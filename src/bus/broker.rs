@@ -634,6 +634,12 @@ mod tests {
         let mut small_sub =
             Subscriber::<MessageEvent>::new_lossy(id, topic_id, event_rx, handle.cmd_tx.clone());
 
+        // The broker handles commands one at a time in order, so once this
+        // subscriber has seen the marker published after `bp2`, the broker has
+        // finished offering `bp2` to the capacity-1 subscriber.
+        let mut barrier: Subscriber<MessageEvent> =
+            handle.subscribe(topics::UserMessage).await.unwrap();
+
         // Fill the capacity-1 channel with one event, then publish a second that must be dropped.
         pub_.publish(topics::UserMessage, test_message("bp1", "fill"))
             .await
@@ -641,7 +647,15 @@ mod tests {
         pub_.publish(topics::UserMessage, test_message("bp2", "dropped"))
             .await
             .unwrap();
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        pub_.publish(topics::UserMessage, test_message("marker", "barrier"))
+            .await
+            .unwrap();
+        loop {
+            let seen = barrier.recv().await.unwrap().unwrap();
+            if seen.id == "marker" {
+                break;
+            }
+        }
 
         // bp1 got through; bp2 was dropped (channel was full).
         let first = small_sub.recv().await.unwrap().unwrap();
@@ -658,7 +672,6 @@ mod tests {
         pub_.publish(topics::UserMessage, test_message("bp3", "recovered"))
             .await
             .unwrap();
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         let recovered = small_sub.recv().await.unwrap().unwrap();
         assert_eq!(recovered.id, "bp3");

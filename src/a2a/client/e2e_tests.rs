@@ -273,6 +273,35 @@ fn sample_info(address: &str) -> SessionInfo {
     }
 }
 
+/// Poll the remote agent until the sender's open task reports WORKING, so a
+/// cancel never races the executor's first status event.
+async fn wait_until_remote_working(f: &Fixture, sender: &str, agent: &str) {
+    let task_id = f
+        .tracker
+        .any_open_task_for(sender, agent)
+        .await
+        .expect("the send must have tracked an open task")
+        .task_id;
+    let (client, _card) = f.hub.client_for(agent).await.unwrap();
+    let request = GetTaskRequest {
+        id: task_id.clone(),
+        history_length: None,
+        tenant: None,
+    };
+    tokio::time::timeout(RECV_TIMEOUT, async {
+        loop {
+            if let Ok(task) = client.get_task(&request).await
+                && task.status.state == TaskState::Working
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for remote task {task_id} to reach WORKING"));
+}
+
 /// The delivered text if `interrupt` is an `AgentMessage`, or a placeholder
 /// naming what it actually was — so a caller's `assert!(content.contains(..))`
 /// fails with a useful message instead of this helper panicking directly.
@@ -458,8 +487,7 @@ async fn stop_agent_cancels_the_open_task_exactly_once() {
         .unwrap();
     assert!(!sent_result.is_error, "got: {}", sent_result.output);
 
-    // Give the executor a moment to reach WORKING before cancelling.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_until_remote_working(&f, sender, "agent1").await;
 
     let stop_tool = StopAgentTool::new(
         Arc::clone(&f.registry),

@@ -209,6 +209,21 @@ impl Default for HarnessOptions {
     }
 }
 
+/// Poll until `port` accepts TCP connections, so a request never races the
+/// listener's bind.
+async fn wait_until_listening(port: u16) {
+    tokio::time::timeout(TEST_TIMEOUT, async {
+        while tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_err()
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for the listener on port {port}"));
+}
+
 async fn free_port() -> u16 {
     tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -393,7 +408,7 @@ async fn start_a2a_listener(
         shutdown_rx,
     );
     tokio::spawn(listener.start());
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_until_listening(port).await;
     (keys, shutdown_tx)
 }
 
@@ -908,7 +923,16 @@ async fn input_required_then_followup_resumes_across_an_idle_session_and_complet
 
     // Let the session's own run idle out and complete, recording a resume
     // point — the same mechanism a follow-up after a long silence relies on.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let address = SessionExecutor::address_for("key:bob", &context_id_of(&events));
+    tokio::time::timeout(TEST_TIMEOUT, async {
+        while harness.session_registry.resume_point(&address).is_none()
+            || harness.session_registry.get(&address).is_some()
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for the session to idle out and record a resume point");
 
     let followup = send_request("markdown please", Some(&task_id), None);
     let response = tokio::time::timeout(TEST_TIMEOUT, client.send_message(&followup))

@@ -270,8 +270,18 @@ mod tests {
             shutdown_rx,
         );
         tokio::spawn(listener.start());
-        // Give the listener a moment to bind before the test issues requests.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Wait until the listener accepts connections before the test issues
+        // requests.
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            while tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_err()
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for the listener on port {port}"));
         (keys, shutdown_tx, dir)
     }
 
