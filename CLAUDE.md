@@ -24,6 +24,10 @@ Pre-commit hooks enforce quality gates:
 
 Bypass is **FORBIDDEN**.
 
+### Local Tasks
+
+The `justfile` wraps the commands above; `just` lists the recipes. `just check` runs everything CI runs (web checks, then fmt, clippy, tests, and `cargo deny`), `just test <filter>` runs `cargo test --quiet <filter>`, and `just web-mock` runs the web UI against the mock API. Every cargo recipe builds `web/dist` first when it is missing, because `build.rs` refuses to compile without it.
+
 ### Cross-Platform Targets
 
 Release builds target Linux x86_64, Linux aarch64, macOS aarch64 (Apple Silicon), and Windows x86_64 (`x86_64-pc-windows-gnu`). Keep platform differences in mind:
