@@ -444,6 +444,7 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
         },
         "127.0.0.1",
         AGENT_NAME,
+        None,
     );
     let card_state = CardState::load(&layout.agent_card_json(), &card_runtime).unwrap();
 

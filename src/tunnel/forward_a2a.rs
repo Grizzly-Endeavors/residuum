@@ -398,6 +398,7 @@ mod tests {
                     break;
                 }
                 other @ (TunnelFrame::Connected { .. }
+                | TunnelFrame::AgentsUpdate { .. }
                 | TunnelFrame::Ping
                 | TunnelFrame::Pong
                 | TunnelFrame::HttpRequest { .. }
@@ -508,6 +509,7 @@ mod tests {
                 }
                 TunnelFrame::HttpResponseEnd { .. } => break,
                 other @ (TunnelFrame::Connected { .. }
+                | TunnelFrame::AgentsUpdate { .. }
                 | TunnelFrame::Ping
                 | TunnelFrame::Pong
                 | TunnelFrame::HttpRequest { .. }

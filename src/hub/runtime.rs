@@ -23,6 +23,7 @@ use crate::util::FatalError;
 
 use super::directory::AgentDirectory;
 use super::host::AgentHost;
+use super::relay_agents::RelayAgents;
 use super::services::{HubControl, HubServices};
 use super::types::NoticeLevel;
 
@@ -159,26 +160,37 @@ async fn spawn_http_server(
     })
 }
 
-/// Start the relay tunnel for `cloud`.
+/// The handles a relay tunnel is started with.
+struct TunnelInputs<'a> {
+    workbench_port: Option<u16>,
+    status_tx: &'a Arc<watch::Sender<TunnelStatus>>,
+    relay_agents: &'a RelayAgents,
+}
+
+/// Start the relay tunnel for `cloud`. The tunnel forwards A2A requests to the
+/// hub's A2A listener when it is enabled, and keeps the relay's agent list
+/// current from `relay_agents`.
 fn spawn_tunnel(
     hub: &HubConfig,
     cloud: &crate::config::CloudConfig,
-    workbench_port: Option<u16>,
-    status_tx: &Arc<watch::Sender<TunnelStatus>>,
+    inputs: &TunnelInputs<'_>,
 ) -> TunnelTask {
     let cloud = cloud.clone();
-    let a2a = crate::config::A2aConfig {
-        enabled: hub.a2a.enabled,
-        port: hub.a2a.port,
-        public_url: hub.a2a.public_url.clone(),
-        ..crate::config::A2aConfig::default()
-    };
-    let (a2a_port, a2a) = crate::tunnel::a2a_tunnel_params(&a2a);
+    let workbench_port = inputs.workbench_port;
+    let a2a_port = hub.a2a.enabled.then_some(hub.a2a.port);
+    let agents_rx = inputs.relay_agents.subscribe();
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let status_tx = Arc::clone(status_tx);
+    let status_tx = Arc::clone(inputs.status_tx);
     let handle = crate::util::spawn_monitored("tunnel", async move {
-        crate::tunnel::start_tunnel(cloud, workbench_port, a2a_port, a2a, shutdown_rx, status_tx)
-            .await;
+        crate::tunnel::start_tunnel(
+            cloud,
+            workbench_port,
+            a2a_port,
+            agents_rx,
+            shutdown_rx,
+            status_tx,
+        )
+        .await;
     });
     TunnelTask {
         handle,
@@ -234,6 +246,7 @@ struct HubRuntime {
     server: HttpServer,
     tunnel: Option<TunnelTask>,
     tunnel_status_tx: Arc<watch::Sender<TunnelStatus>>,
+    relay_agents: RelayAgents,
     a2a: Option<A2aListenerTask>,
     workbench_shutdown_tx: Option<watch::Sender<bool>>,
     reload_rx: tokio::sync::mpsc::UnboundedReceiver<ReloadSignal>,
@@ -285,12 +298,19 @@ impl HubRuntime {
             .a2a
             .enabled
             .then(|| spawn_a2a_listener(&hub_cfg, &host, &services));
+        let relay_agents = RelayAgents::spawn(
+            Arc::clone(&host) as Arc<dyn AgentDirectory>,
+            hub_cfg.a2a.enabled,
+        );
         let tunnel = hub_cfg.cloud.as_ref().map(|cloud| {
             spawn_tunnel(
                 &hub_cfg,
                 cloud,
-                services.workbench_serving.port(),
-                &tunnel_status_tx,
+                &TunnelInputs {
+                    workbench_port: services.workbench_serving.port(),
+                    status_tx: &tunnel_status_tx,
+                    relay_agents: &relay_agents,
+                },
             )
         });
         let (reload_tx, reload_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -323,6 +343,7 @@ impl HubRuntime {
             server,
             tunnel,
             tunnel_status_tx,
+            relay_agents,
             a2a,
             workbench_shutdown_tx,
             reload_rx,
@@ -382,6 +403,7 @@ impl HubRuntime {
         tracing::info!("beginning hub shutdown");
         self.host.stop_all().await;
         self.watcher.abort();
+        self.relay_agents.stop();
         if let Some(tunnel) = self.tunnel.take() {
             stop_task("tunnel", &tunnel.shutdown_tx, tunnel.handle).await;
         }
@@ -419,8 +441,11 @@ impl HubRuntime {
             self.tunnel = Some(spawn_tunnel(
                 &self.hub_cfg,
                 cloud,
-                self.services.workbench_serving.port(),
-                &self.tunnel_status_tx,
+                &TunnelInputs {
+                    workbench_port: self.services.workbench_serving.port(),
+                    status_tx: &self.tunnel_status_tx,
+                    relay_agents: &self.relay_agents,
+                },
             ));
             tracing::info!("tunnel respawned after unexpected exit");
         } else {
@@ -467,6 +492,8 @@ impl HubRuntime {
             changed.push("tracing");
             self.apply_tracing(&new_hub).await;
         }
+        self.relay_agents
+            .set_a2a_listener_enabled(new_hub.a2a.enabled);
         if old.cloud != new_hub.cloud || old.a2a != new_hub.a2a {
             changed.push("cloud");
             self.restart_tunnel(&new_hub).await;
@@ -548,8 +575,11 @@ impl HubRuntime {
             self.tunnel = Some(spawn_tunnel(
                 new_hub,
                 cloud,
-                self.services.workbench_serving.port(),
-                &self.tunnel_status_tx,
+                &TunnelInputs {
+                    workbench_port: self.services.workbench_serving.port(),
+                    status_tx: &self.tunnel_status_tx,
+                    relay_agents: &self.relay_agents,
+                },
             ));
             tracing::info!("tunnel restarted with new config");
         } else {

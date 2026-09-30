@@ -123,9 +123,11 @@ pub struct CardRuntime {
     /// Base URL other agents reach this instance's A2A interfaces at: JSON-RPC
     /// is served at this exact URL, HTTP+JSON (REST) at `{base}/rest`.
     ///
-    /// This is `[a2a] public_url` plus `/agents/<name>` when set, or a local
-    /// fallback (`http://{bind}:{port}/agents/<name>`) otherwise — good for
-    /// same-host and same-network callers, not for callers over the public
+    /// This is `[a2a] public_url` plus `/agents/<name>` when set; otherwise
+    /// the agent's relay address (`{origin}/a2a/{instance}/<name>`) while the
+    /// tunnel is connected; otherwise a local fallback
+    /// (`http://{bind}:{port}/agents/<name>`), which is good for same-host
+    /// and same-network callers but not for callers over the public
     /// internet.
     pub interfaces_base_url: String,
     /// Who may reach this agent without a caller key. Not reflected in the
@@ -136,20 +138,25 @@ pub struct CardRuntime {
 }
 
 impl CardRuntime {
-    /// Build runtime facts for `agent_name` from the resolved `[a2a]` config
-    /// and the gateway's bind address: `public_url` plus `/agents/<name>`
-    /// when set, otherwise the local listener address plus `/agents/<name>`.
+    /// Build runtime facts for `agent_name` from the resolved `[a2a]` config,
+    /// the gateway's bind address, and the relay base (`{origin}/a2a/{instance}`,
+    /// see [`super::public_url::relay_a2a_base`]) when the tunnel is
+    /// connected: `public_url` plus `/agents/<name>` when set, otherwise the
+    /// agent's relay address, otherwise the local listener address plus
+    /// `/agents/<name>`.
     #[must_use]
     pub fn from_config(
         a2a: &crate::config::A2aConfig,
         gateway_bind: &str,
         agent_name: &str,
+        relay_base: Option<&str>,
     ) -> Self {
         Self {
             interfaces_base_url: super::public_url::resolve_a2a_public_url(
                 a2a,
                 gateway_bind,
                 agent_name,
+                relay_base,
             ),
             visibility: a2a.visibility,
         }
@@ -387,7 +394,7 @@ mod tests {
             public_url: Some("https://example.com/a2a/laptop".to_string()),
             visibility: A2aVisibility::Private,
         };
-        let runtime = CardRuntime::from_config(&a2a, "127.0.0.1", "laptop");
+        let runtime = CardRuntime::from_config(&a2a, "127.0.0.1", "laptop", None);
         assert_eq!(
             runtime.interfaces_base_url,
             "https://example.com/a2a/laptop/agents/laptop"
@@ -403,10 +410,52 @@ mod tests {
             public_url: None,
             visibility: A2aVisibility::Public,
         };
-        let runtime = CardRuntime::from_config(&a2a, "127.0.0.1", "laptop");
+        let runtime = CardRuntime::from_config(&a2a, "127.0.0.1", "laptop", None);
         assert_eq!(
             runtime.interfaces_base_url,
             "http://127.0.0.1:7702/agents/laptop"
+        );
+    }
+
+    #[test]
+    fn card_runtime_from_config_uses_the_relay_address_when_connected() {
+        let a2a = crate::config::A2aConfig {
+            enabled: true,
+            port: 7702,
+            public_url: None,
+            visibility: A2aVisibility::Public,
+        };
+        let runtime = CardRuntime::from_config(
+            &a2a,
+            "127.0.0.1",
+            "scout",
+            Some("https://bear.agent-residuum.com/a2a/laptop"),
+        );
+        assert_eq!(
+            runtime.interfaces_base_url,
+            "https://bear.agent-residuum.com/a2a/laptop/scout"
+        );
+        let card = build_agent_card(
+            &AgentCardFile {
+                name: "Scout".to_string(),
+                description: "d".to_string(),
+                skills: vec![],
+                default_input_modes: None,
+                default_output_modes: None,
+            },
+            &runtime,
+        );
+        let urls: Vec<&str> = card
+            .supported_interfaces
+            .iter()
+            .map(|i| i.url.as_str())
+            .collect();
+        assert_eq!(
+            urls,
+            [
+                "https://bear.agent-residuum.com/a2a/laptop/scout",
+                "https://bear.agent-residuum.com/a2a/laptop/scout/rest"
+            ]
         );
     }
 

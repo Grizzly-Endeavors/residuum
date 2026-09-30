@@ -10,6 +10,7 @@ pub mod activity;
 pub mod directory;
 pub mod host;
 pub mod provision;
+mod relay_agents;
 pub mod runtime;
 pub mod services;
 #[cfg(test)]
