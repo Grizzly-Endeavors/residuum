@@ -45,9 +45,11 @@ describe("OutboundTaskRow", () => {
   });
 
   it("says when the agent can't be reached", () => {
-    ws.sessions.now = Date.now();
+    // One timestamp for both, so a millisecond tick between two reads can't make it 10m.
+    const now = Date.now();
+    ws.sessions.now = now;
     render(OutboundTaskRow, {
-      task: { ...TASK, unreachable_since: new Date(Date.now() - 11 * 60_000).toISOString() },
+      task: { ...TASK, unreachable_since: new Date(now - 11 * 60_000).toISOString() },
     });
     expect(screen.getByText(/can't reach laptop for 11m, still retrying/)).toBeTruthy();
   });

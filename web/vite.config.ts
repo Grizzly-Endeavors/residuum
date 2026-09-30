@@ -34,6 +34,14 @@ export default defineConfig({
     }),
   },
   test: {
+    // Reported in CI's job summary, with no threshold. `npm run test:coverage` runs it locally.
+    coverage: {
+      provider: "v8",
+      reportsDirectory: "coverage",
+      include: ["src/**/*.{ts,svelte}"],
+      exclude: ["src/**/*.test.ts", "src/test/**", "src/lib/generated/**"],
+      reporter: ["text-summary", ["text-summary", { file: "summary.txt" }], "html"],
+    },
     projects: [
       {
         extends: true,

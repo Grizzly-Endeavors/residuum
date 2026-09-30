@@ -54,6 +54,11 @@ test *args: _web-dist
 types: _web-dist
     cargo test --quiet --test ts_export
 
+# Regenerate the TypeScript types from scratch and fail if they differ from the index, as CI does (stage regenerated files first)
+[group('rust')]
+types-check: _web-dist
+    scripts/check-generated-types.sh
+
 # Clippy with warnings denied, exactly as the pre-commit hook runs it
 [group('rust')]
 clippy: _web-dist
@@ -122,7 +127,7 @@ web-fmt: _web-deps
 web-fmt-check: _web-deps
     cd web && npm run format:check
 
-# ESLint plus the CSS motion-token lint
+# ESLint plus the style lint (design tokens in stylesheets and component styles)
 [group('web')]
 web-lint: _web-deps
     cd web && npm run lint
@@ -142,6 +147,11 @@ web-typecheck: _web-deps
 web-test *args: _web-deps
     cd web && npm test -- {{ args }}
 
+# Vitest with a coverage summary; the full HTML report is written to web/coverage
+[group('web')]
+web-coverage *args: _web-deps
+    cd web && npm run test:coverage -- {{ args }}
+
 # --- checks ------------------------------------------------------------------
 
 # Everything CI's web job runs
@@ -150,7 +160,7 @@ web-check: web-fmt-check web-lint web-typecheck web-test web-build
 
 # Everything CI's rust job runs
 [group('check')]
-rust-check: rust-fmt-check clippy test deny
+rust-check: rust-fmt-check clippy test types-check deny
 
 # Everything CI runs; web goes first because the Rust build embeds web/dist
 [group('check')]

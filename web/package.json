@@ -3,18 +3,22 @@
   "private": true,
   "version": "0.0.1",
   "type": "module",
+  "engines": {
+    "node": "^22.13.0 || ^24.0.0 || >=26.0.0"
+  },
   "scripts": {
     "dev": "vite",
     "dev:mock": "VITE_MOCK=1 vite",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "lint": "eslint . && npm run lint:css",
-    "lint:css": "sh scripts/lint-css.sh",
+    "lint:css": "stylelint 'src/**/*.{css,svelte}'",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write 'src/**/*.{ts,svelte,js,json,css}'",
     "format:check": "prettier --check 'src/**/*.{ts,svelte,js,json,css}'",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -25,20 +29,23 @@
     "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.56.1",
     "@typescript-eslint/parser": "^8.56.1",
+    "@vitest/coverage-v8": "^5.0.3",
     "eslint": "^10.0.2",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-svelte": "^3.15.0",
     "globals": "^17.4.0",
     "jsdom": "^29.1.1",
+    "postcss-html": "^2.0.0",
     "prettier": "^3.8.1",
     "prettier-plugin-svelte": "^3.5.1",
+    "stylelint": "^17.15.0",
     "svelte": "^5.0.0",
     "svelte-check": "^4.4.4",
     "svelte-eslint-parser": "^1.5.1",
     "typescript": "^5.0.0",
     "typescript-eslint": "^8.56.1",
     "vite": "^6.0.0",
-    "vitest": "^5.0.1",
+    "vitest": "^5.0.3",
     "ws": "^8.18.1"
   },
   "dependencies": {

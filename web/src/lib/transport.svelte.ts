@@ -52,7 +52,7 @@ export class WsTransport<S = ServerMessage, C extends { type: string } = ClientM
     socket.onmessage = (e) => {
       if (this.ws !== socket) return;
       try {
-        const msg: S = JSON.parse(e.data);
+        const msg = JSON.parse(String(e.data)) as S;
         this.onMessage?.(msg);
       } catch (err) {
         // eslint-disable-next-line no-console -- transport-layer failure has no user-visible channel; project rule mandates failure visibility

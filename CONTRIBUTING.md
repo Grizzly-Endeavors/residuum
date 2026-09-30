@@ -5,7 +5,7 @@ Thanks for your interest in contributing. This document covers the workflow and 
 ## Getting Started
 
 1. Fork the repository and clone your fork
-2. Install [Rust](https://rustup.rs/) (the version pinned in `rust-toolchain.toml`; rustup installs it — see [Rust Toolchain](#rust-toolchain)) and [Node.js](https://nodejs.org/) (for the web frontend)
+2. Install [Rust](https://rustup.rs/) (the version pinned in `rust-toolchain.toml`; rustup installs it — see [Rust Toolchain](#rust-toolchain)) and [Node.js](https://nodejs.org/) (for the web frontend; the supported versions are the `engines` field in `web/package.json`, see [web/CONTRIBUTING.md](web/CONTRIBUTING.md#prerequisites))
 3. Build the web frontend first — the Rust binary embeds the built assets, so `cargo build` will fail without them:
    ```bash
    cd web
@@ -70,9 +70,11 @@ Pre-commit hooks run automatically:
 - `cargo clippy` — pedantic linting with strict denials
 - `cargo test` — tests for the modules touched by the commit
 - `cargo deny check` — dependency audit
-- When `web/src/` files are staged: Prettier, ESLint, `svelte-check`, and the web unit tests (Vitest)
+- When `web/src/` files are staged: Prettier, ESLint and the style lint (Stylelint), `svelte-check` (warnings fail it), and the web unit tests (Vitest)
 
 Do not bypass hooks. If a hook fails, fix the issue before committing.
+
+CI, which runs on release tags, repeats these checks and adds two. It regenerates the web's TypeScript protocol types from the Rust types and fails when `web/src/lib/generated/` differs from what is committed, so after changing an exported Rust type run `just types` and commit the result (`just types-check` runs the same check as CI). It also reports web test coverage in the job summary, with no threshold.
 
 ### Style
 

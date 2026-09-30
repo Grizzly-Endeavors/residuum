@@ -41,7 +41,9 @@ class Router {
     if (this.started) return;
     this.started = true;
     this.syncFromUrl();
-    window.addEventListener("popstate", () => this.syncFromUrl());
+    window.addEventListener("popstate", () => {
+      this.syncFromUrl();
+    });
   }
 
   /** The current location, as one value. */
