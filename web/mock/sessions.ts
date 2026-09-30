@@ -12,7 +12,6 @@ import { untrackedRunFields } from "./data/sessions";
 import { artifactIdentity, json, parseJsonObject, readBody, stringField, text } from "./http";
 import { decodedParam, type Route, type RouteContext } from "./routes";
 import type { MockState } from "./state";
-import { sleep } from "./util";
 
 /**
  * Transcript fetches are slowed down so the "Loading transcript…" state (and
@@ -60,10 +59,10 @@ function completeSession(
 ): void {
   const { sessions } = state;
   setSessionState(state, session, "completing");
-  setTimeout(() => {
+  state.env.after(800, () => {
     sessions.live = sessions.live.filter((s) => s.run_id !== session.run_id);
     session.state = "completed";
-    session.completed_at = new Date().toISOString();
+    session.completed_at = state.env.clock.iso();
     session.episode_id = status === "completed" ? "ep-301" : null;
     sessions.completed.unshift(session);
     state.broadcast({
@@ -75,14 +74,14 @@ function completeSession(
       error_details: errorDetails,
       episode_id: session.episode_id,
     });
-  }, 800);
+  });
 }
 
 // One turn: running → tool → reply → idle, relaying to main when spawned by it.
 function runSessionTurn(state: MockState, session: SessionSummary, reply: string): void {
   const { sessions } = state;
-  const turnId = `${session.run_id}-t${Date.now()}`;
-  const toolId = `tc_s_${Date.now()}`;
+  const turnId = `${session.run_id}-t${String(state.env.nextId())}`;
+  const toolId = `tc_s_${String(state.env.nextId())}`;
   setSessionState(state, session, "running");
   state.broadcast({
     type: "session_turn_started",
@@ -90,7 +89,7 @@ function runSessionTurn(state: MockState, session: SessionSummary, reply: string
     run_id: session.run_id,
     turn_id: turnId,
   });
-  setTimeout(() => {
+  state.env.after(500, () => {
     state.broadcast({
       type: "session_broadcast_response",
       address: session.address,
@@ -105,8 +104,8 @@ function runSessionTurn(state: MockState, session: SessionSummary, reply: string
       name: "memory_search",
       arguments: { query: "fallback" },
     });
-  }, 500);
-  setTimeout(() => {
+  });
+  state.env.after(1200, () => {
     state.broadcast({
       type: "session_tool_result",
       address: session.address,
@@ -116,8 +115,8 @@ function runSessionTurn(state: MockState, session: SessionSummary, reply: string
       output: "1 result: notification-routing.md",
       is_error: false,
     });
-  }, 1200);
-  setTimeout(() => {
+  });
+  state.env.after(2400, () => {
     if (!sessions.live.includes(session) || session.state !== "running") return;
     recordMessage(state, session, { role: "assistant", content: reply });
     state.broadcast({
@@ -142,7 +141,7 @@ function runSessionTurn(state: MockState, session: SessionSummary, reply: string
         content: reply,
       });
     }
-  }, 2400);
+  });
 }
 
 /** Start a subagent session on the main agent's behalf, and let it run one turn. */
@@ -158,7 +157,7 @@ export function spawnSession(state: MockState, purpose: string): SessionSummary 
     spawner: "main",
     depth: 1,
     purpose,
-    started_at: new Date().toISOString(),
+    started_at: state.env.clock.iso(),
     completed_at: null,
     episode_id: null,
     interrupted: false,
@@ -167,13 +166,13 @@ export function spawnSession(state: MockState, purpose: string): SessionSummary 
   sessions.live.unshift(session);
   recordMessage(state, session, { role: "user", content: purpose });
   state.broadcast({ type: "session_started", session });
-  setTimeout(() => {
+  state.env.after(400, () => {
     runSessionTurn(
       state,
       session,
       `Finished: ${purpose}. Two items need a look; details are in the transcript.`,
     );
-  }, 400);
+  });
   return session;
 }
 
@@ -189,7 +188,7 @@ function resumeRun(
     ...prev,
     run_id: `${options.runIdPrefix}-${sessions.runCounter}`,
     state: "forking",
-    started_at: new Date().toISOString(),
+    started_at: state.env.clock.iso(),
     completed_at: null,
     episode_id: null,
     interrupted: false,
@@ -198,9 +197,9 @@ function resumeRun(
   sessions.live.unshift(session);
   recordMessage(state, session, { role: "user", content: options.message });
   state.broadcast({ type: "session_started", session });
-  setTimeout(() => {
+  state.env.after(400, () => {
     runSessionTurn(state, session, options.reply);
-  }, 400);
+  });
   return session;
 }
 
@@ -245,13 +244,13 @@ export function sendSessionMessage(
     return;
   }
   reply({ type: "session_message_delivered", id, address, outcome: "resumed" });
-  setTimeout(() => {
+  state.env.after(300, () => {
     resumeRun(state, prev, {
       runIdPrefix: "run-resumed",
       message: `${OWNER_MESSAGE_LABEL}\n${content}`,
       reply: "Picking this back up. Here's where it stands now.",
     });
-  }, 300);
+  });
 }
 
 /** The `session_stop` socket command. */
@@ -319,7 +318,7 @@ async function sessionTranscript(ctx: RouteContext): Promise<void> {
     text(res, 404, "no such run");
     return;
   }
-  await sleep(TRANSCRIPT_DELAY_MS);
+  await state.env.sleep(TRANSCRIPT_DELAY_MS);
   json(res, 200, {
     session,
     messages: state.sessions.transcripts.get(runId) ?? [],
@@ -355,7 +354,7 @@ async function startArtifactSession(ctx: RouteContext): Promise<void> {
     spawner: null,
     depth: 1,
     purpose: prompt.slice(0, 140),
-    started_at: new Date().toISOString(),
+    started_at: state.env.clock.iso(),
     completed_at: null,
     episode_id: null,
     interrupted: false,
@@ -367,9 +366,9 @@ async function startArtifactSession(ctx: RouteContext): Promise<void> {
     content: `[This session was started by the workbench artifact "${artifactName}". Your responses are shown to that artifact, not to the main conversation.]\n\n${prompt}`,
   });
   state.broadcast({ type: "session_started", session });
-  setTimeout(() => {
+  state.env.after(400, () => {
     runSessionTurn(state, session, `Working on it: ${prompt.slice(0, 80)}.`);
-  }, 400);
+  });
   json(res, 202, { address: session.address });
 }
 

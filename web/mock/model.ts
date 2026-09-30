@@ -1,6 +1,5 @@
 import { artifactIdentity, json, readJsonObject, type JsonObject } from "./http";
 import type { Route, RouteContext } from "./routes";
-import { sleep } from "./util";
 
 /**
  * Model calls are slowed down so they're visibly "in flight" in an
@@ -91,7 +90,7 @@ function sampleFromSchema(schema: unknown): unknown {
  * a good one is answered after `delayMs`.
  */
 function completeHandler(delayMs: number): (ctx: RouteContext) => Promise<void> {
-  return async ({ req, res }) => {
+  return async ({ req, res, state }) => {
     if (req.headers[ARTIFACT_HEADER] !== undefined && artifactIdentity(req) === null) {
       json(res, 400, {
         error: `the ${ARTIFACT_HEADER} header must name an artifact, like "wiki-graph"`,
@@ -112,7 +111,7 @@ function completeHandler(delayMs: number): (ctx: RouteContext) => Promise<void> 
         : JSON.stringify(sample);
     // A brief artificial delay, so a call is visibly "in flight" in the
     // artifact activity panel long enough to see and, if wanted, cancel.
-    await sleep(delayMs);
+    await state.env.sleep(delayMs);
     json(res, 200, {
       content,
       ...(sample === undefined ? {} : { json: sample }),
@@ -122,10 +121,10 @@ function completeHandler(delayMs: number): (ctx: RouteContext) => Promise<void> 
   };
 }
 
-/** The model call route, answering after `delayMs`. */
-export function createModelRoutes(delayMs: number): readonly Route[] {
+/** The model call route, answering after `delayMs` of simulated time (see `MockEnv.after`). */
+export function createModelRoutes(delayMs = MODEL_CALL_DELAY_MS): readonly Route[] {
   return [{ method: "POST", pattern: "/api/model/complete", handler: completeHandler(delayMs) }];
 }
 
 /** The model call route, with the delay that shows a call in flight. */
-export const modelRoutes: readonly Route[] = createModelRoutes(MODEL_CALL_DELAY_MS);
+export const modelRoutes: readonly Route[] = createModelRoutes();

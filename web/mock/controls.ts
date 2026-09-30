@@ -1,4 +1,4 @@
-import { json } from "./http";
+import { json, readJsonObject } from "./http";
 import type { Route, RouteContext } from "./routes";
 
 /**
@@ -13,7 +13,7 @@ import type { Route, RouteContext } from "./routes";
  * once it reconnects.
  */
 function missedRelay({ res, state }: RouteContext): void {
-  const now = new Date().toISOString();
+  const now = state.env.clock.iso();
   state.extraRecent.push(
     {
       role: "user",
@@ -45,7 +45,7 @@ function teammateMessage({ res, hub, query }: RouteContext): void {
     json(res, 404, { error: "mock: name an agent with ?agent=" });
     return;
   }
-  const now = new Date().toISOString();
+  const now = hub.env.clock.iso();
   const from = query.get("from") ?? "scout";
   const reply = `${from} asked me to check the wiki index. On it.`;
   agent.state.extraRecent.push(
@@ -62,8 +62,43 @@ function teammateMessage({ res, hub, query }: RouteContext): void {
   json(res, 200, { ok: true });
 }
 
+/**
+ * Put the mock back as it started (see `MockHub.reset`). Whatever a test did
+ * is gone, and every connected page is dropped and reconnects to the initial
+ * scenario.
+ */
+function reset({ res, hub }: RouteContext): void {
+  hub.reset();
+  json(res, 200, { ok: true });
+}
+
+/** `{ ms }`: move the clock forward, and answer with the time it now reads. */
+async function advanceClock({ req, res, hub }: RouteContext): Promise<void> {
+  const { ms } = await readJsonObject(req);
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) {
+    json(res, 422, { error: "mock: `ms` must be a non-negative number of milliseconds" });
+    return;
+  }
+  hub.env.clock.advance(ms);
+  json(res, 200, { now: hub.env.clock.iso() });
+}
+
+/** `{ scale }`: how long simulated work takes now: `1` is the natural pace, `0` is instant. Reset restores the start-up value. */
+async function setDelays({ req, res, hub }: RouteContext): Promise<void> {
+  const { scale } = await readJsonObject(req);
+  if (typeof scale !== "number" || !Number.isFinite(scale) || scale < 0) {
+    json(res, 422, { error: "mock: `scale` must be a non-negative number" });
+    return;
+  }
+  hub.env.setDelayScale(scale);
+  json(res, 200, { scale });
+}
+
 /** The test control routes. */
 export const controlRoutes: readonly Route[] = [
   { method: "POST", pattern: "/api/mock/missed-relay", handler: missedRelay },
   { method: "POST", pattern: "/api/mock/teammate-message", handler: teammateMessage },
+  { method: "POST", pattern: "/api/mock/reset", handler: reset },
+  { method: "POST", pattern: "/api/mock/clock/advance", handler: advanceClock },
+  { method: "POST", pattern: "/api/mock/delays", handler: setDelays },
 ];

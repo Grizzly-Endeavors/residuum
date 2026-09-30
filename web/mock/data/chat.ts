@@ -1,19 +1,13 @@
 import type { RecentMessage } from "../../src/lib/types";
-
-// Produce a Date a given number of calendar days before "now" at a specific
-// local hour, so the live recent messages span several days and exercise the
-// day-divider logic in the frontend feed store.
-function daysAgoAt(daysAgo: number, hour: number, minute = 0): string {
-  const d = new Date();
-  d.setDate(d.getDate() - daysAgo);
-  d.setHours(hour, minute, 0, 0);
-  return d.toISOString();
-}
+import type { MockClock } from "../env";
 
 // Recent live messages — span today, yesterday, and the day before so the
 // frontend inserts a day divider between each run. These correspond to the
 // contents of recent_messages.json on the backend.
-export function sampleRecentMessages(): RecentMessage[] {
+export function sampleRecentMessages(clock: MockClock): RecentMessage[] {
+  // A given number of calendar days before now at a specific hour, so the
+  // messages exercise the day-divider logic in the frontend feed store.
+  const daysAgoAt = clock.dayAt;
   return [
     // Main's reply to the relay that closes ep-003: the turn began in that
     // episode, so it's shown once the episode loads.
@@ -155,13 +149,8 @@ export interface SampleEpisode {
   messages: RecentMessage[];
 }
 
-export function isoDateDaysAgo(daysAgo: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - daysAgo);
-  return d.toISOString().slice(0, 10);
-}
-
-export function sampleEpisodes(): SampleEpisode[] {
+export function sampleEpisodes(clock: MockClock): SampleEpisode[] {
+  const isoDateDaysAgo = clock.dateDaysAgo;
   return [
     {
       id: "ep-003",
