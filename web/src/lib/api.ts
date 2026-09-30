@@ -1068,20 +1068,6 @@ export async function undoCheckpoint(
   });
 }
 
-/**
- * Restore `path` from `checkpointId`, the checkpoint the action itself
- * reported. A newer checkpoint may have landed since (a turn ending, another
- * write); restoring the repo's current tip would bring back the wrong tree.
- */
-export async function undoLastAction(
-  agent: string | null,
-  checkpointId: string,
-  repo: RepoKind,
-  path: string,
-): Promise<RestoreOutcome> {
-  return restoreCheckpoint(agent, checkpointId, repo, path);
-}
-
 /** `checkpoint_id` from a delete/revoke response, or `null` when the server
  * recorded none (the checkpoint failed, or the field is missing). */
 async function readCheckpointId(path: string, init?: RequestInit): Promise<string | null> {

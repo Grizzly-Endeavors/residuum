@@ -1,14 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type * as ApiModule from "./api";
+import { beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
+import { configCoordinator } from "./config-coordinator";
 import { notifyFormUndo } from "./form-undo";
 import { PendingSaveTracker } from "./pending-save";
 import { toast } from "./toast.svelte";
 
-const { undoLastAction } = vi.hoisted(() => ({ undoLastAction: vi.fn() }));
-vi.mock("./api", async (importOriginal) => ({
-  ...(await importOriginal<typeof ApiModule>()),
-  undoLastAction,
-}));
+let restore: MockInstance<typeof configCoordinator.restore>;
 
 function lastToastAction(): { label: string; onClick: () => void } | undefined {
   return [...toast.toasts.values()].at(-1)?.action;
@@ -21,7 +17,8 @@ function errorToastMessage(): string | undefined {
 describe("notifyFormUndo", () => {
   beforeEach(() => {
     for (const id of [...toast.toasts.keys()]) toast.dismiss(id);
-    undoLastAction.mockReset();
+    restore = vi.spyOn(configCoordinator, "restore");
+    restore.mockReset();
   });
 
   it("reverts local state and never touches the server when the save hasn't fired yet", () => {
@@ -41,13 +38,13 @@ describe("notifyFormUndo", () => {
     lastToastAction()?.onClick();
 
     expect(revertLocally).toHaveBeenCalledTimes(1);
-    expect(undoLastAction).not.toHaveBeenCalled();
+    expect(restore).not.toHaveBeenCalled();
     clearTimeout(timer);
   });
 
   it("restores from the checkpoint the removing save reported", async () => {
     const pendingSave = new PendingSaveTracker();
-    undoLastAction.mockResolvedValue({ checkpoint_id: "cp-new", restored_paths: [] });
+    restore.mockResolvedValue({ checkpoint_id: "cp-new", restored_paths: [] });
     const revertLocally = vi.fn();
     const onRestored = vi.fn();
 
@@ -73,12 +70,7 @@ describe("notifyFormUndo", () => {
       expect(onRestored).toHaveBeenCalledTimes(1);
     });
     expect(revertLocally).not.toHaveBeenCalled();
-    expect(undoLastAction).toHaveBeenCalledWith(
-      "scout",
-      "cp-removal",
-      "agent_config",
-      "providers.toml",
-    );
+    expect(restore).toHaveBeenCalledWith("scout", "cp-removal", "agent_config", "providers.toml");
   });
 
   it("ignores a save that was already in flight when the entry was removed", async () => {
@@ -101,12 +93,12 @@ describe("notifyFormUndo", () => {
     await vi.waitFor(() => {
       expect(revertLocally).toHaveBeenCalledTimes(1);
     });
-    expect(undoLastAction).not.toHaveBeenCalled();
+    expect(restore).not.toHaveBeenCalled();
   });
 
   it("waits for an in-flight save to settle before restoring", async () => {
     const pendingSave = new PendingSaveTracker();
-    undoLastAction.mockResolvedValue({ checkpoint_id: "cp2", restored_paths: [] });
+    restore.mockResolvedValue({ checkpoint_id: "cp2", restored_paths: [] });
 
     notifyFormUndo(
       "scout",
@@ -121,12 +113,12 @@ describe("notifyFormUndo", () => {
 
     // Still in flight — the restore must not have started yet.
     await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(undoLastAction).not.toHaveBeenCalled();
+    expect(restore).not.toHaveBeenCalled();
 
     pendingSave.recordWrite("config/mcp.json", "cp1");
     pendingSave.markSettled();
     await vi.waitFor(() => {
-      expect(undoLastAction).toHaveBeenCalledWith("scout", "cp1", "workspace", "config/mcp.json");
+      expect(restore).toHaveBeenCalledWith("scout", "cp1", "workspace", "config/mcp.json");
     });
   });
 
@@ -149,7 +141,7 @@ describe("notifyFormUndo", () => {
     await vi.waitFor(() => {
       expect(revertLocally).toHaveBeenCalledTimes(1);
     });
-    expect(undoLastAction).not.toHaveBeenCalled();
+    expect(restore).not.toHaveBeenCalled();
   });
 
   it("reports plainly when the save's checkpoint failed", async () => {
@@ -171,6 +163,6 @@ describe("notifyFormUndo", () => {
     await vi.waitFor(() => {
       expect(errorToastMessage()).toContain("no checkpoint of providers.toml");
     });
-    expect(undoLastAction).not.toHaveBeenCalled();
+    expect(restore).not.toHaveBeenCalled();
   });
 });

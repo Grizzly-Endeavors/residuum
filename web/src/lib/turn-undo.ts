@@ -7,7 +7,8 @@
 // path the turn itself changed back to its content just before the turn
 // started, skipping anything changed again since.
 
-import { fetchCheckpoints, undoCheckpoint } from "./api";
+import { fetchCheckpoints } from "./api";
+import { configCoordinator } from "./config-coordinator";
 import type { UndoOutcome } from "./types";
 
 /** The turn-end checkpoint for `turnId`, or `null` if none is recorded
@@ -39,5 +40,5 @@ export async function turnChangedWorkspace(agent: string | null, turnId: string)
 export async function undoTurn(agent: string | null, turnId: string): Promise<UndoOutcome | null> {
   const checkpoint = await findTurnEndCheckpoint(agent, turnId);
   if (!checkpoint) return null;
-  return undoCheckpoint(agent, checkpoint.id, "workspace");
+  return configCoordinator.undo(agent, checkpoint.id, "workspace");
 }

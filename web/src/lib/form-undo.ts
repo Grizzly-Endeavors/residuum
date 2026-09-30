@@ -18,7 +18,7 @@
 //   (lib/undo.ts) uses for an immediate delete endpoint, resolved after the
 //   fact because the write may not have happened when Undo is clicked.
 
-import { undoLastAction } from "./api";
+import { configCoordinator } from "./config-coordinator";
 import { userErrorMessage } from "./errors";
 import type { PendingSaveTracker } from "./pending-save";
 import { toast } from "./toast.svelte";
@@ -81,7 +81,7 @@ async function undoAfterSettle(
     return;
   }
   try {
-    await undoLastAction(agent, write.checkpointId, repo, path);
+    await configCoordinator.restore(agent, write.checkpointId, repo, path);
     toast.success("Restored.");
     await onRestored?.();
   } catch (err: unknown) {

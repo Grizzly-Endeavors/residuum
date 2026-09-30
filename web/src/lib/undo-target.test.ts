@@ -34,8 +34,8 @@ describe("toast undo targets the action's own checkpoint", () => {
       vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
         const url = requestUrl(input);
         const method = init?.method ?? "GET";
-        // What `undoLastAction` used to do: ask for the newest checkpoint
-        // at click time. A checkpoint taken after the action is now first.
+        // The listing of the newest checkpoint, which a click-time lookup would
+        // restore from. A checkpoint taken after the action is now first.
         if (method === "GET" && url.startsWith("/api/hub/checkpoints?")) {
           return jsonResponse({
             items: [

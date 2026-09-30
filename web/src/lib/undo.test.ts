@@ -1,19 +1,16 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { parseWorkspaceCheckpoints } from "./api";
-import type * as ApiModule from "./api";
+import { configCoordinator } from "./config-coordinator";
 import { toast } from "./toast.svelte";
 import { notifyWithUndo, notifyWithWorkspaceUndo, restoreTargets } from "./undo";
 
-const { undoLastAction } = vi.hoisted(() => ({ undoLastAction: vi.fn() }));
-vi.mock("./api", async (importOriginal) => ({
-  ...(await importOriginal<typeof ApiModule>()),
-  undoLastAction,
-}));
+let restore: MockInstance<typeof configCoordinator.restore>;
 
 describe("notifyWithUndo", () => {
   beforeEach(() => {
     for (const id of [...toast.toasts.keys()]) toast.dismiss(id);
-    undoLastAction.mockReset();
+    restore = vi.spyOn(configCoordinator, "restore");
+    restore.mockReset();
   });
 
   it("shows a success toast with an Undo action", () => {
@@ -24,7 +21,7 @@ describe("notifyWithUndo", () => {
   });
 
   it("restores from the checkpoint and reports success when Undo is clicked", async () => {
-    undoLastAction.mockResolvedValue({
+    restore.mockResolvedValue({
       checkpoint_id: "abc123",
       restored_paths: ["agent-keys.toml.enc"],
     });
@@ -44,13 +41,13 @@ describe("notifyWithUndo", () => {
       expect(onRestored).toHaveBeenCalledTimes(1);
     });
 
-    expect(undoLastAction).toHaveBeenCalledWith(null, "action-cp", "hub", "agent-keys.toml.enc");
+    expect(restore).toHaveBeenCalledWith(null, "action-cp", "hub", "agent-keys.toml.enc");
     const followUp = [...toast.toasts.values()].at(-1);
     expect(followUp?.message).toBe("Restored.");
   });
 
   it("surfaces a plain-language error if the restore call itself fails", async () => {
-    undoLastAction.mockRejectedValue(new Error("network down"));
+    restore.mockRejectedValue(new Error("network down"));
     notifyWithUndo(null, "Removed github_token.", "hub", "agent-keys.toml.enc", "action-cp");
     const shown = [...toast.toasts.values()].at(-1);
 
@@ -62,7 +59,7 @@ describe("notifyWithUndo", () => {
   });
 
   it("restores every listed path from the same checkpoint", async () => {
-    undoLastAction.mockResolvedValue({ checkpoint_id: "abc123", restored_paths: [] });
+    restore.mockResolvedValue({ checkpoint_id: "abc123", restored_paths: [] });
     notifyWithUndo(
       null,
       'Deleted "Chart".',
@@ -73,17 +70,11 @@ describe("notifyWithUndo", () => {
 
     [...toast.toasts.values()].at(-1)?.action?.onClick();
     await vi.waitFor(() => {
-      expect(undoLastAction).toHaveBeenCalledTimes(2);
+      expect(restore).toHaveBeenCalledTimes(2);
     });
 
-    expect(undoLastAction).toHaveBeenNthCalledWith(
-      1,
-      null,
-      "action-cp",
-      "team",
-      "workbench/chart.html",
-    );
-    expect(undoLastAction).toHaveBeenNthCalledWith(
+    expect(restore).toHaveBeenNthCalledWith(1, null, "action-cp", "team", "workbench/chart.html");
+    expect(restore).toHaveBeenNthCalledWith(
       2,
       null,
       "action-cp",
@@ -163,31 +154,32 @@ describe("parseWorkspaceCheckpoints", () => {
 describe("notifyWithWorkspaceUndo", () => {
   beforeEach(() => {
     for (const id of [...toast.toasts.keys()]) toast.dismiss(id);
-    undoLastAction.mockReset();
+    restore = vi.spyOn(configCoordinator, "restore");
+    restore.mockReset();
   });
 
   it("restores a team path from the team repo, relative to team/", async () => {
-    undoLastAction.mockResolvedValue({ checkpoint_id: "x", restored_paths: [] });
+    restore.mockResolvedValue({ checkpoint_id: "x", restored_paths: [] });
     notifyWithWorkspaceUndo(null, "Deleted a.md.", "team/wiki/a.md", [
       { id: "team-cp", repo: "team" },
     ]);
     [...toast.toasts.values()].at(-1)?.action?.onClick();
     await vi.waitFor(() => {
-      expect(undoLastAction).toHaveBeenCalledTimes(1);
+      expect(restore).toHaveBeenCalledTimes(1);
     });
-    expect(undoLastAction).toHaveBeenCalledWith(null, "team-cp", "team", "wiki/a.md");
+    expect(restore).toHaveBeenCalledWith(null, "team-cp", "team", "wiki/a.md");
   });
 
   it("restores an agent's own path through the agent the action ran on", async () => {
-    undoLastAction.mockResolvedValue({ checkpoint_id: "x", restored_paths: [] });
+    restore.mockResolvedValue({ checkpoint_id: "x", restored_paths: [] });
     notifyWithWorkspaceUndo("atlas", "Deleted a.md.", "notes/a.md", [
       { id: "ws-cp", repo: "workspace" },
     ]);
     [...toast.toasts.values()].at(-1)?.action?.onClick();
     await vi.waitFor(() => {
-      expect(undoLastAction).toHaveBeenCalledTimes(1);
+      expect(restore).toHaveBeenCalledTimes(1);
     });
-    expect(undoLastAction).toHaveBeenCalledWith("atlas", "ws-cp", "workspace", "notes/a.md");
+    expect(restore).toHaveBeenCalledWith("atlas", "ws-cp", "workspace", "notes/a.md");
   });
 
   it("offers no Undo when no checkpoint applies to the path", () => {
