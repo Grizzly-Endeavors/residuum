@@ -110,7 +110,15 @@ web/
 │       ├── format-tool-result.ts # Tool result display: JSON, file dumps, lists, errors, long-output collapse
 │       ├── settings-toml.ts      # Config parsing (for display) and diffing (for the patch endpoints)
 │       └── secrets.ts            # secret:/${ENV_VAR} reference detection for settings fields
-├── mock-server.ts            # Mock API + WebSocket (only used in dev:mock)
+├── mock/                     # Typed mock modules, checked like src/ (only used in dev:mock)
+│   ├── routes.ts             # Route tables: each endpoint is a method, a path pattern and a handler
+│   ├── state.ts              # Per-agent and hub state, and the agent and hub types
+│   ├── http.ts               # Request and response helpers, typed body parsing
+│   ├── sessions.ts           # Sessions endpoints, session socket commands, the session lifecycle
+│   ├── config.ts             # Status, config, providers, MCP, secrets, agent keys, A2A, setup, tracing
+│   ├── data/                 # Sample data: sessions, workspace files, inbox, the workbench artifact
+│   └── *.test.ts             # Unit tests, run by `npm test`
+├── mock-server.ts            # Mock plugin entry, plus the hub, agent sockets, chat, files, workbench, inbox and test controls
 ├── vite.config.ts
 └── package.json
 ```
@@ -157,6 +165,8 @@ npm run test:coverage # The same tests with a coverage summary (HTML report in c
 **svelte-check.** It runs with `--fail-on-warnings`. The one accepted warning, a label without an associated control, is filtered in `svelte.config.js`.
 
 **Generated types.** `src/lib/generated/` comes from the Rust types. After changing an exported Rust type, run `just types` and commit the result; `just types-check` (and CI) fails when the committed files are out of date.
+
+**Mock modules.** Everything under `mock/` is formatted, linted and type-checked with the same rules as `src/`, and its tests (`mock/**/*.test.ts`) run in Node through the same `npm test`. Route handlers live in route tables (`Route` in `mock/routes.ts`), and response bodies are checked against the generated protocol types in `src/lib/generated/` wherever one exists. `mock-server.ts`, the plugin entry, is the one mock file outside those checks; it also holds the hub, agent sockets, chat, files, workbench, inbox and test controls.
 
 Component tests live next to the component as `src/components/**/*.test.ts` (or `*.component.test.ts` anywhere under `src/`). They run in jsdom, through the same `npm test` command as the Node unit tests under `src/lib/`. Mount with `render` and mock `fetch` using `src/test/component.ts`.
 

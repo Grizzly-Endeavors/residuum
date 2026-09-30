@@ -11,6 +11,10 @@
  * `/api/team/...`. Each agent has its own state and its own WebSocket. The
  * hub-level and team-level data (secrets, hub config, team files, workbench)
  * live in one shared state.
+ *
+ * The sessions and config endpoints are route tables in `mock/` (see
+ * `mock/routes.ts`); this file routes requests to them, and holds the hub,
+ * agent sockets, chat, files, workbench, inbox and test controls.
  */
 
 import type { Plugin, ViteDevServer } from "vite";
@@ -18,8 +22,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
-import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { agentNameProblem } from "./mock/agent-name";
+import { configRoutes } from "./mock/config";
 import { MOCK_CLOUD_STATUS, MOCK_FEATURES, MOCK_RESIDUUM_VERSION } from "./mock/constants";
 import { json, readBody, text } from "./mock/http";
 import { dispatchRoute } from "./mock/routes";
@@ -416,39 +420,6 @@ const cannedResponses = [
     "Let me know if you'd like a deeper dive into any specific area.",
 ];
 
-const modelsByProvider: Record<string, Array<{ id: string; name: string }>> = {
-  anthropic: [
-    { id: "claude-opus-4-6", name: "Claude Opus 4.6" },
-    { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
-    { id: "claude-haiku-4-5", name: "Claude Haiku 4.5" },
-  ],
-  openai: [
-    { id: "gpt-4o", name: "GPT-4o" },
-    { id: "gpt-4o-mini", name: "GPT-4o Mini" },
-    { id: "o3", name: "o3" },
-    { id: "o4-mini", name: "o4-mini" },
-  ],
-  gemini: [
-    { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" },
-    { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
-    { id: "gemini-3.0-flash", name: "Gemini 3.0 Flash" },
-  ],
-  fireworks: [
-    { id: "accounts/fireworks/models/glm-5p3", name: "accounts/fireworks/models/glm-5p3" },
-    { id: "accounts/fireworks/models/kimi-k3", name: "accounts/fireworks/models/kimi-k3" },
-    {
-      id: "accounts/fireworks/routers/glm-flash-latest",
-      name: "accounts/fireworks/routers/glm-flash-latest",
-    },
-  ],
-  ollama: [
-    { id: "llama3.3:latest", name: "Llama 3.3" },
-    { id: "mistral:latest", name: "Mistral" },
-    { id: "deepseek-r1:latest", name: "DeepSeek R1" },
-    { id: "qwen3:latest", name: "Qwen 3" },
-  ],
-};
-
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
 /** A stand-in for the file version token (`ETag`) the workspace API reports. */
@@ -462,40 +433,6 @@ function mockFileVersion(content: string): string {
 function fileRead(res: ServerResponse, content: string) {
   res.writeHead(200, { "Content-Type": "text/plain", ETag: mockFileVersion(content) });
   res.end(content);
-}
-
-/**
- * Merge a JSON diff (the shape the Settings form's diff builders in
- * `lib/settings-toml.ts` send) into a plain object in place — the mock's
- * stand-in for the real backend's `toml_edit`/JSON-merge patching
- * (`src/config/patch.rs`, `src/workspace/mcp_patch.rs`). Comment
- * preservation doesn't apply here (mock state is never a real file with
- * comments), but the merge semantics match: `null` removes a key, a nested
- * object recurses, and `{"$inline": {...}}` sets the key to that inner
- * object directly.
- */
-function applyJsonPatch(target: Record<string, unknown>, diff: Record<string, unknown>): void {
-  for (const [key, val] of Object.entries(diff)) {
-    if (val === null) {
-      delete target[key];
-    } else if (typeof val === "object" && !Array.isArray(val)) {
-      const obj = val as Record<string, unknown>;
-      if ("$inline" in obj) {
-        target[key] = obj.$inline;
-        continue;
-      }
-      const existing = target[key];
-      const sub =
-        typeof existing === "object" && existing !== null && !Array.isArray(existing)
-          ? (existing as Record<string, unknown>)
-          : {};
-      target[key] = sub;
-      applyJsonPatch(sub, obj);
-      if (Object.keys(sub).length === 0) delete target[key];
-    } else {
-      target[key] = val;
-    }
-  }
 }
 
 // ─── REST middleware ───────────────────────────────────────────────────────────
@@ -524,23 +461,8 @@ function setupRestMiddleware(server: ViteDevServer, hub: MockHub) {
       const { state, path } = routed;
 
       // Areas whose routes live in `mock/` modules.
-      if (await dispatchRoute(sessionRoutes, { req, res, hub, state, method, path, query })) return;
-
-      // ── Status & system ────────────────────────────────────────────────
-      if (path === "/api/status" && method === "GET") {
-        json(res, 200, {
-          agent: state.agentName,
-          mode: state.mode,
-          version: MOCK_RESIDUUM_VERSION,
-          features: MOCK_FEATURES,
-        });
-        return;
-      }
-
-      if (path === "/api/system/timezone" && method === "GET") {
-        json(res, 200, { timezone: "America/New_York" });
-        return;
-      }
+      const request = { req, res, hub, state, method, path, query };
+      if (await dispatchRoute([...sessionRoutes, ...configRoutes], request)) return;
 
       // ── Chat ───────────────────────────────────────────────────────────
       if (path === "/api/chat/history" && method === "GET") {
@@ -604,380 +526,6 @@ function setupRestMiddleware(server: ViteDevServer, hub: MockHub) {
         agent.state.broadcast({ type: "response", reply_to: "teammate", content: reply });
         if (agent.connectedClients() === 0) hub.addUnread(agent);
         json(res, 200, { ok: true });
-        return;
-      }
-
-      // ── Config ─────────────────────────────────────────────────────────
-      if (path === "/api/config/raw" && method === "GET") {
-        text(res, 200, state.configToml);
-        return;
-      }
-
-      if (path === "/api/config/raw" && method === "PUT") {
-        state.configToml = await readBody(req);
-        json(res, 200, { valid: true });
-        return;
-      }
-
-      if (path === "/api/config/patch" && method === "PATCH") {
-        const diff = JSON.parse(await readBody(req)) as Record<string, unknown>;
-        const doc = state.configToml.trim()
-          ? (parseToml(state.configToml) as Record<string, unknown>)
-          : {};
-        applyJsonPatch(doc, diff);
-        state.configToml = stringifyToml(doc);
-        json(res, 200, { valid: true });
-        return;
-      }
-
-      if (path === "/api/config/validate" && method === "POST") {
-        json(res, 200, { valid: true });
-        return;
-      }
-
-      if (path === "/api/cloud/status" && method === "GET") {
-        json(res, 200, MOCK_CLOUD_STATUS);
-        return;
-      }
-
-      if (path === "/api/hub/config/raw" && method === "GET") {
-        text(res, 200, state.hubConfigToml);
-        return;
-      }
-
-      if (path === "/api/hub/config/raw" && method === "PUT") {
-        state.hubConfigToml = await readBody(req);
-        json(res, 200, { valid: true });
-        return;
-      }
-
-      if (path === "/api/hub/config/patch" && method === "PATCH") {
-        const diff = JSON.parse(await readBody(req)) as Record<string, unknown>;
-        const doc = state.hubConfigToml.trim()
-          ? (parseToml(state.hubConfigToml) as Record<string, unknown>)
-          : {};
-        applyJsonPatch(doc, diff);
-        state.hubConfigToml = stringifyToml(doc);
-        json(res, 200, { valid: true });
-        return;
-      }
-
-      if (path === "/api/hub/config/validate" && method === "POST") {
-        json(res, 200, { valid: true });
-        return;
-      }
-
-      if (path === "/api/hub/config/complete-setup" && method === "POST") {
-        const body = JSON.parse(await readBody(req));
-        const name = String(body.agent_name ?? "");
-        const nameProblem = agentNameProblem(name);
-        if (nameProblem !== null) {
-          json(res, 400, { valid: false, error: nameProblem, diagnostics: [] });
-          return;
-        }
-        // Setup only creates the first agent (`refuse_when_agents_exist`).
-        if (hub.agents.size > 0) {
-          const existing = [...hub.agents.keys()].sort(byName);
-          json(res, 409, {
-            valid: false,
-            error: existing.includes(name)
-              ? `An agent named '${name}' already exists. Choose a different name, or change the existing agent from its settings.`
-              : `This residuum already has an agent ('${existing.join("', '")}'). Setup only creates the first agent.`,
-            diagnostics: [],
-          });
-          return;
-        }
-        state.hubConfigToml = body.hub_config ?? state.hubConfigToml;
-        const agent = hub.createAgent(name, { role: null });
-        agent.state.configToml = body.config ?? agent.state.configToml;
-        agent.state.providersToml = body.providers ?? agent.state.providersToml;
-        if (body.mcp_json) {
-          agent.state.mcpJson = body.mcp_json;
-        }
-        state.mode = "running";
-        json(res, 200, { valid: true, diagnostics: [] });
-        return;
-      }
-
-      // ── Providers ──────────────────────────────────────────────────────
-      if (path === "/api/providers/raw" && method === "GET") {
-        text(res, 200, state.providersToml);
-        return;
-      }
-
-      if (path === "/api/providers/raw" && method === "PUT") {
-        state.providersToml = await readBody(req);
-        json(res, 200, { valid: true });
-        return;
-      }
-
-      if (path === "/api/providers/patch" && method === "PATCH") {
-        const diff = JSON.parse(await readBody(req)) as Record<string, unknown>;
-        const doc = state.providersToml.trim()
-          ? (parseToml(state.providersToml) as Record<string, unknown>)
-          : {};
-        applyJsonPatch(doc, diff);
-        state.providersToml = stringifyToml(doc);
-        json(res, 200, { valid: true });
-        return;
-      }
-
-      if (path === "/api/providers/validate" && method === "POST") {
-        json(res, 200, { valid: true });
-        return;
-      }
-
-      if (path === "/api/providers/models" && method === "POST") {
-        const body = JSON.parse(await readBody(req));
-        const provider = (body.provider ?? "").toLowerCase();
-
-        // Match against known provider types
-        let providerType = provider;
-        for (const key of Object.keys(modelsByProvider)) {
-          if (provider.includes(key)) {
-            providerType = key;
-            break;
-          }
-        }
-
-        const models = modelsByProvider[providerType] ?? [
-          { id: `${provider}/default-model`, name: "Default Model" },
-        ];
-        json(res, 200, { models });
-        return;
-      }
-
-      // ── MCP ────────────────────────────────────────────────────────────
-      if (path === "/api/mcp/raw" && method === "GET") {
-        text(res, 200, state.mcpJson);
-        return;
-      }
-
-      if (path === "/api/mcp/raw" && method === "PUT") {
-        state.mcpJson = await readBody(req);
-        json(res, 200, { valid: true });
-        return;
-      }
-
-      if (path === "/api/mcp/patch" && method === "PATCH") {
-        const diff = JSON.parse(await readBody(req)) as Record<string, unknown>;
-        const doc = state.mcpJson.trim()
-          ? (JSON.parse(state.mcpJson) as Record<string, unknown>)
-          : { mcpServers: {} };
-        applyJsonPatch(doc, diff);
-        doc.mcpServers ??= {};
-        state.mcpJson = JSON.stringify(doc, null, 2);
-        json(res, 200, { valid: true });
-        return;
-      }
-
-      if (path === "/api/mcp-catalog" && method === "GET") {
-        try {
-          const catalog = readFileSync(resolve(__dirname, "public", "mcp-catalog.json"), "utf-8");
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(catalog);
-        } catch {
-          json(res, 200, []);
-        }
-        return;
-      }
-
-      // ── Agent keys ─────────────────────────────────────────────────────
-      if (path === "/api/agent-keys" && method === "GET") {
-        const keys = [...state.agentKeys.entries()]
-          .sort(([a], [b]) => a.localeCompare(b))
-          .map(([name, k]) => ({
-            name,
-            env_var: name.toUpperCase(),
-            description: k.description,
-            created_by: k.created_by,
-          }));
-        json(res, 200, { keys });
-        return;
-      }
-
-      if (path === "/api/agent-keys" && method === "POST") {
-        const body = JSON.parse(await readBody(req));
-        if (!/^[a-z][a-z0-9_]{0,63}$/.test(body.name) || String(body.value).length < 8) {
-          res.writeHead(400, { "Content-Type": "text/plain" });
-          res.end("key name or value is invalid");
-          return;
-        }
-        state.agentKeys.set(body.name, {
-          value: body.value,
-          description: body.description ?? "",
-          created_by: "user",
-        });
-        json(res, 200, { name: body.name, env_var: body.name.toUpperCase() });
-        return;
-      }
-
-      const agentKeyDelete = path.match(/^\/api\/agent-keys\/(.+)$/);
-      if (agentKeyDelete && method === "DELETE") {
-        const name = decodeURIComponent(agentKeyDelete[1]);
-        if (!state.agentKeys.delete(name)) {
-          res.writeHead(404, { "Content-Type": "text/plain" });
-          res.end(`no agent key named '${name}'`);
-          return;
-        }
-        // The mock doesn't keep a checkpoint repository, so there is no id
-        // for Undo to restore. A null id hides the button instead of offering
-        // a restore that would 404.
-        json(res, 200, { deleted: true, checkpoint_id: null });
-        return;
-      }
-
-      // ── A2A ────────────────────────────────────────────────────────────
-      if (path === "/api/a2a/status" && method === "GET") {
-        json(res, 200, {
-          enabled: true,
-          port: 7702,
-          visibility: "public",
-          public_url: null,
-          listener_running: true,
-          card_error: null,
-        });
-        return;
-      }
-
-      if (path === "/api/a2a/card" && method === "GET") {
-        const card = JSON.parse(state.workspaceFileContents["config/agent-card.json"] ?? "{}");
-        json(res, 200, {
-          name: card.name ?? "Residuum agent",
-          description: card.description ?? "",
-          skills: card.skills ?? [],
-        });
-        return;
-      }
-
-      if (path === "/api/a2a/keys" && method === "GET") {
-        const keys = [...state.a2aKeys.entries()]
-          .sort(([a], [b]) => a.localeCompare(b))
-          .map(([name, k]) => ({ name, description: k.description, created_at: k.created_at }));
-        json(res, 200, { keys });
-        return;
-      }
-
-      if (path === "/api/a2a/keys" && method === "POST") {
-        const body = JSON.parse(await readBody(req));
-        if (!/^[a-z][a-z0-9_]{0,63}$/.test(body.name)) {
-          json(res, 400, { error: `caller key name '${body.name}' is invalid` });
-          return;
-        }
-        if (state.a2aKeys.has(body.name)) {
-          json(res, 409, { error: `an A2A caller key named '${body.name}' already exists` });
-          return;
-        }
-        state.a2aKeys.set(body.name, {
-          description: body.description ?? "",
-          created_at: new Date().toISOString(),
-        });
-        json(res, 200, {
-          name: body.name,
-          token: `rsdm_a2a_mock${Math.random().toString(36).slice(2, 10)}`,
-        });
-        return;
-      }
-
-      const a2aKeyDelete = path.match(/^\/api\/a2a\/keys\/(.+)$/);
-      if (a2aKeyDelete && method === "DELETE") {
-        const name = decodeURIComponent(a2aKeyDelete[1]);
-        if (!state.a2aKeys.delete(name)) {
-          json(res, 404, { error: `no A2A caller key named '${name}'` });
-          return;
-        }
-        json(res, 200, { revoked: true, checkpoint_id: null });
-        return;
-      }
-
-      if (path === "/api/a2a/agents" && method === "GET") {
-        json(res, 200, [
-          {
-            name: "research-buddy",
-            url: "https://example.com/a2a/research-buddy",
-            source: "config",
-            status: "ok",
-            error: null,
-            card: {
-              name: "Research Buddy",
-              description: "Digs through papers and reports back with sources.",
-              skills: [{ id: "lit-review", name: "Literature review" }],
-            },
-          },
-          {
-            name: "laptop",
-            url: "https://example.com/a2a/laptop",
-            source: "sibling",
-            status: "pending",
-            error: null,
-            card: null,
-          },
-        ]);
-        return;
-      }
-
-      if (path === "/api/a2a/outbound" && method === "GET") {
-        json(res, 200, state.outboundTasks);
-        return;
-      }
-
-      const outboundStop = /^\/api\/a2a\/outbound\/([^/]+)\/(stop|stop-watching)$/.exec(path);
-      if (outboundStop && method === "POST") {
-        const [, taskId, action] = outboundStop;
-        const task = state.outboundTasks.find(
-          (t) => t.task_id === decodeURIComponent(taskId ?? ""),
-        );
-        if (!task) {
-          json(res, 404, {
-            error: `Task ${taskId} isn't running anymore, so there's nothing to stop.`,
-            code: "not_open",
-          });
-          return;
-        }
-        if (action === "stop" && task.unreachable_since) {
-          json(res, 502, {
-            error: `Couldn't reach ${String(task.agent)} to cancel the task. You can stop watching it instead; it may keep running on their side.`,
-            code: "unreachable",
-          });
-          return;
-        }
-        state.outboundTasks = state.outboundTasks.filter((t) => t !== task);
-        const closed = { ...task, state: "canceled", open: false, unreachable_since: null };
-        state.broadcast({ type: "session_outbound_a2a_task", task: closed });
-        json(res, 200, closed);
-        return;
-      }
-
-      if (path === "/api/a2a/agents/raw" && method === "GET") {
-        text(res, 200, state.a2aAgentsJson);
-        return;
-      }
-
-      if (path === "/api/a2a/agents/raw" && method === "PUT") {
-        state.a2aAgentsJson = await readBody(req);
-        json(res, 200, { valid: true });
-        return;
-      }
-
-      // ── Secrets ────────────────────────────────────────────────────────
-      if (path === "/api/secrets" && method === "GET") {
-        json(res, 200, { names: [...state.secrets.keys()] });
-        return;
-      }
-
-      if (path === "/api/secrets" && method === "POST") {
-        const body = JSON.parse(await readBody(req));
-        state.secrets.set(body.name, body.value);
-        json(res, 200, { reference: `secret:${body.name}` });
-        return;
-      }
-
-      // DELETE /api/secrets/:name
-      const deleteMatch = path.match(/^\/api\/secrets\/(.+)$/);
-      if (deleteMatch && method === "DELETE") {
-        const name = decodeURIComponent(deleteMatch[1]);
-        state.secrets.delete(name);
-        json(res, 200, { deleted: true });
         return;
       }
 
@@ -1095,25 +643,6 @@ function setupRestMiddleware(server: ViteDevServer, hub: MockHub) {
         const body = JSON.parse(await readBody(req));
         filesFor(hub, state, body.path).workspaceFileContents[body.path] = body.content;
         json(res, 200, { saved: true, version: mockFileVersion(String(body.content)) });
-        return;
-      }
-
-      if (path === "/api/tracing/bug-report" && method === "POST") {
-        // Drain the body so the dev server can inspect it if asked.
-        await readBody(req);
-        json(res, 200, {
-          public_id: "RR-MOCK-BUG-01",
-          submitted_at: new Date().toISOString(),
-        });
-        return;
-      }
-
-      if (path === "/api/tracing/feedback" && method === "POST") {
-        await readBody(req);
-        json(res, 200, {
-          public_id: "RR-MOCK-FBK-01",
-          submitted_at: new Date().toISOString(),
-        });
         return;
       }
 
