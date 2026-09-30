@@ -40,6 +40,38 @@ pub fn gather_for_bug_report(config: &Config) -> ClientContext {
         model_name,
         active_subagents: Vec::new(),
         config_flags: config_flags(config),
+        agent: Some(config.agent_name.clone()),
+    }
+}
+
+/// The client context for a failure of the agent `agent`, from its resolved
+/// `config` when one loaded. Without one (the failure was in loading it) the
+/// model and flags are left out.
+#[must_use]
+pub fn gather_for_agent(agent: &str, config: Option<&Config>) -> ClientContext {
+    config.map_or_else(
+        || ClientContext {
+            agent: Some(agent.to_string()),
+            ..gather_for_hub()
+        },
+        gather_for_bug_report,
+    )
+}
+
+/// The client context for a failure that belongs to the hub rather than to
+/// any agent: version and platform only.
+#[must_use]
+pub fn gather_for_hub() -> ClientContext {
+    ClientContext {
+        version: env!("RESIDUUM_VERSION").to_string(),
+        commit: option_env!("RESIDUUM_GIT_COMMIT").map(str::to_string),
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        model_provider: None,
+        model_name: None,
+        active_subagents: Vec::new(),
+        config_flags: BTreeMap::new(),
+        agent: None,
     }
 }
 

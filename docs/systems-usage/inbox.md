@@ -6,18 +6,18 @@ The inbox is a capture system for items the agent or background tasks want to sa
 |---|---|---|
 | Path | `inbox/agent/` | `inbox/user/` |
 | Archive path | `archive/inbox/agent/` | `archive/inbox/user/` |
-| Populated by | Notification router (`inbox` channel target) for `scheduled` and webhook-triggered `external` results, the WS `/inbox` command, `POST /api/agent-inbox` | `user_inbox_add` tool |
+| Populated by | Notification router (`inbox` channel target) for `scheduled` and webhook-triggered `external` results, the WS `/inbox` command, `POST /api/agents/{name}/agent-inbox` | `user_inbox_add` tool |
 | Read/manage tools | `inbox_list`, `inbox_read`, `inbox_archive`, `inbox_restore` | *(none for the agent)* |
 | Consumed by | The agent, via the tools above | The user, via the web UI/HTTP API |
-| Attachments | Populated only when a chat attachment is saved to the agent inbox as a companion item; not attachable via `inbox_list`/`inbox_read`/`inbox_archive`/`inbox_restore` | Populated by `user_inbox_add`'s optional `attachments` parameter, served at `GET /api/inbox/{id}/attachments/{index}` |
+| Attachments | Populated only when a chat attachment is saved to the agent inbox as a companion item; not attachable via `inbox_list`/`inbox_read`/`inbox_archive`/`inbox_restore` | Populated by `user_inbox_add`'s optional `attachments` parameter, served at `GET /api/agents/{name}/inbox/{id}/attachments/{index}` |
 
 The agent inbox is a queue for the agent itself to triage — it's where the `inbox` notification-routing target delivers results. The user inbox is a one-way delivery channel *to* the user: the agent (often a background sub-agent, e.g. the built-in `introspection` skill) writes to it with `user_inbox_add`, and the user reads and archives items through the web UI. The agent has no tool to list, read, or archive the user inbox — only to add to it.
 
-Archiving is a soft delete in both inboxes, not a permanent one: an archived item's JSON file (and its attachments directory, if it has one) simply moves under `archive/inbox/`, so restoring it is just moving it back. The agent restores its own inbox items with `inbox_restore`; the user restores inbox items through the web UI's archived view, which calls `POST /api/inbox/{id}/restore`.
+Archiving is a soft delete in both inboxes, not a permanent one: an archived item's JSON file (and its attachments directory, if it has one) simply moves under `archive/inbox/`, so restoring it is just moving it back. The agent restores its own inbox items with `inbox_restore`; the user restores inbox items through the web UI's archived view, which calls `POST /api/agents/{name}/inbox/{id}/restore`.
 
 ## How Items Arrive
 
-- **Agent inbox**: the notification router files every substantive `scheduled` result and every substantive webhook-triggered `external` result here. A conversation-triggered `external` result (A2A, or a non-owner Discord/Telegram/Teams chat) never reaches the inbox — its output already went back to the conversation it came from, and its observations are merged into memory as an episode — nor does an `artifact` or `spawned` session's result, both of which are relayed elsewhere (see [background-tasks.md](background-tasks.md#result-routing)). A workbench artifact can also add an item directly with `POST /api/agent-inbox` (body `{ title?, body }`) — the same place the WS `/inbox` command writes to. `title` defaults to the body's first line, in full; a blank `body` is refused with `400`. The item's `source` is `artifact:<name>` when the request carries the workbench bridge's artifact-identity header, `web` otherwise. There is no equivalent HTTP endpoint for the user inbox.
+- **Agent inbox**: the notification router files every substantive `scheduled` result and every substantive webhook-triggered `external` result here. A conversation-triggered `external` result (A2A, or a non-owner Discord/Telegram/Teams chat) never reaches the inbox — its output already went back to the conversation it came from, and its observations are merged into memory as an episode — nor does an `artifact` or `spawned` session's result, both of which are relayed elsewhere (see [background-tasks.md](background-tasks.md#result-routing)). A workbench artifact can also add an item directly with `POST /api/agents/{name}/agent-inbox` (body `{ title?, body }`) — the same place the WS `/inbox` command writes to. `title` defaults to the body's first line, in full; a blank `body` is refused with `400`. The item's `source` is `artifact:<name>` when the request carries the workbench bridge's artifact-identity header, `web` otherwise. There is no equivalent HTTP endpoint for the user inbox.
 - **User inbox**: the agent calls `user_inbox_add`; nothing else writes here.
 
 ## Item Format
@@ -69,8 +69,8 @@ A user inbox item created with `user_inbox_add`'s `attachments` parameter record
 - **No size cap**: these are already-local files, not something arriving over a platform with its own upload limit.
 - **Partial failure is not fatal**: a file that fails to copy (missing, unreadable) is skipped and logged; the item is still created with whichever attachments did succeed, and the tool result names each one that failed.
 - **Archiving moves attachments too**: when the user archives an item, its `inbox/user/attachments/{item id}/` directory moves to `archive/inbox/user/attachments/{item id}/` alongside the JSON file, so the item's attachments keep serving after archiving; restoring the item reverses that move.
-- **Serving**: the web UI fetches attachments from `GET /api/inbox/{id}/attachments/{index}`, which checks the active inbox first, then the archive, and confines every resolved path to the item's own attachment directory before serving — an out-of-tree path 404s rather than confirming it exists.
-- **Restoring**: `GET /api/inbox/archive` lists archived user inbox items the same shape as `GET /api/inbox`; `POST /api/inbox/{id}/restore` moves one back to the active inbox. The web UI's inbox has an archived view with a Restore action wired to this endpoint.
+- **Serving**: the web UI fetches attachments from `GET /api/agents/{name}/inbox/{id}/attachments/{index}`, which checks the active inbox first, then the archive, and confines every resolved path to the item's own attachment directory before serving — an out-of-tree path 404s rather than confirming it exists.
+- **Restoring**: `GET /api/agents/{name}/inbox/archive` lists archived user inbox items the same shape as `GET /api/agents/{name}/inbox`; `POST /api/agents/{name}/inbox/{id}/restore` moves one back to the active inbox. The web UI's inbox has an archived view with a Restore action wired to this endpoint.
 
 ## Intended Usage
 

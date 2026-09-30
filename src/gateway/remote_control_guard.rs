@@ -1,10 +1,12 @@
-//! Guard against shutting down or disconnecting the gateway over the tunnel.
+//! Guard against shutting down the hub or disconnecting it from the cloud over
+//! the tunnel.
 //!
 //! Observed failure this exists to prevent: a remote shutdown or cloud
 //! disconnect executed through the tunnel leaves nothing that can bring the
 //! gateway back, since both actions cut off the only channel a remote caller
-//! has to reach it. Restart and update stay reachable remotely — only these
-//! two irreversible-from-a-distance actions are refused.
+//! has to reach it. Every other action stays reachable remotely, including
+//! restart, update, and stopping agents (one or all), because the hub keeps
+//! running after those and any agent can be started again through the tunnel.
 //!
 //! Tunnel-forwarded requests carry [`crate::tunnel::TUNNEL_NONCE_HEADER`] set
 //! to this process's own nonce (see `tunnel::forward_http::forward`), the
@@ -33,9 +35,10 @@ fn is_tunnel_forwarded(req: &Request) -> bool {
 
 /// Refuse a tunnel-forwarded request to a route this guard is mounted on.
 ///
-/// Apply with `.route_layer(...)` to exactly `/api/shutdown` and
-/// `/api/cloud/disconnect` — never with `.layer(...)`, which would apply it
-/// to the whole router instead of just those two routes.
+/// Apply with `.route_layer(...)` to exactly `/api/hub/shutdown` and
+/// `/api/hub/cloud/disconnect` — never with
+/// `.layer(...)`, which would apply it to the whole router instead of just
+/// those routes.
 pub(crate) async fn reject_remote_shutdown_and_disconnect(req: Request, next: Next) -> Response {
     if is_tunnel_forwarded(&req) {
         tracing::warn!(

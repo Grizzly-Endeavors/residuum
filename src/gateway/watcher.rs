@@ -54,7 +54,7 @@ pub(super) fn spawn_workspace_watcher(
     a2a_agents_path: PathBuf,
     reload_tx: crate::gateway::types::ReloadSender,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
+    crate::util::spawn_in_span(async move {
         let mut mcp_file = WatchedFile::new(mcp_path);
         let mut channels_file = WatchedFile::new(channels_path);
         let mut agent_card_file = WatchedFile::new(agent_card_path);
@@ -112,7 +112,7 @@ pub(super) fn spawn_root_config_watcher(
     providers_toml_path: PathBuf,
     reload_tx: crate::gateway::types::ReloadSender,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
+    crate::util::spawn_in_span(async move {
         let mut config_file = WatchedFile::new(config_toml_path);
         let mut providers_file = WatchedFile::new(providers_toml_path);
         let mut interval = tokio::time::interval(Duration::from_secs(2));
@@ -154,11 +154,11 @@ pub(super) fn spawn_root_config_watcher(
 ///
 /// Polls every 2 seconds; on the file's mtime changing, debounces 500ms then
 /// sends `ReloadSignal::Hub`.
-pub(super) fn spawn_hub_config_watcher(
+pub(crate) fn spawn_hub_config_watcher(
     hub_config_toml_path: PathBuf,
     reload_tx: crate::gateway::types::ReloadSender,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
+    crate::util::spawn_in_span(async move {
         let mut hub_config_file = WatchedFile::new(hub_config_toml_path);
         let mut interval = tokio::time::interval(Duration::from_secs(2));
 

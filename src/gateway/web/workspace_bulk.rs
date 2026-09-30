@@ -35,7 +35,7 @@ const TREE_ENTRY_LIMIT: usize = 20_000;
 /// dropped (`skipped`/`error`: `"budget"`) but the entry's metadata stays.
 const RESPONSE_BUDGET_BYTES: usize = 8 * 1024 * 1024;
 
-/// One entry in a `GET /api/workspace/tree` listing.
+/// One entry in a `GET /api/agents/{name}/workspace/tree` listing.
 #[derive(Debug, Serialize)]
 struct TreeEntry {
     path: String,
@@ -51,7 +51,7 @@ struct TreeEntry {
     skipped: Option<&'static str>,
 }
 
-/// Response body for `GET /api/workspace/tree`.
+/// Response body for `GET /api/agents/{name}/workspace/tree`.
 #[derive(Debug, Serialize)]
 pub(super) struct TreeResponse {
     path: String,
@@ -60,7 +60,7 @@ pub(super) struct TreeResponse {
     content_truncated: bool,
 }
 
-/// Parsed and validated query parameters for `GET /api/workspace/tree`.
+/// Parsed and validated query parameters for `GET /api/agents/{name}/workspace/tree`.
 struct TreeParams {
     path: String,
     content: bool,
@@ -68,7 +68,7 @@ struct TreeParams {
     depth: Option<u32>,
 }
 
-/// Parse `GET /api/workspace/tree`'s query string by hand.
+/// Parse `GET /api/agents/{name}/workspace/tree`'s query string by hand.
 ///
 /// `glob` repeats (`?glob=a&glob=b`), which axum's `Query` extractor can't
 /// collect into a `Vec` (it deserializes via `serde_urlencoded`, which
@@ -490,7 +490,7 @@ fn build_tree(
     })
 }
 
-/// `GET /api/workspace/tree` — recursively list a workspace directory.
+/// `GET /api/agents/{name}/workspace/tree` — recursively list a workspace directory.
 ///
 /// Returns a flat, path-sorted list of every file and directory under
 /// `path` (the whole workspace when omitted). Symlinks below the root are
@@ -523,11 +523,7 @@ pub(super) async fn api_workspace_tree(
         located.existing().await?
     };
     // A walk of the whole workspace also covers the team directory.
-    let team_mount = state
-        .team
-        .as_ref()
-        .filter(|_| params.path.is_empty())
-        .map(|team| team.team_root().to_path_buf());
+    let team_mount = state.team_mount().filter(|_| params.path.is_empty());
 
     let root_metadata = tokio::fs::metadata(&root_disk).await.map_err(|e| {
         (
@@ -545,7 +541,7 @@ pub(super) async fn api_workspace_tree(
     let globs = compile_globs(&params.glob)?;
 
     let root_relative = params.path.clone();
-    let response = tokio::task::spawn_blocking(move || {
+    let response = crate::util::spawn_blocking_in_span(move || {
         build_tree(
             &root_disk,
             &root_relative,
@@ -572,13 +568,13 @@ pub(super) async fn api_workspace_tree(
     Ok(Json(response))
 }
 
-/// Request body for `POST /api/workspace/read`.
+/// Request body for `POST /api/agents/{name}/workspace/read`.
 #[derive(Deserialize)]
 pub(super) struct BatchReadRequest {
     paths: Vec<String>,
 }
 
-/// One entry in a `POST /api/workspace/read` response, in request order.
+/// One entry in a `POST /api/agents/{name}/workspace/read` response, in request order.
 #[derive(Debug, Serialize)]
 struct BatchFileResult {
     path: String,
@@ -640,7 +636,7 @@ impl BatchFileResult {
     }
 }
 
-/// Response body for `POST /api/workspace/read`.
+/// Response body for `POST /api/agents/{name}/workspace/read`.
 #[derive(Debug, Serialize)]
 pub(super) struct BatchReadResponse {
     files: Vec<BatchFileResult>,
@@ -831,7 +827,7 @@ fn batch_read(
     (results, content_truncated)
 }
 
-/// `POST /api/workspace/read` — read a chosen set of workspace files.
+/// `POST /api/agents/{name}/workspace/read` — read a chosen set of workspace files.
 ///
 /// Typically the paths named by a change event, so an artifact can refresh
 /// exactly what changed in one request. Results are returned in request
@@ -848,11 +844,8 @@ pub(super) async fn api_workspace_read(
     Json(req): Json<BatchReadRequest>,
 ) -> Result<Json<BatchReadResponse>, (StatusCode, String)> {
     let workspace_dir = state.workspace_dir.clone();
-    let team_root = state
-        .team
-        .as_ref()
-        .map(|team| team.team_root().to_path_buf());
-    let (files, content_truncated) = tokio::task::spawn_blocking(move || {
+    let team_root = state.team_mount();
+    let (files, content_truncated) = crate::util::spawn_blocking_in_span(move || {
         batch_read(&workspace_dir, team_root.as_deref(), &req.paths)
     })
     .await
@@ -883,8 +876,7 @@ mod tests {
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: None,
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            scope: crate::gateway::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         }
     }

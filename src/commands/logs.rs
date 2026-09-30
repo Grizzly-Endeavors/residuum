@@ -5,7 +5,8 @@
 
 use residuum::util::FatalError;
 use residuum::util::log_format::{
-    LogLevel, expand_module_filter, format_entry, format_entry_colored, meets_level, parse_line,
+    LogEntry, LogLevel, expand_module_filter, format_entry, format_entry_colored, meets_level,
+    parse_line,
 };
 
 #[derive(clap::Args)]
@@ -19,6 +20,9 @@ pub(super) struct LogsArgs {
     /// Filter by minimum log level (trace, debug, info, warn, error)
     #[arg(long, short)]
     pub level: Option<String>,
+    /// Show only lines from one agent (matches the `agent` field on the line or its spans)
+    #[arg(long, short)]
+    pub agent: Option<String>,
     /// Output raw JSON instead of formatted text
     #[arg(long)]
     pub json: bool,
@@ -28,6 +32,7 @@ pub(super) struct LogsArgs {
 struct LogFilter {
     module_prefix: Option<String>,
     min_level: Option<LogLevel>,
+    agent: Option<String>,
     raw_json: bool,
     color: bool,
 }
@@ -52,6 +57,7 @@ impl LogFilter {
         Ok(Self {
             module_prefix,
             min_level,
+            agent: args.agent.clone(),
             raw_json: args.json,
             color,
         })
@@ -59,38 +65,66 @@ impl LogFilter {
 
     /// Format and print a log line, applying filters. Returns true if the line was printed.
     fn process_line(&self, line: &str) -> bool {
+        match self.render_line(line) {
+            Some(text) => {
+                println!("{text}");
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Apply the filters to one log line and return the text to print, if any.
+    fn render_line(&self, line: &str) -> Option<String> {
         let trimmed = line.trim();
         if trimmed.is_empty() {
-            return false;
+            return None;
         }
 
         let Some(entry) = parse_line(trimmed) else {
-            // Non-JSON line (old format or partial write) — print raw as fallback
-            println!("{trimmed}");
-            return true;
+            // A line that isn't a JSON log entry (a partial write, or text from another source) is printed raw,
+            // unless filtering by agent: an unparsed line can't be attributed.
+            return self.agent.is_none().then(|| trimmed.to_string());
         };
 
         if let Some(ref prefix) = self.module_prefix
             && !entry.target.starts_with(prefix.as_str())
         {
-            return false;
+            return None;
         }
 
         if let Some(min) = self.min_level
             && !meets_level(&entry.level, min)
         {
-            return false;
+            return None;
         }
 
-        if self.raw_json {
-            println!("{trimmed}");
-        } else if self.color {
-            println!("{}", format_entry_colored(&entry));
-        } else {
-            println!("{}", format_entry(&entry));
+        if let Some(ref agent) = self.agent
+            && !entry_belongs_to_agent(&entry, agent)
+        {
+            return None;
         }
-        true
+
+        Some(if self.raw_json {
+            trimmed.to_string()
+        } else if self.color {
+            format_entry_colored(&entry)
+        } else {
+            format_entry(&entry)
+        })
     }
+}
+
+/// Whether a log entry carries `agent = <name>` on the event or on any
+/// enclosing span.
+fn entry_belongs_to_agent(entry: &LogEntry, agent: &str) -> bool {
+    let matches =
+        |v: Option<&serde_json::Value>| v.and_then(serde_json::Value::as_str) == Some(agent);
+    matches(entry.fields.get("agent"))
+        || entry
+            .spans
+            .iter()
+            .any(|span| matches(span.fields.get("agent")))
 }
 
 /// Display and optionally tail structured log files.
@@ -182,4 +216,76 @@ pub(super) async fn run_logs_command(args: &LogsArgs) -> Result<(), FatalError> 
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn filter(agent: Option<&str>, level: Option<LogLevel>) -> LogFilter {
+        LogFilter {
+            module_prefix: None,
+            min_level: level,
+            agent: agent.map(str::to_string),
+            raw_json: false,
+            color: false,
+        }
+    }
+
+    fn line(level: &str, fields: &str, spans: &str) -> String {
+        format!(
+            r#"{{"timestamp":"2026-09-29T10:00:00Z","level":"{level}","target":"residuum::x","fields":{fields},"spans":{spans}}}"#
+        )
+    }
+
+    #[test]
+    fn agent_filter_matches_event_field() {
+        let f = filter(Some("scout"), None);
+        let hit = line("INFO", r#"{"message":"hi","agent":"scout"}"#, "[]");
+        let miss = line("INFO", r#"{"message":"hi","agent":"other"}"#, "[]");
+        assert!(f.render_line(&hit).is_some());
+        assert!(f.render_line(&miss).is_none());
+    }
+
+    #[test]
+    fn agent_filter_matches_span_field() {
+        let f = filter(Some("scout"), None);
+        let hit = line(
+            "INFO",
+            r#"{"message":"hi"}"#,
+            r#"[{"name":"agent","agent":"scout"}]"#,
+        );
+        assert!(f.render_line(&hit).is_some());
+    }
+
+    #[test]
+    fn agent_filter_drops_untagged_and_unparsed_lines() {
+        let f = filter(Some("scout"), None);
+        assert!(
+            f.render_line(&line("INFO", r#"{"message":"hi"}"#, "[]"))
+                .is_none()
+        );
+        assert!(f.render_line("not json").is_none());
+    }
+
+    #[test]
+    fn no_agent_filter_keeps_everything() {
+        let f = filter(None, None);
+        assert!(
+            f.render_line(&line("INFO", r#"{"message":"hi"}"#, "[]"))
+                .is_some()
+        );
+        assert_eq!(f.render_line("not json").as_deref(), Some("not json"));
+    }
+
+    #[test]
+    fn agent_filter_composes_with_level() {
+        let f = filter(Some("scout"), Some(LogLevel::Warn));
+        let info = line("INFO", r#"{"agent":"scout"}"#, "[]");
+        let warn = line("WARN", r#"{"agent":"scout"}"#, "[]");
+        let other_warn = line("WARN", r#"{"agent":"b"}"#, "[]");
+        assert!(f.render_line(&info).is_none());
+        assert!(f.render_line(&warn).is_some());
+        assert!(f.render_line(&other_warn).is_none());
+    }
 }

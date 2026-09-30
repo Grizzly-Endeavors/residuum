@@ -2,7 +2,7 @@
 
 /**
  * A task this instance sent to a remote agent (`message_agent a2a:<name>`),
- * as listed in the web sessions sidebar by `GET /api/a2a/outbound` and
+ * as listed in the web sessions sidebar by `GET /api/agents/{name}/a2a/outbound` and
  * carried by `SessionOutboundA2aTask`.
  */
 export type OutboundA2aTaskSummary = { 

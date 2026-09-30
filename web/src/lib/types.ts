@@ -270,15 +270,7 @@ export interface ValidateResponse {
 
 // ── Settings types ───────────────────────────────────────────────────
 
-export type SettingsSection =
-  | "runtime"
-  | "providers"
-  | "memory"
-  | "integrations"
-  | "mcp"
-  | "agent-keys"
-  | "a2a"
-  | "history";
+export type { SettingsSection } from "./settings-sections";
 
 export type SettingsMode = "simple" | "advanced" | "raw";
 
@@ -389,8 +381,14 @@ export interface A2aStatusResponse {
   enabled: boolean;
   port: number;
   visibility: "public" | "private";
-  /** This agent's own tunnel/reverse proxy origin, or null when none is set. */
+  /** This agent's address under the user's own tunnel/reverse proxy, or null when none is set. */
   public_url: string | null;
+  /** This agent's address on the local A2A listener. */
+  local_url: string;
+  /** Whether other Residuum installs can reach this agent through the relay. */
+  relay_access: boolean;
+  /** Plain-language statement of how far the agent can be reached. */
+  relay_access_note: string;
   /** Whether something is currently answering on the A2A port. */
   listener_running: boolean;
   /** Plain-language problem with the workspace agent card, or null if it's fine. */

@@ -303,7 +303,7 @@ mod tests {
     ) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let accept = tokio::spawn(async move {
+        let accept = crate::util::spawn_in_span(async move {
             let (stream, _) = listener.accept().await.unwrap();
             tokio_tungstenite::accept_async(stream).await.unwrap()
         });
@@ -352,7 +352,7 @@ mod tests {
     async fn spawn_router(app: Router) -> (SocketAddr, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let handle = tokio::spawn(async move {
+        let handle = crate::util::spawn_in_span(async move {
             axum::serve(listener, app).await.unwrap();
         });
         (addr, handle)

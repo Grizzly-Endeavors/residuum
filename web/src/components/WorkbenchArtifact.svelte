@@ -223,7 +223,7 @@
       </button>
       <div class="workbench-artifact-heading">
         <h1 class="workbench-artifact-title" tabindex="-1" bind:this={headingEl}>{title}</h1>
-        <span class="workbench-slab-path">/workbench/{name}</span>
+        <span class="workbench-slab-path">/team/workbench/{name}</span>
       </div>
 
       <div class="workbench-activity-wrap">

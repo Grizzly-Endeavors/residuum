@@ -226,7 +226,7 @@ impl AgentMessenger {
                 let publisher = self.publisher.clone();
                 let store = Arc::clone(&self.store);
                 let deferred_address = address.clone();
-                tokio::spawn(async move {
+                crate::util::spawn_in_span(async move {
                     deferred_resume(registry, publisher, store, deferred_address, message).await;
                 });
                 return Ok(DeliveryOutcome::Queued(address));
@@ -463,7 +463,7 @@ impl AgentMessenger {
                 let registry = Arc::clone(&self.registry);
                 let publisher = self.publisher.clone();
                 let deferred_address = address.clone();
-                tokio::spawn(async move {
+                crate::util::spawn_in_span(async move {
                     deferred_conversation_resume(
                         registry,
                         publisher,

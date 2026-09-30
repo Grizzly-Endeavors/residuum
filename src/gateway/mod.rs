@@ -14,14 +14,12 @@ pub mod protocol;
 mod reload;
 pub(crate) mod remote_control_guard;
 pub(crate) mod sessions;
-pub mod setup;
 pub(crate) mod startup;
 pub(crate) mod types;
-mod watcher;
+pub(crate) mod watcher;
 pub(crate) mod web;
 mod ws;
 
-pub use event_loop::{run_gateway, run_gateway_with_config};
 pub use last_known_good::exists as has_last_known_good;
 pub use last_known_good::hub::exists as has_hub_last_known_good;
 pub use last_known_good::hub::load as load_hub_last_known_good;

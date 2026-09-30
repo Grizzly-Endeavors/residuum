@@ -8,6 +8,7 @@ use axum::extract::ws::{Message as WsMessage, WebSocket};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
+use tracing::Instrument;
 
 use crate::bus::EndpointName;
 use crate::gateway::protocol::{ClientMessage, ServerMessage};
@@ -22,7 +23,10 @@ pub(super) async fn ws_handler(
     ws: axum::extract::WebSocketUpgrade,
     State(state): State<GatewayState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(|socket| handle_connection(socket, state))
+    // The upgraded connection runs in a task axum spawns with no span of its
+    // own; carrying the request's keeps the agent's `agent` log field on it.
+    let span = tracing::Span::current();
+    ws.on_upgrade(move |socket| handle_connection(socket, state).instrument(span))
 }
 
 /// Handle a single WebSocket connection.
@@ -38,6 +42,9 @@ pub(super) async fn ws_handler(
 /// agent's and every session's) are dropped in the forwarding task when
 /// verbose mode is off.
 async fn handle_connection(socket: WebSocket, state: GatewayState) {
+    // While this connection is open the agent's unread count stays at zero:
+    // a client is there to show new messages.
+    let _client = state.activity.client_connected();
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // The workspace prefixes this connection watches: replaced by the read
@@ -47,6 +54,7 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
     // Subscribe to typed bus topics for this connection
     let mut subs = match WsSubscribers::new(
         &state.bus_handle,
+        &state.team_feed.bus,
         EndpointName::from("ws"),
         state.file_registry.clone(),
         watch_set_rx,
@@ -68,7 +76,7 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
     let verbose_fwd = Arc::clone(&verbose);
 
     // Forwarding task: bus subscribers + local channel → WebSocket client
-    let fwd_handle = tokio::spawn(async move {
+    let fwd_handle = crate::util::spawn_in_span(async move {
         loop {
             let msg = tokio::select! {
                 bus_msg = subs.recv() => {
@@ -198,12 +206,7 @@ async fn handle_client_message(
             verbose.store(enabled, Ordering::Relaxed);
         }
         ClientMessage::WatchWorkspace { prefixes } => {
-            replace_watch_set(
-                prefixes,
-                *state.workspace_watch_health.borrow(),
-                watch_set,
-                local_tx,
-            );
+            replace_watch_set(prefixes, watch_health(state), watch_set, local_tx);
         }
         ClientMessage::Ping => {
             local_tx.send(ServerMessage::Pong).ok();
@@ -233,7 +236,7 @@ async fn handle_client_message(
             // broadcast (e.g. Notice/InlineOutput); only a rejection needs
             // routing back here, scoped to this connection only.
             let err_tx = local_tx.clone();
-            tokio::spawn(async move {
+            crate::util::spawn_in_span(async move {
                 if let Ok(Err(reason)) = reply_rx.await {
                     err_tx
                         .send(ServerMessage::Error {
@@ -283,7 +286,7 @@ async fn handle_client_message(
             let dir = state.agent_inbox_dir.clone();
             let tz = state.tz;
             let tx = local_tx.clone();
-            tokio::spawn(async move {
+            crate::util::spawn_in_span(async move {
                 let title = crate::inbox::derive_title(&body);
                 match crate::inbox::quick_add(&dir, &title, &body, "cli", tz).await {
                     Ok(_filename) => {
@@ -305,6 +308,16 @@ async fn handle_client_message(
         }
     }
     true
+}
+
+/// Whether live updates are off for either feed a connection can watch: the
+/// agent's own directory or the hub's team directory.
+fn watch_health(state: &GatewayState) -> WatchHealth {
+    if *state.team_feed.health.borrow() == WatchHealth::Off {
+        WatchHealth::Off
+    } else {
+        *state.workspace_watch_health.borrow()
+    }
 }
 
 /// Apply a `watch_workspace` request: replace the connection's watch set, or

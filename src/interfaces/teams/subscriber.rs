@@ -68,7 +68,7 @@ impl ChatOutbound for Arc<TeamsRuntime> {
     fn start_typing(&self, target: ConversationRef) -> tokio::sync::watch::Sender<()> {
         let rt = Arc::clone(self);
         let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(());
-        tokio::spawn(async move {
+        crate::util::spawn_in_span(async move {
             loop {
                 if let Err(e) = rt
                     .connector

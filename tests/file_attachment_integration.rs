@@ -82,10 +82,10 @@ mod tests {
         let bus = residuum::bus::spawn_broker();
         let publisher = bus.publisher();
         let ep = EndpointName::from("ws");
-        let file_registry = FileRegistry::new();
+        let file_registry = FileRegistry::new("scout");
         let (_watch_tx, watch_set) =
             tokio::sync::watch::channel(residuum::workspace::watch::WatchSet::default());
-        let mut subs = WsSubscribers::new(&bus, ep.clone(), file_registry, watch_set)
+        let mut subs = WsSubscribers::new(&bus, &bus, ep.clone(), file_registry, watch_set)
             .await
             .unwrap();
 
@@ -125,7 +125,7 @@ mod tests {
                 assert_eq!(mime_type, "image/jpeg");
                 assert_eq!(size, 16);
                 assert!(
-                    url.starts_with("/api/files/"),
+                    url.starts_with("/api/agents/scout/files/"),
                     "url should be a file API path: {url}"
                 );
                 assert_eq!(caption, Some("Here's your photo".to_string()));

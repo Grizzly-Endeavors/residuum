@@ -320,14 +320,17 @@ impl A2aClientHub {
 
     /// Spawn the background loop that retries card fetches for agents not
     /// currently `Ok`, honoring each agent's own backoff. Fire-and-forget:
-    /// runs for the process lifetime, like
-    /// `crate::gateway::file_server::FileRegistry::spawn_cleanup_task`.
+    /// the loop holds the hub weakly, so it ends on its own once the agent
+    /// that owns the hub lets go of it.
     pub fn spawn_background_refresh(self: &Arc<Self>) {
-        let hub = Arc::clone(self);
+        let hub = Arc::downgrade(self);
         crate::util::spawn_monitored("a2a-hub-refresh", async move {
             let mut interval = tokio::time::interval(REFRESH_TICK);
             loop {
                 interval.tick().await;
+                let Some(hub) = hub.upgrade() else {
+                    return;
+                };
                 let due: Vec<String> = {
                     let agents = hub.agents.read().await;
                     let now = Instant::now();
@@ -479,13 +482,13 @@ mod tests {
                 "capabilities":{{"streaming":true}},"defaultInputModes":["text/plain"],
                 "defaultOutputModes":["text/plain"],"skills":[]}}"#
         );
-        tokio::spawn(async move {
+        crate::util::spawn_in_span(async move {
             loop {
                 let Ok((mut socket, _)) = listener.accept().await else {
                     return;
                 };
                 let body = body.clone();
-                tokio::spawn(async move {
+                crate::util::spawn_in_span(async move {
                     use tokio::io::{AsyncReadExt, AsyncWriteExt};
                     let mut buf = [0_u8; 4096];
                     let _read_result = socket.read(&mut buf).await;

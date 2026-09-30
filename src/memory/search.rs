@@ -82,7 +82,7 @@ pub struct SearchFilters {
 /// `SearchFilters`' date fields are plain strings, compared lexicographically
 /// against each document's own `YYYY-MM-DD` date — an unparsable value
 /// wouldn't error there, it would just silently match nothing. The
-/// `/api/memory/search` HTTP endpoint, the one boundary that takes a date
+/// `/api/agents/{name}/memory/search` HTTP endpoint, the one boundary that takes a date
 /// filter from outside the process, validates up front with this instead so
 /// a typo answers `400` rather than an empty result set.
 ///
@@ -962,10 +962,11 @@ pub(crate) async fn search_side(
         source: filters.source,
     };
     let vec_limit = candidates;
-    let vec_results =
-        tokio::task::spawn_blocking(move || vs_clone.search(&query_vec, vec_limit, &vec_filters))
-            .await
-            .context("vector search task failed")??;
+    let vec_results = crate::util::spawn_blocking_in_span(move || {
+        vs_clone.search(&query_vec, vec_limit, &vec_filters)
+    })
+    .await
+    .context("vector search task failed")??;
 
     // Merge results
     let (mut merged, below_threshold) =

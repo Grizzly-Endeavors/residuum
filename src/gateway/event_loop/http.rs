@@ -4,14 +4,9 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
-use crate::bus::BusHandle;
 use crate::config::Config;
 use crate::gateway::types::{GatewayState, ServerCommand, StopRequest};
-use crate::skills::SharedSkillState;
-use crate::tunnel::TunnelStatus;
-use crate::util::FatalError;
 
 use crate::gateway::web;
 use crate::gateway::ws::ws_handler;
@@ -31,36 +26,6 @@ pub struct AdapterSenders {
     pub(crate) conversations: crate::interfaces::conversations::ConversationDirectory,
 }
 
-/// Lifecycle handles returned from spawning chat adapters.
-pub struct AdapterHandles {
-    pub chat: crate::gateway::chat_adapters::ChatAdapters,
-    pub a2a_handle: Option<tokio::task::JoinHandle<()>>,
-    pub a2a_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
-    /// The live agent card, so a workspace-file reload can update it without
-    /// restarting the listener. `None` when A2A is disabled.
-    pub a2a_card_state: Option<crate::a2a::SharedCardState>,
-    /// This instance's current A2A public URL, for the web settings API to
-    /// read later. `None` when A2A is disabled.
-    pub a2a_public_url: Option<crate::a2a::SharedA2aPublicUrl>,
-}
-
-/// What [`build_a2a_listener`] needs beyond `Config`: live runtime state
-/// (sessions, messaging, skills, the bus, and the tunnel's status) rather
-/// than anything derivable from config alone.
-pub(crate) struct A2aListenerDeps {
-    /// The hub directory, holding the A2A caller-key store.
-    pub hub_dir: std::path::PathBuf,
-    pub session_registry: Arc<SessionRegistry>,
-    pub agent_messenger: Arc<AgentMessenger>,
-    pub skill_state: SharedSkillState,
-    pub bus_handle: BusHandle,
-    pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
-    /// Turns `true` once the session spawn listener is subscribed. Restart
-    /// continuations wait on it: a session spawn published before then has
-    /// no listener and would be lost.
-    pub sessions_ready: tokio::sync::watch::Receiver<bool>,
-}
-
 /// State bundle for the smaller, cross-cutting API routers, grouped so
 /// [`build_gateway_app`] doesn't grow another positional parameter for each
 /// one (and trip `clippy::too_many_arguments`).
@@ -70,68 +35,14 @@ pub struct ExtraApiStates {
     pub a2a_agents: web::a2a::A2aAgentsStatusState,
 }
 
-/// Cloud connection routes. Disconnect is refused over the tunnel, since a
-/// remote disconnect leaves no way to reconnect.
-fn cloud_api_router(state: &GatewayState, config_api_state: &web::ConfigApiState) -> axum::Router {
-    use axum::routing::{get, post};
-
-    let cloud_state = web::cloud::CloudApiState {
-        hub_dir: config_api_state.hub_dir.clone(),
-        reload_tx: state.reload_tx.clone(),
-        tunnel_status_rx: state.tunnel_status_rx.clone(),
-        secret_lock: Arc::clone(&config_api_state.secret_lock),
-    };
-    axum::Router::new()
-        .route("/api/cloud/status", get(web::cloud::api_cloud_status))
-        .route("/cloud/callback", get(web::cloud::cloud_callback))
-        .with_state(cloud_state.clone())
-        .merge(
-            axum::Router::new()
-                .route(
-                    "/api/cloud/disconnect",
-                    post(web::cloud::api_cloud_disconnect),
-                )
-                .route_layer(axum::middleware::from_fn(
-                    crate::gateway::remote_control_guard::reject_remote_shutdown_and_disconnect,
-                ))
-                .with_state(cloud_state),
-        )
-}
-
-/// Update and shutdown routes. Shutdown is refused over the tunnel, since a
-/// remote shutdown leaves no way to bring the gateway back.
-fn update_api_router(update_api_state: web::update::UpdateApiState) -> axum::Router {
-    use axum::routing::{get, post};
-
-    axum::Router::new()
-        .route("/api/update/status", get(web::update::api_update_status))
-        .route("/api/update/check", post(web::update::api_update_check))
-        .route("/api/update/apply", post(web::update::api_update_apply))
-        .route("/api/update/restart", post(web::update::api_update_restart))
-        .with_state(update_api_state.clone())
-        .merge(
-            axum::Router::new()
-                .route("/api/shutdown", post(web::update::api_shutdown))
-                .route_layer(axum::middleware::from_fn(
-                    crate::gateway::remote_control_guard::reject_remote_shutdown_and_disconnect,
-                ))
-                .with_state(update_api_state),
-        )
-}
-
-/// The smaller, cross-cutting API routers [`build_gateway_app`] merges in,
-/// built once by [`build_feature_routers`] so the top-level function stays
-/// under the line-count lint.
+/// The agent-scoped routers [`build_gateway_app`] merges in, built once by
+/// [`build_feature_routers`] so the top-level function stays under the
+/// line-count lint.
 struct FeatureRouters {
     webhook: axum::Router,
-    cloud: axum::Router,
-    update: axum::Router,
-    tracing: axum::Router,
     file: axum::Router,
     sessions: axum::Router,
     scheduled: axum::Router,
-    workbench: axum::Router,
-    checkpoints: axum::Router,
     agent_inbox: axum::Router,
     memory: axum::Router,
     model: axum::Router,
@@ -141,18 +52,12 @@ struct FeatureRouters {
 /// Build every feature router [`build_gateway_app`] merges onto the base
 /// `/ws` router. Split out purely to keep that function's line count under
 /// the lint threshold — each router here is independent and self-contained.
-fn build_feature_routers(
-    state: &GatewayState,
-    config_api_state: &web::ConfigApiState,
-    update_api_state: web::update::UpdateApiState,
-    tracing_api_state: web::tracing_api::TracingApiState,
-    workbench_serving: crate::workbench::server::WorkbenchServing,
-    extra: ExtraApiStates,
-) -> FeatureRouters {
+fn build_feature_routers(state: &GatewayState, extra: ExtraApiStates) -> FeatureRouters {
     use axum::routing::get;
 
     // Always mounted: the table is swapped on reload, so webhooks added later
-    // work without rebinding the server. Unknown names get a 404.
+    // work without rebinding the server. Unknown names get a 404. The hub
+    // serves it at `/webhook/{agent}/{name}`.
     let webhook = axum::Router::new()
         .route(
             "/webhook/{name}",
@@ -163,11 +68,6 @@ fn build_feature_routers(
             webhooks: state.webhooks.clone(),
             tz: state.tz,
         });
-
-    let cloud = cloud_api_router(state, config_api_state);
-    let update = update_api_router(update_api_state);
-
-    let tracing = tracing_api_router(tracing_api_state);
 
     let file = axum::Router::new()
         .route(
@@ -197,31 +97,11 @@ fn build_feature_routers(
         tz: state.tz,
     });
 
-    let workbench = web::workbench::workbench_api_router(web::workbench::WorkbenchApiState {
-        dir: crate::workspace::layout::WorkspaceLayout::new(&config_api_state.workspace_dir)
-            .team()
-            .workbench_dir(),
-        serving: workbench_serving,
-        tunnel_status_rx: state.tunnel_status_rx.clone(),
-        checkpoints: Arc::clone(&config_api_state.checkpoints),
-        team: config_api_state.team.clone(),
-    });
-
-    let checkpoints =
-        web::checkpoints::checkpoints_api_router(web::checkpoints::CheckpointApiState {
-            checkpoints: Arc::clone(&config_api_state.checkpoints),
-        });
-
     FeatureRouters {
         webhook,
-        cloud,
-        update,
-        tracing,
         file,
         sessions,
         scheduled,
-        workbench,
-        checkpoints,
         agent_inbox: web::inbox::agent_inbox_api_router(state.clone()),
         memory: web::memory::memory_api_router(extra.memory),
         model: web::model::model_api_router(extra.model),
@@ -229,26 +109,19 @@ fn build_feature_routers(
     }
 }
 
-/// Build the gateway app with WebSocket, webhook, cloud, update, and config API routes.
+/// Build one running agent's router, rooted at `/`: its WebSocket, webhooks,
+/// files, sessions, scheduled work, inbox, memory search, model completion,
+/// A2A settings, and status. It carries no hub-level route, no repair route
+/// (see `hub::http::agent_repair_router`), no static assets and no request guards;
+/// the hub router serves it under `/api/agents/{name}/` and applies those.
 pub fn build_gateway_app(
     state: GatewayState,
     config_api_state: web::ConfigApiState,
-    update_api_state: web::update::UpdateApiState,
-    tracing_api_state: web::tracing_api::TracingApiState,
-    workbench_serving: crate::workbench::server::WorkbenchServing,
     extra: ExtraApiStates,
 ) -> axum::Router {
     use axum::routing::get;
 
-    let a2a_tunnel_status_rx = state.tunnel_status_rx.clone();
-    let routers = build_feature_routers(
-        &state,
-        &config_api_state,
-        update_api_state,
-        tracing_api_state,
-        workbench_serving,
-        extra,
-    );
+    let routers = build_feature_routers(&state, extra);
 
     axum::Router::new()
         .route("/ws", get(ws_handler))
@@ -257,124 +130,21 @@ pub fn build_gateway_app(
         .merge(routers.file)
         .merge(routers.sessions)
         .merge(routers.scheduled)
-        .merge(routers.cloud)
-        .merge(routers.update)
-        .merge(routers.tracing)
-        .merge(routers.workbench)
-        .merge(routers.checkpoints)
         .merge(routers.agent_inbox)
         .merge(routers.memory)
         .merge(routers.model)
         .merge(routers.a2a_agents)
-        .merge(web::a2a::a2a_status_router(web::a2a::A2aStatusApiState {
-            config: config_api_state.clone(),
-            tunnel_status_rx: a2a_tunnel_status_rx,
-        }))
-        .merge(web::config_api_router(config_api_state))
-        .fallback(web::static_handler)
-        .layer(axum::middleware::from_fn(
-            crate::gateway::cross_site::reject_cross_site_requests,
-        ))
+        .merge(web::a2a::a2a_status_router(config_api_state.clone()))
+        .merge(web::agent_data_api_router(config_api_state))
 }
 
-/// Build the tracing API router with all observability endpoints.
-fn tracing_api_router(state: web::tracing_api::TracingApiState) -> axum::Router {
-    use axum::routing::{get, post};
-    axum::Router::new()
-        .route(
-            "/api/tracing/status",
-            get(web::tracing_api::api_tracing_status),
-        )
-        .route(
-            "/api/tracing/error-reporting",
-            post(web::tracing_api::api_tracing_error_reporting),
-        )
-        .route(
-            "/api/tracing/sanitize",
-            post(web::tracing_api::api_tracing_sanitize),
-        )
-        .route(
-            "/api/tracing/otel/endpoints",
-            get(web::tracing_api::api_tracing_otel_list)
-                .post(web::tracing_api::api_tracing_otel_add)
-                .delete(web::tracing_api::api_tracing_otel_remove),
-        )
-        .route(
-            "/api/tracing/otel/test",
-            post(web::tracing_api::api_tracing_otel_test),
-        )
-        .route(
-            "/api/tracing/dump",
-            post(web::tracing_api::api_tracing_dump),
-        )
-        .route(
-            "/api/tracing/stream/start",
-            post(web::tracing_api::api_tracing_stream_start),
-        )
-        .route(
-            "/api/tracing/stream/stop",
-            post(web::tracing_api::api_tracing_stream_stop),
-        )
-        .route(
-            "/api/tracing/bug-report",
-            post(web::tracing_api::api_tracing_bug_report),
-        )
-        .route(
-            "/api/tracing/feedback",
-            post(web::tracing_api::api_tracing_feedback),
-        )
-        .with_state(state)
-}
-
-/// Spawn an axum server on a pre-bound listener with graceful shutdown.
-pub(crate) fn spawn_server_with_listener(
-    listener: tokio::net::TcpListener,
-    app: axum::Router,
-    http_shutdown_tx: &tokio::sync::watch::Sender<bool>,
-) -> tokio::task::JoinHandle<()> {
-    let mut shutdown_rx = http_shutdown_tx.subscribe();
-    tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app)
-            .with_graceful_shutdown(async move {
-                shutdown_rx.wait_for(|v| *v).await.ok();
-            })
-            .await
-        {
-            tracing::error!(error = %e, "gateway server error");
-        }
-    })
-}
-
-/// Bind the HTTP server and spawn it as a background task.
-///
-/// # Errors
-/// Returns `FatalError` if the listener cannot bind to the configured address.
-pub async fn spawn_http_server(
-    cfg: &Config,
-    app: axum::Router,
-    http_shutdown_tx: &tokio::sync::watch::Sender<bool>,
-) -> Result<tokio::task::JoinHandle<()>, FatalError> {
-    let addr = cfg.gateway.addr();
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .map_err(|e| FatalError::Gateway(format!("failed to bind to {addr}: {e}")))?;
-    tracing::info!(addr = %addr, "gateway listening");
-    if cfg.gateway.bind != "127.0.0.1" && cfg.gateway.bind != "localhost" {
-        tracing::warn!(
-            bind = %cfg.gateway.bind,
-            "web UI is exposed on a non-loopback address with no authentication"
-        );
-    }
-    Ok(spawn_server_with_listener(listener, app, http_shutdown_tx))
-}
-
-/// Spawn the Discord, Telegram, Teams, and A2A adapters that are configured.
-pub async fn spawn_adapters(
+/// Spawn the Discord, Telegram, and Teams adapters that are configured.
+pub fn spawn_adapters(
     cfg: &Config,
     senders: &AdapterSenders,
     tz: chrono_tz::Tz,
-    a2a_deps: A2aListenerDeps,
-) -> AdapterHandles {
+    activity: &Arc<crate::hub::activity::ActivityTracker>,
+) -> crate::gateway::chat_adapters::ChatAdapters {
     let mut chat = crate::gateway::chat_adapters::ChatAdapters::new();
     if let Some(ref discord_cfg) = cfg.discord {
         let (tx, rx) = tokio::sync::watch::channel(false);
@@ -428,184 +198,93 @@ pub async fn spawn_adapters(
             tz,
             rx,
         );
+        let port = teams_cfg.port;
+        let activity = Arc::clone(activity);
         chat.insert(
             "teams",
             crate::util::spawn_monitored("teams", async move {
-                if let Err(e) = iface.start().await {
-                    tracing::error!(error = %e, "teams interface failed");
-                }
+                run_teams_adapter(iface, port, &activity).await;
             }),
             tx,
         );
     }
 
-    let (mut a2a_handle, mut a2a_shutdown_tx, mut a2a_card_state, mut a2a_public_url) =
-        (None, None, None, None);
-    if cfg.a2a.enabled {
-        let (tx, rx) = tokio::sync::watch::channel(false);
-        match build_a2a_listener(cfg, a2a_deps, rx).await {
-            Ok((handle, card_state, public_url)) => {
-                tracing::info!(
-                    visibility = %cfg.a2a.visibility,
-                    public_url = %public_url.current(),
-                    "a2a interface started"
-                );
-                a2a_handle = Some(handle);
-                a2a_shutdown_tx = Some(tx);
-                a2a_card_state = Some(card_state);
-                a2a_public_url = Some(public_url);
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "failed to start the a2a interface; it will not run this session");
-            }
-        }
-    }
-
-    AdapterHandles {
-        chat,
-        a2a_handle,
-        a2a_shutdown_tx,
-        a2a_card_state,
-        a2a_public_url,
-    }
+    chat
 }
 
-/// Build the live agent card, task store, session executor, and spawn the
-/// A2A listener task. Shared between initial startup and reload: both
-/// rebuild the listener from scratch when `[a2a]` changes, since a
-/// visibility flip and a new base URL both need a fresh card as well as a
-/// fresh listener.
-///
-/// Also spawns a background task that reloads the card whenever the tunnel's
-/// status changes (so the card's public URL reflects it as soon as it
-/// connects), and starts the restart-continuation sweep for tasks left
-/// `Submitted`/`Working` from a previous run of this process.
-///
-/// # Errors
-/// Returns an error if the persistent task store's directory can't be
-/// created or read.
-pub(crate) async fn build_a2a_listener(
-    cfg: &Config,
-    deps: A2aListenerDeps,
-    shutdown_rx: tokio::sync::watch::Receiver<bool>,
-) -> anyhow::Result<(
-    tokio::task::JoinHandle<()>,
-    crate::a2a::SharedCardState,
-    crate::a2a::SharedA2aPublicUrl,
-)> {
-    let layout = crate::workspace::layout::WorkspaceLayout::new(&cfg.workspace_dir);
-    let tunnel_status = deps.tunnel_status_rx.borrow().clone();
-    let card_runtime = crate::a2a::CardRuntime::from_config_and_tunnel(
-        &cfg.a2a,
-        &cfg.gateway.bind,
-        &tunnel_status,
-    );
-    let card_state =
-        crate::a2a::CardState::load_or_default(&layout.agent_card_json(), &card_runtime);
-    let keys = crate::a2a::A2aKeys::new_shared(&deps.hub_dir);
-    let public_url = crate::a2a::A2aPublicUrl::new(
-        cfg.a2a.clone(),
-        cfg.gateway.bind.clone(),
-        deps.tunnel_status_rx.clone(),
-    );
-
-    let task_store = crate::a2a::FileTaskStore::load(&layout.a2a_tasks_dir()).await?;
-
-    let executor = crate::a2a::SessionExecutor::new(
-        deps.agent_messenger,
-        deps.session_registry,
-        deps.bus_handle,
-        deps.skill_state,
-        Arc::clone(&card_state),
-        layout.agent_inbox_dir(),
-        cfg.timezone,
-    );
-    let inner = a2a_server::DefaultRequestHandler::new(
-        executor,
-        crate::a2a::DelegatingTaskStore(Arc::clone(&task_store)),
-    )
-    .with_capabilities(a2a::AgentCapabilities {
-        streaming: Some(true),
-        push_notifications: Some(false),
-        extensions: None,
-        extended_agent_card: None,
-    });
-    let handler = Arc::new(crate::a2a::ResiduumA2aHandler::new(
-        inner,
-        Arc::clone(&task_store),
-    ));
-
-    let resume_handler = Arc::clone(&handler);
-    let resume_store = Arc::clone(&task_store);
-    let mut sessions_ready = deps.sessions_ready.clone();
-    tokio::spawn(async move {
-        if sessions_ready.wait_for(|ready| *ready).await.is_err() {
-            tracing::error!(
-                "session spawner never became ready; a2a tasks left in progress were not resumed"
-            );
-            return;
-        }
-        crate::a2a::resume_in_progress_tasks(resume_handler, resume_store).await;
-    });
-
-    let listener = crate::a2a::A2aListener::new(
-        cfg.a2a.clone(),
-        cfg.gateway.bind.clone(),
-        handler,
-        Arc::clone(&card_state),
-        keys,
-        Arc::new(|| Some(Arc::<str>::from(crate::tunnel::tunnel_nonce()))),
-        shutdown_rx.clone(),
-    );
-    let handle = crate::util::spawn_monitored("a2a", async move {
-        if let Err(e) = listener.start().await {
-            tracing::error!(error = %e, "a2a interface failed");
-        }
-    });
-
-    spawn_a2a_card_tunnel_watcher(
-        Arc::clone(&card_state),
-        layout.agent_card_json(),
-        cfg.a2a.clone(),
-        cfg.gateway.bind.clone(),
-        deps.tunnel_status_rx,
-        shutdown_rx,
-    );
-
-    Ok((handle, card_state, public_url))
-}
-
-/// Reload the agent card whenever the tunnel's status changes, so its public
-/// URL picks up a newly connected (or disconnected) tunnel without waiting
-/// for a workspace or config reload. Stops when `shutdown_rx` fires, the
-/// same signal that stops the listener this watcher was spawned alongside.
-fn spawn_a2a_card_tunnel_watcher(
-    card_state: crate::a2a::SharedCardState,
-    card_path: std::path::PathBuf,
-    a2a_cfg: crate::config::A2aConfig,
-    gateway_bind: String,
-    mut tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
-    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+/// Run the Teams adapter until it stops. A failure to start (most often a
+/// port another program or agent already holds) is logged and told to the
+/// user as a hub notice naming the agent and the port.
+pub(crate) async fn run_teams_adapter(
+    iface: crate::interfaces::teams::TeamsInterface,
+    port: u16,
+    activity: &crate::hub::activity::ActivityTracker,
 ) {
-    crate::util::spawn_monitored("a2a-card-tunnel-watch", async move {
-        loop {
-            tokio::select! {
-                changed = tunnel_status_rx.changed() => {
-                    if changed.is_err() {
-                        return;
-                    }
-                    let status = tunnel_status_rx.borrow().clone();
-                    let runtime = crate::a2a::CardRuntime::from_config_and_tunnel(&a2a_cfg, &gateway_bind, &status);
-                    if let Err(e) = card_state.reload(&card_path, &runtime) {
-                        tracing::warn!(error = %e, "failed to refresh the a2a agent card after a tunnel status change");
-                    }
-                }
-                changed = shutdown_rx.changed() => {
-                    if changed.is_err() || *shutdown_rx.borrow() {
-                        return;
-                    }
-                }
-            }
+    if let Err(e) = iface.start().await {
+        tracing::error!(error = %format!("{e:#}"), port, "teams interface failed");
+        activity.hub_notice(
+            crate::hub::types::NoticeLevel::Warn,
+            format!(
+                "The Teams adapter couldn't start on port {port} ({e:#}). Check that no other program or agent uses that port, or give this agent a different Teams port, then restart it."
+            ),
+        );
+    }
+}
+
+/// What [`build_agent_a2a`] needs beyond `Config`: the agent's live runtime
+/// state (sessions, messaging, skills, and the bus) rather than anything
+/// derivable from config alone.
+pub(crate) struct A2aServingDeps {
+    pub session_registry: Arc<SessionRegistry>,
+    pub agent_messenger: Arc<crate::background::messaging::AgentMessenger>,
+    pub skill_state: crate::skills::SharedSkillState,
+    pub bus_handle: crate::bus::BusHandle,
+    /// Turns `true` once the session spawn listener is subscribed. Restart
+    /// continuations wait on it: a session spawn published before then has
+    /// no listener and would be lost.
+    pub sessions_ready: tokio::sync::watch::Receiver<bool>,
+}
+
+/// Build the agent's A2A server with [`crate::a2a::agent_a2a_router`]. The
+/// hub's A2A listener serves the router at `/agents/<name>/`.
+///
+/// Shared between startup and reload: both rebuild the agent's A2A state from
+/// scratch when `[a2a]` changes, since a visibility flip and a new base URL
+/// both need a fresh card. A build failure is logged and reported as `None`:
+/// the rest of the agent still runs, and the next successful reload retries.
+pub(crate) async fn build_agent_a2a(
+    cfg: &Config,
+    deps: A2aServingDeps,
+) -> Option<crate::a2a::AgentA2a> {
+    let layout = crate::workspace::layout::WorkspaceLayout::new(&cfg.workspace_dir);
+    match crate::a2a::agent_a2a_router(crate::a2a::AgentA2aState {
+        name: cfg.agent_name.clone(),
+        a2a: cfg.a2a.clone(),
+        bind: cfg.gateway.bind.clone(),
+        layout,
+        timezone: cfg.timezone,
+        agent_messenger: deps.agent_messenger,
+        session_registry: deps.session_registry,
+        bus_handle: deps.bus_handle,
+        skill_state: deps.skill_state,
+        sessions_ready: deps.sessions_ready,
+    })
+    .await
+    {
+        Ok(mut agent) => {
+            // Its handlers run under the hub's A2A listener, outside any agent
+            // span, so the router carries the span itself.
+            agent.router = super::agent_span_layer(&cfg.agent_name, agent.router);
+            tracing::info!(
+                visibility = %cfg.a2a.visibility,
+                public_url = %agent.public_url,
+                "a2a interface ready"
+            );
+            Some(agent)
         }
-    });
+        Err(e) => {
+            tracing::error!(error = %e, "failed to build the a2a interface; it will not run until the next successful reload");
+            None
+        }
+    }
 }

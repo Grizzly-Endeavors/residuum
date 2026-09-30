@@ -3,6 +3,7 @@
   import { Icon } from "../lib/icons";
   import BrandMark from "./BrandMark.svelte";
   import { userInbox } from "../lib/inbox.svelte";
+  import AgentSwitcher from "./AgentSwitcher.svelte";
 
   let {
     status,
@@ -14,10 +15,21 @@
     onOpenScheduled,
     onOpenFeedback,
     onOpenInbox,
+    onOpenTeam,
+    onOpenTeamFiles,
+    onOpenHubSettings,
     sessionsToggle,
   }: {
     status: ConnectionStatus;
-    activeView: "chat" | "workspace" | "settings" | "workbench" | "scheduled";
+    activeView:
+      | "chat"
+      | "workspace"
+      | "settings"
+      | "hub-settings"
+      | "workbench"
+      | "scheduled"
+      | "team"
+      | "team-files";
     onOpenChat: () => void;
     onOpenWorkspace: () => void;
     onOpenSettings: () => void;
@@ -25,6 +37,9 @@
     onOpenScheduled: () => void;
     onOpenFeedback: () => void;
     onOpenInbox: () => void;
+    onOpenTeam: () => void;
+    onOpenTeamFiles: () => void;
+    onOpenHubSettings: () => void;
     /** The sessions sidebar toggle; omitted where the sidebar isn't shown. */
     sessionsToggle?: { open: boolean; liveCount: number; onToggle: () => void };
   } = $props();
@@ -87,7 +102,22 @@
         <button
           class="hamburger-menu-item"
           class:active={activeView === "settings"}
-          onclick={() => select(onOpenSettings)}>Settings</button
+          onclick={() => select(onOpenSettings)}>Agent settings</button
+        >
+        <button
+          class="hamburger-menu-item"
+          class:active={activeView === "team"}
+          onclick={() => select(onOpenTeam)}>Team</button
+        >
+        <button
+          class="hamburger-menu-item"
+          class:active={activeView === "team-files"}
+          onclick={() => select(onOpenTeamFiles)}>Team files</button
+        >
+        <button
+          class="hamburger-menu-item"
+          class:active={activeView === "hub-settings"}
+          onclick={() => select(onOpenHubSettings)}>Hub settings</button
         >
       </div>
     {/if}
@@ -135,6 +165,7 @@
     </button>
   </div>
 </div>
+<AgentSwitcher />
 
 <style>
   .header-right {
@@ -185,7 +216,7 @@
     position: absolute;
     top: 2px;
     right: 2px;
-    background: var(--error-bright);
+    background: var(--error);
     color: #fff;
     font-size: 0.6rem;
     font-weight: bold;

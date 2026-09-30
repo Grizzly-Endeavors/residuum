@@ -90,14 +90,21 @@ pub(crate) struct TunnelA2a {
     pub visibility: A2aVisibility,
 }
 
+/// Whether the tunnel declares the `a2a` capability. The relay routes A2A per
+/// instance, but this hub serves A2A per agent under `/agents/<name>/`, which
+/// the relay can't address. Declaring `a2a` would make it forward requests
+/// the listener answers `404`, so the tunnel stays out of A2A and agents are
+/// reachable locally only.
+const TUNNEL_CARRIES_A2A: bool = false;
+
 /// The `(a2a_port, a2a)` pair [`start_tunnel`] takes, derived from `[a2a]`
-/// config: `None`/`None` when A2A is disabled, otherwise the configured port
-/// and visibility.
+/// config: `None`/`None` when A2A is disabled or the tunnel doesn't carry it
+/// ([`TUNNEL_CARRIES_A2A`]), otherwise the configured port and visibility.
 #[must_use]
 pub(crate) fn a2a_tunnel_params(
     a2a: &crate::config::A2aConfig,
 ) -> (Option<u16>, Option<TunnelA2a>) {
-    if a2a.enabled {
+    if a2a.enabled && TUNNEL_CARRIES_A2A {
         (
             Some(a2a.port),
             Some(TunnelA2a {
@@ -191,7 +198,7 @@ async fn send_frame(
 
 /// Current status of the tunnel connection.
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) enum TunnelStatus {
+pub enum TunnelStatus {
     /// Not connected to the relay.
     Disconnected,
     /// Attempting to connect to the relay.
@@ -242,6 +249,13 @@ impl std::fmt::Debug for TunnelStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tunnel_does_not_declare_a2a_even_when_it_is_enabled() {
+        let cfg = crate::config::A2aConfig::default();
+        assert!(cfg.enabled);
+        assert_eq!(a2a_tunnel_params(&cfg), (None, None));
+    }
 
     #[test]
     fn capabilities_header_without_a2a() {

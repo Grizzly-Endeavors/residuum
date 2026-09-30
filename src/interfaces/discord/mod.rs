@@ -208,7 +208,7 @@ impl DiscordInterface {
                 http: Arc::clone(&client.http),
             }),
         );
-        let outbound = tokio::spawn(subscriber::run_discord_subscriber(
+        let outbound = crate::util::spawn_in_span(subscriber::run_discord_subscriber(
             subs,
             Arc::clone(&client.http),
             state,
@@ -217,7 +217,7 @@ impl DiscordInterface {
         // Monitor shutdown signal and cleanly disconnect shards
         let shard_manager = Arc::clone(&client.shard_manager);
         let mut shutdown_rx = self.shutdown_rx;
-        tokio::spawn(async move {
+        crate::util::spawn_in_span(async move {
             if shutdown_rx.wait_for(|v| *v).await.is_ok() {
                 tracing::info!("discord adapter received shutdown signal");
                 shard_manager.shutdown_all().await;

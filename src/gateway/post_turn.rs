@@ -18,7 +18,7 @@
 //!
 //! Each trigger call carries a fresh snapshot of whatever `Arc`/`Clone`
 //! runtime state the cycle needs (observer, merge writer, subconscious,
-//! learning state, ...), taken from `GatewayRuntime` at the moment of the
+//! learning state, ...), taken from `AgentRuntime` at the moment of the
 //! call. A coalesced run always uses the *latest* trigger's snapshot, so a
 //! reload that swaps a component in place between two coalesced triggers is
 //! still picked up — nothing here holds a stale clone from before the swap.
@@ -234,7 +234,7 @@ impl ObserveWorker {
     fn spawn_or_coalesce(self: &Arc<Self>) {
         let this = Arc::clone(self);
         self.coalescer
-            .trigger(|| tokio::spawn(async move { this.run_loop().await }));
+            .trigger(|| crate::util::spawn_in_span(async move { this.run_loop().await }));
     }
 
     async fn run_loop(&self) {
@@ -284,7 +284,7 @@ impl ObserveWorker {
 }
 
 /// Everything one subconscious evaluation cycle needs, snapshotted fresh
-/// from `GatewayRuntime` by the caller at trigger time.
+/// from `AgentRuntime` by the caller at trigger time.
 pub(crate) struct SubconsciousTrigger {
     pub subconscious: Arc<Subconscious>,
     pub learning_state: Arc<Mutex<LearningState>>,
@@ -348,7 +348,7 @@ impl SubconsciousWorker {
         }
         let this = Arc::clone(self);
         self.coalescer
-            .trigger(|| tokio::spawn(async move { this.run_loop().await }));
+            .trigger(|| crate::util::spawn_in_span(async move { this.run_loop().await }));
     }
 
     async fn run_loop(&self) {
@@ -768,7 +768,7 @@ mod tests {
         let spawned = AtomicUsize::new(0);
         let spawn = || {
             spawned.fetch_add(1, Ordering::SeqCst);
-            tokio::spawn(async {})
+            crate::util::spawn_in_span(async {})
         };
 
         coalescer.trigger(spawn);
@@ -796,7 +796,7 @@ mod tests {
         let spawned = AtomicUsize::new(0);
         coalescer.trigger(|| {
             spawned.fetch_add(1, Ordering::SeqCst);
-            tokio::spawn(async {})
+            crate::util::spawn_in_span(async {})
         });
         assert_eq!(spawned.load(Ordering::SeqCst), 0);
     }

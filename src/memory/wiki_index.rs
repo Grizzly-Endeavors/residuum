@@ -63,6 +63,12 @@ impl WikiIndexer {
         }
     }
 
+    /// Forget which pages are synced, so the next sync reindexes every page.
+    /// Used when the vector store is replaced and must be refilled.
+    pub(crate) async fn forget_synced_state(&self) {
+        *self.synced.lock().await = None;
+    }
+
     /// Reindex pages that changed since the last sync and drop deleted ones.
     ///
     /// The recorded state only advances when the BM25 index and (if configured)
@@ -82,9 +88,10 @@ impl WikiIndexer {
 
         let team_root = self.team_root.clone();
         let wiki_dir = self.wiki_dir.clone();
-        let scanned = tokio::task::spawn_blocking(move || scan_pages(&team_root, &wiki_dir))
-            .await
-            .context("wiki scan task failed")??;
+        let scanned =
+            crate::util::spawn_blocking_in_span(move || scan_pages(&team_root, &wiki_dir))
+                .await
+                .context("wiki scan task failed")??;
 
         let known = synced.clone().unwrap_or_default();
         let changed: Vec<(String, PathBuf)> = scanned
@@ -102,7 +109,7 @@ impl WikiIndexer {
             return Ok(());
         }
 
-        let pages = tokio::task::spawn_blocking(move || {
+        let pages = crate::util::spawn_blocking_in_span(move || {
             changed
                 .iter()
                 .map(|(id, path)| read_page(id, path))
@@ -115,7 +122,7 @@ impl WikiIndexer {
             let bm25 = Arc::clone(bm25);
             let pages = pages.clone();
             let removed = removed.clone();
-            tokio::task::spawn_blocking(move || {
+            crate::util::spawn_blocking_in_span(move || {
                 bm25.replace_wiki_documents(&pages, &removed, first_sync)
             })
             .await
@@ -153,7 +160,7 @@ async fn sync_vectors(
 ) -> anyhow::Result<()> {
     let stored = {
         let store = Arc::clone(store);
-        tokio::task::spawn_blocking(move || store.wiki_page_contents())
+        crate::util::spawn_blocking_in_span(move || store.wiki_page_contents())
             .await
             .context("wiki vector read task failed")??
     };
@@ -196,7 +203,7 @@ async fn sync_vectors(
         .map(|(p, emb)| (p.id.clone(), p.date.clone(), p.content.clone(), emb))
         .collect();
     let store = Arc::clone(store);
-    tokio::task::spawn_blocking(move || {
+    crate::util::spawn_blocking_in_span(move || {
         let vectors: Vec<WikiVector<'_>> = rows
             .iter()
             .map(|(page_id, date, content, embedding)| WikiVector {

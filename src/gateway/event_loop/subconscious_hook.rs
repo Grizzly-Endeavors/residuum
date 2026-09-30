@@ -16,7 +16,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::gateway::post_turn::SubconsciousTrigger;
-use crate::gateway::types::GatewayRuntime;
+use crate::gateway::types::AgentRuntime;
 use crate::inference::Message;
 use crate::subconscious::TurnScratch;
 
@@ -25,7 +25,7 @@ use crate::subconscious::TurnScratch;
 /// findings are applied (or, for a correction, published) from there too —
 /// see `crate::gateway::post_turn::SubconsciousWorker`.
 pub(super) fn run_end_of_turn_subconscious(
-    rt: &GatewayRuntime,
+    rt: &AgentRuntime,
     new_messages: &[Message],
     correlation_id: &str,
     scratch: Option<&Arc<Mutex<TurnScratch>>>,

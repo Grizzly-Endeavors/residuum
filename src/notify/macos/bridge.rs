@@ -137,7 +137,7 @@ impl MacosBridge {
         let cat_id = category_id.to_string();
         let thread = thread_id.to_string();
 
-        tokio::task::spawn_blocking(move || {
+        crate::util::spawn_blocking_in_span(move || {
             post_notification_sync(&id, &text, &cat_id, interruption_level, sound, &thread);
         })
         .await

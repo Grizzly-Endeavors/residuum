@@ -131,6 +131,13 @@ pub struct ClientContext {
     pub active_subagents: Vec<Subagent>,
     /// Curated allowlist of safe config flags. Currently always empty.
     pub config_flags: std::collections::BTreeMap<String, String>,
+    /// The agent this context describes. Not part of the wire format (the
+    /// ingest service rejects unknown fields): it names the agent in the
+    /// report's text and keeps one agent's errors from suppressing another's
+    /// in the rate limiter. Every span in the report's trace carries the same
+    /// `agent` field.
+    #[serde(skip)]
+    pub agent: Option<String>,
 }
 
 /// Reduced client context used for the feedback endpoint. The feedback
@@ -453,7 +460,7 @@ impl TracingService {
         let service_state = Arc::clone(&self.state);
         let agent_keys = self.agent_keys.clone();
 
-        tokio::spawn(async move {
+        crate::util::spawn_in_span(async move {
             tracing::info!("trace streaming task started");
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             loop {
@@ -558,11 +565,15 @@ impl TracingService {
         }
         drop(state);
 
+        let limiter_key = match &client.agent {
+            Some(agent) => format!("{agent}: {error_context}"),
+            None => error_context.to_string(),
+        };
         let admitted = self
             .error_report_limiter
             .lock()
             .await
-            .admit(error_context, Instant::now());
+            .admit(&limiter_key, Instant::now());
         if !admitted {
             tracing::debug!(
                 context = error_context,
@@ -571,10 +582,20 @@ impl TracingService {
             return;
         }
 
+        let (what_happened, what_doing) = match &client.agent {
+            Some(agent) => (
+                format!("agent '{agent}': {error_context}"),
+                format!("auto-reported (no user input) while running agent '{agent}'"),
+            ),
+            None => (
+                error_context.to_string(),
+                "auto-reported (no user input)".to_string(),
+            ),
+        };
         let report = BugReport {
-            what_happened: error_context.to_string(),
+            what_happened,
             what_expected: "no error".to_string(),
-            what_doing: "auto-reported (no user input)".to_string(),
+            what_doing,
             severity: Severity::Broken,
             client,
         };

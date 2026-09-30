@@ -22,6 +22,8 @@ pub(crate) struct CloudApiState {
     pub secret_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
+/// The tunnel's status as `GET /api/hub/cloud/status` and the `tunnel` field
+/// of `GET /api/hub/status` report it.
 #[derive(Serialize)]
 pub(crate) struct CloudStatusResponse {
     status: &'static str,
@@ -36,37 +38,54 @@ pub(crate) struct CloudStatusResponse {
     viewed_via_tunnel: bool,
 }
 
-/// `GET /api/cloud/status` — return current tunnel status.
+impl CloudStatusResponse {
+    /// The status of the tunnel `tunnel_status_rx` watches, with the cloud
+    /// settings read from the hub config in `hub_dir`, for a request carrying
+    /// `headers`.
+    pub(crate) fn current(
+        hub_dir: &std::path::Path,
+        tunnel_status_rx: &watch::Receiver<TunnelStatus>,
+        headers: &HeaderMap,
+    ) -> Self {
+        let tunnel_status = tunnel_status_rx.borrow().clone();
+
+        let (status, user_id) = match tunnel_status {
+            TunnelStatus::Disconnected => ("disconnected", None),
+            TunnelStatus::Connecting => ("connecting", None),
+            TunnelStatus::Connected { ref user_id, .. } => ("connected", Some(user_id.clone())),
+        };
+
+        // Check config for cloud section presence
+        let config_path = hub_dir.join("config.toml");
+        let (has_token, enabled) = match std::fs::read_to_string(&config_path) {
+            Ok(raw) => parse_cloud_state(&raw),
+            Err(_) => (false, false),
+        };
+
+        let viewed_via_tunnel = headers
+            .get(TUNNEL_NONCE_HEADER)
+            .is_some_and(|v| v.as_bytes() == tunnel_nonce().as_bytes());
+
+        Self {
+            status,
+            user_id,
+            has_token,
+            enabled,
+            viewed_via_tunnel,
+        }
+    }
+}
+
+/// `GET /api/hub/cloud/status` — return current tunnel status.
 pub(crate) async fn api_cloud_status(
     State(state): State<CloudApiState>,
     headers: HeaderMap,
 ) -> Json<CloudStatusResponse> {
-    let tunnel_status = state.tunnel_status_rx.borrow().clone();
-
-    let (status, user_id) = match tunnel_status {
-        TunnelStatus::Disconnected => ("disconnected", None),
-        TunnelStatus::Connecting => ("connecting", None),
-        TunnelStatus::Connected { ref user_id, .. } => ("connected", Some(user_id.clone())),
-    };
-
-    // Check config for cloud section presence
-    let config_path = state.hub_dir.join("config.toml");
-    let (has_token, enabled) = match std::fs::read_to_string(&config_path) {
-        Ok(raw) => parse_cloud_state(&raw),
-        Err(_) => (false, false),
-    };
-
-    let viewed_via_tunnel = headers
-        .get(TUNNEL_NONCE_HEADER)
-        .is_some_and(|v| v.as_bytes() == tunnel_nonce().as_bytes());
-
-    Json(CloudStatusResponse {
-        status,
-        user_id,
-        has_token,
-        enabled,
-        viewed_via_tunnel,
-    })
+    Json(CloudStatusResponse::current(
+        &state.hub_dir,
+        &state.tunnel_status_rx,
+        &headers,
+    ))
 }
 
 /// Parse `[cloud]` section from raw TOML to extract token presence and enabled state.
@@ -117,7 +136,7 @@ pub(crate) async fn cloud_callback(
         let _guard = secret_lock.lock().await;
         let dir = hub_dir.clone();
         let tok = token.clone();
-        tokio::task::spawn_blocking(move || {
+        crate::util::spawn_blocking_in_span(move || {
             let mut store = SecretStore::load(&dir)?;
             store.set("cloud_token", &tok, &dir)?;
             Ok::<(), crate::util::FatalError>(())
@@ -165,7 +184,7 @@ pub(crate) async fn cloud_callback(
     (StatusCode::OK, Html(SUCCESS_HTML.to_string())).into_response()
 }
 
-/// `POST /api/cloud/disconnect` — disable cloud tunnel without removing the token.
+/// `POST /api/hub/cloud/disconnect` — disable cloud tunnel without removing the token.
 pub(crate) async fn api_cloud_disconnect(
     State(state): State<CloudApiState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {

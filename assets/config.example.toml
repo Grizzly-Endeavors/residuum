@@ -153,7 +153,8 @@ enabled = true
 # path = ["/opt/residuum-tools"]
 
 # ── Named webhooks (optional) ────────────────────────────────────────────────
-# Each [webhooks.<name>] section creates a POST /webhook/<name> endpoint.
+# Each [webhooks.<name>] section creates a POST /webhook/<agent>/<name> endpoint,
+# where <agent> is the name of the agent this config belongs to.
 # Presence in config = enabled; remove to disable. Changes apply on reload,
 # without a restart.
 #

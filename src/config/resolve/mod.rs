@@ -12,7 +12,6 @@ mod subconscious;
 mod tracing_config;
 mod web_search;
 
-pub(crate) use gateway::resolve_default_gateway_config;
 pub(crate) use hub::from_file_and_env as resolve_hub_config;
 
 use std::path::Path;

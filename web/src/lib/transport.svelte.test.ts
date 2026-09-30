@@ -54,7 +54,10 @@ describe("WsTransport queuing while disconnected", () => {
   });
 
   it("queues a message sent while disconnected instead of dropping it", () => {
-    const transport = new WsTransport();
+    const transport = new WsTransport({
+      url: () => "ws://localhost/api/agents/scout/ws",
+      keepalive: true,
+    });
     transport.connect();
     // Socket hasn't opened yet — still "connecting", not "connected".
     const msg: ClientMessage = { type: "send_message", id: "web-1", content: "hello" };
@@ -66,7 +69,10 @@ describe("WsTransport queuing while disconnected", () => {
   });
 
   it("flushes queued messages in order once the socket reopens", () => {
-    const transport = new WsTransport();
+    const transport = new WsTransport({
+      url: () => "ws://localhost/api/agents/scout/ws",
+      keepalive: true,
+    });
     transport.connect();
     const first: ClientMessage = { type: "send_message", id: "web-1", content: "first" };
     const second: ClientMessage = { type: "send_message", id: "web-2", content: "second" };
@@ -81,14 +87,20 @@ describe("WsTransport queuing while disconnected", () => {
   });
 
   it("never queues a ping — it would just be moot by the next reconnect", () => {
-    const transport = new WsTransport();
+    const transport = new WsTransport({
+      url: () => "ws://localhost/api/agents/scout/ws",
+      keepalive: true,
+    });
     transport.connect();
     transport.send({ type: "ping" });
     expect(transport.pendingCount).toBe(0);
   });
 
   it("sends immediately once connected, without touching the queue", () => {
-    const transport = new WsTransport();
+    const transport = new WsTransport({
+      url: () => "ws://localhost/api/agents/scout/ws",
+      keepalive: true,
+    });
     transport.connect();
     lastSocket.simulateOpen();
     const msg: ClientMessage = { type: "send_message", id: "web-1", content: "hi" };

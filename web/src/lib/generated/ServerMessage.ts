@@ -96,9 +96,11 @@ mime_type: string,
  */
 size: number, 
 /**
- * URL to fetch the file: a durable workspace-relative link (e.g.
- * "/api/files/workspace?path=...") for a file inside the
- * workspace, else an expiring token link (e.g. "/api/files/{id}").
+ * URL to fetch the file, under the agent's own routes: a durable
+ * workspace-relative link (e.g.
+ * "/api/agents/scout/files/workspace?path=...") for a file inside
+ * the workspace, else an expiring token link (e.g.
+ * "/api/agents/scout/files/{id}"). Use it as given.
  */
 url: string, 
 /**

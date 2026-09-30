@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::features;
 use crate::update;
 
-use super::ConfigApiState;
+use super::{ConfigApiState, HubApiState};
 
 /// Status response: which mode the server is running in, its version, and the
 /// feature ids it supports. Workbench artifacts read the same information
@@ -25,7 +25,7 @@ pub(super) struct StatusResponse {
     checkpoints: CheckpointsStatus,
 }
 
-/// Per-repository checkpoint stats shown in `/api/status`.
+/// Per-repository checkpoint stats shown in `/api/agents/{name}/status`.
 #[derive(Serialize)]
 pub(super) struct CheckpointsStatus {
     workspace: Option<crate::checkpoints::RepoStats>,
@@ -125,15 +125,10 @@ pub(super) struct CompleteSetupRequest {
     mcp_json: Option<String>,
 }
 
-/// `GET /api/status` — returns `{ mode, version, features, checkpoints }`.
+/// `GET /api/agents/{name}/status` — returns `{ mode, version, features, checkpoints }`.
 pub(super) async fn api_status(State(state): State<ConfigApiState>) -> Json<StatusResponse> {
-    let mode = if state.setup_done.is_some() {
-        "setup"
-    } else {
-        "running"
-    };
     Json(StatusResponse {
-        mode,
+        mode: "running",
         version: update::CURRENT_VERSION,
         features: features::FEATURES,
         checkpoints: CheckpointsStatus {
@@ -151,7 +146,7 @@ pub(super) async fn api_status(State(state): State<ConfigApiState>) -> Json<Stat
 }
 
 /// A repo's checkpoint stats, or `None` (logged) if they couldn't be read —
-/// `/api/status` degrades rather than failing over a checkpoint read.
+/// `/api/agents/{name}/status` degrades rather than failing over a checkpoint read.
 async fn checkpoint_stats_or_log(
     state: &ConfigApiState,
     kind: crate::checkpoints::RepoKind,
@@ -167,7 +162,7 @@ async fn checkpoint_stats_or_log(
 
 /// `GET /api/hub/config/raw` — return raw `hub/config.toml` contents as text.
 pub(super) async fn api_hub_config_raw_get(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
 ) -> Result<Response, (StatusCode, String)> {
     let config_path = state.hub_dir.join("config.toml");
     let contents = tokio::fs::read_to_string(&config_path).await.map_err(|e| {
@@ -195,7 +190,7 @@ pub(super) async fn api_hub_config_raw_get(
 /// the hub running on its last-known-good config (see
 /// `gateway::reload::handle_hub_reload`).
 pub(super) async fn api_hub_config_raw_put(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
     body: String,
 ) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
     let diagnostics = crate::config::HubConfig::diagnose_toml(&body, &state.hub_dir);
@@ -208,9 +203,7 @@ pub(super) async fn api_hub_config_raw_put(
         .await
         .map_err(|e| internal_error("write hub config", e))?;
 
-    if let Some(reload_tx) = &state.reload_tx {
-        reload_tx.send(super::super::ReloadSignal::Hub).ok();
-    }
+    state.reload_tx.send(super::super::ReloadSignal::Hub).ok();
 
     Ok(Json(ValidateResponse::from_diagnostics(
         diagnostics,
@@ -221,7 +214,7 @@ pub(super) async fn api_hub_config_raw_put(
 /// `PATCH /api/hub/config/patch` — merge a JSON diff into the existing
 /// `hub/config.toml`, validate, save, trigger a hub reload if running.
 pub(super) async fn api_hub_config_patch(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
     Json(diff): Json<serde_json::Value>,
 ) -> Result<Json<PatchSavedResponse>, (StatusCode, Json<ValidateResponse>)> {
     let bad_request = |msg: String| {
@@ -286,16 +279,14 @@ pub(super) async fn api_hub_config_patch(
             )
         })?;
 
-    if let Some(reload_tx) = &state.reload_tx {
-        reload_tx.send(super::super::ReloadSignal::Hub).ok();
-    }
+    state.reload_tx.send(super::super::ReloadSignal::Hub).ok();
 
     Ok(Json(PatchSavedResponse::saved(checkpoint_id)))
 }
 
 /// `POST /api/hub/config/validate` — validate hub config TOML body without saving.
 pub(super) async fn api_hub_config_validate(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
     body: String,
 ) -> Json<ValidateResponse> {
     let diagnostics = crate::config::HubConfig::diagnose_toml(&body, &state.hub_dir);
@@ -305,7 +296,7 @@ pub(super) async fn api_hub_config_validate(
     ))
 }
 
-/// `GET /api/config/raw` — return raw `config.toml` contents as text.
+/// `GET /api/agents/{name}/config/raw` — return raw `config.toml` contents as text.
 pub(super) async fn api_config_raw_get(
     State(state): State<ConfigApiState>,
 ) -> Result<Response, (StatusCode, String)> {
@@ -327,7 +318,7 @@ pub(super) async fn api_config_raw_get(
         })
 }
 
-/// `PUT /api/config/raw` — write TOML body, save unconditionally, trigger
+/// `PUT /api/agents/{name}/config/raw` — write TOML body, save unconditionally, trigger
 /// reload if running, and report diagnostics.
 ///
 /// The save always succeeds, even when `body` fails validation: a config
@@ -369,7 +360,7 @@ pub(super) async fn api_config_raw_put(
     )))
 }
 
-/// `PATCH /api/config/patch` — merge a JSON diff into the existing
+/// `PATCH /api/agents/{name}/config/patch` — merge a JSON diff into the existing
 /// `config.toml`, validate, save, trigger reload if running.
 ///
 /// The diff's shape mirrors `config.toml`'s section/key layout, carrying
@@ -456,7 +447,7 @@ pub(super) async fn api_config_patch(
     Ok(Json(PatchSavedResponse::saved(checkpoint_id)))
 }
 
-/// `POST /api/config/validate` — validate TOML body without saving.
+/// `POST /api/agents/{name}/config/validate` — validate TOML body without saving.
 pub(super) async fn api_config_validate(
     State(state): State<ConfigApiState>,
     body: String,
@@ -468,7 +459,7 @@ pub(super) async fn api_config_validate(
     ))
 }
 
-/// `GET /api/mcp/raw` — return raw `mcp.json` contents as JSON.
+/// `GET /api/agents/{name}/mcp/raw` — return raw `mcp.json` contents as JSON.
 ///
 /// Returns `{"mcpServers":{}}` if the file doesn't exist yet.
 pub(super) async fn api_mcp_raw_get(
@@ -498,7 +489,7 @@ pub(super) async fn api_mcp_raw_get(
         })
 }
 
-/// `PUT /api/mcp/raw` — write `mcp.json`, save unconditionally, trigger a
+/// `PUT /api/agents/{name}/mcp/raw` — write `mcp.json`, save unconditionally, trigger a
 /// workspace reload, and report diagnostics.
 ///
 /// The save always succeeds, even when `body` fails validation: the loader
@@ -544,7 +535,7 @@ pub(super) async fn api_mcp_raw_put(
     )))
 }
 
-/// `PATCH /api/mcp/patch` — merge a JSON diff into the existing `mcp.json`.
+/// `PATCH /api/agents/{name}/mcp/patch` — merge a JSON diff into the existing `mcp.json`.
 ///
 /// The diff's shape mirrors `mcp.json`: `{"mcpServers": {"<name>": {...}}}`.
 /// Only the fields the Settings form actually changed need to be present —
@@ -669,7 +660,38 @@ async fn write_first_agent_config_files(
     Ok(())
 }
 
-/// `POST /api/config/complete-setup` — write config + providers, signal setup done.
+/// Setup creates only the first agent: answer 409 when the residuum root
+/// already holds one, so a live agent is never overwritten.
+fn refuse_when_agents_exist(
+    residuum_root: &std::path::Path,
+    agent_name: &str,
+) -> Result<(), (StatusCode, Json<ValidateResponse>)> {
+    let existing = crate::config::discover_agents(residuum_root)
+        .map_err(|e| internal_error("check for existing agents", e))?;
+    if existing.is_empty() {
+        return Ok(());
+    }
+    let message = if existing.iter().any(|name| name == agent_name) {
+        format!(
+            "An agent named '{agent_name}' already exists. Choose a different name, or change the existing agent from its settings."
+        )
+    } else {
+        format!(
+            "This residuum already has an agent ('{}'). Setup only creates the first agent.",
+            existing.join("', '")
+        )
+    };
+    Err((
+        StatusCode::CONFLICT,
+        Json(ValidateResponse {
+            valid: false,
+            error: Some(message),
+            diagnostics: Vec::new(),
+        }),
+    ))
+}
+
+/// `POST /api/hub/config/complete-setup` — write config + providers, signal setup done.
 ///
 /// Writes `hub/config.toml`, bootstraps the hub directory (`bin/`, `logs/`),
 /// creates the first agent's directory (named `body.agent_name`, validated
@@ -682,7 +704,7 @@ async fn write_first_agent_config_files(
 /// Answers 409 when an agent already exists, so a running gateway's live
 /// agent is never overwritten.
 pub(super) async fn api_complete_setup(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
     Json(body): Json<CompleteSetupRequest>,
 ) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
     let err = |msg: String| {
@@ -704,29 +726,7 @@ pub(super) async fn api_complete_setup(
         .map_or_else(|| state.hub_dir.clone(), std::path::Path::to_path_buf);
     let agent_dir = residuum_root.join(&body.agent_name);
 
-    let existing = crate::config::discover_agents(&residuum_root)
-        .map_err(|e| internal_error("check for existing agents", e))?;
-    if !existing.is_empty() {
-        let message = if existing.contains(&body.agent_name) {
-            format!(
-                "An agent named '{}' already exists. Choose a different name, or change the existing agent from its settings.",
-                body.agent_name
-            )
-        } else {
-            format!(
-                "This residuum already has an agent ('{}'). Setup only creates the first agent.",
-                existing.join("', '")
-            )
-        };
-        return Err((
-            StatusCode::CONFLICT,
-            Json(ValidateResponse {
-                valid: false,
-                error: Some(message),
-                diagnostics: Vec::new(),
-            }),
-        ));
-    }
+    refuse_when_agents_exist(&residuum_root, &body.agent_name)?;
 
     // Parse and resolve the hub config on its own first — the agent config
     // resolves against it (timezone, gateway, ...).
@@ -788,7 +788,9 @@ pub(super) async fn api_complete_setup(
 
     write_first_agent_config_files(&layout, &body).await?;
 
-    // Signal setup server to shut down
+    // The hub picks up the new hub config, and whoever is waiting on setup
+    // learns the first agent is on disk.
+    state.reload_tx.send(super::super::ReloadSignal::Hub).ok();
     if let Some(done_sender) = &state.setup_done {
         done_sender.send(true).ok();
     }
@@ -800,13 +802,13 @@ pub(super) async fn api_complete_setup(
     }))
 }
 
-/// `GET /api/system/timezone` — auto-detect system timezone.
+/// `GET /api/hub/system/timezone` — auto-detect system timezone.
 pub(super) async fn api_system_timezone() -> Json<TimezoneResponse> {
     let tz = iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_string());
     Json(TimezoneResponse { timezone: tz })
 }
 
-/// `GET /api/mcp-catalog` — serve the embedded MCP catalog JSON.
+/// `GET /api/hub/mcp-catalog` — serve the embedded MCP catalog JSON.
 pub(super) async fn api_mcp_catalog() -> Response {
     use axum::http::StatusCode;
 
@@ -833,9 +835,7 @@ mod tests {
 
     use super::*;
 
-    fn state(
-        setup_done: Option<std::sync::Arc<tokio::sync::watch::Sender<bool>>>,
-    ) -> ConfigApiState {
+    fn state() -> ConfigApiState {
         ConfigApiState {
             team: None,
             hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
@@ -844,22 +844,17 @@ mod tests {
             workspace_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
             memory_dir: None,
             reload_tx: None,
-            setup_done,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            scope: crate::gateway::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         }
     }
 
     #[tokio::test]
     async fn status_reports_mode_version_and_features() {
-        let Json(running) = api_status(State(state(None))).await;
+        let Json(running) = api_status(State(state())).await;
         assert_eq!(running.mode, "running");
         assert_eq!(running.version, update::CURRENT_VERSION);
         assert_eq!(running.features, features::FEATURES);
-
-        let (tx, _rx) = tokio::sync::watch::channel(false);
-        let Json(setup) = api_status(State(state(Some(std::sync::Arc::new(tx))))).await;
-        assert_eq!(setup.mode, "setup");
     }
 
     /// A state backed by a real temp directory, for tests that read/write
@@ -879,8 +874,7 @@ mod tests {
             workspace_dir: dir.join("workspace"),
             memory_dir: None,
             reload_tx: None,
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            scope: crate::gateway::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         }
     }
@@ -1062,10 +1056,10 @@ mod tests {
 
     /// A setup-mode state rooted at `root`: the hub directory is `root/hub`,
     /// and no agent exists yet.
-    fn setup_state(root: &std::path::Path) -> (ConfigApiState, tokio::sync::watch::Receiver<bool>) {
+    fn setup_state(root: &std::path::Path) -> (HubApiState, tokio::sync::watch::Receiver<bool>) {
         let (tx, rx) = tokio::sync::watch::channel(false);
-        let mut state = state(Some(std::sync::Arc::new(tx)));
-        state.hub_dir = root.join("hub");
+        let mut state = HubApiState::for_test(&root.join("hub"));
+        state.setup_done = Some(std::sync::Arc::new(tx));
         (state, rx)
     }
 
@@ -1104,10 +1098,8 @@ mod tests {
         assert!(team.agent_role_page("scout").is_file());
         assert!(*done_rx.borrow(), "setup should be signalled complete");
         assert_eq!(
-            crate::config::discover_single_agent(root.path())
-                .unwrap()
-                .as_deref(),
-            Some("scout")
+            crate::config::discover_agents(root.path()).unwrap(),
+            vec!["scout".to_string()]
         );
     }
 

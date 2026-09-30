@@ -5,7 +5,7 @@ use crate::bus::{
     AgentResultEvent, AgentResultStatus, BusError, PulseOverlap, ResultDisposition, topics,
 };
 use crate::gateway::helpers::publish_notice;
-use crate::gateway::types::GatewayRuntime;
+use crate::gateway::types::AgentRuntime;
 use crate::pulse::executor::PulseContext;
 use crate::pulse::scheduler::PulseScheduler;
 use crate::pulse::types::PulseDef;
@@ -14,7 +14,7 @@ use crate::pulse::types::PulseDef;
 #[tracing::instrument(skip_all)]
 pub async fn handle_pulse_execution(
     spawn_event: crate::bus::SpawnRequestEvent,
-    rt: &mut GatewayRuntime,
+    rt: &mut AgentRuntime,
 ) {
     let source_label = spawn_event.source_label.clone();
     if let Err(e) = rt.publisher.publish(topics::Background, spawn_event).await {
@@ -76,7 +76,7 @@ fn resolve_pulse_context(pulse: &PulseDef, scheduler: &PulseScheduler) -> Option
 /// Extract `(pulse_name, summary)` from a pulse result eligible to become
 /// that pulse's `last_output`, or `None` if it isn't. Split out as a pure
 /// function (rather than inlined into [`handle_pulse_result_event`]) so the
-/// eligibility rule is testable without a full `GatewayRuntime`.
+/// eligibility rule is testable without a full `AgentRuntime`.
 ///
 /// Only a `Completed` run with a non-empty summary whose disposition isn't
 /// `Silent` (a `HEARTBEAT_OK` result) counts as "delivered" — a failed or
@@ -103,7 +103,7 @@ fn delivered_pulse_output(event: &AgentResultEvent) -> Option<(&str, &str)> {
 /// of pulse state, not something worth failing the loop over.
 pub fn handle_pulse_result_event(
     event: Result<Option<AgentResultEvent>, BusError>,
-    rt: &mut GatewayRuntime,
+    rt: &mut AgentRuntime,
 ) {
     let Ok(Some(event)) = event else {
         return;
@@ -116,7 +116,7 @@ pub fn handle_pulse_result_event(
 
 /// Process all due pulses.
 #[tracing::instrument(level = "debug", skip_all)]
-pub async fn handle_pulse_tick(rt: &mut GatewayRuntime) {
+pub async fn handle_pulse_tick(rt: &mut AgentRuntime) {
     use crate::pulse::executor::build_pulse_execution;
     use crate::time;
 

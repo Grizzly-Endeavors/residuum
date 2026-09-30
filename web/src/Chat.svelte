@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import { ws } from "./lib/ws.svelte";
   import { parseCommand } from "./lib/commands";
   import { notifications } from "./lib/notifications.svelte";
@@ -9,10 +8,6 @@
   import type { ImageAttachment } from "./lib/types";
 
   let { onOpenFeedback }: { onOpenFeedback: () => void } = $props();
-
-  onMount(() => {
-    void ws.loadMainHistory();
-  });
 
   function handleSend(text: string, images?: ImageAttachment[]) {
     const result = parseCommand(text, {

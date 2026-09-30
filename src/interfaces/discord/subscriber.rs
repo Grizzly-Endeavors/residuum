@@ -79,7 +79,7 @@ impl ChatOutbound for DiscordOutbound {
     fn start_typing(&self, channel_id: ChannelId) -> tokio::sync::watch::Sender<()> {
         let http = Arc::clone(&self.http);
         let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(());
-        tokio::spawn(async move {
+        crate::util::spawn_in_span(async move {
             loop {
                 if let Err(e) = channel_id.broadcast_typing(&http).await {
                     tracing::trace!(error = %e, "discord typing indicator failed");

@@ -77,7 +77,7 @@ pub(super) async fn handle_ws_open(
     // Task: read from local WS, send through tunnel.
     let tunnel_tx_reader = Arc::clone(&tunnel_tx);
     let ch_id_reader = channel_id.clone();
-    tokio::spawn(async move {
+    crate::util::spawn_in_span(async move {
         while let Some(msg) = local_read.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
@@ -115,7 +115,7 @@ pub(super) async fn handle_ws_open(
 
     // Task: read from mpsc rx, send to local WS.
     let ch_id_writer = channel_id;
-    tokio::spawn(async move {
+    crate::util::spawn_in_span(async move {
         loop {
             let Some(data) = rx.recv().await else {
                 debug!(channel_id = ch_id_writer, "tunnel→local WS channel closed");

@@ -79,7 +79,7 @@ The `agent` field controls how the pulse executes:
 
 ## Diagnostics
 
-Editing `HEARTBEAT.yml` via `write_file`/`edit_file`, the workspace editor, or `POST /api/workspace/validate` reports invalid YAML, a non-list `pulses` key, a pulse entry that fails to deserialize on its own, a removed option, or a duplicate pulse name as a diagnostic alongside the save — one per problem, so one bad pulse doesn't hide problems in the others — and the write always goes through rather than being rejected.
+Editing `HEARTBEAT.yml` via `write_file`/`edit_file`, the workspace editor, or `POST /api/agents/<agent>/workspace/validate` reports invalid YAML, a non-list `pulses` key, a pulse entry that fails to deserialize on its own, a removed option, or a duplicate pulse name as a diagnostic alongside the save — one per problem, so one bad pulse doesn't hide problems in the others — and the write always goes through rather than being rejected.
 
 ## Behavior
 
@@ -96,7 +96,7 @@ Editing `HEARTBEAT.yml` via `write_file`/`edit_file`, the workspace editor, or `
 
 ## Scheduled View
 
-The web UI's Scheduled view (hamburger menu, `/scheduled`) lists every pulse — schedule, active hours, agent/skill, enabled flag, next fire estimate, last outcome (with error if failed), current run (with any overlap flag), and per-pulse loading problems — and every pending scheduled action with a cancel button. Toggling a pulse's enabled switch edits just that value in HEARTBEAT.yml, leaving the rest of the file untouched. Backed by `GET/PUT /api/scheduled/pulses...` and `GET/DELETE /api/scheduled/actions...`.
+The web UI's Scheduled view (hamburger menu, `/scheduled`) lists every pulse — schedule, active hours, agent/skill, enabled flag, next fire estimate, last outcome (with error if failed), current run (with any overlap flag), and per-pulse loading problems — and every pending scheduled action with a cancel button. Toggling a pulse's enabled switch edits just that value in HEARTBEAT.yml, leaving the rest of the file untouched. Backed by `GET/PUT /api/agents/<agent>/scheduled/pulses...` and `GET/DELETE /api/agents/<agent>/scheduled/actions...`.
 
 ## Gotchas
 

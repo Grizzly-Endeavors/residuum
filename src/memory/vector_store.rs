@@ -451,6 +451,31 @@ impl VectorStore {
         }
     }
 
+    /// Discard every stored vector and rebuild the tables for `dim`.
+    ///
+    /// Used when the embedding model changes: the old vectors are meaningless
+    /// to the new model and may have a different dimension. This clears the
+    /// store in place rather than deleting the database file, because the file
+    /// cannot be deleted on Windows while any connection to it is open.
+    ///
+    /// # Errors
+    /// Returns an error if dropping or recreating the tables fails.
+    pub fn reset(&mut self, dim: usize) -> anyhow::Result<()> {
+        {
+            let conn = self.lock_conn()?;
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS obs_vectors;
+                 DROP TABLE IF EXISTS chunk_vectors;
+                 DROP TABLE IF EXISTS wiki_vectors;
+                 DROP TABLE IF EXISTS store_meta;",
+            )
+            .context("failed to clear vector store")?;
+            create_tables(&conn, dim)?;
+        }
+        self.dim = dim;
+        Ok(())
+    }
+
     /// Record the embedding model whose vectors this store holds.
     ///
     /// # Errors
@@ -1000,6 +1025,25 @@ mod tests {
             .insert_observations("ep-001", "2026-02-19", &obs, &embeddings)
             .unwrap();
         assert!(store.has_observation("ep-001-o0").unwrap());
+    }
+
+    #[test]
+    fn reset_clears_vectors_and_adopts_the_new_dimension_while_the_file_stays_open() {
+        let (_dir, mut store) = create_test_store();
+        let emb = sample_embedding(0.2);
+        store
+            .upsert_wiki_pages(&[wiki_vector("wiki/a.md", "a page", &emb)])
+            .unwrap();
+        store.set_embedding_model("model-a").unwrap();
+
+        store.reset(3).unwrap();
+
+        assert!(store.wiki_page_contents().unwrap().is_empty());
+        assert_eq!(store.embedding_model().unwrap(), None);
+        store
+            .upsert_wiki_pages(&[wiki_vector("wiki/b.md", "b page", &[0.1, 0.2, 0.3])])
+            .unwrap();
+        assert_eq!(store.wiki_page_contents().unwrap().len(), 1);
     }
 
     #[test]

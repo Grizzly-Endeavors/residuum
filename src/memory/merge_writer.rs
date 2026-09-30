@@ -787,7 +787,7 @@ mod tests {
         let mut handles = Vec::new();
         for i in 0..5 {
             let mw = Arc::clone(&mw);
-            handles.push(tokio::spawn(async move {
+            handles.push(crate::util::spawn_in_span(async move {
                 mw.merge(
                     sample_extraction(&format!("observation {i}")),
                     SourceTag::main(),
@@ -981,7 +981,7 @@ mod tests {
         ));
 
         let mw1 = Arc::clone(&mw);
-        let first = tokio::spawn(async move {
+        let first = crate::util::spawn_in_span(async move {
             mw1.merge(
                 sample_extraction("first"),
                 SourceTag::main(),
@@ -996,7 +996,7 @@ mod tests {
         entered.notified().await;
 
         let mw2 = Arc::clone(&mw);
-        let second = tokio::spawn(async move {
+        let second = crate::util::spawn_in_span(async move {
             mw2.merge(
                 sample_extraction("second"),
                 SourceTag::main(),

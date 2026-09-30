@@ -39,12 +39,14 @@ pub(super) struct ApiInboxItem {
 }
 
 /// Resolve an item's attachments into servable metadata by statting each file
-/// under `attachments_root/<id>/`.
+/// under `attachments_root/<id>/`. Each URL is under the owning agent's routes,
+/// so a client uses it as given.
 ///
 /// An attachment whose file can't be found on disk is dropped from the listing
 /// (rather than shown as a broken link) and logged — this can happen if a
 /// workspace was hand-edited, but should not happen in normal operation.
 async fn resolve_attachments(
+    agent: &str,
     id: &str,
     item: &InboxItem,
     attachments_root: &std::path::Path,
@@ -61,7 +63,7 @@ async fn resolve_attachments(
                 filename: file_name.to_string(),
                 mime_type: crate::interfaces::attachment::detect_mime_type(&path),
                 size: meta.len(),
-                url: format!("/api/inbox/{id}/attachments/{index}"),
+                url: format!("/api/agents/{agent}/inbox/{id}/attachments/{index}"),
             }),
             Err(e) => {
                 tracing::warn!(
@@ -79,11 +81,12 @@ async fn resolve_attachments(
 /// Build the API-facing representation of an inbox item, resolving its
 /// attachments against `attachments_root`.
 async fn to_api_item(
+    agent: &str,
     id: String,
     item: InboxItem,
     attachments_root: &std::path::Path,
 ) -> ApiInboxItem {
-    let attachments = resolve_attachments(&id, &item, attachments_root).await;
+    let attachments = resolve_attachments(agent, &id, &item, attachments_root).await;
     ApiInboxItem {
         id,
         title: item.title,
@@ -95,7 +98,7 @@ async fn to_api_item(
     }
 }
 
-/// `GET /api/inbox` — List all user inbox items.
+/// `GET /api/agents/{name}/inbox` — List all user inbox items.
 pub(super) async fn api_inbox_list(
     State(state): State<ConfigApiState>,
 ) -> Result<Json<Vec<ApiInboxItem>>, (StatusCode, String)> {
@@ -114,13 +117,13 @@ pub(super) async fn api_inbox_list(
 
     let mut api_items = Vec::with_capacity(items.len());
     for (id, item) in items {
-        api_items.push(to_api_item(id, item, &attachments_root).await);
+        api_items.push(to_api_item(&state.agent_name, id, item, &attachments_root).await);
     }
 
     Ok(Json(api_items))
 }
 
-/// `GET /api/inbox/archive` — List all archived user inbox items.
+/// `GET /api/agents/{name}/inbox/archive` — List all archived user inbox items.
 pub(super) async fn api_inbox_archive_list(
     State(state): State<ConfigApiState>,
 ) -> Result<Json<Vec<ApiInboxItem>>, (StatusCode, String)> {
@@ -137,13 +140,13 @@ pub(super) async fn api_inbox_archive_list(
 
     let mut api_items = Vec::with_capacity(items.len());
     for (id, item) in items {
-        api_items.push(to_api_item(id, item, &attachments_root).await);
+        api_items.push(to_api_item(&state.agent_name, id, item, &attachments_root).await);
     }
 
     Ok(Json(api_items))
 }
 
-/// `PUT /api/inbox/:id/read` — Mark an inbox item as read.
+/// `PUT /api/agents/{name}/inbox/:id/read` — Mark an inbox item as read.
 pub(super) async fn api_inbox_read(
     Path(id): Path<String>,
     State(state): State<ConfigApiState>,
@@ -161,10 +164,12 @@ pub(super) async fn api_inbox_read(
             )
         })?;
 
-    Ok(Json(to_api_item(id, item, &attachments_root).await))
+    Ok(Json(
+        to_api_item(&state.agent_name, id, item, &attachments_root).await,
+    ))
 }
 
-/// `POST /api/inbox/:id/archive` — Archive an inbox item.
+/// `POST /api/agents/{name}/inbox/:id/archive` — Archive an inbox item.
 pub(super) async fn api_inbox_archive(
     Path(id): Path<String>,
     State(state): State<ConfigApiState>,
@@ -185,7 +190,7 @@ pub(super) async fn api_inbox_archive(
     Ok(Json(()))
 }
 
-/// `POST /api/inbox/:id/restore` — Restore an archived inbox item back to
+/// `POST /api/agents/{name}/inbox/:id/restore` — Restore an archived inbox item back to
 /// the active inbox — the one way to undo `api_inbox_archive`.
 pub(super) async fn api_inbox_restore(
     Path(id): Path<String>,
@@ -236,7 +241,7 @@ async fn confine(
         .then_some(candidate_canon)
 }
 
-/// `GET /api/inbox/:id/attachments/:index` — Serve one of a user inbox item's
+/// `GET /api/agents/{name}/inbox/:id/attachments/:index` — Serve one of a user inbox item's
 /// attachments by its position in the item's attachment list.
 ///
 /// Checks the active inbox first, then the archive, so a link handed out before
@@ -294,7 +299,7 @@ pub(super) async fn api_inbox_attachment(
     response
 }
 
-/// Build the agent-inbox API router (`POST /api/agent-inbox`).
+/// Build the agent-inbox API router (`POST /api/agents/{name}/agent-inbox`).
 ///
 /// A workbench artifact's only way to hand the agent something to triage
 /// later — there is no equivalent write endpoint for the user inbox, which
@@ -305,7 +310,7 @@ pub(crate) fn agent_inbox_api_router(state: GatewayState) -> axum::Router {
         .with_state(state)
 }
 
-/// Request body for `POST /api/agent-inbox`.
+/// Request body for `POST /api/agents/{name}/agent-inbox`.
 #[derive(Debug, Deserialize)]
 pub(super) struct AgentInboxAddRequest {
     /// Defaults to the body's first line, in full, when absent or blank.
@@ -314,7 +319,7 @@ pub(super) struct AgentInboxAddRequest {
     pub body: String,
 }
 
-/// Response body for `POST /api/agent-inbox`.
+/// Response body for `POST /api/agents/{name}/agent-inbox`.
 #[derive(Debug, Serialize)]
 pub(super) struct AgentInboxAddResponse {
     /// The new item's ID (its filename stem), as used by `inbox_read` and
@@ -322,7 +327,7 @@ pub(super) struct AgentInboxAddResponse {
     pub id: String,
 }
 
-/// `POST /api/agent-inbox` — add an item to the agent's inbox, the same
+/// `POST /api/agents/{name}/agent-inbox` — add an item to the agent's inbox, the same
 /// place the WS `/inbox` command and the notification router's `inbox`
 /// target write to. The source is `artifact:<name>` when the request carries
 /// the artifact identity header (set by the workbench bridge), `"web"`
@@ -390,8 +395,7 @@ mod tests {
             workspace_dir,
             memory_dir: None,
             reload_tx: None,
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            scope: crate::gateway::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         }
     }
@@ -403,8 +407,6 @@ mod tests {
             workspace_dir.to_path_buf(),
             workspace_dir.to_path_buf(),
         );
-        let (_tunnel_tx, tunnel_status_rx) =
-            tokio::sync::watch::channel(crate::tunnel::TunnelStatus::Disconnected);
         let session_registry =
             std::sync::Arc::new(crate::background::registry::SessionRegistry::new());
         let session_store = std::sync::Arc::new(crate::background::store::SessionStore::new(
@@ -427,10 +429,9 @@ mod tests {
             stop_tx: core.stop_tx,
             agent_inbox_dir,
             tz: chrono_tz::UTC,
-            tunnel_status_rx,
             publisher: core.publisher,
             bus_handle: core.bus_handle,
-            file_registry: crate::gateway::file_server::FileRegistry::new(),
+            file_registry: crate::gateway::file_server::FileRegistry::new("scout"),
             webhooks: crate::interfaces::webhook::WebhookTable::default(),
             session_registry,
             session_store,
@@ -443,12 +444,17 @@ mod tests {
                 crate::workspace::watch::WatchHealth::Native,
             )
             .1,
+            team_feed: std::sync::Arc::new(crate::hub::services::TeamChangeFeed::idle()),
             action_store: std::sync::Arc::new(tokio::sync::Mutex::new(
                 crate::actions::store::ActionStore::new_empty(
                     workspace_dir.join("scheduled_actions.json"),
                 ),
             )),
             layout: crate::workspace::layout::WorkspaceLayout::new(workspace_dir),
+            activity: crate::hub::activity::ActivityTracker::new(
+                "test-agent",
+                tokio::sync::broadcast::channel(4).0,
+            ),
         }
     }
 
@@ -588,6 +594,35 @@ mod tests {
         let response = api_inbox_attachment(Path(("item1".to_string(), 0)), State(state)).await;
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn listed_attachment_urls_are_under_the_owning_agents_routes() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let attachments_dir = layout.user_inbox_attachments_dir().join("item1");
+        tokio::fs::create_dir_all(&attachments_dir).await.unwrap();
+        tokio::fs::write(attachments_dir.join("note.txt"), b"hello")
+            .await
+            .unwrap();
+        write_active_item(
+            &layout,
+            "item1",
+            vec![std::path::PathBuf::from(
+                "inbox/user/attachments/item1/note.txt",
+            )],
+        )
+        .await;
+
+        let state = make_state(dir.path().to_path_buf());
+        let Json(items) = api_inbox_list(State(state)).await.unwrap();
+
+        let item = items.first().expect("the seeded item is listed");
+        let attachment = item.attachments.first().expect("its attachment is listed");
+        assert_eq!(
+            attachment.url,
+            "/api/agents/test-agent/inbox/item1/attachments/0"
+        );
     }
 
     #[tokio::test]

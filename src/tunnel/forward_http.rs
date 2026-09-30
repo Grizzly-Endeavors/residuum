@@ -286,7 +286,7 @@ mod tests {
                 axum::routing::get(|| async { axum::response::Redirect::permanent("/tool/") }),
             )
             .route("/tool/", axum::routing::get(|| async { "page" }));
-        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let server = crate::util::spawn_in_span(async move { axum::serve(listener, app).await });
 
         let client = forwarding_client().unwrap();
         let frame = forward(
@@ -327,7 +327,7 @@ mod tests {
                     .to_string()
             }),
         );
-        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let server = crate::util::spawn_in_span(async move { axum::serve(listener, app).await });
 
         let client = forwarding_client().unwrap();
         let mut headers = HashMap::new();

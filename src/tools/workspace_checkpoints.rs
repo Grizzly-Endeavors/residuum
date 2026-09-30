@@ -344,6 +344,7 @@ mod tests {
         std::fs::create_dir_all(&workspace).unwrap();
         Arc::new(
             CheckpointEngine::new(
+                "test-agent",
                 workspace,
                 &crate::config::paths::TeamPaths::new(dir.join("team")),
                 dir.join("agent-config"),
@@ -432,6 +433,7 @@ mod tests {
         std::fs::create_dir_all(&ws).unwrap();
         let checkpoints_engine = Arc::new(
             CheckpointEngine::new(
+                "test-agent",
                 ws.clone(),
                 &crate::config::paths::TeamPaths::new(dir.path().join("team")),
                 dir.path().join("agent-config"),

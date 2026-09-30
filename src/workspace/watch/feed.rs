@@ -47,7 +47,7 @@ pub(crate) fn spawn_change_feed(
     health: watch::Sender<WatchHealth>,
 ) -> JoinHandle<()> {
     let prefix = prefix.map(str::to_string);
-    tokio::spawn(async move {
+    crate::util::spawn_in_span(async move {
         let (raw_tx, raw_rx) = mpsc::channel(RAW_EVENT_CAPACITY);
         let overflowed = Arc::new(AtomicBool::new(false));
         let sink = RawSink {
@@ -135,7 +135,7 @@ impl Backend {
 async fn start_backend(root: &Path, mode: Mode, sink: &RawSink) -> Option<Backend> {
     if mode == Mode::Native {
         let (root_owned, sink) = (root.to_path_buf(), sink.clone());
-        match tokio::task::spawn_blocking(move || start_native(&root_owned, sink)).await {
+        match crate::util::spawn_blocking_in_span(move || start_native(&root_owned, sink)).await {
             Ok(Ok(watcher)) => {
                 return Some(Backend {
                     mode: Mode::Native,
@@ -155,7 +155,7 @@ async fn start_backend(root: &Path, mode: Mode, sink: &RawSink) -> Option<Backen
         }
     }
     let (root_owned, sink) = (root.to_path_buf(), sink.clone());
-    match tokio::task::spawn_blocking(move || start_polling(&root_owned, sink)).await {
+    match crate::util::spawn_blocking_in_span(move || start_polling(&root_owned, sink)).await {
         Ok(Ok(watcher)) => Some(Backend {
             mode: Mode::Polling,
             _watcher: Box::new(watcher),
@@ -353,7 +353,7 @@ impl FeedLoop {
             }
             ReadyBatch::Paths(paths) => {
                 let root = self.root.clone();
-                match tokio::task::spawn_blocking(move || {
+                match crate::util::spawn_blocking_in_span(move || {
                     resolve_changes(paths, |path| path_state(&root, path))
                 })
                 .await
@@ -477,7 +477,7 @@ mod tests {
             Arc::clone(&overflowed),
             bus.publisher(),
         );
-        let task = tokio::spawn(async move { feed.run(Mode::Native).await });
+        let task = crate::util::spawn_in_span(async move { feed.run(Mode::Native).await });
         Harness {
             dir,
             raw_tx,
@@ -763,7 +763,7 @@ mod tests {
             .unwrap();
         assert_eq!(backend.health(), WatchHealth::Polling);
         let mut feed = FeedLoop::new(dir.path(), None, raw_rx, overflowed, bus.publisher());
-        let task = tokio::spawn(async move { feed.run(Mode::Polling).await });
+        let task = crate::util::spawn_in_span(async move { feed.run(Mode::Polling).await });
 
         std::fs::write(dir.path().join("polled.md"), "x").unwrap();
         let seen = collect_until(&mut sub, |c| c.path == "polled.md").await;

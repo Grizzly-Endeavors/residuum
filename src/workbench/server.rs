@@ -35,7 +35,7 @@ const PORT_SEARCH_ATTEMPTS: u16 = 10;
 
 /// Whether the artifacts listener is running.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum WorkbenchServing {
+pub enum WorkbenchServing {
     /// Serving on this port, beside the gateway.
     Running { port: u16 },
     /// Not serving; the reason is shown to the user.

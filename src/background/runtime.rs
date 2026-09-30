@@ -161,17 +161,22 @@ struct RunEnv {
 }
 
 impl SessionRuntime {
-    /// Create a new runtime with the given concurrency limit.
+    /// Create a new runtime whose session turns draw permits from
+    /// `session_budget`.
+    ///
+    /// The budget is the hub's one semaphore, shared by every agent's
+    /// runtime, so a session that finds it exhausted waits (shown as
+    /// `Queued`) behind sessions of any agent.
     #[must_use]
     pub(crate) fn new(
         registry: Arc<SessionRegistry>,
         store: Arc<SessionStore>,
-        max_concurrent: usize,
+        session_budget: Arc<Semaphore>,
         idle_timeouts: impl Into<IdleTimeouts>,
         handles: SessionRuntimeHandles,
     ) -> Self {
         Self {
-            semaphore: Arc::new(Semaphore::new(max_concurrent)),
+            semaphore: session_budget,
             registry,
             store,
             idle_timeouts: idle_timeouts.into(),
@@ -244,7 +249,7 @@ impl SessionRuntime {
         };
         let config = req.subagent_config;
 
-        tokio::spawn(async move {
+        crate::util::spawn_in_span(async move {
             publish_session_event(
                 &env.publisher,
                 &info.address,
@@ -422,7 +427,7 @@ fn deliver_losing_spawn_input(
             let registry = Arc::clone(registry);
             let publisher = publisher.clone();
             let address = info.address.clone();
-            tokio::spawn(async move {
+            crate::util::spawn_in_span(async move {
                 super::messaging::retry_race_guard_user_message(
                     registry,
                     publisher,
@@ -1504,6 +1509,7 @@ mod tests {
     fn test_checkpoints(dir: &std::path::Path) -> Arc<crate::checkpoints::CheckpointEngine> {
         Arc::new(
             crate::checkpoints::CheckpointEngine::new(
+                "test-agent",
                 dir.join("workspace"),
                 &crate::config::paths::TeamPaths::new(dir.join("team")),
                 dir.join("agent-config"),
@@ -1538,6 +1544,7 @@ mod tests {
             model_name: None,
             active_subagents: Vec::new(),
             config_flags: std::collections::BTreeMap::new(),
+            agent: None,
         })
     }
 
@@ -1569,7 +1576,7 @@ mod tests {
         let runtime = SessionRuntime::new(
             registry,
             store,
-            max_concurrent,
+            Arc::new(tokio::sync::Semaphore::new(max_concurrent)),
             idle_timeouts,
             SessionRuntimeHandles {
                 publisher: bus_handle.publisher(),
@@ -1614,7 +1621,7 @@ mod tests {
         let runtime = SessionRuntime::new(
             registry,
             store,
-            max_concurrent,
+            Arc::new(tokio::sync::Semaphore::new(max_concurrent)),
             idle_timeouts,
             SessionRuntimeHandles {
                 publisher: bus_handle.publisher(),
@@ -2346,7 +2353,7 @@ mod tests {
         let runtime = SessionRuntime::new(
             registry,
             store,
-            max_concurrent,
+            Arc::new(tokio::sync::Semaphore::new(max_concurrent)),
             idle_timeouts,
             SessionRuntimeHandles {
                 publisher: bus_handle.publisher(),
@@ -2718,7 +2725,7 @@ mod tests {
         let runtime = SessionRuntime::new(
             registry,
             store,
-            3,
+            Arc::new(tokio::sync::Semaphore::new(3)),
             IdleTimeouts {
                 scheduled: Duration::from_mins(1),
                 spawned: Duration::from_mins(1),
@@ -3149,7 +3156,7 @@ mod tests {
         let runtime = SessionRuntime::new(
             registry,
             store,
-            1,
+            Arc::new(tokio::sync::Semaphore::new(1)),
             IdleTimeouts {
                 scheduled: idle_window,
                 spawned: idle_window,
@@ -3462,7 +3469,7 @@ mod tests {
         let runtime = SessionRuntime::new(
             registry,
             store,
-            3,
+            Arc::new(tokio::sync::Semaphore::new(3)),
             IdleTimeouts {
                 scheduled: idle_window,
                 spawned: idle_window,
@@ -3673,7 +3680,7 @@ mod tests {
         let runtime = SessionRuntime::new(
             registry,
             store,
-            3,
+            Arc::new(tokio::sync::Semaphore::new(3)),
             IdleTimeouts {
                 scheduled: Duration::from_millis(50),
                 spawned: Duration::from_millis(50),
@@ -3733,7 +3740,7 @@ mod tests {
         let runtime = SessionRuntime::new(
             registry,
             store,
-            3,
+            Arc::new(tokio::sync::Semaphore::new(3)),
             IdleTimeouts {
                 scheduled: Duration::from_millis(50),
                 spawned: Duration::from_millis(50),
@@ -4146,7 +4153,7 @@ mod tests {
         let runtime = SessionRuntime::new(
             registry,
             store,
-            1,
+            Arc::new(tokio::sync::Semaphore::new(1)),
             IdleTimeouts {
                 scheduled: Duration::from_secs(5),
                 spawned: Duration::from_secs(5),

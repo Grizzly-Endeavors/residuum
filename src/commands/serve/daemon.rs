@@ -22,11 +22,11 @@ fn build_child_args(raw: &[String]) -> Vec<String> {
     child_args
 }
 
-/// Spawn the gateway as a background daemon process.
+/// Spawn the hub as a background daemon process.
 ///
 /// Launches `residuum serve --foreground` as a detached child and waits for
-/// it to report itself healthy (providers, workspace, and its HTTP listener
-/// all ready — see `gateway::event_loop::run_loop::run_gateway`) before
+/// it to report itself healthy (its HTTP listener bound and every autostart
+/// agent started or recorded as failed — see `hub::run_hub`) before
 /// reporting success, so a later init failure is caught here instead of
 /// being reported as "started" and then exiting silently. Prints a
 /// first-launch welcome message if no config exists yet.
@@ -65,17 +65,18 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
     let gateway_addr = super::super::resolve_gateway_addr(&residuum_root);
 
     // Detect whether the child will enter setup mode (no agent exists yet)
-    let agent_name = residuum::config::discover_single_agent(&residuum_root)?;
-    let needs_setup = args.setup || agent_name.is_none();
+    let has_agents = !residuum::config::discover_agents(&residuum_root)?.is_empty();
+    let needs_setup = args.setup || !has_agents;
 
-    // Catch an invalid config here, where the user can see the error. The
-    // child takes its PID lock before loading config, so the startup poll
-    // below would report success before the child exits. A live config
-    // that fails to load is only blocked here when there's no
-    // last-known-good copy either — the child falls back to one and keeps
-    // running, same as `run_serve_foreground_inner`'s check.
-    if let Some(agent_name) = agent_name.filter(|_| !needs_setup) {
-        super::startup_config::ensure_config_loads_or_has_fallback(&residuum_root, &agent_name)?;
+    // Catch an invalid hub config here, where the user can see the error.
+    // The child takes its PID lock before loading config, so the startup poll
+    // below would report success before the child exits. A live config that
+    // fails to load is only blocked here when there's no last-known-good
+    // copy either — the child falls back to one and keeps running, same as
+    // `run_serve_foreground_inner`'s check. An agent's own broken config
+    // doesn't stop the hub: that agent starts `failed` and the rest run.
+    if !needs_setup {
+        super::startup_config::ensure_hub_config_loads_or_has_fallback(&hub_dir)?;
     }
 
     // First-launch welcome (or --setup which mimics it)
@@ -129,9 +130,9 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
         }
     }
 
-    // Wait for the daemon to report itself healthy: providers and workspace
-    // initialized, and its HTTP listener bound (see
-    // `gateway::event_loop::run_loop::run_gateway`). Reaching the PID lock
+    // Wait for the daemon to report itself healthy: its HTTP listener bound
+    // and every autostart agent started or recorded as failed (see
+    // `hub::run_hub`). Reaching the PID lock
     // alone isn't enough — a later init failure would otherwise be reported
     // as "started" and then exit silently.
     let ready_path = residuum::daemon::ready_file_path(&hub_dir);

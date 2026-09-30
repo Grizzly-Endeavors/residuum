@@ -41,7 +41,7 @@ pub(crate) async fn spawn_workbench_watcher(
     let mut scanner = WorkbenchScanner::new(dir);
     let mut known = scanner.scan().await.unwrap_or_default();
 
-    Ok(tokio::spawn(async move {
+    Ok(crate::util::spawn_in_span(async move {
         loop {
             let event = match feed.recv().await {
                 Ok(Some(event)) => event,

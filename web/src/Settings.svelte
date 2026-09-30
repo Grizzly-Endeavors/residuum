@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import type {
-    SettingsSection,
     SettingsMode,
     McpServerEntry,
     SettingsProviderEntry,
@@ -27,10 +26,10 @@
     validateHubConfig,
     validateProviders,
     validateWorkspaceFile,
-    CACHE_KEY_CONFIG_RAW,
+    cacheKeyConfigRaw,
     CACHE_KEY_HUB_CONFIG_RAW,
-    CACHE_KEY_PROVIDERS_RAW,
-    CACHE_KEY_MCP_RAW,
+    cacheKeyProvidersRaw,
+    cacheKeyMcpRaw,
   } from "./lib/api";
   import { invalidate } from "./lib/cache";
   import { isStoredReference } from "./lib/secrets";
@@ -48,7 +47,14 @@
     defaultModels,
     type ConfigFields,
   } from "./lib/settings-toml";
+  import { sectionsFor, type SettingsScope, type SettingsSection } from "./lib/settings-sections";
   import Runtime from "./components/settings/Runtime.svelte";
+  import Pulses from "./components/settings/Pulses.svelte";
+  import HubGeneral from "./components/settings/HubGeneral.svelte";
+  import SessionBudget from "./components/settings/SessionBudget.svelte";
+  import Tracing from "./components/settings/Tracing.svelte";
+  import Secrets from "./components/settings/Secrets.svelte";
+  import Update from "./components/settings/Update.svelte";
   import Providers from "./components/settings/Providers.svelte";
   import Memory from "./components/settings/Memory.svelte";
   import Integrations from "./components/settings/Integrations.svelte";
@@ -61,17 +67,28 @@
   import { toast } from "./lib/toast.svelte";
   import { userErrorMessage } from "./lib/errors";
 
+  // One page edits one scope: an agent's files, or the hub's. The page is
+  // remounted when the scope or the agent changes, so `scope` is fixed for
+  // the life of the component.
   let {
+    scope,
+    agent,
     section: activeSection,
     onSelectSection,
     onClose,
   }: {
+    scope: SettingsScope;
+    /** The agent whose settings these are; named in the title for agent scope. */
+    agent: string | null;
     section: SettingsSection;
     onSelectSection: (section: SettingsSection) => void;
     onClose: () => void;
   } = $props();
 
   // ── State ──────────────────────────────────────────────────────────
+
+  // svelte-ignore state_referenced_locally
+  const isHub = scope === "hub";
 
   let settingsMode = $state<SettingsMode>(
     (localStorage.getItem("residuum-settings-mode") as SettingsMode) || "simple",
@@ -93,7 +110,7 @@
   let editHubConfig = $state("");
   let editProviders = $state("");
   let editMcp = $state("");
-  let advancedTab = $state<"config" | "hub" | "providers" | "mcp">("config");
+  let advancedTab = $state<"config" | "hub" | "providers" | "mcp">(isHub ? "hub" : "config");
 
   // Live diagnostics for the raw editors, refreshed on a debounce while
   // typing and replaced with each save's own diagnostics after saving.
@@ -132,38 +149,59 @@
 
   let mobileNavOpen = $state(false);
 
-  const sections: { id: SettingsSection; label: string }[] = [
-    { id: "runtime", label: "Runtime" },
-    { id: "providers", label: "Providers" },
-    { id: "memory", label: "Memory" },
-    { id: "integrations", label: "Integrations" },
-    { id: "mcp", label: "MCP" },
-    { id: "agent-keys", label: "Agent keys" },
-    { id: "a2a", label: "A2A" },
-    { id: "history", label: "History" },
-  ];
+  // svelte-ignore state_referenced_locally
+  const sections = sectionsFor(scope);
 
   let simple = $derived(settingsMode === "simple");
 
+  let title = $derived.by(() => {
+    if (isHub) return "Hub settings";
+    return agent ? `${agent} settings` : "Settings";
+  });
+
+  let scopeNote = $derived.by(() => {
+    if (isHub) return "Applies to every agent";
+    return agent ? `Applies to ${agent} only` : "Applies to this agent only";
+  });
+
+  /** The Integrations file's groups that back each of the agent's sections. */
+  const INTEGRATIONS_PARTS = {
+    channels: "channels",
+    webhooks: "webhooks",
+    skills: "tools",
+  } as const;
+
   function activeLabel(): string {
-    return sections.find((s) => s.id === activeSection)?.label ?? "Runtime";
+    return sections.find((s) => s.id === activeSection)?.label ?? sections[0]?.label ?? "";
   }
 
   // ── Load ───────────────────────────────────────────────────────────
 
+  /**
+   * Fetch the files this scope edits. An agent's page also reads the hub's
+   * config, because a few of the agent's fields show hub values, but it never
+   * writes it. The hub's page touches no agent files.
+   */
+  async function fetchScopeFiles(): Promise<void> {
+    if (isHub) {
+      rawHubConfig = await fetchHubConfigRaw();
+      return;
+    }
+    const [cfgRaw, hubRaw, provRaw, mcpRaw] = await Promise.all([
+      fetchConfigRaw(),
+      fetchHubConfigRaw(),
+      fetchProvidersRaw(),
+      fetchMcpRaw(),
+    ]);
+    rawConfig = cfgRaw;
+    rawHubConfig = hubRaw;
+    rawProviders = provRaw;
+    rawMcp = mcpRaw;
+  }
+
   onMount(async () => {
     try {
-      const [cfgRaw, hubRaw, provRaw, mcpRaw] = await Promise.all([
-        fetchConfigRaw(),
-        fetchHubConfigRaw(),
-        fetchProvidersRaw(),
-        fetchMcpRaw(),
-      ]);
-      rawConfig = cfgRaw;
-      rawHubConfig = hubRaw;
-      rawProviders = provRaw;
-      rawMcp = mcpRaw;
-
+      await fetchScopeFiles();
       parseAllToForm();
     } catch (err: unknown) {
       statusMsg = userErrorMessage(err, { action: "Couldn't load settings." });
@@ -178,10 +216,12 @@
 
   function parseAllToForm() {
     configFields = parseConfigToml(rawConfig, rawHubConfig);
-    const prov = parseProvidersToml(rawProviders);
-    providerEntries = prov.providers;
-    modelAssignments = prov.models;
-    mcpServers = parseMcpJson(rawMcp);
+    if (!isHub) {
+      const prov = parseProvidersToml(rawProviders);
+      providerEntries = prov.providers;
+      modelAssignments = prov.models;
+      mcpServers = parseMcpJson(rawMcp);
+    }
     captureBaseline();
   }
 
@@ -204,7 +244,7 @@
    */
   async function reloadProvidersFile(): Promise<void> {
     try {
-      invalidate(CACHE_KEY_PROVIDERS_RAW);
+      invalidate(cacheKeyProvidersRaw());
       rawProviders = await fetchProvidersRaw();
       const prov = parseProvidersToml(rawProviders);
       providerEntries = prov.providers;
@@ -218,7 +258,7 @@
 
   async function reloadConfigFile(): Promise<void> {
     try {
-      invalidate(CACHE_KEY_CONFIG_RAW);
+      invalidate(cacheKeyConfigRaw());
       invalidate(CACHE_KEY_HUB_CONFIG_RAW);
       [rawConfig, rawHubConfig] = await Promise.all([fetchConfigRaw(), fetchHubConfigRaw()]);
       configFields = parseConfigToml(rawConfig, rawHubConfig);
@@ -230,7 +270,7 @@
 
   async function reloadMcpFile(): Promise<void> {
     try {
-      invalidate(CACHE_KEY_MCP_RAW);
+      invalidate(cacheKeyMcpRaw());
       rawMcp = await fetchMcpRaw();
       mcpServers = parseMcpJson(rawMcp);
       baselineMcpServers = $state.snapshot(mcpServers);
@@ -283,16 +323,7 @@
     statusMsg = "";
     statusKind = "";
     try {
-      const [cfgRaw, hubRaw, provRaw, mcpRaw] = await Promise.all([
-        fetchConfigRaw(),
-        fetchHubConfigRaw(),
-        fetchProvidersRaw(),
-        fetchMcpRaw(),
-      ]);
-      rawConfig = cfgRaw;
-      rawHubConfig = hubRaw;
-      rawProviders = provRaw;
-      rawMcp = mcpRaw;
+      await fetchScopeFiles();
 
       if (settingsMode === "raw") {
         editConfig = rawConfig;
@@ -372,11 +403,14 @@
     const prov = editProviders;
     const mcp = editMcp;
     const timer = setTimeout(() => {
+      if (isHub) {
+        void validateHubConfig(hub).then((r) => {
+          rawDiagnostics = { ...rawDiagnostics, hub: r.diagnostics ?? [] };
+        });
+        return;
+      }
       void validateConfig(cfg).then((r) => {
         rawDiagnostics = { ...rawDiagnostics, config: r.diagnostics ?? [] };
-      });
-      void validateHubConfig(hub).then((r) => {
-        rawDiagnostics = { ...rawDiagnostics, hub: r.diagnostics ?? [] };
       });
       void validateProviders(prov).then((r) => {
         rawDiagnostics = { ...rawDiagnostics, providers: r.diagnostics ?? [] };
@@ -428,14 +462,19 @@
     const provToml = editProviders;
     const mcpJson = editMcp;
 
-    // The hub config first: the agent's files validate against it on disk.
-    // Only when it changed: each hub save reloads the whole hub.
-    const hubChanged = hubToml !== rawHubConfig;
-    const hubResult: ValidateResponse = hubChanged
-      ? await putHubConfigRaw(hubToml)
-      : { valid: true, diagnostics: rawDiagnostics.hub };
-    rawHubConfig = hubToml;
+    if (isHub) {
+      const hubResult = await putHubConfigRaw(hubToml);
+      rawHubConfig = hubToml;
+      rawDiagnostics = { ...rawDiagnostics, hub: hubResult.diagnostics ?? [] };
+      lastSavedSnapshot = currentSnapshot();
+      showStatus(
+        (hubResult.diagnostics?.length ?? 0) > 0 ? "Saved — see the problems noted below" : "Saved",
+        "success",
+      );
+      return;
+    }
 
+    // The agent's page never rewrites the hub's config.
     const provResult = await putProvidersRaw(provToml);
     rawProviders = provToml;
 
@@ -447,7 +486,7 @@
 
     rawDiagnostics = {
       config: cfgResult.diagnostics ?? [],
-      hub: hubResult.diagnostics ?? [],
+      hub: rawDiagnostics.hub,
       providers: provResult.diagnostics ?? [],
       mcp: mcpResult.diagnostics ?? [],
     };
@@ -455,10 +494,28 @@
     lastSavedSnapshot = currentSnapshot();
     const hadProblems =
       (cfgResult.diagnostics?.length ?? 0) > 0 ||
-      (hubResult.diagnostics?.length ?? 0) > 0 ||
       (provResult.diagnostics?.length ?? 0) > 0 ||
       (mcpResult.diagnostics?.length ?? 0) > 0;
     showStatus(hadProblems ? "Saved — see the problems noted below" : "Saved", "success");
+  }
+
+  /** Form mode on the hub's page: patch the hub's `config.toml` with what changed. */
+  async function saveHubForm(
+    hubDiff: Record<string, unknown>,
+    currentConfig: ConfigFields,
+  ): Promise<void> {
+    const changed = Object.keys(hubDiff).length > 0;
+    const result: ValidateResponse = changed ? await patchHubConfig(hubDiff) : { valid: true };
+    statusMsg = "";
+    statusKind = "";
+    if (!result.valid) {
+      toast.error(`Failed to save hub config.toml: ${result.error ?? "unknown error"}.`);
+      return;
+    }
+    baselineConfigFields = currentConfig;
+    if (changed) pendingSave.recordWrite("hub/config.toml", result.checkpoint_id ?? null);
+    lastSavedSnapshot = currentSnapshot();
+    showStatus("Saved", "success");
   }
 
   /**
@@ -493,20 +550,13 @@
     );
     const mcpDiff = diffMcpServers(baselineMcpServers, currentMcp);
 
+    if (isHub) {
+      await saveHubForm(hubDiff, currentConfig);
+      return;
+    }
+
     const saved: string[] = [];
     const failed: { file: string; error: string }[] = [];
-
-    // The agent's files validate against the hub's config on disk, so the
-    // hub's changes go first. If they fail, the agent's config changes wait:
-    // they may depend on the hub change.
-    const hubResult: ValidateResponse =
-      Object.keys(hubDiff).length > 0 ? await patchHubConfig(hubDiff) : { valid: true };
-    if (!hubResult.valid) {
-      failed.push({ file: "hub config.toml", error: hubResult.error ?? "unknown error" });
-    } else if (Object.keys(hubDiff).length > 0) {
-      saved.push("hub config.toml");
-      pendingSave.recordWrite("hub/config.toml", hubResult.checkpoint_id ?? null);
-    }
 
     const provResult = await patchProviders(providersDiff);
     if (provResult.valid) {
@@ -522,7 +572,7 @@
 
     // config.toml validation reads providers.toml from disk, so only
     // attempt it once providers.toml is in the state config expects.
-    if (provResult.valid && hubResult.valid) {
+    if (provResult.valid) {
       const cfgResult = await patchConfig(configDiff);
       if (cfgResult.valid) {
         baselineConfigFields = currentConfig;
@@ -595,6 +645,8 @@
     ];
 
     for (const { field, name } of secretFields) {
+      // The hub's page owns the cloud token; an agent's page owns the rest.
+      if ((field === "cloud_token") !== isHub) continue;
       const val = configFields[field];
       if (val && !isStoredReference(val)) {
         secretOps.push({ field, name });
@@ -643,7 +695,10 @@
 
 <div class="settings-view emerges">
   <div class="settings-header">
-    <span class="settings-title">Settings</span>
+    <div class="settings-heading">
+      <h2 class="settings-title">{title}</h2>
+      <span class="settings-scope">{scopeNote}</span>
+    </div>
     <div class="settings-header-actions">
       {#if statusMsg}
         <span class="settings-status {statusKind}">{statusMsg}</span>
@@ -657,10 +712,11 @@
       >
         <Icon name="reload" size={16} />
       </button>
-      <div class="settings-mode-selector">
+      <div class="settings-mode-selector" role="group" aria-label="Settings view">
         <button
           class="settings-mode-btn"
           class:active={settingsMode === "simple"}
+          aria-pressed={settingsMode === "simple"}
           onclick={() => setMode("simple")}
         >
           Simple
@@ -668,6 +724,7 @@
         <button
           class="settings-mode-btn"
           class:active={settingsMode === "advanced"}
+          aria-pressed={settingsMode === "advanced"}
           onclick={() => setMode("advanced")}
         >
           Advanced
@@ -675,6 +732,7 @@
         <button
           class="settings-mode-btn"
           class:active={settingsMode === "raw"}
+          aria-pressed={settingsMode === "raw"}
           onclick={() => setMode("raw")}
         >
           Raw
@@ -688,9 +746,15 @@
 
   <div class="settings-body">
     {#if settingsMode !== "raw"}
-      <div class="settings-sidebar" class:collapsed={!mobileNavOpen}>
+      <nav
+        class="settings-sidebar"
+        class:collapsed={!mobileNavOpen}
+        aria-label={isHub ? "Hub settings sections" : "Settings sections"}
+      >
         <button
           class="settings-nav-toggle"
+          aria-expanded={mobileNavOpen}
+          aria-controls="settings-nav-items"
           onclick={() => {
             mobileNavOpen = !mobileNavOpen;
           }}
@@ -698,11 +762,12 @@
           <span>{activeLabel()}</span>
           <span class="nav-chevron" class:open={mobileNavOpen}>&#9660;</span>
         </button>
-        <div class="settings-nav-items">
+        <div class="settings-nav-items" id="settings-nav-items">
           {#each sections as sec (sec.id)}
             <button
               class="settings-sidebar-btn"
               class:active={activeSection === sec.id}
+              aria-current={activeSection === sec.id ? "page" : undefined}
               onclick={() => {
                 onSelectSection(sec.id);
                 mobileNavOpen = false;
@@ -712,7 +777,7 @@
             </button>
           {/each}
         </div>
-      </div>
+      </nav>
     {/if}
 
     <div class="settings-content">
@@ -720,36 +785,35 @@
         <p style="color:var(--text-dim); padding:20px;">Loading settings...</p>
       {:else if settingsMode === "raw"}
         <!-- Raw tabbed editor -->
-        <div class="advanced-tabs">
-          <button
-            class="advanced-tab"
-            class:active={advancedTab === "config"}
-            onclick={() => {
-              advancedTab = "config";
-            }}>config.toml</button
-          >
-          <button
-            class="advanced-tab"
-            class:active={advancedTab === "hub"}
-            onclick={() => {
-              advancedTab = "hub";
-            }}>hub config.toml</button
-          >
-          <button
-            class="advanced-tab"
-            class:active={advancedTab === "providers"}
-            onclick={() => {
-              advancedTab = "providers";
-            }}>providers.toml</button
-          >
-          <button
-            class="advanced-tab"
-            class:active={advancedTab === "mcp"}
-            onclick={() => {
-              advancedTab = "mcp";
-            }}>mcp.json</button
-          >
-        </div>
+        {#if !isHub}
+          <div class="advanced-tabs">
+            <button
+              class="advanced-tab"
+              class:active={advancedTab === "config"}
+              onclick={() => {
+                advancedTab = "config";
+              }}>config.toml</button
+            >
+            <button
+              class="advanced-tab"
+              class:active={advancedTab === "providers"}
+              onclick={() => {
+                advancedTab = "providers";
+              }}>providers.toml</button
+            >
+            <button
+              class="advanced-tab"
+              class:active={advancedTab === "mcp"}
+              onclick={() => {
+                advancedTab = "mcp";
+              }}>mcp.json</button
+            >
+          </div>
+        {:else}
+          <div class="advanced-tabs">
+            <span class="advanced-tab active">hub config.toml</span>
+          </div>
+        {/if}
         {#if advancedTab === "config"}
           <textarea class="toml-editor" bind:value={editConfig}></textarea>
         {:else if advancedTab === "hub"}
@@ -774,6 +838,32 @@
             {/each}
           </ul>
         {/if}
+      {:else if isHub}
+        {#if activeSection === "general"}
+          <HubGeneral bind:fields={configFields} {simple} />
+        {:else if activeSection === "cloud"}
+          <Integrations
+            bind:fields={configFields}
+            {simple}
+            part="cloud"
+            {pendingSave}
+            onReload={reloadConfigFile}
+          />
+        {:else if activeSection === "a2a"}
+          <A2a bind:fields={configFields} {simple} scope="hub" />
+        {:else if activeSection === "sessions"}
+          <SessionBudget bind:fields={configFields} />
+        {:else if activeSection === "tracing"}
+          <Tracing bind:fields={configFields} />
+        {:else if activeSection === "update"}
+          <Update />
+        {:else if activeSection === "secrets"}
+          <Secrets />
+        {:else if activeSection === "agent-keys"}
+          <AgentKeys />
+        {:else if activeSection === "history"}
+          <History scope="hub" />
+        {/if}
       {:else if activeSection === "runtime"}
         <Runtime bind:fields={configFields} {simple} />
       {:else if activeSection === "providers"}
@@ -783,23 +873,24 @@
           {pendingSave}
           onReload={reloadProvidersFile}
         />
-      {:else if activeSection === "memory"}
-        <Memory bind:fields={configFields} {simple} />
-      {:else if activeSection === "integrations"}
+      {:else if activeSection === "channels" || activeSection === "skills" || activeSection === "webhooks"}
         <Integrations
           bind:fields={configFields}
           {simple}
+          part={INTEGRATIONS_PARTS[activeSection]}
           {pendingSave}
           onReload={reloadConfigFile}
         />
+      {:else if activeSection === "pulses"}
+        <Pulses bind:fields={configFields} />
+      {:else if activeSection === "memory"}
+        <Memory bind:fields={configFields} {simple} />
       {:else if activeSection === "mcp"}
         <MCP bind:servers={mcpServers} {pendingSave} onReload={reloadMcpFile} />
-      {:else if activeSection === "agent-keys"}
-        <AgentKeys />
       {:else if activeSection === "a2a"}
-        <A2a bind:fields={configFields} {simple} />
+        <A2a bind:fields={configFields} {simple} scope="agent" />
       {:else if activeSection === "history"}
-        <History />
+        <History scope="agent" />
       {/if}
     </div>
   </div>

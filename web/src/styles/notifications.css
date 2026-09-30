@@ -42,6 +42,8 @@
 
 .notif-toast-message {
   flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
   padding: var(--s-1) 0;
   background: transparent;
   border: none;
@@ -72,6 +74,28 @@
 .notif-toast-action:hover {
   background: var(--vein-faint);
   border-color: var(--vein);
+}
+
+.notif-toast-close {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition:
+    color var(--dur-quick),
+    background-color var(--dur-quick);
+}
+
+.notif-toast-close:hover {
+  color: var(--text);
+  background: var(--bg-raised);
 }
 
 .notif-toast-success {

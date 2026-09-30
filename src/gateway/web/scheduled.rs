@@ -1,15 +1,15 @@
 //! Scheduled view HTTP API: pulses and one-off scheduled actions, backing
 //! the web UI's Scheduled sidebar view.
 //!
-//! - `GET /api/scheduled/pulses` — every pulse in HEARTBEAT.yml, its next
+//! - `GET /api/agents/{name}/scheduled/pulses` — every pulse in HEARTBEAT.yml, its next
 //!   fire time, last outcome, current run (with any overlap flag), and any
 //!   per-pulse loading problems (see `crate::pulse::types::load_heartbeat`).
-//! - `PUT /api/scheduled/pulses/{name}/enabled` — flip a pulse's `enabled`
+//! - `PUT /api/agents/{name}/scheduled/pulses/{pulse}/enabled` — flip a pulse's `enabled`
 //!   field in HEARTBEAT.yml in place, preserving everything else in the
 //!   file (see `crate::pulse::edit::set_pulse_enabled`).
-//! - `GET /api/scheduled/actions` — every pending scheduled action, its due
+//! - `GET /api/agents/{name}/scheduled/actions` — every pending scheduled action, its due
 //!   time, and its current run if it has already fired.
-//! - `DELETE /api/scheduled/actions/{id}` — cancel a pending action.
+//! - `DELETE /api/agents/{name}/scheduled/actions/{id}` — cancel a pending action.
 //!
 //! Pulse/action run state (current run, last outcome) changes are already
 //! visible live over the WebSocket as `session_*` frames for the
@@ -78,7 +78,7 @@ pub(crate) fn scheduled_api_router(state: ScheduledApiState) -> axum::Router {
         .with_state(state)
 }
 
-/// `GET /api/scheduled/pulses`
+/// `GET /api/agents/{name}/scheduled/pulses`
 async fn api_scheduled_pulses(State(state): State<ScheduledApiState>) -> Response {
     let heartbeat_path = state.layout.heartbeat_yml();
     let mut last_parse_error = None;
@@ -243,7 +243,7 @@ struct SetEnabledRequest {
     enabled: bool,
 }
 
-/// `PUT /api/scheduled/pulses/{name}/enabled`
+/// `PUT /api/agents/{name}/scheduled/pulses/{pulse}/enabled`
 async fn api_scheduled_pulse_set_enabled(
     State(state): State<ScheduledApiState>,
     Path(name): Path<String>,
@@ -290,7 +290,7 @@ async fn api_scheduled_pulse_set_enabled(
     Json(serde_json::json!({ "name": name, "enabled": body.enabled })).into_response()
 }
 
-/// `GET /api/scheduled/actions`
+/// `GET /api/agents/{name}/scheduled/actions`
 async fn api_scheduled_actions(State(state): State<ScheduledApiState>) -> Response {
     let actions = state.action_store.lock().await.list().to_vec();
     let mut infos = Vec::with_capacity(actions.len());
@@ -308,7 +308,7 @@ async fn api_scheduled_actions(State(state): State<ScheduledApiState>) -> Respon
     Json(infos).into_response()
 }
 
-/// `DELETE /api/scheduled/actions/{id}`
+/// `DELETE /api/agents/{name}/scheduled/actions/{id}`
 async fn api_scheduled_action_cancel(
     State(state): State<ScheduledApiState>,
     Path(id): Path<String>,

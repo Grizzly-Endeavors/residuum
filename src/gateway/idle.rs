@@ -13,14 +13,14 @@ use std::sync::Arc;
 
 use crate::gateway::memory::MemorySubsystems;
 use crate::gateway::post_turn::IdleContinuation;
-use crate::gateway::types::GatewayRuntime;
+use crate::gateway::types::AgentRuntime;
 
 /// Run the idle transition's synchronous steps and trigger its observe
 /// cycle in the background; [`apply_idle_continuation`] finishes the rest
 /// once that cycle's result comes back.
 #[tracing::instrument(skip_all)]
 pub(super) async fn execute_idle_transition(
-    rt: &mut GatewayRuntime,
+    rt: &mut AgentRuntime,
     observe_deadline: &mut Option<tokio::time::Instant>,
 ) {
     let timeout_mins = rt.cfg.idle.timeout.as_secs() / 60;
@@ -56,7 +56,7 @@ pub(super) async fn execute_idle_transition(
 /// arrives: clear the in-memory message buffer, switch the notification
 /// interface, and inject the continuity system message. Called from
 /// `run_loop`'s `apply_post_turn_result`.
-pub(super) fn apply_idle_continuation(rt: &mut GatewayRuntime, continuation: &IdleContinuation) {
+pub(super) fn apply_idle_continuation(rt: &mut AgentRuntime, continuation: &IdleContinuation) {
     rt.agent.clear_messages();
 
     if let Some(channel_name) = &continuation.idle_channel {
@@ -71,7 +71,7 @@ pub(super) fn apply_idle_continuation(rt: &mut GatewayRuntime, continuation: &Id
 ///
 /// Validates the endpoint exists in the registry and has interactive capability
 /// before switching. Falls back to current topic if the endpoint is not found.
-fn switch_idle_interface(rt: &mut GatewayRuntime, channel_name: &str) {
+fn switch_idle_interface(rt: &mut AgentRuntime, channel_name: &str) {
     let endpoint_id = crate::bus::EndpointId::from(channel_name);
     match rt.endpoint_registry.get(&endpoint_id) {
         Some(entry)
@@ -98,7 +98,7 @@ fn switch_idle_interface(rt: &mut GatewayRuntime, channel_name: &str) {
 }
 
 /// Deactivate all remaining explicitly-activated skills.
-async fn deactivate_remaining_skills(rt: &mut GatewayRuntime) -> usize {
+async fn deactivate_remaining_skills(rt: &mut AgentRuntime) -> usize {
     let mut state = rt.skill_state.lock().await;
     let names: Vec<String> = state
         .active_skill_names()

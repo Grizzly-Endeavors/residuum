@@ -26,6 +26,17 @@ export function normalizeWatchPrefix(prefix: string): string | null {
   return kept.join("/");
 }
 
+/**
+ * Normalize a prefix for the hub connection's `watch_team`: `team` or a path
+ * under `team/` (`team/wiki`), the spelling the hub's change feed uses.
+ * Returns `null` for anything else, which the hub would refuse.
+ */
+export function normalizeTeamWatchPrefix(prefix: string): string | null {
+  const normalized = normalizeWatchPrefix(prefix);
+  if (normalized === null) return null;
+  return normalized === "team" || normalized.startsWith("team/") ? normalized : null;
+}
+
 /** Whether `path` is `ancestor` or lies under it, by whole path segments. */
 function isWithin(path: string, ancestor: string): boolean {
   return (
@@ -71,6 +82,11 @@ export class WorkspaceWatchSync {
     }
     this.prefixes = next;
     this.send({ type: "watch_workspace", prefixes: next });
+  }
+
+  /** Forget the watched prefixes without telling anyone, for a connection about to be discarded. */
+  clear(): void {
+    this.prefixes = [];
   }
 
   /** A connection opened: it watches nothing until told again. */

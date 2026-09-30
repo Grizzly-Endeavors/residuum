@@ -1,9 +1,9 @@
 //! A2A web API endpoints: caller-key management, the client-side "remote
-//! agents" endpoints (`GET /api/a2a/agents` for live status and
-//! `GET`/`PUT /api/a2a/agents/raw` for the `config/a2a.json` editor), the
-//! sessions sidebar's tasks sent to remote agents (`GET /api/a2a/outbound`
+//! agents" endpoints (`GET /api/agents/{name}/a2a/agents` for live status and
+//! `GET`/`PUT /api/agents/{name}/a2a/agents/raw` for the `config/a2a.json` editor), the
+//! sessions sidebar's tasks sent to remote agents (`GET /api/agents/{name}/a2a/outbound`
 //! and the stop endpoints under it), and the settings page's
-//! `GET /api/a2a/status` and `GET /api/a2a/card`.
+//! `GET /api/agents/{name}/a2a/status` and `GET /api/agents/{name}/a2a/card`.
 //!
 //! Each request opens its own handle on the key store; writes are serialized
 //! across handles and processes by the store's file lock, so the web UI,
@@ -27,10 +27,10 @@ use crate::config::{A2aConfig, A2aVisibility, DEFAULT_A2A_PORT};
 use crate::gateway::protocol::OutboundA2aTaskSummary;
 use crate::workspace::layout::WorkspaceLayout;
 
-use super::ConfigApiState;
 use super::config::ValidateResponse;
+use super::{ConfigApiState, HubApiState};
 
-/// Request body for `POST /api/a2a/keys`.
+/// Request body for `POST /api/hub/a2a/keys`.
 #[derive(Deserialize)]
 pub(super) struct CreateA2aKeyRequest {
     pub name: String,
@@ -38,7 +38,7 @@ pub(super) struct CreateA2aKeyRequest {
     pub description: Option<String>,
 }
 
-/// Response from `POST /api/a2a/keys`. Carries the token — shown only here,
+/// Response from `POST /api/hub/a2a/keys`. Carries the token — shown only here,
 /// once, and never again.
 #[derive(Serialize)]
 pub(super) struct CreateA2aKeyResponse {
@@ -46,13 +46,13 @@ pub(super) struct CreateA2aKeyResponse {
     pub token: String,
 }
 
-/// Response from `GET /api/a2a/keys`.
+/// Response from `GET /api/hub/a2a/keys`.
 #[derive(Serialize)]
 pub(super) struct ListA2aKeysResponse {
     pub keys: Vec<A2aKeyInfo>,
 }
 
-/// Response from `DELETE /api/a2a/keys/{name}`.
+/// Response from `DELETE /api/hub/a2a/keys/{name}`.
 #[derive(Serialize)]
 pub(super) struct RevokeA2aKeyResponse {
     pub revoked: bool,
@@ -75,9 +75,9 @@ fn error_response(e: &A2aKeyError) -> (StatusCode, String) {
     (status, e.to_string())
 }
 
-/// `GET /api/a2a/keys` — list caller keys (metadata only, never tokens).
+/// `GET /api/hub/a2a/keys` — list caller keys (metadata only, never tokens).
 pub(super) async fn api_a2a_keys_list(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
 ) -> Result<Json<ListA2aKeysResponse>, (StatusCode, String)> {
     let snapshot = A2aKeys::new(state.hub_dir)
         .snapshot()
@@ -88,9 +88,9 @@ pub(super) async fn api_a2a_keys_list(
     }))
 }
 
-/// `POST /api/a2a/keys` — mint a caller key, returning the token once.
+/// `POST /api/hub/a2a/keys` — mint a caller key, returning the token once.
 pub(super) async fn api_a2a_keys_create(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
     Json(req): Json<CreateA2aKeyRequest>,
 ) -> Result<Json<CreateA2aKeyResponse>, (StatusCode, String)> {
     state
@@ -106,9 +106,9 @@ pub(super) async fn api_a2a_keys_create(
     }))
 }
 
-/// `DELETE /api/a2a/keys/{name}` — revoke a caller key.
+/// `DELETE /api/hub/a2a/keys/{name}` — revoke a caller key.
 pub(super) async fn api_a2a_keys_revoke(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
     Path(name): Path<String>,
 ) -> Result<Json<RevokeA2aKeyResponse>, (StatusCode, String)> {
     let checkpoint_id = state
@@ -126,7 +126,7 @@ pub(super) async fn api_a2a_keys_revoke(
 
 // ── Remote agents (client side) ─────────────────────────────────────────
 
-/// Shared state for `GET /api/a2a/agents` and the outbound-task endpoints.
+/// Shared state for `GET /api/agents/{name}/a2a/agents` and the outbound-task endpoints.
 #[derive(Clone)]
 pub(crate) struct A2aAgentsStatusState {
     pub hub: Arc<A2aClientHub>,
@@ -172,7 +172,7 @@ fn outbound_not_open(task_id: &str) -> (StatusCode, Json<OutboundTaskError>) {
     )
 }
 
-/// `GET /api/a2a/outbound` — every open task sent to a remote agent, newest
+/// `GET /api/agents/{name}/a2a/outbound` — every open task sent to a remote agent, newest
 /// first.
 pub(crate) async fn api_a2a_outbound_list(
     State(state): State<A2aAgentsStatusState>,
@@ -181,7 +181,7 @@ pub(crate) async fn api_a2a_outbound_list(
     Json(tasks.iter().map(OutboundA2aTaskSummary::from).collect())
 }
 
-/// `POST /api/a2a/outbound/{task_id}/stop` — ask the remote agent to cancel
+/// `POST /api/agents/{name}/a2a/outbound/{task_id}/stop` — ask the remote agent to cancel
 /// the task, the same cancel the agent's own `stop_agent a2a:<name>` makes.
 ///
 /// # Errors
@@ -211,7 +211,7 @@ pub(crate) async fn api_a2a_outbound_stop(
     }
 }
 
-/// `POST /api/a2a/outbound/{task_id}/stop-watching` — close the task locally
+/// `POST /api/agents/{name}/a2a/outbound/{task_id}/stop-watching` — close the task locally
 /// without reaching its agent, ending the retries and their notices.
 ///
 /// # Errors
@@ -243,7 +243,7 @@ pub(crate) struct A2aAgentCardView {
     skills: Vec<A2aAgentSkillView>,
 }
 
-/// One entry in `GET /api/a2a/agents`. `error` and `card` are always present
+/// One entry in `GET /api/agents/{name}/a2a/agents`. `error` and `card` are always present
 /// (as `null` when absent) rather than omitted, matching the web UI's
 /// `string | null` / `Card | null` contract.
 #[derive(Serialize)]
@@ -289,7 +289,7 @@ impl From<AgentSnapshot> for A2aAgentView {
     }
 }
 
-/// `GET /api/a2a/agents` — every registered remote agent's live status.
+/// `GET /api/agents/{name}/a2a/agents` — every registered remote agent's live status.
 pub(crate) async fn api_a2a_agents_list(
     State(state): State<A2aAgentsStatusState>,
 ) -> Json<Vec<A2aAgentView>> {
@@ -300,7 +300,7 @@ pub(crate) async fn api_a2a_agents_list(
 /// Default `config/a2a.json` content when the file doesn't exist yet.
 const DEFAULT_A2A_AGENTS_JSON: &str = r#"{"agents":{}}"#;
 
-/// `GET /api/a2a/agents/raw` — return raw `config/a2a.json` contents.
+/// `GET /api/agents/{name}/a2a/agents/raw` — return raw `config/a2a.json` contents.
 pub(super) async fn api_a2a_agents_raw_get(
     State(state): State<ConfigApiState>,
 ) -> Result<Response, (StatusCode, String)> {
@@ -327,7 +327,7 @@ pub(super) async fn api_a2a_agents_raw_get(
         })
 }
 
-/// `PUT /api/a2a/agents/raw` — write `config/a2a.json` atomically, save
+/// `PUT /api/agents/{name}/a2a/agents/raw` — write `config/a2a.json` atomically, save
 /// unconditionally, trigger a workspace reload, and report diagnostics.
 ///
 /// The save always succeeds, even when `body` fails validation: the loader
@@ -507,51 +507,55 @@ fn plain_card_error(e: &CardError) -> String {
     }
 }
 
-/// Response body for `GET /api/a2a/status`.
+/// What the settings page says about reaching this agent through the relay:
+/// the tunnel doesn't declare A2A, so the agent is reachable locally (or
+/// through the user's own `public_url`) but not through the relay.
+const RELAY_ACCESS_NOTE: &str =
+    "Reachable locally; remote access through the relay arrives with relay support.";
+
+/// Response body for `GET /api/agents/{name}/a2a/status`.
 #[derive(Serialize)]
 pub(super) struct A2aStatusResponse {
     enabled: bool,
     port: u16,
     visibility: &'static str,
+    /// This agent's address under the user's own `[a2a] public_url`, or
+    /// `None` when that isn't set.
     public_url: Option<String>,
+    /// This agent's address on the local A2A listener.
+    local_url: String,
+    /// Whether other Residuum installs can reach this agent through the relay.
+    relay_access: bool,
+    /// Plain-language statement of how far the agent can be reached.
+    relay_access_note: &'static str,
     listener_running: bool,
     card_error: Option<String>,
 }
 
-/// State for `GET /api/a2a/status` and `GET /api/a2a/card`: the config API
-/// state plus the live tunnel status, so both report the same public URL the
-/// listener advertises.
-#[derive(Clone)]
-pub(crate) struct A2aStatusApiState {
-    pub config: ConfigApiState,
-    pub tunnel_status_rx: tokio::sync::watch::Receiver<crate::tunnel::TunnelStatus>,
-}
-
 /// Build the router for the settings page's A2A status and card endpoints.
-pub(crate) fn a2a_status_router(state: A2aStatusApiState) -> axum::Router {
+pub(crate) fn a2a_status_router(state: ConfigApiState) -> axum::Router {
     axum::Router::new()
         .route("/api/a2a/status", axum::routing::get(api_a2a_status))
         .route("/api/a2a/card", axum::routing::get(api_a2a_card))
         .with_state(state)
 }
 
-/// `GET /api/a2a/status` — whether A2A is on, how other agents can reach it,
+/// `GET /api/agents/{name}/a2a/status` — whether A2A is on, how other agents can reach it,
 /// and whether the listener or the workspace agent card currently have a
 /// problem.
 ///
-/// `public_url` is the configured `[a2a] public_url` when set, and `null`
-/// otherwise. Once the relay tunnel can supply an address automatically,
-/// filling this in from the tunnel status instead is a one-line change here.
-pub(super) async fn api_a2a_status(
-    State(state): State<A2aStatusApiState>,
-) -> Json<A2aStatusResponse> {
-    let cfg = read_a2a_status_config(&state.config.hub_dir, &state.config.config_dir);
+/// `public_url` is the configured `[a2a] public_url` plus this agent's
+/// `/agents/<name>` path when set, and `null` otherwise; `local_url` is the
+/// address on the local listener. The relay tunnel doesn't carry A2A, so
+/// `relay_access` is `false` and `relay_access_note` says so.
+pub(super) async fn api_a2a_status(State(state): State<ConfigApiState>) -> Json<A2aStatusResponse> {
+    let cfg = read_a2a_status_config(&state.hub_dir, &state.config_dir);
     let listener_running = if cfg.enabled {
         probe_listener_running(cfg.port).await
     } else {
         false
     };
-    let card_path = WorkspaceLayout::new(&state.config.workspace_dir).agent_card_json();
+    let card_path = WorkspaceLayout::new(&state.workspace_dir).agent_card_json();
     let card_error = AgentCardFile::load(&card_path)
         .err()
         .map(|e| plain_card_error(&e));
@@ -562,41 +566,44 @@ pub(super) async fn api_a2a_status(
         visibility: cfg.visibility.as_str(),
         public_url: crate::a2a::public_url::known_a2a_public_url(
             &cfg.as_a2a_config(),
-            &state.tunnel_status_rx.borrow(),
+            &state.agent_name,
         ),
+        local_url: format!(
+            "http://{}:{}{}/{}",
+            cfg.gateway_bind,
+            cfg.port,
+            crate::a2a::public_url::AGENTS_PATH_PREFIX,
+            state.agent_name
+        ),
+        relay_access: false,
+        relay_access_note: RELAY_ACCESS_NOTE,
         listener_running,
         card_error,
     })
 }
 
-/// `GET /api/a2a/card` — the Agent Card as the listener would currently serve
+/// `GET /api/agents/{name}/a2a/card` — the Agent Card as the listener would currently serve
 /// it, or a `503` with a plain-language error if the workspace
 /// `agent-card.json` file is invalid.
 pub(super) async fn api_a2a_card(
-    State(state): State<A2aStatusApiState>,
+    State(state): State<ConfigApiState>,
 ) -> Result<Json<a2a::AgentCard>, (StatusCode, String)> {
-    let cfg = read_a2a_status_config(&state.config.hub_dir, &state.config.config_dir);
-    let card_path = WorkspaceLayout::new(&state.config.workspace_dir).agent_card_json();
+    let cfg = read_a2a_status_config(&state.hub_dir, &state.config_dir);
+    let card_path = WorkspaceLayout::new(&state.workspace_dir).agent_card_json();
     let file = AgentCardFile::load(&card_path)
         .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, plain_card_error(&e)))?;
-    let runtime = CardRuntime::from_config_and_tunnel(
-        &cfg.as_a2a_config(),
-        &cfg.gateway_bind,
-        &state.tunnel_status_rx.borrow(),
-    );
+    let runtime =
+        CardRuntime::from_config(&cfg.as_a2a_config(), &cfg.gateway_bind, &state.agent_name);
     Ok(Json(build_agent_card(&file, &runtime)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::test_ports::free_port;
 
-    fn status_state(config: ConfigApiState) -> A2aStatusApiState {
-        let (_tx, rx) = tokio::sync::watch::channel(crate::tunnel::TunnelStatus::Disconnected);
-        A2aStatusApiState {
-            config,
-            tunnel_status_rx: rx,
-        }
+    fn hub_state(dir: &std::path::Path) -> HubApiState {
+        HubApiState::for_test(dir)
     }
 
     fn test_state(dir: &std::path::Path) -> ConfigApiState {
@@ -608,8 +615,7 @@ mod tests {
             workspace_dir: dir.join("workspace"),
             memory_dir: None,
             reload_tx: None,
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            scope: crate::gateway::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         }
     }
@@ -618,7 +624,7 @@ mod tests {
     async fn create_list_revoke_roundtrip_returns_token_only_on_create() {
         let dir = tempfile::tempdir().unwrap();
         let created = api_a2a_keys_create(
-            State(test_state(dir.path())),
+            State(hub_state(dir.path())),
             Json(CreateA2aKeyRequest {
                 name: "laptop".to_string(),
                 description: Some("my other instance".to_string()),
@@ -629,7 +635,7 @@ mod tests {
         assert_eq!(created.name, "laptop");
         assert!(created.token.starts_with("rsdm_a2a_"));
 
-        let list = api_a2a_keys_list(State(test_state(dir.path())))
+        let list = api_a2a_keys_list(State(hub_state(dir.path())))
             .await
             .unwrap();
         let body = serde_json::to_string(&list.0).unwrap();
@@ -639,12 +645,11 @@ mod tests {
             "listing must never carry the token"
         );
 
-        let revoked =
-            api_a2a_keys_revoke(State(test_state(dir.path())), Path("laptop".to_string()))
-                .await
-                .unwrap();
+        let revoked = api_a2a_keys_revoke(State(hub_state(dir.path())), Path("laptop".to_string()))
+            .await
+            .unwrap();
         assert!(revoked.revoked);
-        let after = api_a2a_keys_list(State(test_state(dir.path())))
+        let after = api_a2a_keys_list(State(hub_state(dir.path())))
             .await
             .unwrap();
         assert!(after.keys.is_empty());
@@ -653,7 +658,7 @@ mod tests {
     #[tokio::test]
     async fn revoke_returns_the_checkpoint_taken_before_the_revoke() {
         let dir = tempfile::tempdir().unwrap();
-        let state = super::super::test_support::watching_state(dir.path());
+        let state = super::super::test_support::watching_hub_state(dir.path());
         let _created = api_a2a_keys_create(
             State(state.clone()),
             Json(CreateA2aKeyRequest {
@@ -700,7 +705,7 @@ mod tests {
     async fn invalid_name_is_bad_request_and_unknown_revoke_is_not_found() {
         let dir = tempfile::tempdir().unwrap();
         let Err((status, _)) = api_a2a_keys_create(
-            State(test_state(dir.path())),
+            State(hub_state(dir.path())),
             Json(CreateA2aKeyRequest {
                 name: "Bad Name".to_string(),
                 description: None,
@@ -713,7 +718,7 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
 
         let Err((revoke_status, _)) =
-            api_a2a_keys_revoke(State(test_state(dir.path())), Path("nope".to_string())).await
+            api_a2a_keys_revoke(State(hub_state(dir.path())), Path("nope".to_string())).await
         else {
             panic!("unknown key revoke should fail");
         };
@@ -724,7 +729,7 @@ mod tests {
     async fn duplicate_name_is_conflict() {
         let dir = tempfile::tempdir().unwrap();
         let _first = api_a2a_keys_create(
-            State(test_state(dir.path())),
+            State(hub_state(dir.path())),
             Json(CreateA2aKeyRequest {
                 name: "laptop".to_string(),
                 description: None,
@@ -734,7 +739,7 @@ mod tests {
         .unwrap();
 
         let Err((status, _)) = api_a2a_keys_create(
-            State(test_state(dir.path())),
+            State(hub_state(dir.path())),
             Json(CreateA2aKeyRequest {
                 name: "laptop".to_string(),
                 description: None,
@@ -948,21 +953,10 @@ mod tests {
     const VALID_CARD: &str =
         r#"{"name": "Test Agent", "description": "does things", "skills": []}"#;
 
-    async fn free_port() -> u16 {
-        tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port()
-    }
-
     #[tokio::test]
     async fn status_defaults_when_config_and_card_are_missing() {
         let dir = tempfile::tempdir().unwrap();
-        let status = api_a2a_status(State(status_state(test_state(dir.path()))))
-            .await
-            .0;
+        let status = api_a2a_status(State(test_state(dir.path()))).await.0;
         assert!(status.enabled, "a2a is enabled by default");
         assert_eq!(status.port, DEFAULT_A2A_PORT);
         assert_eq!(status.visibility, "public");
@@ -978,12 +972,12 @@ mod tests {
     #[tokio::test]
     async fn status_reports_no_listener_when_nothing_answers_the_port() {
         let dir = tempfile::tempdir().unwrap();
-        let port = free_port().await;
+        let port = free_port();
         write_config(dir.path(), &format!("[a2a]\nport = {port}\n"));
         let state = test_state(dir.path());
         write_card(&state, VALID_CARD);
 
-        let status = api_a2a_status(State(status_state(state))).await.0;
+        let status = api_a2a_status(State(state)).await.0;
         assert!(status.enabled);
         assert!(
             !status.listener_running,
@@ -994,7 +988,7 @@ mod tests {
     #[tokio::test]
     async fn status_reads_public_url_and_private_visibility_from_config() {
         let dir = tempfile::tempdir().unwrap();
-        let port = free_port().await;
+        let port = free_port();
         write_config(
             dir.path(),
             &format!(
@@ -1005,12 +999,12 @@ mod tests {
         let state = test_state(dir.path());
         write_card(&state, VALID_CARD);
 
-        let status = api_a2a_status(State(status_state(state))).await.0;
+        let status = api_a2a_status(State(state)).await.0;
         assert_eq!(status.port, port);
         assert_eq!(status.visibility, "private");
         assert_eq!(
             status.public_url.as_deref(),
-            Some("https://example.com/a2a/laptop")
+            Some("https://example.com/a2a/laptop/agents/test-agent")
         );
         assert!(status.card_error.is_none());
     }
@@ -1018,7 +1012,7 @@ mod tests {
     #[tokio::test]
     async fn status_reports_listener_running_when_something_answers_auth_check() {
         let dir = tempfile::tempdir().unwrap();
-        let port = free_port().await;
+        let port = free_port();
         write_config(
             dir.path(),
             &format!("[a2a]\nenabled = true\nport = {port}\n"),
@@ -1033,17 +1027,17 @@ mod tests {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
             .await
             .unwrap();
-        tokio::spawn(async move { axum::serve(listener, router).await });
+        crate::util::spawn_in_span(async move { axum::serve(listener, router).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let status = api_a2a_status(State(status_state(state))).await.0;
+        let status = api_a2a_status(State(state)).await.0;
         assert!(status.listener_running);
     }
 
     #[tokio::test]
     async fn status_never_probes_a_disabled_listener() {
         let dir = tempfile::tempdir().unwrap();
-        let port = free_port().await;
+        let port = free_port();
         // Nothing listens on `port`: if the handler probed it anyway despite
         // `enabled = false`, it would (correctly) report `false` too, so this
         // only exercises the disabled branch's own reported fields.
@@ -1054,7 +1048,7 @@ mod tests {
         let state = test_state(dir.path());
         write_card(&state, VALID_CARD);
 
-        let status = api_a2a_status(State(status_state(state))).await.0;
+        let status = api_a2a_status(State(state)).await.0;
         assert!(!status.enabled);
         assert!(!status.listener_running);
     }
@@ -1062,7 +1056,7 @@ mod tests {
     #[tokio::test]
     async fn card_endpoint_returns_the_served_card_when_valid() {
         let dir = tempfile::tempdir().unwrap();
-        let port = free_port().await;
+        let port = free_port();
         write_config(
             dir.path(),
             &format!("[a2a]\nenabled = true\nport = {port}\n"),
@@ -1070,7 +1064,7 @@ mod tests {
         let state = test_state(dir.path());
         write_card(&state, VALID_CARD);
 
-        let card = api_a2a_card(State(status_state(state))).await.unwrap().0;
+        let card = api_a2a_card(State(state)).await.unwrap().0;
         assert_eq!(card.name, "Test Agent");
         assert!(card.skills.is_empty());
     }
@@ -1081,7 +1075,7 @@ mod tests {
         let state = test_state(dir.path());
         write_card(&state, "not json");
 
-        let Err((status, message)) = api_a2a_card(State(status_state(state))).await else {
+        let Err((status, message)) = api_a2a_card(State(state)).await else {
             panic!("an invalid card file should be rejected");
         };
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
@@ -1094,32 +1088,36 @@ mod tests {
     #[tokio::test]
     async fn card_endpoint_is_503_when_the_card_file_is_missing() {
         let dir = tempfile::tempdir().unwrap();
-        let Err((status, _)) = api_a2a_card(State(status_state(test_state(dir.path())))).await
-        else {
+        let Err((status, _)) = api_a2a_card(State(test_state(dir.path()))).await else {
             panic!("a missing card file should be rejected");
         };
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
-    async fn status_reports_the_relay_url_while_the_tunnel_is_connected() {
+    async fn status_puts_the_agent_under_its_own_path_and_says_the_relay_is_not_available() {
         let dir = tempfile::tempdir().unwrap();
-        let (_tx, rx) = tokio::sync::watch::channel(crate::tunnel::TunnelStatus::Connected {
-            user_id: "bear".to_string(),
-            origin: Some("https://bear.agent-residuum.com".to_string()),
-            workbench_origin: None,
-            instance: Some("laptop".to_string()),
-            a2a_token: None,
-        });
-        let state = A2aStatusApiState {
-            config: test_state(dir.path()),
-            tunnel_status_rx: rx,
-        };
+        let port = free_port();
+        write_config(
+            dir.path(),
+            &format!("[a2a]\nport = {port}\npublic_url = \"https://example.com/a2a/\"\n"),
+        );
+        let state = test_state(dir.path());
         let status = api_a2a_status(State(state)).await.0;
         assert_eq!(
             status.public_url.as_deref(),
-            Some("https://bear.agent-residuum.com/a2a/laptop"),
-            "the relay URL is the public address while the tunnel is connected"
+            Some("https://example.com/a2a/agents/test-agent")
+        );
+        assert_eq!(
+            status.local_url,
+            format!("http://127.0.0.1:{port}/agents/test-agent")
+        );
+        assert!(!status.relay_access);
+        assert!(
+            status.relay_access_note.contains("locally")
+                && status.relay_access_note.contains("relay support"),
+            "{}",
+            status.relay_access_note
         );
     }
 }

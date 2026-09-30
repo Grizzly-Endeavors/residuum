@@ -20,8 +20,6 @@ use crate::memory::search::HybridSearcher;
 use crate::pulse::scheduler::PulseScheduler;
 use crate::skills::SharedSkillState;
 use crate::tracing_service::TracingService;
-use crate::tunnel::TunnelStatus;
-use crate::update::SharedUpdateStatus;
 use crate::workspace::layout::WorkspaceLayout;
 
 /// Describes what kind of configuration reload was requested.
@@ -52,28 +50,10 @@ pub enum GatewayExit {
     Restart,
 }
 
-/// Which shutdown trigger interrupted a running turn.
-///
-/// A turn blocks the event loop's own `select!` for its whole duration, so
-/// the trigger is observed and reacted to (stopping the turn) from inside
-/// the turn's own select loop instead — see `run_agent_turn_with_interrupts`
-/// in `gateway/event_loop/turns.rs`. That already consumes the underlying
-/// signal, so this is bubbled back up to the event loop instead of it
-/// re-observing the same signal a second time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ShutdownReason {
-    /// SIGTERM (Unix) or the platform termination signal.
-    Sigterm,
-    /// Shutdown requested via the HTTP `/api/shutdown` endpoint.
-    GatewayShutdown,
-    /// Restart requested (binary updated, re-exec needed).
-    Restart,
-}
-
 /// Platform-aware termination signal.
 ///
 /// On Unix, wraps a SIGTERM listener. On Windows (and other platforms), `recv()`
-/// pends forever — graceful shutdown is handled via the HTTP `/api/shutdown` endpoint
+/// pends forever — graceful shutdown is handled via the HTTP `/api/hub/shutdown` endpoint
 /// or the cross-platform Ctrl+C handler instead.
 pub struct TermSignal {
     #[cfg(unix)]
@@ -147,16 +127,14 @@ pub struct StopRequest {
     pub result_tx: Option<tokio::sync::oneshot::Sender<bool>>,
 }
 
-/// Long-lived core that owns shared communication channels.
+/// One agent's long-lived communication channels and bus.
 ///
-/// Created once at startup and persists across configuration reloads.
+/// Created when the agent starts and persists across configuration reloads.
 /// The senders are cloned into adapters, the web server, and event loop state.
 pub(crate) struct GatewayCore {
     pub reload_tx: crate::gateway::types::ReloadSender,
     pub command_tx: mpsc::Sender<ServerCommand>,
     pub stop_tx: mpsc::Sender<StopRequest>,
-    /// Dedicated shutdown signal for the HTTP server (not tied to reload).
-    pub http_shutdown_tx: tokio::sync::watch::Sender<bool>,
     /// The agent's own `config/` directory (`~/.residuum/<agent>/config`).
     pub config_dir: std::path::PathBuf,
     /// The hub's directory (`~/.residuum/hub`).
@@ -182,7 +160,6 @@ impl GatewayCore {
             tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>();
         let (command_tx, command_rx) = mpsc::channel::<ServerCommand>(32);
         let (stop_tx, stop_rx) = mpsc::channel::<StopRequest>(8);
-        let http_shutdown_tx = tokio::sync::watch::channel::<bool>(false).0;
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
 
@@ -190,7 +167,6 @@ impl GatewayCore {
             reload_tx,
             command_tx,
             stop_tx,
-            http_shutdown_tx,
             config_dir,
             hub_dir,
             bus_handle,
@@ -213,7 +189,6 @@ pub(crate) struct GatewayState {
     pub stop_tx: mpsc::Sender<StopRequest>,
     pub agent_inbox_dir: std::path::PathBuf,
     pub tz: chrono_tz::Tz,
-    pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
     pub publisher: Publisher,
     pub bus_handle: BusHandle,
     pub file_registry: crate::gateway::file_server::FileRegistry,
@@ -231,16 +206,28 @@ pub(crate) struct GatewayState {
     /// Whether the workspace change feed is running, so a connection that
     /// starts watching can be told when live updates are off.
     pub workspace_watch_health: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
+    /// The hub's one change feed over the team directory, which a connection
+    /// watching `team/...` paths reads.
+    pub team_feed: Arc<crate::hub::services::TeamChangeFeed>,
     /// Pending one-off scheduled actions, for the Scheduled view's listing
     /// and cancel button.
     pub action_store: Arc<tokio::sync::Mutex<ActionStore>>,
     /// Workspace layout, for the Scheduled view's reads of HEARTBEAT.yml,
     /// `pulse_state.json`, and its in-place edits to HEARTBEAT.yml.
     pub layout: WorkspaceLayout,
+    /// Main-conversation activity for the hub's agent switcher; a WebSocket
+    /// connection registers itself here so unread counts reset while a client
+    /// is watching.
+    pub activity: Arc<crate::hub::activity::ActivityTracker>,
 }
 
-/// All state needed by the main event loop.
-pub(crate) struct GatewayRuntime {
+/// All state one agent needs to run: its subsystems, its channels, and the
+/// hub services it was started with.
+pub(crate) struct AgentRuntime {
+    /// The agent's name: its directory name and identity everywhere.
+    pub name: String,
+    /// Shared services the hub passed in.
+    pub services: crate::hub::services::HubServices,
     // Current running config (for diffing on reload)
     pub cfg: Config,
     /// Current running hub config, reloaded independently of `cfg` — see
@@ -279,14 +266,11 @@ pub(crate) struct GatewayRuntime {
     pub hybrid_searcher: Arc<HybridSearcher>,
     pub session_runtime: Arc<SessionRuntime>,
     pub session_registry: Arc<SessionRegistry>,
-    /// Durable record of every session run, shared with the HTTP server's
-    /// sessions endpoints (rebuilt on a gateway rebind).
-    pub session_store: Arc<SessionStore>,
     /// Routes `message_agent` deliveries by address. Constant for the
-    /// process lifetime — cloned into `spawn_context` on every reload.
+    /// agent's lifetime — cloned into `spawn_context` on every reload.
     pub agent_messenger: Arc<crate::background::messaging::AgentMessenger>,
     /// Routes admitted inbound conversation messages that aren't the owner's
-    /// own DM to their conversation's session. Constant for the process
+    /// own DM to their conversation's session. Constant for the agent's
     /// lifetime, like `agent_messenger`.
     pub conversation_router: Arc<crate::background::ConversationRouter>,
     pub action_store: Arc<tokio::sync::Mutex<ActionStore>>,
@@ -294,14 +278,14 @@ pub(crate) struct GatewayRuntime {
     pub mcp_registry: SharedMcpRegistry,
     /// Shared, reloadable effective `PATH` for spawned children (exec + MCP stdio).
     pub tools_path: crate::tools::SharedToolsPath,
-    /// Shared agent key store (exec, MCP, trace redaction, sessions).
+    /// The hub's shared agent key store (exec, MCP, trace redaction, sessions).
     pub agent_keys: crate::agent_keys::SharedAgentKeys,
     pub skill_state: SharedSkillState,
     pub pulse_enabled: bool,
     pub notify_handles: Vec<tokio::task::JoinHandle<()>>,
     /// Notification channels from `channels.toml`, kept to rebuild the endpoint registry on reload.
     pub channel_configs: Vec<crate::notify::types::ExternalChannelConfig>,
-    /// Shared with the HTTP server's webhook route; replaced on config reload.
+    /// Shared with the agent's webhook route; replaced on config reload.
     pub webhooks: crate::interfaces::webhook::WebhookTable,
     /// Bus infrastructure handles (bridge, result router, registry) — not restarted on reload.
     pub bus_infra_handles: Vec<tokio::task::JoinHandle<()>>,
@@ -309,7 +293,7 @@ pub(crate) struct GatewayRuntime {
     pub spawn_context: Arc<SpawnContext>,
     /// Pushes a fresh `ModelCallResources` to the model-call HTTP endpoint on
     /// every config reload, alongside `spawn_context`, so `POST
-    /// /api/model/complete` resolves providers from the current config
+    /// /api/agents/{name}/model/complete` resolves providers from the current config
     /// without the HTTP router being rebuilt.
     pub model_call_resources_tx:
         tokio::sync::watch::Sender<Arc<crate::gateway::web::model::ModelCallResources>>,
@@ -346,89 +330,79 @@ pub(crate) struct GatewayRuntime {
     /// event loop when idle (responds "nothing running") and by the active
     /// turn's own select loop while a turn is in progress.
     pub stop_rx: mpsc::Receiver<StopRequest>,
-    /// Kept alive so the HTTP server task isn't dropped; shut down via `shutdown_tx`.
-    pub server_handle: tokio::task::JoinHandle<()>,
+    /// The hub asking this agent to stop (stop, restart, or hub shutdown).
+    /// Watched by the outer loop and by the active turn, which it interrupts
+    /// the way a user stop does.
+    pub agent_stop_rx: mpsc::Receiver<()>,
     pub pulse_scheduler: PulseScheduler,
-    /// Platform termination signal (SIGTERM on Unix, never-resolving on Windows).
-    pub sigterm: TermSignal,
-    /// Dedicated shutdown signal for the HTTP server.
-    pub http_shutdown_tx: tokio::sync::watch::Sender<bool>,
     /// Path to the agent's own `config/` directory (for backup/rollback during reload).
     pub config_dir: std::path::PathBuf,
     /// Path to the hub's directory (`~/.residuum/hub`).
     pub hub_dir: std::path::PathBuf,
     /// When the last user message was received (for idle deadline recalculation on reload).
     pub last_user_message_instant: Option<tokio::time::Instant>,
-    // Cloud config for tunnel respawn
-    pub cloud_config: Option<crate::config::CloudConfig>,
-    // Adapter lifecycle handles
-    pub tunnel_handle: Option<tokio::task::JoinHandle<()>>,
-    pub tunnel_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
-    pub tunnel_status_tx: Arc<tokio::sync::watch::Sender<TunnelStatus>>,
-    pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
     /// Discord, Telegram, and Teams, addressed by name for reload and shutdown.
     pub chat_adapters: super::chat_adapters::ChatAdapters,
-    pub a2a_handle: Option<tokio::task::JoinHandle<()>>,
-    pub a2a_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
-    /// The live agent card, so a workspace-file reload can update it without
-    /// restarting the listener. `None` when A2A is disabled.
-    pub a2a_card_state: Option<crate::a2a::SharedCardState>,
-    /// Remote A2A agents this instance's client can reach, loaded from
+    /// The agent's A2A server state: its card and the router the hub's A2A
+    /// listener serves for it. `None` when A2A is disabled.
+    pub a2a: Option<crate::a2a::AgentA2a>,
+    /// Where the hub's A2A listener finds this agent's current A2A router.
+    pub a2a_router_tx: tokio::sync::watch::Sender<Option<axum::Router>>,
+    /// Counts finished config reloads, for the hub to wait on.
+    pub reload_done_tx: tokio::sync::watch::Sender<u64>,
+    /// Remote A2A agents this agent's client can reach, loaded from
     /// `config/a2a.json` and reloaded on every workspace config change.
     pub a2a_hub: Arc<crate::a2a::A2aClientHub>,
-    /// Outbound A2A tasks this instance started on other agents.
+    /// Outbound A2A tasks this agent started on other agents.
     pub a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
-    /// Workspace and config checkpoint repositories.
+    /// This agent's workspace and config checkpoint repositories, plus the
+    /// team and hub-config ones every agent shares.
     pub checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
     /// Tracks the agent's own config-file writes so the reload each one
     /// triggers can report back into its transcript instead of only
     /// reaching the user's interfaces.
     pub config_reload_tracker: crate::tools::SharedConfigReloadTracker,
-    /// This instance's current A2A public URL, read by the web settings API. `None` when A2A is disabled.
-    pub a2a_public_url: Option<crate::a2a::SharedA2aPublicUrl>,
     pub watcher_handle: Option<tokio::task::JoinHandle<()>>,
     /// Polls `config.toml`/`providers.toml` for changes made outside the web
     /// config API (the agent's own `write_file`/`edit_file`, or a manual
     /// edit) and signals a root reload.
     pub root_config_watcher_handle: Option<tokio::task::JoinHandle<()>>,
-    /// Polls `hub/config.toml` for changes and signals a hub reload.
-    pub hub_config_watcher_handle: Option<tokio::task::JoinHandle<()>>,
     /// The workspace change feed (one recursive watcher over the workspace).
     pub change_feed_handle: Option<tokio::task::JoinHandle<()>>,
-    /// The change feed over the team directory, published with `team/`
-    /// paths.
-    pub team_change_feed_handle: Option<tokio::task::JoinHandle<()>>,
-    /// Whether the change feed is running; handed to the HTTP server's state
-    /// again on a gateway rebind.
-    pub workspace_watch_health: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
     /// Derives artifact reloads from the change feed.
     pub workbench_watcher_handle: Option<tokio::task::JoinHandle<()>>,
-    /// Whether the workbench artifacts listener is running, and on which port.
-    pub workbench_serving: crate::workbench::server::WorkbenchServing,
-    /// Stops the workbench artifacts listener, when it is running.
-    pub workbench_listener_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
     /// Cloned core senders for rebuilding adapters on reload.
     pub reload_tx: crate::gateway::types::ReloadSender,
     pub command_tx: mpsc::Sender<ServerCommand>,
     pub stop_tx: mpsc::Sender<StopRequest>,
-    /// File registry for serving attachments to WebSocket clients.
-    pub file_registry: crate::gateway::file_server::FileRegistry,
     /// Shared path policy for updating blocked paths on reload.
     pub path_policy: crate::tools::SharedPathPolicy,
-    /// The hub's team write coordinator.
-    pub team: crate::workspace::team_files::TeamWriteCoordinator,
     /// Shared tracing service for observability API.
     pub tracing_service: Arc<TracingService>,
-    /// Shared update status for periodic version checking.
-    pub update_status: SharedUpdateStatus,
-    /// Sender half for triggering restart (cloned into API state on rebind).
-    pub restart_tx: mpsc::Sender<()>,
-    /// Receives a signal to trigger a graceful restart (binary replaced).
-    pub restart_rx: mpsc::Receiver<()>,
-    /// Sender half for triggering graceful shutdown from the HTTP API.
-    pub gateway_shutdown_tx: mpsc::Sender<()>,
-    /// Receives a signal to trigger a graceful shutdown from the HTTP API.
-    pub gateway_shutdown_rx: mpsc::Receiver<()>,
+    /// Main-conversation activity for the hub's agent switcher.
+    pub activity: Arc<crate::hub::activity::ActivityTracker>,
+}
+
+impl Drop for AgentRuntime {
+    /// A runtime dropped without [`graceful_shutdown`](super::event_loop) —
+    /// its event loop panicked — must not leave its tasks running against a
+    /// bus nobody reads. The chat adapters stop themselves (see
+    /// [`ChatAdapters`](super::chat_adapters::ChatAdapters)); this aborts the
+    /// rest.
+    fn drop(&mut self) {
+        self.a2a_tracker.shutdown();
+        for handle in self
+            .notify_handles
+            .drain(..)
+            .chain(self.bus_infra_handles.drain(..))
+            .chain(self.watcher_handle.take())
+            .chain(self.root_config_watcher_handle.take())
+            .chain(self.change_feed_handle.take())
+            .chain(self.workbench_watcher_handle.take())
+        {
+            handle.abort();
+        }
+    }
 }
 
 #[cfg(test)]

@@ -35,6 +35,7 @@ mod feedback_submit_integration {
             model_name: Some("claude-opus-4-7".to_string()),
             active_subagents: Vec::new(),
             config_flags: BTreeMap::new(),
+            agent: None,
         }
     }
 

@@ -11,10 +11,10 @@ use serde::{Deserialize, Serialize};
 use crate::config::secrets::SecretStore;
 use crate::inference::providers::anthropic::is_oauth_key;
 
-use super::ConfigApiState;
 use super::config::{PatchSavedResponse, ValidateResponse};
+use super::{ConfigApiState, HubDir};
 
-/// Request body for `POST /api/providers/models`.
+/// Request body for `POST /api/hub/providers/models` (and the same route under an agent).
 #[derive(Deserialize)]
 pub(super) struct ModelsRequest {
     provider: String,
@@ -39,12 +39,14 @@ pub(super) struct ModelsResponse {
     error: Option<String>,
 }
 
-/// `POST /api/providers/models` — fetch available models from a provider API.
+/// `POST /api/hub/providers/models` (and `/api/agents/{name}/providers/models`)
+/// — fetch available models from a provider API.
 ///
-/// Used by the setup wizard and settings page to populate model dropdowns.
-/// Takes provider type, optional API key, and optional base URL.
+/// Used by onboarding and the settings pages to populate model dropdowns.
+/// Takes provider type, optional API key, and optional base URL. Needs no
+/// agent: `secret:` keys resolve against the hub's secret store.
 pub(super) async fn api_provider_models(
-    State(state): State<ConfigApiState>,
+    State(HubDir(hub_dir)): State<HubDir>,
     Json(req): Json<ModelsRequest>,
 ) -> Json<ModelsResponse> {
     // Resolve secret: prefixed API keys via the encrypted store
@@ -53,10 +55,9 @@ pub(super) async fn api_provider_models(
         .as_deref()
         .and_then(|raw| raw.strip_prefix("secret:"))
     {
-        let dir = state.config_dir.clone();
         let name_owned = name.to_owned();
-        tokio::task::spawn_blocking(move || -> Option<String> {
-            SecretStore::load(&dir)
+        crate::util::spawn_blocking_in_span(move || -> Option<String> {
+            SecretStore::load(&hub_dir)
                 .ok()
                 .and_then(|s| s.get(&name_owned).map(String::from))
         })
@@ -381,7 +382,7 @@ async fn fetch_ollama_models(
         .collect())
 }
 
-/// `GET /api/providers/raw` — return raw `providers.toml` contents as text.
+/// `GET /api/agents/{name}/providers/raw` — return raw `providers.toml` contents as text.
 pub(super) async fn api_providers_raw_get(
     State(state): State<ConfigApiState>,
 ) -> Result<Response, (StatusCode, String)> {
@@ -405,7 +406,7 @@ pub(super) async fn api_providers_raw_get(
         })
 }
 
-/// `PUT /api/providers/raw` — write `providers.toml` unconditionally, save,
+/// `PUT /api/agents/{name}/providers/raw` — write `providers.toml` unconditionally, save,
 /// trigger reload, and report diagnostics.
 ///
 /// The save always succeeds, even when `body` fails validation — see
@@ -444,7 +445,7 @@ pub(super) async fn api_providers_raw_put(
     )))
 }
 
-/// `PATCH /api/providers/patch` — merge a JSON diff into the existing
+/// `PATCH /api/agents/{name}/providers/patch` — merge a JSON diff into the existing
 /// `providers.toml`, validate, save, trigger reload if running.
 ///
 /// The diff's shape mirrors `providers.toml`'s section/key layout, carrying
@@ -527,7 +528,7 @@ pub(super) async fn api_providers_patch(
     Ok(Json(PatchSavedResponse::saved(checkpoint_id)))
 }
 
-/// `POST /api/providers/validate` — validate providers TOML body without saving.
+/// `POST /api/agents/{name}/providers/validate` — validate providers TOML body without saving.
 pub(super) async fn api_providers_validate(
     State(state): State<ConfigApiState>,
     body: String,
@@ -558,8 +559,7 @@ mod tests {
             workspace_dir: dir.join("workspace"),
             memory_dir: None,
             reload_tx: None,
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            scope: crate::gateway::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         }
     }

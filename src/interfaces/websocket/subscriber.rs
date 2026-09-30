@@ -68,7 +68,10 @@ fn turn_usage_frame(usage: TurnUsageEvent) -> ServerMessage {
 
 /// The frame a workspace change-feed event becomes for a connection watching
 /// `watch_set`, if any. A connection watching nothing gets nothing.
-fn workspace_frame(watch_set: &WatchSet, event: WorkspaceEvent) -> Option<ServerMessage> {
+pub(crate) fn workspace_frame(
+    watch_set: &WatchSet,
+    event: WorkspaceEvent,
+) -> Option<ServerMessage> {
     if watch_set.is_empty() {
         return None;
     }
@@ -143,8 +146,11 @@ pub struct WsSubscribers {
     pub outbound_a2a: Subscriber<OutboundA2aTaskEvent>,
     /// Workbench artifact file changes, so an open artifact view reloads live.
     pub workbench: Subscriber<WorkbenchEvent>,
-    /// The workspace change feed, filtered by `watch_set`.
+    /// The agent's own workspace change feed, filtered by `watch_set`.
     pub workspace: Subscriber<WorkspaceEvent>,
+    /// The hub's team change feed (paths under `team/`), filtered by
+    /// `watch_set`.
+    pub team_workspace: Subscriber<WorkspaceEvent>,
     /// The prefixes this connection watches, replaced by its
     /// `watch_workspace` frames.
     pub watch_set: tokio::sync::watch::Receiver<WatchSet>,
@@ -159,6 +165,7 @@ impl WsSubscribers {
     /// Returns `BusError` if any subscription fails.
     pub async fn new(
         bus_handle: &crate::bus::BusHandle,
+        team_bus: &crate::bus::BusHandle,
         ep: EndpointName,
         file_registry: crate::gateway::file_server::FileRegistry,
         watch_set: tokio::sync::watch::Receiver<WatchSet>,
@@ -178,6 +185,7 @@ impl WsSubscribers {
             outbound_a2a: bus_handle.subscribe(system_topic()).await?,
             workbench: bus_handle.subscribe(topics::Workbench).await?,
             workspace: bus_handle.subscribe(topics::Workspace).await?,
+            team_workspace: team_bus.subscribe(topics::Workspace).await?,
             watch_set,
             file_registry,
         })
@@ -258,6 +266,14 @@ impl WsSubscribers {
                         _ => return None,
                     }
                 }
+                event = self.team_workspace.recv() => {
+                    match event {
+                        Ok(Some(workspace_event)) => {
+                            workspace_frame(&self.watch_set.borrow(), workspace_event)
+                        }
+                        _ => return None,
+                    }
+                }
                 event = self.error.recv() => {
                     match event {
                         Ok(Some(ErrorEvent { correlation_id, message, details })) => {
@@ -303,8 +319,9 @@ mod tests {
         let ep = EndpointName::from("ws");
         let mut subs = WsSubscribers::new(
             &handle,
+            &handle,
             ep.clone(),
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -338,8 +355,9 @@ mod tests {
         let ep = EndpointName::from("ws");
         let mut subs = WsSubscribers::new(
             &handle,
+            &handle,
             ep.clone(),
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -372,8 +390,9 @@ mod tests {
         let ep = EndpointName::from("ws");
         let mut subs = WsSubscribers::new(
             &handle,
+            &handle,
             ep.clone(),
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -407,8 +426,9 @@ mod tests {
         let ep = EndpointName::from("ws");
         let mut subs = WsSubscribers::new(
             &handle,
+            &handle,
             ep.clone(),
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -439,8 +459,9 @@ mod tests {
         let ep = EndpointName::from("ws");
         let mut subs = WsSubscribers::new(
             &handle,
+            &handle,
             ep,
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -470,8 +491,9 @@ mod tests {
         let ep = EndpointName::from("ws");
         let mut subs = WsSubscribers::new(
             &handle,
+            &handle,
             ep,
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -501,8 +523,9 @@ mod tests {
         let ep = EndpointName::from("ws");
         let mut subs = WsSubscribers::new(
             &handle,
+            &handle,
             ep.clone(),
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -532,8 +555,9 @@ mod tests {
         let ep = EndpointName::from("ws");
         let mut subs = WsSubscribers::new(
             &handle,
+            &handle,
             ep.clone(),
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -562,8 +586,9 @@ mod tests {
         let ep = EndpointName::from("ws");
         let mut subs = WsSubscribers::new(
             &handle,
+            &handle,
             ep.clone(),
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -608,8 +633,9 @@ mod tests {
         let ep = EndpointName::from("ws");
         let mut subs = WsSubscribers::new(
             &handle,
+            &handle,
             ep,
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -640,8 +666,9 @@ mod tests {
         let pub_ = handle.publisher();
         let mut subs = WsSubscribers::new(
             &handle,
+            &handle,
             EndpointName::from("ws"),
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -678,8 +705,9 @@ mod tests {
         let handle = crate::bus::spawn_broker();
         let mut subs = WsSubscribers::new(
             &handle,
+            &handle,
             EndpointName::from("ws"),
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -808,8 +836,9 @@ mod tests {
         let (watch_tx, watch_rx) = tokio::sync::watch::channel(WatchSet::default());
         let mut subs = WsSubscribers::new(
             &handle,
+            &handle,
             EndpointName::from("ws"),
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             watch_rx,
         )
         .await

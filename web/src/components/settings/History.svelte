@@ -19,7 +19,11 @@
   import { toast } from "../../lib/toast.svelte";
   import type { CheckpointDetail, CheckpointSummary, RepoKind, RepoStats } from "../../lib/types";
 
-  let repo = $state<RepoKind>("workspace");
+  // Hub settings show the team's and the hub's own history; an agent's show its workspace and config.
+  let { scope }: { scope: "hub" | "agent" } = $props();
+
+  // svelte-ignore state_referenced_locally
+  let repo = $state<RepoKind>(scope === "hub" ? "team" : "workspace");
   let pathFilter = $state("");
   let stats = $state<Record<RepoKind, RepoStats | null>>({
     workspace: null,
@@ -47,13 +51,14 @@
 
   async function loadStats(): Promise<void> {
     try {
-      const [workspace, team, agent_config, hub] = await Promise.all([
-        fetchCheckpointStats("workspace"),
-        fetchCheckpointStats("team"),
-        fetchCheckpointStats("agent_config"),
-        fetchCheckpointStats("hub"),
-      ]);
-      stats = { workspace, team, agent_config, hub };
+      // Only the repositories this scope shows: agent-level ones need an agent chosen.
+      const repos: RepoKind[] = scope === "hub" ? ["team", "hub"] : ["workspace", "agent_config"];
+      const fetched = await Promise.all(repos.map((r) => fetchCheckpointStats(r)));
+      const next = { ...stats };
+      repos.forEach((r, i) => {
+        next[r] = fetched[i] ?? null;
+      });
+      stats = next;
     } catch {
       // Stats are a footnote, not load-bearing — the list still works without them.
     }
@@ -175,34 +180,37 @@
   <div class="settings-group">
     <div class="history-toolbar">
       <div class="settings-mode-selector">
-        <button
-          class="settings-mode-btn"
-          class:active={repo === "workspace"}
-          onclick={() => switchRepo("workspace")}
-        >
-          Workspace
-        </button>
-        <button
-          class="settings-mode-btn"
-          class:active={repo === "team"}
-          onclick={() => switchRepo("team")}
-        >
-          Team
-        </button>
-        <button
-          class="settings-mode-btn"
-          class:active={repo === "agent_config"}
-          onclick={() => switchRepo("agent_config")}
-        >
-          Agent config
-        </button>
-        <button
-          class="settings-mode-btn"
-          class:active={repo === "hub"}
-          onclick={() => switchRepo("hub")}
-        >
-          Hub config
-        </button>
+        {#if scope === "agent"}
+          <button
+            class="settings-mode-btn"
+            class:active={repo === "workspace"}
+            onclick={() => switchRepo("workspace")}
+          >
+            Workspace
+          </button>
+          <button
+            class="settings-mode-btn"
+            class:active={repo === "agent_config"}
+            onclick={() => switchRepo("agent_config")}
+          >
+            Agent config
+          </button>
+        {:else}
+          <button
+            class="settings-mode-btn"
+            class:active={repo === "team"}
+            onclick={() => switchRepo("team")}
+          >
+            Team
+          </button>
+          <button
+            class="settings-mode-btn"
+            class:active={repo === "hub"}
+            onclick={() => switchRepo("hub")}
+          >
+            Hub config
+          </button>
+        {/if}
       </div>
       <form
         class="history-filter"

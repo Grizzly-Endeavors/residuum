@@ -113,11 +113,9 @@ pub(super) async fn run_telegram_polling(
     let subs = crate::interfaces::BaseSubscribers::new(&bus_handle, EndpointName::from(ENDPOINT))
         .await
         .context("failed to subscribe to telegram bus topics")?;
-    let _outbound = OutboundTask(tokio::spawn(super::subscriber::run_telegram_subscriber(
-        subs,
-        bot.clone(),
-        Arc::clone(&state),
-    )));
+    let _outbound = OutboundTask(crate::util::spawn_in_span(
+        super::subscriber::run_telegram_subscriber(subs, bot.clone(), Arc::clone(&state)),
+    ));
 
     let mut offset: i32 = 0;
     let mut consecutive_errors: u32 = 0;

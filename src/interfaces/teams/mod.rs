@@ -215,12 +215,13 @@ impl TeamsInterface {
             .with_state(Arc::clone(&rt));
 
         let worker_rt = Arc::clone(&rt);
-        let worker = tokio::spawn(async move {
+        let worker = crate::util::spawn_in_span(async move {
             while let Some(activity) = inbound_rx.recv().await {
                 handler::process_activity(&worker_rt, activity).await;
             }
         });
-        let outbound = tokio::spawn(subscriber::run_teams_subscriber(Arc::clone(&rt), subs));
+        let outbound =
+            crate::util::spawn_in_span(subscriber::run_teams_subscriber(Arc::clone(&rt), subs));
         let _registration = self
             .senders
             .conversations
