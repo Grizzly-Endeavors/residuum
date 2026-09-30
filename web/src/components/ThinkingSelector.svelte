@@ -1,10 +1,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { ws } from "../lib/ws.svelte";
-  import { fetchProvidersRaw, patchProviders } from "../lib/api";
+  import { fetchProvidersRaw } from "../lib/api";
+  import { agentConfigFile, configCoordinator } from "../lib/config-coordinator";
   import { requireAgent } from "../lib/paths";
   import { parseProvidersToml, modelRoleJson } from "../lib/settings-toml";
-  import { withConfigLock } from "../lib/config-lock";
   import { toast } from "../lib/toast.svelte";
   import { userErrorMessage } from "../lib/errors";
 
@@ -21,15 +21,33 @@
   let currentLevel = $state("");
   let saving = $state(false);
 
-  onMount(async () => {
+  onMount(() => {
+    void loadLevel();
+  });
+
+  // The control shows what providers.toml says, so it follows the file: a
+  // change made in settings, by history restore, or outside this page reloads it.
+  $effect(() => {
+    const agent = ws.agent;
+    if (agent === null) return;
+    return configCoordinator.subscribe(agentConfigFile(agent, "providers"), () => {
+      void loadLevel();
+    });
+  });
+
+  /** Sequences loads, so a slow one can't overwrite what a later one found. */
+  let loadCount = 0;
+
+  async function loadLevel(): Promise<void> {
+    const load = ++loadCount;
     try {
       const raw = await fetchProvidersRaw(requireAgent(ws.agent));
       const parsed = parseProvidersToml(raw);
-      currentLevel = parsed.models.overrides.main?.thinking ?? "";
+      if (load === loadCount) currentLevel = parsed.models.overrides.main?.thinking ?? "";
     } catch {
       // config not available yet
     }
-  });
+  }
 
   async function setLevel(level: string): Promise<void> {
     if (saving || disabled) return;
@@ -38,27 +56,24 @@
     const newLevel = level === currentLevel ? "" : level;
     saving = true;
 
-    await withConfigLock(async () => {
-      try {
-        const agent = requireAgent(ws.agent);
-        const raw = await fetchProvidersRaw(agent);
-        const parsed = parseProvidersToml(raw);
-        const mainModel = parsed.models.main;
+    try {
+      const agent = requireAgent(ws.agent);
+      const saved = await configCoordinator.edit(agentConfigFile(agent, "providers"), (raw) => {
+        const { models } = parseProvidersToml(raw);
         const overrides = {
-          temperature: parsed.models.overrides.main?.temperature ?? "",
+          temperature: models.overrides.main?.temperature ?? "",
           thinking: newLevel,
         };
-        const value = modelRoleJson(mainModel, overrides);
-        const result = await patchProviders(agent, { models: { main: value } });
-        if (!result.valid) throw new Error(result.error ?? "unknown error");
-        ws.send({ type: "reload" });
-        currentLevel = newLevel;
-      } catch (err: unknown) {
-        toast.error(userErrorMessage(err, { action: "Couldn't change the thinking level." }));
-      }
-    });
-
-    saving = false;
+        return { models: { main: modelRoleJson(models.main, overrides) } };
+      });
+      if (!saved.result.valid) throw new Error(saved.result.error ?? "unknown error");
+      ws.send({ type: "reload" });
+      currentLevel = newLevel;
+    } catch (err: unknown) {
+      toast.error(userErrorMessage(err, { action: "Couldn't change the thinking level." }));
+    } finally {
+      saving = false;
+    }
   }
 </script>
 
