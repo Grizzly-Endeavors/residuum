@@ -9,7 +9,7 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Mount a model reply of `text` on `server`, answering after `delay`.
-pub(super) async fn mount_reply(server: &MockServer, text: &str, delay: Duration) {
+pub(crate) async fn mount_reply(server: &MockServer, text: &str, delay: Duration) {
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .respond_with(
@@ -25,7 +25,7 @@ pub(super) async fn mount_reply(server: &MockServer, text: &str, delay: Duration
 
 /// Write a bootstrapped agent directory `root/<name>` whose main model is
 /// the mock server at `model_url`.
-pub(super) fn write_agent(root: &Path, name: &str, model_url: &str) {
+pub(crate) fn write_agent(root: &Path, name: &str, model_url: &str) {
     let config_dir = root.join(name).join("config");
     std::fs::create_dir_all(&config_dir).unwrap();
     std::fs::write(config_dir.join("config.toml"), "").unwrap();
@@ -39,7 +39,7 @@ pub(super) fn write_agent(root: &Path, name: &str, model_url: &str) {
 }
 
 /// A TCP port that was free a moment ago.
-pub(super) async fn free_port() -> u16 {
+pub(crate) async fn free_port() -> u16 {
     tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .unwrap()

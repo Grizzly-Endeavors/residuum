@@ -185,13 +185,18 @@ impl AgentHost {
     /// every agent resolves its own config against.
     pub(crate) fn new(services: HubServices, hub_cfg: HubConfig) -> Arc<Self> {
         let (events, _first_subscriber) = broadcast::channel(HUB_EVENT_CAPACITY);
-        Arc::new_cyclic(|me| Self {
-            me: Weak::clone(me),
-            services,
-            hub_cfg: RwLock::new(hub_cfg),
-            slots: RwLock::new(BTreeMap::new()),
-            events,
-            creation_lock: tokio::sync::Mutex::new(()),
+        Arc::new_cyclic(|me| {
+            services
+                .directory
+                .bind(Weak::clone(me) as Weak<dyn AgentDirectory>);
+            Self {
+                me: Weak::clone(me),
+                services,
+                hub_cfg: RwLock::new(hub_cfg),
+                slots: RwLock::new(BTreeMap::new()),
+                events,
+                creation_lock: tokio::sync::Mutex::new(()),
+            }
         })
     }
 
@@ -1069,7 +1074,20 @@ impl AgentDirectory for AgentHost {
     }
 
     async fn delete(&self, name: &str, by: Actor) -> Result<DeleteOutcome, LifecycleError> {
-        self.delete_agent(name, by).await
+        let result = self.delete_agent(name, by.clone()).await;
+        // An agent deleting itself is stopped by its own delete, so nothing is
+        // left to hear the error; the user has to.
+        if let (Err(e), Actor::Agent(actor)) = (&result, &by)
+            && actor == name
+        {
+            tracing::error!(agent = %name, error = %e, "an agent's request to delete itself failed");
+            self.notice(
+                NoticeLevel::Warn,
+                format!("{name} asked to be deleted, but that failed: {e}. It has been stopped; check its state in the team view."),
+                Some(name.to_string()),
+            );
+        }
+        result
     }
 
     async fn start(&self, name: &str) -> Result<AgentSummary, LifecycleError> {

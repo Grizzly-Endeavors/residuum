@@ -142,6 +142,8 @@ pub struct SubagentToolDeps {
     /// Workspace and config checkpoint repositories, shared with main —
     /// backs `workspace_history`/`workspace_restore`.
     pub checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    /// How this session's `agent_create`/`agent_delete` reach the hub.
+    pub lifecycle: super::LifecycleAccess,
 }
 
 impl ToolRegistry {
@@ -515,6 +517,17 @@ impl ToolRegistry {
         )));
     }
 
+    /// Register `agent_create` and `agent_delete`, acting as the agent
+    /// `lifecycle` names.
+    pub fn register_agent_lifecycle_tools(&mut self, lifecycle: super::LifecycleAccess) {
+        self.register(Box::new(super::agent_lifecycle::AgentCreateTool::new(
+            lifecycle.clone(),
+        )));
+        self.register(Box::new(super::agent_lifecycle::AgentDeleteTool::new(
+            lifecycle,
+        )));
+    }
+
     /// Register the `subagent_spawn` tool for on-demand sub-agent delegation.
     ///
     /// `spawner_address` and `depth` are the caller's own address and depth
@@ -552,6 +565,10 @@ impl ToolRegistry {
     ///
     /// See [`SubagentToolDeps`] for what each field means.
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one linear list of registrations that mirrors init_tool_registry; splitting it would scatter the parity surface the registry test guards"
+    )]
     pub fn build_subagent_registry(deps: SubagentToolDeps) -> Self {
         let SubagentToolDeps {
             tracker,
@@ -591,6 +608,7 @@ impl ToolRegistry {
             a2a_hub,
             a2a_tracker,
             checkpoints,
+            lifecycle,
         } = deps;
 
         let mut registry = Self::new();
@@ -670,6 +688,9 @@ impl ToolRegistry {
 
         // Web fetch
         registry.register_web_fetch_tool();
+
+        // Teammate lifecycle
+        registry.register_agent_lifecycle_tools(lifecycle);
 
         // Workspace checkpoint history (workspace repository only)
         registry.register_workspace_checkpoint_tools(checkpoints, path_policy);

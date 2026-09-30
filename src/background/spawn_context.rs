@@ -139,6 +139,9 @@ pub(crate) struct SpawnContext {
     /// Workspace and config checkpoint repositories, shared with main —
     /// backs the `workspace_history`/`workspace_restore` tools.
     pub(crate) checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    /// How a fork's `agent_create`/`agent_delete` reach the hub, acting as
+    /// this agent.
+    pub(crate) lifecycle: crate::tools::LifecycleAccess,
     /// Shared failover-transition counters for the background model tiers —
     /// see [`BackgroundTierActiveIndex`].
     pub(crate) bg_tier_active_index: BackgroundTierActiveIndex,
@@ -327,6 +330,7 @@ pub(crate) async fn build_spawn_resources(
         a2a_hub: Arc::clone(&ctx.a2a_hub),
         a2a_tracker: Arc::clone(&ctx.a2a_tracker),
         checkpoints: Arc::clone(&ctx.checkpoints),
+        lifecycle: ctx.lifecycle.clone(),
     };
 
     build_subagent_resources(

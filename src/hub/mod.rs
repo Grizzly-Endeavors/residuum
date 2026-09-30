@@ -13,11 +13,11 @@ pub mod provision;
 pub mod runtime;
 pub mod services;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 pub mod types;
 mod wiring;
 
-pub use directory::AgentDirectory;
+pub use directory::{AgentDirectory, DirectoryHandle};
 pub use host::AgentHost;
 pub use provision::{
     AgentSpec, copy_providers_from, deprovision_agent, first_message, provision_agent,

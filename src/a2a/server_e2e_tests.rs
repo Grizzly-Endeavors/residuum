@@ -646,6 +646,10 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
         a2a_hub: Arc::clone(&deps.a2a_hub),
         a2a_tracker: Arc::clone(&deps.a2a_tracker),
         checkpoints: Arc::clone(&deps.checkpoints),
+        lifecycle: crate::tools::LifecycleAccess::new(
+            crate::hub::DirectoryHandle::unbound(),
+            "test",
+        ),
     });
 
     SubAgentResources {

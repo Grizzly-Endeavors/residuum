@@ -649,6 +649,7 @@ fn build_spawn_context(
         a2a_hub: Arc::clone(&rt.a2a_hub),
         a2a_tracker: Arc::clone(&rt.a2a_tracker),
         checkpoints: Arc::clone(&rt.checkpoints),
+        lifecycle: rt.spawn_context.lifecycle.clone(),
         bg_tier_active_index: crate::background::spawn_context::BackgroundTierActiveIndex::default(
         ),
     })

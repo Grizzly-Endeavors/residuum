@@ -1135,3 +1135,5 @@ async fn an_agent_with_a_broken_config_fails_alone_with_a_plain_message() {
     assert!(message.contains("scout couldn't start"), "{message}");
     assert!(message.contains("start it again"), "{message}");
 }
+
+mod lifecycle_tools;

@@ -76,6 +76,9 @@ pub(crate) struct HubServices {
     /// Feeds relay-discovered sibling instances to every registered agent's
     /// A2A client hub. Each agent registers at start and unregisters at stop.
     pub sibling_fanout: Arc<crate::a2a::SiblingFanout>,
+    /// The agent host, for agent tools that create or delete teammates. The
+    /// host binds itself when it is built.
+    pub directory: super::directory::DirectoryHandle,
 }
 
 impl HubServices {
@@ -131,6 +134,7 @@ impl HubServices {
             control,
             workbench_serving,
             sibling_fanout,
+            directory: super::directory::DirectoryHandle::unbound(),
         })
     }
 
