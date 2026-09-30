@@ -27,6 +27,7 @@ use crate::hub::{
     CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError, RestoreAgentRequest,
 };
 use crate::tunnel::{TUNNEL_NONCE_HEADER, TunnelStatus, tunnel_nonce};
+use crate::workspace::layout::WorkspaceLayout;
 use crate::workspace::team_files::TeamWriteCoordinator;
 use crate::workspace::watch::{WatchHealth, WorkspaceChange, WorkspaceChangeKind};
 
@@ -122,7 +123,7 @@ impl FakeDirectory {
             config_dir: agent_dir.join("config"),
             agent_name: name.to_string(),
             workspace_dir: agent_dir.clone(),
-            memory_dir: None,
+            memory_dir: Some(WorkspaceLayout::new(&agent_dir).memory_dir()),
             reload_tx: live.then(|| tokio::sync::mpsc::unbounded_channel().0),
             checkpoints: crate::checkpoints::test_engine(),
             team: Some(team.view_for_user(agent_dir)),
@@ -470,6 +471,42 @@ impl Harness {
 
     async fn post_expect(&self, uri: &str, want: StatusCode) -> Value {
         self.expect(Method::POST, uri, None, want).await
+    }
+
+    /// Send a request with a text body, assert that it answered `200`, and
+    /// return the headers and body bytes.
+    async fn request_ok(&self, method: Method, uri: &str, body: &str) -> (HeaderMap, Vec<u8>) {
+        let (status, headers, bytes) = self
+            .send(
+                Request::builder()
+                    .method(method.clone())
+                    .uri(uri)
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{method} {uri}: {}",
+            String::from_utf8_lossy(&bytes)
+        );
+        (headers, bytes)
+    }
+
+    /// The directory of agent `name` on disk.
+    fn agent_dir(&self, name: &str) -> PathBuf {
+        self.root.path().join(name)
+    }
+
+    /// Add a failed agent `broken` beside the running `scout` and the
+    /// stopped `quiet`.
+    fn add_failed_agent(&self) {
+        self.directory
+            .agents
+            .lock()
+            .unwrap()
+            .push(summary("broken", AgentState::Failed));
     }
 
     /// Serve the app on a local port, for the WebSocket tests.
@@ -943,6 +980,355 @@ async fn an_agents_checkpoint_routes_refuse_the_hub_repositories() {
             StatusCode::BAD_REQUEST,
         )
         .await;
+    }
+}
+
+// ---- file-only agent routes ----------------------------------------------
+
+/// A running, a stopped and a failed agent: the file-only routes answer all
+/// of them the same way.
+const EVERY_STATE: [&str; 3] = ["scout", "quiet", "broken"];
+
+/// Write two episodes and one recent message into the agent's memory.
+async fn seed_history(agent_dir: &Path, name: &str) {
+    use crate::inference::Message;
+    use crate::memory::episode_store::write_episode_transcript;
+    use crate::memory::recent_messages::append_recent_messages;
+    use crate::memory::types::{Episode, Visibility};
+
+    let layout = WorkspaceLayout::new(agent_dir);
+    tokio::fs::create_dir_all(layout.episodes_dir())
+        .await
+        .unwrap();
+    append_recent_messages(
+        &layout.recent_messages_json(),
+        &[Message::user(format!("hello from {name}"))],
+        Visibility::User,
+        chrono_tz::UTC,
+        Some("turn-1"),
+    )
+    .await
+    .unwrap();
+    for (id, day, text) in [("ep-001", 19, "oldest"), ("ep-002", 20, "newest")] {
+        let episode = Episode {
+            id: id.to_string(),
+            date: chrono::NaiveDate::from_ymd_opt(2026, 2, day).unwrap(),
+            observations: vec![],
+        };
+        write_episode_transcript(
+            &layout.episodes_dir(),
+            &episode,
+            &[Message::user(format!("{text} of {name}"))],
+        )
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn chat_history_and_usage_are_served_from_disk_in_every_agent_state() {
+    let h = Harness::new();
+    h.add_failed_agent();
+    let mut totals = crate::agent::usage::SessionUsageTotals::default();
+    totals.accumulate(Some(crate::inference::Usage {
+        input_tokens: 300,
+        output_tokens: 60,
+        cache_creation_tokens: None,
+        cache_read_tokens: None,
+    }));
+
+    for name in EVERY_STATE {
+        seed_history(&h.agent_dir(name), name).await;
+        crate::agent::usage::save_session_usage_totals(
+            &WorkspaceLayout::new(h.agent_dir(name)).usage_totals_json(),
+            &totals,
+        )
+        .await;
+        let history = format!("/api/agents/{name}/chat/history");
+
+        let recent = h.get_expect(&history, StatusCode::OK).await;
+        assert_eq!(recent["kind"], "recent", "{name}");
+        assert_eq!(recent["messages"][0]["role"], "user", "{name}");
+        assert_eq!(
+            recent["messages"][0]["content"],
+            format!("hello from {name}"),
+            "{name}"
+        );
+        assert_eq!(recent["messages"][0]["turn_id"], "turn-1", "{name}");
+        assert_eq!(recent["next_cursor"], "ep-002", "{name}");
+
+        let newest = h
+            .get_expect(&format!("{history}?episode=ep-002"), StatusCode::OK)
+            .await;
+        assert_eq!(newest["kind"], "episode", "{name}");
+        assert_eq!(newest["episode_id"], "ep-002", "{name}");
+        assert_eq!(newest["date"], "2026-02-20", "{name}");
+        assert_eq!(
+            newest["messages"][0]["content"],
+            format!("newest of {name}"),
+            "{name}"
+        );
+        assert_eq!(newest["next_cursor"], "ep-001", "{name}");
+
+        let oldest = h
+            .get_expect(&format!("{history}?episode=ep-001"), StatusCode::OK)
+            .await;
+        assert_eq!(oldest["next_cursor"], Value::Null, "{name}");
+        h.get_expect(&format!("{history}?episode=ep-404"), StatusCode::NOT_FOUND)
+            .await;
+
+        let usage = h
+            .get_expect(&format!("/api/agents/{name}/usage"), StatusCode::OK)
+            .await;
+        assert_eq!(usage, serde_json::to_value(totals).unwrap(), "{name}");
+    }
+}
+
+#[tokio::test]
+async fn a_stopped_agent_with_no_history_answers_empty_not_an_error() {
+    let h = Harness::new();
+    let history = h
+        .get_expect("/api/agents/quiet/chat/history", StatusCode::OK)
+        .await;
+    assert_eq!(
+        history,
+        json!({ "kind": "recent", "messages": [], "next_cursor": null })
+    );
+    let usage = h
+        .get_expect("/api/agents/quiet/usage", StatusCode::OK)
+        .await;
+    assert_eq!(
+        usage,
+        serde_json::to_value(crate::agent::usage::SessionUsageTotals::default()).unwrap()
+    );
+}
+
+/// Write the active user-inbox item `id`, with one attachment holding
+/// `attachment` bytes under the file name `note.txt`.
+async fn seed_inbox_item(agent_dir: &Path, id: &str, title: &str, attachment: &[u8]) {
+    let layout = WorkspaceLayout::new(agent_dir);
+    let item_dir = layout.user_inbox_attachments_dir().join(id);
+    tokio::fs::create_dir_all(&item_dir).await.unwrap();
+    tokio::fs::write(item_dir.join("note.txt"), attachment)
+        .await
+        .unwrap();
+    let item = crate::inbox::InboxItem {
+        title: title.to_string(),
+        body: format!("body of {title}"),
+        source: "test".to_string(),
+        timestamp: chrono::NaiveDate::from_ymd_opt(2026, 9, 30)
+            .unwrap()
+            .and_hms_opt(8, 15, 0)
+            .unwrap(),
+        read: false,
+        attachments: vec![PathBuf::from(format!(
+            "inbox/user/attachments/{id}/note.txt"
+        ))],
+    };
+    crate::inbox::save_item(&layout.user_inbox_dir(), &format!("{id}.json"), &item)
+        .await
+        .unwrap();
+}
+
+/// The JSON a listing shows for [`seed_inbox_item`]'s item `id` of agent
+/// `name`.
+fn listed_inbox_item(name: &str, id: &str, title: &str, read: bool) -> Value {
+    json!({
+        "id": id,
+        "title": title,
+        "body": format!("body of {title}"),
+        "source": "test",
+        "timestamp": "2026-09-30T08:15",
+        "read": read,
+        "attachments": [{
+            "filename": "note.txt",
+            "mime_type": "text/plain",
+            "size": 5,
+            "url": format!("/api/agents/{name}/inbox/{id}/attachments/0"),
+        }],
+    })
+}
+
+#[tokio::test]
+async fn the_user_inbox_is_served_from_disk_in_every_agent_state() {
+    let h = Harness::new();
+    h.add_failed_agent();
+
+    for name in EVERY_STATE {
+        seed_inbox_item(&h.agent_dir(name), "item1", "First", b"hello").await;
+        let inbox = format!("/api/agents/{name}/inbox");
+
+        let listed = h.get_expect(&inbox, StatusCode::OK).await;
+        assert_eq!(
+            listed,
+            json!([listed_inbox_item(name, "item1", "First", false)]),
+            "{name}"
+        );
+        h.get_expect(&format!("{inbox}/archive"), StatusCode::OK)
+            .await;
+
+        // The attachment link the listing handed out downloads the file.
+        let attachment = format!("{inbox}/item1/attachments/0");
+        let (headers, bytes) = h.request_ok(Method::GET, &attachment, "").await;
+        assert_eq!(bytes, b"hello", "{name}");
+        assert_eq!(headers["content-type"], "text/plain", "{name}");
+        assert_eq!(
+            headers["content-disposition"], "inline; filename=\"note.txt\"",
+            "{name}"
+        );
+        h.get_expect(
+            &format!("{inbox}/ghost/attachments/0"),
+            StatusCode::NOT_FOUND,
+        )
+        .await;
+
+        // Marking read returns the item and persists on disk.
+        let read = h
+            .expect(
+                Method::PUT,
+                &format!("{inbox}/item1/read"),
+                None,
+                StatusCode::OK,
+            )
+            .await;
+        assert_eq!(
+            read,
+            listed_inbox_item(name, "item1", "First", true),
+            "{name}"
+        );
+        let on_disk = crate::inbox::load_item(
+            &WorkspaceLayout::new(h.agent_dir(name))
+                .user_inbox_dir()
+                .join("item1.json"),
+        )
+        .await
+        .unwrap();
+        assert!(on_disk.read, "{name}: the read flag is saved");
+
+        // Archiving moves the item out of the active list, and the archive
+        // keeps serving its attachment.
+        let archived = h
+            .expect(
+                Method::POST,
+                &format!("{inbox}/item1/archive"),
+                None,
+                StatusCode::OK,
+            )
+            .await;
+        assert_eq!(archived, Value::Null, "{name}");
+        assert_eq!(
+            h.get_expect(&inbox, StatusCode::OK).await,
+            json!([]),
+            "{name}"
+        );
+        assert_eq!(
+            h.get_expect(&format!("{inbox}/archive"), StatusCode::OK)
+                .await,
+            json!([listed_inbox_item(name, "item1", "First", true)]),
+            "{name}"
+        );
+        let (_, archived_bytes) = h.request_ok(Method::GET, &attachment, "").await;
+        assert_eq!(archived_bytes, b"hello", "{name}: archived attachment");
+
+        // Restoring puts it back.
+        let restored = h
+            .expect(
+                Method::POST,
+                &format!("{inbox}/item1/restore"),
+                None,
+                StatusCode::OK,
+            )
+            .await;
+        assert_eq!(restored, Value::Null, "{name}");
+        assert_eq!(
+            h.get_expect(&inbox, StatusCode::OK).await,
+            json!([listed_inbox_item(name, "item1", "First", true)]),
+            "{name}"
+        );
+        assert_eq!(
+            h.get_expect(&format!("{inbox}/archive"), StatusCode::OK)
+                .await,
+            json!([]),
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_raw_a2a_settings_are_read_and_saved_in_every_agent_state() {
+    let h = Harness::new();
+    h.add_failed_agent();
+    let saved = r#"{"agents":{"laptop":{"url":"https://laptop.example.com"}}}"#;
+
+    for name in EVERY_STATE {
+        let uri = format!("/api/agents/{name}/a2a/agents/raw");
+        let path = h.agent_dir(name).join("config/a2a.json");
+
+        // Nothing saved yet: the template.
+        let (headers, template) = h.request_ok(Method::GET, &uri, "").await;
+        assert_eq!(headers["content-type"], "application/json", "{name}");
+        assert_eq!(template, br#"{"agents":{}}"#, "{name}");
+
+        let (_, saved_report) = h.request_ok(Method::PUT, &uri, saved).await;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&saved_report).unwrap(),
+            json!({ "valid": true }),
+            "{name}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved, "{name}");
+        let (_, read_back) = h.request_ok(Method::GET, &uri, "").await;
+        assert_eq!(read_back, saved.as_bytes(), "{name}");
+
+        // An invalid file is saved anyway and reported.
+        let (_, invalid_report) = h.request_ok(Method::PUT, &uri, "not json").await;
+        let report: Value = serde_json::from_slice(&invalid_report).unwrap();
+        assert_eq!(report["valid"], false, "{name}");
+        assert!(
+            !report["diagnostics"].as_array().unwrap().is_empty(),
+            "{name}: {report}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "not json",
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn routes_that_describe_the_live_agent_still_need_it_running() {
+    let h = Harness::new();
+    h.add_failed_agent();
+
+    // The running agent's own `status` answers.
+    let status = h
+        .get_expect("/api/agents/scout/status", StatusCode::OK)
+        .await;
+    assert_eq!(status, json!({ "agent": "scout", "route": "running" }));
+
+    for (name, state) in [("quiet", "stopped"), ("broken", "failed")] {
+        for (method, route) in [
+            (Method::GET, "status"),
+            (Method::GET, "sessions"),
+            (Method::GET, "scheduled/actions"),
+            (Method::POST, "agent-inbox"),
+            (Method::GET, "a2a/agents"),
+            (Method::GET, "a2a/status"),
+            (Method::GET, "a2a/card"),
+            (Method::GET, "a2a/outbound"),
+            (Method::GET, "memory/search"),
+            (Method::GET, "files/workspace"),
+        ] {
+            let uri = format!("/api/agents/{name}/{route}");
+            let refused = h
+                .expect(method.clone(), &uri, None, StatusCode::CONFLICT)
+                .await;
+            assert_eq!(
+                refused,
+                json!({ "error": format!("{name} is {state}"), "state": state }),
+                "{method} {uri}"
+            );
+        }
     }
 }
 

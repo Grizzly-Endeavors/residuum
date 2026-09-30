@@ -402,9 +402,11 @@ impl ConfigApiState {
     }
 }
 
-/// The routes that repair an agent, which work whether or not it is running:
-/// its config, providers, MCP, and workspace-file routes, and its workspace
-/// and agent-config checkpoints.
+/// The routes of an agent that answer whether or not it is running, because
+/// they only read and write its files: the repair routes (config, providers,
+/// MCP, workspace files, and the workspace and agent-config checkpoints) and
+/// the file-only data routes (chat history and usage, the user inbox, and the
+/// raw A2A client settings).
 ///
 /// With `reload_tx` set in the state, writes signal the live agent to
 /// reload; without it they only touch disk.
@@ -439,6 +441,7 @@ pub fn agent_repair_api_router(state: ConfigApiState) -> axum::Router {
         .route("/api/mcp/raw", put(config::api_mcp_raw_put))
         .route("/api/mcp/patch", patch(config::api_mcp_patch))
         .merge(workspace_api_router("/api"))
+        .merge(agent_file_data_api_router())
         .with_state(state)
         .merge(checkpoints)
 }
@@ -486,11 +489,11 @@ pub(crate) fn team_workspace_api_router(state: ConfigApiState) -> axum::Router {
     workspace_api_router("/api/team").with_state(state)
 }
 
-/// The routes of a running agent that are not repair routes: its status, chat
-/// history and usage, inbox, and A2A client settings.
-pub(crate) fn agent_data_api_router(state: ConfigApiState) -> axum::Router {
+/// The routes that read and write an agent's files and nothing of its live
+/// state: chat history, session usage, the user inbox, and the raw A2A client
+/// settings.
+fn agent_file_data_api_router() -> axum::Router<ConfigApiState> {
     axum::Router::new()
-        .route("/api/status", get(config::api_status))
         .route("/api/chat/history", get(chat::api_chat_history))
         .route("/api/usage", get(chat::api_usage))
         .route("/api/a2a/agents/raw", get(a2a::api_a2a_agents_raw_get))
@@ -504,6 +507,13 @@ pub(crate) fn agent_data_api_router(state: ConfigApiState) -> axum::Router {
             "/api/inbox/{id}/attachments/{index}",
             get(inbox::api_inbox_attachment),
         )
+}
+
+/// The running agent's `status` route: the one per-agent data route that
+/// describes the live process, so it needs a running agent.
+pub(crate) fn agent_status_api_router(state: ConfigApiState) -> axum::Router {
+    axum::Router::new()
+        .route("/api/status", get(config::api_status))
         .with_state(state)
 }
 

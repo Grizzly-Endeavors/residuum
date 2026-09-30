@@ -1472,11 +1472,12 @@ impl AgentHost {
 
     // ─── Routers ──────────────────────────────────────────────────────
 
-    /// The agent's config, file, and checkpoint routes, over its files on
-    /// disk, so they work whether or not the agent is running.
+    /// The agent's config, workspace file, checkpoint, chat history, usage,
+    /// user inbox, and A2A settings routes, over its files on disk, so they
+    /// work whether or not the agent is running.
     fn repair_router_for(&self, slot: &AgentSlot) -> Result<Router, LifecycleError> {
         let checkpoints = self.checkpoint_engine(slot).map_err(|e| {
-            tracing::error!(agent = %slot.name, error = %e, "couldn't open the agent's checkpoint repositories for its repair routes");
+            tracing::error!(agent = %slot.name, error = %e, "couldn't open the agent's checkpoint repositories for its file routes");
             LifecycleError::Failed(format!(
                 "couldn't open {}'s checkpoint history: {e}",
                 slot.name
