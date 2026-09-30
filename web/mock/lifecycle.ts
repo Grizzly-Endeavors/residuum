@@ -145,17 +145,28 @@ function hubStatus(ctx: RouteContext): void {
   } satisfies HubStatusResponse);
 }
 
+/** The stops in progress, so a second request to stop an agent waits for the first, as the hub's per-agent lock makes it. */
+const stopsInProgress = new WeakMap<MockAgent, Promise<void>>();
+
 /**
  * Stop an agent. A running agent is announced as stopping, winds down for a
- * moment, and is then reported stopped.
+ * moment, and is then reported stopped. Asking again while it winds down waits
+ * for that stop.
  */
-async function stopAgent(hub: MockHub, agent: MockAgent): Promise<void> {
-  if (agent.stopping) return;
-  if (agent.runState === "running") {
-    hub.markStopping(agent);
-    await hub.env.sleep(STOP_MS);
-  }
-  hub.transition(agent, "stopped");
+function stopAgent(hub: MockHub, agent: MockAgent): Promise<void> {
+  const inProgress = stopsInProgress.get(agent);
+  if (inProgress !== undefined) return inProgress;
+  const stop = (async (): Promise<void> => {
+    if (agent.runState === "running") {
+      hub.markStopping(agent);
+      await hub.env.sleep(STOP_MS);
+    }
+    hub.transition(agent, "stopped");
+  })().finally(() => {
+    stopsInProgress.delete(agent);
+  });
+  stopsInProgress.set(agent, stop);
+  return stop;
 }
 
 /** `POST /api/hub/stop-all`: stop every running or starting agent and leave the hub running. */
@@ -170,11 +181,20 @@ async function stopAll(ctx: RouteContext): Promise<void> {
   json(ctx.res, 200, { stopped, failed: [] } satisfies StopAllResponse);
 }
 
-/** `DELETE /api/hub/agents/{name}`: checkpoint, stop, and remove an agent, keeping it for a restore. */
-function deleteAgent(ctx: RouteContext): void {
+/**
+ * `DELETE /api/hub/agents/{name}`: stop, checkpoint and remove an agent, keeping it for a restore.
+ * A running agent stops the way `stopAgent` stops it, so it is listed as stopping first.
+ */
+async function deleteAgent(ctx: RouteContext): Promise<void> {
   const agent = namedAgent(ctx);
   if (agent === null) return;
   const { hub } = ctx;
+  if (agent.runState === "running") await stopAgent(hub, agent);
+  // Another delete of the same agent finished while this one waited for it to stop.
+  if (hub.agents.get(agent.name) !== agent) {
+    json(ctx.res, 404, { error: `no agent named '${agent.name}'` });
+    return;
+  }
   agent.state.dropSockets();
   agent.runState = "stopped";
   agent.busySince = null;

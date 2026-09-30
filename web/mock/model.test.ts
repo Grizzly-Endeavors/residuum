@@ -109,6 +109,17 @@ describe("model call route", () => {
     });
   });
 
+  it("takes an artifact's name as the backend does: single hyphens between words, at most 64 characters", async () => {
+    for (const name of ["x9", "wiki-graph", "a-b-c", "a".repeat(64)]) {
+      const res = await complete({ prompt: "hi" }, { "X-Residuum-Artifact": name });
+      expect(res.status, name).toBe(200);
+    }
+    for (const name of ["tip--splitter", "-tip", "tip-", "a".repeat(65), "tip_splitter"]) {
+      const res = await complete({ prompt: "hi" }, { "X-Residuum-Artifact": name });
+      expect(res.status, name).toBe(400);
+    }
+  });
+
   it("holds a good call for the delay, and refuses a bad one at once", async () => {
     const slow = await startRouteHarness(createModelRoutes(250));
     try {
