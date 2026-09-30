@@ -417,7 +417,15 @@ impl SessionStore {
             .await
         {
             Ok(mut file) => {
-                if let Err(e) = file.write_all(buf.as_bytes()).await {
+                // `tokio::fs::File` completes `write_all` once the bytes are
+                // queued for a blocking thread, and dropping the handle does
+                // not wait for that write; `flush` does. Without it a reader
+                // that follows the append can see an empty transcript.
+                let written = match file.write_all(buf.as_bytes()).await {
+                    Ok(()) => file.flush().await,
+                    Err(e) => Err(e),
+                };
+                if let Err(e) = written {
                     tracing::warn!(run_id, path = %path.display(), error = %e, "failed to append to session transcript");
                 }
             }
@@ -933,6 +941,26 @@ mod tests {
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
             overlap: None,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn appended_transcript_is_readable_as_soon_as_append_returns() {
+        // `tokio::fs::File` hands writes to a blocking thread and can report
+        // `write_all` complete before the bytes reach the file, so an append
+        // that skips `flush` is not yet visible to a reader that follows it.
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let info = sample_info();
+        for round in 0..300 {
+            let run_id = format!("run-durable-{round}");
+            store
+                .append_transcript(&run_id, info.started_at, &[Message::user("hello")])
+                .await;
+            let read = store
+                .read_incremental_transcript(&run_id, info.started_at)
+                .await;
+            assert_eq!(read.len(), 1, "append {round} was not readable on return");
         }
     }
 
