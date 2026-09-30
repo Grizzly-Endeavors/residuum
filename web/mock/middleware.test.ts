@@ -11,8 +11,9 @@ describe("the API handler", () => {
 
   it("scopes a request to the agent and runs its route", async () => {
     harness = await startMockServer();
-    const res = await fetchJson(`${harness.baseUrl}/api/agents/atlas/system/timezone`);
-    expect(res).toEqual({ status: 200, body: { timezone: "America/New_York" } });
+    const res = await fetchJson(`${harness.baseUrl}/api/agents/atlas/usage`);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ input_tokens: 0, output_tokens: 0 });
   });
 
   it("passes a request outside /api on", async () => {
@@ -24,9 +25,9 @@ describe("the API handler", () => {
 
   it("names the endpoint when no route takes the request", async () => {
     harness = await startMockServer();
-    expect(await fetchJson(`${harness.baseUrl}/api/agents/atlas/nothing-here?x=1`)).toEqual({
+    expect(await fetchJson(`${harness.baseUrl}/api/agents/atlas/status/nothing-here?x=1`)).toEqual({
       status: 404,
-      body: { error: "mock: unknown endpoint GET /api/nothing-here" },
+      body: { error: "mock: unknown endpoint GET /api/status/nothing-here" },
     });
   });
 
@@ -42,15 +43,15 @@ describe("the API handler", () => {
       routes: [
         {
           method: "GET",
-          pattern: "/api/custom",
+          pattern: "/api/usage",
           handler: ({ res, state, path, query }) => {
             json(res, 200, { agent: state.agentName, path, q: query.get("q") });
           },
         },
       ],
     });
-    const res = await fetchJson(`${harness.baseUrl}/api/agents/scout/custom?q=1`);
-    expect(res).toEqual({ status: 200, body: { agent: "scout", path: "/api/custom", q: "1" } });
+    const res = await fetchJson(`${harness.baseUrl}/api/agents/scout/usage?q=1`);
+    expect(res).toEqual({ status: 200, body: { agent: "scout", path: "/api/usage", q: "1" } });
   });
 
   it("answers 500 when a handler throws", async () => {
@@ -58,12 +59,12 @@ describe("the API handler", () => {
       routes: [
         {
           method: "GET",
-          pattern: "/api/custom",
+          pattern: "/api/usage",
           handler: () => Promise.reject(new Error("the handler failed")),
         },
       ],
     });
-    const res = await fetchJson(`${harness.baseUrl}/api/agents/scout/custom`);
+    const res = await fetchJson(`${harness.baseUrl}/api/agents/scout/usage`);
     expect(res).toEqual({
       status: 500,
       body: { error: "mock server error: the handler failed" },
