@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-/** The web app directory, where `mock/` and `mock-server.ts` live. */
+/** The web app directory, where `mock/` lives. */
 export const WEB_ROOT = resolve(import.meta.dirname, "..");
 
 /** An example config from the repository's `assets/`, or a placeholder comment when it can't be read. */
