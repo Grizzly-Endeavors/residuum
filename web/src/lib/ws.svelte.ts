@@ -15,7 +15,8 @@ import { SessionsStore, isSessionFrame } from "./sessions.svelte";
 import { notifications } from "./notifications.svelte";
 import { invalidate } from "./cache";
 import { userErrorMessage } from "./errors";
-import { WorkspaceWatchSync } from "./workspace-watch";
+import { normalizeWatchPrefix } from "./workspace-watch";
+import { WatchRegistry } from "./watch-registry";
 import {
   fetchChatHistory,
   fetchChatSegment,
@@ -44,9 +45,18 @@ class WsCoordinator {
   private hasConnected = false;
   private frameListeners = new Set<(msg: ServerMessage, agent: string | null) => void>();
   private connectionListeners = new Set<(connected: boolean) => void>();
-  /** The open artifact's watched workspace prefixes, re-sent on reconnect. */
-  private workspaceWatch = new WorkspaceWatchSync((msg) => {
-    this.transport.send(msg);
+  /**
+   * The bound agent's workspace watches. Whatever follows changes on this
+   * socket registers here, and the registry keeps the socket's one watch set
+   * the union of theirs.
+   */
+  readonly watches = new WatchRegistry({
+    send: (prefixes) => {
+      this.transport.send({ type: "watch_workspace", prefixes });
+    },
+    normalize: normalizeWatchPrefix,
+    refusal: (prefix) =>
+      `can't watch "${prefix}": watch paths are relative to the workspace, like "team/wiki", and can't contain ".."`,
   });
   /** Whether this connection already told the user live updates are off. */
   private liveUpdatesOffShown = false;
@@ -56,6 +66,11 @@ class WsCoordinator {
   constructor() {
     onViewedAgentChange((name) => {
       this.useAgent(name);
+    });
+    // First among the frame observers, so a watch owner has acted on a change
+    // before the other observers hear of it.
+    this.frameListeners.add((msg) => {
+      this.watches.handleFrame(msg);
     });
     try {
       this.verbose = localStorage.getItem("residuum-verbose") === "true";
@@ -123,11 +138,12 @@ class WsCoordinator {
       // before listeners hear of the reconnect, so an artifact that reloads
       // on it can't miss changes made in between.
       this.liveUpdatesOffShown = false;
-      this.workspaceWatch.connected();
+      this.watches.connected();
       this.notifyConnection(true);
     };
 
     this.transport.onDisconnected = () => {
+      this.watches.disconnected();
       this.store.clearPostTurnActivity();
       this.notifyConnection(false);
     };
@@ -166,7 +182,7 @@ class WsCoordinator {
     this.sessions = this.createSessions(name, store);
     this.hasConnected = false;
     this.liveUpdatesOffShown = false;
-    this.workspaceWatch.clear();
+    this.watches.bind(name);
     scheduled.reset(name);
     userInbox.reset(name);
     this.agent = name;
@@ -291,14 +307,6 @@ class WsCoordinator {
 
   private notifyConnection(connected: boolean): void {
     for (const listener of this.connectionListeners) listener(connected);
-  }
-
-  /**
-   * Watch these workspace path prefixes on this connection (the open
-   * artifact's), replacing any before. `[]` stops watching.
-   */
-  watchWorkspace(prefixes: readonly string[]): void {
-    this.workspaceWatch.set(prefixes);
   }
 
   // ── Delegated methods ─────────────────────────────────────────────

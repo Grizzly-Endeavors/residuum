@@ -9,6 +9,8 @@ import {
   type RelayedResponse,
 } from "./workbench-bridge";
 import type { ServerMessage } from "./types";
+import { WatchRegistry } from "./watch-registry";
+import { normalizeWatchPrefix } from "./workspace-watch";
 
 const ORIGIN = "https://bear.agent-residuum.com";
 const ARTIFACTS = "https://bear.workbench.agent-residuum.com";
@@ -212,8 +214,10 @@ interface Harness {
   /** Deliver a frame as if `agent`'s connection sent it (`scout` unless given). */
   emit: (msg: ServerMessage, agent?: string | null) => void;
   escapes: () => number;
-  /** Every watch set handed to the coordinator, in order. */
+  /** Every watch set the agent socket's registry sent, in order. */
   watchSets: (readonly string[])[];
+  /** The agent socket's watch registry, open, which the bridge registers with. */
+  registry: WatchRegistry;
   setConnected: (connected: boolean) => void;
 }
 
@@ -226,6 +230,12 @@ function harness(overrides: Partial<BridgeDeps> = {}): Harness {
   let listener: ((msg: ServerMessage, agent: string | null) => void) | null = null;
   let connectionListener: ((connected: boolean) => void) | null = null;
   const watchSets: (readonly string[])[] = [];
+  const registry = new WatchRegistry({
+    send: (prefixes) => watchSets.push(prefixes),
+    normalize: normalizeWatchPrefix,
+    refusal: (prefix) => `can't watch ${prefix}`,
+  });
+  registry.connected();
   let escapes = 0;
   const deps: BridgeDeps = {
     onConnectionChange: (l) => {
@@ -234,7 +244,7 @@ function harness(overrides: Partial<BridgeDeps> = {}): Harness {
         connectionListener = null;
       };
     },
-    watchWorkspace: (prefixes) => watchSets.push(prefixes),
+    registerWatch: (handler) => registry.register(handler),
     origin: ORIGIN,
     boundAgent: () => "scout",
     fetch: vi.fn(() => Promise.resolve(new Response('{"ok":true}', { status: 200 }))),
@@ -255,9 +265,14 @@ function harness(overrides: Partial<BridgeDeps> = {}): Harness {
     bridge,
     frame,
     deps,
-    emit: (msg, agent = "scout") => listener?.(msg, agent),
+    // The coordinator hands each frame to the watch registry, then to the observers.
+    emit: (msg, agent = "scout") => {
+      registry.handleFrame(msg);
+      listener?.(msg, agent);
+    },
     escapes: () => escapes,
     watchSets,
+    registry,
     setConnected: (connected) => connectionListener?.(connected),
   };
 }
@@ -813,5 +828,40 @@ describe("WorkbenchBridge change feed", () => {
     // A page without the SDK never announces itself: its load clears everything.
     h.bridge.documentChanged();
     expect(h.watchSets.at(-1)).toEqual([]);
+  });
+
+  it("owns only its document's watches, leaving other owners' in place", async () => {
+    const h = harness();
+    const other: string[][] = [];
+    h.registry
+      .register({ changed: (changes) => other.push(changes.map((c) => c.path)) })
+      .set(["notes"]);
+
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, watchMsg(["wiki"]));
+    expect(h.watchSets.at(-1)).toEqual(["notes", "wiki"]);
+
+    // Changing, then clearing, the document's watch never touches the other owner's.
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, watchMsg(["inbox/user"]));
+    expect(h.watchSets.at(-1)).toEqual(["inbox/user", "notes"]);
+    h.bridge.documentChanged();
+    expect(h.watchSets.at(-1)).toEqual(["notes"]);
+
+    // Each hears only what is under its own prefixes.
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, watchMsg(["wiki"]));
+    h.emit(changed("wiki/a.md", "notes/b.md"));
+    expect(events(h)).toEqual([changed("wiki/a.md")]);
+    expect(other).toEqual([["notes/b.md"]]);
+
+    h.bridge.stop();
+    expect(h.watchSets.at(-1)).toEqual(["notes"]);
+  });
+
+  it("stops hearing the change feed once it has stopped", async () => {
+    const h = harness();
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, watchMsg([""]));
+    h.bridge.stop();
+    h.emit(changed("wiki/a.md"));
+    h.emit({ type: "workspace_resync", reason: "overflow" });
+    expect(events(h)).toEqual([]);
   });
 });
