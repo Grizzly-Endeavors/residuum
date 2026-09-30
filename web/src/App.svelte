@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
-  import { fetchStatus } from "./lib/api";
   import { ws } from "./lib/ws.svelte";
   import Header from "./components/Header.svelte";
   import BrandMark from "./components/BrandMark.svelte";
@@ -16,7 +15,11 @@
   import SessionView from "./components/SessionView.svelte";
   import Workbench from "./components/Workbench.svelte";
   import Scheduled from "./Scheduled.svelte";
+  import TeamView from "./components/TeamView.svelte";
   import { userInbox } from "./lib/inbox.svelte";
+  import { hub } from "./lib/hub.svelte";
+  import { notifications } from "./lib/notifications.svelte";
+  import { userErrorMessage } from "./lib/errors";
   import { router } from "./lib/router.svelte";
 
   // Below this width the sessions sidebar becomes a drawer over the page.
@@ -34,14 +37,25 @@
 
   router.start();
 
-  let activeView = $derived.by<"chat" | "workspace" | "settings" | "workbench" | "scheduled">(
-    () => {
-      if (router.settings !== null) return "settings";
-      if (router.workbench !== null) return "workbench";
-      if (router.scheduled) return "scheduled";
-      return router.chat.workspace ? "workspace" : "chat";
-    },
-  );
+  let activeView = $derived.by<
+    | "chat"
+    | "workspace"
+    | "settings"
+    | "hub-settings"
+    | "workbench"
+    | "scheduled"
+    | "team"
+    | "team-files"
+  >(() => {
+    if (router.settings !== null) {
+      return router.settings.scope === "hub" ? "hub-settings" : "settings";
+    }
+    if (router.workbench !== null) return "workbench";
+    if (router.team === "overview") return "team";
+    if (router.team === "files") return "team-files";
+    if (router.scheduled) return "scheduled";
+    return router.chat.workspace ? "workspace" : "chat";
+  });
   let workspaceMounted = $state(false);
   let helpOpen = $state(false);
   let feedbackOpen = $state(false);
@@ -52,7 +66,7 @@
   let drawerOpen = $state(false);
 
   let sidebarOpen = $derived(narrow ? drawerOpen : sidebarPreferredOpen);
-  const sessions = ws.sessions;
+  const sessions = $derived(ws.sessions);
 
   function readSidebarPref(): boolean {
     try {
@@ -130,25 +144,49 @@
     });
   });
 
-  onMount(async () => {
-    try {
-      const status = await fetchStatus();
-      mode = status.mode === "setup" ? "setup" : "running";
-    } catch {
-      mode = "running";
-    }
-    if (openedFromNotification) {
-      router.setWorkspace(true);
-    }
+  // No agents yet means first-run setup. The hub socket stays up for the life
+  // of the page and feeds the switcher; the agent connection follows the
+  // router's current agent (see `ws.svelte.ts`), so navigating between pages
+  // or to the team never drops it.
+  onMount(() => {
+    hub.connect();
+    void (async () => {
+      try {
+        await hub.refresh(true);
+        mode = hub.agents.length === 0 ? "setup" : "running";
+      } catch (err) {
+        notifications.surface(
+          "error",
+          userErrorMessage(err, { action: "Couldn't load your agents." }),
+        );
+        mode = "running";
+      }
+      if (openedFromNotification) {
+        router.setWorkspace(true);
+      }
+    })();
+    return () => {
+      hub.disconnect();
+      ws.disconnect();
+    };
   });
 
-  // WS lives as long as the page does — it is not tied to any single screen.
-  // Navigating to Settings / Workspace must not drop the connection.
+  // Settle on an agent that exists: `/` and unknown agents go to the last-used
+  // or first one.
   $effect(() => {
-    if (mode !== "running") return;
-    ws.connect();
-    return () => ws.disconnect();
+    if (mode !== "running" || !hub.loaded) return;
+    const names = hub.agents.map((agent) => agent.name);
+    untrack(() => router.resolveAgent(names));
   });
+
+  async function finishSetup() {
+    try {
+      await hub.refresh(true);
+    } catch {
+      // the hub socket delivers the list once it connects
+    }
+    mode = "running";
+  }
 
   $effect(() => {
     if (mode === "running") {
@@ -191,11 +229,7 @@
       <span class="header-title">Residuum</span>
     </div>
   </div>
-  <Setup
-    onComplete={() => {
-      mode = "running";
-    }}
-  />
+  <Setup onComplete={() => void finishSetup()} />
 {:else}
   <!-- A workbench artifact in full view fills the window on its own. -->
   {#if !router.workbench?.full}
@@ -207,6 +241,18 @@
       onOpenSettings={() => {
         if (activeView === "settings") router.closeSettings();
         else router.openSettings();
+      }}
+      onOpenTeam={() => {
+        if (activeView === "team") router.closeTeam();
+        else router.openTeam("overview");
+      }}
+      onOpenTeamFiles={() => {
+        if (activeView === "team-files") router.closeTeam();
+        else router.openTeam("files");
+      }}
+      onOpenHubSettings={() => {
+        if (activeView === "hub-settings") router.closeSettings();
+        else router.openSettings(undefined, "hub");
       }}
       onOpenWorkbench={() => {
         if (activeView === "workbench") router.closeWorkbench();
@@ -221,8 +267,11 @@
         inboxOpen = true;
       }}
       sessionsToggle={activeView === "settings" ||
+      activeView === "hub-settings" ||
       activeView === "workbench" ||
-      activeView === "scheduled"
+      activeView === "scheduled" ||
+      activeView === "team" ||
+      activeView === "team-files"
         ? undefined
         : {
             open: sidebarOpen,
@@ -231,63 +280,78 @@
           }}
     />
   {/if}
-  {#if activeView === "settings"}
-    <Settings
-      section={router.settings ?? "runtime"}
-      onSelectSection={(section) => router.openSettings(section)}
-      onClose={() => router.closeSettings()}
-    />
-  {:else if activeView === "workbench"}
-    <Workbench
-      artifact={router.workbench?.artifact ?? null}
-      full={router.workbench?.full ?? false}
-      onClose={() => router.closeWorkbench()}
-    />
-  {:else if activeView === "scheduled"}
-    <Scheduled onClose={() => router.closeScheduled()} />
-  {:else}
-    <div class="app-body">
-      {#if sidebarOpen}
-        <SessionsSidebar
-          overlay={narrow}
-          onClose={() => setSidebarOpen(false)}
-          onSelect={selectSession}
+  {#key router.agent}
+    {#if activeView === "settings" || activeView === "hub-settings"}
+      {#key router.settings?.scope}
+        <Settings
+          scope={router.settings?.scope ?? "agent"}
+          agent={router.agent}
+          section={router.settings?.section ?? "runtime"}
+          onSelectSection={(section) =>
+            router.openSettings(section, router.settings?.scope ?? "agent")}
+          onClose={() => router.closeSettings()}
         />
-        {#if narrow}
-          <button
-            type="button"
-            class="sessions-backdrop"
-            aria-label="Close sessions"
-            tabindex="-1"
-            onclick={() => setSidebarOpen(false)}
-          ></button>
-        {/if}
-      {/if}
-      <!-- Behind the open drawer, the page is inert: no focus, no clicks,
-           hidden from assistive tech, so the drawer behaves as a modal. -->
-      <div
-        class="app-main emerges"
-        class:with-workspace={activeView === "workspace"}
-        inert={narrow && drawerOpen}
-      >
-        <div class="workspace-slot" aria-hidden={activeView !== "workspace"}>
-          {#if workspaceMounted}
-            <Workspace onClose={() => router.setWorkspace(false)} />
-          {/if}
-        </div>
-        <div class="main-pane">
-          <!-- The chat stays mounted under a session view so its history,
-               scroll position, and draft survive a visit to a session. -->
-          <div class="chat-slot" class:is-hidden={sessions.view !== null}>
-            <Chat onOpenFeedback={() => openFeedback("feedback")} />
-          </div>
-          {#if sessions.view}
-            <SessionView view={sessions.view} onBack={backToChat} />
-          {/if}
+      {/key}
+    {:else if activeView === "team"}
+      <TeamView onClose={() => router.closeTeam()} />
+    {:else if activeView === "team-files"}
+      <div class="app-body">
+        <div class="app-main">
+          <Workspace scope="team" onClose={() => router.closeTeam()} />
         </div>
       </div>
-    </div>
-  {/if}
+    {:else if activeView === "workbench"}
+      <Workbench
+        artifact={router.workbench?.artifact ?? null}
+        full={router.workbench?.full ?? false}
+        onClose={() => router.closeWorkbench()}
+      />
+    {:else if activeView === "scheduled"}
+      <Scheduled onClose={() => router.closeScheduled()} />
+    {:else}
+      <div class="app-body">
+        {#if sidebarOpen}
+          <SessionsSidebar
+            overlay={narrow}
+            onClose={() => setSidebarOpen(false)}
+            onSelect={selectSession}
+          />
+          {#if narrow}
+            <button
+              type="button"
+              class="sessions-backdrop"
+              aria-label="Close sessions"
+              tabindex="-1"
+              onclick={() => setSidebarOpen(false)}
+            ></button>
+          {/if}
+        {/if}
+        <!-- Behind the open drawer, the page is inert: no focus, no clicks,
+           hidden from assistive tech, so the drawer behaves as a modal. -->
+        <div
+          class="app-main emerges"
+          class:with-workspace={activeView === "workspace"}
+          inert={narrow && drawerOpen}
+        >
+          <div class="workspace-slot" aria-hidden={activeView !== "workspace"}>
+            {#if workspaceMounted}
+              <Workspace onClose={() => router.setWorkspace(false)} />
+            {/if}
+          </div>
+          <div class="main-pane">
+            <!-- The chat stays mounted under a session view so its history,
+               scroll position, and draft survive a visit to a session. -->
+            <div class="chat-slot" class:is-hidden={sessions.view !== null}>
+              <Chat onOpenFeedback={() => openFeedback("feedback")} />
+            </div>
+            {#if sessions.view}
+              <SessionView view={sessions.view} onBack={backToChat} />
+            {/if}
+          </div>
+        </div>
+      </div>
+    {/if}
+  {/key}
 {/if}
 
 <FeedbackModal

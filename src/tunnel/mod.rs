@@ -198,7 +198,7 @@ async fn send_frame(
 
 /// Current status of the tunnel connection.
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) enum TunnelStatus {
+pub enum TunnelStatus {
     /// Not connected to the relay.
     Disconnected,
     /// Attempting to connect to the relay.

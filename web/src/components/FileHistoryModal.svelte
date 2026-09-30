@@ -11,18 +11,26 @@
   import { toast } from "../lib/toast.svelte";
   import { checkpointLocation } from "../lib/undo";
   import type { CheckpointSummary } from "../lib/types";
+  import type { WorkspaceScope } from "../lib/hub-types";
 
   let {
     path,
     onClose,
     onRestored,
+    scope = "agent",
   }: {
     path: string;
+    scope?: WorkspaceScope;
     onClose: () => void;
     onRestored: () => void;
   } = $props();
 
-  const target = $derived(checkpointLocation(path));
+  /**
+   * Where `path` is checkpointed: the team's files in the team repository
+   * (a team-scoped tree is already relative to `team/`), an agent's in its
+   * workspace repository.
+   */
+  const target = $derived(checkpointLocation(scope === "team" ? `team/${path}` : path));
 
   let checkpoints = $state<CheckpointSummary[]>([]);
   let loading = $state(true);

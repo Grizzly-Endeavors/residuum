@@ -184,7 +184,7 @@ pub struct CheckpointDetail {
 }
 
 /// On-disk size and history depth of a checkpoint repository, shown in
-/// `/api/status` and the CLI so growth is visible before the UI lands.
+/// `/api/agents/{name}/status` and the CLI so growth is visible before the UI lands.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct RepoStats {

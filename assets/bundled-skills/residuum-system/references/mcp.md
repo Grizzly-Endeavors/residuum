@@ -29,7 +29,7 @@ Same `mcpServers` map format used by Claude Code/Desktop. `${VAR}` /
 just that server — never a hard failure.
 
 Editing `mcp.json` via `write_file`/`edit_file`, the workspace editor,
-`POST /api/workspace/validate`, or the Settings page's raw editor reports
+`POST /api/agents/<agent>/workspace/validate`, or the Settings page's raw editor reports
 invalid JSON, a missing `command`/`url`, or an unrecognized/deprecated
 transport as a diagnostic alongside the save — the write always goes
 through rather than being rejected. Only the patch endpoint that merges a

@@ -3,19 +3,19 @@
 //! [`types`] holds the shapes shared by the agent host, the hub HTTP API,
 //! and the hub WebSocket; [`directory`] is the interface the HTTP surface
 //! and the A2A listener use to reach hosted agents; [`provision`] writes and
-//! removes agent directories. See
+//! removes agent directories; [`http`] is the hub's HTTP app. See
 //! `docs/design/multi-agent-hub/design.md` and `http-contract.md`.
 
 pub mod activity;
 pub mod directory;
 pub mod host;
+pub mod http;
 pub mod provision;
 pub mod runtime;
 pub mod services;
 #[cfg(test)]
 mod test_support;
 pub mod types;
-mod wiring;
 
 pub use directory::AgentDirectory;
 pub use host::AgentHost;

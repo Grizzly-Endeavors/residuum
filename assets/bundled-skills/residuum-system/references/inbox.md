@@ -6,7 +6,7 @@ There are **two** inboxes, stored as individual JSON files under the workspace r
 |---|---|---|
 | Path | `inbox/agent/` | `inbox/user/` |
 | Archive path | `archive/inbox/agent/` | `archive/inbox/user/` |
-| Write tool | *(external — notification router for `scheduled` and webhook-triggered `external` results, WS `/inbox`, `POST /api/agent-inbox`)* | `user_inbox_add` |
+| Write tool | *(external — notification router for `scheduled` and webhook-triggered `external` results, WS `/inbox`, `POST /api/agents/<agent>/agent-inbox`)* | `user_inbox_add` |
 | Read/manage tools | `inbox_list`, `inbox_read`, `inbox_archive`, `inbox_restore` | *(none — consumed via the web UI)* |
 | Consumer | The agent itself | The user, via the web UI |
 
@@ -59,7 +59,7 @@ The notification router creates an item in the **agent inbox** (`inbox/agent/`) 
 
 ## Workbench Artifacts
 
-A workbench artifact can file an agent-inbox item directly with `POST /api/agent-inbox` (`{ title?, body }`), the same queue `inbox_list`/`inbox_read`/`inbox_archive` work from. Its title defaults to the body's first line, in full, and a blank body is refused. The item's source records which artifact sent it (`artifact:<name>`) or `web` for a direct web UI call. There is no equivalent for the user inbox — an artifact still has no way to write there.
+A workbench artifact can file an agent-inbox item directly with `POST /api/agents/<agent>/agent-inbox` (`{ title?, body }`), the same queue `inbox_list`/`inbox_read`/`inbox_archive` work from. Its title defaults to the body's first line, in full, and a blank body is refused. The item's source records which artifact sent it (`artifact:<name>`) or `web` for a direct web UI call. There is no equivalent for the user inbox — an artifact still has no way to write there.
 
 ## Gotchas
 
@@ -67,4 +67,4 @@ A workbench artifact can file an agent-inbox item directly with `POST /api/agent
 - Archived items are moved (not copied) to the matching `archive/inbox/{agent,user}/` directory. The original file is removed from the source directory. `inbox_restore` (agent inbox) or the web UI's archived view (user inbox) moves it back.
 - There is no unread-count surfaced anywhere in the agent's context or status line — check with `inbox_list unread_only: true` if you need to know.
 - `user_inbox_add`'s `attachments` parameter is all-or-nothing: if one file in the batch fails to copy, none of them are attached and no item is created.
-- There is no tool to list, read, or archive the user inbox's attachments from the agent side — same as the rest of the user inbox, they're write-only for you. Restoring the user inbox is web-UI-only too, via `GET /api/inbox/archive` and `POST /api/inbox/{id}/restore`.
+- There is no tool to list, read, or archive the user inbox's attachments from the agent side — same as the rest of the user inbox, they're write-only for you. Restoring the user inbox is web-UI-only too, via `GET /api/agents/<agent>/inbox/archive` and `POST /api/agents/<agent>/inbox/{id}/restore`.

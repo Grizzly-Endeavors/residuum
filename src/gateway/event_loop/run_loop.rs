@@ -61,6 +61,8 @@ pub(crate) struct AgentControl {
     /// What the hub cleans up when the event loop dies without shutting the
     /// agent down.
     pub cleanup: AgentCleanup,
+    /// The agent's live sessions, for the hub's bug reports.
+    pub session_registry: Arc<crate::background::registry::SessionRegistry>,
     /// The agent's bus publisher, for handing the agent a message.
     publisher: crate::bus::Publisher,
 }
@@ -212,6 +214,7 @@ pub(crate) async fn start_agent(inputs: AgentStartInputs) -> Result<StartedAgent
             sessions: Arc::clone(&parts.session_runtime),
             mcp_registry: Arc::clone(&parts.mcp_registry),
         },
+        session_registry: Arc::clone(&parts.session_registry),
         publisher: core.publisher.clone(),
     };
     let sibling_fanout = Arc::clone(&services.sibling_fanout);
@@ -329,7 +332,6 @@ struct SpawnedHandles {
     root_config_watcher_handle: Option<tokio::task::JoinHandle<()>>,
     workbench_watcher_handle: Option<tokio::task::JoinHandle<()>>,
     change_feed_handle: Option<tokio::task::JoinHandle<()>>,
-    team_change_feed_handle: Option<tokio::task::JoinHandle<()>>,
     /// Raised by [`build_runtime`] once the session spawn listener is up.
     sessions_ready_tx: tokio::sync::watch::Sender<bool>,
 }
@@ -338,8 +340,6 @@ struct SpawnedHandles {
 /// `spawn_agent_tasks` to keep it under the line-count lint.
 struct ApiStates {
     config: web::ConfigApiState,
-    update: web::update::UpdateApiState,
-    tracing: web::tracing_api::TracingApiState,
     memory: web::memory::MemoryApiState,
     model: web::model::ModelApiState,
 }
@@ -348,7 +348,6 @@ fn build_api_states(
     cfg: &Config,
     parts: &crate::gateway::startup::GatewayComponents,
     core: &GatewayCore,
-    services: &HubServices,
     model_call_resources_rx: tokio::sync::watch::Receiver<Arc<web::model::ModelCallResources>>,
 ) -> ApiStates {
     ApiStates {
@@ -359,21 +358,9 @@ fn build_api_states(
             workspace_dir: parts.layout.root().to_path_buf(),
             memory_dir: Some(parts.layout.memory_dir()),
             reload_tx: Some(core.reload_tx.clone()),
-            setup_done: None,
-            secret_lock: Arc::clone(&services.secret_lock),
+            scope: crate::gateway::web::WorkspaceScope::Agent,
             checkpoints: Arc::clone(&parts.checkpoints),
             team: Some(parts.team.view_for_user(parts.layout.root())),
-        },
-        update: web::update::UpdateApiState {
-            update_status: Arc::clone(&services.control.update_status),
-            restart_tx: services.control.restart_tx.clone(),
-            gateway_shutdown_tx: services.control.shutdown_tx.clone(),
-            hub_dir: core.hub_dir.clone(),
-        },
-        tracing: web::tracing_api::TracingApiState {
-            service: Arc::clone(&services.tracing_service),
-            client_context: Arc::clone(&parts.tracing_client_context),
-            session_registry: Arc::clone(&parts.session_registry),
         },
         memory: web::memory::MemoryApiState {
             hybrid_searcher: Arc::clone(&parts.hybrid_searcher),
@@ -390,10 +377,10 @@ fn build_api_states(
 fn build_gateway_state(
     core: &GatewayCore,
     parts: &crate::gateway::startup::GatewayComponents,
-    services: &HubServices,
     file_registry: &crate::gateway::file_server::FileRegistry,
     webhooks: &crate::interfaces::webhook::WebhookTable,
     workspace_watch_health: &tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
+    services: &HubServices,
     activity: &Arc<ActivityTracker>,
 ) -> GatewayState {
     GatewayState {
@@ -402,7 +389,6 @@ fn build_gateway_state(
         stop_tx: core.stop_tx.clone(),
         agent_inbox_dir: parts.layout.agent_inbox_dir(),
         tz: parts.tz,
-        tunnel_status_rx: services.tunnel_status_rx.clone(),
         publisher: core.publisher.clone(),
         bus_handle: core.bus_handle.clone(),
         file_registry: file_registry.clone(),
@@ -412,6 +398,7 @@ fn build_gateway_state(
         agent_messenger: Arc::clone(&parts.agent_messenger),
         skill_state: Arc::clone(&parts.skill_state),
         workspace_watch_health: workspace_watch_health.clone(),
+        team_feed: Arc::clone(&services.team_feed),
         action_store: Arc::clone(&parts.action_store),
         layout: parts.layout.clone(),
         activity: Arc::clone(activity),
@@ -482,32 +469,28 @@ async fn spawn_agent_tasks(
         conversations: parts.endpoint_registry.conversations().clone(),
     };
 
-    let file_registry = crate::gateway::file_server::FileRegistry::new()
+    let file_registry = crate::gateway::file_server::FileRegistry::new(cfg.agent_name.clone())
         .with_workspace_root(parts.layout.root().to_path_buf());
     file_registry.spawn_cleanup_task();
     let webhooks = crate::interfaces::webhook::WebhookTable::from_config(&cfg.webhooks);
     let ChangeFeeds {
         workbench_watcher: workbench_watcher_handle,
         workspace: change_feed_handle,
-        team: team_change_feed_handle,
         health: workspace_watch_health,
-    } = spawn_change_feed_tasks(core, &parts.layout).await;
+    } = spawn_change_feed_tasks(core, &parts.layout, &services.team_feed).await;
     let state = build_gateway_state(
         core,
         parts,
-        services,
         &file_registry,
         &webhooks,
         &workspace_watch_health,
+        services,
         activity,
     );
-    let api_states = build_api_states(cfg, parts, core, services, model_call_resources_rx);
+    let api_states = build_api_states(cfg, parts, core, model_call_resources_rx);
     let router = build_gateway_app(
         state,
         api_states.config,
-        api_states.update,
-        api_states.tracing,
-        services.workbench_serving.clone(),
         super::http::ExtraApiStates {
             memory: api_states.memory,
             model: api_states.model,
@@ -535,41 +518,41 @@ async fn spawn_agent_tasks(
         root_config_watcher_handle,
         workbench_watcher_handle,
         change_feed_handle,
-        team_change_feed_handle,
         sessions_ready_tx,
     })
 }
 
-/// The running change-feed tasks.
+/// The change-feed tasks the agent runs.
 struct ChangeFeeds {
-    /// The artifact reload watcher that follows the feeds.
+    /// The artifact reload watcher that follows the team feed.
     workbench_watcher: Option<tokio::task::JoinHandle<()>>,
     /// The feed over the agent's directory.
     workspace: Option<tokio::task::JoinHandle<()>>,
-    /// The feed over the team directory, published with `team/` paths.
-    team: Option<tokio::task::JoinHandle<()>>,
     /// Whether the agent-directory feed is running.
     health: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
 }
 
-/// Start the workspace change feeds (agent directory and team directory) and
-/// the artifact reload watcher that follows them.
+/// Start the change feed over the agent's directory and the artifact reload
+/// watcher. The team directory has one feed for the whole hub
+/// ([`TeamChangeFeed`](crate::hub::services::TeamChangeFeed)); the watcher
+/// reads it and publishes its reloads on the agent's own bus.
 async fn spawn_change_feed_tasks(
     core: &GatewayCore,
     layout: &crate::workspace::layout::WorkspaceLayout,
+    team_feed: &crate::hub::services::TeamChangeFeed,
 ) -> ChangeFeeds {
     let (health_tx, health) =
         tokio::sync::watch::channel(crate::workspace::watch::WatchHealth::Starting);
     let workbench_watcher = match crate::workbench::watcher::spawn_workbench_watcher(
         layout.team().workbench_dir(),
-        &core.bus_handle,
+        &team_feed.bus,
         core.publisher.clone(),
     )
     .await
     {
         Ok(handle) => Some(handle),
         Err(e) => {
-            tracing::warn!(error = %e, "failed to subscribe the artifact reload watcher to the workspace change feed; open artifacts won't reload on their own");
+            tracing::warn!(error = %e, "failed to subscribe the artifact reload watcher to the team change feed; open artifacts won't reload on their own");
             None
         }
     };
@@ -579,25 +562,9 @@ async fn spawn_change_feed_tasks(
         core.publisher.clone(),
         health_tx,
     );
-    // The team feed's health is not surfaced separately: a watcher that
-    // can't start announces `Unavailable` on the shared topic, which turns
-    // live updates off for every watching client.
-    let team_root = layout.team().root().to_path_buf();
-    if let Err(e) = tokio::fs::create_dir_all(&team_root).await {
-        tracing::warn!(error = %e, path = %team_root.display(), "failed to create the team directory; changes to team files may not appear live");
-    }
-    let (team_health_tx, _team_health) =
-        tokio::sync::watch::channel(crate::workspace::watch::WatchHealth::Starting);
-    let team_feed = crate::workspace::watch::spawn_change_feed(
-        team_root,
-        Some(crate::workspace::team_files::TEAM_PREFIX),
-        core.publisher.clone(),
-        team_health_tx,
-    );
     ChangeFeeds {
         workbench_watcher,
         workspace: Some(change_feed),
-        team: Some(team_feed),
         health,
     }
 }
@@ -784,7 +751,6 @@ async fn build_runtime(
         root_config_watcher_handle: spawned.root_config_watcher_handle,
         workbench_watcher_handle: spawned.workbench_watcher_handle,
         change_feed_handle: spawned.change_feed_handle,
-        team_change_feed_handle: spawned.team_change_feed_handle,
         reload_tx: core.reload_tx,
         command_tx: core.command_tx,
         stop_tx: core.stop_tx,
@@ -1037,7 +1003,6 @@ async fn graceful_shutdown(rt: &mut AgentRuntime) {
         rt.root_config_watcher_handle.take(),
         rt.workbench_watcher_handle.take(),
         rt.change_feed_handle.take(),
-        rt.team_change_feed_handle.take(),
     ]
     .into_iter()
     .flatten()
@@ -1114,14 +1079,12 @@ async fn next_log_only_task_exit(
     root_config_watcher: &mut Option<tokio::task::JoinHandle<()>>,
     workbench_watcher: &mut Option<tokio::task::JoinHandle<()>>,
     change_feed: &mut Option<tokio::task::JoinHandle<()>>,
-    team_change_feed: &mut Option<tokio::task::JoinHandle<()>>,
 ) -> (&'static str, Result<(), tokio::task::JoinError>) {
     tokio::select! {
         result = poll_handle(watcher) => ("workspace config watcher", result),
         result = poll_handle(root_config_watcher) => ("root config watcher", result),
         result = poll_handle(workbench_watcher) => ("artifact reload watcher", result),
         result = poll_handle(change_feed) => ("workspace change feed", result),
-        result = poll_handle(team_change_feed) => ("team change feed", result),
     }
 }
 
@@ -1404,7 +1367,6 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
                 &mut rt.root_config_watcher_handle,
                 &mut rt.workbench_watcher_handle,
                 &mut rt.change_feed_handle,
-                &mut rt.team_change_feed_handle,
             ) => {
                 log_adapter_task_exit(&rt, task_name, &result).await;
             }

@@ -207,6 +207,31 @@ impl CheckpointEngine {
         self
     }
 
+    /// An engine over only the shared team and hub-config repositories, for
+    /// the hub's own routes and commands, which never touch an agent's
+    /// workspace or config repositories. Those are throwaway ones in a
+    /// scratch directory, removed when the engine drops.
+    ///
+    /// # Errors
+    /// Returns [`CheckpointError`] if the scratch repositories can't be
+    /// created.
+    pub fn hub_scoped(
+        shared: Arc<SharedCheckpointRepos>,
+        hub_dir: &Path,
+    ) -> Result<Self, CheckpointError> {
+        let scratch = tempfile::tempdir()
+            .map_err(|e| CheckpointError::Io(format!("failed to create scratch directory: {e}")))?;
+        let engine = Self::with_shared_repos(
+            shared,
+            "hub",
+            hub_dir.join("_unused-workspace"),
+            hub_dir.join("_unused-agent-config"),
+            scratch.path(),
+            None,
+        )?;
+        Ok(engine.with_tempdir_guard(scratch))
+    }
+
     /// Open the checkpoint repositories for a one-off CLI invocation
     /// (`residuum secret`/`residuum agent-keys`/`residuum a2a keys`),
     /// sharing the same on-disk hub-config repository the hub commits to.
@@ -225,20 +250,7 @@ impl CheckpointEngine {
         let checkpoints_dir = crate::config::HubPaths::new(hub_dir).checkpoints_dir();
         let placeholder_team = TeamPaths::new(hub_dir.join("_unused-team"));
         let opened = SharedCheckpointRepos::open(hub_dir, &placeholder_team, &checkpoints_dir)
-            .and_then(|shared| {
-                let scratch = tempfile::tempdir().map_err(|e| {
-                    CheckpointError::Io(format!("failed to create scratch directory: {e}"))
-                })?;
-                let engine = Self::with_shared_repos(
-                    shared,
-                    "cli",
-                    hub_dir.join("_unused-workspace"),
-                    hub_dir.join("_unused-agent-config"),
-                    scratch.path(),
-                    None,
-                )?;
-                Ok(engine.with_tempdir_guard(scratch))
-            });
+            .and_then(|shared| Self::hub_scoped(shared, hub_dir));
         match opened {
             Ok(engine) => Some(engine),
             Err(e) => {

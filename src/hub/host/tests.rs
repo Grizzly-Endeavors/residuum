@@ -14,8 +14,8 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
+use crate::hub::runtime::build_app;
 use crate::hub::test_support::{free_port, mount_reply, write_agent};
-use crate::hub::wiring::build_hub_app;
 
 const POLL_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -66,7 +66,8 @@ impl Fixture {
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
-        let app = build_hub_app(Arc::clone(&host) as Arc<dyn AgentDirectory>);
+        let (reload_tx, _reload_rx) = tokio::sync::mpsc::unbounded_channel();
+        let app = build_app(&host, &services, reload_tx, None).unwrap();
         crate::util::spawn_in_span(async move {
             axum::serve(listener, app).await.unwrap();
         });
@@ -123,7 +124,7 @@ impl Fixture {
     async fn start_session(&self, name: &str, prompt: &str) -> String {
         let response = self
             .http
-            .post(self.url(&format!("/api/agents/{name}/api/sessions")))
+            .post(self.url(&format!("/api/agents/{name}/sessions")))
             .header("x-residuum-artifact", "test-artifact")
             .json(&json!({ "prompt": prompt }))
             .send()
@@ -136,7 +137,7 @@ impl Fixture {
 
     /// The `(live states, completed count)` of the agent's sessions.
     async fn sessions(&self, name: &str) -> (Vec<String>, usize) {
-        let (status, body) = self.get(&format!("/api/agents/{name}/api/sessions")).await;
+        let (status, body) = self.get(&format!("/api/agents/{name}/sessions")).await;
         assert_eq!(status, 200, "{body}");
         let value: Value = serde_json::from_str(&body).unwrap();
         let live = array_at(&value, "live")
@@ -215,7 +216,7 @@ async fn each_agent_serves_its_own_routes_with_separate_memory_and_sessions() {
     assert_eq!(hub.state_of("scout"), AgentState::Running);
 
     for name in ["atlas", "scout"] {
-        let (status, body) = hub.get(&format!("/api/agents/{name}/api/status")).await;
+        let (status, body) = hub.get(&format!("/api/agents/{name}/status")).await;
         assert_eq!(status, 200, "{name}: {body}");
         assert!(body.contains("running"), "{name}: {body}");
     }
@@ -224,8 +225,8 @@ async fn each_agent_serves_its_own_routes_with_separate_memory_and_sessions() {
     assert_eq!(hub.chat("atlas", "hello atlas").await, "atlas here");
 
     // Memory is per agent: each history holds only its own conversation.
-    let (_, scout_history) = hub.get("/api/agents/scout/api/chat/history").await;
-    let (_, atlas_history) = hub.get("/api/agents/atlas/api/chat/history").await;
+    let (_, scout_history) = hub.get("/api/agents/scout/chat/history").await;
+    let (_, atlas_history) = hub.get("/api/agents/atlas/chat/history").await;
     assert!(scout_history.contains("hello scout"), "{scout_history}");
     assert!(!scout_history.contains("hello atlas"), "{scout_history}");
     assert!(atlas_history.contains("hello atlas"), "{atlas_history}");
@@ -253,21 +254,21 @@ async fn each_agent_serves_its_own_routes_with_separate_memory_and_sessions() {
 async fn an_unknown_agent_is_404_and_a_stopped_one_is_409_except_for_repair_routes() {
     let hub = Fixture::new(&["scout"], "").await;
 
-    let (unknown_status, unknown_body) = hub.get("/api/agents/nobody/api/status").await;
+    let (unknown_status, unknown_body) = hub.get("/api/agents/nobody/status").await;
     assert_eq!(unknown_status, 404);
     assert!(
         unknown_body.contains("no agent named 'nobody'"),
         "{unknown_body}"
     );
 
-    let (stopped_status, stopped_body) = hub.get("/api/agents/scout/api/sessions").await;
+    let (stopped_status, stopped_body) = hub.get("/api/agents/scout/sessions").await;
     assert_eq!(stopped_status, 409);
     let value: Value = serde_json::from_str(&stopped_body).unwrap();
     assert_eq!(str_at(&value, "state"), "stopped");
     assert_eq!(str_at(&value, "error"), "scout is stopped");
 
     // The config route still answers, so a stopped agent can be repaired.
-    let (repair_status, repair_body) = hub.get("/api/agents/scout/api/config/raw").await;
+    let (repair_status, repair_body) = hub.get("/api/agents/scout/config/raw").await;
     assert_eq!(repair_status, 200, "{repair_body}");
 }
 
@@ -281,9 +282,9 @@ async fn stopping_one_agent_leaves_the_other_serving() {
 
     assert_eq!(summary.state, AgentState::Stopped);
     assert_eq!(hub.state_of("atlas"), AgentState::Running);
-    let (stopped_status, _) = hub.get("/api/agents/scout/api/sessions").await;
+    let (stopped_status, _) = hub.get("/api/agents/scout/sessions").await;
     assert_eq!(stopped_status, 409);
-    let (running_status, _) = hub.get("/api/agents/atlas/api/sessions").await;
+    let (running_status, _) = hub.get("/api/agents/atlas/sessions").await;
     assert_eq!(running_status, 200);
     assert_eq!(hub.chat("atlas", "still there?").await, "atlas here");
     assert_eq!(
@@ -373,7 +374,7 @@ async fn a_panic_in_one_agents_loop_fails_only_that_agent() {
     );
     assert_eq!(hub.state_of("atlas"), AgentState::Running);
     assert_eq!(hub.chat("atlas", "you ok?").await, "atlas here");
-    let (status, body) = hub.get("/api/agents/scout/api/sessions").await;
+    let (status, body) = hub.get("/api/agents/scout/sessions").await;
     assert_eq!(status, 409);
     assert!(body.contains("failed"), "{body}");
     assert!(
@@ -482,7 +483,7 @@ async fn patch_persists_to_the_config_and_reloads_the_agent() {
         "the change is published"
     );
     // The write was checkpointed in the agent's own config repository.
-    let (_, status) = hub.get("/api/agents/scout/api/status").await;
+    let (_, status) = hub.get("/api/agents/scout/status").await;
     let status: Value = serde_json::from_str(&status).unwrap();
     let count = status
         .get("checkpoints")
@@ -611,7 +612,7 @@ async fn stopping_an_agent_records_its_live_sessions_as_interrupted() {
     let (live, completed) = hub.sessions("scout").await;
     assert!(live.is_empty(), "no session survived the stop: {live:?}");
     assert_eq!(completed, 1, "the interrupted session was recorded");
-    let (_, body) = hub.get("/api/agents/scout/api/sessions").await;
+    let (_, body) = hub.get("/api/agents/scout/sessions").await;
     let listing: Value = serde_json::from_str(&body).unwrap();
     let outcome = array_at(&listing, "completed")
         .first()
@@ -745,6 +746,7 @@ fn is_hub_level(event: &CapturedEvent) -> bool {
     .iter()
     .any(|prefix| event.target.starts_with(prefix))
         || event.task.as_deref() == Some("a2a-sibling-discovery")
+        || event.spans.iter().any(|span| span == "team_feed")
 }
 
 /// The test binary run as a child process, so the scenario below has the whole
@@ -1078,7 +1080,7 @@ async fn deleting_an_agent_stops_it_and_keeps_its_history_for_a_restore() {
     hub.host.adopt("scout");
     hub.host.start("scout").await.unwrap();
     assert_eq!(hub.chat("scout", "am I back?").await, "scout here");
-    let (_, history) = hub.get("/api/agents/scout/api/chat/history").await;
+    let (_, history) = hub.get("/api/agents/scout/chat/history").await;
     assert!(history.contains("remember this"), "{history}");
 }
 

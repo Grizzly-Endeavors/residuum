@@ -36,7 +36,7 @@ describe("toast undo targets the action's own checkpoint", () => {
         const method = init?.method ?? "GET";
         // What `undoLastAction` used to do: ask for the newest checkpoint
         // at click time. A checkpoint taken after the action is now first.
-        if (method === "GET" && url.startsWith("/api/checkpoints?")) {
+        if (method === "GET" && url.startsWith("/api/hub/checkpoints?")) {
           return jsonResponse({
             items: [
               {
@@ -54,7 +54,7 @@ describe("toast undo targets the action's own checkpoint", () => {
           });
         }
         if (method === "POST" && url.includes("/restore")) {
-          const id = decodeURIComponent(url.split("/api/checkpoints/")[1]?.split("/")[0] ?? "");
+          const id = decodeURIComponent(url.split("/api/hub/checkpoints/")[1]?.split("/")[0] ?? "");
           restored.push(id);
           return jsonResponse({
             checkpoint_id: "after-restore",

@@ -12,6 +12,7 @@ use tokio::sync::{Mutex, Semaphore, mpsc, watch};
 
 use crate::a2a::SharedA2aKeys;
 use crate::agent_keys::SharedAgentKeys;
+use crate::bus::BusHandle;
 use crate::checkpoints::SharedCheckpointRepos;
 use crate::config::paths::TeamPaths;
 use crate::config::{HubConfig, HubPaths};
@@ -22,6 +23,7 @@ use crate::tunnel::TunnelStatus;
 use crate::update::SharedUpdateStatus;
 use crate::util::FatalError;
 use crate::workspace::team_files::TeamWriteCoordinator;
+use crate::workspace::watch::WatchHealth;
 
 /// The hub-level controls an agent's HTTP routes drive: the update status
 /// and the requests to restart or shut down the whole process.
@@ -33,6 +35,59 @@ pub(crate) struct HubControl {
     pub restart_tx: mpsc::Sender<()>,
     /// Asks the hub to stop every agent and exit.
     pub shutdown_tx: mpsc::Sender<()>,
+}
+
+/// The hub's one change feed over the team directory.
+///
+/// It publishes `WorkspaceEvent`s on `topics::Workspace` of its own bus, with
+/// paths under the `team/` prefix. The hub WebSocket, every agent's
+/// WebSocket (for clients watching `team/...`), and every agent's artifact
+/// reload watcher read it, so a change to a team file is watched once no
+/// matter how many agents are running.
+pub(crate) struct TeamChangeFeed {
+    /// The bus the feed publishes on.
+    pub bus: BusHandle,
+    /// Whether the feed is running, so a client that starts watching can be
+    /// told when live updates are off.
+    pub health: watch::Receiver<WatchHealth>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl TeamChangeFeed {
+    /// Start the feed over `team_root`, creating the directory if it is
+    /// missing so the watcher has something to watch.
+    async fn start(team_root: PathBuf) -> Self {
+        if let Err(e) = tokio::fs::create_dir_all(&team_root).await {
+            tracing::warn!(error = %e, path = %team_root.display(), "failed to create the team directory; changes to team files may not appear live");
+        }
+        // The broker serves clients of every agent, so its own log lines belong
+        // to the hub's team feed, not to whichever agent subscribed.
+        let bus = tracing::info_span!("team_feed").in_scope(crate::bus::spawn_broker);
+        let (health_tx, health) = watch::channel(WatchHealth::Starting);
+        let task = crate::workspace::watch::spawn_change_feed(
+            team_root,
+            Some(crate::workspace::team_files::TEAM_PREFIX),
+            bus.publisher(),
+            health_tx,
+        );
+        Self { bus, health, task }
+    }
+
+    /// A feed that watches nothing, for tests.
+    #[cfg(test)]
+    pub(crate) fn idle() -> Self {
+        Self {
+            bus: crate::bus::spawn_broker(),
+            health: watch::channel(WatchHealth::Native).1,
+            task: tokio::spawn(std::future::ready(())),
+        }
+    }
+}
+
+impl Drop for TeamChangeFeed {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 
 /// Shared services handed to every agent's runtime.
@@ -73,6 +128,8 @@ pub(crate) struct HubServices {
     pub control: HubControl,
     /// Whether the workbench artifacts listener is running, and on which port.
     pub workbench_serving: crate::workbench::server::WorkbenchServing,
+    /// The one change feed over the team directory.
+    pub team_feed: Arc<TeamChangeFeed>,
     /// Feeds relay-discovered sibling instances to every registered agent's
     /// A2A client hub. Each agent registers at start and unregisters at stop.
     pub sibling_fanout: Arc<crate::a2a::SiblingFanout>,
@@ -114,6 +171,7 @@ impl HubServices {
                     checkpoints_dir.display()
                 ))
             })?;
+        let team_feed = Arc::new(TeamChangeFeed::start(team_paths.root().to_path_buf()).await);
         let sibling_fanout = crate::a2a::SiblingFanout::new_shared();
         crate::a2a::spawn_sibling_discovery(Arc::clone(&sibling_fanout), tunnel_status_rx.clone());
         Ok(Self {
@@ -130,6 +188,7 @@ impl HubServices {
             secret_lock: Arc::new(Mutex::new(())),
             control,
             workbench_serving,
+            team_feed,
             sibling_fanout,
         })
     }

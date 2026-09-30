@@ -308,7 +308,7 @@ pub(crate) async fn send_session_message(
 }
 
 /// Stop the live session at `address`, as the sidebar's stop button and the
-/// `POST /api/sessions/{address}/stop` endpoint do.
+/// `POST /api/agents/{name}/sessions/{address}/stop` endpoint do.
 ///
 /// # Errors
 /// Returns a [`SessionCommandError`] when `address` is `main` or doesn't name

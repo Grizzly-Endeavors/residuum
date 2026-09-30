@@ -4,7 +4,7 @@ You see one file tree: your own directory, plus a `team/` prefix for the folder 
 
 ## Paths
 
-- A relative path starting with `team/` is in the shared team folder: `team/wiki/people/sam.md`. This works in `read_file`, `write_file`, `edit_file`, the `artifacts` of `a2a_task_update`, and the workspace file API (`/api/workspace/files`, `file`, `raw`, `tree`, `read`, `validate`, `dir`, `move`, and `DELETE /api/workspace/file`).
+- A relative path starting with `team/` is in the shared team folder: `team/wiki/people/sam.md`. This works in `read_file`, `write_file`, `edit_file`, the `artifacts` of `a2a_task_update`, and the workspace file API (`/api/agents/<agent>/workspace/files`, `file`, `raw`, `tree`, `read`, `validate`, `dir`, `move`, and `DELETE /api/agents/<agent>/workspace/file`).
 - Any other relative path is in your own directory, so `SOUL.md` is yours.
 - Absolute paths work as usual.
 - Your own directory can never contain a `team` entry. A write to a path inside `<your directory>/team/` is refused with an explanation; use `team/...` to work in the shared folder.

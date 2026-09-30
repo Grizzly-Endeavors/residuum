@@ -17,6 +17,10 @@ mod ts_export {
         ActionInfo, ArtifactSummary, ClientMessage, PulseInfo, ServerMessage, SessionListResponse,
         WorkbenchInfo,
     };
+    use residuum::hub::types::{
+        A2aVisibility, AgentActivity, AgentLastError, AgentPatch, AgentState, AgentSummary,
+        CreateAgentRequest, DeleteOutcome,
+    };
     use residuum::inference::ImageData;
 
     #[test]
@@ -34,9 +38,9 @@ mod ts_export {
         // HTTP response type for `GET /api/sessions` (its `SessionSummary`
         // items are also carried by the `session_started` frame).
         SessionListResponse::export_all(&cfg).unwrap();
-        // HTTP response items for `GET /api/workbench/artifacts`.
+        // HTTP response items for `GET /api/team/workbench/artifacts`.
         ArtifactSummary::export_all(&cfg).unwrap();
-        // `GET /api/workbench/info` (its relay origins are exported with it).
+        // `GET /api/team/workbench/info` (its relay origins are exported with it).
         WorkbenchInfo::export_all(&cfg).unwrap();
         // The checkpoints API: `GET /api/checkpoints` (its `CheckpointSummary`
         // items and `CheckpointTrigger` are exported with it), `GET
@@ -53,6 +57,21 @@ mod ts_export {
         // `GET /api/scheduled/pulses` and `GET /api/scheduled/actions`.
         PulseInfo::export_all(&cfg).unwrap();
         ActionInfo::export_all(&cfg).unwrap();
+
+        // The hub API: `AgentSummary` (with `AgentState`, `AgentLastError` and
+        // `A2aVisibility`) is the item of `GET /api/hub/agents` and the
+        // `agent` of the hub WebSocket's frames; `CreateAgentRequest` and
+        // `AgentPatch` are the bodies of `POST /api/hub/agents` and `PATCH
+        // /api/hub/agents/{name}`; `DeleteOutcome` answers the `DELETE`;
+        // `AgentActivity` is the `busy`/`unread` pair of `agent_activity`.
+        AgentSummary::export_all(&cfg).unwrap();
+        AgentState::export_all(&cfg).unwrap();
+        AgentLastError::export_all(&cfg).unwrap();
+        A2aVisibility::export_all(&cfg).unwrap();
+        CreateAgentRequest::export_all(&cfg).unwrap();
+        AgentPatch::export_all(&cfg).unwrap();
+        DeleteOutcome::export_all(&cfg).unwrap();
+        AgentActivity::export_all(&cfg).unwrap();
 
         // Verify the generated files exist
         assert!(

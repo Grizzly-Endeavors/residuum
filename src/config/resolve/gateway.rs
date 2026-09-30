@@ -30,14 +30,6 @@ pub(super) fn resolve_timezone(file: Option<&HubConfigFile>) -> Result<chrono_tz
     })
 }
 
-/// Resolve gateway configuration from environment variables and defaults only.
-///
-/// Used by the setup server which runs before any config file exists.
-#[must_use]
-pub(crate) fn resolve_default_gateway_config() -> GatewayConfig {
-    resolve_gateway_config(None)
-}
-
 /// Resolve gateway configuration from TOML section and environment variables.
 pub(super) fn resolve_gateway_config(section: Option<&GatewayConfigFile>) -> GatewayConfig {
     let mut cfg = GatewayConfig::default();

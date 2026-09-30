@@ -56,7 +56,7 @@ impl From<crate::update::UnverifiedUpdate> for UnverifiedUpdateResponse {
     }
 }
 
-/// Response from `GET /api/update/status` and `POST /api/update/check`.
+/// Response from `GET /api/hub/update/status` and `POST /api/hub/update/check`.
 #[derive(Serialize)]
 pub(crate) struct UpdateStatusResponse {
     current: String,
@@ -73,14 +73,14 @@ pub(crate) struct UpdateStatusResponse {
     unverified_update: Option<UnverifiedUpdateResponse>,
 }
 
-/// `GET /api/update/status` — return current update state.
+/// `GET /api/hub/update/status` — return current update state.
 pub(crate) async fn api_update_status(
     State(state): State<UpdateApiState>,
 ) -> Json<UpdateStatusResponse> {
     Json(current_status(&state).await)
 }
 
-/// `POST /api/update/check` — trigger an immediate check, return refreshed status.
+/// `POST /api/hub/update/check` — trigger an immediate check, return refreshed status.
 pub(crate) async fn api_update_check(
     State(state): State<UpdateApiState>,
 ) -> Json<UpdateStatusResponse> {
@@ -103,7 +103,7 @@ async fn current_status(state: &UpdateApiState) -> UpdateStatusResponse {
     }
 }
 
-/// `POST /api/update/apply` — download, install, then restart.
+/// `POST /api/hub/update/apply` — download, install, then restart.
 pub(crate) async fn api_update_apply(
     State(state): State<UpdateApiState>,
 ) -> Result<Json<UpdateStatusResponse>, (StatusCode, String)> {
@@ -150,7 +150,7 @@ pub(crate) async fn api_update_apply(
     Ok(Json(current_status(&state).await))
 }
 
-/// `POST /api/update/restart` — send restart signal only (binary already replaced).
+/// `POST /api/hub/update/restart` — send restart signal only (binary already replaced).
 pub(crate) async fn api_update_restart(
     State(state): State<UpdateApiState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
@@ -164,7 +164,7 @@ pub(crate) async fn api_update_restart(
     Ok(Json(serde_json::json!({ "restarting": true })))
 }
 
-/// `POST /api/shutdown` — trigger graceful gateway shutdown.
+/// `POST /api/hub/shutdown` — trigger graceful gateway shutdown.
 pub(crate) async fn api_shutdown(
     State(state): State<UpdateApiState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {

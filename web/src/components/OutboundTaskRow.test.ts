@@ -1,5 +1,14 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, jsonResponse, mockFetch, render, screen, settle } from "../test/component";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  fireEvent,
+  jsonResponse,
+  mockFetch,
+  render,
+  screen,
+  settle,
+  stubWebSocket,
+} from "../test/component";
+import { setCurrentAgent } from "../lib/paths";
 import { ws } from "../lib/ws.svelte";
 import type { OutboundA2aTaskSummary } from "../lib/types";
 import OutboundTaskRow from "./OutboundTaskRow.svelte";
@@ -15,7 +24,13 @@ const TASK: OutboundA2aTaskSummary = {
   unreachable_since: null,
 };
 
+beforeEach(() => {
+  stubWebSocket();
+  setCurrentAgent("scout");
+});
+
 afterEach(() => {
+  setCurrentAgent(null);
   vi.unstubAllGlobals();
   ws.sessions.outbound = [];
   ws.sessions.outboundUnreachable.clear();
@@ -41,7 +56,7 @@ describe("OutboundTaskRow", () => {
     const calls: string[] = [];
     mockFetch((url, init) => {
       calls.push(`${init?.method ?? "GET"} ${url}`);
-      if (url.endsWith("/api/a2a/outbound/t1/stop")) {
+      if (url.endsWith("/api/agents/scout/a2a/outbound/t1/stop")) {
         return jsonResponse(
           {
             error: "Couldn't reach laptop to cancel the task. You can stop watching it instead.",
@@ -50,7 +65,7 @@ describe("OutboundTaskRow", () => {
           502,
         );
       }
-      if (url.endsWith("/api/a2a/outbound/t1/stop-watching")) {
+      if (url.endsWith("/api/agents/scout/a2a/outbound/t1/stop-watching")) {
         return jsonResponse({ ...TASK, state: "canceled", open: false });
       }
       throw new Error(`unexpected ${url}`);
@@ -64,8 +79,8 @@ describe("OutboundTaskRow", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Stop watching" }));
     await settle();
     expect(calls).toEqual([
-      "POST /api/a2a/outbound/t1/stop",
-      "POST /api/a2a/outbound/t1/stop-watching",
+      "POST /api/agents/scout/a2a/outbound/t1/stop",
+      "POST /api/agents/scout/a2a/outbound/t1/stop-watching",
     ]);
   });
 });

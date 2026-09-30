@@ -53,8 +53,7 @@ fn fixture() -> Fixture {
         workspace_dir: agent_dir.clone(),
         memory_dir: None,
         reload_tx: None,
-        setup_done: None,
-        secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+        scope: crate::gateway::web::WorkspaceScope::Agent,
         checkpoints,
     };
     Fixture {

@@ -48,10 +48,10 @@ describe("Update page", () => {
     status = updateStatus();
     mockFetch((url, init) => {
       const method = init?.method ?? "GET";
-      if (url.endsWith("/api/update/apply") && method === "POST") {
+      if (url.endsWith("/api/hub/update/apply") && method === "POST") {
         return jsonResponse(status);
       }
-      if (url.endsWith("/api/update/status") && method === "GET") {
+      if (url.endsWith("/api/hub/update/status") && method === "GET") {
         if (!gatewayUp) return Promise.reject(new TypeError("Failed to fetch"));
         return jsonResponse(status);
       }

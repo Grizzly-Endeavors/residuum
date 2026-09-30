@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setCurrentAgent } from "./paths";
 import { SessionsStore } from "./sessions.svelte";
 import type { OutboundA2aTaskSummary } from "./types";
 
@@ -34,7 +35,12 @@ function respond(status: number, body: unknown): void {
   );
 }
 
+beforeEach(() => {
+  setCurrentAgent("scout");
+});
+
 afterEach(() => {
+  setCurrentAgent(null);
   vi.unstubAllGlobals();
 });
 

@@ -12,7 +12,7 @@
 //!
 //! Reused in three places: after an agent `write_file`/`edit_file` call
 //! (`src/tools/write.rs`, `src/tools/edit.rs`), the `POST
-//! /api/workspace/validate` endpoint and the raw config save handlers
+//! /api/agents/{name}/workspace/validate` endpoint and the raw config save handlers
 //! (`src/gateway/web/workspace.rs`, `config.rs`, `providers.rs`), and the
 //! load/reload notices for these files.
 

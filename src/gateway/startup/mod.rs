@@ -66,8 +66,6 @@ pub(crate) struct GatewayComponents {
     /// and the web file API.
     pub team: TeamWriteCoordinator,
     pub output_topic_override_tx: tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
-    /// Snapshot of the runtime client context for bug-report submissions.
-    pub tracing_client_context: Arc<crate::tracing_service::ClientContext>,
     /// Remote A2A agents this instance's client can reach, loaded from
     /// `config/a2a.json`.
     pub a2a_hub: Arc<crate::a2a::A2aClientHub>,
@@ -1343,7 +1341,6 @@ pub(crate) async fn initialize(
         path_policy: infra.path_policy,
         team: shared.team.clone(),
         output_topic_override_tx,
-        tracing_client_context: infra.tracing_client_context,
         a2a_hub: infra.a2a_hub,
         a2a_tracker: infra.a2a_tracker,
         checkpoints,

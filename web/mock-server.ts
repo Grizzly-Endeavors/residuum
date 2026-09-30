@@ -4,6 +4,13 @@
  *
  * State is held in-memory for the duration of the dev server session.
  * Nothing persists across restarts.
+ *
+ * The mock serves the multi-agent hub HTTP contract
+ * (docs/design/multi-agent-hub/http-contract.md): `/api/agents/{name}/...`,
+ * `/api/hub/...` (lifecycle, hub config, secrets, and `/api/hub/ws`) and
+ * `/api/team/...`. Each agent has its own state and its own WebSocket. The
+ * hub-level and team-level data (secrets, hub config, team files, workbench)
+ * live in one shared state.
  */
 
 import type { Plugin, ViteDevServer } from "vite";
@@ -22,6 +29,8 @@ const MOCK_FEATURES: readonly string[] = ["model-complete", "artifact-sessions",
 // ─── In-memory state ───────────────────────────────────────────────────────────
 
 interface MockState {
+  /** The agent this state belongs to, or `hub` for the hub- and team-level state. */
+  agentName: string;
   mode: "setup" | "running";
   secrets: Map<string, string>;
   agentKeys: Map<string, { value: string; description: string; created_by: "user" | "agent" }>;
@@ -516,8 +525,9 @@ function startMockArtifactsListener(state: MockState) {
   });
 }
 
-function createState(): MockState {
+function createState(agentName: string): MockState {
   return {
+    agentName,
     mode: process.env.VITE_MOCK_SETUP === "1" ? "setup" : "running",
     workbenchPort: null,
     workbenchArtifacts: new Map([
@@ -1114,6 +1124,19 @@ function text(res: ServerResponse, status: number, body: string) {
   res.end(body);
 }
 
+/** A stand-in for the file version token (`ETag`) the workspace API reports. */
+function mockFileVersion(content: string): string {
+  let hash = 0;
+  for (let i = 0; i < content.length; i++) hash = (hash * 31 + content.charCodeAt(i)) >>> 0;
+  return `"${hash.toString(16)}-${content.length}"`;
+}
+
+/** A workspace file read: the content, with its version as the `ETag` header. */
+function fileRead(res: ServerResponse, content: string) {
+  res.writeHead(200, { "Content-Type": "text/plain", ETag: mockFileVersion(content) });
+  res.end(content);
+}
+
 /**
  * Merge a JSON diff (the shape the Settings form's diff builders in
  * `lib/settings-toml.ts` send) into a plain object in place — the mock's
@@ -1157,7 +1180,7 @@ function artifactIdentity(req: IncomingMessage): string | null {
 
 // ─── REST middleware ───────────────────────────────────────────────────────────
 
-function setupRestMiddleware(server: ViteDevServer, state: MockState) {
+function setupRestMiddleware(server: ViteDevServer, hub: MockHub) {
   server.middlewares.use(async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     const url = req.url ?? "";
     const method = req.method ?? "GET";
@@ -1169,13 +1192,21 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
     }
 
     // Strip query string for matching, but keep params for handlers that need them.
-    const [path, rawQuery = ""] = url.split("?");
+    const [rawPath = "", rawQuery = ""] = url.split("?");
     const query = new URLSearchParams(rawQuery);
 
     try {
+      // Scope the request: an agent's routes run against that agent's state, hub
+      // and team routes against the shared state, and each is handled below as
+      // the unscoped route it used to be.
+      const routed = await routeScoped(hub, req, res, rawPath, method);
+      if (routed === "handled") return;
+      const { state, path } = routed;
+
       // ── Status & system ────────────────────────────────────────────────
       if (path === "/api/status" && method === "GET") {
         json(res, 200, {
+          agent: state.agentName,
           mode: state.mode,
           version: MOCK_RESIDUUM_VERSION,
           features: MOCK_FEATURES,
@@ -1222,6 +1253,33 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
           },
         );
         state.dropSockets();
+        json(res, 200, { ok: true });
+        return;
+      }
+
+      // A teammate messages an agent (`?agent=atlas`): the message lands in its
+      // main conversation, and the hub reports it unread until the web UI
+      // opens that agent's socket.
+      if (path === "/api/mock/teammate-message" && method === "POST") {
+        const agent = hub.agents.get(query.get("agent") ?? "");
+        if (!agent) {
+          json(res, 404, { error: "mock: name an agent with ?agent=" });
+          return;
+        }
+        const now = new Date().toISOString();
+        const from = query.get("from") ?? "scout";
+        const reply = `${from} asked me to check the wiki index. On it.`;
+        agent.state.extraRecent.push(
+          {
+            role: "user",
+            content: `[Message from ${from}]\nCan you look over the wiki index when you get a chance?`,
+            timestamp: now,
+            visibility: "user",
+          },
+          { role: "assistant", content: reply, timestamp: now, visibility: "user" },
+        );
+        agent.state.broadcast({ type: "response", reply_to: "teammate", content: reply });
+        if (agent.connectedClients() === 0) hub.addUnread(agent);
         json(res, 200, { ok: true });
         return;
       }
@@ -1422,6 +1480,11 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
         return;
       }
 
+      if (path === "/api/cloud/status" && method === "GET") {
+        json(res, 200, MOCK_CLOUD_STATUS);
+        return;
+      }
+
       if (path === "/api/hub/config/raw" && method === "GET") {
         text(res, 200, state.hubConfigToml);
         return;
@@ -1449,16 +1512,35 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
         return;
       }
 
-      if (path === "/api/config/complete-setup" && method === "POST") {
+      if (path === "/api/hub/config/complete-setup" && method === "POST") {
         const body = JSON.parse(await readBody(req));
+        const name = String(body.agent_name ?? "");
+        const nameProblem = mockAgentNameProblem(name);
+        if (nameProblem !== null) {
+          json(res, 400, { valid: false, error: nameProblem, diagnostics: [] });
+          return;
+        }
+        // Setup only creates the first agent (`refuse_when_agents_exist`).
+        if (hub.agents.size > 0) {
+          const existing = [...hub.agents.keys()].sort(byName);
+          json(res, 409, {
+            valid: false,
+            error: existing.includes(name)
+              ? `An agent named '${name}' already exists. Choose a different name, or change the existing agent from its settings.`
+              : `This residuum already has an agent ('${existing.join("', '")}'). Setup only creates the first agent.`,
+            diagnostics: [],
+          });
+          return;
+        }
         state.hubConfigToml = body.hub_config ?? state.hubConfigToml;
-        state.configToml = body.config ?? state.configToml;
-        state.providersToml = body.providers ?? state.providersToml;
+        const agent = hub.createAgent(name, { role: null });
+        agent.state.configToml = body.config ?? agent.state.configToml;
+        agent.state.providersToml = body.providers ?? agent.state.providersToml;
         if (body.mcp_json) {
-          state.mcpJson = body.mcp_json;
+          agent.state.mcpJson = body.mcp_json;
         }
         state.mode = "running";
-        json(res, 200, { valid: true });
+        json(res, 200, { valid: true, diagnostics: [] });
         return;
       }
 
@@ -1833,7 +1915,7 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
       if (path === "/api/workspace/files" && method === "GET") {
         const urlObj = new URL(url, "http://localhost");
         const wsPath = urlObj.searchParams.get("path") ?? "";
-        const entries = state.workspaceFiles[wsPath];
+        const entries = filesFor(hub, state, wsPath).workspaceFiles[wsPath];
         if (entries) {
           json(res, 200, entries);
         } else {
@@ -1845,9 +1927,9 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
       if (path === "/api/workspace/file" && method === "GET") {
         const urlObj = new URL(url, "http://localhost");
         const filePath = urlObj.searchParams.get("path") ?? "";
-        const content = state.workspaceFileContents[filePath];
+        const content = filesFor(hub, state, filePath).workspaceFileContents[filePath];
         if (content !== undefined) {
-          text(res, 200, content);
+          fileRead(res, content);
         } else {
           text(res, 404, "file not found");
         }
@@ -1856,8 +1938,8 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
 
       if (path === "/api/workspace/file" && method === "PUT") {
         const body = JSON.parse(await readBody(req));
-        state.workspaceFileContents[body.path] = body.content;
-        json(res, 200, { saved: true });
+        filesFor(hub, state, body.path).workspaceFileContents[body.path] = body.content;
+        json(res, 200, { saved: true, version: mockFileVersion(String(body.content)) });
         return;
       }
 
@@ -1891,18 +1973,30 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
 
 // ─── WebSocket handler ─────────────────────────────────────────────────────────
 
-function setupWebSocket(server: ViteDevServer, state: MockState) {
+function setupWebSocket(server: ViteDevServer, hub: MockHub, agent: MockAgent) {
+  const state = agent.state;
   const httpServer = server.httpServer;
   if (!httpServer) return;
 
   const wss = new WebSocketServer({ noServer: true });
   let responseIndex = 0;
+  const wsPath = `/api/agents/${agent.name}/ws`;
 
   httpServer.on("upgrade", (req, socket, head) => {
     const url = req.url ?? "";
 
-    // Only handle /ws upgrades — Vite's HMR uses /__vite_hmr or /
-    if (url === "/ws" || url.startsWith("/ws?")) {
+    // Only handle this agent's socket — Vite's HMR uses /__vite_hmr or /
+    if (url === wsPath || url.startsWith(`${wsPath}?`)) {
+      if (agent.runState !== "running") {
+        const body = JSON.stringify({
+          error: `${agent.name} is ${agent.runState}`,
+          state: agent.runState,
+        });
+        socket.end(
+          `HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
+        );
+        return;
+      }
       wss.handleUpgrade(req, socket, head, (ws) => {
         wss.emit("connection", ws, req);
       });
@@ -1985,7 +2079,11 @@ function setupWebSocket(server: ViteDevServer, state: MockState) {
     return session;
   }
 
+  agent.connectedClients = () => wss.clients.size;
+
   wss.on("connection", (ws: WebSocket) => {
+    // Opening the agent's socket is what shows its messages.
+    hub.clearUnread(agent);
     ws.on("message", (raw: Buffer) => {
       let msg: { type: string; [key: string]: unknown };
       try {
@@ -2162,6 +2260,7 @@ function setupWebSocket(server: ViteDevServer, state: MockState) {
     };
 
     send({ type: "turn_started", reply_to: replyTo });
+    hub.setBusy(agent, true);
     setTimeout(() => {
       send({ type: "broadcast_response", content: "Looking through recent notes first." });
       send({
@@ -2197,6 +2296,8 @@ function setupWebSocket(server: ViteDevServer, state: MockState) {
       });
       send({ type: "response", reply_to: replyTo, content: response });
       send({ type: "turn_ended", reply_to: replyTo });
+      hub.setBusy(agent, false);
+      if (wss.clients.size === 0) hub.addUnread(agent);
       const now = new Date().toISOString();
       state.extraRecent.push(
         { role: "user", content, timestamp: now, visibility: "user" },
@@ -2220,23 +2321,540 @@ function setupWebSocket(server: ViteDevServer, state: MockState) {
   }
 }
 
+// ─── Hub: agents, lifecycle, and scoped routing ────────────────────────────────
+
+type MockRunState = "starting" | "running" | "stopped" | "failed";
+
+interface MockAgent {
+  name: string;
+  runState: MockRunState;
+  lastError: { message: string; at: string } | null;
+  autostart: boolean;
+  role: string | null;
+  visibility: "public" | "private";
+  /** A main turn is in progress. */
+  busy: boolean;
+  /** Main-conversation messages the web UI hasn't shown. */
+  unread: number;
+  state: MockState;
+  /** How many web clients have this agent's WebSocket open. Set by `setupWebSocket`. */
+  connectedClients: () => number;
+}
+
+interface MockHub {
+  agents: Map<string, MockAgent>;
+  /** Hub-level and team-level state: secrets, hub config, team files, the workbench. */
+  hubState: MockState;
+  /** Register an agent and open its WebSocket route. */
+  createAgent: (
+    name: string,
+    options?: { role?: string | null; runState?: MockRunState; lastError?: string },
+  ) => MockAgent;
+  summary: (agent: MockAgent) => Record<string, unknown>;
+  /** Send a frame to every hub WebSocket client. */
+  broadcast: (frame: Record<string, unknown>) => void;
+  setBusy: (agent: MockAgent, busy: boolean) => void;
+  addUnread: (agent: MockAgent) => void;
+  clearUnread: (agent: MockAgent) => void;
+  /** Move an agent to a run state and tell hub clients. */
+  transition: (agent: MockAgent, runState: MockRunState) => void;
+}
+
+const MOCK_MAX_AGENT_NAME_LEN = 24;
+const MOCK_RESERVED_NAMES = ["hub", "team", "agents"];
+
+/** The backend's `validate_agent_name`: an error message, or `null` for a valid name. */
+function mockAgentNameProblem(name: string): string | null {
+  if (name === "") return "agent name must not be empty";
+  if (name.length > MOCK_MAX_AGENT_NAME_LEN) {
+    return `agent name '${name}' is too long: at most ${MOCK_MAX_AGENT_NAME_LEN} characters`;
+  }
+  if (!/^[a-z0-9-]+$/.test(name) || name.startsWith("-") || name.endsWith("-")) {
+    return `agent name '${name}' must contain only lowercase letters, digits, and hyphens, and must not start or end with a hyphen`;
+  }
+  if (MOCK_RESERVED_NAMES.includes(name)) {
+    return `agent name '${name}' is reserved and cannot be used; reserved names: ${MOCK_RESERVED_NAMES.join(", ")}`;
+  }
+  return null;
+}
+
+/** What `GET /api/hub/cloud/status` reports, and the `tunnel` of `GET /api/hub/status`. */
+const MOCK_CLOUD_STATUS = {
+  status: "disconnected",
+  user_id: null,
+  has_token: false,
+  enabled: false,
+  viewed_via_tunnel: false,
+};
+
+/** The backend's error for a body it can't use (`parse_body` in `src/hub/http/lifecycle.rs`). */
+function mockBadBody(err: unknown): string {
+  return `the request body isn't valid for this route: ${err instanceof Error ? err.message : String(err)}`;
+}
+
+const byName = (a: string, b: string): number => (a === b ? 0 : a < b ? -1 : 1);
+
+/**
+ * Routes that still work on a stopped or failed agent, so the user can repair
+ * it: the same list as the backend's repair router (`src/hub/http/dispatch.rs`).
+ */
+const REPAIRABLE_ROUTES = /^\/(config|providers|mcp|workspace|checkpoints)(\/|$)/;
+
+function mockAgentSummary(agent: MockAgent): Record<string, unknown> {
+  return {
+    name: agent.name,
+    state: agent.runState,
+    last_error: agent.runState === "failed" ? agent.lastError : null,
+    autostart: agent.autostart,
+    role: agent.role,
+    a2a_visibility: agent.visibility,
+  };
+}
+
+function createHub(server: ViteDevServer): MockHub {
+  const agents = new Map<string, MockAgent>();
+  const hubState = createState("hub");
+  const hubClients = new Set<WebSocket>();
+
+  const broadcast = (frame: Record<string, unknown>) => {
+    const data = JSON.stringify(frame);
+    for (const client of hubClients) {
+      if (client.readyState === WebSocket.OPEN) client.send(data);
+    }
+  };
+
+  const sortedSummaries = () =>
+    [...agents.values()].sort((a, b) => byName(a.name, b.name)).map(mockAgentSummary);
+
+  const hub: MockHub = {
+    agents,
+    hubState,
+    broadcast,
+    summary: mockAgentSummary,
+    createAgent(name, options = {}) {
+      const agent: MockAgent = {
+        name,
+        runState: options.runState ?? "running",
+        lastError:
+          options.lastError === undefined
+            ? null
+            : { message: options.lastError, at: new Date().toISOString() },
+        autostart: options.runState !== "stopped",
+        role: options.role === undefined ? null : options.role,
+        visibility: "private",
+        busy: false,
+        unread: 0,
+        state: createState(name),
+        connectedClients: () => 0,
+      };
+      if (name !== "scout") {
+        agent.state.extraRecent.push({
+          role: "assistant",
+          content: `Hi, this is ${name}. You are in my conversation, not scout's.`,
+          timestamp: new Date().toISOString(),
+          visibility: "user",
+        });
+      }
+      agents.set(name, agent);
+      setupWebSocket(server, hub, agent);
+      return agent;
+    },
+    setBusy(agent, busy) {
+      agent.busy = busy;
+      broadcast({ type: "agent_activity", name: agent.name, busy, unread: agent.unread });
+    },
+    addUnread(agent) {
+      agent.unread += 1;
+      broadcast({
+        type: "agent_activity",
+        name: agent.name,
+        busy: agent.busy,
+        unread: agent.unread,
+      });
+    },
+    clearUnread(agent) {
+      if (agent.unread === 0) return;
+      agent.unread = 0;
+      broadcast({ type: "agent_activity", name: agent.name, busy: agent.busy, unread: 0 });
+    },
+    transition(agent, runState) {
+      agent.runState = runState;
+      if (runState !== "running") agent.state.dropSockets();
+      broadcast({ type: "agent_state", agent: mockAgentSummary(agent) });
+    },
+  };
+
+  // The hub WebSocket: server to client only.
+  const hubWss = new WebSocketServer({ noServer: true });
+  server.httpServer?.on("upgrade", (req, socket, head) => {
+    const url = req.url ?? "";
+    if (url === "/api/hub/ws" || url.startsWith("/api/hub/ws?")) {
+      hubWss.handleUpgrade(req, socket, head, (ws) => hubWss.emit("connection", ws, req));
+    }
+  });
+  hubWss.on("connection", (ws: WebSocket) => {
+    hubClients.add(ws);
+    ws.on("close", () => hubClients.delete(ws));
+    ws.send(JSON.stringify({ type: "agents_snapshot", agents: sortedSummaries() }));
+    for (const agent of agents.values()) {
+      if (agent.busy || agent.unread > 0) {
+        ws.send(
+          JSON.stringify({
+            type: "agent_activity",
+            name: agent.name,
+            busy: agent.busy,
+            unread: agent.unread,
+          }),
+        );
+      }
+    }
+    // The only client message: which team prefixes (`team` or `team/...`) to
+    // send changes for. The mock has no team files changing, so no change
+    // frames follow. Like the backend, it refuses a message it can't use with
+    // a warning notice.
+    ws.on("message", (raw) => {
+      let refusal: string | null = null;
+      try {
+        const msg = JSON.parse(String(raw));
+        const prefixes: unknown = msg?.type === "watch_team" ? msg.prefixes : undefined;
+        if (!Array.isArray(prefixes) || prefixes.some((p) => typeof p !== "string")) {
+          refusal = "That message isn't one the hub understands, so it was ignored.";
+        } else if (prefixes.some((p) => p !== "team" && !p.startsWith("team/"))) {
+          refusal =
+            "Team watch paths are `team` or start with `team/`, so the request was ignored.";
+        }
+      } catch {
+        refusal = "That message isn't one the hub understands, so it was ignored.";
+      }
+      if (refusal !== null && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "notice", level: "warn", message: refusal }));
+      }
+    });
+  });
+
+  return hub;
+}
+
+/** The state holding the file at `path`: `team/` lives in the shared state. */
+function filesFor(hub: MockHub, agentState: MockState, path: string): MockState {
+  return path === "team" || path.startsWith("team/") ? hub.hubState : agentState;
+}
+
+function notice(
+  hub: MockHub,
+  level: "info" | "warn" | "error",
+  message: string,
+  agent?: string,
+): void {
+  hub.broadcast({ type: "notice", level, message, ...(agent ? { agent } : {}) });
+}
+
+const STARTUP_MS = 400;
+
+async function handleLifecycle(
+  hub: MockHub,
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  method: string,
+): Promise<void> {
+  if (path === "/api/hub/agents" && method === "GET") {
+    const list = [...hub.agents.values()].sort((a, b) => byName(a.name, b.name)).map(hub.summary);
+    json(res, 200, { agents: list });
+    return;
+  }
+
+  if (path === "/api/hub/agents" && method === "POST") {
+    // `CreateAgentRequest`: `name` is required; the rest may be absent or null.
+    let body: Record<string, unknown>;
+    try {
+      body = JSON.parse(await readBody(req));
+      if (typeof body.name !== "string") throw new Error("missing field `name`");
+    } catch (err) {
+      json(res, 400, { error: mockBadBody(err) });
+      return;
+    }
+    const name = String(body.name);
+    const nameProblem = mockAgentNameProblem(name);
+    if (nameProblem !== null) {
+      json(res, 400, { error: nameProblem });
+      return;
+    }
+    if (hub.agents.has(name)) {
+      json(res, 409, { error: `an agent named '${name}' already exists` });
+      return;
+    }
+    const modelsFrom = typeof body.models_from === "string" ? body.models_from : null;
+    if (modelsFrom !== null && !hub.agents.has(modelsFrom)) {
+      json(res, 400, { error: `no agent named '${modelsFrom}'` });
+      return;
+    }
+    if (modelsFrom === null && typeof body.providers_toml !== "string") {
+      json(res, 400, { error: "give models_from or providers_toml" });
+      return;
+    }
+    const agent = hub.createAgent(name, {
+      role: typeof body.description === "string" ? body.description : null,
+    });
+    if (body.a2a_visibility === "public") agent.visibility = "public";
+    hub.broadcast({ type: "agent_created", agent: hub.summary(agent), by: "user" });
+    json(res, 201, hub.summary(agent));
+    return;
+  }
+
+  if (path === "/api/hub/status" && method === "GET") {
+    const counts = { starting: 0, running: 0, stopped: 0, failed: 0 };
+    for (const agent of hub.agents.values()) counts[agent.runState]++;
+    json(res, 200, {
+      version: MOCK_RESIDUUM_VERSION,
+      uptime_secs: Math.floor(process.uptime()),
+      tunnel: MOCK_CLOUD_STATUS,
+      agents: counts,
+    });
+    return;
+  }
+
+  // POST /api/hub/stop-all — stops every running or starting agent and leaves
+  // the hub running. Answers `{ stopped, failed }`.
+  if (path === "/api/hub/stop-all" && method === "POST") {
+    const stopped: Record<string, unknown>[] = [];
+    for (const agent of [...hub.agents.values()].sort((a, b) => byName(a.name, b.name))) {
+      if (agent.runState !== "running" && agent.runState !== "starting") continue;
+      hub.transition(agent, "stopped");
+      stopped.push(hub.summary(agent));
+    }
+    json(res, 200, { stopped, failed: [] });
+    return;
+  }
+
+  const match = /^\/api\/hub\/agents\/([^/]+)(?:\/(start|stop|restart))?$/.exec(path);
+  const agent = match ? hub.agents.get(decodeURIComponent(match[1] ?? "")) : undefined;
+  if (!match || !agent) {
+    if (match) {
+      json(res, 404, { error: `no agent named '${decodeURIComponent(match[1] ?? "")}'` });
+    } else {
+      json(res, 404, { error: `mock: unknown endpoint ${method} ${path}` });
+    }
+    return;
+  }
+  const action = match[2];
+
+  if (!action && method === "DELETE") {
+    agent.state.dropSockets();
+    hub.agents.delete(agent.name);
+    hub.broadcast({ type: "agent_deleted", name: agent.name, by: "user" });
+    json(res, 200, { deleted: true, checkpoint_id: `ckpt-${agent.name}-${Date.now()}` });
+    return;
+  }
+
+  if (!action && method === "PATCH") {
+    let body: Record<string, unknown>;
+    try {
+      body = JSON.parse(await readBody(req));
+    } catch (err) {
+      json(res, 400, { error: mockBadBody(err) });
+      return;
+    }
+    const hasVisibility = body.a2a_visibility === "public" || body.a2a_visibility === "private";
+    if (typeof body.autostart !== "boolean" && !hasVisibility) {
+      json(res, 400, {
+        error: "the request must set at least one of autostart or a2a_visibility",
+      });
+      return;
+    }
+    if (typeof body.autostart === "boolean") agent.autostart = body.autostart;
+    if (hasVisibility) agent.visibility = body.a2a_visibility as "public" | "private";
+    hub.broadcast({ type: "agent_state", agent: hub.summary(agent) });
+    json(res, 200, hub.summary(agent));
+    return;
+  }
+
+  if (action && method === "POST") {
+    if (action === "stop") {
+      hub.transition(agent, "stopped");
+      json(res, 200, hub.summary(agent));
+      return;
+    }
+    if (action === "start" && agent.runState === "running") {
+      json(res, 200, hub.summary(agent));
+      return;
+    }
+    hub.transition(agent, "starting");
+    await new Promise((done) => setTimeout(done, STARTUP_MS));
+    if (agent.name === "brittle") {
+      agent.lastError = {
+        message: "providers.toml: model 'gpt-9' is not offered by provider 'openai'",
+        at: new Date().toISOString(),
+      };
+      hub.transition(agent, "failed");
+    } else {
+      hub.transition(agent, "running");
+    }
+    json(res, 200, hub.summary(agent));
+    return;
+  }
+
+  json(res, 404, { error: `mock: unknown endpoint ${method} ${path}` });
+}
+
+/** Team files: the shared `team/` tree, addressed relative to `team/`. */
+async function handleTeamWorkspace(
+  hub: MockHub,
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  method: string,
+): Promise<void> {
+  const state = hub.hubState;
+  const rest = path.slice("/api/team/workspace".length);
+  const query = new URL(req.url ?? "", "http://localhost").searchParams;
+  const inTeam = (p: string) => (p === "" ? "team" : `team/${p}`);
+
+  if (rest === "/files" && method === "GET") {
+    json(res, 200, state.workspaceFiles[inTeam(query.get("path") ?? "")] ?? []);
+    return;
+  }
+  if (rest === "/file" && method === "GET") {
+    const content = state.workspaceFileContents[inTeam(query.get("path") ?? "")];
+    if (content === undefined) text(res, 404, "file not found");
+    else fileRead(res, content);
+    return;
+  }
+  if (rest === "/file" && method === "PUT") {
+    const body = JSON.parse(await readBody(req));
+    state.workspaceFileContents[inTeam(String(body.path))] = String(body.content);
+    json(res, 200, { saved: true, version: mockFileVersion(String(body.content)) });
+    return;
+  }
+  if (rest === "/file" && method === "DELETE") {
+    delete state.workspaceFileContents[inTeam(query.get("path") ?? "")];
+    json(res, 200, { deleted: true, checkpoint_id: null });
+    return;
+  }
+  if (rest === "/validate" && method === "POST") {
+    await readBody(req);
+    json(res, 200, { diagnostics: [] });
+    return;
+  }
+  if (rest === "/move" && method === "POST") {
+    const body = JSON.parse(await readBody(req));
+    const from = inTeam(String(body.from));
+    const content = state.workspaceFileContents[from];
+    if (content !== undefined) {
+      state.workspaceFileContents[inTeam(String(body.to))] = content;
+      delete state.workspaceFileContents[from];
+    }
+    json(res, 200, {
+      moved: true,
+      version: content === undefined ? null : mockFileVersion(content),
+    });
+    return;
+  }
+  json(res, 404, { error: `mock: unknown endpoint ${method} ${path}` });
+}
+
+/**
+ * Resolve a request to the state and unscoped path the handlers below expect,
+ * or answer it here. The unscoped `/api/...` routes no longer exist: only the
+ * contract's scoped routes are served, so a call that skips the scope fails
+ * here the way it would against the real backend.
+ */
+async function routeScoped(
+  hub: MockHub,
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  method: string,
+): Promise<"handled" | { state: MockState; path: string }> {
+  if (path.startsWith("/api/mock/")) {
+    const target = new URL(req.url ?? "", "http://localhost").searchParams.get("agent");
+    const agent =
+      (target ? hub.agents.get(target) : undefined) ??
+      [...hub.agents.values()].find((a) => a.runState === "running");
+    return { state: agent?.state ?? hub.hubState, path };
+  }
+
+  const agentMatch = /^\/api\/agents\/([^/]+)(\/.*)?$/.exec(path);
+  if (agentMatch) {
+    const name = decodeURIComponent(agentMatch[1] ?? "");
+    const sub = agentMatch[2] ?? "";
+    const agent = hub.agents.get(name);
+    if (!agent) {
+      json(res, 404, { error: `no agent named '${name}'` });
+      return "handled";
+    }
+    if (agent.runState !== "running" && !REPAIRABLE_ROUTES.test(sub)) {
+      json(res, 409, { error: `${name} is ${agent.runState}`, state: agent.runState });
+      return "handled";
+    }
+    return { state: agent.state, path: `/api${sub}` };
+  }
+
+  if (
+    path === "/api/hub/status" ||
+    path === "/api/hub/stop-all" ||
+    path === "/api/hub/agents" ||
+    path.startsWith("/api/hub/agents/")
+  ) {
+    await handleLifecycle(hub, req, res, path, method);
+    return "handled";
+  }
+  // Hub config keeps its path; every other hub route is a hub-level route.
+  if (path.startsWith("/api/hub/config/")) return { state: hub.hubState, path };
+  if (path.startsWith("/api/hub/")) {
+    return { state: hub.hubState, path: `/api${path.slice("/api/hub".length)}` };
+  }
+
+  if (path.startsWith("/api/team/workspace/")) {
+    await handleTeamWorkspace(hub, req, res, path, method);
+    return "handled";
+  }
+  if (path.startsWith("/api/team/")) {
+    return { state: hub.hubState, path: `/api${path.slice("/api/team".length)}` };
+  }
+
+  json(res, 404, {
+    error: `mock: ${path} is not a hub, team, or agent route; the contract scopes every /api path`,
+  });
+  return "handled";
+}
+
 // ─── Plugin export ─────────────────────────────────────────────────────────────
 
 export function mockServerPlugin(): Plugin {
   return {
     name: "residuum-mock-server",
     configureServer(server) {
-      const state = createState();
+      const hub = createHub(server);
+      const setup = process.env.VITE_MOCK_SETUP === "1";
 
-      setupRestMiddleware(server, state);
-      setupWebSocket(server, state);
-      startMockArtifactsListener(state);
+      // With no agents the web UI shows the setup wizard, and finishing it
+      // creates the first one.
+      if (!setup) {
+        hub.createAgent("scout", { role: "Digs through the web and the wiki, then reports back" });
+        hub.createAgent("atlas", { role: "Keeps the team wiki tidy" });
+        hub.createAgent("drifter", {
+          runState: "stopped",
+          role: "Sleeps until something needs it",
+        });
+        hub.createAgent("brittle", {
+          runState: "failed",
+          role: "Has a broken model config",
+          lastError: "providers.toml: model 'gpt-9' is not offered by provider 'openai'",
+        });
+      }
 
-      const modeLabel = state.mode === "setup" ? "setup" : "running";
+      setupRestMiddleware(server, hub);
+      startMockArtifactsListener(hub.hubState);
+
+      const modeLabel = setup ? "setup" : "running";
       console.log("");
       console.log("  [mock] API mock server active");
       console.log(`  [mock] Mode: ${modeLabel} (set VITE_MOCK_SETUP=1 for setup wizard)`);
-      console.log("  [mock] WebSocket echo server on /ws");
+      console.log("  [mock] Agents: scout, atlas (running), drifter (stopped), brittle (failed)");
+      console.log(
+        "  [mock] Hub WebSocket on /api/hub/ws, agent WebSockets on /api/agents/{name}/ws",
+      );
       console.log("");
     },
   };

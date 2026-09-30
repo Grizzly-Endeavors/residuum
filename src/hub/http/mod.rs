@@ -1,0 +1,97 @@
+//! The hub's HTTP surface: one router for everything the backend serves.
+//!
+//! [`hub_router`] takes the [`AgentDirectory`] and the hub-level handles in
+//! [`HubHttpState`] and returns the whole app, laid out as
+//! `docs/design/multi-agent-hub/http-contract.md` places it:
+//!
+//! - `/api/hub/...`: agent lifecycle and status ([`lifecycle`]), the hub
+//!   WebSocket ([`ws`]), and the routes that exist once per process: hub
+//!   config, secrets, keys, cloud, update, shutdown, tracing, and the hub and
+//!   team checkpoint repositories ([`process`]).
+//! - `/api/team/...`: the team's file API and workbench.
+//! - `/api/agents/{name}/...` and `/webhook/{agent}/{name}`: resolved against
+//!   the directory on every request and handed to the agent's own routers
+//!   ([`dispatch`]).
+//! - `/cloud/callback`, and the embedded web app for every other path.
+//!
+//! The cross-site guard covers the whole app. The remote-control guard covers
+//! hub shutdown, cloud disconnect, and stopping every agent.
+
+mod dispatch;
+mod error;
+mod lifecycle;
+mod process;
+mod state;
+#[cfg(test)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "test code indexes parsed JSON for clarity"
+)]
+mod tests;
+mod ws;
+
+use std::sync::Arc;
+
+use axum::Router;
+use axum::http::StatusCode;
+use axum::response::Response;
+use axum::routing::post;
+
+pub use crate::gateway::web::{
+    ConfigApiState, WorkspaceScope, agent_repair_api_router as agent_repair_router,
+};
+pub use state::HubHttpState;
+
+use crate::gateway::remote_control_guard::reject_remote_shutdown_and_disconnect;
+use crate::gateway::web;
+use crate::hub::AgentDirectory;
+
+/// Build the hub's whole HTTP app over `directory`, with the process-wide
+/// handles in `hub`. Serve it on the gateway address.
+pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Router {
+    let lifecycle_state = lifecycle::LifecycleState {
+        directory: Arc::clone(&directory),
+        hub_dir: hub.hub_dir.clone(),
+        tunnel_status_rx: hub.tunnel_status_rx.clone(),
+        started_at: hub.started_at,
+    };
+    let ws_state = ws::HubWsState {
+        directory: Arc::clone(&directory),
+        team_bus: hub.team_bus.clone(),
+        team_watch_health: hub.team_watch_health.clone(),
+    };
+
+    let app =
+        Router::new()
+            .merge(lifecycle::routes(lifecycle_state.clone()))
+            .merge(lifecycle::stop_all_route(lifecycle_state).route_layer(
+                axum::middleware::from_fn(reject_remote_shutdown_and_disconnect),
+            ))
+            .merge(ws::routes(ws_state))
+            .merge(process::hub_config_routes(&hub))
+            .merge(process::cloud_routes(&hub))
+            .merge(process::update_routes(&hub))
+            .merge(process::tracing_routes(&hub))
+            .merge(process::checkpoint_routes(&hub))
+            .merge(process::team_routes(&hub))
+            .merge(dispatch::routes(directory))
+            .route("/api/sessions", post(sessions_need_an_agent))
+            .fallback(web::static_handler)
+            .layer(axum::middleware::from_fn(
+                crate::gateway::cross_site::reject_cross_site_requests,
+            ));
+    // The routers above hold their own clones of the handles they need.
+    drop(hub);
+    app
+}
+
+/// `POST /api/sessions`: sessions belong to an agent, so an artifact starts
+/// one at `/api/agents/{name}/sessions`. A request that names no agent gets
+/// this explanation instead of a bare "not found".
+async fn sessions_need_an_agent() -> Response {
+    error::json_error(
+        StatusCode::BAD_REQUEST,
+        "A session runs on one agent, so a start request must name it. Start it with \
+         POST /api/agents/<name>/sessions, or pass { agent } to residuum.sessions.start.",
+    )
+}

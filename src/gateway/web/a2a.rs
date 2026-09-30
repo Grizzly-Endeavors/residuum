@@ -1,9 +1,9 @@
 //! A2A web API endpoints: caller-key management, the client-side "remote
-//! agents" endpoints (`GET /api/a2a/agents` for live status and
-//! `GET`/`PUT /api/a2a/agents/raw` for the `config/a2a.json` editor), the
-//! sessions sidebar's tasks sent to remote agents (`GET /api/a2a/outbound`
+//! agents" endpoints (`GET /api/agents/{name}/a2a/agents` for live status and
+//! `GET`/`PUT /api/agents/{name}/a2a/agents/raw` for the `config/a2a.json` editor), the
+//! sessions sidebar's tasks sent to remote agents (`GET /api/agents/{name}/a2a/outbound`
 //! and the stop endpoints under it), and the settings page's
-//! `GET /api/a2a/status` and `GET /api/a2a/card`.
+//! `GET /api/agents/{name}/a2a/status` and `GET /api/agents/{name}/a2a/card`.
 //!
 //! Each request opens its own handle on the key store; writes are serialized
 //! across handles and processes by the store's file lock, so the web UI,
@@ -27,10 +27,10 @@ use crate::config::{A2aConfig, A2aVisibility, DEFAULT_A2A_PORT};
 use crate::gateway::protocol::OutboundA2aTaskSummary;
 use crate::workspace::layout::WorkspaceLayout;
 
-use super::ConfigApiState;
 use super::config::ValidateResponse;
+use super::{ConfigApiState, HubApiState};
 
-/// Request body for `POST /api/a2a/keys`.
+/// Request body for `POST /api/hub/a2a/keys`.
 #[derive(Deserialize)]
 pub(super) struct CreateA2aKeyRequest {
     pub name: String,
@@ -38,7 +38,7 @@ pub(super) struct CreateA2aKeyRequest {
     pub description: Option<String>,
 }
 
-/// Response from `POST /api/a2a/keys`. Carries the token — shown only here,
+/// Response from `POST /api/hub/a2a/keys`. Carries the token — shown only here,
 /// once, and never again.
 #[derive(Serialize)]
 pub(super) struct CreateA2aKeyResponse {
@@ -46,13 +46,13 @@ pub(super) struct CreateA2aKeyResponse {
     pub token: String,
 }
 
-/// Response from `GET /api/a2a/keys`.
+/// Response from `GET /api/hub/a2a/keys`.
 #[derive(Serialize)]
 pub(super) struct ListA2aKeysResponse {
     pub keys: Vec<A2aKeyInfo>,
 }
 
-/// Response from `DELETE /api/a2a/keys/{name}`.
+/// Response from `DELETE /api/hub/a2a/keys/{name}`.
 #[derive(Serialize)]
 pub(super) struct RevokeA2aKeyResponse {
     pub revoked: bool,
@@ -75,9 +75,9 @@ fn error_response(e: &A2aKeyError) -> (StatusCode, String) {
     (status, e.to_string())
 }
 
-/// `GET /api/a2a/keys` — list caller keys (metadata only, never tokens).
+/// `GET /api/hub/a2a/keys` — list caller keys (metadata only, never tokens).
 pub(super) async fn api_a2a_keys_list(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
 ) -> Result<Json<ListA2aKeysResponse>, (StatusCode, String)> {
     let snapshot = A2aKeys::new(state.hub_dir)
         .snapshot()
@@ -88,9 +88,9 @@ pub(super) async fn api_a2a_keys_list(
     }))
 }
 
-/// `POST /api/a2a/keys` — mint a caller key, returning the token once.
+/// `POST /api/hub/a2a/keys` — mint a caller key, returning the token once.
 pub(super) async fn api_a2a_keys_create(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
     Json(req): Json<CreateA2aKeyRequest>,
 ) -> Result<Json<CreateA2aKeyResponse>, (StatusCode, String)> {
     state
@@ -106,9 +106,9 @@ pub(super) async fn api_a2a_keys_create(
     }))
 }
 
-/// `DELETE /api/a2a/keys/{name}` — revoke a caller key.
+/// `DELETE /api/hub/a2a/keys/{name}` — revoke a caller key.
 pub(super) async fn api_a2a_keys_revoke(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
     Path(name): Path<String>,
 ) -> Result<Json<RevokeA2aKeyResponse>, (StatusCode, String)> {
     let checkpoint_id = state
@@ -126,7 +126,7 @@ pub(super) async fn api_a2a_keys_revoke(
 
 // ── Remote agents (client side) ─────────────────────────────────────────
 
-/// Shared state for `GET /api/a2a/agents` and the outbound-task endpoints.
+/// Shared state for `GET /api/agents/{name}/a2a/agents` and the outbound-task endpoints.
 #[derive(Clone)]
 pub(crate) struct A2aAgentsStatusState {
     pub hub: Arc<A2aClientHub>,
@@ -172,7 +172,7 @@ fn outbound_not_open(task_id: &str) -> (StatusCode, Json<OutboundTaskError>) {
     )
 }
 
-/// `GET /api/a2a/outbound` — every open task sent to a remote agent, newest
+/// `GET /api/agents/{name}/a2a/outbound` — every open task sent to a remote agent, newest
 /// first.
 pub(crate) async fn api_a2a_outbound_list(
     State(state): State<A2aAgentsStatusState>,
@@ -181,7 +181,7 @@ pub(crate) async fn api_a2a_outbound_list(
     Json(tasks.iter().map(OutboundA2aTaskSummary::from).collect())
 }
 
-/// `POST /api/a2a/outbound/{task_id}/stop` — ask the remote agent to cancel
+/// `POST /api/agents/{name}/a2a/outbound/{task_id}/stop` — ask the remote agent to cancel
 /// the task, the same cancel the agent's own `stop_agent a2a:<name>` makes.
 ///
 /// # Errors
@@ -211,7 +211,7 @@ pub(crate) async fn api_a2a_outbound_stop(
     }
 }
 
-/// `POST /api/a2a/outbound/{task_id}/stop-watching` — close the task locally
+/// `POST /api/agents/{name}/a2a/outbound/{task_id}/stop-watching` — close the task locally
 /// without reaching its agent, ending the retries and their notices.
 ///
 /// # Errors
@@ -243,7 +243,7 @@ pub(crate) struct A2aAgentCardView {
     skills: Vec<A2aAgentSkillView>,
 }
 
-/// One entry in `GET /api/a2a/agents`. `error` and `card` are always present
+/// One entry in `GET /api/agents/{name}/a2a/agents`. `error` and `card` are always present
 /// (as `null` when absent) rather than omitted, matching the web UI's
 /// `string | null` / `Card | null` contract.
 #[derive(Serialize)]
@@ -289,7 +289,7 @@ impl From<AgentSnapshot> for A2aAgentView {
     }
 }
 
-/// `GET /api/a2a/agents` — every registered remote agent's live status.
+/// `GET /api/agents/{name}/a2a/agents` — every registered remote agent's live status.
 pub(crate) async fn api_a2a_agents_list(
     State(state): State<A2aAgentsStatusState>,
 ) -> Json<Vec<A2aAgentView>> {
@@ -300,7 +300,7 @@ pub(crate) async fn api_a2a_agents_list(
 /// Default `config/a2a.json` content when the file doesn't exist yet.
 const DEFAULT_A2A_AGENTS_JSON: &str = r#"{"agents":{}}"#;
 
-/// `GET /api/a2a/agents/raw` — return raw `config/a2a.json` contents.
+/// `GET /api/agents/{name}/a2a/agents/raw` — return raw `config/a2a.json` contents.
 pub(super) async fn api_a2a_agents_raw_get(
     State(state): State<ConfigApiState>,
 ) -> Result<Response, (StatusCode, String)> {
@@ -327,7 +327,7 @@ pub(super) async fn api_a2a_agents_raw_get(
         })
 }
 
-/// `PUT /api/a2a/agents/raw` — write `config/a2a.json` atomically, save
+/// `PUT /api/agents/{name}/a2a/agents/raw` — write `config/a2a.json` atomically, save
 /// unconditionally, trigger a workspace reload, and report diagnostics.
 ///
 /// The save always succeeds, even when `body` fails validation: the loader
@@ -513,7 +513,7 @@ fn plain_card_error(e: &CardError) -> String {
 const RELAY_ACCESS_NOTE: &str =
     "Reachable locally; remote access through the relay arrives with relay support.";
 
-/// Response body for `GET /api/a2a/status`.
+/// Response body for `GET /api/agents/{name}/a2a/status`.
 #[derive(Serialize)]
 pub(super) struct A2aStatusResponse {
     enabled: bool,
@@ -540,7 +540,7 @@ pub(crate) fn a2a_status_router(state: ConfigApiState) -> axum::Router {
         .with_state(state)
 }
 
-/// `GET /api/a2a/status` — whether A2A is on, how other agents can reach it,
+/// `GET /api/agents/{name}/a2a/status` — whether A2A is on, how other agents can reach it,
 /// and whether the listener or the workspace agent card currently have a
 /// problem.
 ///
@@ -582,7 +582,7 @@ pub(super) async fn api_a2a_status(State(state): State<ConfigApiState>) -> Json<
     })
 }
 
-/// `GET /api/a2a/card` — the Agent Card as the listener would currently serve
+/// `GET /api/agents/{name}/a2a/card` — the Agent Card as the listener would currently serve
 /// it, or a `503` with a plain-language error if the workspace
 /// `agent-card.json` file is invalid.
 pub(super) async fn api_a2a_card(
@@ -601,6 +601,10 @@ pub(super) async fn api_a2a_card(
 mod tests {
     use super::*;
 
+    fn hub_state(dir: &std::path::Path) -> HubApiState {
+        HubApiState::for_test(dir)
+    }
+
     fn test_state(dir: &std::path::Path) -> ConfigApiState {
         ConfigApiState {
             team: None,
@@ -610,8 +614,7 @@ mod tests {
             workspace_dir: dir.join("workspace"),
             memory_dir: None,
             reload_tx: None,
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            scope: crate::gateway::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         }
     }
@@ -620,7 +623,7 @@ mod tests {
     async fn create_list_revoke_roundtrip_returns_token_only_on_create() {
         let dir = tempfile::tempdir().unwrap();
         let created = api_a2a_keys_create(
-            State(test_state(dir.path())),
+            State(hub_state(dir.path())),
             Json(CreateA2aKeyRequest {
                 name: "laptop".to_string(),
                 description: Some("my other instance".to_string()),
@@ -631,7 +634,7 @@ mod tests {
         assert_eq!(created.name, "laptop");
         assert!(created.token.starts_with("rsdm_a2a_"));
 
-        let list = api_a2a_keys_list(State(test_state(dir.path())))
+        let list = api_a2a_keys_list(State(hub_state(dir.path())))
             .await
             .unwrap();
         let body = serde_json::to_string(&list.0).unwrap();
@@ -641,12 +644,11 @@ mod tests {
             "listing must never carry the token"
         );
 
-        let revoked =
-            api_a2a_keys_revoke(State(test_state(dir.path())), Path("laptop".to_string()))
-                .await
-                .unwrap();
+        let revoked = api_a2a_keys_revoke(State(hub_state(dir.path())), Path("laptop".to_string()))
+            .await
+            .unwrap();
         assert!(revoked.revoked);
-        let after = api_a2a_keys_list(State(test_state(dir.path())))
+        let after = api_a2a_keys_list(State(hub_state(dir.path())))
             .await
             .unwrap();
         assert!(after.keys.is_empty());
@@ -655,7 +657,7 @@ mod tests {
     #[tokio::test]
     async fn revoke_returns_the_checkpoint_taken_before_the_revoke() {
         let dir = tempfile::tempdir().unwrap();
-        let state = super::super::test_support::watching_state(dir.path());
+        let state = super::super::test_support::watching_hub_state(dir.path());
         let _created = api_a2a_keys_create(
             State(state.clone()),
             Json(CreateA2aKeyRequest {
@@ -702,7 +704,7 @@ mod tests {
     async fn invalid_name_is_bad_request_and_unknown_revoke_is_not_found() {
         let dir = tempfile::tempdir().unwrap();
         let Err((status, _)) = api_a2a_keys_create(
-            State(test_state(dir.path())),
+            State(hub_state(dir.path())),
             Json(CreateA2aKeyRequest {
                 name: "Bad Name".to_string(),
                 description: None,
@@ -715,7 +717,7 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
 
         let Err((revoke_status, _)) =
-            api_a2a_keys_revoke(State(test_state(dir.path())), Path("nope".to_string())).await
+            api_a2a_keys_revoke(State(hub_state(dir.path())), Path("nope".to_string())).await
         else {
             panic!("unknown key revoke should fail");
         };
@@ -726,7 +728,7 @@ mod tests {
     async fn duplicate_name_is_conflict() {
         let dir = tempfile::tempdir().unwrap();
         let _first = api_a2a_keys_create(
-            State(test_state(dir.path())),
+            State(hub_state(dir.path())),
             Json(CreateA2aKeyRequest {
                 name: "laptop".to_string(),
                 description: None,
@@ -736,7 +738,7 @@ mod tests {
         .unwrap();
 
         let Err((status, _)) = api_a2a_keys_create(
-            State(test_state(dir.path())),
+            State(hub_state(dir.path())),
             Json(CreateA2aKeyRequest {
                 name: "laptop".to_string(),
                 description: None,

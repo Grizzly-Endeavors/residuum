@@ -1,7 +1,7 @@
 //! Guard against browsers issuing requests to the gateway on behalf of other sites.
 //!
 //! The gateway has no authentication of its own, so any web page open in the
-//! user's browser could otherwise POST to `localhost:<port>/api/shutdown` or
+//! user's browser could otherwise POST to `localhost:<port>/api/hub/shutdown` or
 //! open `/ws` and drive the agent. Browsers label every request with
 //! `Sec-Fetch-Site`, which the relay passes through unchanged, so it identifies
 //! the initiator both locally and through the tunnel (where the `Host` header is

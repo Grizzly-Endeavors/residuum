@@ -17,7 +17,7 @@ use crate::workspace::version::{modified_unix_ms, version_token};
 use super::ConfigApiState;
 
 /// Maximum size for a workspace text or raw read or write, in bytes (8 MiB).
-/// The `PUT /api/workspace/file` and `PUT /api/workspace/raw` routes' request
+/// The `PUT /api/agents/{name}/workspace/file` and `PUT /api/agents/{name}/workspace/raw` routes' request
 /// body limits are raised to match, so an over-limit write is refused before
 /// the handler even runs.
 pub(crate) const TEXT_FILE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
@@ -32,40 +32,40 @@ pub(super) struct WorkspaceEntry {
     pub version: String,
 }
 
-/// Query parameters for `GET /api/workspace/files` (directory listing).
+/// Query parameters for `GET /api/agents/{name}/workspace/files` (directory listing).
 #[derive(Deserialize)]
 pub(super) struct FilesQuery {
     pub path: Option<String>,
 }
 
-/// Query parameters for `GET /api/workspace/file` (single file read).
+/// Query parameters for `GET /api/agents/{name}/workspace/file` (single file read).
 #[derive(Deserialize)]
 pub(super) struct FileQuery {
     pub path: String,
 }
 
-/// Request body for `PUT /api/workspace/file`.
+/// Request body for `PUT /api/agents/{name}/workspace/file`.
 #[derive(Deserialize)]
 pub(super) struct WriteFileRequest {
     pub path: String,
     pub content: String,
 }
 
-/// Request body for `POST /api/workspace/validate`.
+/// Request body for `POST /api/agents/{name}/workspace/validate`.
 #[derive(Deserialize)]
 pub(super) struct ValidateFileRequest {
     pub path: String,
     pub content: String,
 }
 
-/// Response from `POST /api/workspace/validate`.
+/// Response from `POST /api/agents/{name}/workspace/validate`.
 #[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(Deserialize))]
 pub(super) struct ValidateFileResponse {
     pub diagnostics: Vec<crate::diagnostics::Diagnostic>,
 }
 
-/// Response from `PUT /api/workspace/file`.
+/// Response from `PUT /api/agents/{name}/workspace/file`.
 ///
 /// `diagnostics` is always populated when `path` is one of the
 /// strictly-parsed files `crate::diagnostics` understands, whether or not
@@ -142,7 +142,7 @@ struct ConditionalWriteError {
     current_version: Option<String>,
 }
 
-/// Query parameters for `DELETE /api/workspace/file`.
+/// Query parameters for `DELETE /api/agents/{name}/workspace/file`.
 #[derive(Deserialize)]
 pub(super) struct DeleteFileQuery {
     pub path: String,
@@ -150,7 +150,7 @@ pub(super) struct DeleteFileQuery {
     pub recursive: bool,
 }
 
-/// Response from `DELETE /api/workspace/file`.
+/// Response from `DELETE /api/agents/{name}/workspace/file`.
 #[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(Deserialize))]
 pub(super) struct DeleteResponse {
@@ -162,20 +162,20 @@ pub(super) struct DeleteResponse {
     pub undo: UndoRefs,
 }
 
-/// Request body for `POST /api/workspace/dir`.
+/// Request body for `POST /api/agents/{name}/workspace/dir`.
 #[derive(Deserialize)]
 pub(super) struct MkdirRequest {
     pub path: String,
 }
 
-/// Response from `POST /api/workspace/dir`.
+/// Response from `POST /api/agents/{name}/workspace/dir`.
 #[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(Deserialize))]
 pub(super) struct MkdirResponse {
     pub created: bool,
 }
 
-/// Request body for `POST /api/workspace/move`.
+/// Request body for `POST /api/agents/{name}/workspace/move`.
 #[derive(Deserialize)]
 pub(super) struct MoveRequest {
     pub from: String,
@@ -184,7 +184,7 @@ pub(super) struct MoveRequest {
     pub overwrite: bool,
 }
 
-/// Response from `POST /api/workspace/move`.
+/// Response from `POST /api/agents/{name}/workspace/move`.
 #[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(Deserialize))]
 pub(super) struct MoveResponse {
@@ -452,7 +452,7 @@ async fn is_identity_target(state: &ConfigApiState, relative: &str, resolved: &P
         .any(|file| file == resolved)
 }
 
-/// `GET /api/workspace/files` — list directory contents inside the workspace.
+/// `GET /api/agents/{name}/workspace/files` — list directory contents inside the workspace.
 ///
 /// Defaults to the workspace root when no `path` query parameter is provided.
 /// Directories are sorted before files; entries within each group are sorted
@@ -511,11 +511,11 @@ pub(super) async fn api_workspace_files(
 
     // The team directory appears as a `team` folder at the top of the tree.
     if relative.is_empty()
-        && let Some(team) = &state.team
+        && let Some(team_root) = state.team_mount()
         && !entries
             .iter()
             .any(|e| e.name == crate::workspace::team_files::TEAM_PREFIX)
-        && let Ok(metadata) = tokio::fs::metadata(team.team_root()).await
+        && let Ok(metadata) = tokio::fs::metadata(&team_root).await
         && metadata.is_dir()
     {
         entries.push(WorkspaceEntry {
@@ -572,7 +572,7 @@ async fn workspace_entry(
     }))
 }
 
-/// `GET /api/workspace/file` — read a workspace file as plain text.
+/// `GET /api/agents/{name}/workspace/file` — read a workspace file as plain text.
 ///
 /// Returns 404 if the file does not exist, 403 if the path is blocked, 413
 /// if the file exceeds the 8 MiB text limit, and 415 if the file is not
@@ -728,11 +728,7 @@ fn diagnose_write_content(
         .is_some()
         .then(|| located.base.join(&located.rel));
     let path = team_path.as_deref().unwrap_or_else(|| Path::new(relative));
-    let paths = crate::diagnostics::DiagnosticsPaths {
-        config_dir: state.config_dir.clone(),
-        workspace_dir: state.workspace_dir.clone(),
-        hub_dir: state.hub_dir.clone(),
-    };
+    let paths = state.diagnostics_paths();
 
     let Ok(text) = std::str::from_utf8(bytes) else {
         // Every file this module understands is text (YAML/TOML/JSON/MD), so
@@ -750,7 +746,7 @@ fn diagnose_write_content(
     crate::diagnostics::diagnose(path, text, &paths).unwrap_or_default()
 }
 
-/// `POST /api/workspace/validate` — diagnostics for `content` as if it were
+/// `POST /api/agents/{name}/workspace/validate` — diagnostics for `content` as if it were
 /// saved to `path`, without writing anything.
 ///
 /// `path` is resolved the same way a write would resolve it: against the app
@@ -867,7 +863,7 @@ async fn write_workspace_bytes(
     .into_response())
 }
 
-/// `PUT /api/workspace/file` — write content to a workspace file.
+/// `PUT /api/agents/{name}/workspace/file` — write content to a workspace file.
 ///
 /// Creates the file and any missing parent directories inside the
 /// workspace. Writes are atomic (temp file in the target directory, then
@@ -909,7 +905,7 @@ pub(super) async fn api_workspace_file_write(
     .await
 }
 
-/// `GET /api/workspace/raw` — read a workspace file as raw bytes.
+/// `GET /api/agents/{name}/workspace/raw` — read a workspace file as raw bytes.
 ///
 /// Returns the file's bytes with a `Content-Type` guessed from its
 /// extension and an `ETag` header carrying its version. `404` if missing,
@@ -973,7 +969,7 @@ pub(super) async fn api_workspace_raw_read(
     Ok(response)
 }
 
-/// `PUT /api/workspace/raw` — write raw bytes to a workspace file.
+/// `PUT /api/agents/{name}/workspace/raw` — write raw bytes to a workspace file.
 ///
 /// The request body is the file's exact bytes, up to 8 MiB (the route's
 /// body limit is raised to match). Otherwise identical to the text write
@@ -1045,7 +1041,7 @@ async fn checkpoint_before_destructive_action(
     UndoRefs::from_recorded(recorded)
 }
 
-/// `DELETE /api/workspace/file` — delete a workspace file or directory.
+/// `DELETE /api/agents/{name}/workspace/file` — delete a workspace file or directory.
 ///
 /// A directory requires `recursive=true`; without it the request answers
 /// `409`. The workspace root cannot be deleted (`400`). `If-Match` applies
@@ -1177,7 +1173,7 @@ pub(super) async fn api_workspace_delete(
     .into_response())
 }
 
-/// `POST /api/workspace/dir` — create a workspace directory and any missing
+/// `POST /api/agents/{name}/workspace/dir` — create a workspace directory and any missing
 /// parents. Idempotent: creating a directory that already exists succeeds
 /// without changing anything. Answers `409` if a non-directory file already
 /// exists at that path.
@@ -1415,7 +1411,7 @@ async fn record_team_move(
     }
 }
 
-/// `POST /api/workspace/move` — move or rename a workspace file or
+/// `POST /api/agents/{name}/workspace/move` — move or rename a workspace file or
 /// directory.
 ///
 /// Creates `to`'s missing parent directories. Answers `409` if `to` already
@@ -1621,8 +1617,7 @@ mod tests {
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: None,
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            scope: crate::gateway::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         }
     }
@@ -2072,8 +2067,7 @@ mod tests {
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: Some(tx),
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            scope: crate::gateway::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         };
 
@@ -2677,8 +2671,7 @@ mod tests {
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: Some(tx),
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            scope: crate::gateway::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         };
 
@@ -3274,8 +3267,7 @@ mod tests {
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: Some(tx),
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            scope: crate::gateway::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         };
 

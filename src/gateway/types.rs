@@ -20,7 +20,6 @@ use crate::memory::search::HybridSearcher;
 use crate::pulse::scheduler::PulseScheduler;
 use crate::skills::SharedSkillState;
 use crate::tracing_service::TracingService;
-use crate::tunnel::TunnelStatus;
 use crate::workspace::layout::WorkspaceLayout;
 
 /// Describes what kind of configuration reload was requested.
@@ -54,7 +53,7 @@ pub enum GatewayExit {
 /// Platform-aware termination signal.
 ///
 /// On Unix, wraps a SIGTERM listener. On Windows (and other platforms), `recv()`
-/// pends forever — graceful shutdown is handled via the HTTP `/api/shutdown` endpoint
+/// pends forever — graceful shutdown is handled via the HTTP `/api/hub/shutdown` endpoint
 /// or the cross-platform Ctrl+C handler instead.
 pub struct TermSignal {
     #[cfg(unix)]
@@ -190,7 +189,6 @@ pub(crate) struct GatewayState {
     pub stop_tx: mpsc::Sender<StopRequest>,
     pub agent_inbox_dir: std::path::PathBuf,
     pub tz: chrono_tz::Tz,
-    pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
     pub publisher: Publisher,
     pub bus_handle: BusHandle,
     pub file_registry: crate::gateway::file_server::FileRegistry,
@@ -208,6 +206,9 @@ pub(crate) struct GatewayState {
     /// Whether the workspace change feed is running, so a connection that
     /// starts watching can be told when live updates are off.
     pub workspace_watch_health: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
+    /// The hub's one change feed over the team directory, which a connection
+    /// watching `team/...` paths reads.
+    pub team_feed: Arc<crate::hub::services::TeamChangeFeed>,
     /// Pending one-off scheduled actions, for the Scheduled view's listing
     /// and cancel button.
     pub action_store: Arc<tokio::sync::Mutex<ActionStore>>,
@@ -292,7 +293,7 @@ pub(crate) struct AgentRuntime {
     pub spawn_context: Arc<SpawnContext>,
     /// Pushes a fresh `ModelCallResources` to the model-call HTTP endpoint on
     /// every config reload, alongside `spawn_context`, so `POST
-    /// /api/model/complete` resolves providers from the current config
+    /// /api/agents/{name}/model/complete` resolves providers from the current config
     /// without the HTTP router being rebuilt.
     pub model_call_resources_tx:
         tokio::sync::watch::Sender<Arc<crate::gateway::web::model::ModelCallResources>>,
@@ -368,9 +369,6 @@ pub(crate) struct AgentRuntime {
     pub root_config_watcher_handle: Option<tokio::task::JoinHandle<()>>,
     /// The workspace change feed (one recursive watcher over the workspace).
     pub change_feed_handle: Option<tokio::task::JoinHandle<()>>,
-    /// The change feed over the team directory, published with `team/`
-    /// paths.
-    pub team_change_feed_handle: Option<tokio::task::JoinHandle<()>>,
     /// Derives artifact reloads from the change feed.
     pub workbench_watcher_handle: Option<tokio::task::JoinHandle<()>>,
     /// Cloned core senders for rebuilding adapters on reload.
@@ -400,7 +398,6 @@ impl Drop for AgentRuntime {
             .chain(self.watcher_handle.take())
             .chain(self.root_config_watcher_handle.take())
             .chain(self.change_feed_handle.take())
-            .chain(self.team_change_feed_handle.take())
             .chain(self.workbench_watcher_handle.take())
         {
             handle.abort();

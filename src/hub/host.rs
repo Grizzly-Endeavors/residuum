@@ -318,13 +318,45 @@ impl AgentHost {
     /// and tell every running agent to reload against it.
     pub fn hub_config_changed(&self, hub_cfg: HubConfig) {
         *self.hub_cfg.write().unwrap_or_else(PoisonError::into_inner) = hub_cfg;
+        self.signal_running_agents(ReloadSignal::Hub, "the hub config change");
+    }
+
+    /// Tell every running agent that files it reads from the shared team
+    /// directory changed (its identity files, `AGENTS.md` and `USER.md`), so
+    /// each reloads its workspace.
+    pub fn team_files_changed(&self) {
+        self.signal_running_agents(ReloadSignal::Workspace, "the team file change");
+    }
+
+    /// Send `signal` to every running agent; `about` names the cause in the
+    /// log when an agent can't be reached.
+    fn signal_running_agents(&self, signal: ReloadSignal, about: &str) {
         for slot in self.slots() {
             if let Some(running) = &slot.lock().running
-                && running.control.reload_tx.send(ReloadSignal::Hub).is_err()
+                && running.control.reload_tx.send(signal).is_err()
             {
-                tracing::warn!(agent = %slot.name, "couldn't tell a running agent about the hub config change: its reload channel is closed");
+                tracing::warn!(agent = %slot.name, "couldn't tell a running agent about {about}: its reload channel is closed");
             }
         }
+    }
+
+    /// The live subagent sessions of every running agent.
+    #[must_use]
+    pub fn active_subagents(&self) -> Vec<crate::tracing_service::Subagent> {
+        let registries: Vec<_> = self
+            .slots()
+            .iter()
+            .filter_map(|slot| {
+                slot.lock()
+                    .running
+                    .as_ref()
+                    .map(|running| Arc::clone(&running.control.session_registry))
+            })
+            .collect();
+        registries
+            .iter()
+            .flat_map(|registry| registry.subagent_snapshot())
+            .collect()
     }
 
     fn summary_of(&self, slot: &AgentSlot) -> AgentSummary {
@@ -959,12 +991,11 @@ impl AgentHost {
             workspace_dir: slot.dir.clone(),
             memory_dir: Some(layout.memory_dir()),
             reload_tx,
-            setup_done: None,
-            secret_lock: Arc::clone(&self.services.secret_lock),
             checkpoints,
             team: Some(self.services.team.view_for_agent(&slot.name, &slot.dir)),
+            scope: crate::gateway::web::WorkspaceScope::Agent,
         };
-        Ok(crate::gateway::web::repair_router(state))
+        Ok(crate::gateway::web::agent_repair_api_router(state))
     }
 }
 

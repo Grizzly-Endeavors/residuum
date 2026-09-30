@@ -201,7 +201,7 @@ fn set(entries: &mut Vec<(String, OrderedValue)>, key: &str, value: OrderedValue
 /// text.
 ///
 /// A missing or empty `existing_text` is treated as `{"mcpServers": {}}`,
-/// matching `GET /api/mcp/raw`'s behavior for a file that doesn't exist yet.
+/// matching `GET /api/agents/{name}/mcp/raw`'s behavior for a file that doesn't exist yet.
 ///
 /// # Errors
 /// Returns a plain-language error if `existing_text` is non-empty but not

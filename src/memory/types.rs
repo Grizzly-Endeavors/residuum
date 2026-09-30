@@ -79,7 +79,7 @@ impl DocSource {
 
     /// Parse a caller's user-facing source filter name (`"observations"`,
     /// `"episodes"`, `"wiki"`) onto this vocabulary. Shared by the
-    /// `memory_search` tool and the `/api/memory/search` HTTP endpoint, the
+    /// `memory_search` tool and the `/api/agents/{name}/memory/search` HTTP endpoint, the
     /// only two boundaries where this name is user-supplied. `None` means
     /// the value isn't one of the three names; callers distinguish that from
     /// "no filter given" themselves, since this function only sees a value

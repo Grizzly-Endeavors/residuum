@@ -33,7 +33,7 @@ pub(crate) struct WorkbenchApiState {
     pub team: Option<crate::workspace::team_files::TeamFiles>,
 }
 
-/// Response from `DELETE /api/workbench/artifacts/{name}`.
+/// Response from `DELETE /api/team/workbench/artifacts/{name}`.
 #[derive(Debug, Serialize)]
 struct DeleteArtifactResponse {
     /// Entries removed: the page or folder (`name/`) and any `<name>.*` data files.
@@ -46,16 +46,19 @@ struct DeleteArtifactResponse {
 
 pub(crate) fn workbench_api_router(state: WorkbenchApiState) -> axum::Router {
     axum::Router::new()
-        .route("/api/workbench/info", get(api_workbench_info))
-        .route("/api/workbench/artifacts", get(api_workbench_artifacts))
+        .route("/api/team/workbench/info", get(api_workbench_info))
         .route(
-            "/api/workbench/artifacts/{name}",
+            "/api/team/workbench/artifacts",
+            get(api_workbench_artifacts),
+        )
+        .route(
+            "/api/team/workbench/artifacts/{name}",
             delete(api_workbench_artifact_delete),
         )
         .with_state(state)
 }
 
-/// `GET /api/workbench/info` — where artifacts are served, locally and
+/// `GET /api/team/workbench/info` — where artifacts are served, locally and
 /// through the relay. The web UI picks the relay origin when it is itself
 /// being viewed through the relay, and the local port otherwise.
 async fn api_workbench_info(State(state): State<WorkbenchApiState>) -> Json<WorkbenchInfo> {
@@ -83,7 +86,7 @@ async fn api_workbench_info(State(state): State<WorkbenchApiState>) -> Json<Work
     })
 }
 
-/// `GET /api/workbench/artifacts` — every artifact, most recently modified first.
+/// `GET /api/team/workbench/artifacts` — every artifact, most recently modified first.
 async fn api_workbench_artifacts(
     State(state): State<WorkbenchApiState>,
 ) -> Result<Json<Vec<ArtifactSummary>>, (StatusCode, String)> {
@@ -100,7 +103,7 @@ async fn api_workbench_artifacts(
         })
 }
 
-/// `DELETE /api/workbench/artifacts/{name}` — remove the artifact and its data files.
+/// `DELETE /api/team/workbench/artifacts/{name}` — remove the artifact and its data files.
 async fn api_workbench_artifact_delete(
     State(state): State<WorkbenchApiState>,
     Path(name): Path<String>,
@@ -229,7 +232,7 @@ mod tests {
             connected,
         )
         .oneshot(
-            Request::get("/api/workbench/info")
+            Request::get("/api/team/workbench/info")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -256,7 +259,7 @@ mod tests {
             TunnelStatus::Disconnected,
         )
         .oneshot(
-            Request::get("/api/workbench/info")
+            Request::get("/api/team/workbench/info")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -281,7 +284,7 @@ mod tests {
             TunnelStatus::Disconnected,
         )
         .oneshot(
-            Request::get("/api/workbench/artifacts/chart")
+            Request::get("/api/team/workbench/artifacts/chart")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -309,7 +312,7 @@ mod tests {
         let listing = router
             .clone()
             .oneshot(
-                Request::get("/api/workbench/artifacts")
+                Request::get("/api/team/workbench/artifacts")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -325,7 +328,7 @@ mod tests {
         let deleted = router
             .clone()
             .oneshot(
-                Request::delete("/api/workbench/artifacts/chart")
+                Request::delete("/api/team/workbench/artifacts/chart")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -339,7 +342,7 @@ mod tests {
 
         let deleted_again = router
             .oneshot(
-                Request::delete("/api/workbench/artifacts/chart")
+                Request::delete("/api/team/workbench/artifacts/chart")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -381,7 +384,7 @@ mod tests {
 
         let deleted = router
             .oneshot(
-                Request::delete("/api/workbench/artifacts/chart")
+                Request::delete("/api/team/workbench/artifacts/chart")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -461,7 +464,7 @@ mod tests {
             .lock(&workbench.join("chart.state.json"))
             .await;
         let deleting = router.oneshot(
-            Request::delete("/api/workbench/artifacts/chart")
+            Request::delete("/api/team/workbench/artifacts/chart")
                 .body(Body::empty())
                 .unwrap(),
         );

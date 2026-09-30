@@ -67,7 +67,7 @@ Use `memory_get` to retrieve the full transcript of a specific episode by ID, or
 
 Episodes are indexed after each observer extraction and synced on startup. Wiki pages in `team/wiki/` are resynced into the team index before every search, so a page you just wrote is searchable immediately; a wiki result's ID is the page path (`team/wiki/...`) to open with `read_file`, and `source: "wiki"` searches only the team wiki. Wiki pages are exempt from temporal decay.
 
-A workbench artifact runs the same search via `GET /api/memory/search?q=<query>&limit=<1..50, default 10>&source=observations|episodes|wiki&date_from=&date_to=` (no `episode_ids` filter). It answers `{ results: [{ id, source, episode_id, date, line_start, line_end, snippet, score }], semantic }`, `semantic` saying whether vector search contributed. A blank `q`, an unrecognized `source`, or a malformed date answers `400`.
+A workbench artifact runs the same search via `GET /api/agents/<agent>/memory/search?q=<query>&limit=<1..50, default 10>&source=observations|episodes|wiki&date_from=&date_to=` (no `episode_ids` filter). It answers `{ results: [{ id, source, episode_id, date, line_start, line_end, snippet, score }], semantic }`, `semantic` saying whether vector search contributed. A blank `q`, an unrecognized `source`, or a malformed date answers `400`.
 
 ## Gotchas
 

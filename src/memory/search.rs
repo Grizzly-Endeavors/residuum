@@ -82,7 +82,7 @@ pub struct SearchFilters {
 /// `SearchFilters`' date fields are plain strings, compared lexicographically
 /// against each document's own `YYYY-MM-DD` date — an unparsable value
 /// wouldn't error there, it would just silently match nothing. The
-/// `/api/memory/search` HTTP endpoint, the one boundary that takes a date
+/// `/api/agents/{name}/memory/search` HTTP endpoint, the one boundary that takes a date
 /// filter from outside the process, validates up front with this instead so
 /// a typo answers `400` rather than an empty result set.
 ///

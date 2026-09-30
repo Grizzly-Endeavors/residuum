@@ -1,4 +1,4 @@
-//! Memory search HTTP API: `GET /api/memory/search`, the same hybrid search
+//! Memory search HTTP API: `GET /api/agents/{name}/memory/search`, the same hybrid search
 //! the agent's `memory_search` tool runs, exposed to workbench artifacts.
 
 use std::sync::Arc;
@@ -30,7 +30,7 @@ pub(crate) fn memory_api_router(state: MemoryApiState) -> axum::Router {
         .with_state(state)
 }
 
-/// Query parameters for `GET /api/memory/search`.
+/// Query parameters for `GET /api/agents/{name}/memory/search`.
 #[derive(Debug, Deserialize)]
 pub(super) struct MemorySearchQuery {
     /// The search query. Blank answers `400`.
@@ -65,7 +65,7 @@ pub(super) struct MemorySearchResultItem {
     pub score: f32,
 }
 
-/// Response body for `GET /api/memory/search`.
+/// Response body for `GET /api/agents/{name}/memory/search`.
 #[derive(Debug, Serialize, PartialEq)]
 pub(super) struct MemorySearchResponse {
     pub results: Vec<MemorySearchResultItem>,
@@ -76,7 +76,7 @@ pub(super) struct MemorySearchResponse {
     pub below_threshold: usize,
 }
 
-/// `GET /api/memory/search` — run the same hybrid BM25 + vector search the
+/// `GET /api/agents/{name}/memory/search` — run the same hybrid BM25 + vector search the
 /// `memory_search` tool uses.
 ///
 /// # Errors

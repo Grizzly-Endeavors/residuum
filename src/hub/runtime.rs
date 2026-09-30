@@ -16,13 +16,14 @@ use tokio::time::Duration;
 
 use crate::config::{Config, HubConfig};
 use crate::gateway::last_known_good;
-use crate::gateway::types::{GatewayExit, ReloadSignal, TermSignal};
+use crate::gateway::types::{GatewayExit, ReloadReceiver, ReloadSignal, TermSignal};
 use crate::inference::EmbeddingProvider;
 use crate::tunnel::TunnelStatus;
 use crate::util::FatalError;
 
 use super::directory::AgentDirectory;
 use super::host::AgentHost;
+use super::http::{HubHttpState, hub_router};
 use super::services::{HubControl, HubServices};
 use super::types::NoticeLevel;
 
@@ -232,11 +233,14 @@ struct HubRuntime {
     host: Arc<AgentHost>,
     app: axum::Router,
     server: HttpServer,
+    /// Resolves when onboarding has written the first agent; `None` once the
+    /// hub has agents (or from the start, if it began with some).
+    setup_done_rx: Option<watch::Receiver<bool>>,
     tunnel: Option<TunnelTask>,
     tunnel_status_tx: Arc<watch::Sender<TunnelStatus>>,
     a2a: Option<A2aListenerTask>,
     workbench_shutdown_tx: Option<watch::Sender<bool>>,
-    reload_rx: tokio::sync::mpsc::UnboundedReceiver<ReloadSignal>,
+    reload_rx: ReloadReceiver,
     watcher: JoinHandle<()>,
     restart_rx: mpsc::Receiver<()>,
     shutdown_rx: mpsc::Receiver<()>,
@@ -279,7 +283,12 @@ impl HubRuntime {
         tracing::info!(agents = agents.len(), names = %agents.join(", "), "found agents");
         publish_startup_notices(&host, &hub_cfg, fallback_problem.as_deref());
 
-        let app = super::wiring::build_hub_app(Arc::clone(&host) as Arc<dyn AgentDirectory>);
+        let (reload_tx, reload_rx) = tokio::sync::mpsc::unbounded_channel();
+        // With no agents the web app runs onboarding, whose last step signals
+        // this once the first agent is on disk.
+        let setup_done = agents.is_empty().then(|| Arc::new(watch::channel(false).0));
+        let setup_done_rx = setup_done.as_ref().map(|tx| tx.subscribe());
+        let app = build_app(&host, &services, reload_tx.clone(), setup_done)?;
         let server = spawn_http_server(&hub_cfg.gateway, app.clone()).await?;
         let a2a = hub_cfg
             .a2a
@@ -293,7 +302,6 @@ impl HubRuntime {
                 &tunnel_status_tx,
             )
         });
-        let (reload_tx, reload_rx) = tokio::sync::mpsc::unbounded_channel();
         let watcher = crate::gateway::watcher::spawn_hub_config_watcher(
             hub_dir.join("config.toml"),
             reload_tx,
@@ -321,6 +329,7 @@ impl HubRuntime {
             host,
             app,
             server,
+            setup_done_rx,
             tunnel,
             tunnel_status_tx,
             a2a,
@@ -358,11 +367,12 @@ impl HubRuntime {
                     break GatewayExit::Restart;
                 }
                 signal = self.reload_rx.recv() => {
-                    if signal.is_some() {
-                        // Drain the queue: one reload picks up every edit.
-                        while self.reload_rx.try_recv().is_ok() {}
-                        self.reload().await;
+                    if let Some(first) = signal {
+                        self.handle_reload_signals(first).await;
                     }
+                }
+                () = setup_finished(&mut self.setup_done_rx) => {
+                    self.start_first_agents().await;
                 }
                 _ = update_tick.tick(), if check_updates => {
                     tracing::debug!("scheduled update check triggered");
@@ -426,6 +436,53 @@ impl HubRuntime {
         } else {
             self.tunnel = None;
         }
+    }
+
+    /// Act on the reload signals queued behind `first`: one hub reload
+    /// covers every hub config edit, and one workspace signal per running
+    /// agent covers every team identity edit.
+    async fn handle_reload_signals(&mut self, first: ReloadSignal) {
+        let mut hub_changed = false;
+        let mut team_changed = false;
+        let mut note = |signal: ReloadSignal| match signal {
+            ReloadSignal::Workspace => team_changed = true,
+            // Nothing sends an agent-scoped signal to the hub; one that
+            // arrives is read as a hub reload so it isn't dropped.
+            ReloadSignal::Hub | ReloadSignal::Agent => hub_changed = true,
+        };
+        note(first);
+        while let Ok(next) = self.reload_rx.try_recv() {
+            note(next);
+        }
+        if hub_changed {
+            self.reload().await;
+        }
+        if team_changed {
+            self.host.team_files_changed();
+        }
+    }
+
+    /// Onboarding wrote the first agent: apply the hub config it wrote, find
+    /// the agent, and start it.
+    async fn start_first_agents(&mut self) {
+        self.reload().await;
+        match self.host.discover() {
+            Ok(agents) => {
+                tracing::info!(names = %agents.join(", "), "onboarding finished; starting the first agent");
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "couldn't look for the agent onboarding created");
+                self.host.notice(
+                    NoticeLevel::Error,
+                    format!(
+                        "Setup finished, but residuum couldn't find the new agent ({e}). Restart residuum to start it."
+                    ),
+                    None,
+                );
+                return;
+            }
+        }
+        self.host.start_autostart().await;
     }
 
     /// Reload `hub/config.toml` in place.
@@ -569,6 +626,64 @@ impl HubRuntime {
             tracing::info!("a2a listener removed from config");
         }
     }
+}
+
+/// Resolves once onboarding signals that the first agent is written, then
+/// clears the slot; pends forever when there is nothing to wait for.
+async fn setup_finished(setup_done_rx: &mut Option<watch::Receiver<bool>>) {
+    let Some(rx) = setup_done_rx else {
+        return std::future::pending().await;
+    };
+    if rx.wait_for(|done| *done).await.is_err() {
+        // Every sender is gone, so no client can finish onboarding.
+        *setup_done_rx = None;
+        return std::future::pending().await;
+    }
+    *setup_done_rx = None;
+}
+
+/// Build the hub's HTTP app over `host`, with the process-wide handles from
+/// `services`.
+///
+/// # Errors
+/// Returns `FatalError::Gateway` if the hub-level checkpoint repositories
+/// can't be opened.
+pub(super) fn build_app(
+    host: &Arc<AgentHost>,
+    services: &HubServices,
+    reload_tx: crate::gateway::types::ReloadSender,
+    setup_done: Option<Arc<watch::Sender<bool>>>,
+) -> Result<axum::Router, FatalError> {
+    let checkpoints = crate::checkpoints::CheckpointEngine::hub_scoped(
+        Arc::clone(&services.checkpoints),
+        &services.hub_dir,
+    )
+    .map_err(|e| FatalError::Gateway(format!("failed to open the hub's checkpoints: {e}")))?
+    .with_team_coordinator(services.team.clone());
+    let subagents_host = Arc::clone(host);
+    let state = HubHttpState {
+        hub_dir: services.hub_dir.clone(),
+        reload_tx,
+        setup_done,
+        secret_lock: Arc::clone(&services.secret_lock),
+        checkpoints: Arc::new(checkpoints),
+        tunnel_status_rx: services.tunnel_status_rx.clone(),
+        update_status: Arc::clone(&services.control.update_status),
+        restart_tx: services.control.restart_tx.clone(),
+        shutdown_tx: services.control.shutdown_tx.clone(),
+        tracing_service: Arc::clone(&services.tracing_service),
+        client_context: Arc::new(crate::tracing_service::client_context::gather_for_hub()),
+        active_subagents: Arc::new(move || subagents_host.active_subagents()),
+        workbench_serving: services.workbench_serving.clone(),
+        team: services.team.clone(),
+        team_bus: services.team_feed.bus.clone(),
+        team_watch_health: services.team_feed.health.clone(),
+        started_at: std::time::Instant::now(),
+    };
+    Ok(hub_router(
+        Arc::clone(host) as Arc<dyn AgentDirectory>,
+        state,
+    ))
 }
 
 /// Await the tunnel task if there is one, clearing the slot when it ends;
@@ -744,7 +859,7 @@ mod tests {
             let response = self
                 .http
                 .post(format!(
-                    "http://127.0.0.1:{}/api/shutdown",
+                    "http://127.0.0.1:{}/api/hub/shutdown",
                     self.gateway_port
                 ))
                 .send()
@@ -766,7 +881,7 @@ mod tests {
         for name in ["atlas", "scout"] {
             hub.eventually_status(
                 hub.gateway_port,
-                &format!("/api/agents/{name}/api/status"),
+                &format!("/api/agents/{name}/status"),
                 Some(200),
             )
             .await;
@@ -788,7 +903,7 @@ mod tests {
 
         assert!(
             http.get(format!(
-                "http://127.0.0.1:{gateway_port}/api/agents/scout/api/status"
+                "http://127.0.0.1:{gateway_port}/api/agents/scout/status"
             ))
             .send()
             .await
@@ -800,7 +915,7 @@ mod tests {
     #[tokio::test]
     async fn changing_the_gateway_port_rebinds_the_server_and_keeps_the_agents_running() {
         let hub = RunningHub::start().await;
-        hub.eventually_status(hub.gateway_port, "/api/agents/scout/api/status", Some(200))
+        hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", Some(200))
             .await;
         let new_port = free_port().await;
 
@@ -813,11 +928,11 @@ mod tests {
         )
         .unwrap();
 
-        hub.eventually_status(new_port, "/api/agents/scout/api/status", Some(200))
+        hub.eventually_status(new_port, "/api/agents/scout/status", Some(200))
             .await;
-        hub.eventually_status(new_port, "/api/agents/atlas/api/status", Some(200))
+        hub.eventually_status(new_port, "/api/agents/atlas/status", Some(200))
             .await;
-        hub.eventually_status(hub.gateway_port, "/api/agents/scout/api/status", None)
+        hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", None)
             .await;
         let mut hub = hub;
         hub.gateway_port = new_port;
@@ -827,7 +942,7 @@ mod tests {
     #[tokio::test]
     async fn a_broken_hub_config_reload_keeps_the_hub_running_and_says_so() {
         let mut hub = RunningHub::start().await;
-        hub.eventually_status(hub.gateway_port, "/api/agents/scout/api/status", Some(200))
+        hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", Some(200))
             .await;
 
         std::fs::write(hub.hub_config_path(), "not valid toml [[[").unwrap();
@@ -844,7 +959,7 @@ mod tests {
         .await
         .expect("the failed reload is announced");
         assert!(notice.starts_with("hub config reload failed"), "{notice}");
-        hub.eventually_status(hub.gateway_port, "/api/agents/scout/api/status", Some(200))
+        hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", Some(200))
             .await;
         hub.shut_down().await;
     }

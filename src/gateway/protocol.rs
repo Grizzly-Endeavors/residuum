@@ -138,7 +138,7 @@ pub struct SessionSummary {
     pub overlap: Option<crate::bus::PulseOverlap>,
 }
 
-/// `GET /api/sessions` response: live sessions plus one page of completed
+/// `GET /api/agents/{name}/sessions` response: live sessions plus one page of completed
 /// runs.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -154,7 +154,7 @@ pub struct SessionListResponse {
 }
 
 /// A task this instance sent to a remote agent (`message_agent a2a:<name>`),
-/// as listed in the web sessions sidebar by `GET /api/a2a/outbound` and
+/// as listed in the web sessions sidebar by `GET /api/agents/{name}/a2a/outbound` and
 /// carried by `SessionOutboundA2aTask`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -256,7 +256,7 @@ pub struct ScheduledCurrentRun {
     pub overlap: Option<crate::bus::PulseOverlap>,
 }
 
-/// One pulse, as listed by `GET /api/scheduled/pulses`.
+/// One pulse, as listed by `GET /api/agents/{name}/scheduled/pulses`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct PulseInfo {
@@ -280,7 +280,7 @@ pub struct PulseInfo {
     pub problems: Vec<String>,
 }
 
-/// One pending scheduled action, as listed by `GET /api/scheduled/actions`.
+/// One pending scheduled action, as listed by `GET /api/agents/{name}/scheduled/actions`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ActionInfo {
@@ -327,7 +327,7 @@ pub enum SessionCommandErrorCode {
     DeliveryFailed,
 }
 
-/// One artifact in `GET /api/workbench/artifacts`.
+/// One artifact in `GET /api/team/workbench/artifacts`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ArtifactSummary {
@@ -343,7 +343,7 @@ pub struct ArtifactSummary {
     pub size: u64,
 }
 
-/// `GET /api/workbench/info`: where workbench artifacts are served.
+/// `GET /api/team/workbench/info`: where workbench artifacts are served.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct WorkbenchInfo {
@@ -464,9 +464,11 @@ pub enum ServerMessage {
         /// File size in bytes.
         #[ts(type = "number")]
         size: u64,
-        /// URL to fetch the file: a durable workspace-relative link (e.g.
-        /// "/api/files/workspace?path=...") for a file inside the
-        /// workspace, else an expiring token link (e.g. "/api/files/{id}").
+        /// URL to fetch the file, under the agent's own routes: a durable
+        /// workspace-relative link (e.g.
+        /// "/api/agents/scout/files/workspace?path=...") for a file inside
+        /// the workspace, else an expiring token link (e.g.
+        /// "/api/agents/scout/files/{id}"). Use it as given.
         url: String,
         /// Optional caption text.
         #[serde(skip_serializing_if = "Option::is_none")]

@@ -36,16 +36,21 @@ pub struct FileRegistry {
     entries: Arc<RwLock<HashMap<String, FileEntry>>>,
     /// The workspace root, when configured — see [`Self::with_workspace_root`].
     workspace_root: Option<PathBuf>,
+    /// The agent whose files this registry serves. Every URL it returns is
+    /// under `/api/agents/{agent}/`, so a client can use it as given.
+    agent_name: String,
 }
 
 impl FileRegistry {
-    /// Create a new empty file registry, with no workspace root configured
-    /// (every file is served through the expiring token scheme).
+    /// Create a new empty file registry for the agent named `agent_name`,
+    /// with no workspace root configured (every file is served through the
+    /// expiring token scheme).
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(agent_name: impl Into<String>) -> Self {
         Self {
             entries: Arc::new(RwLock::new(HashMap::new())),
             workspace_root: None,
+            agent_name: agent_name.into(),
         }
     }
 
@@ -80,10 +85,15 @@ impl FileRegistry {
         if let Some(relative) = self.workspace_relative_path(&path).await {
             let encoded: String =
                 url::form_urlencoded::byte_serialize(relative.as_bytes()).collect();
-            return format!("/api/files/workspace?path={encoded}");
+            return format!("{}/files/workspace?path={encoded}", self.url_prefix());
         }
         let id = self.register(path, mime_type, filename).await;
-        format!("/api/files/{id}")
+        format!("{}/files/{id}", self.url_prefix())
+    }
+
+    /// The hub URL prefix of this agent's routes.
+    fn url_prefix(&self) -> String {
+        format!("/api/agents/{}", self.agent_name)
     }
 
     /// `path`'s location relative to the workspace root, as a `/`-separated
@@ -119,12 +129,7 @@ impl FileRegistry {
 
     /// Remove all expired entries. Returns `(removed, remaining)`.
     pub async fn sweep_expired(&self) -> (usize, usize) {
-        let now = Instant::now();
-        let mut entries = self.entries.write().await;
-        let before = entries.len();
-        entries.retain(|_, entry| entry.expires_at > now);
-        let remaining = entries.len();
-        (before - remaining, remaining)
+        sweep_entries(&self.entries).await
     }
 
     /// Spawn a background task that periodically sweeps expired entries. It
@@ -140,11 +145,7 @@ impl FileRegistry {
                 let Some(entries) = entries.upgrade() else {
                     return;
                 };
-                let registry = FileRegistry {
-                    entries,
-                    workspace_root: None,
-                };
-                let (removed, remaining) = registry.sweep_expired().await;
+                let (removed, remaining) = sweep_entries(&entries).await;
                 if removed > 0 {
                     tracing::debug!(removed, remaining, "swept expired file entries");
                 }
@@ -153,10 +154,14 @@ impl FileRegistry {
     }
 }
 
-impl Default for FileRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
+/// Remove the expired entries from `entries`. Returns `(removed, remaining)`.
+async fn sweep_entries(entries: &RwLock<HashMap<String, FileEntry>>) -> (usize, usize) {
+    let now = Instant::now();
+    let mut entries = entries.write().await;
+    let before = entries.len();
+    entries.retain(|_, entry| entry.expires_at > now);
+    let remaining = entries.len();
+    (before - remaining, remaining)
 }
 
 /// Axum handler to serve a registered file by ID.
@@ -276,7 +281,7 @@ mod tests {
 
     #[tokio::test]
     async fn register_and_lookup() {
-        let registry = FileRegistry::new();
+        let registry = FileRegistry::new("scout");
         let id = registry
             .register(
                 PathBuf::from("/tmp/test.pdf"),
@@ -295,13 +300,13 @@ mod tests {
 
     #[tokio::test]
     async fn lookup_unknown_id_returns_none() {
-        let registry = FileRegistry::new();
+        let registry = FileRegistry::new("scout");
         assert!(registry.get("nonexistent").await.is_none());
     }
 
     #[tokio::test]
     async fn sweep_removes_expired() {
-        let registry = FileRegistry::new();
+        let registry = FileRegistry::new("scout");
         // Insert with already-expired time
         {
             let mut entries = registry.entries.write().await;
@@ -325,7 +330,7 @@ mod tests {
     async fn sweep_concurrent_register_does_not_underflow() {
         // Regression: earlier implementation computed removed = before - after across
         // separate lock acquisitions, which could underflow if a register raced in.
-        let registry = FileRegistry::new();
+        let registry = FileRegistry::new("scout");
         registry
             .register(
                 PathBuf::from("/tmp/live.pdf"),
@@ -352,7 +357,7 @@ mod tests {
         let file_path = dir.path().join("notes/plan.md");
         std::fs::write(&file_path, "hello").unwrap();
 
-        let registry = FileRegistry::new().with_workspace_root(dir.path().to_path_buf());
+        let registry = FileRegistry::new("scout").with_workspace_root(dir.path().to_path_buf());
         let url = registry
             .url_for(
                 file_path,
@@ -362,7 +367,7 @@ mod tests {
             .await;
 
         assert_eq!(
-            url, "/api/files/workspace?path=notes%2Fplan.md",
+            url, "/api/agents/scout/files/workspace?path=notes%2Fplan.md",
             "should be a workspace-path link, not an expiring token: {url}"
         );
     }
@@ -374,7 +379,7 @@ mod tests {
         let file_path = outside.path().join("scratch.txt");
         std::fs::write(&file_path, "hello").unwrap();
 
-        let registry = FileRegistry::new().with_workspace_root(dir.path().to_path_buf());
+        let registry = FileRegistry::new("scout").with_workspace_root(dir.path().to_path_buf());
         let url = registry
             .url_for(
                 file_path,
@@ -384,7 +389,8 @@ mod tests {
             .await;
 
         assert!(
-            url.starts_with("/api/files/") && !url.starts_with("/api/files/workspace"),
+            url.starts_with("/api/agents/scout/files/")
+                && !url.starts_with("/api/agents/scout/files/workspace"),
             "a file outside the workspace should still get a token link: {url}"
         );
     }
@@ -395,7 +401,7 @@ mod tests {
         let file_path = dir.path().join("scratch.txt");
         std::fs::write(&file_path, "hello").unwrap();
 
-        let registry = FileRegistry::new();
+        let registry = FileRegistry::new("scout");
         let url = registry
             .url_for(
                 file_path,
@@ -404,14 +410,18 @@ mod tests {
             )
             .await;
 
-        assert!(!url.starts_with("/api/files/workspace"), "got: {url}");
+        assert!(
+            url.starts_with("/api/agents/scout/files/")
+                && !url.starts_with("/api/agents/scout/files/workspace"),
+            "got: {url}"
+        );
     }
 
     #[tokio::test]
     async fn serve_workspace_file_serves_an_existing_file() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("report.md"), "# hello").unwrap();
-        let registry = FileRegistry::new().with_workspace_root(dir.path().to_path_buf());
+        let registry = FileRegistry::new("scout").with_workspace_root(dir.path().to_path_buf());
 
         let resp = serve_workspace_file(
             axum::extract::Query(WorkspaceFileQuery {
@@ -428,7 +438,7 @@ mod tests {
     #[tokio::test]
     async fn serve_workspace_file_missing_file_gives_a_plain_explanation() {
         let dir = tempfile::tempdir().unwrap();
-        let registry = FileRegistry::new().with_workspace_root(dir.path().to_path_buf());
+        let registry = FileRegistry::new("scout").with_workspace_root(dir.path().to_path_buf());
 
         let resp = serve_workspace_file(
             axum::extract::Query(WorkspaceFileQuery {
@@ -451,7 +461,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("ws")).unwrap();
         let workspace = dir.path().join("ws");
         std::fs::write(dir.path().join("secret.txt"), "nope").unwrap();
-        let registry = FileRegistry::new().with_workspace_root(workspace);
+        let registry = FileRegistry::new("scout").with_workspace_root(workspace);
 
         let resp = serve_workspace_file(
             axum::extract::Query(WorkspaceFileQuery {
@@ -469,7 +479,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".index")).unwrap();
         std::fs::write(dir.path().join(".index/segment.bin"), "data").unwrap();
-        let registry = FileRegistry::new().with_workspace_root(dir.path().to_path_buf());
+        let registry = FileRegistry::new("scout").with_workspace_root(dir.path().to_path_buf());
 
         let resp = serve_workspace_file(
             axum::extract::Query(WorkspaceFileQuery {

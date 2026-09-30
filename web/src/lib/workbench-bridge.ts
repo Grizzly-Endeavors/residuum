@@ -15,6 +15,7 @@
 
 import type { ServerMessage, WorkspaceChange } from "./types";
 import { changesUnder, normalizeWatchPrefix } from "./workspace-watch";
+import { NoAgentSelectedError, scopeApiPath } from "./paths";
 
 /** Tag on every message between the SDK and the bridge. Matches sdk.js. */
 export const BRIDGE_TAG = "residuum-workbench";
@@ -26,14 +27,17 @@ export const ARTIFACT_HEADER = "X-Residuum-Artifact";
 const MAX_CONCURRENT_REQUESTS = 8;
 
 /**
- * How many model calls (`POST /api/model/complete`) one bridge relays at
+ * How many model calls (`POST /api/agents/{name}/model/complete`) one bridge relays at
  * once, kept separate from `MAX_CONCURRENT_REQUESTS` so a burst of slow
  * model calls never holds up an artifact's ordinary requests.
  */
 const MAX_CONCURRENT_MODEL_CALLS = 4;
 
-/** The route model calls are identified by, for their own concurrency lane and abort tracking. */
-const MODEL_COMPLETE_PATH = "/api/model/complete";
+/**
+ * The route model calls are identified by, for their own concurrency lane and
+ * abort tracking: an agent's `model/complete`.
+ */
+const MODEL_COMPLETE_PATH = /^\/api\/agents\/[^/]+\/model\/complete$/;
 
 /** How many times a relay `agent overloaded` 503 is retried before giving up. */
 const MAX_OVERLOADED_RETRIES = 3;
@@ -54,40 +58,60 @@ interface BlockRule {
   reason: string;
 }
 
+// Artifacts name paths either way: the scoped form the SDK builds
+// (`/api/hub/...`, `/api/agents/{name}/...`) or the unscoped form
+// (`/api/secrets`), which `scopeApiPath` maps onto a scope. Each rule covers
+// both spellings so a request can't get past by choosing the other.
 const BLOCKED_ROUTES: BlockRule[] = [
   {
-    path: /^\/api\/secrets(\/|$)/,
+    path: /^\/api\/(hub\/)?secrets(\/|$)/,
     methods: "writes",
     reason: "Workbench artifacts can't change secrets. Manage them in Settings.",
   },
   {
-    path: /^\/api\/agent-keys(\/|$)/,
+    path: /^\/api\/(hub\/)?agent-keys(\/|$)/,
     methods: "writes",
     reason: "Workbench artifacts can't change agent keys. Manage them in Settings.",
   },
   {
-    path: /^\/api\/(config|providers)\/raw(\/|$)/,
+    path: /^\/api\/(hub\/)?a2a\/keys(\/|$)/,
+    methods: "writes",
+    reason: "Workbench artifacts can't change A2A keys. Manage them in Settings.",
+  },
+  {
+    path: /^\/api\/hub\/config\/raw(\/|$)/,
+    methods: "all",
+    reason:
+      "Workbench artifacts can't read or change the raw hub configuration file, since it can hold credentials.",
+  },
+  {
+    path: /^\/api\/(agents\/[^/]+\/)?(config|providers)\/raw(\/|$)/,
     methods: "all",
     reason:
       "Workbench artifacts can't read or change raw configuration files, since they can hold credentials.",
   },
   {
-    path: /^\/api\/config\/complete-setup(\/|$)/,
+    path: /^\/api\/(hub\/|agents\/[^/]+\/)?config\/complete-setup(\/|$)/,
     methods: "all",
     reason: "Workbench artifacts can't run setup.",
   },
   {
-    path: /^\/api\/(shutdown|update\/(check|apply|restart))(\/|$)/,
+    path: /^\/api\/(hub\/(shutdown|stop-all|update\/(check|apply|restart))|shutdown|update\/(check|apply|restart))(\/|$)/,
     methods: "all",
-    reason: "Workbench artifacts can't shut down, update, or restart Residuum.",
+    reason: "Workbench artifacts can't shut down, stop, update, or restart Residuum.",
   },
   {
-    path: /^\/api\/cloud\/disconnect(\/|$)/,
+    path: /^\/api\/hub\/agents(\/|$)/,
+    methods: "writes",
+    reason: "Workbench artifacts can't create, delete, start, stop, or change agents.",
+  },
+  {
+    path: /^\/api\/(hub\/)?cloud\/disconnect(\/|$)/,
     methods: "all",
     reason: "Workbench artifacts can't disconnect remote access.",
   },
   {
-    path: /^\/api\/tracing\//,
+    path: /^\/api\/(hub\/)?tracing\//,
     methods: "writes",
     reason: "Workbench artifacts can't change tracing or send diagnostics.",
   },
@@ -128,6 +152,22 @@ export function checkArtifactRequest(method: string, path: string, origin: strin
     decoded = decodeURIComponent(url.pathname);
   } catch {
     return { allowed: false, status: 400, reason: `"${path}" isn't a valid path.` };
+  }
+  if (method === "POST" && /^\/api\/sessions\/?$/.test(decoded)) {
+    return {
+      allowed: false,
+      status: 400,
+      reason:
+        "A session runs on one agent. Start it with residuum.sessions.start({ agent, prompt }) so the request names the agent.",
+    };
+  }
+  if (method === "POST" && /^\/api\/model\/complete\/?$/.test(decoded)) {
+    return {
+      allowed: false,
+      status: 400,
+      reason:
+        "A model call runs on one agent's models. Make it with residuum.ask(prompt, { agent }) so the request names the agent.",
+    };
   }
   const isRead = READ_METHODS.has(method);
   for (const rule of BLOCKED_ROUTES) {
@@ -321,7 +361,7 @@ async function isRelayOverloaded(resp: Response): Promise<boolean> {
 /** Whether a relayed request's resolved URL is a model call, by route (design §10). */
 function isModelCompletePath(url: string): boolean {
   const path = url.split("?", 1)[0];
-  return path === MODEL_COMPLETE_PATH;
+  return MODEL_COMPLETE_PATH.test(path ?? "");
 }
 
 /** Whether `err` is a `fetch` abort, from this bridge cancelling the request's signal. */
@@ -335,8 +375,11 @@ export interface BridgeDeps {
   /** The gateway's origin (the web UI's own). */
   origin: string;
   fetch: typeof fetch;
-  /** Observe server frames; returns a function that stops observing. */
-  onFrame: (listener: (msg: ServerMessage) => void) => () => void;
+  /**
+   * Observe server frames, each with the agent whose connection sent it
+   * (`null` when none is bound); returns a function that stops observing.
+   */
+  onFrame: (listener: (msg: ServerMessage, agent: string | null) => void) => () => void;
   /** Observe the socket connecting and disconnecting; returns a function that stops observing. */
   onConnectionChange: (listener: (connected: boolean) => void) => () => void;
   /** Set the workspace prefixes the connection watches for this artifact. `[]` stops watching. */
@@ -381,8 +424,8 @@ export class WorkbenchBridge {
 
   /** Start forwarding server frames to subscribed and watching artifacts. */
   start(): void {
-    this.stopObserving ??= this.deps.onFrame((frame) => {
-      this.forwardFrame(frame);
+    this.stopObserving ??= this.deps.onFrame((frame, agent) => {
+      this.forwardFrame(frame, agent);
     });
     this.stopObservingConnection ??= this.deps.onConnectionChange((connected) => {
       this.connectionChanged(connected);
@@ -442,7 +485,15 @@ export class WorkbenchBridge {
     this.deps.watchWorkspace(prefixes);
   }
 
-  private forwardFrame(frame: ServerMessage): void {
+  /**
+   * Forward one server frame. Frames an artifact hears through `subscribe`
+   * carry the `agent` whose connection sent them, because two agents can
+   * hold sessions at the same address (`artifact-chart-0001`); the SDK
+   * routes a session's frames by (agent, address) and drops any frame that
+   * names no agent, so one agent's session never reaches a handle for
+   * another's.
+   */
+  private forwardFrame(frame: ServerMessage, agent: string | null): void {
     if (frame.type === "workspace_changed") {
       this.deliverChanges(frame.changes);
     } else if (frame.type === "workspace_resync") {
@@ -450,7 +501,9 @@ export class WorkbenchBridge {
     } else if (frame.type !== "workspace_watch_unavailable" && frame.type !== "pong") {
       // The web UI shows its own notice when live updates are off, and
       // keepalive pongs are transport noise, not events an artifact can act on.
-      if (this.subscribed) this.post({ kind: "event", frame });
+      if (this.subscribed) {
+        this.post({ kind: "event", frame: agent === null ? frame : { ...frame, agent } });
+      }
     }
   }
 
@@ -526,36 +579,43 @@ export class WorkbenchBridge {
   private async handleFetch(request: FetchRequest): Promise<void> {
     const check = checkArtifactRequest(request.method, request.path, this.deps.origin);
     if (!check.allowed) {
-      const body = new TextEncoder().encode(JSON.stringify({ error: check.reason }));
-      this.reply(request.id, {
-        result: {
-          status: check.status,
-          statusText: "Blocked by the workbench",
-          headers: [["content-type", "application/json"]],
-          body: body.buffer,
-        } satisfies RelayedResponse,
-      });
+      this.replyBlocked(request.id, check.status, check.reason);
+      return;
+    }
+
+    // Unscoped paths (`/api/status`) address the agent the web UI has open;
+    // scoped ones pass through. With no agent open, only scoped paths resolve.
+    let url: string;
+    try {
+      url = scopeApiPath(check.url);
+    } catch (err) {
+      if (!(err instanceof NoAgentSelectedError)) throw err;
+      this.replyBlocked(
+        request.id,
+        409,
+        "No agent is open, so this path can't be resolved to one. Name the agent in the path: /api/agents/<name>/...",
+      );
       return;
     }
 
     // Model calls get their own concurrency lane (separate from ordinary
     // requests) and an abort signal, tracked per frame so the activity panel
     // and Stop page (design §9) can cancel them later.
-    const isModelCall = isModelCompletePath(check.url);
+    const isModelCall = isModelCompletePath(url);
     const limiter = isModelCall ? this.modelCalls : this.requests;
     const controller = isModelCall ? new AbortController() : null;
     if (controller) this.trackModelCall(request.id, controller);
 
     let resp: Response;
     try {
-      resp = await limiter.run(() => this.relayWithRetry(check.url, request, controller?.signal));
+      resp = await limiter.run(() => this.relayWithRetry(url, request, controller?.signal));
     } catch (err) {
       if (isAbortError(err)) {
         this.reply(request.id, { error: "The model call was cancelled." });
         return;
       }
       // eslint-disable-next-line no-console -- the tool gets a plain-language error; the raw cause is for developers
-      console.error("workbench bridge request failed", request.method, check.url, err);
+      console.error("workbench bridge request failed", request.method, url, err);
       this.reply(request.id, {
         error: "Couldn't reach Residuum. Check that it's running, then try again.",
       });
@@ -595,6 +655,18 @@ export class WorkbenchBridge {
       if (attempt >= MAX_OVERLOADED_RETRIES || !(await isRelayOverloaded(resp))) return resp;
       await this.sleep(retryDelayMs(attempt + 1));
     }
+  }
+
+  private replyBlocked(id: string, status: number, reason: string): void {
+    const body = new TextEncoder().encode(JSON.stringify({ error: reason }));
+    this.reply(id, {
+      result: {
+        status,
+        statusText: "Blocked by the workbench",
+        headers: [["content-type", "application/json"]],
+        body: body.buffer,
+      } satisfies RelayedResponse,
+    });
   }
 
   /**

@@ -46,6 +46,8 @@ class ScheduledStore {
 
   private unsubscribeFrame: (() => void) | null = null;
   private watchers = 0;
+  /** Bumped on a reset, so a load begun for the previous agent can tell it is stale. */
+  private generation = 0;
 
   /**
    * Start watching for refetch signals. Call once per mounted view; pairs
@@ -72,23 +74,40 @@ class ScheduledStore {
     }
   }
 
+  /**
+   * Forget the current agent's pulses and actions, for a switch to another
+   * agent. A view that is open reloads for the new one.
+   */
+  reset(): void {
+    this.generation++;
+    this.pulses = [];
+    this.actions = [];
+    this.loaded = false;
+    this.loading = false;
+    this.pending = new Set();
+    if (this.watchers > 0) void this.load();
+  }
+
   async load(): Promise<void> {
+    const generation = this.generation;
     this.loading = true;
     try {
       const [pulses, actions] = await Promise.all([
         fetchScheduledPulses(),
         fetchScheduledActions(),
       ]);
+      if (generation !== this.generation) return;
       this.pulses = pulses;
       this.actions = actions;
       this.loaded = true;
     } catch (err) {
+      if (generation !== this.generation) return;
       notifications.surface(
         "error",
         userErrorMessage(err, { action: "Couldn't load the Scheduled view." }),
       );
     } finally {
-      this.loading = false;
+      if (generation === this.generation) this.loading = false;
     }
   }
 

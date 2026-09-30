@@ -54,6 +54,7 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
     // Subscribe to typed bus topics for this connection
     let mut subs = match WsSubscribers::new(
         &state.bus_handle,
+        &state.team_feed.bus,
         EndpointName::from("ws"),
         state.file_registry.clone(),
         watch_set_rx,
@@ -205,12 +206,7 @@ async fn handle_client_message(
             verbose.store(enabled, Ordering::Relaxed);
         }
         ClientMessage::WatchWorkspace { prefixes } => {
-            replace_watch_set(
-                prefixes,
-                *state.workspace_watch_health.borrow(),
-                watch_set,
-                local_tx,
-            );
+            replace_watch_set(prefixes, watch_health(state), watch_set, local_tx);
         }
         ClientMessage::Ping => {
             local_tx.send(ServerMessage::Pong).ok();
@@ -312,6 +308,16 @@ async fn handle_client_message(
         }
     }
     true
+}
+
+/// Whether live updates are off for either feed a connection can watch: the
+/// agent's own directory or the hub's team directory.
+fn watch_health(state: &GatewayState) -> WatchHealth {
+    if *state.team_feed.health.borrow() == WatchHealth::Off {
+        WatchHealth::Off
+    } else {
+        *state.workspace_watch_health.borrow()
+    }
 }
 
 /// Apply a `watch_workspace` request: replace the connection's watch set, or

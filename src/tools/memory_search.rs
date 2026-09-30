@@ -103,7 +103,7 @@ impl Tool for MemorySearchTool {
         };
 
         // Map the tool-facing source names onto the internal DocSource vocabulary,
-        // shared with the `/api/memory/search` HTTP endpoint. Omitted → None
+        // shared with the `/api/agents/{name}/memory/search` HTTP endpoint. Omitted → None
         // (search every source); an unrecognized value is rejected rather than
         // silently falling back to searching everything.
         let source_filter = match arguments.get("source").and_then(Value::as_str) {
