@@ -7,6 +7,7 @@
 //! `docs/systems-usage/hub.md` and `docs/systems-usage/hub-http.md`.
 
 pub mod activity;
+pub mod agent_watch;
 mod deleted;
 pub mod directory;
 pub mod host;

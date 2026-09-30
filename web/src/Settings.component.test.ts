@@ -11,7 +11,7 @@ import {
 } from "./test/component";
 import Settings from "./Settings.svelte";
 import { invalidate } from "./lib/cache";
-import type { SettingsScope, SettingsSection } from "./lib/settings-sections";
+import type { LegacyScope, LegacySection } from "./lib/legacy-settings-sections";
 
 interface Call {
   method: string;
@@ -41,9 +41,9 @@ function serve(): void {
 }
 
 function mount(
-  scope: SettingsScope,
-  section: SettingsSection,
-  onSelectSection = vi.fn<(section: SettingsSection) => void>(),
+  scope: LegacyScope,
+  section: LegacySection,
+  onSelectSection = vi.fn<(section: LegacySection) => void>(),
 ): typeof onSelectSection {
   render(Settings, {
     scope,

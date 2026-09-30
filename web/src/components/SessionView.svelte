@@ -1,7 +1,8 @@
 <script lang="ts">
   import { tick } from "svelte";
   import { ws } from "../lib/ws.svelte";
-  import { router } from "../lib/router.svelte";
+  import { openSessionByAddress } from "../lib/session-address";
+  import { legacyRouter } from "../lib/legacy-router.svelte";
   import { Icon } from "../lib/icons";
   import type { SessionView } from "../lib/sessions.svelte";
   import {
@@ -79,7 +80,7 @@
   }
 
   function openSpawner() {
-    if (summary?.spawner) void ws.sessions.openAddress(summary.spawner, null);
+    if (summary?.spawner) void openSessionByAddress(ws.sessions, summary.spawner, null);
   }
 </script>
 
@@ -134,7 +135,7 @@
               <button
                 type="button"
                 class="session-meta-link"
-                onclick={() => router.openWorkbench(artifact)}
+                onclick={() => legacyRouter.openWorkbench(artifact)}
               >
                 {artifact}
               </button>

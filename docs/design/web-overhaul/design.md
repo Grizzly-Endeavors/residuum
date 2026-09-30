@@ -948,7 +948,7 @@ Artifacts have never shipped in a release, so the SDK is shaped for standalone p
 - **Workbench fidelity.**
   - In deterministic mode the mock's artifacts listener runs on a fixed port, and preview mode includes it.
   - The listener forwards `/api` and sockets to the mock, with the block list.
-  - Its sample artifact names its agent through the meta tag and in `ask` and `sessions.start`.
+  - Its sample artifact names its agent in `ask` and `sessions.start`.
   - Artifact deletes return a checkpoint id.
   - It sends artifact events and workspace changes when files change, and implements the session relay with acknowledgements.
 

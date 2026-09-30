@@ -4,10 +4,12 @@ import type {
   WorkspaceValidateResponse,
   WorkspaceWriteResponse,
 } from "../src/lib/types";
-import { json, readJsonObject, stringField, text, type JsonObject } from "./http";
+import { json, readBody, readJsonObject, stringField, text, type JsonObject } from "./http";
 import type { Route, RouteContext } from "./routes";
 import type { MockState } from "./state";
+import { batchRead, buildTree, type Walker } from "./workspace-bulk";
 import {
+  ensureDirectory,
   fileVersion,
   listDirectory,
   movePath,
@@ -40,18 +42,22 @@ function isTeamKey(key: string): boolean {
   return key === TEAM_PREFIX || key.startsWith(`${TEAM_PREFIX}/`);
 }
 
-/** Place a path as a client sent it. A path that leaves the workspace is refused with `403`, and gives `null`. */
-function locate(ctx: RouteContext, scope: WorkspaceScope, path: string): Located | null {
-  if (path.startsWith("/") || path.split("/").includes("..")) {
-    text(ctx.res, 403, `path traversal rejected: ${path}`);
-    return null;
-  }
+/** Place a path as a client sent it, or `null` for one that leaves the workspace. */
+function place(ctx: RouteContext, scope: WorkspaceScope, path: string): Located | null {
+  if (path.startsWith("/") || path.split("/").includes("..")) return null;
   const relative = path.replace(/\/+$/, "");
   if (scope === "team") {
     const key = relative === "" ? TEAM_PREFIX : `${TEAM_PREFIX}/${relative}`;
     return { state: ctx.hub.hubState, key };
   }
   return { state: isTeamKey(relative) ? ctx.hub.hubState : ctx.state, key: relative };
+}
+
+/** `place`, refusing a path that leaves the workspace with `403`. */
+function locate(ctx: RouteContext, scope: WorkspaceScope, path: string): Located | null {
+  const at = place(ctx, scope, path);
+  if (at === null) text(ctx.res, 403, `path traversal rejected: ${path}`);
+  return at;
 }
 
 /** The `path` query parameter every file route needs, or `null` after answering `400` for its absence. */
@@ -144,11 +150,15 @@ function listFiles(ctx: RouteContext, scope: WorkspaceScope): void {
   json(ctx.res, 200, listed);
 }
 
-function readFile(ctx: RouteContext, scope: WorkspaceScope): void {
+/** The file the `path` query names, or `null` after answering `400`, `403`, `404` or `500`. */
+function requireFile(
+  ctx: RouteContext,
+  scope: WorkspaceScope,
+): { path: string; content: string } | null {
   const path = requirePathQuery(ctx);
-  if (path === null) return;
+  if (path === null) return null;
   const at = locate(ctx, scope, path);
-  if (at === null) return;
+  if (at === null) return null;
   const content = at.state.workspaceFileContents[at.key];
   if (content === undefined) {
     if (pathKind(at.state, at.key) === "directory") {
@@ -156,13 +166,127 @@ function readFile(ctx: RouteContext, scope: WorkspaceScope): void {
     } else {
       notFound(ctx, path);
     }
-    return;
+    return null;
   }
+  return { path, content };
+}
+
+function readFile(ctx: RouteContext, scope: WorkspaceScope): void {
+  const file = requireFile(ctx, scope);
+  if (file === null) return;
   ctx.res.writeHead(200, {
     "Content-Type": "text/plain; charset=utf-8",
-    ETag: fileVersion(content),
+    ETag: fileVersion(file.content),
   });
-  ctx.res.end(content);
+  ctx.res.end(file.content);
+}
+
+/** The content types a raw read guesses from a file's extension. */
+const MIME_TYPES: Readonly<Record<string, string>> = {
+  md: "text/markdown",
+  txt: "text/plain",
+  json: "application/json",
+  html: "text/html",
+  css: "text/css",
+  js: "text/javascript",
+  svg: "image/svg+xml",
+  png: "image/png",
+  yml: "application/yaml",
+  toml: "application/toml",
+};
+
+/** `GET .../workspace/raw`: a file's bytes, with a content type guessed from its extension and its version as the `ETag`. */
+function readRaw(ctx: RouteContext, scope: WorkspaceScope): void {
+  const file = requireFile(ctx, scope);
+  if (file === null) return;
+  const extension = file.path.slice(file.path.lastIndexOf(".") + 1);
+  ctx.res.writeHead(200, {
+    "Content-Type": MIME_TYPES[extension] ?? "application/octet-stream",
+    ETag: fileVersion(file.content),
+  });
+  ctx.res.end(Buffer.from(file.content));
+}
+
+/** `PUT .../workspace/raw?path=`: the body is the file, written as text. The same write rules as `PUT .../file`. */
+async function putRaw(ctx: RouteContext, scope: WorkspaceScope): Promise<void> {
+  const path = requirePathQuery(ctx);
+  if (path === null) return;
+  const at = locate(ctx, scope, path);
+  if (at === null || refusesTeamRoot(ctx, at.key) || preconditionFailed(ctx, at)) return;
+  const version = writeFile(at.state, at.key, await readBody(ctx.req));
+  json(ctx.res, 200, { saved: true, version, diagnostics: [] } satisfies WorkspaceWriteResponse);
+}
+
+/** `POST .../workspace/dir`: create a directory and its parents, and succeed when it is already there. */
+async function makeDirectory(ctx: RouteContext, scope: WorkspaceScope): Promise<void> {
+  const fields = requireStrings(ctx, await readJsonObject(ctx.req), ["path"]);
+  if (fields === undefined) return;
+  const [path = ""] = fields;
+  if (path.trim() === "") {
+    text(ctx.res, 400, "path is required");
+    return;
+  }
+  const at = locate(ctx, scope, path);
+  if (at === null) return;
+  if (pathKind(at.state, at.key) === "file") {
+    text(ctx.res, 409, `${path} already exists and is not a directory`);
+    return;
+  }
+  ensureDirectory(at.state, at.key);
+  json(ctx.res, 200, { created: true });
+}
+
+/** `GET .../workspace/tree`: every file and directory below `path`, flat and in path order. */
+function listTree(ctx: RouteContext, scope: WorkspaceScope): void {
+  const path = ctx.query.get("path") ?? "";
+  const at = locate(ctx, scope, path);
+  if (at === null) return;
+  const kind = pathKind(at.state, at.key);
+  if (kind === null) {
+    notFound(ctx, path);
+    return;
+  }
+  if (kind === "file") {
+    text(ctx.res, 400, `${path} is not a directory`);
+    return;
+  }
+  const depthParam = ctx.query.get("depth");
+  if (depthParam !== null && !/^\d+$/.test(depthParam)) {
+    text(
+      ctx.res,
+      400,
+      `invalid depth ${JSON.stringify(depthParam)}: invalid digit found in string`,
+    );
+    return;
+  }
+  const content = ctx.query.get("content");
+  const walker: Walker = {
+    stateAt: (key) => (isTeamKey(key) ? ctx.hub.hubState : at.state),
+    label: (key) => (scope === "team" ? key.replace(/^team\/?/, "") : key),
+  };
+  json(
+    ctx.res,
+    200,
+    buildTree(at.key, walker, {
+      content: content === "true" || content === "1",
+      globs: ctx.query.getAll("glob"),
+      depth: depthParam === null ? null : Number(depthParam),
+    }),
+  );
+}
+
+/** `POST .../workspace/read`: the content of the listed files, in order; a file that can't be read carries an `error`. */
+async function readMany(ctx: RouteContext, scope: WorkspaceScope): Promise<void> {
+  const { paths } = await readJsonObject(ctx.req);
+  if (!Array.isArray(paths) || paths.some((p) => typeof p !== "string")) {
+    text(ctx.res, 422, "Failed to deserialize the JSON body: missing list of strings `paths`");
+    return;
+  }
+  json(
+    ctx.res,
+    200,
+    batchRead(paths as string[], (path) => place(ctx, scope, path)),
+  );
 }
 
 async function putFile(ctx: RouteContext, scope: WorkspaceScope): Promise<void> {
@@ -172,7 +296,7 @@ async function putFile(ctx: RouteContext, scope: WorkspaceScope): Promise<void> 
   const at = locate(ctx, scope, path);
   if (at === null || refusesTeamRoot(ctx, at.key) || preconditionFailed(ctx, at)) return;
   const version = writeFile(at.state, at.key, content);
-  json(ctx.res, 200, { saved: true, version } satisfies WorkspaceWriteResponse);
+  json(ctx.res, 200, { saved: true, version, diagnostics: [] } satisfies WorkspaceWriteResponse);
 }
 
 function deleteFile(ctx: RouteContext, scope: WorkspaceScope): void {
@@ -268,8 +392,25 @@ function routesFor(scope: WorkspaceScope, prefix: string): readonly Route[] {
         deleteFile(ctx, scope);
       },
     },
+    {
+      method: "GET",
+      pattern: `${prefix}/raw`,
+      handler: (ctx) => {
+        readRaw(ctx, scope);
+      },
+    },
+    { method: "PUT", pattern: `${prefix}/raw`, handler: (ctx) => putRaw(ctx, scope) },
+    { method: "POST", pattern: `${prefix}/dir`, handler: (ctx) => makeDirectory(ctx, scope) },
     { method: "POST", pattern: `${prefix}/move`, handler: (ctx) => moveFile(ctx, scope) },
     { method: "POST", pattern: `${prefix}/validate`, handler: validateFile },
+    {
+      method: "GET",
+      pattern: `${prefix}/tree`,
+      handler: (ctx) => {
+        listTree(ctx, scope);
+      },
+    },
+    { method: "POST", pattern: `${prefix}/read`, handler: (ctx) => readMany(ctx, scope) },
   ];
 }
 

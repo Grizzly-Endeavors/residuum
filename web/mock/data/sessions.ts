@@ -1,5 +1,6 @@
 import type { SessionSummary } from "../../src/lib/generated/protocol";
 import type { RecentMessage } from "../../src/lib/types";
+import type { MockClock } from "../env";
 
 /** An agent's sessions: the live runs, the finished ones, and each run's transcript. */
 export interface MockSessions {
@@ -27,11 +28,8 @@ export function untrackedRunFields(): Pick<
   };
 }
 
-function minutesAgo(minutes: number): string {
-  return new Date(Date.now() - minutes * 60_000).toISOString();
-}
-
-export function createSessions(): MockSessions {
+export function createSessions(clock: MockClock): MockSessions {
+  const minutesAgo = (minutes: number): string => clock.isoAgo(minutes * 60_000);
   const live: SessionSummary[] = [
     {
       address: "spawned-research-3f9a",

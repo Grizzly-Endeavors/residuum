@@ -95,6 +95,19 @@ Motion answers what the user did, and shows what changed.
 - Icons take `currentColor`; color them through the parent.
 - A new icon is drawn on the same grid with the same stroke, from paths, circles and rectangles. Filled shapes are marked `solid`.
 
+## Primitives
+
+`src/lib/ui` holds the controls every surface is built from, exported from its `index.ts`: Button and IconButton; TextField, NumberField, SelectField, Toggle, SegmentedControl and SecretField, which wrap `Field` (label, hint, inline error) around `Input` or their own control; Badge, StatusDot, Disclosure, Tabs, EmptyState, Skeleton, Banner and Kbd; and the Spinner and VisuallyHidden helpers.
+
+- **Buttons.** Primary fills with `vein-dim` and white; secondary with `stone-3`; quiet has no fill until hovered; danger labels in `err-text` and turns to `text` over its `err-tint` hover. `md` is 32px and `sm` 28px tall. A loading button shows a spinner, reports `aria-busy` and ignores presses but stays focusable. An IconButton takes a required `label`, its accessible name, and asks the tooltip provider in context (`provideTooltips` in `tooltip.ts`) to show it; with no provider it shows none.
+- **Fields.** The label sits above the control (`stack`), beside it with the control at the end (`row`, the toggle's default), or just before it (`inline`). Hint and error are linked to the control with `aria-describedby`, hint first, and an error also sets `aria-invalid`. The focus ring of a text box or select is its own boundary: `vein` at double weight with a `vein-faint` halo, or `err` with an `err-tint` halo when invalid. Every other control takes the base outline.
+- **Keyboard.** Toggles flip with Space and Enter. Segmented controls are radio groups and Tabs a tab list: one tab stop on the chosen item, arrow keys move and choose, skipping disabled items and wrapping, and Home and End jump to the ends. A Disclosure is a button with `aria-expanded`; its closed content stays mounted but hidden.
+- **State marks.** StatusDot draws each agent state as its own shape: a `moss-text` dot running, a pulsing `vein-bright` dot working, a `text-3` ring stopped, a turning ring starting (`vein-bright`, clockwise) or stopping (`text-2`, backwards), and an `err-text` triangle failed. Badges on a tint label in `text` or `vein-bright` and carry their tone in a dot; a solid count is `stone-0` on `vein-bright`. Warning and error banners share the `err-tint` wash; errors are announced as alerts, the rest politely.
+- **Phones.** At phone width every button, tab, segment, disclosure, text box and select grows to `--layout-touch-target`; the toggle keeps its track and grows its hit area instead.
+- **Class names.** Every primitive class starts with `ui-`, which no legacy stylesheet uses.
+
+The gallery at `/dev/gallery` shows every primitive in every state, live. It is served by the dev server (`npm run dev`, `npm run dev:mock`) and built into mock builds (`VITE_MOCK=1`); production builds compile it out, through the `__UI_GALLERY__` flag set in `vite.config.ts`.
+
 ## Base styles
 
 `src/styles/ui-base.css` holds the reset and base styles for components: box sizing, zeroed margins and padding, controls that inherit type, headings that take their size from the component, code in JetBrains Mono, vein-bright links, the `vein-bright` focus outline, the placeholder color, and bare dialogs and popovers. It applies inside the element marked `data-ui` (the shell root) and skips anything inside a `data-legacy-view` wrapper, where a hosted legacy view keeps the legacy global styles. Every base rule has zero specificity, so a component's own rule always wins.

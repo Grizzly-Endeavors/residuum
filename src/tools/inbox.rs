@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use serde_json::Value;
 
+use crate::bus::{Publisher, UserInboxAddedEvent, topics};
 use crate::inbox::{self, InboxItem};
 use crate::inference::ToolDefinition;
 
@@ -377,6 +378,9 @@ pub struct UserInboxAddTool {
     user_inbox_dir: PathBuf,
     user_inbox_attachments_dir: PathBuf,
     tz: chrono_tz::Tz,
+    /// Where each saved item is announced, so the hub learns of it without
+    /// waiting for a file change. `None` announces nothing.
+    publisher: Option<Publisher>,
 }
 
 impl UserInboxAddTool {
@@ -391,6 +395,33 @@ impl UserInboxAddTool {
             user_inbox_dir,
             user_inbox_attachments_dir,
             tz,
+            publisher: None,
+        }
+    }
+
+    /// Announce every saved item on `publisher`'s bus.
+    #[must_use]
+    pub fn with_publisher(mut self, publisher: Publisher) -> Self {
+        self.publisher = Some(publisher);
+        self
+    }
+
+    /// Tell the bus the item `item_id` was saved. A failure to announce
+    /// leaves the item saved: the hub still sees the file appear.
+    async fn announce(&self, item_id: &str) {
+        let Some(publisher) = &self.publisher else {
+            return;
+        };
+        if let Err(e) = publisher
+            .publish(
+                topics::UserInbox,
+                UserInboxAddedEvent {
+                    item_id: item_id.to_string(),
+                },
+            )
+            .await
+        {
+            tracing::warn!(error = %e, item_id, "failed to announce a new user inbox item");
         }
     }
 }
@@ -459,6 +490,7 @@ impl Tool for UserInboxAddTool {
         })?;
 
         let id = filename.trim_end_matches(".json");
+        self.announce(id).await;
         let succeeded = attachment_paths.len() - failures.len();
         let mut message = if attachment_paths.is_empty() {
             format!("Added item to user inbox with ID: {id}")
@@ -795,6 +827,82 @@ mod tests {
         assert!(
             !attachments_dir.exists(),
             "no attachments directory should be created"
+        );
+    }
+
+    #[tokio::test]
+    async fn user_inbox_add_announces_the_saved_item_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let user_inbox_dir = dir.path().join("inbox/user");
+        tokio::fs::create_dir_all(&user_inbox_dir).await.unwrap();
+        let bus = crate::bus::spawn_broker();
+        let mut added = bus
+            .subscribe::<_, UserInboxAddedEvent>(topics::UserInbox)
+            .await
+            .unwrap();
+
+        let tool = UserInboxAddTool::new(
+            user_inbox_dir.clone(),
+            user_inbox_dir.join("attachments"),
+            chrono_tz::UTC,
+        )
+        .with_publisher(bus.publisher());
+        let result = tool
+            .execute(serde_json::json!({"title": "heads up", "body": "look"}))
+            .await
+            .unwrap();
+        assert!(!result.is_error, "{}", result.output);
+
+        let announced = tokio::time::timeout(std::time::Duration::from_secs(5), added.recv())
+            .await
+            .expect("the item is announced")
+            .unwrap()
+            .unwrap();
+        assert!(
+            result.output.ends_with(&announced.item_id),
+            "the announced id {:?} is the one the tool reported: {}",
+            announced.item_id,
+            result.output
+        );
+        assert!(
+            user_inbox_dir
+                .join(format!("{}.json", announced.item_id))
+                .is_file(),
+            "the announced item is already saved"
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), added.recv())
+                .await
+                .is_err(),
+            "one item, one announcement"
+        );
+    }
+
+    #[tokio::test]
+    async fn user_inbox_add_that_fails_announces_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        // A regular file where the inbox directory should be, so saving fails.
+        let blocked = dir.path().join("inbox");
+        tokio::fs::write(&blocked, b"not a directory")
+            .await
+            .unwrap();
+        let bus = crate::bus::spawn_broker();
+        let mut added = bus
+            .subscribe::<_, UserInboxAddedEvent>(topics::UserInbox)
+            .await
+            .unwrap();
+
+        let tool = UserInboxAddTool::new(blocked.join("user"), blocked.join("a"), chrono_tz::UTC)
+            .with_publisher(bus.publisher());
+        let result = tool
+            .execute(serde_json::json!({"title": "lost", "body": "never saved"}))
+            .await;
+        assert!(result.is_err(), "saving into a file path fails");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), added.recv())
+                .await
+                .is_err(),
+            "an item that wasn't saved is not announced"
         );
     }
 

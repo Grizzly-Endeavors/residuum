@@ -8,7 +8,10 @@
 //! the other agents keep running.
 //!
 //! Every state, autostart, visibility, and activity change is published on
-//! the hub bus, in order, for the hub WebSocket to forward.
+//! the hub bus, in order, for the hub WebSocket to forward. What happens
+//! inside a running agent (its sessions, inbox, schedule and turns) reaches
+//! the hub's [`AgentChangeFeed`] through the agent's watcher, which starts
+//! and stops with the agent.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -35,6 +38,7 @@ use crate::util::FatalError;
 use crate::workspace::layout::WorkspaceLayout;
 
 use super::activity::ActivityTracker;
+use super::agent_watch::{AgentChange, AgentChangeFeed, AgentChangeKind, AgentWatcher};
 use super::directory::{AgentDirectory, AgentFiles};
 use super::services::HubServices;
 use super::team_embedding::EmbeddingSource;
@@ -265,6 +269,9 @@ pub struct AgentHost {
     hub_cfg: RwLock<HubConfig>,
     slots: RwLock<BTreeMap<String, Arc<AgentSlot>>>,
     events: broadcast::Sender<HubEvent>,
+    /// Changes inside running agents, published by each agent's watcher and
+    /// by its activity tracker's turn hook.
+    agent_changes: Arc<AgentChangeFeed>,
     /// Serializes creating agents, so two requests for one name can't both
     /// write its directory.
     creation_lock: tokio::sync::Mutex<()>,
@@ -296,6 +303,7 @@ impl AgentHost {
                 hub_cfg: RwLock::new(hub_cfg),
                 slots: RwLock::new(BTreeMap::new()),
                 events,
+                agent_changes: AgentChangeFeed::new(),
                 creation_lock: tokio::sync::Mutex::new(()),
                 stopping: AtomicBool::new(false),
                 teams_ports: Mutex::new(BTreeMap::new()),
@@ -338,6 +346,14 @@ impl AgentHost {
         // No subscribers is the normal state until a client opens the hub
         // WebSocket.
         self.events.send(event).ok();
+    }
+
+    /// The feed of changes inside running agents: sessions, outbound tasks,
+    /// user inbox additions, watched files, turns that ended, and resyncs.
+    /// Subscribe before agents start to hear about every one of them.
+    #[must_use]
+    pub fn agent_changes(&self) -> &Arc<AgentChangeFeed> {
+        &self.agent_changes
     }
 
     /// Publish a hub notice for the user.
@@ -384,7 +400,11 @@ impl AgentHost {
                 published_meta: None,
                 meta_unreadable: false,
             }),
-            activity: ActivityTracker::new(name, self.events.clone()),
+            activity: ActivityTracker::new(
+                name,
+                self.events.clone(),
+                Arc::clone(&self.agent_changes),
+            ),
         });
         slot.reload_meta();
         slots.insert(name.to_string(), slot);
@@ -602,7 +622,8 @@ impl AgentHost {
         .await;
         match started {
             Ok(Ok(started)) => {
-                self.attach(slot, started.runtime, started.control);
+                let watcher = self.attach_watcher(slot, &started.control).await;
+                self.attach(slot, started.runtime, started.control, watcher);
                 Ok(())
             }
             Ok(Err(err)) => {
@@ -747,13 +768,31 @@ impl AgentHost {
         }
     }
 
+    /// Start watching a started agent, before its event loop runs so the
+    /// watcher hears everything it does. An agent that can't be watched
+    /// still runs; the hub just hears nothing from it.
+    async fn attach_watcher(
+        &self,
+        slot: &AgentSlot,
+        control: &AgentControl,
+    ) -> Option<AgentWatcher> {
+        match AgentWatcher::attach(&slot.name, control, Arc::clone(&self.agent_changes)).await {
+            Ok(watcher) => Some(watcher),
+            Err(e) => {
+                tracing::error!(agent = %slot.name, error = %e, "couldn't start watching the agent; the hub won't hear about its sessions, inbox or schedule until it restarts");
+                None
+            }
+        }
+    }
+
     /// Record a successfully started agent: run its event loop as its own
-    /// task under a supervisor.
+    /// task under a supervisor, which stops `watcher` when the agent ends.
     fn attach(
         &self,
         slot: &Arc<AgentSlot>,
         runtime: crate::gateway::types::AgentRuntime,
         control: AgentControl,
+        watcher: Option<AgentWatcher>,
     ) {
         let join = spawn_agent_loop(runtime);
         let abort = join.abort_handle();
@@ -773,6 +812,13 @@ impl AgentHost {
             guard.generation
         };
         self.set_state(slot, AgentState::Running, None);
+        // The watcher is already listening, so whatever happened before now
+        // is on disk or in the registry, and everything after reaches the
+        // feed: a consumer recomputes the agent once, from here.
+        self.agent_changes.publish(&AgentChange {
+            agent: slot.name.clone(),
+            kind: AgentChangeKind::Resync,
+        });
 
         if let Some(host) = self.me.upgrade() {
             let supervised = Supervised {
@@ -782,6 +828,7 @@ impl AgentHost {
                 forced,
                 done_tx,
                 cleanup: control.cleanup.clone(),
+                watcher,
             };
             crate::util::spawn_in_span(
                 {
@@ -888,7 +935,7 @@ impl AgentHost {
     }
 
     /// Wait for the agent's event loop to end, then record how it ended.
-    async fn supervise(&self, run: Supervised, join: tokio::task::JoinHandle<AgentExit>) {
+    async fn supervise(&self, mut run: Supervised, join: tokio::task::JoinHandle<AgentExit>) {
         let exit = join.await;
         let requested = run.stop_requested.load(Ordering::SeqCst);
         // A failure is its message for the user and the underlying reason. A
@@ -916,6 +963,11 @@ impl AgentHost {
         if failure.is_some() || run.forced.load(Ordering::SeqCst) {
             // The event loop didn't shut the agent down itself.
             run.cleanup.run().await;
+        }
+        // After the agent's own shutdown, so what it published while winding
+        // down (sessions recorded as interrupted) still reaches the feed.
+        if let Some(watcher) = run.watcher.take() {
+            watcher.stop().await;
         }
         run.slot.activity.run_ended();
         // Whether the agent shut down itself or died, it no longer takes part
@@ -1587,6 +1639,8 @@ struct Supervised {
     forced: Arc<AtomicBool>,
     done_tx: watch::Sender<bool>,
     cleanup: AgentCleanup,
+    /// Stopped once the agent's run has ended.
+    watcher: Option<AgentWatcher>,
 }
 
 /// A log-ready description of why an agent's task ended.

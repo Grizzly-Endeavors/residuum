@@ -2,7 +2,7 @@
   import { tick } from "svelte";
   import AgentStateGlyph from "./AgentStateGlyph.svelte";
   import { hub } from "../lib/hub.svelte";
-  import { router } from "../lib/router.svelte";
+  import { legacyRouter } from "../lib/legacy-router.svelte";
   import { describeAgent, stateLabel, unreadText } from "../lib/agent-state";
   import type { AgentSummary } from "../lib/hub-types";
 
@@ -12,7 +12,7 @@
   // so the switcher never claims a different agent than the page is on.
   let entries = $derived.by(() => {
     const listed = hub.agents;
-    const current = router.agent;
+    const current = legacyRouter.agent;
     if (current === null || listed.some((a) => a.name === current)) return listed;
     const unlisted: AgentSummary = {
       name: current,
@@ -28,7 +28,9 @@
   // Team pages and hub settings belong to the whole install, so the Team chip
   // is the current place there and no single agent is.
   let onTeamSide = $derived(
-    router.team !== null || router.workbench !== null || router.settings?.scope === "hub",
+    legacyRouter.team !== null ||
+      legacyRouter.workbench !== null ||
+      legacyRouter.settings?.scope === "hub",
   );
 
   // A failed agent's last error, shown while its chip is hovered or focused.
@@ -68,7 +70,7 @@
 
   // Keep the current agent's chip in view when the row scrolls (phone width).
   $effect(() => {
-    void router.agent;
+    void legacyRouter.agent;
     void tick().then(() => {
       nav
         ?.querySelector<HTMLElement>(".switcher-chip.current")
@@ -83,7 +85,7 @@
   <ul class="switcher-list">
     {#each entries as agent (agent.name)}
       {@const activity = hub.activityOf(agent.name)}
-      {@const current = !onTeamSide && agent.name === router.agent}
+      {@const current = !onTeamSide && agent.name === legacyRouter.agent}
       <li>
         <button
           type="button"
@@ -92,7 +94,7 @@
           aria-current={current ? "true" : undefined}
           aria-label={describeAgent(agent, activity)}
           aria-describedby={tipFor === agent.name && tipText !== null ? tipId : undefined}
-          onclick={() => router.openAgent(agent.name)}
+          onclick={() => legacyRouter.openAgent(agent.name)}
           onpointerenter={() => {
             tipFor = agent.name;
           }}
@@ -127,7 +129,7 @@
     class:current={onTeamSide}
     aria-current={onTeamSide ? "page" : undefined}
     onclick={() => {
-      router.openTeam("overview");
+      legacyRouter.openTeam("overview");
     }}
   >
     <span class="chip-name">Team</span>

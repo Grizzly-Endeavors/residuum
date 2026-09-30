@@ -78,6 +78,28 @@ The hub's reload queue carries two signals. `Hub` (from the config watcher, hub 
 
 The host tracks two things per agent for the switcher: `busy`, true while a main turn runs, with `busy_since`, when that turn began, and `unread`, the number of main-conversation replies published while no web client was connected to that agent's `/ws`. Connecting a client resets `unread` to zero. Changes are published on the hub bus as `agent_activity` events, which the hub WebSocket (`/api/hub/ws`) forwards. A change in activity is never an `agent_state` event. The snapshot a hub WebSocket connection starts with, and `GET /api/hub/agents`, carry every agent's current activity, so a client that connects mid-turn knows which agents are busy and since when.
 
+## Watching running agents
+
+The hub learns what happens inside a running agent as it happens. Each agent has a **watcher**: a task the host starts with the agent, before its event loop runs, and stops once the agent's run has ended, after the agent's own shutdown, so what the agent published while winding down still gets through. Nothing arrives from a watcher once it has stopped. If the watcher can't subscribe to the agent's bus, the agent still runs and the hub logs an error.
+
+The watcher reads the agent's own bus and publishes **agent changes** on one hub-wide feed, in order per agent. It reads every subscription continuously, whether or not anything consumes the feed. A consumer gets its own unbounded queue, so none are lost, and one that lets 10,000 changes pile up is logged as stuck. A consumer hears changes from the moment it subscribes; nothing is replayed.
+
+| Source | Change |
+|---|---|
+| Sessions | A session run started, moved to another state, or completed. |
+| Outbound A2A tasks | A task the agent sent to a remote agent was recorded or changed. The task tracker publishes one when an unreachable streak starts, one when the streak passes its 10-minute notice threshold (the moment it sends its notice), and one when the streak ends. |
+| `UserInbox` topic | The `user_inbox_add` tool saved an item; the change carries the item's id. Only this tool publishes it. Items that appear any other way, and every change to the inbox's files, arrive as file changes. |
+| The agent's own change feed | A file the hub follows changed: a top-level `*.json` file in `inbox/user/`, `scheduled_actions.json`, `HEARTBEAT.yml`, `pulse_state.json`, or a file in `config/`. A batch of file changes is one change per kind of file it touched. |
+| Resync | Everything about the agent may have changed. Sent when the agent finishes starting, when the agent's change feed says it may have missed changes, and every 60 seconds while that feed is down, until its next batch or resync. The hub logs one warning when the feed goes down. |
+
+A consumer answers a resync by recomputing everything it shows for that agent, from disk and the agent's session registry.
+
+Every session event, lifecycle or turn (tool calls and responses included), is also relayed on a broadcast of its own, tagged with the agent's name and the source label the session started with. A consumer that falls more than 1,024 events behind is told how many it missed.
+
+**Turn hook.** The agent runtime calls its activity tracker exactly once when a main turn ends, whatever the outcome, after the turn's replies are published and counted as unread. The hook puts the turn on the same feed: the user's message text, if a user started the turn; the last reply text, if there was one; the time; whether the turn had `user` or `background` visibility; and whether any client had the agent's WebSocket open. Empty text counts as no text. Unread counting is unchanged.
+
+None of this is exposed over HTTP or the hub WebSocket.
+
 ## Hub bus events
 
 Every change to an agent's state, autostart, or visibility is published in order as an `agent_state` event carrying the agent's summary. `agent_stopping` carries the name of an agent whose stop has begun. `agent_created`, `agent_restored` and `agent_deleted` carry who did it (`user` or `agent:<name>`); the first two carry the agent's summary. `agent_activity` carries `busy`, `busy_since` and `unread`. `hub_config_reloaded` reports each hub config reload attempt (see [Hub config reloads](#hub-config-reloads)). `notice` events carry hub-level messages: a fallback to the last-known-good hub config, hub config notices, removed environment overrides that are still set, and hub config reload outcomes.

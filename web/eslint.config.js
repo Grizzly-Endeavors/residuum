@@ -124,6 +124,33 @@ export default tseslint.config(
     },
   },
 
+  // ── Stores do not navigate ──────────────────────────────────────────
+  // Stores and services in `src/lib/` expose data and commands, and views
+  // navigate (design §12). Only the router, its adapter for the current views
+  // and the helper that opens a session from a view import it.
+  {
+    files: ["src/lib/**/*.ts"],
+    ignores: [
+      "src/lib/router.svelte.ts",
+      "src/lib/legacy-router.svelte.ts",
+      "src/lib/session-address.ts",
+      "src/lib/**/*.test.ts",
+    ],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/router.svelte", "**/legacy-router.svelte"],
+              message: "Stores expose data and commands; views navigate. Import the router from a view.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+
   // ── Svelte files ────────────────────────────────────────────────────
   {
     files: ["src/**/*.svelte"],

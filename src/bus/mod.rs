@@ -23,7 +23,8 @@ pub use events::{
     NotificationEvent, OutboundA2aTaskEvent, PostTurnActivityEvent, PostTurnActivityKind,
     PulseOverlap, ResponseEvent, ResultDisposition, SessionEvent, SessionEventKind,
     SessionResponseEvent, SpawnRequestEvent, ToolActivityEvent, ToolCallEvent, ToolResultEvent,
-    TurnLifecycleEvent, TurnUsageEvent, WorkbenchEvent, WorkspaceEvent, ends_with_sentinel,
+    TurnLifecycleEvent, TurnUsageEvent, UserInboxAddedEvent, WorkbenchEvent, WorkspaceEvent,
+    ends_with_sentinel,
 };
 pub use handle::{Publisher, Subscriber};
 pub use registry::{EndpointEntry, EndpointRegistry};

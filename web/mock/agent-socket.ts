@@ -4,14 +4,18 @@ import { createChatSimulator } from "./chat";
 import { parseJsonObject, stringField, type JsonObject } from "./http";
 import { sendSessionMessage, spawnSession, stopSession } from "./sessions";
 import {
+  agentSocketPath,
   frameText,
+  isWorkspaceFrame,
+  normalizeWatchPrefix,
   routeUpgrades,
   sendFrame,
+  watchedFrame,
   watchPrefixProblem,
   type UpgradeHost,
+  type WatchSet,
 } from "./sockets";
 import type { MockAgent, MockHub } from "./state";
-import { sleep } from "./util";
 
 /** How long a reload takes before the page is told it finished. */
 const RELOAD_MS = 1000;
@@ -93,8 +97,10 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
   const wss = new WebSocketServer({ noServer: true });
   const chat = createChatSimulator(hub, agent);
   const verbose = new WeakSet<WebSocket>();
+  /** What each page watches (`watch_workspace`); a page that never asked watches nothing. */
+  const watching = new WeakMap<WebSocket, WatchSet>();
 
-  routeUpgrades(host, wss, `/api/agents/${agent.name}/ws`, () =>
+  const stopRouting = routeUpgrades(host, wss, agentSocketPath(agent.name), () =>
     agent.runState === "running"
       ? null
       : { error: `${agent.name} is ${agent.runState}`, state: agent.runState },
@@ -105,10 +111,19 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
   };
   state.broadcast = (frame) => {
     for (const client of wss.clients) {
-      if (!VERBOSE_ONLY_FRAMES.has(frame.type) || verbose.has(client)) sendFrame(client, frame);
+      if (VERBOSE_ONLY_FRAMES.has(frame.type) && !verbose.has(client)) continue;
+      const sent = isWorkspaceFrame(frame)
+        ? watchedFrame(watching.get(client) ?? [], frame)
+        : frame;
+      if (sent !== null) sendFrame(client, sent);
     }
   };
   agent.connectedClients = () => wss.clients.size;
+  agent.dispose = () => {
+    stopRouting();
+    state.dropSockets();
+    wss.close();
+  };
 
   function handle(ws: WebSocket, msg: ClientMessage): void {
     const reply = (frame: ServerMessage): void => {
@@ -136,12 +151,14 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
         break;
 
       case "watch_workspace": {
-        // The mock has no workspace to watch, so no change frames follow; like
-        // the backend, it refuses a prefix it can't use and keeps going.
+        // Like the backend, it replaces what the page watches, unless a prefix
+        // can't be used: that is refused and the old set stays.
         const problem = msg.prefixes
           .map((prefix) => watchPrefixProblem(prefix))
           .find((p): p is string => p !== null);
-        if (problem !== undefined) {
+        if (problem === undefined) {
+          watching.set(ws, [...new Set(msg.prefixes.map(normalizeWatchPrefix))]);
+        } else {
           reply({
             type: "error",
             reply_to: null,
@@ -162,7 +179,7 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
 
       case "reload":
         reply({ type: "reloading" });
-        void sleep(RELOAD_MS).then(() => {
+        hub.env.after(RELOAD_MS, () => {
           reply({ type: "notice", message: "Configuration reloaded successfully." });
         });
         break;

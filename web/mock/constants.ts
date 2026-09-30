@@ -4,6 +4,12 @@ import type { CloudStatusResponse } from "../src/lib/types";
 /** Stand-in for `update::CURRENT_VERSION`, embedded the way the real artifacts listener does. */
 export const MOCK_RESIDUUM_VERSION = "0.0.0-mock";
 
+/** The `agentName` of the state that holds hub-level and team-level data. */
+export const HUB_STATE_NAME = "hub";
+
+/** The boot id the hub announces in deterministic mode, where a random one would differ between runs. */
+export const MOCK_DETERMINISTIC_BOOT_ID = "00000000-0000-4000-8000-000000000000";
+
 /** The detectable capabilities the mock implements (a subset of `src/features.rs`). */
 export const MOCK_FEATURES: readonly string[] = [
   "model-complete",
