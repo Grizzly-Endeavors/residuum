@@ -246,7 +246,16 @@ async fn fixture() -> Fixture {
         shutdown_rx,
     );
     crate::util::spawn_in_span(listener.start());
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_err()
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for the listener on port {port}"));
     Fixture {
         port,
         keys,
