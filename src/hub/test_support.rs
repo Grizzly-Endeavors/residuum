@@ -38,12 +38,4 @@ pub(super) fn write_agent(root: &Path, name: &str, model_url: &str) {
     .unwrap();
 }
 
-/// A TCP port that was free a moment ago.
-pub(super) async fn free_port() -> u16 {
-    tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
+pub(super) use crate::util::test_ports::free_port;

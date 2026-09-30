@@ -3,6 +3,7 @@
 //! visibility, over real HTTP with the official client. See
 //! `docs/systems-usage/a2a.md`.
 
+use crate::util::test_ports::free_port;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -175,15 +176,6 @@ impl Fixture {
     }
 }
 
-async fn free_port() -> u16 {
-    tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
 /// One agent's router: a card titled `display`, URLs under `/agents/<name>`,
 /// and an [`AgentHandler`].
 fn agent_router(
@@ -220,7 +212,7 @@ fn agent_router(
 /// Two agents behind one listener: `scout` (public) and `vault` (private).
 async fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
-    let port = free_port().await;
+    let port = free_port();
     let gate = Arc::new(Notify::new());
     let directory = Arc::new(
         StaticAgentDirectory::new()

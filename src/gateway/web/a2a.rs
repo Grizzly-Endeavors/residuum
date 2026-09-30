@@ -600,6 +600,7 @@ pub(super) async fn api_a2a_card(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::test_ports::free_port;
 
     fn hub_state(dir: &std::path::Path) -> HubApiState {
         HubApiState::for_test(dir)
@@ -952,15 +953,6 @@ mod tests {
     const VALID_CARD: &str =
         r#"{"name": "Test Agent", "description": "does things", "skills": []}"#;
 
-    async fn free_port() -> u16 {
-        tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port()
-    }
-
     #[tokio::test]
     async fn status_defaults_when_config_and_card_are_missing() {
         let dir = tempfile::tempdir().unwrap();
@@ -980,7 +972,7 @@ mod tests {
     #[tokio::test]
     async fn status_reports_no_listener_when_nothing_answers_the_port() {
         let dir = tempfile::tempdir().unwrap();
-        let port = free_port().await;
+        let port = free_port();
         write_config(dir.path(), &format!("[a2a]\nport = {port}\n"));
         let state = test_state(dir.path());
         write_card(&state, VALID_CARD);
@@ -996,7 +988,7 @@ mod tests {
     #[tokio::test]
     async fn status_reads_public_url_and_private_visibility_from_config() {
         let dir = tempfile::tempdir().unwrap();
-        let port = free_port().await;
+        let port = free_port();
         write_config(
             dir.path(),
             &format!(
@@ -1020,7 +1012,7 @@ mod tests {
     #[tokio::test]
     async fn status_reports_listener_running_when_something_answers_auth_check() {
         let dir = tempfile::tempdir().unwrap();
-        let port = free_port().await;
+        let port = free_port();
         write_config(
             dir.path(),
             &format!("[a2a]\nenabled = true\nport = {port}\n"),
@@ -1045,7 +1037,7 @@ mod tests {
     #[tokio::test]
     async fn status_never_probes_a_disabled_listener() {
         let dir = tempfile::tempdir().unwrap();
-        let port = free_port().await;
+        let port = free_port();
         // Nothing listens on `port`: if the handler probed it anyway despite
         // `enabled = false`, it would (correctly) report `false` too, so this
         // only exercises the disabled branch's own reported fields.
@@ -1064,7 +1056,7 @@ mod tests {
     #[tokio::test]
     async fn card_endpoint_returns_the_served_card_when_valid() {
         let dir = tempfile::tempdir().unwrap();
-        let port = free_port().await;
+        let port = free_port();
         write_config(
             dir.path(),
             &format!("[a2a]\nenabled = true\nport = {port}\n"),
@@ -1105,7 +1097,7 @@ mod tests {
     #[tokio::test]
     async fn status_puts_the_agent_under_its_own_path_and_says_the_relay_is_not_available() {
         let dir = tempfile::tempdir().unwrap();
-        let port = free_port().await;
+        let port = free_port();
         write_config(
             dir.path(),
             &format!("[a2a]\nport = {port}\npublic_url = \"https://example.com/a2a/\"\n"),

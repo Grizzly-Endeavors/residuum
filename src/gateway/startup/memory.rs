@@ -397,42 +397,41 @@ async fn build_vector_store(
         .embedding_model
         .as_ref()
         .is_some_and(|m| *m != model_name);
+
+    let mut vs = match VectorStore::open_or_create(&layout.vectors_db(), dim) {
+        Ok(vs) => vs,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to open vector store");
+            return None;
+        }
+    };
     if model_changed {
         tracing::info!(
             old_model = manifest.embedding_model.as_deref().unwrap_or("none"),
             new_model = model_name.as_str(),
             "embedding model changed, clearing vector store"
         );
-        if let Err(e) = std::fs::remove_file(layout.vectors_db())
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            tracing::warn!(error = %e, "failed to remove old vector store");
+        if let Err(e) = vs.reset(dim) {
+            tracing::warn!(error = %format!("{e:#}"), "failed to clear old vector store");
+            return None;
         }
     }
 
-    match VectorStore::open_or_create(&layout.vectors_db(), dim) {
-        Ok(vs) => {
-            tracing::info!(dim, model = model_name.as_str(), "vector store ready");
+    tracing::info!(dim, model = model_name.as_str(), "vector store ready");
 
-            let mut updated_manifest = IndexManifest::load(manifest_path).await.unwrap_or_default();
-            updated_manifest.embedding_model = Some(model_name);
-            updated_manifest.embedding_dim = Some(dim);
-            if model_changed {
-                for entry in updated_manifest.files.values_mut() {
-                    entry.embedded = false;
-                }
-            }
-            if let Err(e) = updated_manifest.save(manifest_path).await {
-                tracing::warn!(error = %e, "failed to save manifest with embedding info");
-            }
-
-            Some(Arc::new(vs))
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to open vector store");
-            None
+    let mut updated_manifest = IndexManifest::load(manifest_path).await.unwrap_or_default();
+    updated_manifest.embedding_model = Some(model_name);
+    updated_manifest.embedding_dim = Some(dim);
+    if model_changed {
+        for entry in updated_manifest.files.values_mut() {
+            entry.embedded = false;
         }
     }
+    if let Err(e) = updated_manifest.save(manifest_path).await {
+        tracing::warn!(error = %e, "failed to save manifest with embedding info");
+    }
+
+    Some(Arc::new(vs))
 }
 
 /// Build an `IndexManifest` from a full rebuild result.
