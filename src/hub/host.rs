@@ -410,7 +410,7 @@ impl AgentHost {
 
     fn ensure_not_stopping(&self) -> Result<(), LifecycleError> {
         if self.stopping.load(Ordering::SeqCst) {
-            return Err(LifecycleError::Failed(SHUTTING_DOWN.to_string()));
+            return Err(LifecycleError::ShuttingDown(SHUTTING_DOWN.to_string()));
         }
         Ok(())
     }

@@ -280,7 +280,7 @@ async fn nothing_is_restored_once_the_hub_is_shutting_down() {
         .await;
 
     assert!(
-        matches!(&refused, Err(LifecycleError::Failed(message)) if message.contains("shutting down")),
+        matches!(&refused, Err(LifecycleError::ShuttingDown(message)) if message.contains("shutting down")),
         "{refused:?}"
     );
     assert!(!dir_of(&hub, "nova").exists());

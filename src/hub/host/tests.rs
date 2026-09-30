@@ -1508,7 +1508,7 @@ async fn once_the_hub_is_shutting_down_nothing_starts_and_running_agents_still_s
     ] {
         assert_eq!(
             result.unwrap_err(),
-            LifecycleError::Failed("Residuum is shutting down".to_string())
+            LifecycleError::ShuttingDown("Residuum is shutting down".to_string())
         );
     }
     assert_eq!(hub.state_of("scout"), AgentState::Stopped);

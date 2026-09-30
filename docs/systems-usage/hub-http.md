@@ -40,7 +40,7 @@ The hub serves everything the backend offers from one router over its `AgentDire
 
 `AgentSummary` is `{ name, state, last_error, autostart, role, a2a_visibility }`. `state` is `starting`, `running`, `stopped`, or `failed`; `last_error` is `{ message, at }` while the state is `failed` and `null` otherwise.
 
-A lifecycle request is always made on the user's behalf. Errors are `{ "error": message }` with `404` for an unknown agent, `400` for an invalid name or request body, `409` for a name that exists or an agent in the wrong state, and `500` for a failure the user can read in the message.
+A lifecycle request is always made on the user's behalf. Errors are `{ "error": message }` with `404` for an unknown agent, `400` for an invalid name or request body, `409` for a name that exists or an agent in the wrong state, `503` for `start`, `restart`, or `create` refused because the hub is shutting down (see [hub.md](hub.md#start-up-and-shutdown)), and `500` for a failure the user can read in the message.
 
 ### Team routes
 
