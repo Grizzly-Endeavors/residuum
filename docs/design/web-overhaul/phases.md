@@ -69,31 +69,48 @@ It does not merge, and does not contact the owner.
 
 ## Phase 1 — Harness and guardrails (target: main)
 
-W01, then W01b. Then W02 and W04 together. Then W03 and W02b after W02.
+W01, then W01a, then W01b. Then W02 and W04 together. Then W03 and W02b after W02.
 
-### W01 — Mock server as typed modules, part 1 (L)
+### W01 — Mock server as typed modules, part 1: foundation, sessions and config (L)
 
 - **Modules:** mock server; web type-check, lint and format configuration.
 - **Preconditions:** none.
 - **Shape when done:**
-  - The mock server has a module structure, with shared state, routing and socket plumbing in their own modules.
-  - The hub, agent chat, sessions and config areas are moved into modules, type-checked, linted and formatted with the app's rules, and use generated protocol types wherever one exists.
-  - The remaining areas stay in the original file, excluded from the new checks until W01b.
-  - Behavior is unchanged.
+  - The mock server has a module structure: request helpers, shared state, route dispatch and the sample data for every area in their own modules. The sample data is in typed data modules.
+  - The sessions and config areas are moved into modules. The config area covers status, config, providers, MCP, secrets, agent keys, A2A, setup completion and tracing.
+  - Each moved area exports a route table of method, pattern and handler.
+  - The moved modules are type-checked, linted and formatted with the app's rules, and use generated protocol types wherever one exists. Session summaries carry every field of the generated type, with neutral values where the mock has no data.
+  - The remaining areas stay in the original file, excluded from the new checks. They call the moved modules and keep their own route matching.
+  - Behavior is otherwise unchanged.
 - **Verification:**
   - The type check and lint cover the moved modules.
-  - Today's manual scenarios behave the same under `just web-mock`: the `spawn`, `drop` and `busy` chat triggers, the test-control endpoints, and setup mode.
-  - Existing tests pass.
+  - The moved modules have unit tests, and existing tests pass.
+  - Today's manual scenarios behave the same under `just web-mock`: session endpoints and commands, config editing in Settings, and setup mode.
 
-### W01b — Mock server as typed modules, part 2 (L)
+### W01a — Mock server as typed modules, part 2: hub, agent chat, sockets and routing (L)
 
 - **Modules:** mock server.
 - **Preconditions:** W01.
 - **Shape when done:**
+  - The hub (agent lifecycle, hub status, hub socket), agent chat (history and the chat turn simulation) and the agent socket are moved into modules under the same checks.
+  - Chat and session frames are checked against the generated protocol types, and hub frames against the app's hub types.
+  - Scoped routing and the request middleware are in their own modules and dispatch over the route tables.
+  - The plugin entry in the original file is glue over the modules.
+  - Behavior is unchanged.
+- **Verification:**
+  - The type check and lint cover the moved modules.
+  - Today's manual scenarios behave the same under `just web-mock`: the `spawn`, `drop` and `busy` chat triggers, agent lifecycle, and the hub socket's snapshot and activity frames.
+  - Existing tests pass.
+
+### W01b — Mock server as typed modules, part 3 (L)
+
+- **Modules:** mock server.
+- **Preconditions:** W01a.
+- **Shape when done:**
   - The files and checkpoints, workbench, inbox, scheduled and test-control areas are moved into modules under the same checks.
   - The original single file is gone.
   - Behavior is unchanged.
-- **Verification:** the same as W01, now covering the whole mock.
+- **Verification:** the same as W01 and W01a, now covering the whole mock, including the test-control endpoints.
 
 ### W02 — Mock determinism, preview mode and route parity (M)
 
