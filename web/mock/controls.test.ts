@@ -70,6 +70,7 @@ describe("test controls", () => {
         type: "agent_activity",
         name: "atlas",
         busy: false,
+        busy_since: null,
         unread: 1,
       });
       const [message, reply] = (await recentMessages("atlas")).slice(-2);
