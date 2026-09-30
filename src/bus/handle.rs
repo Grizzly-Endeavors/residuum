@@ -97,6 +97,21 @@ impl EventReceiver {
             Self::Lossy(rx) => rx.recv().await,
         }
     }
+
+    /// Take one already-queued event without waiting for more, or `None` if
+    /// the channel is empty right now.
+    fn try_recv(&mut self) -> Option<ErasedEvent> {
+        match self {
+            Self::Lossless(rx, backlog) => {
+                let event = rx.try_recv().ok();
+                if event.is_some() {
+                    backlog.fetch_sub(1, Ordering::Relaxed);
+                }
+                event
+            }
+            Self::Lossy(rx) => rx.try_recv().ok(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -251,6 +266,27 @@ impl<E: Clone + Send + Sync + 'static> Subscriber<E> {
                 topic: self.topic.to_string(),
             })
         }
+    }
+
+    /// Non-blocking drain of every event already queued for this subscriber.
+    ///
+    /// Used at shutdown, before this subscriber is dropped, so events
+    /// published while a sender was told delivery succeeded are not silently
+    /// discarded along with the channel. A type mismatch is logged and the
+    /// event skipped, mirroring [`Subscriber::recv`]'s handling.
+    pub fn drain(&mut self) -> Vec<E> {
+        let mut events = Vec::new();
+        while let Some(erased) = self.event_rx.try_recv() {
+            match erased.downcast::<E>() {
+                Ok(arc_e) => events.push(Arc::unwrap_or_clone(arc_e)),
+                Err(_mismatched) => error!(
+                    expected = std::any::type_name::<E>(),
+                    topic = %self.topic,
+                    "type mismatch draining bus subscriber: programmer error"
+                ),
+            }
+        }
+        events
     }
 }
 
