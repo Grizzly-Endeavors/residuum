@@ -1,10 +1,12 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Plugin, ViteDevServer } from "vite";
+import type { Plugin } from "vite";
 import type { AgentSummary } from "../src/lib/generated/protocol";
 import type { WorkbenchInfo } from "../src/lib/types";
+import { WebSocket } from "ws";
 import { mockServerPlugin } from "./plugin";
+import { frameText } from "./sockets";
 import { fetchJson } from "./test-support";
 
 type Middleware = (req: IncomingMessage, res: ServerResponse, next: () => void) => void;
@@ -16,7 +18,10 @@ interface DevServer {
   logged: string[];
 }
 
-function startPlugin(): Promise<DevServer> {
+/** Which Vite server the plugin is started on: the dev server, or the preview server of a production build. */
+type ServerKind = "configureServer" | "configurePreviewServer";
+
+function startPlugin(kind: ServerKind = "configureServer"): Promise<DevServer> {
   const http = createServer();
   const logged: string[] = [];
   let middleware: Middleware | undefined;
@@ -34,12 +39,15 @@ function startPlugin(): Promise<DevServer> {
         },
       },
     },
-  } as unknown as ViteDevServer;
+  };
 
   const plugin: Plugin = mockServerPlugin();
-  const hook = plugin.configureServer;
-  const configure = typeof hook === "function" ? hook : hook?.handler;
-  if (configure === undefined) throw new Error("the plugin has no configureServer hook");
+  const hook = plugin[kind];
+  // The two hooks take different servers, which this fake stands in for both of.
+  const configure = (typeof hook === "function" ? hook : hook?.handler) as
+    | ((server: unknown) => unknown)
+    | undefined;
+  if (configure === undefined) throw new Error(`the plugin has no ${kind} hook`);
   void configure.call(undefined as never, server);
 
   http.on("request", (req, res) => {
@@ -74,8 +82,8 @@ describe("the mock server plugin", () => {
     }
   });
 
-  async function start(): Promise<DevServer> {
-    const dev = await startPlugin();
+  async function start(kind: ServerKind = "configureServer"): Promise<DevServer> {
+    const dev = await startPlugin(kind);
     running.push(dev.http);
     return dev;
   }
@@ -144,5 +152,102 @@ describe("the mock server plugin", () => {
       });
     });
     await expect(fetch(`http://127.0.0.1:${String(port)}/tip-splitter/`)).rejects.toThrow();
+  });
+
+  it("serves the same mock from the preview server of a production build", async () => {
+    const preview = await start("configurePreviewServer");
+    const agents = await fetchJson(`${preview.baseUrl}/api/hub/agents`);
+    expect((agents.body as { agents: AgentSummary[] }).agents.map((a) => a.name)).toEqual([
+      "atlas",
+      "brittle",
+      "drifter",
+      "scout",
+    ]);
+    // The preview server's own middleware, the built app, answers what isn't /api.
+    expect((await fetch(`${preview.baseUrl}/index.html`)).status).toBe(404);
+    await vi.waitFor(async () => {
+      const info = (await fetchJson(`${preview.baseUrl}/api/team/workbench/info`))
+        .body as WorkbenchInfo;
+      expect(info.port).not.toBeNull();
+    });
+    const frames = await new Promise<string[]>((resolve, reject) => {
+      const ws = new WebSocket(`${preview.baseUrl.replace("http", "ws")}/api/hub/ws`);
+      const seen: string[] = [];
+      ws.on("message", (raw) => {
+        seen.push((JSON.parse(frameText(raw)) as { type: string }).type);
+        if (seen.length === 2) {
+          ws.close();
+          resolve(seen);
+        }
+      });
+      ws.on("error", reject);
+    });
+    expect(frames).toEqual(["hub_boot", "agents_snapshot"]);
+  });
+
+  describe("when deterministic", () => {
+    /** A port nothing is listening on. */
+    async function freePort(): Promise<number> {
+      const probe = createServer();
+      await new Promise<void>((resolve) => {
+        probe.listen(0, "127.0.0.1", resolve);
+      });
+      const { port } = probe.address() as AddressInfo;
+      await new Promise<void>((resolve) => {
+        probe.close(() => {
+          resolve();
+        });
+      });
+      return port;
+    }
+
+    it("listens for artifacts on the port it is given, where a live mock takes a free one", async () => {
+      const port = await freePort();
+      vi.stubEnv("MOCK_DETERMINISTIC", "1");
+      vi.stubEnv("MOCK_ARTIFACTS_PORT", String(port));
+      const dev = await start();
+      await vi.waitFor(async () => {
+        const info = (await fetchJson(`${dev.baseUrl}/api/team/workbench/info`))
+          .body as WorkbenchInfo;
+        expect(info.port).toBe(port);
+      });
+      expect(dev.logged.some((line) => line.includes("Deterministic: fixed clock"))).toBe(true);
+      expect((await fetch(`http://127.0.0.1:${String(port)}/tip-splitter/`)).status).toBe(200);
+    });
+
+    it("says so, and reports artifacts as unavailable, when the port is taken", async () => {
+      const taken = createServer();
+      await new Promise<void>((resolve) => {
+        taken.listen(0, "127.0.0.1", resolve);
+      });
+      running.push(taken);
+      const { port } = taken.address() as AddressInfo;
+      vi.stubEnv("MOCK_DETERMINISTIC", "1");
+      vi.stubEnv("MOCK_ARTIFACTS_PORT", String(port));
+      const dev = await start();
+      await vi.waitFor(() => {
+        expect(
+          dev.logged.some((line) => line.includes(`can't listen on port ${String(port)}`)),
+        ).toBe(true);
+      });
+      const info = (await fetchJson(`${dev.baseUrl}/api/team/workbench/info`))
+        .body as WorkbenchInfo;
+      expect(info.port).toBeNull();
+      expect(info.unavailable_reason).not.toBeNull();
+    });
+
+    it("resets through the plugin's own handler", async () => {
+      vi.stubEnv("MOCK_DETERMINISTIC", "1");
+      vi.stubEnv("MOCK_ARTIFACTS_PORT", String(await freePort()));
+      const dev = await start();
+      await fetchJson(`${dev.baseUrl}/api/hub/agents/scout`, { method: "DELETE" });
+      expect((await fetchJson(`${dev.baseUrl}/api/mock/reset`, { method: "POST" })).body).toEqual({
+        ok: true,
+      });
+      const agents = (await fetchJson(`${dev.baseUrl}/api/hub/agents`)).body as {
+        agents: AgentSummary[];
+      };
+      expect(agents.agents.map((a) => a.name)).toContain("scout");
+    });
   });
 });

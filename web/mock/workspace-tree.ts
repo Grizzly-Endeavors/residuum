@@ -52,6 +52,11 @@ export function pathKind(state: MockState, path: string): "file" | "directory" |
   return null;
 }
 
+/** The listing entry of the file or directory at `path`, or `undefined` when there is none. */
+export function entryOf(state: MockState, path: string): WorkspaceEntry | undefined {
+  return state.workspaceFiles[parentOf(path)]?.find((entry) => entry.name === nameOf(path));
+}
+
 /** A directory's entries, directories first and each group by name; `undefined` when it doesn't exist. */
 export function listDirectory(state: MockState, path: string): WorkspaceEntry[] | undefined {
   const entries = state.workspaceFiles[path];
@@ -61,8 +66,8 @@ export function listDirectory(state: MockState, path: string): WorkspaceEntry[] 
 }
 
 /** A modification time later than `previous`, so a change is never mistaken for none. */
-function nextModified(previous: number): number {
-  return Math.max(Date.now(), previous + 1);
+function nextModified(state: MockState, previous: number): number {
+  return Math.max(state.env.clock.now(), previous + 1);
 }
 
 function upsertEntry(state: MockState, dir: string, entry: WorkspaceEntry): void {
@@ -77,7 +82,7 @@ function touchDirectory(state: MockState, dir: string): void {
   if (dir === "") return;
   const entry = state.workspaceFiles[parentOf(dir)]?.find((e) => e.name === nameOf(dir));
   if (entry === undefined) return;
-  entry.modified = nextModified(entry.modified);
+  entry.modified = nextModified(state, entry.modified);
   entry.version = dirEntryVersion(dir, entry.modified);
 }
 
@@ -87,7 +92,7 @@ export function ensureDirectory(state: MockState, dir: string): void {
   const parent = parentOf(dir);
   ensureDirectory(state, parent);
   state.workspaceFiles[dir] = [];
-  const modified = Date.now();
+  const modified = state.env.clock.now();
   upsertEntry(state, parent, {
     name: nameOf(dir),
     entry_type: "directory",
@@ -108,7 +113,7 @@ export function writeFile(state: MockState, path: string, content: string): stri
     name: nameOf(path),
     entry_type: "file",
     size: byteLength(content),
-    modified: Date.now(),
+    modified: state.env.clock.now(),
     version,
   });
   touchDirectory(state, dir);

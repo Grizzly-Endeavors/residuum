@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { MockResetError } from "./env";
 import { json } from "./http";
 import { dispatchRoute, type Route, type RouteRequest } from "./routes";
 import { isRefusal, scopeRequest } from "./scope";
@@ -14,7 +15,8 @@ export interface ApiHandlerOptions {
 /**
  * The mock's `/api/*` request handler. It scopes the request to an agent or
  * the hub (see `scopeRequest`), runs the first matching route, and answers
- * `404` when nothing matches and `500` when a handler throws. It answers
+ * `404` when nothing matches, `503` when a reset cut a handler short, and
+ * `500` when a handler throws. It answers
  * `false` for a request outside `/api`, without touching it.
  */
 export function createApiHandler(
@@ -40,6 +42,11 @@ export function createApiHandler(
       if (await dispatchRoute(routes, request)) return true;
       json(res, 404, { error: `mock: unknown endpoint ${method} ${scoped.path}` });
     } catch (err) {
+      // A request that was waiting on simulated time when the mock was reset has nothing to answer to.
+      if (err instanceof MockResetError) {
+        json(res, 503, { error: err.message });
+        return true;
+      }
       const message = err instanceof Error ? err.message : String(err);
       json(res, 500, { error: `mock server error: ${message}` });
     }

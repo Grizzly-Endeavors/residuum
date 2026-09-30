@@ -17,7 +17,7 @@ npm run dev:mock
 
 Open [http://localhost:5173](http://localhost:5173) in your browser. That's it — no backend required.
 
-With [`just`](https://github.com/casey/just), `just web-mock` from the repo root does the same (installing dependencies first if they are missing or out of date), and `just web-mock-setup` starts in setup wizard mode. Extra arguments go to Vite: `just web-mock --port 5199`.
+With [`just`](https://github.com/casey/just), `just web-mock` from the repo root does the same (installing dependencies first if they are missing or out of date), and `just web-mock-setup` starts in setup wizard mode. Extra arguments go to Vite: `just web-mock --port 5199`. `just web-mock-serve [port]` and `just web-mock-preview [port]` start the deterministic mock headlessly (see [Deterministic mode](#deterministic-mode) and [Preview mode](#preview-mode)).
 
 ## Mock Mode
 
@@ -33,12 +33,16 @@ With [`just`](https://github.com/casey/just), `just web-mock` from the repo root
 
 - All REST endpoints return realistic fake data
 - WebSocket simulates chat responses with tool calls and delays. Like the backend, it sends tool calls and results only to pages that turned verbose mode on, reads client frames strictly (a frame it can't read gets an `error` frame), and `/stop` ends a running turn
+- Scoped routing, as the backend has it: an agent's path (`/api/agents/{name}/...`) reaches only what an agent owns, the hub's (`/api/hub/...`) only what the hub owns, and the team's (`/api/team/...`) only the workbench and team files. `/api/agents/scout/workbench/artifacts` and `/api/hub/workspace/files` answer `404`, like the real routes
 - The multi-agent hub contract: four agents (`scout` and `atlas` running, `drifter` stopped, `brittle` failed), each with its own chat, sessions, inbox and config under `/api/agents/{name}/...`. `/api/hub/agents` lists, creates, deletes, starts, stops and restarts them and toggles autostart, and `/api/hub/ws` sends the agent snapshot, state changes, busy/unread activity and notices. Unscoped `/api/...` paths answer 404. A stopped or failed agent serves the routes the backend serves for one: the repair routes (config, providers, MCP, workspace, checkpoints) and the file-only ones (chat history, usage, inbox, raw A2A settings). Every other agent route answers `409`, and an unknown agent `404`. An agent that has never run (`drifter`, `brittle`) has no conversation, inbox or A2A agents until it first runs. Team files and the workbench are shared under `/api/team/...`. `POST /api/mock/teammate-message?agent=atlas` sends atlas a teammate message and lights its unread indicator until you open it
 - Agent sessions: live sessions (including a Discord conversation session) and a page-able list of finished ones. Messaging a session simulates a turn (include "busy" in the message to see a delivery failure), messaging a finished one resumes it, and a chat message starting with `spawn` starts a spawned session that relays its result to the main chat. Transcripts load after a short delay, so the loading state and anything racing it can be tried by hand
 - The `POST /api/sessions` / `.../stop` / `.../messages` HTTP endpoints an artifact's `residuum.sessions.start` uses: the bundled "Tip Splitter" artifact (`/workbench/tip-splitter`) has "Start a background session" and "Fire 3 calls at once" buttons for trying the artifact bar's activity panel, Cancel calls, and Stop page by hand; model calls are slowed down (`MODEL_CALL_DELAY_MS`) so they're visibly "in flight" long enough to cancel
 - Tasks sent to other agents in the sessions sidebar's External group: stopping `research-buddy`'s task succeeds, while `laptop` is unreachable, so its Stop fails and the row offers "Stop watching"
 - `POST /api/mock/missed-relay` records a session result in the main chat's history and drops the WebSocket, to exercise catching up after a reconnect
-- Workspace files, for an agent (`/api/agents/{name}/workspace/...`) and for the shared team tree (`/api/team/workspace/...`): directory listings with size, modification time and version, reads with the version as the `ETag`, writes that answer `412` when the client's `If-Match` no longer matches, and delete, move and validate. Edits change the listings, and the team tree is the same one under an agent's `team/`
+- Workspace files, for an agent (`/api/agents/{name}/workspace/...`) and for the shared team tree (`/api/team/workspace/...`): directory listings with size, modification time and version, reads with the version as the `ETag`, writes that answer `412` when the client's `If-Match` no longer matches, and delete, move, validate, `dir`, `raw` reads and writes, the recursive `tree` (with `glob`, `depth` and `content`) and the batch `read` with the backend's size budgets. Edits change the listings, and the team tree is the same one under an agent's `team/`
+- The Scheduled view (`/api/agents/{name}/scheduled/...`): the pulses, with their next fire, last outcome and current run worked out from the agent's sessions the way the backend reads them, toggling a pulse, and the pending actions with cancel. One pulse is disabled and one failed to load
+- Checkpoints, for an agent (`workspace` and `agent_config` repositories) and for the hub (`hub` and `team`): list with `path`, `turn_id` and paging, stats, a checkpoint's detail, diff and file, restore and undo. Each repository keeps the whole tree of each checkpoint, so a restore writes the files back (Settings, the workspace and the team tree show it) and an undo skips a path that changed again since. A route answers `400` for a repository of the other scope, like the backend. The sample histories end at the live files, and `status` reports their stats
+- `POST /api/agents/{name}/agent-inbox` (what an artifact adds to the agent's own inbox, with the backend's ids, title default and `artifact:<name>` source), and the update routes (`/api/hub/update/status`, `check` and `apply`; the mock is always on the latest version) with `cloud/disconnect`
 - The user inbox: a listing, an archive, mark read, archive, restore and attachments (`/api/agents/{name}/inbox/...`), with the backend's response shapes, including its `500` for an item that isn't there. No sample item carries an attachment; an attachment serves a stand-in file of its type
 - The workbench (`/api/team/workbench/...`): the artifact list, where artifacts are served, and deleting an artifact along with its saved state. `POST /api/agents/{name}/model/complete` answers from a canned model, with parsed JSON when the call asks for a schema
 - Main chat turns are recorded in history when they end. A chat message starting with `drop` loses the connection mid-turn: `drop finish …` ends the turn while disconnected, `drop compress …` also compresses history into a new episode (forcing a history reload), and any other `drop …` finishes the turn live after the page reconnects
@@ -51,7 +55,8 @@ With [`just`](https://github.com/casey/just), `just web-mock` from the repo root
 - No real LLM calls happen — responses are canned
 - Config saves don't persist across server restarts
 - Some edge cases (rate limits, network errors) aren't simulated
-- The Scheduled view's endpoints (`/scheduled/...`), the checkpoint endpoints, and the workspace's `dir`, `raw`, `tree` and `read` routes answer `404`. The workspace routes don't block paths the backend blocks, and a delete or move records no checkpoint
+- The workspace routes don't block paths the backend blocks, and a delete, move or raw write records no checkpoint. A raw write stores its body as text, so bytes that aren't valid UTF-8 don't round-trip
+- The Scheduled view's pulses and actions are kept apart from `HEARTBEAT.yml` in the workspace: toggling a pulse doesn't edit that file
 - `POST /api/secrets` doesn't validate the value like the real server does — it accepts anything, including a `secret:` or `${ENV_VAR}` reference the real server would reject with a 400. The frontend already avoids sending those (see `lib/secrets.ts`), so this only matters if you're testing the rejection path itself
 
 ### Setup Wizard Mode
@@ -63,6 +68,33 @@ VITE_MOCK_SETUP=1 npm run dev:mock
 ```
 
 This starts the app in "setup" mode so you can walk through the onboarding flow.
+
+### Deterministic mode
+
+```bash
+MOCK_DETERMINISTIC=1 npm run dev:mock -- --port 5173 --strictPort   # or: just web-mock-serve 5173
+```
+
+With `MOCK_DETERMINISTIC=1` the mock gives the same responses to the same steps, so end-to-end and visual tests can rely on them:
+
+- **One fixed clock.** Every timestamp the mock makes (sample inbox and sessions, workspace versions, workbench and chat times, `busy_since`, uptime) reads one clock that stands at 2026-03-14 12:00 UTC until a test moves it with `POST /api/mock/clock/advance` (`{ "ms": 3600000 }`). Dates are read in UTC, so a machine's time zone changes nothing. Ids that would otherwise come from the time or from chance (tool call ids, turn ids, A2A key tokens, delete checkpoint ids) come from a counter that starts over at reset.
+- **No delays.** Model calls, transcript loads, agent start and stop windows, reloads and every step of the chat and session simulations take no time, and run in the order they were started. `MOCK_DELAY_SCALE` multiplies all of them (`1` is the natural pace, `0.2` a fifth of it), and `POST /api/mock/delays` (`{ "scale": 1 }`) changes it until the next reset. A chat message starting with `drop` relies on real time to lose and regain the connection, so run it with a scale above zero.
+- **The scenario** is the one `dev:mock` starts with: scout and atlas running, drifter stopped, brittle failed, and the sample sessions, outbound tasks, inbox, checkpoints and artifacts. The hub announces the same boot id every time.
+- **A fixed artifacts port**, 5180 (or `MOCK_ARTIFACTS_PORT`), where a live mock takes a free one. A port that can't be bound is logged, and the workbench reports artifacts as unavailable.
+
+`POST /api/mock/reset` puts the mock back as it started: the clock, the delays, the counter, every pending timer (a request waiting on simulated time answers `503`), the hub's own state (secrets, hub config, team files, workbench), and the agents, which are recreated from the scenario with their sessions, inbox and files. Every open socket is closed, so a page reconnects to the initial scenario. The port and the artifacts listener stay.
+
+### Preview mode
+
+```bash
+just web-mock-preview 4173   # builds, then: MOCK_DETERMINISTIC=1 npm run preview:mock -- --port 4173 --strictPort
+```
+
+`npm run preview:mock` (`VITE_MOCK=1 vite preview`) serves the production build in `dist/` together with the whole mock: the API, the hub and agent sockets, and the artifacts listener. It is what service worker and installability tests run against, since the dev server can't serve a built app. Both modes start headlessly, need no browser, and take the port with `--port`; `--strictPort` makes a taken port an error instead of moving on.
+
+### Route parity
+
+`mock/route-parity.test.ts` calls every function `src/lib/api.ts` exports, with sample arguments, against a `fetch` that records the requests. It checks each recorded method and path against the mock: scoped the way the mock's handler scopes it, then matched against `apiRoutes` (the route table every mock route is in), plus the hub and agent socket paths and the routes artifacts reach through the bridge. A client function without a sample call, or a request the mock doesn't serve, fails `npm test` and names the function and route. When you add an API client function, add its sample call there, and the route to the mock in the same change.
 
 ## Project Structure
 
@@ -116,14 +148,17 @@ web/
 │       ├── format-tool-result.ts # Tool result display: JSON, file dumps, lists, errors, long-output collapse
 │       ├── settings-toml.ts      # Config parsing (for display) and diffing (for the patch endpoints)
 │       └── secrets.ts            # secret:/${ENV_VAR} reference detection for settings fields
-├── mock/                     # Typed mock modules, checked like src/ (only used in dev:mock)
+├── mock/                     # Typed mock modules, checked like src/ (only used in dev:mock and preview:mock)
 │   ├── routes.ts             # Route tables: each endpoint is a method, a path pattern and a handler
 │   ├── api-routes.ts         # Every route table the mock serves
-│   ├── scope.ts              # Scoped routing: agent, hub and team paths to state and unscoped path; stopped-agent rules
+│   ├── env.ts                # The clock, simulated delays and timers, the id counter; what reset restores
+│   ├── scope.ts              # Scoped routing: agent, hub and team paths to state and unscoped path; what each scope owns; stopped-agent rules
 │   ├── middleware.ts         # The /api request handler and its Connect middleware
 │   ├── state.ts              # Per-agent and hub state, and the agent and hub types
 │   ├── http.ts               # Request and response helpers, typed body parsing
-│   ├── hub.ts                # The hub: agents, activity and unread, run state changes
+│   ├── hub.ts                # The hub: agents, activity and unread, run state changes, reset
+│   ├── hub-inbox.ts          # The cross-agent inbox: every agent's items in one listing
+│   ├── hub-config-reload.ts  # The hub's config reload and its frames
 │   ├── lifecycle.ts          # Agent lifecycle routes and hub status
 │   ├── hub-socket.ts         # The hub WebSocket
 │   ├── agent-socket.ts       # An agent's WebSocket: client frames, commands, verbose mode
@@ -134,14 +169,21 @@ web/
 │   ├── config.ts             # Status, config, providers, MCP, secrets, agent keys, A2A, setup, tracing
 │   ├── workspace.ts          # Workspace file routes, for an agent and for the team tree
 │   ├── workspace-tree.ts     # The workspace tree in state: listings, versions, writes, moves
+│   ├── workspace-bulk.ts     # The recursive tree listing and the batch read, with their budgets
 │   ├── inbox.ts              # The user inbox: listing, archive, read, restore, attachments
+│   ├── agent-inbox.ts        # The agent's own inbox: what an artifact adds to it
+│   ├── scheduled.ts          # The Scheduled view: pulses and actions
+│   ├── checkpoints.ts        # Checkpoint histories: list, stats, detail, diff, file, restore, undo
+│   ├── update.ts             # The update routes
 │   ├── workbench.ts          # Workbench artifact list, info and delete
 │   ├── model.ts              # The artifact model call
-│   ├── controls.ts           # Test controls: missed-relay and teammate-message
+│   ├── controls.ts           # Test controls: reset, clock, delays, missed-relay and teammate-message
 │   ├── artifacts-listener.ts # The second origin that serves artifact pages
-│   ├── plugin.ts             # The Vite plugin: creates the hub and its agents, serves the route tables
+│   ├── mock.ts               # Starts the mock on a Vite server, from the environment's options
+│   ├── plugin.ts             # The Vite plugin: starts the mock on the dev server and the preview server
 │   ├── data/                 # Sample data: chat, sessions, workspace files, inbox, the workbench artifact
 │   ├── test-support.ts       # Test harnesses: route tables over HTTP, the whole mock with its sockets
+│   ├── route-parity.test.ts  # Every API client request lands on a mock route
 │   └── *.test.ts             # Unit tests, run by `npm test`
 ├── vite.config.ts
 └── package.json
@@ -196,7 +238,7 @@ npm run test:coverage # The same tests with a coverage summary (HTML report in c
 
 **Generated types.** `src/lib/generated/` comes from the Rust types. After changing an exported Rust type, run `just types` and commit the result; `just types-check` (and CI) fails when the committed files are out of date.
 
-**Mock modules.** Everything under `mock/` is formatted, linted and type-checked with the same rules as `src/`, and its tests (`mock/**/*.test.ts`) run in Node through the same `npm test`. Route handlers live in route tables (`Route` in `mock/routes.ts`), and response bodies are checked against the generated protocol types in `src/lib/generated/` wherever one exists. The Vite plugin entry is `mock/plugin.ts`, and nothing in the mock is left out of these checks. `mock/test-support.ts` has two harnesses: one serves route tables over HTTP against a stub hub, and `startMockServer` runs the whole mock (hub, agents, sockets, scoped routing) on a real HTTP server, with a WebSocket client that keeps the frames it receives.
+**Mock modules.** Everything under `mock/` is formatted, linted and type-checked with the same rules as `src/`, and its tests (`mock/**/*.test.ts`) run in Node through the same `npm test`. Route handlers live in route tables (`Route` in `mock/routes.ts`), and response bodies are checked against the generated protocol types in `src/lib/generated/` wherever one exists. The Vite plugin entry is `mock/plugin.ts`, and nothing in the mock is left out of these checks. `mock/test-support.ts` has two harnesses: one serves route tables over HTTP against a stub hub, and `startMockServer` runs the whole mock (hub, agents, sockets, scoped routing) on a real HTTP server, with a WebSocket client that keeps the frames it receives. Both take a mock environment (`createMockEnv({ deterministic: true })`, or `startMockServer({ deterministic: true })`), so a test that asserts on times or ids runs on the fixed clock.
 
 Component tests live next to the component as `src/components/**/*.test.ts` (or `*.component.test.ts` anywhere under `src/`). They run in jsdom, through the same `npm test` command as the Node unit tests under `src/lib/`. Mount with `render` and mock `fetch` using `src/test/component.ts`.
 

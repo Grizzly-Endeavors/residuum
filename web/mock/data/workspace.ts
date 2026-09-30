@@ -1,4 +1,5 @@
 import type { WorkspaceEntry } from "../../src/lib/types";
+import type { MockClock } from "../env";
 import { dirEntryVersion, fileVersion } from "../workspace-tree";
 
 /** A directory entry as the sample tree declares it: its modification time and version are added when the tree is built. */
@@ -64,8 +65,9 @@ const SAMPLE_TREE: Record<string, SampleEntry[]> = {
  */
 export function createWorkspaceFiles(
   contents: Readonly<Record<string, string>>,
+  clock: MockClock,
 ): Record<string, WorkspaceEntry[]> {
-  const modified = Date.now();
+  const modified = clock.now();
   const tree: Record<string, WorkspaceEntry[]> = {};
   for (const [dir, entries] of Object.entries(SAMPLE_TREE)) {
     tree[dir] = entries.map((entry) => {

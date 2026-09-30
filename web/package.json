@@ -11,6 +11,7 @@
     "dev:mock": "VITE_MOCK=1 vite",
     "build": "vite build",
     "preview": "vite preview",
+    "preview:mock": "VITE_MOCK=1 vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "lint": "eslint . && npm run lint:css",
     "lint:css": "stylelint 'src/**/*.{css,svelte}'",
