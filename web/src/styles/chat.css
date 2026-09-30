@@ -1600,17 +1600,17 @@
 
 /* ── Scrollbar ─────────────────────────────────────────────────────────── */
 
-::-webkit-scrollbar {
+:where(:not([data-ui], [data-ui] *), [data-legacy-view] *)::-webkit-scrollbar {
   width: 6px;
 }
-::-webkit-scrollbar-track {
+:where(:not([data-ui], [data-ui] *), [data-legacy-view] *)::-webkit-scrollbar-track {
   background: transparent;
 }
-::-webkit-scrollbar-thumb {
+:where(:not([data-ui], [data-ui] *), [data-legacy-view] *)::-webkit-scrollbar-thumb {
   background: var(--border);
   border-radius: 3px;
 }
-::-webkit-scrollbar-thumb:hover {
+:where(:not([data-ui], [data-ui] *), [data-legacy-view] *)::-webkit-scrollbar-thumb:hover {
   background: var(--text-dim);
 }
 

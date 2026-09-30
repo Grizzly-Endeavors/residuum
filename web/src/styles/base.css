@@ -1,4 +1,7 @@
 /* ── Reset ─────────────────────────────────────────────────────────────── */
+/* Rules that would also reach the new UI's components are limited to legacy
+   markup: anything outside the `data-ui` shell root, or inside a
+   `data-legacy-view` wrapper. */
 
 *,
 *::before,
@@ -12,21 +15,27 @@ html,
 body {
   height: 100%;
   height: 100dvh;
+  background: var(--bg-deep);
+}
+
+/* A legacy view hosted in the new shell keeps the legacy body type. */
+html,
+body,
+[data-legacy-view] {
   font-family: var(--font-body);
   font-size: 17px;
   font-weight: 300;
   line-height: 1.7;
   color: var(--text);
-  background: var(--bg-deep);
   -webkit-font-smoothing: antialiased;
   font-feature-settings: "kern", "liga", "onum";
 }
 
-code,
-pre,
-kbd,
-samp,
-.mono {
+code:where(:not([data-ui], [data-ui] *), [data-legacy-view] *),
+pre:where(:not([data-ui], [data-ui] *), [data-legacy-view] *),
+kbd:where(:not([data-ui], [data-ui] *), [data-legacy-view] *),
+samp:where(:not([data-ui], [data-ui] *), [data-legacy-view] *),
+.mono:where(:not([data-ui], [data-ui] *), [data-legacy-view] *) {
   font-feature-settings: "tnum", "zero";
 }
 
@@ -75,11 +84,11 @@ body::before {
 /* ── Global focus ring — vein surfaces on keyboard focus ─────────────── */
 /* Mouse/touch users get no ring; keyboard users get a vein halo via box-shadow. */
 
-:focus {
+:where(:not([data-ui], [data-ui] *), [data-legacy-view] *):focus {
   outline: none;
 }
 
-:focus-visible {
+:where(:not([data-ui], [data-ui] *), [data-legacy-view] *):focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
   transition: box-shadow var(--dur-quick) var(--ease-out-stone);
@@ -114,16 +123,9 @@ body::before {
 
 /* ── Reduced motion ──────────────────────────────────────────────────── */
 
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: var(--dur-quick) !important;
-    scroll-behavior: auto !important;
-  }
+/* The global reduced-motion rule is in ui-base.css. */
 
+@media (prefers-reduced-motion: reduce) {
   .emerges {
     animation: none;
     opacity: 1;
