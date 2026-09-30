@@ -104,9 +104,27 @@ export default tseslint.config(
     },
   },
 
+  // ── Rune store modules (*.svelte.ts) ────────────────────────────────
+  // These also match the TypeScript block above, so they get its strict rules.
+  // This block only makes the Svelte parser read them as TypeScript.
+  {
+    files: ["src/**/*.svelte.ts"],
+    languageOptions: {
+      parser: svelteParser,
+      parserOptions: {
+        parser: tseslint.parser,
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    rules: {
+      "svelte/valid-compile": ["error", { ignoreWarnings: true }],
+    },
+  },
+
   // ── Svelte files ────────────────────────────────────────────────────
   {
-    files: ["src/**/*.svelte", "src/**/*.svelte.ts"],
+    files: ["src/**/*.svelte"],
     languageOptions: {
       globals: globals.browser,
       parser: svelteParser,

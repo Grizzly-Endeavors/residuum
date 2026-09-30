@@ -23,7 +23,7 @@ class UserInboxState {
 
   private intervalId: number | null = null;
 
-  startPolling() {
+  startPolling(): void {
     this.stopPolling();
     void this.refresh();
     this.intervalId = window.setInterval(() => {
@@ -31,7 +31,7 @@ class UserInboxState {
     }, 30_000);
   }
 
-  stopPolling() {
+  stopPolling(): void {
     if (this.intervalId !== null) {
       window.clearInterval(this.intervalId);
       this.intervalId = null;
@@ -42,19 +42,19 @@ class UserInboxState {
    * Forget the current agent's items, for a switch to another agent. Polling
    * carries on for the new agent when it was running.
    */
-  reset() {
+  reset(): void {
     this.items = [];
     this.archivedItems = [];
     if (this.intervalId !== null) this.startPolling();
   }
 
-  async refresh() {
+  async refresh(): Promise<void> {
     const agent = getCurrentAgent();
     if (agent === null) return;
     try {
       const response = await fetch(agentPath("/inbox", agent));
       if (response.ok) {
-        const data = await response.json();
+        const data = (await response.json()) as UserInboxItem[];
         if (agent === getCurrentAgent()) this.items = data;
       }
     } catch {
@@ -62,7 +62,7 @@ class UserInboxState {
     }
   }
 
-  async markRead(id: string) {
+  async markRead(id: string): Promise<void> {
     try {
       const updatedItem = await markUserInboxItemRead(id);
       const index = this.items.findIndex((item) => item.id === id);
@@ -74,7 +74,7 @@ class UserInboxState {
     }
   }
 
-  async archive(id: string) {
+  async archive(id: string): Promise<void> {
     try {
       await archiveUserInboxItem(id);
       this.items = this.items.filter((item) => item.id !== id);
@@ -83,7 +83,7 @@ class UserInboxState {
     }
   }
 
-  async refreshArchive() {
+  async refreshArchive(): Promise<void> {
     try {
       this.archivedItems = await fetchArchivedUserInbox();
     } catch (err) {
@@ -91,7 +91,7 @@ class UserInboxState {
     }
   }
 
-  async restore(id: string) {
+  async restore(id: string): Promise<void> {
     try {
       await restoreUserInboxItem(id);
       this.archivedItems = this.archivedItems.filter((item) => item.id !== id);

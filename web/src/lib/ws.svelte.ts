@@ -310,7 +310,7 @@ class WsCoordinator {
       type: "send_message",
       id,
       content,
-      ...(images?.length ? { images } : {}),
+      ...(images !== undefined && images.length > 0 ? { images } : {}),
     };
     this.transport.send(msg);
     this.store.pushUserMessage(content, images);
