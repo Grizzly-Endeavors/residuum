@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
-  import type { WorkspaceEntry, Diagnostic } from "../lib/types";
+  import type { WorkspaceChange, WorkspaceEntry, Diagnostic } from "../lib/types";
   import type { WorkspaceScope } from "../lib/hub-types";
   import {
     fetchWorkspaceFiles,
@@ -17,6 +17,10 @@
   import { userErrorMessage } from "../lib/errors";
   import { formatDiagnosticLocation } from "../lib/diagnostics";
   import { notifyWithWorkspaceUndo } from "../lib/undo";
+  import { ws } from "../lib/ws.svelte";
+  import { hub } from "../lib/hub.svelte";
+  import { treeUpdateFor, treeWatchPrefix } from "../lib/tree-changes";
+  import type { WatchOwner } from "../lib/watch-registry";
   import FileTree from "./FileTree.svelte";
   import FileHistoryModal from "./FileHistoryModal.svelte";
   import Modal from "./Modal.svelte";
@@ -106,6 +110,17 @@
 
   async function loadDir(path: string) {
     if (treeCache[path]) return;
+    await refreshDir(path);
+  }
+
+  function parentDir(path: string): string {
+    const slash = path.lastIndexOf("/");
+    return slash < 0 ? "" : path.slice(0, slash);
+  }
+
+  /** List a directory again and show that in place of its cached listing, so the tree reflects
+   * a delete, move, restore or change made outside the normal `loadFile`/`handleSave` flow. */
+  async function refreshDir(path: string): Promise<void> {
     try {
       const entries = await fetchWorkspaceFiles(agent, path || undefined, scope);
       treeCache = { ...treeCache, [path]: entries };
@@ -117,18 +132,37 @@
     }
   }
 
-  function parentDir(path: string): string {
-    const slash = path.lastIndexOf("/");
-    return slash < 0 ? "" : path.slice(0, slash);
+  /** Forget the listings of folders that no longer exist. */
+  function forgetDirs(dirs: readonly string[]): void {
+    if (dirs.length === 0) return;
+    treeCache = Object.fromEntries(
+      Object.entries(treeCache).filter(([dir]) => !dirs.includes(dir)),
+    );
+    for (const dir of dirs) expandedDirs.delete(dir);
   }
 
-  /** Drop a directory's cached listing and reload it, so the tree reflects
-   * a delete, move, or restore made outside the normal `loadFile`/`handleSave` flow. */
-  async function refreshDir(path: string): Promise<void> {
-    const { [path]: _dropped, ...rest } = treeCache;
-    treeCache = rest;
-    await loadDir(path);
-  }
+  // The tree follows the disk: it owns a watch on its whole tree, through the
+  // agent's socket or, for the team tree, the hub's team watch, and lists again
+  // the folders that gain or lose something. The registry keeps it from
+  // touching anyone else's watch.
+  $effect(() => {
+    const handler = {
+      changed: (changes: WorkspaceChange[]) => {
+        const update = treeUpdateFor(changes, scope, Object.keys(treeCache));
+        forgetDirs(update.forget);
+        for (const dir of update.reload) void refreshDir(dir);
+      },
+      // The feed lost track of changes: nothing listed can be trusted.
+      resync: () => {
+        for (const dir of Object.keys(treeCache)) void refreshDir(dir);
+      },
+    };
+    let owner: WatchOwner | null = null;
+    if (scope === "team") owner = hub.teamWatches.register(handler);
+    else if (agent !== null) owner = ws.watches.register(handler, { agent });
+    owner?.set([treeWatchPrefix(scope)]);
+    return () => owner?.release();
+  });
 
   function clearEditorIfOpen(path: string): void {
     if (selectedFile !== path) return;
