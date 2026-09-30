@@ -42,7 +42,7 @@ This design covers the new visual system and components, the shell and navigatio
 - **Overview** — the hub-level per-agent summary that feeds Home and the rail's badges (§9.3).
 - **Team event** — an entry in the hub's in-memory event log (§9.4). The log feeds Home's "Across the team".
 - **Boot id** — a random id the hub generates at startup, used to tell a restarted hub's event ids from old ones.
-- **Chat unread** — the hub's existing per-agent count of main-conversation replies published while no web client had that agent's socket open. It is reset when a web client connects to that agent's socket. It is not persisted.
+- **Chat unread** — the hub's existing per-agent count of main-conversation replies published while no client had that agent's socket open (any client counts, including the macOS app). It is reset when a client connects to that agent's socket. It is not persisted.
 - **Inbox unread** — the number of unread items in an agent's user inbox (`inbox/user/`), counted from disk. The agent inbox (`inbox/agent/`), where background results are filed, is a separate folder, reachable through Files.
 - **Needs-you item** — a Home entry for something the user should act on (§6).
 - **Activity line** — the one-line summary of a turn's tool use that heads the agent's output for that turn. It expands to steps, and each step expands to its details.
@@ -52,7 +52,8 @@ This design covers the new visual system and components, the shell and navigatio
 - **Overlay entry** — a history entry pushed when a modal overlay opens (§3), so that Back closes it.
 - **Hub banner** — the notice at the top of the main region shown while the hub socket is disconnected.
 - **Reload from disk** — re-reading a scope's config files and discarding staged changes for that scope.
-- **Identity files** — SOUL.md, HEARTBEAT.yml, CHANNELS.yml, team/AGENTS.md and team/USER.md. The file tree tints them.
+- **Identity files** — SOUL.md, HEARTBEAT.yml, team/AGENTS.md and team/USER.md. The file tree tints them. The current UI also lists a CHANNELS.yml that no longer exists; it is dropped.
+- **Turn hook** — a new method on the hub-owned activity tracker that the agent runtime calls exactly once at the end of every main turn (§9).
 - **Legacy view** — an existing component hosted inside the new shell until the unit that replaces it lands.
 - **Integration branch** — `feat/web-overhaul`, where frontend work collects before cutover to `main`.
 - **Work unit** — one subagent-sized piece of implementation, defined in `phases.md`.
@@ -82,6 +83,7 @@ This design covers the new visual system and components, the shell and navigatio
 - `text-3`, `vein` used as text, `moss-text` and `err-text` may sit only on `stone-0` to `stone-3`, never on `stone-4`. On `stone-4`, use `text` or `text-2`.
 - White text sits only on `vein-dim` or `vein-hover`. Primary buttons therefore use `vein-dim` as their fill, not `vein`.
 - Input, select and toggle boundaries use the control border.
+- **Tint surfaces** (`vein-tint` over any stone surface, used for selected rows; `moss-tint`, used for user bubbles; `err-tint`) are declared surfaces too. On them, text uses only `text`, `text-2` or `vein-bright`. Selected rows therefore label in `vein-bright`, not `vein`.
 
 **Type.**
 - Onest (400, 500, 600) for all UI and message text.
@@ -238,7 +240,7 @@ On any other place, the parameter is removed by a replace.
 | `/team/settings[/:old]` | `/home?settings=_all/<new>` |
 | `/settings[/:old]`, `/scheduled`, `/sessions/:runId` | Resolved under the last-used agent, then as above |
 | `/workbench[/…]` | `/team/workbench[/…]` |
-| `/notification/<id>` (the macOS notification "Open" action) | `/agent/<last-used agent>/files`. The item is in that agent's agent inbox, as today. |
+| `/notification/<id>` (the macOS notification "Open" action) | `/agent/<last-used agent>/files`, as today. The notified result is in the agent inbox of whichever agent sent it, which may be a different agent. |
 
 The last-used agent is the most recently viewed agent, remembered in local storage. When there is none, or it no longer exists, it is the first agent by name. With no agents at all, the setup wizard shows.
 
@@ -251,14 +253,19 @@ The last-used agent is the most recently viewed agent, remembered in local stora
 - Day dividers, episode dividers and the compressed-history marker remain. The marker reads: "Older messages are summarized. <agent> remembers what was said, not the exact wording."
 - One empty state.
 - Every existing feed behavior in `parity.md` is kept.
-- **Path links.** Inline code whose whole text is a workspace path becomes a link that opens that file in the context panel. A workspace path means optional `team/`, then one or more `/`-separated segments of letters, digits, `.`, `_` or `-`, the last containing a `.`. Activity-line step targets that are paths link the same way.
+- **Path links.** Inline code whose whole text is a workspace path becomes a link that opens that file in the context panel. A workspace path means at least two `/`-separated segments of letters, digits, `.`, `_` or `-`, with the last containing a `.`; `team/` reaches team files. Activity-line step targets that are paths link the same way. When the file doesn't exist, the panel says so and offers nothing else.
 
-**Turn grouping.** A turn's output is everything after a user message (or, for turns without one, after the previous turn) up to the next user message:
+**Turn grouping.** A turn's output is:
 - one activity line built from every tool call in the turn, placed first;
 - any intermediate agent texts, in order;
 - the final reply.
 
-The same grouping applies to live turns, recent history and episodes. It doesn't need turn ids, which episodes lack.
+Turns are bounded as follows:
+- **Live turns:** by `turn_started` and `turn_ended`.
+- **Recent history:** by a change of `turn_id` where messages carry one, and otherwise by the next user message or agent-message card.
+- **Episodes,** which carry no turn ids: by user messages and agent-message cards.
+
+Main history shows background turns only when they begin with an agent message, so every displayed turn has a boundary.
 
 **Activity line.**
 - **Summary.** Friendly step labels joined in order, with repeats merged and counted, for example "Searched memory, read 2 files, started a research session".
@@ -267,7 +274,7 @@ The same grouping applies to live turns, recent history and episodes. It doesn't
 - **Expanded.** The steps in order, each with its label, its target (path, query or session, linked where §4 allows), and, for live turns, its status.
 - **Expanded again.** A step shows its arguments and formatted result, using the existing per-tool argument summaries and result formatters.
 - **Labels** come from one table keyed by tool name. It covers every built-in tool the current UI summarizes. Other tools fall back to "Used <tool>", and MCP tools to "Used <server>: <tool>".
-- **Tool frames.** The client sends `set_verbose {enabled: true}` as its first frame on every agent socket connect. Tool frames for a turn already in progress before that frame are missed, and the turn's line is completed from history when the turn ends.
+- **Tool frames.** The client sends `set_verbose {enabled: true}` as its first frame on every agent socket connect. When the page connects to a turn already in progress, its line shows the steps seen, with "Earlier steps happened before this page connected". The next history load renders the full line. There is no fetch on `turn_ended`, because history is written after that frame.
 - The `/verbose` command is removed.
 - The feed store gains per-turn aggregation of steps, live timings and failure state. Its existing frame handling is otherwise unchanged.
 
@@ -295,13 +302,14 @@ While not running, the composer is replaced:
 
 | State | Card |
 |---|---|
-| **Failed** | "<agent> couldn't start" and `last_error.reason` in plain words, with `last_error.message` behind a Details disclosure. Actions: **Restart**, and a settings link chosen by `last_error.file`: `providers.toml` opens Model, `mcp.json` opens Tool servers, `config.toml` opens Raw config (where the diagnostics show), `channels.toml` opens that file in the context panel. Any other value, or none, opens the agent's settings at its default section. |
+| **Failed** | "<agent> couldn't start", a plain-language line chosen by `last_error.kind` (§9.1), and `last_error.reason` behind a Details disclosure. Actions: **Restart**, plus by kind: `config` gets **Fix settings** (below); `port_conflict` gets **Open Connections**; `crash` and `other` get **Report a bug**. |
 | **Stopped** | "<agent> is stopped", **Start**, and a Start automatically toggle. |
 | **Starting / Stopping** | A progress line with no actions. |
 
+- **Fix settings.** The client asks the agent's repair validate endpoints for diagnostics on `providers.toml` and `config.toml`. It opens the Settings section of the first diagnostic whose key path maps to a settings field, with that field flagged (for example, a bad main model opens Model). When no diagnostic maps, it opens Raw config, where the diagnostics show.
 - If Restart or Start fails, the new error shows in the card.
 - The conversation above the card stays readable: chat history is served for non-running agents (§9.2).
-- Actions that need a running agent are disabled, with the reason "Start <agent> first": the composer, Show conversation size, and session and schedule controls.
+- Actions that need a running agent are disabled, with the reason "Start <agent> first": the composer, and session and schedule controls. Show conversation size still works, showing the last recorded figures.
 
 **Conversation size.** The session token and context figures leave the always-visible footer. "Show conversation size" (overflow menu and palette) opens them in the context panel as plain-language figures, with raw token counts in a Details disclosure.
 
@@ -358,8 +366,8 @@ In addition:
 
 | Item | Severity | Condition | Actions |
 |---|---|---|---|
-| Agent couldn't start | error | the agent's state is failed | Restart; settings link chosen as in §4 |
-| Can't reach a remote agent | warn | an overview `outbound_problems` entry | Stop task; Stop watching |
+| Agent couldn't start | error | the agent's state is failed | Restart; the kind-specific action from §4 |
+| Can't reach a remote agent | warn | an overview `outbound_problems` entry (running agents only, §9.3) | Stop task; Stop watching |
 | Inbox item | info | an unread user-inbox item; the five newest are shown, then "N more in Inbox" | Open → `/inbox?item=<agent>:<id>` |
 
 The rail's Home count is the number of needs-you items. Inbox items beyond the five shown don't count toward it.
@@ -440,7 +448,7 @@ The rail's Home count is the number of needs-you items. Inbox items beyond the f
   - each PATCH validates before writing
   - diagnostics whose location is a key path show inline on the field mapped to that key (the settings model holds one field-to-key-path map, used for both diffing and error placement); other diagnostics show at the top of the section
   - a partial failure names which files saved and which didn't
-  - a successful save that returns a checkpoint offers Undo, which restores that checkpoint
+  - a successful save offers Undo when any file returned a checkpoint. Undo restores every checkpoint that save returned, in reverse save order, and reports reverted and skipped paths per file, as History's undo does. A partial Undo failure names the files it couldn't restore.
 - **Secret fields** exchange a typed value for a stored secret during Save, as today.
 - **Raw config** editors have their own Save, and always write, as today. While the form has staged changes to a file, that file's raw editor is read-only with "Save or discard your form changes first", and the reverse.
 - **Scope isolation.** An agent scope never writes install-wide files, and the All-agents scope never writes an agent's files. Install-wide values that matter to an agent page (for example, whether the agent-to-agent listener is on) show read-only there, with a link to the All-agents section.
@@ -453,8 +461,10 @@ The rail's Home count is the number of needs-you items. Inbox items beyond the f
   - If they don't overlap, the save proceeds: PATCH diffs apply to the current file, so external changes to other keys survive.
 - **After a write, reload or restore,** it notifies subscribers, so every view that shows a config value refreshes.
 - **External changes** are picked up from:
-  - `workspace_changed` frames on the bound agent's socket that touch its config files
+  - `workspace_changed` frames for the bound agent's config files; the coordinator keeps a watch on that agent's `config/` folder registered on the socket
   - the hub's `hub_config_reloaded` frame (§9.1)
+
+  Other agents' files have no change feed, so for those the pre-save re-read is the only protection.
 - It replaces the current client-side lock, which only the composer used.
 
 **Sections.** Ids are in brackets.
@@ -479,7 +489,7 @@ The rail's Home count is the number of needs-you items. Inbox items beyond the f
 | Section | Holds |
 |---|---|
 | **General** `[general]` | Timezone. Gateway bind address and port under More options. |
-| **Notifications** `[notifications]` | Push on this device, per-event toggles, other devices (§11). |
+| **Notifications** `[notifications]` | Push on this device, per-event toggles, other devices (§11). The push contact (`[push] contact`) under More options. |
 | **Residuum Cloud** `[cloud]` | Every existing connection state and action. Relay URL and local port under More options. |
 | **Saved keys** `[keys]` | Two lists. Keys agents use as environment variables (agent keys). Stored secrets referenced by settings. |
 | **Updates** `[updates]` | Status, check, update and restart. |
@@ -518,7 +528,7 @@ A section named under the wrong scope moves to the scope that has it.
 
 ### 9. Backend contracts
 
-All changes are additive. Existing endpoints and frames keep their shapes, because the macOS client and older web builds use them.
+Existing endpoints and frames keep their shapes, because the macOS client and older web builds use them. Every change is additive except one: removing the hub's own user-inbox notes (§9.5). That removal lands on the integration branch just before cutover, so the current UI on `main` keeps those notes until the new UI replaces it.
 
 - **Timestamps.** New fields are RFC 3339 with an offset. Data stored as naive local minute times is converted using the hub's configured timezone at read time:
   - an ambiguous time during a DST fall-back takes the earlier offset
@@ -528,20 +538,37 @@ All changes are additive. Existing endpoints and frames keep their shapes, becau
 
 **How the hub learns about agents.** The hub already owns each agent's activity tracker and passes it into the agent runtime. The runtime calls it directly for busy, unread and client connections. The hub also needs to watch each running agent:
 
-- When an agent starts, the hub attaches a **per-agent watcher**, which subscribes to that agent's event bus through a subscription handle added to the agent's control handle. It listens to:
-  - the Sessions topic: session started, state changed, completed
-  - the system Notification topic: outbound A2A task changes
+- **Per-agent watcher.** When an agent starts, the hub attaches a watcher that subscribes to that agent's event bus, through a subscription handle added to the agent's control handle. It listens to:
+  - the Sessions topic. It acts only on started, state-changed and completed; other session events are drained and dropped.
+  - the system Notification topic, for outbound A2A task changes.
+  - a new `UserInbox` topic, carrying `user_inbox_added {item_id}`. It is published by the only in-agent code that creates user-inbox items, the user-inbox tool, after the item is saved.
   - the Workspace topic, filtered to:
-    - `inbox/user/`
+    - top-level `*.json` files in `inbox/user/`
     - `scheduled_actions.json`
     - `HEARTBEAT.yml`
     - `pulse_state.json`
     - the agent's config files
-  - A Workspace `Resync` (the topic is lossy) makes the watcher recompute everything for that agent.
-- The watcher drains its subscriptions continuously. It stops when the agent stops.
-- The activity tracker's reply hook is extended to carry the reply's text and time, so the hub knows each agent's last message without re-reading files.
-- For stopped and failed agents, the hub computes the same data from disk on request and when the hub itself changes it (hub inbox actions).
-- Every user-inbox write passes through the inbox module's single save path. The overview's inbox counts are driven by the Workspace watch for running agents, and by the hub's own inbox actions. A file dropped into a stopped agent's inbox by hand is picked up on the next overview request.
+
+  Rules:
+  - Lossless topics use unbounded channels, so the watcher drains every subscription continuously, and stops when the agent stops.
+  - A Workspace `Resync` makes it recompute everything for that agent.
+  - A Workspace `Unavailable` makes it recompute every 60 seconds until the next `Changed` or `Resync`, logging one warning.
+- **Outbound threshold event.** The outbound task tracker already sends a notice once per unreachable streak when a task has been unreachable for its notice threshold (10 minutes). It also publishes a task-change event at that moment, so the watcher learns about the crossing without a timer.
+- **Turn hook.** The activity tracker gains a method the runtime calls exactly once when a main turn ends. It carries:
+  - the turn's user message text, if any
+  - its last reply text, if any
+  - the time
+  - the turn's visibility (`user` or `background`)
+  - whether any client had the agent's socket open
+
+  The texts are captured before the turn's outcome is published. The existing per-reply unread counting is unchanged.
+- **Stopped and failed agents.** The hub computes the same data from disk: on request, and when the hub itself changes something (hub inbox actions).
+- **Inbox counts** are recomputed from disk whenever:
+  - the watcher sees a `user_inbox_added` event, or a Workspace change to a top-level inbox file
+  - the hub's own inbox actions change something
+  - an overview is requested
+
+  Hand-placed files and changes made through the per-agent inbox routes are counted this way, but only the user-inbox tool produces an "added" event.
 
 #### 9.1 Hub snapshot and frames
 
@@ -551,13 +578,19 @@ All changes are additive. Existing endpoints and frames keep their shapes, becau
 - **`GET /api/hub/agents`** gains the same two fields beside `agents`.
 - **`AgentActivity`** gains `busy_since: string | null`, the start of the current main turn. The `agent_activity` frame carries it too.
 - **`AgentSummary` is unchanged.** Busy changes never produce `agent_state` frames.
-- **`AgentLastError`** gains:
-  - `reason: string`: the underlying error, without the "<agent> couldn't start: … Fix its settings…" wrapper that `message` keeps
-  - `file: "config.toml" | "providers.toml" | "mcp.json" | "channels.toml" | "a2a.json" | null`: set when the failure came from loading or validating that file
+- **`AgentLastError`** gains two fields:
+  - `kind: "config" | "port_conflict" | "crash" | "other"`
+  - `reason: string`: the underlying error text, without the "<agent> couldn't start: … Fix its settings…" wrapper that `message` keeps
 
-  The start path keeps this information structured until the last error is recorded, instead of flattening it to a string first.
+  Each caller of the failure recorder passes its kind:
+  - `config`: the start path's configuration errors, which today are the config-error variant.
+  - `port_conflict`: the Teams port conflict.
+  - `crash`: a panicked or exited run.
+  - `other`: anything else.
+
+  No file provenance is carried. §4 finds the failing setting through the validate endpoints instead.
 - **New frames:**
-  - `hub_config_reloaded {ok: boolean, message: string | null}`, sent after each hub config reload attempt (alongside the existing notice)
+  - `hub_config_reloaded {ok: boolean, changed: boolean, message: string | null}`, sent after each hub config reload attempt, alongside the existing notice. A reload that found nothing changed sends `ok: true, changed: false`.
   - `hub_boot {boot_id}`, sent first on every hub socket connection
 - **`agent_stopping`** is exported and documented.
 - **On a lagged hub socket,** the hub sends `agents_snapshot` as today. The client then refetches the overview and the events since its newest id (§9.4).
@@ -590,7 +623,7 @@ AgentOverview {
 - **Run state, activity and summary are not repeated here.** They come from the snapshot and the `agent_state` and `agent_activity` frames.
 - **`last_message`.** The newest main-conversation message with user visibility and non-empty text content, from the user or the agent. Assistant messages with only tool calls are skipped.
   - `preview` is the text as plain text: Markdown syntax removed, whitespace collapsed, cut to 200 characters with "…".
-  - For a running agent it comes from the reply hook, or from recent history at startup.
+  - For a running agent it comes from the turn hook for turns with `user` visibility: the reply if there is one, otherwise the user message. At hub startup and agent start it is read from disk, as for a stopped agent.
   - For a stopped agent it comes from recent history on disk. When recent history is empty, it comes from the newest episode containing a main-conversation message, with `at` set to that episode's date and `at_precision: "day"`.
   - It is `null` when there is none.
 - **`live_sessions`.** Empty for a non-running agent.
@@ -600,8 +633,8 @@ AgentOverview {
   - A pulse's time is the first moment at or after `max(now, last_run + interval)` that falls inside its active hours. A never-run pulse counts from now.
   - Disabled pulses, or all pulses when `pulse_enabled` is off, are excluded.
   - The same calculation replaces the existing `next_fire_at` on the per-agent scheduled pulses endpoint.
-  - Computed for non-running agents too, so Home can say "won't run while stopped".
-- **`outbound_problems`.** Open tracked tasks with `unreachable_since` set. For a stopped agent they come from its persisted task file, frozen as of when it stopped.
+  - Computed for non-running agents too, so Home can say "won't run while stopped". It is empty when the agent's config can't be loaded.
+- **`outbound_problems`.** Open tracked tasks whose current unreachable streak has passed the tracker's notice threshold. It updates on the task-change events at streak start, at the threshold and at clearing. It is empty for non-running agents: their tasks aren't being watched, and the stop controls need a running agent.
 
 **Frames.**
 - `agent_overview {overview: AgentOverview}` replaces the client's copy for that agent whenever any field changes.
@@ -613,7 +646,8 @@ AgentOverview {
 #### 9.4 Team events
 
 **The log.** In memory, holding up to 500 entries, reset on hub restart.
-- When full, the oldest `info` entry is evicted first. `warn` and `error` entries are evicted only when no `info` entry remains.
+- The newest 100 `warn` and `error` entries are protected.
+- When the log is full, the oldest unprotected entry is evicted, whatever its level.
 - Ids are monotonic within a boot.
 
 ```
@@ -631,8 +665,15 @@ TeamEventTarget =
   | { kind: "agent_place", agent, place: "chat" | "activity" | "schedule" | "files" }
   | { kind: "session", agent, run_id }
   | { kind: "inbox_item", agent, item_id }
-  | { kind: "settings", scope, section }
 ```
+
+The client turns targets into URLs:
+
+| Target | URL |
+|---|---|
+| `agent_place` | `/agent/<agent>`, with `/activity`, `/schedule` or `/files` appended for those places |
+| `session` | `/agent/<agent>?panel=session:<run_id>` |
+| `inbox_item` | `/inbox?item=<agent>:<item_id>` |
 
 **Kinds and levels:**
 
@@ -641,16 +682,16 @@ TeamEventTarget =
 | `hub_started` | info | none |
 | `agent_started` | info | agent_place chat |
 | `agent_stopped` | info | agent_place chat |
-| `agent_failed` | error | settings, per `last_error.file` as in §4 |
+| `agent_failed` | error | agent_place chat (the state card holds the fix) |
 | `agent_created` | info | agent_place chat |
 | `agent_deleted` | info | none |
 | `agent_restored` | info | agent_place chat |
-| `agent_replied` | info | agent_place chat; a main turn ended with a reply |
-| `session_started` | info | session |
-| `session_finished` | info if completed, warn if cancelled, error if failed | session |
-| `inbox_item_added` | info | inbox_item |
-| `scheduled_run_finished` | info, or error if it failed | session |
-| `hub_notice` | the notice's level | none; every existing hub notice |
+| `agent_replied` | info | agent_place chat. Once per turn, from the turn hook, when the turn has a reply and `user` visibility. |
+| `session_started` | info | session; not for scheduled sessions |
+| `session_finished` | info if completed, warn if cancelled, error if failed | session; not for scheduled sessions |
+| `inbox_item_added` | info | inbox_item; from `user_inbox_added` |
+| `scheduled_run_finished` | info, or error if it failed | session; the only event for a scheduled session's run |
+| `hub_notice` | the notice's level | none; every hub-wide `notice` broadcast. Warnings sent to a single socket connection are excluded. |
 
 **Endpoints and frames.**
 - `GET /api/hub/events?before=<id>&after=<id>&limit=<n>` → `{boot_id, events: TeamEvent[], next_before: number | null}`:
@@ -731,10 +772,28 @@ Defaults for a new device: `inbox_item` and `agent_failed` on, the other two off
 
 | Preference | Fires when | Target | Urgency | TTL |
 |---|---|---|---|---|
-| `inbox_item` | A user-inbox item is added | `/inbox?item=<agent>:<id>` | normal | 24h |
+| `inbox_item` | A `user_inbox_added` event (§9) | `/inbox?item=<agent>:<id>` | normal | 24h |
 | `agent_failed` | An agent enters the failed state | That agent's Chat | high | 24h |
-| `outbound_unreachable` | Once per task, when an outbound task's `unreachable_since` becomes more than 15 minutes old | That agent's Activity | normal | 6h |
-| `reply_while_away` | An agent publishes a main-conversation reply while no web client has that agent's socket open (the condition that counts chat unread) | That agent's Chat | normal | 1h |
+| `outbound_unreachable` | Once per unreachable streak, when the tracker's 10-minute threshold event arrives (§9) | That agent's Activity | normal | 6h |
+| `reply_while_away` | Once per turn, from the turn hook, when the turn has a reply, has `user` visibility, and no client had that agent's socket open | That agent's Chat | normal | 1h |
+
+**Payload.** Encrypted JSON:
+
+```
+{ v: 1, event: "inbox_item" | "agent_failed" | "outbound_unreachable" | "reply_while_away",
+  agent, title, body, target, tag, badge }
+```
+
+- `target` is a URL path from the triggers table.
+- `badge` is the total inbox unread.
+- `body` is plain text, at most 120 characters.
+
+| Event | Title | Body | Tag |
+|---|---|---|---|
+| `inbox_item` | The item's title | "From <agent>: " and the start of its body | `inbox:<agent>:<id>` |
+| `agent_failed` | "<agent> couldn't start" | A line chosen by the error's kind | `failed:<agent>` |
+| `outbound_unreachable` | "<agent> can't reach <remote>" | "A task has been waiting since <time>." | `outbound:<agent>:<task_id>` |
+| `reply_while_away` | "<agent> replied" | The reply's preview | `reply:<agent>` (later replies replace earlier ones) |
 
 **Delivery.**
 - Standard Web Push encryption and VAPID authentication, sent from the host to the subscription's endpoint.
@@ -753,7 +812,7 @@ Defaults for a new device: `inbox_item` and `agent_failed` on, the other two off
 | Component | jsdom and Testing Library | Every primitive, and every surface's empty, loading, error, populated and live states. Shared fixtures build hub, agent and feed state without a socket. |
 | End-to-end | Playwright against the mock server | Navigation and flows in two Chromium projects, desktop 1440×900 and phone 390×844 with touch, both in CI. A WebKit phone project runs locally only. |
 | Accessibility | axe-core inside end-to-end | Every place and overlay. Serious and critical violations fail. |
-| Visual | Playwright screenshots | A small set of baselines per surface at both sizes, with frozen time and animation and masked dynamic regions. They run inside the official Playwright container image, pinned to the Playwright version, locally and in CI, so rendering matches. `just web-e2e-update` regenerates baselines in that container. |
+| Visual | Playwright screenshots | A small set of baselines per surface at both sizes, with frozen time and animation and masked dynamic regions. They run inside the official Playwright container image, pinned to the Playwright version, so rendering matches wherever they run. `just web-e2e-update` regenerates baselines in that container. If the CI runner can't run the container, CI skips visual comparisons; the orchestrator runs them locally before each integration merge, and a follow-up issue tracks enabling them in CI. |
 
 **Mock server as a harness.**
 - Split into modules; type-checked, linted and formatted like the app.
@@ -798,7 +857,10 @@ Defaults for a new device: `inbox_item` and `agent_failed` on, the other two off
   - `/api` and WebSocket traffic are never intercepted.
 - **Offline:** the app launches to the shell, and the hub banner explains that Residuum can't be reached. No data is cached for offline reading.
 - **Updates:** a new worker waits. The app shows "Update ready" with Reload, and Reload activates it.
-- **Push:** the same worker handles push and notification-click events. A click focuses an open app window and navigates it to the target, or opens one.
+- **Push:** the same worker handles push and notification-click events.
+  - When any app window is visible and focused, the worker updates the app badge from `badge` but shows no notification. The app itself already shows the change.
+  - Otherwise it shows the notification with the payload's title, body and tag, and updates the badge.
+  - A click focuses an open app window and navigates it to `target`, or opens a window there.
 - **Registration** happens only in production builds, including the mock's preview mode, never in the dev server.
 
 **Code splitting.** Settings, the file editor, the workbench artifact host, the command palette and the setup wizard load on demand. The shell, Home and Chat are in the initial bundle.
@@ -865,7 +927,9 @@ They chose a combination:
 
 **Bus subscription for the watcher, and the activity tracker for replies.**
 - Sessions, outbound tasks and workspace changes are already published on each agent's bus, so subscribing needs no new publishers.
-- The last message comes through the activity tracker's reply hook. It already fires for each reply, and the recent-messages file is written only after a turn and loses messages to episode rotation.
+- The last message and per-turn events come through a new turn hook on the activity tracker, which the runtime already calls directly.
+  - The recent-messages file is written only after a turn, and loses messages to episode rotation.
+  - The existing per-reply call fires once per reply text, not once per turn.
 
 **Team event log in memory.**
 - "Across the team" needs recent timestamped history, and nothing records one today.
@@ -882,6 +946,7 @@ They chose a combination:
 - Those notes duplicated what the state card, Home, team events and push now show. A failed agent would appear twice in needs-you and send two pushes.
 - They made the user inbox hold system chatter instead of what agents chose to send.
 - Repeated same-day failures also overwrote each other (#305).
+- The removal waits for the integration branch, so users of the current UI keep the notes until the new surfaces that replace them ship.
 
 **Explicit save in settings.**
 - Autosave validated half-typed values, raced the composer's model control, and reported failures only after the fact.
@@ -991,12 +1056,13 @@ Choices written into this design that the owner has not yet confirmed:
 1. **Home's data** comes from a hub overview contract fed by a per-agent bus watcher (§9, §9.3), not browser fan-out.
 2. **"Across the team"** is an in-memory event log of 500 entries with level-aware eviction, reset on restart (§9.4).
 3. **The Inbox** is one cross-agent list backed by hub endpoints (§9.5).
-4. **The hub stops writing** its failure and lifecycle notes into user inboxes (§9.5).
+4. **The hub stops writing** its failure and lifecycle notes into user inboxes (§9.5), at cutover.
 5. **Settings** use explicit Save and Discard per scope, with the staged/immediate split in §8.
 6. **The service worker** is hand-written (§11).
-7. **Web Push** is in scope: the four events and defaults in §9.7, keys and devices in untracked hub files, and a `[push] contact` hub setting for the VAPID contact.
+7. **Web Push** is in scope. It covers the four events and defaults in §9.7 (the outbound event reuses the tracker's existing 10-minute threshold), keys and devices in untracked hub files, a `[push] contact` hub setting for the VAPID contact, and no notification while an app window is focused.
 8. **Visual screenshot tests** are in CI, inside a pinned Playwright container. CI end-to-end runs Chromium only (§10).
 9. **Backend units** merge to `main` directly; frontend units go to the integration branch.
 10. **The grain overlay and time-of-day vein intensity** are dropped (§1).
 11. **Modal overlays push history entries** so that Back closes them (§3).
-12. **Input borders** use `#6a6a6f`, the old dim text tone, to meet the 3:1 control-boundary contrast. They will read slightly more visible than the mockup's (§1).
+12. **Input borders** use `#6a6a6f`, the old dim text tone, to meet the 3:1 control-boundary contrast. They will read slightly more visible than the mockup's. Selected rows label in `vein-bright` instead of `vein` for contrast on the tint (§1).
+13. **A failed agent's Fix settings** finds the failing field through the validate endpoints and falls back to Raw config, instead of the backend reporting which file failed (§4, §9.1).
