@@ -28,13 +28,16 @@ use crate::gateway::web::{
     agent_files_api_router as agent_files_router,
 };
 use crate::hub::{
-    A2aVisibility, Actor, AgentActivity, AgentDirectory, AgentPatch, AgentState, AgentSummary,
-    CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError, RestoreAgentRequest,
+    A2aVisibility, Actor, AgentActivity, AgentDirectory, AgentFiles, AgentPatch, AgentState,
+    AgentSummary, CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError,
+    RestoreAgentRequest,
 };
 use crate::tunnel::{TUNNEL_NONCE_HEADER, TunnelStatus, tunnel_nonce};
 use crate::workspace::layout::WorkspaceLayout;
 use crate::workspace::team_files::TeamWriteCoordinator;
 use crate::workspace::watch::{WatchHealth, WorkspaceChange, WorkspaceChangeKind};
+
+mod inbox;
 
 fn summary(name: &str, state: AgentState) -> AgentSummary {
     AgentSummary {
@@ -66,6 +69,8 @@ struct FakeDirectory {
     checkpoint_opens: Arc<AtomicUsize>,
     /// Makes those opens fail, as unreadable repositories would.
     checkpoints_unopenable: Arc<AtomicBool>,
+    /// The hub timezone the directory reports, UTC until a test sets one.
+    timezone: Mutex<chrono_tz::Tz>,
 }
 
 impl FakeDirectory {
@@ -81,6 +86,7 @@ impl FakeDirectory {
             file_routers_built: AtomicUsize::new(0),
             checkpoint_opens: Arc::new(AtomicUsize::new(0)),
             checkpoints_unopenable: Arc::new(AtomicBool::new(false)),
+            timezone: Mutex::new(chrono_tz::UTC),
         })
     }
 
@@ -260,6 +266,14 @@ impl AgentDirectory for FakeDirectory {
             }),
             ..AgentFilesState::from(&config)
         }))
+    }
+
+    fn agent_files(&self, name: &str) -> Result<AgentFiles, LifecycleError> {
+        self.find(name)?;
+        Ok(AgentFiles {
+            dir: self.root.join(name),
+            timezone: *self.timezone.lock().unwrap(),
+        })
     }
 
     fn agent_a2a_router(&self, name: &str) -> Result<Router, LifecycleError> {

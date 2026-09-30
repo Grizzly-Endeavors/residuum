@@ -29,6 +29,8 @@ Each item is a JSON file. There is **no `id` field in the JSON body** — the it
 }
 ```
 
+IDs are unique within an agent. A filename is the date plus the sanitized title; when that stem is already taken, by an item in the inbox or in its archive, `_2`, `_3`, ... is appended, so two items with the same title on one day don't overwrite each other and an archived item's ID is never reused. `user_inbox_add` returns the ID it used, which may carry such a suffix.
+
 ## Agent Inbox Tools
 
 | Tool | Parameters | Description |
@@ -51,7 +53,7 @@ There is no tool to read or manage the user inbox from the agent side — it's w
 
 Use `user_inbox_add` (title + body) when a background task — most often a sub-agent that only talks to the user asynchronously — has findings the user should see but that don't need to interrupt a conversation. Before adding a new item, it's worth checking prior items (including the archive) so you don't repeat a suggestion the user already saw.
 
-Pass `attachments` — an array of paths to files you've already written to disk — when the finding is easier to review as a file than as inline text (an export, a screenshot, a generated report). Each file is copied into the item's own storage, so the original can safely be moved or deleted afterward. If any attachment can't be copied, the whole call fails and no item is created — retry with valid paths rather than expecting a partial item.
+Pass `attachments` — an array of paths to files you've already written to disk — when the finding is easier to review as a file than as inline text (an export, a screenshot, a generated report). Each file is copied into the item's own storage, so the original can safely be moved or deleted afterward. If an attachment can't be copied, the item is still created with the ones that were, and the result lists each file that failed, so send the missing file in a follow-up item if the user needs it.
 
 ## Integration with Notifications
 
@@ -66,5 +68,5 @@ A workbench artifact can file an agent-inbox item directly with `POST /api/agent
 - `inbox_read` marks the item as read immediately — there is no way to mark it unread again.
 - Archived items are moved (not copied) to the matching `archive/inbox/{agent,user}/` directory. The original file is removed from the source directory. `inbox_restore` (agent inbox) or the web UI's archived view (user inbox) moves it back.
 - There is no unread-count surfaced anywhere in the agent's context or status line — check with `inbox_list unread_only: true` if you need to know.
-- `user_inbox_add`'s `attachments` parameter is all-or-nothing: if one file in the batch fails to copy, none of them are attached and no item is created.
+- `user_inbox_add`'s `attachments` parameter is best-effort: a file that fails to copy is skipped and named in the result, and the item is created with the rest.
 - There is no tool to list, read, or archive the user inbox's attachments from the agent side — same as the rest of the user inbox, they're write-only for you. Restoring the user inbox is web-UI-only too, via `GET /api/agents/<agent>/inbox/archive` and `POST /api/agents/<agent>/inbox/{id}/restore`.

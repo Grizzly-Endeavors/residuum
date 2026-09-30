@@ -17,6 +17,8 @@ Archiving is a soft delete in both inboxes, not a permanent one: an archived ite
 
 The user inbox's HTTP routes (`GET /api/agents/{name}/inbox` and `.../inbox/archive`, `PUT .../inbox/{id}/read`, `POST .../inbox/{id}/archive` and `.../restore`, and `GET .../inbox/{id}/attachments/{index}`) only read and write the inbox files, so they answer for a stopped or failed agent as well as a running one (see [Hub HTTP Surface](hub-http.md#agent-routes)). `POST /api/agents/{name}/agent-inbox`, which adds to the agent inbox, needs the agent running.
 
+The hub also serves every agent's user inbox as one list (see [Cross-Agent View](#cross-agent-view)).
+
 ## How Items Arrive
 
 - **Agent inbox**: the notification router files every substantive `scheduled` result and every substantive webhook-triggered `external` result here. A conversation-triggered `external` result (A2A, or a non-owner Discord/Telegram/Teams chat) never reaches the inbox — its output already went back to the conversation it came from, and its observations are merged into memory as an episode — nor does an `artifact` or `spawned` session's result, both of which are relayed elsewhere (see [background-tasks.md](background-tasks.md#result-routing)). A workbench artifact can also add an item directly with `POST /api/agents/{name}/agent-inbox` (body `{ title?, body }`) — the same place the WS `/inbox` command writes to. `title` defaults to the body's first line, in full; a blank `body` is refused with `400`. The item's `source` is `artifact:<name>` when the request carries the workbench bridge's artifact-identity header, `web` otherwise. There is no equivalent HTTP endpoint for the user inbox.
@@ -50,7 +52,10 @@ A user inbox item created with `user_inbox_add`'s `attachments` parameter record
 }
 ```
 
-- Filenames are auto-generated from date and sanitized title; the filename stem *is* the ID used by `inbox_read`/`inbox_archive`, and the directory attachments are copied into.
+- Filenames are generated from the date and the sanitized title (`{YYYYMMDD}_{title}`, at most 60 title characters). The filename stem *is* the ID used by `inbox_read`/`inbox_archive`, and the directory attachments are copied into.
+- **IDs are unique within an agent.** When the generated stem is already taken, by an item in the inbox or in its archive, `_2`, `_3`, ... is appended (`20260227_weekly_export_ready_2`), so two items with the same title on the same day each keep their own file and attachment directory, and an archived item's ID is never reused. Every writer goes through this: `user_inbox_add`, the notification router, the WS `/inbox` command, `POST /api/agents/{name}/agent-inbox`, a chat attachment's companion item, and the hub's own notes. Any existing file keeps working under its own stem, suffixed or not.
+- Archiving and restoring never replace a different item that has the same ID. If a file in the destination already has it (an item placed by hand, say), the move fails with an error naming the conflict, and both items stay where they are. The hub API answers that case with `409`.
+- `timestamp` is a naive local time to the minute (`YYYY-MM-DDTHH:MM`) in the hub's timezone. The hub API reports it as RFC 3339 with an offset (see [Cross-Agent View](#cross-agent-view)).
 - Only the final path component (the filename) of each `attachments` entry is meaningful — the directory portion can go stale once an item is archived, since archiving physically moves the item's attachment directory alongside its JSON file. Consumers (the web UI, the HTTP serving endpoint) resolve attachments by filename against the item's *current* location, not by trusting the stored path literally.
 - There is no unread-count surfaced anywhere in the agent's context or status line — the agent has to call `inbox_list` (with `unread_only: true`) to find out.
 
@@ -73,6 +78,16 @@ A user inbox item created with `user_inbox_add`'s `attachments` parameter record
 - **Archiving moves attachments too**: when the user archives an item, its `inbox/user/attachments/{item id}/` directory moves to `archive/inbox/user/attachments/{item id}/` alongside the JSON file, so the item's attachments keep serving after archiving; restoring the item reverses that move.
 - **Serving**: the web UI fetches attachments from `GET /api/agents/{name}/inbox/{id}/attachments/{index}`, which checks the active inbox first, then the archive, and confines every resolved path to the item's own attachment directory before serving — an out-of-tree path 404s rather than confirming it exists.
 - **Restoring**: `GET /api/agents/{name}/inbox/archive` lists archived user inbox items the same shape as `GET /api/agents/{name}/inbox`; `POST /api/agents/{name}/inbox/{id}/restore` moves one back to the active inbox. The web UI's inbox has an archived view with a Restore action wired to this endpoint.
+
+## Cross-Agent View
+
+`GET /api/hub/inbox` and its per-item routes serve the user inboxes of every agent as one list, read straight from each agent's `inbox/user/` and `archive/inbox/user/`, so an agent's items are included whether it is running, stopped, or failed. The routes and shapes are in [Hub HTTP Surface](hub-http.md#cross-agent-inbox).
+
+- Each item is identified by its agent and its ID, since two agents can have items with the same ID.
+- The list is newest first, by the item's time and then its ID, in pages.
+- An item's time is the stored naive local time read in the hub's configured timezone at the moment of the request, so changing the timezone changes the instants reported. A local time that happened twice (a DST fall-back) takes its first occurrence, and one that never happened (a spring-forward gap) moves forward by the length of the gap.
+- Marking an item read, archiving it, and restoring it make the same file changes as the per-agent routes.
+- Attachment links point at the per-agent attachment route, which serves a stopped agent as well.
 
 ## Intended Usage
 
