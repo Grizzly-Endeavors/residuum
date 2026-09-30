@@ -509,11 +509,54 @@ fn a2a_listener_path(agent: Option<&str>, path: &str) -> Result<String, &'static
     if crate::config::paths::validate_agent_name(agent).is_err() {
         return Err("No agent with that name is available on this Residuum instance.");
     }
+    if path_escapes_agent(path) {
+        return Err("This A2A request's path isn't valid.");
+    }
     let separator = if path.starts_with('/') { "" } else { "/" };
     Ok(format!(
         "{}/{agent}{separator}{path}",
         crate::a2a::public_url::AGENTS_PATH_PREFIX
     ))
+}
+
+/// Whether a relay-supplied path could climb out of `/agents/{agent}` once
+/// the HTTP client normalizes it: any `.` or `..` segment, in plain or
+/// percent-encoded form (`%2e`, `%2E`, mixed), or any backslash. The relay
+/// gates access per agent, so a path that reaches a different agent's routes
+/// would bypass that gating (`/a2a/inst/scout/../vault/...` normalizes to
+/// vault's routes). The query string is not part of the path.
+fn path_escapes_agent(path: &str) -> bool {
+    let path_only = path.split(['?', '#']).next().unwrap_or_default();
+    let decoded = percent_decode(path_only);
+    decoded.contains('\\')
+        || decoded
+            .split('/')
+            .any(|segment| segment == "." || segment == "..")
+}
+
+/// Decode `%XX` escapes, leaving malformed ones as they are.
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while let Some(&byte) = bytes.get(i) {
+        let escaped = if byte == b'%' {
+            bytes
+                .get(i + 1..i + 3)
+                .and_then(|hex| std::str::from_utf8(hex).ok())
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+        } else {
+            None
+        };
+        if let Some(decoded) = escaped {
+            out.push(decoded);
+            i += 3;
+        } else {
+            out.push(byte);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Answer an A2A-surface request the tunnel can't dispatch with a streamed
@@ -1354,6 +1397,50 @@ mod tests {
             a2a_listener_path(Some("scout"), "").as_deref(),
             Ok("/agents/scout/")
         );
+    }
+
+    #[test]
+    fn a_path_that_climbs_out_of_the_agent_is_refused() {
+        for bad in [
+            "/../vault/.well-known/agent-card.json",
+            "/./x",
+            "/..",
+            "/rest/../../vault/x",
+            "/%2e%2e/vault/x",
+            "/%2E%2E/vault/x",
+            "/%2e./vault/x",
+            "/.%2E/vault/x",
+            "/%2e/x",
+            "/..%2fvault/x",
+            "/%2e%2e%2fvault/x",
+            "/..\\vault/x",
+            "/%5cvault",
+            "/%5Cvault",
+            "/a\\b",
+            "..",
+            "/x/..?q=1",
+        ] {
+            assert!(
+                a2a_listener_path(Some("scout"), bad).is_err(),
+                "'{bad}' must not reach another agent's routes"
+            );
+        }
+    }
+
+    #[test]
+    fn dots_inside_names_and_the_query_string_are_not_traversal() {
+        for fine in [
+            "/.well-known/agent-card.json",
+            "/rest/a..b",
+            "/rest/message:send?next=../x",
+            "/v1/tasks/1.2.3",
+            "/%2e%2eabc/x",
+        ] {
+            assert!(
+                a2a_listener_path(Some("scout"), fine).is_ok(),
+                "'{fine}' is an ordinary path"
+            );
+        }
     }
 
     #[test]

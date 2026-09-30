@@ -23,7 +23,7 @@ Until the relay has received the first list on a connection it answers `503` to 
 
 ## A2A through the tunnel
 
-The relay forwards `/a2a/{instance}/{agent}/<rest>` as an HTTP request on the A2A surface with the frame's `agent` field set. The tunnel sends it to the hub's A2A listener as `/agents/<agent>/<rest>` and streams the response back frame by frame (`http_response_start`, `http_response_chunk`, `http_response_end`), so a long streaming call flows through unbuffered. A request on the A2A surface that names no agent, or a name that isn't a valid agent name, is answered `404` and reaches no agent. If the A2A listener isn't running, the answer is `503` saying so. See [A2A](a2a.md) for addresses and sibling discovery.
+The relay forwards `/a2a/{instance}/{agent}/<rest>` as an HTTP request on the A2A surface with the frame's `agent` field set. The tunnel sends it to the hub's A2A listener as `/agents/<agent>/<rest>` and streams the response back frame by frame (`http_response_start`, `http_response_chunk`, `http_response_end`), so a long streaming call flows through unbuffered. A request on the A2A surface that names no agent, or a name that isn't a valid agent name, is answered `404` and reaches no agent. So is a request whose path contains a `.` or `..` segment (plain or percent-encoded, in any case) or a backslash, since after normalization it could reach a different agent's routes and skip the relay's per-agent gating. If the A2A listener isn't running, the answer is `503` saying so. See [A2A](a2a.md) for addresses and sibling discovery.
 
 ## Telling a Tunnel-Forwarded Request Apart From a Local One
 
