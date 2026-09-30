@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import type { SetupWizardState, McpCatalogEntry, ProviderKey } from "./lib/types";
-  import { fetchTimezone, fetchMcpCatalog } from "./lib/api";
+  import { fetchTimezone, fetchMcpCatalogOrThrow } from "./lib/api";
   import { DEFAULT_AGENT_NAME } from "./lib/agent-name";
+  import { userErrorMessage } from "./lib/errors";
   import Welcome from "./components/setup/Welcome.svelte";
   import Providers from "./components/setup/Providers.svelte";
   import Roles from "./components/setup/Roles.svelte";
@@ -110,6 +111,13 @@
 
   let step = $state(Math.min(Math.max(persisted?.step ?? 0, 0), TOTAL_STEPS - 1));
   let catalog = $state<McpCatalogEntry[]>([]);
+  let catalogLoading = $state(false);
+  let catalogError = $state<string | null>(null);
+
+  // A restored draft never carries API keys (sanitizeForStorage strips them
+  // before every save) — tell the user so a blank key field on the
+  // Providers step doesn't read as "already saved".
+  let showDraftKeyNotice = $state(persisted !== null);
 
   // Fields added after a draft was saved fall back to their defaults.
   let wizardState = $state<SetupWizardState>({
@@ -117,11 +125,23 @@
     ...persisted?.wizardState,
   });
 
+  async function loadCatalog() {
+    catalogLoading = true;
+    catalogError = null;
+    try {
+      catalog = await fetchMcpCatalogOrThrow();
+    } catch (err: unknown) {
+      catalogError = userErrorMessage(err, { action: "Couldn't load the MCP server catalog." });
+    } finally {
+      catalogLoading = false;
+    }
+  }
+
   onMount(async () => {
-    const [tz, cat] = await Promise.all([fetchTimezone(), fetchMcpCatalog()]);
+    const tz = await fetchTimezone();
     // Don't clobber a timezone the user already resolved in a prior session.
     if (!wizardState.timezone) wizardState.timezone = tz;
-    catalog = cat;
+    void loadCatalog();
   });
 
   let persistTimer: ReturnType<typeof setTimeout> | undefined;
@@ -173,6 +193,22 @@
         {/each}
       </div>
 
+      {#if showDraftKeyNotice}
+        <div class="provider-warning draft-key-notice">
+          <span class="provider-warning-icon">&#9888;</span>
+          <span
+            >Restored your in-progress setup. API keys aren't saved in the draft, so re-enter them
+            on the Providers step before finishing.</span
+          >
+          <button
+            type="button"
+            class="draft-key-notice-dismiss"
+            aria-label="Dismiss"
+            onclick={() => (showDraftKeyNotice = false)}>&times;</button
+          >
+        </div>
+      {/if}
+
       {#if step === 0}
         <Welcome {wizardState} onNext={next} />
       {:else if step === 1}
@@ -180,7 +216,15 @@
       {:else if step === 2}
         <Roles {wizardState} onNext={next} onBack={back} />
       {:else if step === 3}
-        <MCP {wizardState} {catalog} onNext={next} onBack={back} />
+        <MCP
+          {wizardState}
+          {catalog}
+          {catalogLoading}
+          {catalogError}
+          onRetryCatalog={loadCatalog}
+          onNext={next}
+          onBack={back}
+        />
       {:else if step === 4}
         <Integrations {wizardState} onNext={next} onBack={back} />
       {:else if step === 5}
