@@ -53,7 +53,9 @@ fn lifecycle_error_text(error: &LifecycleError, action: &str) -> String {
         LifecycleError::NotFound(name) => format!(
             "can't {action}: there is no agent named '{name}'. Check the name against the team roster."
         ),
-        LifecycleError::InvalidRequest(reason) | LifecycleError::Failed(reason) => {
+        LifecycleError::InvalidRequest(reason)
+        | LifecycleError::Failed(reason)
+        | LifecycleError::ShuttingDown(reason) => {
             format!("can't {action}: {reason}")
         }
         LifecycleError::NotRunning { .. } => format!("can't {action}: {error}"),

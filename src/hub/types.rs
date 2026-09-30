@@ -232,7 +232,7 @@ pub enum NoticeLevel {
 
 /// Why a lifecycle or lookup call failed. The HTTP layer maps these to
 /// status codes: `NotFound` and `NoDeletedAgent` 404, `InvalidName`/`InvalidRequest` 400,
-/// `AlreadyExists`/`NotRunning` 409, `Failed` 500.
+/// `AlreadyExists`/`NotRunning` 409, `ShuttingDown` 503, `Failed` 500.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LifecycleError {
     /// No agent has this name.
@@ -256,6 +256,10 @@ pub enum LifecycleError {
     /// The operation failed; the message is safe to show the user.
     #[error("{0}")]
     Failed(String),
+    /// The hub is shutting down and refused the operation; this is expected
+    /// and temporary, not a real failure.
+    #[error("{0}")]
+    ShuttingDown(String),
 }
 
 #[cfg(test)]
