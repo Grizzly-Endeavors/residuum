@@ -447,6 +447,17 @@ describe("closing the panel and the modal", () => {
     expect(page.entry().idx).toBe(0);
   });
 
+  it("closes a modal that opened along with its place by leaving the place where it is", async () => {
+    const page = await boot("/home");
+    await page.router.openPlace(chat("scout"), { settings: { scope: "scout", section: "model" } });
+    expect(page.entry().settings).toBeUndefined();
+    await page.router.closeSettings();
+    expect(page.url()).toBe("/agent/scout");
+    expect(page.router.place).toEqual(chat("scout"));
+    expect(page.replaces).toEqual(["/agent/scout"]);
+    expect(page.entry().idx).toBe(1);
+  });
+
   it("keeps the marks when the modal's section or scope changes by replace", async () => {
     const page = await boot("/agent/scout");
     await page.router.openSettings({ scope: "scout", section: "model" });

@@ -487,3 +487,8 @@ export function formatLocation(location: AppLocation): string {
 export function locationsEqual(a: AppLocation, b: AppLocation): boolean {
   return formatLocation(a) === formatLocation(b);
 }
+
+/** Whether two places are the same destination, whatever panel or modal is over them. */
+export function placesEqual(a: Place, b: Place): boolean {
+  return formatLocation(locationAt(a)) === formatLocation(locationAt(b));
+}

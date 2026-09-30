@@ -74,6 +74,25 @@ describe("marks on a push", () => {
   });
 });
 
+describe("marks when the place changes", () => {
+  const files = { ...withSettings, place: { kind: "files", agent: "scout" } } as AppLocation;
+
+  it("has none on a push that opens the modal along with another place", () => {
+    expect(entryAfterPush({ idx: 2 }, plain, files)).toEqual({ idx: 3 });
+    expect(entryAfterPush({ idx: 2 }, withPanel, { ...files, panel: { kind: "size" } })).toEqual({
+      idx: 3,
+    });
+  });
+
+  it("drops them on a push to another place", () => {
+    expect(entryAfterPush({ idx: 3, settings: 3 }, withSettings, files)).toEqual({ idx: 4 });
+  });
+
+  it("drops them on a replace to another place", () => {
+    expect(entryAfterReplace({ idx: 3, settings: 3 }, withSettings, files)).toEqual({ idx: 3 });
+  });
+});
+
 describe("marks on a replace", () => {
   it("keeps the opener of what stays open", () => {
     expect(entryAfterReplace({ idx: 3, settings: 3 }, withSettings, withSettings)).toEqual({

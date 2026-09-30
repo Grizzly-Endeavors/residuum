@@ -3,7 +3,7 @@
 // that opened the panel or modal?" (closing is then `history.back()`), and "is
 // this entry an overlay's?" (Back then closes the overlay and nothing else).
 
-import type { AppLocation } from "./routes";
+import { placesEqual, type AppLocation } from "./routes";
 
 export interface EntryState {
   /** Position among the entries this page lineage pushed; each push is one more than the entry it follows. */
@@ -40,10 +40,13 @@ export function readEntry(state: unknown): EntryState | null {
  * The marks for a new entry pushed after `entry`, which showed `from`. A
  * parameter that appears with this push was opened by it; one that was already
  * open keeps the entry that opened it, or none when the page didn't push that.
+ * A push that also changes the place has no marks: going back would leave the
+ * place, and closing a parameter only removes it.
  */
 export function entryAfterPush(entry: EntryState, from: AppLocation, to: AppLocation): EntryState {
   const idx = entry.idx + 1;
   const next: EntryState = { idx };
+  if (!placesEqual(from.place, to.place)) return next;
   if (to.settings !== null) {
     if (from.settings === null) next.settings = idx;
     else if (entry.settings !== undefined) next.settings = entry.settings;
@@ -58,7 +61,8 @@ export function entryAfterPush(entry: EntryState, from: AppLocation, to: AppLoca
 /**
  * The marks for `entry` after its location changes by replace: the parameters
  * that stay open keep their opener, and one that appears was not pushed by
- * this page.
+ * this page. A replace that changes the place drops them, for the same reason
+ * as a push that does.
  */
 export function entryAfterReplace(
   entry: EntryState,
@@ -66,13 +70,14 @@ export function entryAfterReplace(
   to: AppLocation,
 ): EntryState {
   const next: EntryState = { idx: entry.idx };
+  if (entry.overlay !== undefined) next.overlay = entry.overlay;
+  if (!placesEqual(from.place, to.place)) return next;
   if (to.settings !== null && from.settings !== null && entry.settings !== undefined) {
     next.settings = entry.settings;
   }
   if (to.panel !== null && from.panel !== null && entry.panel !== undefined) {
     next.panel = entry.panel;
   }
-  if (entry.overlay !== undefined) next.overlay = entry.overlay;
   return next;
 }
 
