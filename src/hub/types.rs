@@ -116,6 +116,12 @@ pub struct CreateAgentRequest {
     /// A2A visibility; defaults to private for user-created agents.
     #[serde(default)]
     pub a2a_visibility: Option<A2aVisibility>,
+    /// The hop count the creating agent's message chain has reached, set by
+    /// `agent_create` from the caller's turn. Not part of the request body:
+    /// a user-created agent starts a chain at zero.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub creator_hop: u32,
 }
 
 /// Body of `PATCH /api/hub/agents/{name}`: at least one field is set.

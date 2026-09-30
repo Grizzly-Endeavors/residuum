@@ -960,6 +960,7 @@ fn create_request(name: &str, description: Option<&str>) -> CreateAgentRequest {
         models_from: Some("scout".to_string()),
         providers_toml: None,
         a2a_visibility: None,
+        creator_hop: 0,
     }
 }
 
@@ -2087,6 +2088,7 @@ async fn the_team_block_lists_teammates_and_follows_their_state() {
 
 mod lifecycle_tools;
 mod restore;
+mod review_fixes;
 
 #[tokio::test]
 async fn the_team_router_never_reaches_a_stopped_or_deleted_teammate() {

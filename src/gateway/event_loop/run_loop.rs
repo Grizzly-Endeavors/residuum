@@ -65,49 +65,65 @@ pub(crate) struct AgentControl {
     pub session_registry: Arc<crate::background::registry::SessionRegistry>,
     /// The agent's bus publisher, for handing the agent a message.
     publisher: crate::bus::Publisher,
+    /// The agent's messenger, which delivers a creating agent's first
+    /// message through the same hop-bounded path as any teammate message.
+    messenger: Arc<crate::background::messaging::AgentMessenger>,
 }
 
 impl AgentControl {
     /// Deliver `content` to the agent's main conversation as a message from
-    /// `from`: the owner's own message for the user, or a message from the
-    /// creating agent's address. An idle main starts a turn on it.
+    /// `from`: the owner's own message for the user, or a teammate message
+    /// from the creating agent carrying `hop_count`, so a chain of agents
+    /// creating agents meets the same hop limit as any other message chain.
+    /// An idle main starts a turn on it.
     ///
     /// # Errors
     /// Returns a plain-language reason when the message could not be
-    /// published on the agent's bus.
+    /// delivered: the agent's bus is closed, or the hop limit was reached.
     pub(crate) async fn deliver_to_main(
         &self,
         from: &crate::hub::Actor,
         content: String,
         tz: chrono_tz::Tz,
+        hop_count: u32,
     ) -> Result<(), String> {
-        let event = match from {
-            crate::hub::Actor::User => crate::bus::MessageEvent {
-                id: format!("hub-{}", uuid::Uuid::new_v4()),
-                content,
-                origin: crate::interfaces::types::MessageOrigin {
-                    endpoint: "ws".to_string(),
-                    sender: None,
-                    conversation: None,
-                    agent_sender: None,
-                },
-                timestamp: crate::time::now_local(tz),
-                images: Vec::new(),
-                context: None,
-            },
-            crate::hub::Actor::Agent(creator) => {
-                crate::bus::MessageEvent::from_agent(&crate::bus::AgentMessageEvent {
-                    from: crate::bus::SessionAddress::from(format!("agent:{creator}")),
-                    from_category: "agent".to_string(),
+        let creator = match from {
+            crate::hub::Actor::User => {
+                let event = crate::bus::MessageEvent {
+                    id: format!("hub-{}", uuid::Uuid::new_v4()),
                     content,
-                    hop_count: 0,
-                })
+                    origin: crate::interfaces::types::MessageOrigin {
+                        endpoint: "ws".to_string(),
+                        sender: None,
+                        conversation: None,
+                        agent_sender: None,
+                    },
+                    timestamp: crate::time::now_local(tz),
+                    images: Vec::new(),
+                    context: None,
+                };
+                return self
+                    .publisher
+                    .publish(crate::bus::topics::UserMessage, event)
+                    .await
+                    .map_err(|e| format!("the agent's message channel is closed: {e}"));
             }
+            crate::hub::Actor::Agent(creator) => creator,
         };
-        self.publisher
-            .publish(crate::bus::topics::UserMessage, event)
+        self.messenger
+            .send(
+                crate::background::registry::MAIN_ADDRESS,
+                crate::bus::SessionAddress::from(format!(
+                    "{}{creator}",
+                    crate::background::registry::TEAMMATE_SENDER_PREFIX
+                )),
+                crate::background::registry::TEAMMATE_SENDER_CATEGORY.to_string(),
+                content,
+                hop_count,
+            )
             .await
-            .map_err(|e| format!("the agent's message channel is closed: {e}"))
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -216,6 +232,7 @@ pub(crate) async fn start_agent(inputs: AgentStartInputs) -> Result<StartedAgent
         },
         session_registry: Arc::clone(&parts.session_registry),
         publisher: core.publisher.clone(),
+        messenger: Arc::clone(&parts.agent_messenger),
     };
     let sibling_fanout = Arc::clone(&services.sibling_fanout);
     let team_router = Arc::clone(&services.team_router);

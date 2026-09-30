@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::agent::HopCounter;
 use crate::config::paths::MAX_AGENT_NAME_LEN;
 use crate::hub::{
     Actor, AgentState, AgentSummary, CreateAgentRequest, DirectoryHandle, LifecycleError,
@@ -81,13 +82,19 @@ fn created_text(summary: &AgentSummary) -> String {
 /// Tool that creates a new teammate agent.
 pub struct AgentCreateTool {
     access: LifecycleAccess,
+    hop_counter: HopCounter,
 }
 
 impl AgentCreateTool {
-    /// Create the tool for the agent `access` names.
+    /// Create the tool for the agent `access` names. `hop_counter` is the
+    /// calling turn's, so the new agent's first message continues the
+    /// creator's message chain.
     #[must_use]
-    pub fn new(access: LifecycleAccess) -> Self {
-        Self { access }
+    pub fn new(access: LifecycleAccess, hop_counter: HopCounter) -> Self {
+        Self {
+            access,
+            hop_counter,
+        }
     }
 }
 
@@ -157,6 +164,7 @@ impl Tool for AgentCreateTool {
             models_from: Some(self.access.agent.clone()),
             providers_toml: None,
             a2a_visibility: Some(own.a2a_visibility),
+            creator_hop: self.hop_counter.outgoing(),
         };
         let by = Actor::Agent(self.access.agent.clone());
         // Its own task: cancelling this turn must not drop the creation

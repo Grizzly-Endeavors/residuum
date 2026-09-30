@@ -10,7 +10,7 @@ use crate::tools::agent_lifecycle::{AgentCreateTool, AgentDeleteTool};
 fn lifecycle_tools(hub: &Fixture, as_agent: &str) -> (AgentCreateTool, AgentDeleteTool) {
     let access = crate::tools::LifecycleAccess::new(hub.services.directory.clone(), as_agent);
     (
-        AgentCreateTool::new(access.clone()),
+        AgentCreateTool::new(access.clone(), crate::agent::HopCounter::new(0)),
         AgentDeleteTool::new(access),
     )
 }

@@ -141,7 +141,7 @@ pub(super) fn init_tool_registry(
         deps.hop_counter.clone(),
     );
 
-    tools.register_agent_lifecycle_tools(deps.lifecycle.clone());
+    tools.register_agent_lifecycle_tools(deps.lifecycle.clone(), deps.hop_counter.clone());
 
     tools.register_send_message_tool(
         deps.endpoint_registry.clone(),

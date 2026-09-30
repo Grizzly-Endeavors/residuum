@@ -1014,9 +1014,15 @@ impl AgentHost {
             self.start_locked(&slot).await
         };
         // The agent exists either way; a failed start is its `failed` state.
+        self.note_start_outcome(&slot, &started);
         if started.is_ok() {
-            self.hand_over_role(&slot, &by, request.description.as_deref())
-                .await;
+            self.hand_over_role(
+                &slot,
+                &by,
+                request.description.as_deref(),
+                request.creator_hop,
+            )
+            .await;
         }
         let summary = self.summary_of(&slot);
         self.tell_acting_agent(
@@ -1033,6 +1039,20 @@ impl AgentHost {
             by,
         });
         Ok(summary)
+    }
+
+    /// Log why a start that create or restore asked for did not happen. The
+    /// agent stays in the state the summary reports (`failed` with its error,
+    /// or `stopped` when the start was refused before it began).
+    fn note_start_outcome(&self, slot: &AgentSlot, started: &Result<(), LifecycleError>) {
+        if let Err(reason) = started {
+            tracing::info!(
+                agent = %slot.name,
+                state = %self.summary_of(slot).state,
+                reason = %reason,
+                "agent was not started"
+            );
+        }
     }
 
     /// Leave a user inbox item for the agent that created or deleted another,
@@ -1060,7 +1080,13 @@ impl AgentHost {
     /// Deliver a new agent's role description to its main conversation, from
     /// its creator. A delivery failure is logged and told to the user; the
     /// agent is still created and can be given its role by hand.
-    async fn hand_over_role(&self, slot: &AgentSlot, by: &Actor, description: Option<&str>) {
+    async fn hand_over_role(
+        &self,
+        slot: &AgentSlot,
+        by: &Actor,
+        description: Option<&str>,
+        hop_count: u32,
+    ) {
         let Some(description) = description.map(str::trim).filter(|text| !text.is_empty()) else {
             return;
         };
@@ -1074,7 +1100,7 @@ impl AgentHost {
         };
         let message = super::provision::first_message(description);
         if let Err(reason) = control
-            .deliver_to_main(by, message, self.hub_config().timezone)
+            .deliver_to_main(by, message, self.hub_config().timezone, hop_count)
             .await
         {
             tracing::warn!(agent = %slot.name, error = %reason, "couldn't deliver the new agent's role description");
@@ -1129,12 +1155,15 @@ impl AgentHost {
             id
         };
         self.spawn_team_embedding_refresh();
-        self.tell_acting_agent(
-            &by,
-            &format!("Deleted the agent {name}"),
+        // An agent deleting itself has no inbox left to write to.
+        if !matches!(&by, Actor::Agent(actor) if actor == name) {
+            self.tell_acting_agent(
+                &by,
+                &format!("Deleted the agent {name}"),
             &format!("You deleted the agent '{name}'. Its files were checkpointed first, so the user can restore it from the team view or with `residuum agent restore {name}`."),
-        )
-        .await;
+            )
+            .await;
+        }
         self.publish(HubEvent::AgentDeleted {
             name: name.to_string(),
             by,
@@ -1236,7 +1265,8 @@ impl AgentHost {
             let _op = slot.op_lock.lock().await;
             // The agent is restored either way; a failed start is its
             // `failed` state, which the user sees and can fix.
-            self.start_locked(&slot).await.ok();
+            let started = self.start_locked(&slot).await;
+            self.note_start_outcome(&slot, &started);
         }
         self.spawn_team_embedding_refresh();
         let summary = self.summary_of(&slot);

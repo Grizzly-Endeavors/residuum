@@ -525,9 +525,14 @@ impl ToolRegistry {
 
     /// Register `agent_create` and `agent_delete`, acting as the agent
     /// `lifecycle` names.
-    pub fn register_agent_lifecycle_tools(&mut self, lifecycle: super::LifecycleAccess) {
+    pub fn register_agent_lifecycle_tools(
+        &mut self,
+        lifecycle: super::LifecycleAccess,
+        hop_counter: HopCounter,
+    ) {
         self.register(Box::new(super::agent_lifecycle::AgentCreateTool::new(
             lifecycle.clone(),
+            hop_counter,
         )));
         self.register(Box::new(super::agent_lifecycle::AgentDeleteTool::new(
             lifecycle,
@@ -648,7 +653,7 @@ impl ToolRegistry {
             deps.workspace_dir.clone(),
             Arc::clone(&deps.path_policy),
         );
-        self.register_agent_lifecycle_tools(deps.lifecycle.clone());
+        self.register_agent_lifecycle_tools(deps.lifecycle.clone(), deps.hop_counter.clone());
     }
 
     /// A session's messaging tools.
