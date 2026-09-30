@@ -16,10 +16,10 @@ pub mod services;
 pub mod team;
 pub(crate) mod team_embedding;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 pub mod types;
 
-pub use directory::AgentDirectory;
+pub use directory::{AgentDirectory, DirectoryHandle};
 pub use host::AgentHost;
 pub use provision::{
     AgentSpec, copy_providers_from, deprovision_agent, first_message, provision_agent,

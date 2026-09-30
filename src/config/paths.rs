@@ -25,7 +25,7 @@ const RESERVED_NAMES: &[&str] = &[HUB_DIR_NAME, TEAM_DIR_NAME, "agents"];
 /// Longest accepted agent name, matching the relay's own slug validation
 /// (an agent's name is also its A2A path segment) — see
 /// `src/a2a/client/siblings.rs`'s `is_valid_sibling_slug`.
-const MAX_AGENT_NAME_LEN: usize = 24;
+pub(crate) const MAX_AGENT_NAME_LEN: usize = 24;
 
 /// The `~/.residuum` root: the only place this literal path is resolved.
 ///

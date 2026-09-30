@@ -15,14 +15,14 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::sync::{Arc, OnceLock, PoisonError, RwLock, Weak};
+use std::sync::{Arc, PoisonError, RwLock};
 
 use crate::background::messaging::{AgentMessenger, DeliveryOutcome, SendError};
 use crate::background::registry::{MAIN_ADDRESS, TEAMMATE_SENDER_CATEGORY, TEAMMATE_SENDER_PREFIX};
 use crate::bus::SessionAddress;
 use crate::config::paths::validate_agent_name;
 
-use super::directory::AgentDirectory;
+use super::directory::{AgentDirectory, DirectoryHandle};
 use super::types::{AgentState, AgentSummary, LifecycleError};
 
 /// Where a teammate message is going: an agent, and one of its sessions
@@ -172,25 +172,17 @@ pub struct TeamRouter {
     messengers: RwLock<BTreeMap<String, Arc<AgentMessenger>>>,
     /// The agent host, bound once it exists (it is built from the services
     /// that hold this router). Read for existence and state.
-    directory: OnceLock<Weak<dyn AgentDirectory>>,
+    directory: DirectoryHandle,
 }
 
 impl TeamRouter {
-    /// An empty router with no directory bound yet.
+    /// An empty router that checks names and states against `directory`.
     #[must_use]
-    pub fn new_shared() -> Arc<Self> {
+    pub fn new_shared(directory: DirectoryHandle) -> Arc<Self> {
         Arc::new(Self {
             messengers: RwLock::new(BTreeMap::new()),
-            directory: OnceLock::new(),
+            directory,
         })
-    }
-
-    /// Bind the agent directory the router checks names and states against.
-    /// Binding twice keeps the first.
-    pub fn bind_directory(&self, directory: Weak<dyn AgentDirectory>) {
-        if self.directory.set(directory).is_err() {
-            tracing::debug!("team router already has a directory bound; keeping the first");
-        }
     }
 
     /// Register a starting agent's messenger. A restarted agent replaces its
@@ -220,7 +212,7 @@ impl TeamRouter {
     }
 
     fn directory(&self) -> Option<Arc<dyn AgentDirectory>> {
-        self.directory.get().and_then(Weak::upgrade)
+        self.directory.get()
     }
 
     /// Every agent on the team, sorted by name. Empty until the directory is
@@ -353,7 +345,7 @@ impl TeamLink {
     /// A link to a team of one: no directory, no teammates.
     #[must_use]
     pub fn alone(me: impl Into<String>) -> Self {
-        Self::new(me, TeamRouter::new_shared())
+        Self::new(me, TeamRouter::new_shared(DirectoryHandle::unbound()))
     }
 
     /// The agent's own name.

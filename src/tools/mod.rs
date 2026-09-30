@@ -3,6 +3,7 @@
 pub(crate) mod a2a_task_update;
 pub mod actions;
 mod agent_keys;
+pub mod agent_lifecycle;
 pub mod background;
 pub mod config_reload_tracker;
 mod edit;
@@ -29,6 +30,7 @@ pub(crate) mod web_fetch;
 pub mod workspace_checkpoints;
 mod write;
 
+pub use agent_lifecycle::LifecycleAccess;
 pub use config_reload_tracker::{ConfigWriteWatch, SharedConfigReloadTracker};
 pub use file_tracker::{FileTracker, SharedFileTracker};
 pub use path_policy::{PathPolicy, SharedPathPolicy};

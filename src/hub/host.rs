@@ -284,9 +284,11 @@ impl AgentHost {
     pub(crate) fn new(services: HubServices, hub_cfg: HubConfig) -> Arc<Self> {
         let (events, _first_subscriber) = broadcast::channel(HUB_EVENT_CAPACITY);
         Arc::new_cyclic(|me| {
-            // The team router checks names and states against this host.
-            let directory: Weak<dyn AgentDirectory> = Weak::<Self>::clone(me);
-            services.team_router.bind_directory(directory);
+            // Agent tools and the team router reach this host through the
+            // directory handle in the shared services.
+            services
+                .directory
+                .bind(Weak::clone(me) as Weak<dyn AgentDirectory>);
             Self {
                 me: Weak::clone(me),
                 services,
@@ -937,6 +939,9 @@ impl AgentHost {
             return Ok(());
         };
         stop_requested.store(true, Ordering::SeqCst);
+        // From the stop request on, no teammate message reaches the agent;
+        // its event loop only unregisters once it sees the request.
+        self.services.team_router.unregister(&slot.name);
         // A closed channel means the event loop is already gone.
         stop_tx.send(()).await.ok();
         if tokio::time::timeout(STOP_TIMEOUT, done.wait_for(|finished| *finished))
@@ -1376,7 +1381,20 @@ impl AgentDirectory for AgentHost {
     }
 
     async fn delete(&self, name: &str, by: Actor) -> Result<DeleteOutcome, LifecycleError> {
-        self.delete_agent(name, by).await
+        let result = self.delete_agent(name, by.clone()).await;
+        // An agent deleting itself is stopped by its own delete, so nothing is
+        // left to hear the error; the user has to.
+        if let (Err(e), Actor::Agent(actor)) = (&result, &by)
+            && actor == name
+        {
+            tracing::error!(agent = %name, error = %e, "an agent's request to delete itself failed");
+            self.notice(
+                NoticeLevel::Warn,
+                format!("{name} asked to be deleted, but that failed: {e}. It has been stopped; check its state in the team view."),
+                Some(name.to_string()),
+            );
+        }
+        result
     }
 
     async fn start(&self, name: &str) -> Result<AgentSummary, LifecycleError> {

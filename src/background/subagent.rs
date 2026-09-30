@@ -263,16 +263,15 @@ pub async fn build_subagent_resources(
         a2a_hub,
         a2a_tracker,
         checkpoints,
+        lifecycle,
     } = config;
 
     let (skill_state, skills_index) =
         prepare_session_skill_state(main_skill_state, skill.as_deref()).await?;
 
-    // Fresh file tracker (tracks reads within this sub-agent turn only)
-    let tracker = FileTracker::new_shared();
-
-    let tools = ToolRegistry::build_subagent_registry(SubagentToolDeps {
-        tracker,
+    let tools = ToolRegistry::build_subagent_registry(&SubagentToolDeps {
+        // Fresh file tracker (tracks reads within this sub-agent turn only)
+        tracker: FileTracker::new_shared(),
         path_policy,
         tools_path,
         agent_keys,
@@ -307,6 +306,7 @@ pub async fn build_subagent_resources(
         a2a_hub,
         a2a_tracker,
         checkpoints,
+        lifecycle,
     });
 
     Ok(SubAgentResources {

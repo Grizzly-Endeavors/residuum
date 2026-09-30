@@ -139,6 +139,9 @@ pub(crate) struct HubServices {
     /// Carries `agent:` messages between the running agents. Each agent
     /// registers its messenger at start and unregisters at stop.
     pub team_router: Arc<super::team::TeamRouter>,
+    /// The agent host, for agent tools that create or delete teammates. The
+    /// host binds itself when it is built.
+    pub directory: super::directory::DirectoryHandle,
 }
 
 impl HubServices {
@@ -178,6 +181,7 @@ impl HubServices {
                 ))
             })?;
         let team_feed = Arc::new(TeamChangeFeed::start(team_paths.root().to_path_buf()).await);
+        let directory = super::directory::DirectoryHandle::unbound();
         let sibling_fanout = crate::a2a::SiblingFanout::new_shared();
         crate::a2a::spawn_sibling_discovery(Arc::clone(&sibling_fanout), tunnel_status_rx.clone());
         Ok(Self {
@@ -196,7 +200,8 @@ impl HubServices {
             workbench_serving,
             team_feed,
             sibling_fanout,
-            team_router: super::team::TeamRouter::new_shared(),
+            team_router: super::team::TeamRouter::new_shared(directory.clone()),
+            directory,
         })
     }
 

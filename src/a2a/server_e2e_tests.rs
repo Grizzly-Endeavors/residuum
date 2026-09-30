@@ -623,7 +623,7 @@ fn spawn_mini_background_listener(bus_handle: BusHandle, deps: MiniListenerDeps)
 fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> SubAgentResources {
     let (layout, observer, merge_writer) = test_memory_extras();
     let hop_counter = HopCounter::new(event.hop_count);
-    let tools = ToolRegistry::build_subagent_registry(SubagentToolDeps {
+    let tools = ToolRegistry::build_subagent_registry(&SubagentToolDeps {
         tracker: crate::tools::FileTracker::new_shared(),
         path_policy: Arc::clone(&deps.path_policy),
         tools_path: Arc::clone(&deps.tools_path),
@@ -661,6 +661,10 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
         a2a_hub: Arc::clone(&deps.a2a_hub),
         a2a_tracker: Arc::clone(&deps.a2a_tracker),
         checkpoints: Arc::clone(&deps.checkpoints),
+        lifecycle: crate::tools::LifecycleAccess::new(
+            crate::hub::DirectoryHandle::unbound(),
+            "test",
+        ),
     });
 
     SubAgentResources {

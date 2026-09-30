@@ -2090,3 +2090,36 @@ async fn the_team_block_lists_teammates_and_follows_their_state() {
         "the next turn shows the state change"
     );
 }
+
+mod lifecycle_tools;
+
+#[tokio::test]
+async fn the_team_router_never_reaches_a_stopped_or_deleted_teammate() {
+    use crate::hub::team::{TeamLink, TeamSendError, parse_team_address};
+
+    let hub = Fixture::new(&["alpha", "beta"], "").await;
+    start_all(&hub, &["alpha", "beta"]).await;
+    let link = TeamLink::new("alpha", Arc::clone(&hub.services.team_router));
+    let target = parse_team_address("agent:beta").unwrap().unwrap();
+    let main =
+        crate::bus::SessionAddress::from(crate::background::registry::MAIN_ADDRESS.to_string());
+
+    hub.host.stop("beta").await.unwrap();
+    let stopped = link
+        .send(&main, &target, "are you there".to_string(), 0)
+        .await;
+    assert!(
+        matches!(stopped, Err(TeamSendError::NotRunning { .. })),
+        "a stopped teammate is refused"
+    );
+
+    hub.host.delete("beta", Actor::User).await.unwrap();
+    let deleted = link
+        .send(&main, &target, "are you there".to_string(), 0)
+        .await;
+    assert!(
+        matches!(deleted, Err(TeamSendError::UnknownAgent { .. })),
+        "a deleted teammate is unknown"
+    );
+    assert!(link.teammates().is_empty(), "the roster drops it");
+}

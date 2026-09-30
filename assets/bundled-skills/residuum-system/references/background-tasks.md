@@ -86,6 +86,8 @@ Discord/Telegram/Teams also show a typing indicator while the session's own turn
 | `subagent_spawn` | `task`, `skill`, `model` | Fork a session. Returns its address immediately. Each turn's result relays to its direct spawner via the agent-messaging path, tagged with the address. |
 | `list_agents` | *(none)* | List main plus every live session, with category, state, depth, spawner, elapsed time, tool calls executed, and purpose. Also lists every teammate (`agent:<name>`) with state and role line, your own entry marked, and every remote agent from `config/a2a.json`, with status and your open tasks with each. |
 | `stop_agent` | `address` | Stop a live session by address, or cancel your open task with `a2a:<name>`. |
+| `agent_create` | `name`, `description` | Create a teammate: a durable agent with its own workspace and memory, started at once. It copies your model settings and A2A visibility, and `description` becomes its first message, which it turns into its own SOUL.md notes and role page. Reach it at `agent:<name>`. For a one-off task use `subagent_spawn`. |
+| `agent_delete` | `name` | Delete a teammate after checkpointing it; the result gives the checkpoint id, and the user can restore it from checkpoints. Deleting yourself stops your turn as soon as the call returns, so call it last. |
 
 ### `subagent_spawn` Details
 

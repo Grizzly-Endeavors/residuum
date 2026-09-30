@@ -867,6 +867,77 @@ Routed through `crate::a2a::client`'s `A2aClientHub` (resolves the agent's card 
 
 ---
 
+## `agent_create`
+
+**Source:** `agent_lifecycle.rs` · `AgentCreateTool`
+
+**Description sent to LLM:**
+> Create a new teammate: a long-lived agent with its own workspace, memory, and conversation. Use it when the work needs a durable specialist (a researcher, an inbox triager) that keeps its own notes and improves over time. For a one-off task whose result you need now, use subagent_spawn instead.
+>
+> It inherits your model settings and A2A visibility. Write a `description`: it is delivered as the teammate's first message and becomes its SOUL.md notes and team role page. State its purpose, how it should work, and what to hand it. Message the teammate afterwards at agent:<name>.
+>
+> Names are 1-24 characters of lowercase letters, digits, and hyphens, with no leading or trailing hyphen.
+
+### Input
+
+| Parameter     | Type   | Required | Description |
+|---------------|--------|----------|-------------|
+| `name`        | string | yes      | The new agent's name, for example `research-desk`. |
+| `description` | string | no       | What the agent is for and how it should work. Becomes its own SOUL.md notes and role page. |
+
+### Output
+
+- Created and started: `"Created agent '{name}' (running). Reach it with message_agent at agent:{name}."`
+- Created but it failed to start: `"Created agent '{name}', but it failed to start: {reason}"` followed by a line saying it exists on disk, received no first message, and can be fixed and started from the user's team view (`is_error = false`: the agent exists, so a retry would hit "already exists").
+- Invalid name, name taken, or any other refusal (`is_error = true`): `"can't create the agent: ..."` with the reason. An invalid name adds the naming rules; a taken name suggests messaging the existing agent.
+- The hub is shutting down (`is_error = true`): says agents can't be created right now.
+
+### Errors
+
+- Missing `name` → `InvalidArguments`
+
+### Side effects
+
+Calls `AgentDirectory::create` as `Actor::Agent(<caller>)` with `models_from` set to the caller and the caller's A2A visibility. The hub copies the caller's `providers.toml`, starts the agent, delivers the description as its first message when one was given, publishes `agent_created` naming the caller (a toast for the user), and files an item in the caller's user inbox. The creation runs on its own task, so cancelling the calling turn does not stop it half-way. See `docs/systems-usage/agent-lifecycle.md`.
+
+**Available to sessions:** registered in both the main agent's registry and `build_subagent_registry()`; a session acts as the agent it belongs to.
+
+---
+
+## `agent_delete`
+
+**Source:** `agent_lifecycle.rs` · `AgentDeleteTool`
+
+**Description sent to LLM:**
+> Stop a teammate and remove its directory, role page, and roster entry. Its files are checkpointed first; the result gives the checkpoint id, and the user can restore the teammate from checkpoints.
+>
+> You can delete yourself. That stops your turn the moment this call returns, so send your messages and save your files first, and call it last.
+
+### Input
+
+| Parameter | Type   | Required | Description |
+|-----------|--------|----------|-------------|
+| `name`    | string | yes      | The name of the agent to delete. |
+
+### Output
+
+- Deleted: `"Deleted agent '{name}'. Its files were checkpointed as {id}; the user can restore it from checkpoints."` When no checkpoint could be recorded the second sentence says it can't be restored.
+- Unknown agent or failure (`is_error = true`): `"can't delete the agent: ..."` with the reason.
+- Deleting yourself: `"Deleting yourself now. You are stopped as soon as this call returns; ..."`. The checkpoint id is not available yet.
+- The hub is shutting down (`is_error = true`): says agents can't be deleted right now.
+
+### Errors
+
+- Missing `name` → `InvalidArguments`
+
+### Side effects
+
+Calls `AgentDirectory::delete` as `Actor::Agent(<caller>)`: the agent is stopped, checkpointed, and removed, `agent_deleted` naming the caller is published (a toast), and an item is filed in the caller's user inbox. Deleting another agent runs on its own task, so cancelling the calling turn does not stop it half-way. Deleting yourself stops the turn running the call, so the delete runs on a detached task and the tool returns at once; if it fails, the hub publishes a warning notice naming the agent and the agent is left stopped.
+
+**Available to sessions:** registered in both registries, as for `agent_create`.
+
+---
+
 ## `web_fetch`
 
 **Source:** `web_fetch.rs` · `WebFetchTool`
