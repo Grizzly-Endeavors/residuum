@@ -224,8 +224,22 @@ async fn each_agent_serves_its_own_routes_with_separate_memory_and_sessions() {
     assert_eq!(hub.chat("atlas", "hello atlas").await, "atlas here");
 
     // Memory is per agent: each history holds only its own conversation.
-    let (_, scout_history) = hub.get("/api/agents/scout/api/chat/history").await;
-    let (_, atlas_history) = hub.get("/api/agents/atlas/api/chat/history").await;
+    // The reply is published before the turn is persisted, so wait for each
+    // conversation to reach its history.
+    let history_with = |name: &'static str, needle: &'static str| {
+        let hub = &hub;
+        async move {
+            eventually("the conversation to reach history", || async {
+                let (_, history) = hub
+                    .get(&format!("/api/agents/{name}/api/chat/history"))
+                    .await;
+                history.contains(needle).then_some(history)
+            })
+            .await
+        }
+    };
+    let scout_history = history_with("scout", "hello scout").await;
+    let atlas_history = history_with("atlas", "hello atlas").await;
     assert!(scout_history.contains("hello scout"), "{scout_history}");
     assert!(!scout_history.contains("hello atlas"), "{scout_history}");
     assert!(atlas_history.contains("hello atlas"), "{atlas_history}");
@@ -1156,29 +1170,21 @@ fn last_chat_message(request: &wiremock::Request) -> (String, String) {
     (text("role"), text("content"))
 }
 
-/// How long a scripted model takes to decide on a tool call. A message that
-/// reaches a main agent during the last model call of its turn is not acted
-/// on until its next turn, so scripted agents pause before replying to let
-/// the sender's turn finish first.
-const SCRIPTED_TOOL_CALL_DELAY: Duration = Duration::from_millis(300);
-
 /// A model reply that calls `tool` with `arguments`.
 fn tool_call_reply(tool: &str, arguments: &Value) -> ResponseTemplate {
     static NEXT_CALL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let id = NEXT_CALL.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    ResponseTemplate::new(200)
-        .set_delay(SCRIPTED_TOOL_CALL_DELAY)
-        .set_body_json(json!({
-            "choices": [{ "message": {
-                "role": "assistant",
-                "content": null,
-                "tool_calls": [{
-                    "id": format!("call_{id}"),
-                    "type": "function",
-                    "function": { "name": tool, "arguments": arguments.to_string() }
-                }]
-            } }]
-        }))
+    ResponseTemplate::new(200).set_body_json(json!({
+        "choices": [{ "message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": format!("call_{id}"),
+                "type": "function",
+                "function": { "name": tool, "arguments": arguments.to_string() }
+            }]
+        } }]
+    }))
 }
 
 /// Script the model behind `server`: `script` sees the role and content of
@@ -1281,6 +1287,66 @@ async fn a_teammate_message_is_attributed_and_the_reply_finds_its_way_back() {
     assert!(
         model_was_told(hub.mock("alpha"), "[Message from teammate agent:beta,").await,
         "alpha sees beta's reply attributed to beta"
+    );
+}
+
+#[tokio::test]
+async fn a_message_sent_during_the_final_model_call_gets_its_own_reply() {
+    let hub = Fixture::new(&["alpha"], "").await;
+    // A slow model, so the second message lands while the first turn's only
+    // (and therefore last) model call is still running.
+    hub.mock("alpha").reset().await;
+    mount_reply(hub.mock("alpha"), "alpha here", Duration::from_millis(600)).await;
+    start_all(&hub, &["alpha"]).await;
+
+    let (mut ws, _) =
+        tokio_tungstenite::connect_async(format!("ws://{}/api/agents/alpha/ws", hub.addr))
+            .await
+            .unwrap();
+    ws.send(WsMessage::text(
+        json!({ "type": "send_message", "id": "m1", "content": "first-question" }).to_string(),
+    ))
+    .await
+    .unwrap();
+    eventually("alpha's model call to start", || async {
+        model_was_told(hub.mock("alpha"), "first-question")
+            .await
+            .then_some(())
+    })
+    .await;
+    ws.send(WsMessage::text(
+        json!({ "type": "send_message", "id": "m2", "content": "second-question" }).to_string(),
+    ))
+    .await
+    .unwrap();
+
+    let replies = tokio::time::timeout(POLL_TIMEOUT, async {
+        let mut replies = 0;
+        while replies < 2 {
+            let Some(frame) = ws.next().await else {
+                panic!("the WebSocket closed before both messages were answered");
+            };
+            let WsMessage::Text(raw) = frame.unwrap() else {
+                continue;
+            };
+            let value: Value = serde_json::from_str(&raw).unwrap();
+            if value.get("type") == Some(&json!("response")) {
+                replies += 1;
+            }
+        }
+        replies
+    })
+    .await
+    .expect("both messages are answered");
+
+    assert_eq!(replies, 2);
+    let requests = hub.mock("alpha").received_requests().await.unwrap();
+    let answered_second = requests
+        .iter()
+        .any(|request| last_chat_message(request).1.contains("second-question"));
+    assert!(
+        answered_second,
+        "the second message reached the model as the newest message of a turn of its own"
     );
 }
 

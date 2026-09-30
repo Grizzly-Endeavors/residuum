@@ -377,13 +377,18 @@ impl Agent {
         self.last_user_message_at = Some(now);
 
         let sender = origin.and_then(|o| o.sender.clone());
-        if images.is_empty() {
-            self.recent_messages
-                .push(Message::user(user_input).with_sender(sender));
+        // A teammate's or session's message can start a turn (it may arrive
+        // when no turn is running, or after the last checkpoint of one), so
+        // the kickoff carries the structured sender the way a message
+        // injected mid-turn does.
+        let agent_sender = origin.and_then(|o| o.agent_sender.as_deref().cloned());
+        let kickoff = if images.is_empty() {
+            Message::user(user_input)
         } else {
-            self.recent_messages
-                .push(Message::user_with_images(user_input, images.to_vec()).with_sender(sender));
-        }
+            Message::user_with_images(user_input, images.to_vec())
+        };
+        self.recent_messages
+            .push(kickoff.with_sender(sender).with_agent_sender(agent_sender));
 
         let memory_ctx =
             Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());

@@ -183,6 +183,29 @@ impl AgentMessenger {
             .unwrap_or(0)
     }
 
+    /// Record `hop_count` for a message main is about to receive again under
+    /// `message_id`, so the next [`Self::take_main_hop`] for it returns the
+    /// hop count it originally carried. A zero hop count records nothing:
+    /// `take_main_hop` already answers `0` for an id it has no entry for.
+    pub(crate) fn restore_main_hop(&self, message_id: &str, hop_count: u32) {
+        if hop_count == 0 {
+            return;
+        }
+        self.pending_main_hops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(message_id.to_string(), hop_count);
+    }
+
+    /// Discard the hop count recorded for `message_id`, for a message that
+    /// will not be looked up as a turn's kickoff.
+    pub(crate) fn forget_main_hop(&self, message_id: &str) {
+        self.pending_main_hops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(message_id);
+    }
+
     /// Send `content` from `from` (identified by address and category) to
     /// `to`, carrying `hop_count`. `to` may be `"main"`, a live session's
     /// address, or a completed (or completing) session's address.

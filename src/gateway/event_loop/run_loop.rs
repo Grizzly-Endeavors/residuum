@@ -741,6 +741,7 @@ async fn build_runtime(
             post_turn_result_tx,
         ),
         post_turn_result_rx,
+        deferred_inbound: std::collections::VecDeque::new(),
         hybrid_searcher: parts.hybrid_searcher,
         session_runtime: parts.session_runtime,
         session_registry: parts.session_registry,
@@ -1013,6 +1014,10 @@ async fn graceful_shutdown(rt: &mut AgentRuntime) {
     // First, so a stopping agent takes no more teammate messages while its
     // sessions wind down.
     rt.services.team_router.unregister(&rt.name);
+    // Messages still waiting for their turn get none now; keep them in
+    // history so they are not lost.
+    let undelivered: Vec<_> = rt.deferred_inbound.drain(..).collect();
+    super::turns::inject_undelivered_messages(&mut rt.agent, &rt.agent_messenger, undelivered);
     // Before sessions: a post-turn cycle may itself be about to publish a
     // notice or spawn a learner, which still needs the bus infrastructure
     // (aborted further down) alive to land.
@@ -1333,6 +1338,22 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
     tracing::info!("agent ready, entering main loop");
 
     loop {
+        // Messages that arrived after the last turn's final checkpoint run
+        // first: their senders are waiting on a reply, and anything queued
+        // on the bus arrived after them.
+        if let Some(message) = rt.deferred_inbound.pop_front() {
+            if let Some(exit) = apply_bus_event(
+                Ok(Some(message)),
+                &mut rt,
+                &mut observe_deadline,
+                &mut idle_deadline,
+            )
+            .await
+            {
+                return exit;
+            }
+            continue;
+        }
         tokio::select! {
             _ = rt.agent_stop_rx.recv() => {
                 tracing::info!("stop requested, shutting down");
