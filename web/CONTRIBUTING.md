@@ -17,6 +17,8 @@ npm run dev:mock
 
 Open [http://localhost:5173](http://localhost:5173) in your browser. That's it — no backend required.
 
+With [`just`](https://github.com/casey/just), `just web-mock` from the repo root does the same (installing dependencies first if they are missing or out of date), and `just web-mock-setup` starts in setup wizard mode. Extra arguments go to Vite: `just web-mock --port 5199`.
+
 ## Mock Mode
 
 `npm run dev:mock` starts the Vite dev server with a built-in mock server that fakes all API endpoints and WebSocket connections. You'll see this in the terminal:
