@@ -60,16 +60,19 @@ impl TeamChangeFeed {
         if let Err(e) = tokio::fs::create_dir_all(&team_root).await {
             tracing::warn!(error = %e, path = %team_root.display(), "failed to create the team directory; changes to team files may not appear live");
         }
-        // The broker serves clients of every agent, so its own log lines belong
-        // to the hub's team feed, not to whichever agent subscribed.
-        let bus = tracing::info_span!("team_feed").in_scope(crate::bus::spawn_broker);
+        // The feed serves every agent, so the log lines of its broker and
+        // watcher belong to the hub's team feed, not to any one agent.
+        let span = tracing::info_span!("team_feed");
+        let bus = span.in_scope(crate::bus::spawn_broker);
         let (health_tx, health) = watch::channel(WatchHealth::Starting);
-        let task = crate::workspace::watch::spawn_change_feed(
-            team_root,
-            Some(crate::workspace::team_files::TEAM_PREFIX),
-            bus.publisher(),
-            health_tx,
-        );
+        let task = span.in_scope(|| {
+            crate::workspace::watch::spawn_change_feed(
+                team_root,
+                Some(crate::workspace::team_files::TEAM_PREFIX),
+                bus.publisher(),
+                health_tx,
+            )
+        });
         Self { bus, health, task }
     }
 

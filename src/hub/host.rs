@@ -340,6 +340,18 @@ impl AgentHost {
         }
     }
 
+    /// How many config reloads the running agent `name` has finished, or
+    /// `None` when it isn't running.
+    #[cfg(test)]
+    pub(crate) fn reloads_finished(&self, name: &str) -> Option<u64> {
+        let slot = self.slot(name).ok()?;
+        let state = slot.lock();
+        state
+            .running
+            .as_ref()
+            .map(|running| *running.control.reload_done.borrow())
+    }
+
     /// The live subagent sessions of every running agent.
     #[must_use]
     pub fn active_subagents(&self) -> Vec<crate::tracing_service::Subagent> {

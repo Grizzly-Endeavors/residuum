@@ -1137,3 +1137,86 @@ async fn an_agent_with_a_broken_config_fails_alone_with_a_plain_message() {
     assert!(message.contains("scout couldn't start"), "{message}");
     assert!(message.contains("start it again"), "{message}");
 }
+
+/// Read frames from `ws` until one of type `frame_type` satisfies `matches`.
+async fn frame_where(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    frame_type: &str,
+    matches: impl Fn(&Value) -> bool,
+) -> Value {
+    tokio::time::timeout(POLL_TIMEOUT, async {
+        while let Some(frame) = ws.next().await {
+            let WsMessage::Text(raw) = frame.unwrap() else {
+                continue;
+            };
+            let value: Value = serde_json::from_str(&raw).unwrap();
+            if value.get("type") == Some(&json!(frame_type)) && matches(&value) {
+                return value;
+            }
+        }
+        panic!("the WebSocket closed before a {frame_type} frame arrived");
+    })
+    .await
+    .unwrap_or_else(|_| panic!("no {frame_type} frame arrived within the timeout"))
+}
+
+#[tokio::test]
+async fn the_hub_websocket_carries_an_agents_activity_as_it_chats() {
+    let hub = Fixture::new(&["atlas", "scout"], "").await;
+    hub.host.start_autostart().await;
+    let (mut hub_ws, _) = tokio_tungstenite::connect_async(format!("ws://{}/api/hub/ws", hub.addr))
+        .await
+        .unwrap();
+    let snapshot = frame_where(&mut hub_ws, "agents_snapshot", |_| true).await;
+    assert_eq!(array_at(&snapshot, "agents").len(), 2);
+
+    hub.chat("scout", "hello").await;
+
+    let busy = frame_where(&mut hub_ws, "agent_activity", |frame| {
+        str_at(frame, "name") == "scout" && frame.get("busy") == Some(&json!(true))
+    })
+    .await;
+    assert_eq!(str_at(&busy, "name"), "scout");
+}
+
+#[tokio::test]
+async fn one_team_change_feed_serves_every_agent_and_the_artifact_reload_watcher() {
+    let hub = Fixture::new(&["atlas", "scout"], "").await;
+    hub.host.start_autostart().await;
+    let team = hub.root.path().join("team");
+    std::fs::create_dir_all(team.join("wiki")).unwrap();
+    std::fs::create_dir_all(team.join("workbench")).unwrap();
+
+    let mut sockets = Vec::new();
+    for name in ["atlas", "scout"] {
+        let (mut ws, _) =
+            tokio_tungstenite::connect_async(format!("ws://{}/api/agents/{name}/ws", hub.addr))
+                .await
+                .unwrap();
+        ws.send(WsMessage::text(
+            json!({ "type": "watch_workspace", "prefixes": ["team/wiki"] }).to_string(),
+        ))
+        .await
+        .unwrap();
+        sockets.push(ws);
+    }
+    // The feed is already running; give the watches a moment to settle.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    std::fs::write(team.join("wiki").join("note.md"), "a note").unwrap();
+    std::fs::write(team.join("workbench").join("chart.html"), "<p>chart</p>").unwrap();
+
+    for ws in &mut sockets {
+        let changed = frame_where(ws, "workspace_changed", |frame| {
+            array_at(frame, "changes")
+                .iter()
+                .any(|change| str_at(change, "path") == "team/wiki/note.md")
+        })
+        .await;
+        assert_eq!(array_at(&changed, "changes").len(), 1, "{changed}");
+        let artifact = frame_where(ws, "artifact_updated", |_| true).await;
+        assert_eq!(str_at(&artifact, "name"), "chart");
+    }
+}

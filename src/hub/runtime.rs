@@ -792,13 +792,19 @@ mod tests {
         gateway_port: u16,
         a2a_port: u16,
         events: tokio::sync::broadcast::Receiver<HubEvent>,
+        host: Arc<AgentHost>,
         exit: JoinHandle<GatewayExit>,
         http: reqwest::Client,
-        _model: MockServer,
+        model: MockServer,
     }
 
     impl RunningHub {
         async fn start() -> Self {
+            Self::start_with(&["atlas", "scout"]).await
+        }
+
+        /// A hub over the agents `names`, which may be none.
+        async fn start_with(names: &[&str]) -> Self {
             let root = tempfile::tempdir().unwrap();
             let (gateway_port, a2a_port) = (free_port().await, free_port().await);
             let hub_dir = root.path().join("hub");
@@ -812,7 +818,7 @@ mod tests {
             .unwrap();
             let model = MockServer::start().await;
             mount_reply(&model, "hello", Duration::ZERO).await;
-            for name in ["atlas", "scout"] {
+            for name in names {
                 write_agent(root.path(), name, &model.uri());
             }
             let runtime =
@@ -820,14 +826,16 @@ mod tests {
                     .await
                     .unwrap();
             let events = runtime.host.subscribe();
+            let host = Arc::clone(&runtime.host);
             Self {
                 root,
                 gateway_port,
                 a2a_port,
                 events,
+                host,
                 exit: crate::util::spawn_in_span(runtime.run(false)),
                 http: reqwest::Client::new(),
-                _model: model,
+                model,
             }
         }
 
@@ -961,6 +969,113 @@ mod tests {
         assert!(notice.starts_with("hub config reload failed"), "{notice}");
         hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", Some(200))
             .await;
+        hub.shut_down().await;
+    }
+
+    /// The body onboarding posts to create the first agent `name`, talking to
+    /// the hub's mock model.
+    fn setup_body(hub: &RunningHub, name: &str) -> serde_json::Value {
+        serde_json::json!({
+            "hub_config": format!(
+                "timezone = \"UTC\"\n[gateway]\nport = {}\n[a2a]\nport = {}\n",
+                hub.gateway_port, hub.a2a_port
+            ),
+            "agent_name": name,
+            "user_name": "Sam",
+            "config": "",
+            "providers": format!(
+                "[providers]\nmock = {{ type = \"openai\", api_key = \"test-key\", url = \"{}\" }}\n\n[models]\nmain = \"mock/test-model\"\n",
+                hub.model.uri()
+            ),
+        })
+    }
+
+    #[tokio::test]
+    async fn onboarding_a_hub_without_agents_starts_the_first_agent_without_a_restart() {
+        let hub = RunningHub::start_with(&[]).await;
+        hub.eventually_status(hub.gateway_port, "/api/hub/agents", Some(200))
+            .await;
+        assert_eq!(
+            hub.status_of(hub.gateway_port, "/api/agents/scout/status")
+                .await,
+            Some(404),
+            "no agent exists before onboarding"
+        );
+        let complete_setup = format!(
+            "http://127.0.0.1:{}/api/hub/config/complete-setup",
+            hub.gateway_port
+        );
+
+        let response = hub
+            .http
+            .post(&complete_setup)
+            .json(&setup_body(&hub, "scout"))
+            .send()
+            .await
+            .unwrap();
+
+        assert!(response.status().is_success(), "{response:?}");
+        hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", Some(200))
+            .await;
+        hub.eventually_status(
+            hub.a2a_port,
+            "/agents/scout/.well-known/agent-card.json",
+            Some(200),
+        )
+        .await;
+        let again = hub
+            .http
+            .post(&complete_setup)
+            .json(&setup_body(&hub, "atlas"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            again.status().as_u16(),
+            409,
+            "onboarding only creates the first agent"
+        );
+        hub.shut_down().await;
+    }
+
+    #[tokio::test]
+    async fn editing_a_team_identity_file_reloads_every_running_agent() {
+        let hub = RunningHub::start().await;
+        for name in ["atlas", "scout"] {
+            hub.eventually_status(
+                hub.gateway_port,
+                &format!("/api/agents/{name}/status"),
+                Some(200),
+            )
+            .await;
+        }
+        let reloads_before =
+            ["atlas", "scout"].map(|name| hub.host.reloads_finished(name).unwrap());
+
+        let response = hub
+            .http
+            .put(format!(
+                "http://127.0.0.1:{}/api/team/workspace/file",
+                hub.gateway_port
+            ))
+            .json(
+                &serde_json::json!({ "path": "USER.md", "content": "Sam prefers short replies." }),
+            )
+            .send()
+            .await
+            .unwrap();
+
+        assert!(response.status().is_success(), "{response:?}");
+        for (name, before) in ["atlas", "scout"].into_iter().zip(reloads_before) {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+            while hub.host.reloads_finished(name).unwrap() <= before {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "{name} never reloaded after the team USER.md changed"
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
         hub.shut_down().await;
     }
 
