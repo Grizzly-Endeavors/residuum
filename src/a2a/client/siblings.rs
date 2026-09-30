@@ -1,13 +1,16 @@
 //! Sibling discovery: on every tunnel (re)connect, and every
 //! [`REFRESH_INTERVAL`] while it stays connected, fetch the relay's per-user
-//! A2A directory (`GET {origin}/a2a/agents`) and register every *other*
-//! instance of the same user as a `Sibling`-sourced agent in every hosted
-//! agent's [`A2aClientHub`], per `docs/systems-usage/a2a.md`.
+//! A2A directory (`GET {origin}/a2a/agents`) and register every agent of every
+//! *other* instance of the same user as a `Sibling`-sourced agent in every
+//! hosted agent's [`A2aClientHub`], per `docs/systems-usage/a2a.md`. A
+//! sibling is named `<instance>/<agent>` and lives at
+//! `{origin}/a2a/{instance}/{agent}`.
 //!
 //! Discovery runs once per hub process. [`SiblingFanout`] is the registry of
 //! the per-agent client hubs it fans each result out to. The hub's own
 //! agents are teammates, reachable directly, so they never appear as
-//! siblings: the process's own instance is filtered out of every result.
+//! siblings: every entry of the process's own instance is filtered out of
+//! every result.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -31,7 +34,8 @@ const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(300);
 /// How long a single directory fetch may take before it's treated as a
 /// failure.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
-/// Longest accepted sibling slug, matching the relay's own slug validation.
+/// Longest accepted instance or agent slug, matching the relay's own slug
+/// validation.
 const MAX_SLUG_LEN: usize = 24;
 
 /// The loop's timing knobs, split out of the constants above so tests can
@@ -56,13 +60,15 @@ impl Default for DiscoveryTimings {
     }
 }
 
-/// One entry in the relay's `GET {origin}/a2a/agents` response. Only `slug`
-/// is used; the other fields the relay sends (`display_name`, `card_url`,
-/// `online`) aren't needed to register a sibling and are ignored by serde's
-/// default "extra fields are fine" behavior.
+/// One entry in the relay's `GET {origin}/a2a/agents` response: one agent of
+/// one instance. Only `instance` and `agent` are used; the other fields the
+/// relay sends (`slug`, `display_name`, `card_url`, `online`) aren't needed to
+/// register a sibling and are ignored by serde's default "extra fields are
+/// fine" behavior.
 #[derive(Debug, Deserialize)]
 struct DirectoryEntry {
-    slug: String,
+    instance: String,
+    agent: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -101,8 +107,9 @@ fn connection_from(status: &TunnelStatus) -> Option<Connection> {
 
 /// A slug shaped like the relay's own `validate_slug`: 1–24 lowercase
 /// letters, digits, and hyphens, never leading or trailing with a hyphen.
-/// Guards against registering a malformed name from a buggy or compromised
-/// relay as an `a2a:<name>` address the model would see.
+/// Applied to both halves of an `<instance>/<agent>` name. Guards against
+/// registering a malformed name from a buggy or compromised relay as an
+/// `a2a:<instance>/<agent>` address the model would see.
 fn is_valid_sibling_slug(slug: &str) -> bool {
     !slug.is_empty()
         && slug.len() <= MAX_SLUG_LEN
@@ -249,7 +256,7 @@ async fn run(
 
 /// One fetch-and-register pass: `GET {origin}/a2a/agents` with the sibling
 /// bearer token, then replace every registered hub's sibling set with every
-/// entry except this instance's own slug (this hub's agents are teammates).
+/// agent except those of this instance (this hub's agents are teammates).
 async fn discover_once(
     client: &reqwest::Client,
     fanout: &SiblingFanout,
@@ -276,12 +283,13 @@ async fn discover_once(
     let siblings = body
         .agents
         .into_iter()
-        .filter(|entry| entry.slug != conn.instance)
+        .filter(|entry| entry.instance != conn.instance)
         .filter_map(|entry| {
-            if !is_valid_sibling_slug(&entry.slug) {
+            if !is_valid_sibling_slug(&entry.instance) || !is_valid_sibling_slug(&entry.agent) {
                 tracing::warn!(
-                    slug = %entry.slug,
-                    "a2a directory returned a malformed sibling slug, skipping"
+                    instance = %entry.instance,
+                    agent = %entry.agent,
+                    "a2a directory returned a malformed sibling name, skipping"
                 );
                 return None;
             }
@@ -291,8 +299,8 @@ async fn discover_once(
                 format!("Bearer {}", conn.token),
             );
             Some((
-                entry.slug.clone(),
-                format!("{}/a2a/{}", conn.origin, entry.slug),
+                format!("{}/{}", entry.instance, entry.agent),
+                format!("{}/a2a/{}/{}", conn.origin, entry.instance, entry.agent),
                 headers,
             ))
         })
@@ -331,25 +339,31 @@ mod tests {
         fetch_timeout: Duration::from_secs(2),
     };
 
+    /// One directory entry the fake relay serves: `(instance, agent)`.
+    type FakeEntry = (&'static str, &'static str);
+
     /// Shared state behind the fake relay/instance stand-in: the directory
     /// body to serve, and every `Authorization` header seen on a card fetch
-    /// (`GET /a2a/{slug}/.well-known/agent-card.json`), keyed by slug.
+    /// (`GET /a2a/{instance}/{agent}/.well-known/agent-card.json`), keyed by
+    /// `<instance>/<agent>`.
     #[derive(Default)]
     struct FakeRelay {
-        agents: Mutex<Vec<&'static str>>,
+        agents: Mutex<Vec<FakeEntry>>,
         card_auth_seen: Mutex<StdHashMap<String, String>>,
         card_fetch_should_fail: Mutex<bool>,
     }
 
     async fn directory_handler(State(relay): State<Arc<FakeRelay>>) -> impl IntoResponse {
-        let slugs = relay.agents.lock().unwrap().clone();
-        let agents: Vec<serde_json::Value> = slugs
+        let entries = relay.agents.lock().unwrap().clone();
+        let agents: Vec<serde_json::Value> = entries
             .into_iter()
-            .map(|slug| {
+            .map(|(instance, agent)| {
                 serde_json::json!({
-                    "slug": slug,
-                    "display_name": slug,
-                    "card_url": format!("http://ignored/a2a/{slug}/.well-known/agent-card.json"),
+                    "slug": format!("{instance}/{agent}"),
+                    "instance": instance,
+                    "agent": agent,
+                    "display_name": agent,
+                    "card_url": format!("http://ignored/a2a/{instance}/{agent}/.well-known/agent-card.json"),
                     "online": true,
                 })
             })
@@ -359,7 +373,7 @@ mod tests {
 
     async fn card_handler(
         State(relay): State<Arc<FakeRelay>>,
-        Path(slug): Path<String>,
+        Path((instance, agent)): Path<(String, String)>,
         headers: HeaderMap,
     ) -> axum::response::Response {
         if *relay.card_fetch_should_fail.lock().unwrap() {
@@ -370,6 +384,7 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default()
             .to_string();
+        let slug = format!("{instance}/{agent}");
         relay
             .card_auth_seen
             .lock()
@@ -380,7 +395,7 @@ mod tests {
             "description": "a fake sibling",
             "version": "1.0",
             "supportedInterfaces": [
-                {"url": format!("http://placeholder/a2a/{slug}/"), "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}
+                {"url": format!("http://placeholder/a2a/{instance}/{agent}/"), "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}
             ],
             "capabilities": {"streaming": true},
             "defaultInputModes": ["text/plain"],
@@ -392,7 +407,7 @@ mod tests {
 
     /// Spawn the fake relay on a loopback port and return its base origin
     /// plus the shared state used to inspect what it saw.
-    async fn spawn_fake_relay(initial_agents: Vec<&'static str>) -> (String, Arc<FakeRelay>) {
+    async fn spawn_fake_relay(initial_agents: Vec<FakeEntry>) -> (String, Arc<FakeRelay>) {
         let relay = Arc::new(FakeRelay {
             agents: Mutex::new(initial_agents),
             card_auth_seen: Mutex::new(StdHashMap::new()),
@@ -400,7 +415,10 @@ mod tests {
         });
         let app = Router::new()
             .route("/a2a/agents", get(directory_handler))
-            .route("/a2a/{slug}/.well-known/agent-card.json", get(card_handler))
+            .route(
+                "/a2a/{instance}/{agent}/.well-known/agent-card.json",
+                get(card_handler),
+            )
             .with_state(Arc::clone(&relay));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -438,7 +456,13 @@ mod tests {
 
     #[tokio::test]
     async fn connect_registers_siblings_excluding_self_with_the_token_header() {
-        let (origin, relay) = spawn_fake_relay(vec!["alpha", "beta", "gamma"]).await;
+        let (origin, relay) = spawn_fake_relay(vec![
+            ("alpha", "scout"),
+            ("alpha", "writer"),
+            ("beta", "atlas"),
+            ("gamma", "nova"),
+        ])
+        .await;
         let hub = Arc::new(A2aClientHub::new());
         let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
         let task = crate::util::spawn_in_span(run(fanout_of(&hub).await, rx, FAST_TIMINGS));
@@ -451,25 +475,29 @@ mod tests {
         .await;
 
         let snap = hub.snapshot().await;
-        let names: Vec<&str> = snap.iter().map(|a| a.name.as_str()).collect();
-        assert!(names.contains(&"beta"), "got {names:?}");
-        assert!(names.contains(&"gamma"), "got {names:?}");
-        assert!(
-            !names.contains(&"alpha"),
-            "self must be excluded: {names:?}"
-        );
+        assert_eq!(sibling_names(&snap), ["beta/atlas", "gamma/nova"]);
         assert!(snap.iter().all(|a| a.source == AgentSource::Sibling));
 
         let seen = relay.card_auth_seen.lock().unwrap().clone();
-        assert_eq!(seen.get("beta").map(String::as_str), Some("Bearer tok1"));
-        assert_eq!(seen.get("gamma").map(String::as_str), Some("Bearer tok1"));
+        assert_eq!(
+            seen.get("beta/atlas").map(String::as_str),
+            Some("Bearer tok1")
+        );
+        assert_eq!(
+            seen.get("gamma/nova").map(String::as_str),
+            Some("Bearer tok1")
+        );
+        assert!(
+            !seen.keys().any(|slug| slug.starts_with("alpha/")),
+            "the hub's own agents must never be fetched: {seen:?}"
+        );
 
         task.abort();
     }
 
     #[tokio::test]
     async fn reconnect_with_a_new_token_updates_the_header() {
-        let (origin, relay) = spawn_fake_relay(vec!["alpha", "beta"]).await;
+        let (origin, relay) = spawn_fake_relay(vec![("alpha", "scout"), ("beta", "atlas")]).await;
         let hub = Arc::new(A2aClientHub::new());
         let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
         let task = crate::util::spawn_in_span(run(fanout_of(&hub).await, rx, FAST_TIMINGS));
@@ -477,11 +505,16 @@ mod tests {
         tx.send(connected(&origin, "alpha", "tok1")).ok();
         wait_for(&hub, |snap| {
             snap.iter()
-                .any(|a| a.name == "beta" && matches!(a.status, AgentStatus::Ok(_)))
+                .any(|a| a.name == "beta/atlas" && matches!(a.status, AgentStatus::Ok(_)))
         })
         .await;
         assert_eq!(
-            relay.card_auth_seen.lock().unwrap().get("beta").cloned(),
+            relay
+                .card_auth_seen
+                .lock()
+                .unwrap()
+                .get("beta/atlas")
+                .cloned(),
             Some("Bearer tok1".to_string())
         );
 
@@ -492,7 +525,7 @@ mod tests {
                     .card_auth_seen
                     .lock()
                     .unwrap()
-                    .get("beta")
+                    .get("beta/atlas")
                     .map(String::as_str)
                     == Some("Bearer tok2")
                 {
@@ -509,14 +542,14 @@ mod tests {
 
     #[tokio::test]
     async fn config_entry_name_collision_means_config_wins() {
-        let (origin, _relay) = spawn_fake_relay(vec!["alpha", "beta"]).await;
+        let (origin, _relay) = spawn_fake_relay(vec![("alpha", "scout"), ("beta", "atlas")]).await;
         let hub = Arc::new(A2aClientHub::new());
 
-        // A config/a2a.json entry named "beta" already exists before
+        // A config entry under the sibling's name already exists before
         // discovery ever runs.
-        let config_url = format!("{origin}/a2a/beta");
+        let config_url = format!("{origin}/a2a/beta/atlas");
         hub.register_external(
-            "beta".to_string(),
+            "beta/atlas".to_string(),
             config_url.clone(),
             HashMap::new(),
             AgentSource::Config,
@@ -529,15 +562,15 @@ mod tests {
 
         wait_for(&hub, |snap| {
             snap.iter()
-                .any(|a| a.name == "beta" && matches!(a.status, AgentStatus::Ok(_)))
+                .any(|a| a.name == "beta/atlas" && matches!(a.status, AgentStatus::Ok(_)))
         })
         .await;
 
         let snap = hub.snapshot().await;
         let beta = snap
             .iter()
-            .find(|a| a.name == "beta")
-            .expect("beta present");
+            .find(|a| a.name == "beta/atlas")
+            .expect("beta/atlas present");
         assert_eq!(
             beta.source,
             AgentSource::Config,
@@ -572,7 +605,7 @@ mod tests {
 
     #[tokio::test]
     async fn disconnect_keeps_previously_registered_siblings() {
-        let (origin, _relay) = spawn_fake_relay(vec!["alpha", "beta"]).await;
+        let (origin, _relay) = spawn_fake_relay(vec![("alpha", "scout"), ("beta", "atlas")]).await;
         let hub = Arc::new(A2aClientHub::new());
         let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
         let task = crate::util::spawn_in_span(run(fanout_of(&hub).await, rx, FAST_TIMINGS));
@@ -600,7 +633,14 @@ mod tests {
     #[tokio::test]
     async fn discovery_fans_out_to_every_agent_and_excludes_the_hubs_own_instance() {
         // "alpha" is this hub's own instance, so its agents are teammates.
-        let (origin, _relay) = spawn_fake_relay(vec!["alpha", "beta", "gamma"]).await;
+        let (origin, _relay) = spawn_fake_relay(vec![
+            ("alpha", "scout"),
+            ("alpha", "writer"),
+            ("beta", "atlas"),
+            ("beta", "ledger"),
+            ("gamma", "nova"),
+        ])
+        .await;
         let scout = Arc::new(A2aClientHub::new());
         let writer = Arc::new(A2aClientHub::new());
         let fanout = SiblingFanout::new_shared();
@@ -611,17 +651,18 @@ mod tests {
         let task = crate::util::spawn_in_span(run(fanout, rx, FAST_TIMINGS));
         tx.send(connected(&origin, "alpha", "tok1")).ok();
 
-        wait_for(&scout, |snap| snap.len() == 2).await;
-        wait_for(&writer, |snap| snap.len() == 2).await;
-        assert_eq!(sibling_names(&scout.snapshot().await), ["beta", "gamma"]);
-        assert_eq!(sibling_names(&writer.snapshot().await), ["beta", "gamma"]);
+        let expected = ["beta/atlas", "beta/ledger", "gamma/nova"];
+        wait_for(&scout, |snap| snap.len() == 3).await;
+        wait_for(&writer, |snap| snap.len() == 3).await;
+        assert_eq!(sibling_names(&scout.snapshot().await), expected);
+        assert_eq!(sibling_names(&writer.snapshot().await), expected);
 
         task.abort();
     }
 
     #[tokio::test]
     async fn a_hub_registered_after_discovery_gets_the_last_result() {
-        let (origin, _relay) = spawn_fake_relay(vec!["alpha", "beta"]).await;
+        let (origin, _relay) = spawn_fake_relay(vec![("alpha", "scout"), ("beta", "atlas")]).await;
         let early = Arc::new(A2aClientHub::new());
         let fanout = fanout_of(&early).await;
 
@@ -632,14 +673,14 @@ mod tests {
 
         let late = Arc::new(A2aClientHub::new());
         fanout.register("late", Arc::clone(&late)).await;
-        assert_eq!(sibling_names(&late.snapshot().await), ["beta"]);
+        assert_eq!(sibling_names(&late.snapshot().await), ["beta/atlas"]);
 
         task.abort();
     }
 
     #[tokio::test]
     async fn an_unregistered_hub_stops_receiving_results() {
-        let (origin, _relay) = spawn_fake_relay(vec!["alpha", "beta"]).await;
+        let (origin, _relay) = spawn_fake_relay(vec![("alpha", "scout"), ("beta", "atlas")]).await;
         let stopped = Arc::new(A2aClientHub::new());
         let running = Arc::new(A2aClientHub::new());
         let fanout = SiblingFanout::new_shared();
@@ -653,6 +694,47 @@ mod tests {
         wait_for(&running, |snap| snap.len() == 1).await;
 
         assert!(stopped.snapshot().await.is_empty());
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_malformed_instance_or_agent_name_is_skipped() {
+        let (origin, _relay) = spawn_fake_relay(vec![
+            ("beta", "atlas"),
+            ("Bad-Caps", "nova"),
+            ("gamma", "has space"),
+            ("delta", "-lead"),
+        ])
+        .await;
+        let hub = Arc::new(A2aClientHub::new());
+        let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
+        let task = crate::util::spawn_in_span(run(fanout_of(&hub).await, rx, FAST_TIMINGS));
+        tx.send(connected(&origin, "alpha", "tok1")).ok();
+
+        wait_for(&hub, |snap| !snap.is_empty()).await;
+        assert_eq!(sibling_names(&hub.snapshot().await), ["beta/atlas"]);
+
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn the_sibling_url_addresses_the_agent_under_its_instance() {
+        let (origin, _relay) = spawn_fake_relay(vec![("beta", "atlas")]).await;
+        let hub = Arc::new(A2aClientHub::new());
+        let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
+        let task = crate::util::spawn_in_span(run(fanout_of(&hub).await, rx, FAST_TIMINGS));
+        tx.send(connected(&origin, "alpha", "tok1")).ok();
+
+        wait_for(&hub, |snap| {
+            snap.iter().any(|a| matches!(a.status, AgentStatus::Ok(_)))
+        })
+        .await;
+        let client = hub.client_for("beta/atlas").await;
+        assert!(
+            client.is_ok(),
+            "the sibling must be callable by its full name"
+        );
+
         task.abort();
     }
 
