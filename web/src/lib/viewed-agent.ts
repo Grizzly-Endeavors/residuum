@@ -1,9 +1,11 @@
 // ── The viewed agent ─────────────────────────────────────────────────
 //
-// The agent the URL names. The router publishes it on every location change
-// and the WebSocket coordinator binds to it. It is a signal between those two
-// and nothing more: no request reads it. Every API call takes its agent as an
-// argument (see `paths.ts`).
+// The agent the app is on: the one an agent place's URL names, and on a place
+// with none (Home, Inbox, the Workbench, Shared files) the one most recently
+// viewed, which is the bound agent. The router publishes it on every location
+// change and the WebSocket coordinator binds to it. It is a signal between
+// those two and nothing more: no request reads it. Every API call takes its
+// agent as an argument (see `paths.ts`).
 
 type AgentListener = (agent: string | null) => void;
 

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { hub } from "../lib/hub.svelte";
-  import { router } from "../lib/router.svelte";
+  import { legacyRouter } from "../lib/legacy-router.svelte";
   import { agentNameProblem } from "../lib/agent-name";
   import { stateLabel, unreadText } from "../lib/agent-state";
   import { relativeTime } from "../lib/time";
@@ -251,7 +251,7 @@
                 type="button"
                 class="team-agent-link"
                 onclick={() => {
-                  router.openAgent(agent.name);
+                  legacyRouter.openAgent(agent.name);
                 }}>{agent.name}</button
               >
               <span class="team-state">{stateLabel(agent.state)}</span>
@@ -465,7 +465,7 @@
             type="button"
             class="team-agent-link"
             onclick={() => {
-              if (created) router.openAgent(created);
+              if (created) legacyRouter.openAgent(created);
             }}>Open it</button
           >
         {/if}

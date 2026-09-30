@@ -21,7 +21,6 @@ import { nextFeedId } from "./feed-id";
 import { appendToolCall, applyToolResult, convertHistoryMessages } from "./feed-items";
 import { notifications } from "./notifications.svelte";
 import { requireAgent } from "./paths";
-import { router } from "./router.svelte";
 import { SESSION_CATEGORIES, deliveryOutcomeText, runOutcomeText } from "./session-format";
 import type {
   ClientMessage,
@@ -471,16 +470,16 @@ export class SessionsStore {
     );
   }
 
-  // ── Navigation ───────────────────────────────────────────────────
+  // ── The run in the main pane ─────────────────────────────────────
 
-  /** Navigate to a run, showing it in the main pane. */
-  openRun(runId: string): void {
-    router.openSession(runId);
+  /** The agent these sessions belong to, `null` before one is bound. */
+  get agent(): string | null {
+    return this.deps.agent;
   }
 
   /**
-   * Put a run in the main pane. Called when the location changes; anything
-   * that wants to show a run navigates with `openRun` instead.
+   * Put a run in the main pane. Views call this when the location names a run,
+   * and navigate to a run themselves (`openSessionByAddress`).
    */
   showRun(runId: string): void {
     if (this.view?.runId === runId) return;
@@ -490,33 +489,26 @@ export class SessionsStore {
   }
 
   /**
-   * Show a session by address: `runId` when known, else its newest run
-   * (live first), looked up on the server if it isn't loaded.
+   * The run to show for a session address: `runId` when known, else its newest
+   * run (live first), looked up on the server if it isn't loaded. Null, after
+   * telling the user, when there is none.
    */
-  async openAddress(address: string, runId: string | null): Promise<void> {
-    if (runId) {
-      this.openRun(runId);
-      return;
-    }
+  async resolveRun(address: string, runId: string | null): Promise<string | null> {
+    if (runId) return runId;
     const known = this.findByAddress(address);
-    if (known) {
-      this.openRun(known.run_id);
-      return;
-    }
+    if (known) return known.run_id;
     try {
       const page = await fetchSessions(requireAgent(this.deps.agent), { address, limit: 1 });
       const run = page.live[0] ?? page.completed[0];
-      if (run) {
-        this.openRun(run.run_id);
-      } else {
-        notifications.surface("error", `There's no record of the session ${address}.`);
-      }
+      if (run) return run.run_id;
+      notifications.surface("error", `There's no record of the session ${address}.`);
     } catch (err) {
       notifications.surface(
         "error",
         userErrorMessage(err, { action: `Couldn't open the session ${address}.` }),
       );
     }
+    return null;
   }
 
   /** Take the run out of the main pane. Called when the location changes. */
@@ -622,10 +614,8 @@ export class SessionsStore {
   private handleStarted(session: SessionSummary): void {
     this.live = [session, ...this.live.filter((s) => s.run_id !== session.run_id)];
     const view = this.view;
-    if (view?.followAddress === session.address) {
-      view.follow(session);
-      router.replaceSession(session.run_id);
-    }
+    // The view's run changes; the view that shows it moves the location along.
+    if (view?.followAddress === session.address) view.follow(session);
   }
 
   private handleRunFrame(frame: RunFrame): void {

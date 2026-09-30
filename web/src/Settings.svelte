@@ -47,7 +47,11 @@
     defaultModels,
     type ConfigFields,
   } from "./lib/settings-toml";
-  import { sectionsFor, type SettingsScope, type SettingsSection } from "./lib/settings-sections";
+  import {
+    legacySectionsFor,
+    type LegacyScope,
+    type LegacySection,
+  } from "./lib/legacy-settings-sections";
   import Runtime from "./components/settings/Runtime.svelte";
   import Pulses from "./components/settings/Pulses.svelte";
   import HubGeneral from "./components/settings/HubGeneral.svelte";
@@ -78,11 +82,11 @@
     onSelectSection,
     onClose,
   }: {
-    scope: SettingsScope;
+    scope: LegacyScope;
     /** The agent whose settings these are; named in the title for agent scope. */
     agent: string | null;
-    section: SettingsSection;
-    onSelectSection: (section: SettingsSection) => void;
+    section: LegacySection;
+    onSelectSection: (section: LegacySection) => void;
     onClose: () => void;
   } = $props();
 
@@ -160,7 +164,7 @@
   let mobileNavOpen = $state(false);
 
   // svelte-ignore state_referenced_locally
-  const sections = sectionsFor(scope);
+  const sections = legacySectionsFor(scope);
 
   let simple = $derived(settingsMode === "simple");
 

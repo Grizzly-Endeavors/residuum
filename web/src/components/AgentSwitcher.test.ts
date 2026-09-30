@@ -3,6 +3,8 @@ import { fireEvent, render, screen } from "../test/component";
 import AgentSwitcher from "./AgentSwitcher.svelte";
 import { hub } from "../lib/hub.svelte";
 import { router } from "../lib/router.svelte";
+import { legacyRouter } from "../lib/legacy-router.svelte";
+import { HOME } from "../lib/routes";
 import { activityFrame, snapshot } from "../test/hub-frames";
 import type { AgentSummary } from "../lib/hub-types";
 
@@ -18,7 +20,7 @@ function agent(name: string, overrides: Partial<AgentSummary> = {}): AgentSummar
   };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   hub.handleFrame(
     snapshot([
       agent("atlas"),
@@ -36,13 +38,12 @@ beforeEach(() => {
       agent("warm", { state: "starting" }),
     ]),
   );
-  router.agent = "scout";
-  router.team = null;
+  await router.replacePlace({ kind: "chat", agent: "scout" });
 });
 
-afterEach(() => {
+afterEach(async () => {
   hub.handleFrame(snapshot([]));
-  router.agent = null;
+  await router.replacePlace(HOME);
 });
 
 describe("AgentSwitcher", () => {
@@ -86,33 +87,34 @@ describe("AgentSwitcher", () => {
     );
   });
 
-  it("marks Team, not an agent, as current on team pages and hub settings", () => {
-    router.team = "overview";
+  it("marks Team, not an agent, as current on team pages and hub settings", async () => {
+    await router.replacePlace(HOME);
     const { unmount } = render(AgentSwitcher);
     expect(screen.getByRole("button", { name: "Team" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("button", { name: "scout, running" })).not.toHaveAttribute(
       "aria-current",
     );
     unmount();
-    router.team = null;
-    router.settings = { scope: "hub", section: "a2a" };
+    await router.replacePlace(
+      { kind: "chat", agent: "scout" },
+      { settings: { scope: "_all", section: "listener" } },
+    );
     render(AgentSwitcher);
     expect(screen.getByRole("button", { name: "Team" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("button", { name: "scout, running" })).not.toHaveAttribute(
       "aria-current",
     );
-    router.settings = null;
   });
 
   it("navigates to the agent that is clicked", async () => {
-    const open = vi.spyOn(router, "openAgent").mockImplementation(() => {});
+    const open = vi.spyOn(legacyRouter, "openAgent").mockImplementation(() => {});
     render(AgentSwitcher);
     await fireEvent.click(screen.getByRole("button", { name: "atlas, running" }));
     expect(open).toHaveBeenCalledWith("atlas");
   });
 
   it("opens the team view from its own button", async () => {
-    const open = vi.spyOn(router, "openTeam").mockImplementation(() => {});
+    const open = vi.spyOn(legacyRouter, "openTeam").mockImplementation(() => {});
     render(AgentSwitcher);
     await fireEvent.click(screen.getByRole("button", { name: "Team" }));
     expect(open).toHaveBeenCalledWith("overview");
@@ -171,8 +173,8 @@ describe("AgentSwitcher", () => {
     expect(screen.queryByRole("tooltip")).toBeNull();
   });
 
-  it("still names the agent in the URL before the hub has listed it", () => {
-    router.agent = "newcomer";
+  it("still names the agent in the URL before the hub has listed it", async () => {
+    await router.replacePlace({ kind: "chat", agent: "newcomer" });
     render(AgentSwitcher);
     expect(screen.getByRole("button", { name: /^newcomer/ })).toHaveAttribute(
       "aria-current",

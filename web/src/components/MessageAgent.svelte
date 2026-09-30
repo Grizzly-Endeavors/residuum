@@ -1,6 +1,7 @@
 <script lang="ts">
   import MarkdownContent from "./MarkdownContent.svelte";
   import { ws } from "../lib/ws.svelte";
+  import { openSessionByAddress } from "../lib/session-address";
   import type { AgentMessageFeedItem } from "../lib/types";
   import CategoryBadge from "./CategoryBadge.svelte";
 
@@ -21,7 +22,7 @@
   });
 
   function open() {
-    void ws.sessions.openAddress(item.from, item.runId);
+    void openSessionByAddress(ws.sessions, item.from, item.runId);
   }
 </script>
 
