@@ -319,6 +319,47 @@ describe("hub", () => {
       expect((await request("GET", "/agents/deleted")).body.agents).toEqual([]);
     });
 
+    it("stops a running agent first, announcing it as stopping, and deletes it once stopped", async () => {
+      const deleted = request("DELETE", "/agents/atlas");
+      expect(await hubSocket.nextOfType("agent_stopping")).toEqual({
+        type: "agent_stopping",
+        name: "atlas",
+      });
+      const during = (await request("GET", "/agents")).body;
+      expect(during.stopping).toEqual(["atlas"]);
+      expect(names(during.agents)).toContain("atlas");
+
+      expect((await deleted).status).toBe(200);
+      expect(
+        hubSocket.frames
+          .map((f) => f.type)
+          .filter((t) => t !== "agents_snapshot" && t !== "hub_boot"),
+      ).toEqual(["agent_stopping", "agent_state", "agent_deleted"]);
+      expect(hubSocket.frames.find((f) => f.type === "agent_state")).toMatchObject({
+        agent: { name: "atlas", state: "stopped" },
+      });
+      expect((await request("GET", "/agents")).body.stopping).toEqual([]);
+    });
+
+    it("deletes an agent that isn't running without a stopping window", async () => {
+      await request("DELETE", "/agents/drifter");
+      await request("DELETE", "/agents/brittle");
+      expect(
+        hubSocket.frames
+          .map((f) => f.type)
+          .filter((t) => t !== "agents_snapshot" && t !== "hub_boot"),
+      ).toEqual(["agent_deleted", "agent_deleted"]);
+    });
+
+    it("answers a second delete that raced the first with 404", async () => {
+      const [first, second] = await Promise.all([
+        request("DELETE", "/agents/atlas"),
+        request("DELETE", "/agents/atlas"),
+      ]);
+      expect([first.status, second.status].sort()).toEqual([200, 404]);
+      expect(hubSocket.frames.filter((f) => f.type === "agent_deleted")).toHaveLength(1);
+    });
+
     it("keeps a deleted agent's conversation for the restore", async () => {
       const agent = harness.hub.agents.get("atlas");
       agent?.state.extraRecent.push({
