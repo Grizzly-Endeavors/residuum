@@ -724,6 +724,12 @@ async fn handle_attachment(
         bot.download_file(&file.path, &mut dst)
             .await
             .map_err(|e| format!("failed to download '{filename}': {e}"))?;
+        // `tokio::fs::File` queues writes on a blocking thread and dropping it
+        // does not wait for them; flush so the attachment is complete on disk
+        // before anything reads it back.
+        tokio::io::AsyncWriteExt::flush(&mut dst)
+            .await
+            .map_err(|e| format!("failed to save '{filename}': {e}"))?;
 
         Ok(SavedAttachment { local_path })
     }
