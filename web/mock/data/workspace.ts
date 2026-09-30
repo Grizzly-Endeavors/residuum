@@ -1,64 +1,85 @@
-/** One entry of a workspace directory listing. */
-export interface MockWorkspaceEntry {
-  name: string;
-  entry_type: "file" | "directory";
-  size: number | null;
-}
+import type { WorkspaceEntry } from "../../src/lib/types";
+import type { MockClock } from "../env";
+import { dirEntryVersion, fileVersion } from "../workspace-tree";
 
-/** The sample workspace tree: directory path to its entries. `team` is the shared team tree. */
-export function createWorkspaceFiles(): Record<string, MockWorkspaceEntry[]> {
-  return {
-    "": [
-      { name: "SOUL.md", entry_type: "file", size: 847 },
-      { name: "PRESENCE.toml", entry_type: "file", size: 245 },
-      { name: "HEARTBEAT.yml", entry_type: "file", size: 178 },
-      { name: "CHANNELS.yml", entry_type: "file", size: 392 },
-      { name: "team", entry_type: "directory", size: null },
-      { name: "memory", entry_type: "directory", size: null },
-      { name: "skills", entry_type: "directory", size: null },
-      { name: "config", entry_type: "directory", size: null },
-      { name: "inbox", entry_type: "directory", size: null },
-      { name: "subagents", entry_type: "directory", size: null },
-      { name: "archive", entry_type: "directory", size: null },
-    ],
-    skills: [
-      { name: "research", entry_type: "directory", size: null },
-      { name: "code-review", entry_type: "directory", size: null },
-    ],
-    "skills/research": [
-      { name: "SKILL.md", entry_type: "file", size: 634 },
-      { name: "prompt.md", entry_type: "file", size: 1102 },
-    ],
-    "skills/code-review": [{ name: "SKILL.md", entry_type: "file", size: 478 }],
-    config: [
-      { name: "mcp.json", entry_type: "file", size: 1567 },
-      { name: "channels.toml", entry_type: "file", size: 834 },
-      { name: "agent-card.json", entry_type: "file", size: 356 },
-    ],
-    team: [
-      { name: "AGENTS.md", entry_type: "file", size: 523 },
-      { name: "USER.md", entry_type: "file", size: 312 },
-      { name: "wiki", entry_type: "directory", size: null },
-      { name: "workbench", entry_type: "directory", size: null },
-    ],
-    "team/workbench": [],
-    "team/wiki": [
-      { name: "index.md", entry_type: "file", size: 512 },
-      { name: "log.md", entry_type: "file", size: 340 },
-      { name: "projects", entry_type: "directory", size: null },
-    ],
-    "team/wiki/projects": [
-      { name: "index.md", entry_type: "file", size: 210 },
-      { name: "residuum.md", entry_type: "file", size: 486 },
-    ],
-    memory: [
-      { name: "observations.jsonl", entry_type: "file", size: 45230 },
-      { name: "reflections.jsonl", entry_type: "file", size: 12450 },
-    ],
-    inbox: [],
-    subagents: [],
-    archive: [],
-  };
+/** A directory entry as the sample tree declares it: its modification time and version are added when the tree is built. */
+type SampleEntry = Pick<WorkspaceEntry, "name" | "entry_type" | "size">;
+
+const SAMPLE_TREE: Record<string, SampleEntry[]> = {
+  "": [
+    { name: "SOUL.md", entry_type: "file", size: 847 },
+    { name: "PRESENCE.toml", entry_type: "file", size: 245 },
+    { name: "HEARTBEAT.yml", entry_type: "file", size: 178 },
+    { name: "CHANNELS.yml", entry_type: "file", size: 392 },
+    { name: "team", entry_type: "directory", size: null },
+    { name: "memory", entry_type: "directory", size: null },
+    { name: "skills", entry_type: "directory", size: null },
+    { name: "config", entry_type: "directory", size: null },
+    { name: "inbox", entry_type: "directory", size: null },
+    { name: "subagents", entry_type: "directory", size: null },
+    { name: "archive", entry_type: "directory", size: null },
+  ],
+  skills: [
+    { name: "research", entry_type: "directory", size: null },
+    { name: "code-review", entry_type: "directory", size: null },
+  ],
+  "skills/research": [
+    { name: "SKILL.md", entry_type: "file", size: 634 },
+    { name: "prompt.md", entry_type: "file", size: 1102 },
+  ],
+  "skills/code-review": [{ name: "SKILL.md", entry_type: "file", size: 478 }],
+  config: [
+    { name: "mcp.json", entry_type: "file", size: 1567 },
+    { name: "channels.toml", entry_type: "file", size: 834 },
+    { name: "agent-card.json", entry_type: "file", size: 356 },
+  ],
+  team: [
+    { name: "AGENTS.md", entry_type: "file", size: 523 },
+    { name: "USER.md", entry_type: "file", size: 312 },
+    { name: "wiki", entry_type: "directory", size: null },
+    { name: "workbench", entry_type: "directory", size: null },
+  ],
+  "team/workbench": [],
+  "team/wiki": [
+    { name: "index.md", entry_type: "file", size: 512 },
+    { name: "log.md", entry_type: "file", size: 340 },
+    { name: "projects", entry_type: "directory", size: null },
+  ],
+  "team/wiki/projects": [
+    { name: "index.md", entry_type: "file", size: 210 },
+    { name: "residuum.md", entry_type: "file", size: 486 },
+  ],
+  memory: [
+    { name: "observations.jsonl", entry_type: "file", size: 45230 },
+    { name: "reflections.jsonl", entry_type: "file", size: 12450 },
+  ],
+  inbox: [],
+  subagents: [],
+  archive: [],
+};
+
+/**
+ * The sample workspace tree: directory path to its entries, each with the
+ * size and version the listing reports. `team` is the shared team tree.
+ * `contents` are the sample files, whose version a read of the file reports.
+ */
+export function createWorkspaceFiles(
+  contents: Readonly<Record<string, string>>,
+  clock: MockClock,
+): Record<string, WorkspaceEntry[]> {
+  const modified = clock.now();
+  const tree: Record<string, WorkspaceEntry[]> = {};
+  for (const [dir, entries] of Object.entries(SAMPLE_TREE)) {
+    tree[dir] = entries.map((entry) => {
+      const path = dir === "" ? entry.name : `${dir}/${entry.name}`;
+      const version =
+        entry.entry_type === "directory"
+          ? dirEntryVersion(path, modified)
+          : fileVersion(contents[path] ?? "");
+      return { ...entry, modified, version };
+    });
+  }
+  return tree;
 }
 
 /** The sample file contents, by workspace path. */

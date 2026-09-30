@@ -4,6 +4,7 @@ import { createChatSimulator } from "./chat";
 import { parseJsonObject, stringField, type JsonObject } from "./http";
 import { sendSessionMessage, spawnSession, stopSession } from "./sessions";
 import {
+  agentSocketPath,
   frameText,
   routeUpgrades,
   sendFrame,
@@ -11,7 +12,6 @@ import {
   type UpgradeHost,
 } from "./sockets";
 import type { MockAgent, MockHub } from "./state";
-import { sleep } from "./util";
 
 /** How long a reload takes before the page is told it finished. */
 const RELOAD_MS = 1000;
@@ -94,7 +94,7 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
   const chat = createChatSimulator(hub, agent);
   const verbose = new WeakSet<WebSocket>();
 
-  routeUpgrades(host, wss, `/api/agents/${agent.name}/ws`, () =>
+  const stopRouting = routeUpgrades(host, wss, agentSocketPath(agent.name), () =>
     agent.runState === "running"
       ? null
       : { error: `${agent.name} is ${agent.runState}`, state: agent.runState },
@@ -109,6 +109,11 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
     }
   };
   agent.connectedClients = () => wss.clients.size;
+  agent.dispose = () => {
+    stopRouting();
+    state.dropSockets();
+    wss.close();
+  };
 
   function handle(ws: WebSocket, msg: ClientMessage): void {
     const reply = (frame: ServerMessage): void => {
@@ -162,7 +167,7 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
 
       case "reload":
         reply({ type: "reloading" });
-        void sleep(RELOAD_MS).then(() => {
+        hub.env.after(RELOAD_MS, () => {
           reply({ type: "notice", message: "Configuration reloaded successfully." });
         });
         break;

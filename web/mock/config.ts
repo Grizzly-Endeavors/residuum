@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
-import type { OutboundA2aTaskSummary, RepoStats } from "../src/lib/generated/protocol";
+import type { OutboundA2aTaskSummary } from "../src/lib/generated/protocol";
 import type {
   A2aAgentCard,
   A2aCardSkill,
@@ -21,6 +21,7 @@ import type {
 } from "../src/lib/types";
 import { agentNameProblem } from "./agent-name";
 import { WEB_ROOT } from "./assets";
+import { repoStats } from "./checkpoints";
 import { MOCK_CLOUD_STATUS, MOCK_FEATURES, MOCK_RESIDUUM_VERSION } from "./constants";
 import {
   json,
@@ -108,35 +109,21 @@ function applyJsonPatch(target: JsonObject, diff: JsonObject): void {
 
 // ─── Status & system ───────────────────────────────────────────────────────────
 
-/** A checkpoint repository's size and history, as the status route reports it. */
-function repoStats(bytes: number, count: number, daysOld: number): RepoStats {
-  return {
-    on_disk_bytes: bytes,
-    checkpoint_count: count,
-    oldest: new Date(Date.now() - daysOld * 86_400_000).toISOString(),
-  };
-}
-
-/** Plausible stats for the four checkpoint repositories. */
-function checkpointStats(): StatusResponse["checkpoints"] {
-  return {
-    workspace: repoStats(18_874_368, 142, 45),
-    team: repoStats(6_291_456, 57, 45),
-    agent_config: repoStats(1_048_576, 23, 30),
-    hub: repoStats(524_288, 11, 30),
-  };
-}
-
 const systemRoutes: readonly Route[] = [
   {
     method: "GET",
     pattern: "/api/status",
-    handler: ({ res, state }) => {
+    handler: ({ res, state, hub }) => {
       json(res, 200, {
         mode: state.mode,
         version: MOCK_RESIDUUM_VERSION,
         features: [...MOCK_FEATURES],
-        checkpoints: checkpointStats(),
+        checkpoints: {
+          workspace: repoStats(state, "workspace"),
+          team: repoStats(hub.hubState, "team"),
+          agent_config: repoStats(state, "agent_config"),
+          hub: repoStats(hub.hubState, "hub"),
+        },
       } satisfies StatusResponse);
     },
   },
@@ -155,25 +142,33 @@ const systemRoutes: readonly Route[] = [
     },
   },
   {
+    // The mock's tunnel is always disconnected, so there is nothing to turn off.
+    method: "POST",
+    pattern: "/api/cloud/disconnect",
+    handler: ({ res }) => {
+      json(res, 200, { ok: true });
+    },
+  },
+  {
     method: "POST",
     pattern: "/api/tracing/bug-report",
-    handler: async ({ req, res }) => {
+    handler: async ({ req, res, state }) => {
       // Drain the body so the dev server can inspect it if asked.
       await readBody(req);
       json(res, 200, {
         public_id: "RR-MOCK-BUG-01",
-        submitted_at: new Date().toISOString(),
+        submitted_at: state.env.clock.iso(),
       });
     },
   },
   {
     method: "POST",
     pattern: "/api/tracing/feedback",
-    handler: async ({ req, res }) => {
+    handler: async ({ req, res, state }) => {
       await readBody(req);
       json(res, 200, {
         public_id: "RR-MOCK-FBK-01",
-        submitted_at: new Date().toISOString(),
+        submitted_at: state.env.clock.iso(),
       });
     },
   },
@@ -183,8 +178,16 @@ const systemRoutes: readonly Route[] = [
 
 type TomlDocument = "configToml" | "hubConfigToml" | "providersToml";
 
-/** Read, replace, patch and validate one TOML document kept in the state. */
-function tomlDocumentRoutes(prefix: string, field: TomlDocument): readonly Route[] {
+/**
+ * Read, replace, patch and validate one TOML document kept in the state.
+ * `afterWrite` runs once a write has been answered, as the hub reloads after
+ * its own config changes.
+ */
+function tomlDocumentRoutes(
+  prefix: string,
+  field: TomlDocument,
+  afterWrite: (ctx: RouteContext) => void = () => {},
+): readonly Route[] {
   return [
     {
       method: "GET",
@@ -196,20 +199,23 @@ function tomlDocumentRoutes(prefix: string, field: TomlDocument): readonly Route
     {
       method: "PUT",
       pattern: `${prefix}/raw`,
-      handler: async ({ req, res, state }) => {
-        state[field] = await readBody(req);
-        json(res, 200, VALID);
+      handler: async (ctx) => {
+        ctx.state[field] = await readBody(ctx.req);
+        json(ctx.res, 200, VALID);
+        afterWrite(ctx);
       },
     },
     {
       method: "PATCH",
       pattern: `${prefix}/patch`,
-      handler: async ({ req, res, state }) => {
-        const diff = await readJsonObject(req);
+      handler: async (ctx) => {
+        const { state } = ctx;
+        const diff = await readJsonObject(ctx.req);
         const doc = state[field].trim() ? parseToml(state[field]) : {};
         applyJsonPatch(doc, diff);
         state[field] = stringifyToml(doc);
-        json(res, 200, VALID);
+        json(ctx.res, 200, VALID);
+        afterWrite(ctx);
       },
     },
     {
@@ -319,6 +325,7 @@ async function completeSetup({ req, res, hub, state }: RouteContext): Promise<vo
     return;
   }
   state.hubConfigToml = stringField(body, "hub_config") ?? state.hubConfigToml;
+  hub.reloadHubConfig();
   const agent = hub.createAgent(name, { role: null });
   agent.state.configToml = stringField(body, "config") ?? agent.state.configToml;
   agent.state.providersToml = stringField(body, "providers") ?? agent.state.providersToml;
@@ -478,11 +485,11 @@ const a2aRoutes: readonly Route[] = [
       }
       state.a2aKeys.set(name, {
         description: stringField(body, "description") ?? "",
-        created_at: new Date().toISOString(),
+        created_at: state.env.clock.iso(),
       });
       json(res, 200, {
         name,
-        token: `rsdm_a2a_mock${Math.random().toString(36).slice(2, 10)}`,
+        token: `rsdm_a2a_mock${state.env.nextId().toString(36).padStart(8, "0")}`,
       } satisfies CreateA2aKeyResponse);
     },
   },
@@ -596,7 +603,9 @@ const secretRoutes: readonly Route[] = [
 export const configRoutes: readonly Route[] = [
   ...systemRoutes,
   ...tomlDocumentRoutes("/api/config", "configToml"),
-  ...tomlDocumentRoutes("/api/hub/config", "hubConfigToml"),
+  ...tomlDocumentRoutes("/api/hub/config", "hubConfigToml", ({ hub }) => {
+    hub.reloadHubConfig();
+  }),
   { method: "POST", pattern: "/api/hub/config/complete-setup", handler: completeSetup },
   ...providerRoutes,
   ...mcpRoutes,

@@ -1,8 +1,9 @@
 import { WebSocketServer, type WebSocket } from "ws";
-import type { HubServerMessage } from "../src/lib/hub-types";
+import type { AgentListResponse, HubServerMessage } from "../src/lib/hub-types";
 import { parseJsonObject } from "./http";
 import {
   frameText,
+  HUB_SOCKET_PATH,
   routeUpgrades,
   sendFrame,
   watchPrefixProblem,
@@ -17,6 +18,8 @@ const UNREADABLE_MESSAGE =
 export interface HubSocket {
   /** Send a frame to every connected page. */
   broadcast: (frame: HubServerMessage) => void;
+  /** Drop every connected page, as a restart of the hub would. */
+  dropClients: () => void;
 }
 
 /**
@@ -46,18 +49,20 @@ function watchTeamRefusal(raw: string): string | null {
 
 /**
  * Open the hub WebSocket on the HTTP server. A page that connects first gets
- * `greeting()`, the frames that bring it up to date. The mock has no team
- * files changing, so no change frames follow a `watch_team`.
+ * `hub_boot` with `bootId`, then an `agents_snapshot` of `listing()`. The
+ * mock has no team files changing, so no change frames follow a `watch_team`.
  */
 export function openHubSocket(
   host: UpgradeHost | null,
-  greeting: () => HubServerMessage[],
+  bootId: string,
+  listing: () => AgentListResponse,
 ): HubSocket {
   const wss = new WebSocketServer({ noServer: true });
-  routeUpgrades(host, wss, "/api/hub/ws");
+  routeUpgrades(host, wss, HUB_SOCKET_PATH);
 
   wss.on("connection", (ws: WebSocket) => {
-    for (const frame of greeting()) sendFrame(ws, frame);
+    sendFrame(ws, { type: "hub_boot", boot_id: bootId } satisfies HubServerMessage);
+    sendFrame(ws, { type: "agents_snapshot", ...listing() } satisfies HubServerMessage);
     ws.on("message", (raw) => {
       const refusal = watchTeamRefusal(frameText(raw));
       if (refusal !== null) {
@@ -73,6 +78,9 @@ export function openHubSocket(
   return {
     broadcast: (frame) => {
       for (const client of wss.clients) sendFrame(client, frame);
+    },
+    dropClients: () => {
+      for (const client of wss.clients) client.terminate();
     },
   };
 }

@@ -1,22 +1,23 @@
 import type {
   A2aVisibility,
   AgentLastError,
+  AgentListResponse,
   AgentState,
   AgentSummary,
   OutboundA2aTaskSummary,
   ServerMessage,
 } from "../src/lib/generated/protocol";
 import type { HubServerMessage } from "../src/lib/hub-types";
-import type { RecentMessage, UserInboxItem } from "../src/lib/types";
+import type { RecentMessage, UserInboxItem, WorkspaceEntry } from "../src/lib/types";
 import { loadAsset } from "./assets";
-import { createInboxItems } from "./data/inbox";
+import { seedCheckpoints, type MockCheckpoints } from "./checkpoints";
+import { createArchivedInboxItems, createInboxItems } from "./data/inbox";
 import { createSessions, type MockSessions } from "./data/sessions";
 import { createWorkbenchArtifacts, type MockArtifact } from "./data/workbench";
-import {
-  createWorkspaceFileContents,
-  createWorkspaceFiles,
-  type MockWorkspaceEntry,
-} from "./data/workspace";
+import { createWorkspaceFileContents, createWorkspaceFiles } from "./data/workspace";
+import { createMockEnv, type MockEnv } from "./env";
+import { createScheduled, type MockScheduled } from "./scheduled";
+import type { MockUpdateStatus } from "./update";
 
 /** An agent key as the mock stores it, value included. */
 export interface MockAgentKey {
@@ -31,9 +32,20 @@ export interface MockA2aKey {
   created_at: string;
 }
 
+/** An item in an agent's own inbox, which a workbench artifact can add to. */
+export interface MockAgentInboxItem {
+  id: string;
+  title: string;
+  body: string;
+  source: string;
+  timestamp: string;
+}
+
 export interface MockState {
   /** The agent this state belongs to, or `hub` for the hub- and team-level state. */
   agentName: string;
+  /** The clock, delays and timers the mock shares; the hub and every agent hold the same one. */
+  env: MockEnv;
   mode: "setup" | "running";
   secrets: Map<string, string>;
   agentKeys: Map<string, MockAgentKey>;
@@ -43,9 +55,21 @@ export interface MockState {
   hubConfigToml: string;
   providersToml: string;
   mcpJson: string;
-  workspaceFiles: Record<string, MockWorkspaceEntry[]>;
+  /** Directory path to its listing. Changed only through `workspace-tree.ts`, which keeps it agreeing with the contents. */
+  workspaceFiles: Record<string, WorkspaceEntry[]>;
+  /** File path to its content. */
   workspaceFileContents: Record<string, string>;
   inboxItems: UserInboxItem[];
+  /** The items the user archived, which `restore` brings back to `inboxItems`. */
+  inboxArchive: UserInboxItem[];
+  /** What a workbench artifact added to the agent's own inbox (`POST /api/agent-inbox`), oldest first. */
+  agentInbox: MockAgentInboxItem[];
+  /** The pulses and scheduled actions the Scheduled view lists. */
+  scheduled: MockScheduled;
+  /** What the hub knows about updates, for the update routes. */
+  update: MockUpdateStatus;
+  /** The checkpoint histories this state holds: an agent's own, or the hub's. */
+  checkpoints: MockCheckpoints;
   /**
    * Whether the agent has a conversation: the sample history and episodes
    * sit behind `extraRecent`. An agent has one once it has run.
@@ -88,13 +112,17 @@ export interface MockAgent {
   autostart: boolean;
   role: string | null;
   visibility: A2aVisibility;
-  /** A main turn is in progress. */
-  busy: boolean;
+  /** When the current main turn began, or `null` while none is running. */
+  busySince: string | null;
+  /** The agent's stop has begun and isn't finished: its state is still `running`. */
+  stopping: boolean;
   /** Main-conversation messages the web UI hasn't shown. */
   unread: number;
   state: MockState;
   /** How many web clients have this agent's WebSocket open. Set by the agent socket. */
   connectedClients: () => number;
+  /** Close the agent's WebSocket route and its connections. Set by the agent socket. */
+  dispose: () => void;
 }
 
 /** An agent removed by `DELETE`, kept whole so a restore brings back its conversation and settings. */
@@ -105,6 +133,7 @@ export interface MockDeletedAgent {
 }
 
 export interface MockHub {
+  env: MockEnv;
   agents: Map<string, MockAgent>;
   /** Deleted agents that can be restored, by name. */
   deleted: Map<string, MockDeletedAgent>;
@@ -113,16 +142,35 @@ export interface MockHub {
   /** Register an agent and open its WebSocket route. */
   createAgent: (
     name: string,
-    options?: { role?: string | null; runState?: AgentState; lastError?: string },
+    options?: {
+      role?: string | null;
+      runState?: AgentState;
+      lastError?: Omit<AgentLastError, "at">;
+    },
   ) => MockAgent;
   summary: (agent: MockAgent) => AgentSummary;
+  /** Every agent by name with its activity and stopping set: `GET /api/hub/agents` and the hub snapshot. */
+  listing: () => AgentListResponse;
   /** Send a frame to every hub WebSocket client. */
   broadcast: (frame: HubServerMessage) => void;
   setBusy: (agent: MockAgent, busy: boolean) => void;
+  /** Tell hub clients the agent's stop has begun. Its state changes when `transition` moves it on. */
+  markStopping: (agent: MockAgent) => void;
+  /**
+   * Reload the hub config from the state's `hubConfigToml` the way the hub
+   * does after the file changes, and tell hub clients how it went.
+   */
+  reloadHubConfig: () => void;
   addUnread: (agent: MockAgent) => void;
   clearUnread: (agent: MockAgent) => void;
   /** Move an agent to a run state and tell hub clients. */
   transition: (agent: MockAgent, runState: AgentState) => void;
+  /**
+   * Put the mock back as it started: the clock, the timers and delays, the
+   * hub's own state, and the agents the scenario creates. Every socket is
+   * closed, so pages reconnect to the new state.
+   */
+  reset: () => void;
 }
 
 /** The remote agents an agent that has run has listed in its A2A client settings. */
@@ -138,25 +186,35 @@ const EMPTY_A2A_AGENTS_JSON = '{"agents":{}}';
 
 /**
  * Give an agent the data it has once it has run: a conversation, the sample
- * inbox and its A2A client settings. An agent that has never run has none of
- * it, and its file-only routes answer with empty data.
+ * inbox and archive, and its A2A client settings. An agent that has never run
+ * has none of it, and its file-only routes answer with empty data.
  */
 export function seedAgentData(state: MockState): void {
+  const { clock } = state.env;
   state.hasConversation = true;
-  state.inboxItems = createInboxItems();
+  state.inboxItems = createInboxItems(clock);
+  state.inboxArchive = createArchivedInboxItems(clock);
   state.a2aAgentsJson = SAMPLE_A2A_AGENTS_JSON;
+  state.scheduled = createScheduled(clock);
 }
 
 /**
  * A fresh state with the sample data of an agent that has run, or with none
  * of it when `hasRun` is false.
  */
-export function createState(agentName: string, hasRun = true): MockState {
+export function createState(
+  agentName: string,
+  hasRun = true,
+  env: MockEnv = createMockEnv(),
+): MockState {
+  const { clock } = env;
+  const workspaceFileContents = createWorkspaceFileContents();
   const state: MockState = {
     agentName,
+    env,
     mode: process.env.VITE_MOCK_SETUP === "1" ? "setup" : "running",
     workbenchPort: null,
-    workbenchArtifacts: createWorkbenchArtifacts(),
+    workbenchArtifacts: createWorkbenchArtifacts(clock),
     secrets: new Map([
       ["anthropic_key", "sk-ant-mock-xxxx"],
       ["openai_key", "sk-mock-xxxx"],
@@ -184,7 +242,7 @@ export function createState(agentName: string, hasRun = true): MockState {
         "laptop",
         {
           description: "My other instance, before siblings exist",
-          created_at: new Date(Date.now() - 86400000 * 3).toISOString(),
+          created_at: clock.isoAgo(3 * 86_400_000),
         },
       ],
     ]),
@@ -193,9 +251,9 @@ export function createState(agentName: string, hasRun = true): MockState {
     hubConfigToml: loadAsset("hub-config.example.toml"),
     providersToml: loadAsset("providers.example.toml"),
     mcpJson: loadAsset("mcp.example.json"),
-    workspaceFiles: createWorkspaceFiles(),
-    workspaceFileContents: createWorkspaceFileContents(),
-    sessions: createSessions(),
+    workspaceFiles: createWorkspaceFiles(workspaceFileContents, clock),
+    workspaceFileContents,
+    sessions: createSessions(clock),
     outboundTasks: [
       {
         task_id: "task-7f3a",
@@ -204,7 +262,7 @@ export function createState(agentName: string, hasRun = true): MockState {
         state: "working",
         status_text: "Reading the three papers you linked and pulling out their benchmark numbers.",
         open: true,
-        started_at: new Date(Date.now() - 4 * 60_000).toISOString(),
+        started_at: clock.isoAgo(4 * 60_000),
         unreachable_since: null,
       },
       {
@@ -214,8 +272,8 @@ export function createState(agentName: string, hasRun = true): MockState {
         state: "working",
         status_text: null,
         open: true,
-        started_at: new Date(Date.now() - 42 * 60_000).toISOString(),
-        unreachable_since: new Date(Date.now() - 17 * 60_000).toISOString(),
+        started_at: clock.isoAgo(42 * 60_000),
+        unreachable_since: clock.isoAgo(17 * 60_000),
       },
     ],
     extraRecent: [],
@@ -223,8 +281,14 @@ export function createState(agentName: string, hasRun = true): MockState {
     broadcast: () => {},
     compressedAt: null,
     inboxItems: [],
+    inboxArchive: [],
+    agentInbox: [],
+    scheduled: { pulses: [], actions: [] },
+    update: { latest: null, lastChecked: null },
+    checkpoints: {},
     hasConversation: false,
   };
   if (hasRun) seedAgentData(state);
+  seedCheckpoints(state);
   return state;
 }

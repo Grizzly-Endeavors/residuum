@@ -1,14 +1,20 @@
 // @ts-check
 
+import { readFileSync } from "node:fs";
+
 // Style lint for the web UI's global stylesheets and component <style> blocks.
 //
 // Outside the token file, styles reference design tokens instead of spelling
 // out literal colors, font sizes, z-indexes, durations or easing curves. The
 // token file is the one place those literals are declared, so a value changes
-// in one place.
+// in one place. Viewport media queries use only the shell breakpoints; a
+// component that needs its own responsive rule uses a container query.
 
-/** The files that may declare literal values: the design token set. */
-const TOKEN_FILES = ["src/styles/variables.css"];
+/**
+ * The files that may declare literal values: the design token set, and the
+ * legacy variables that legacy styles still read.
+ */
+const TOKEN_FILES = ["src/styles/tokens.css", "src/styles/variables.css"];
 
 /**
  * Stylesheets and components that still carry literal values, exempt from the
@@ -45,7 +51,7 @@ const LEGACY_FILES = [
   "src/components/UserInboxDrawer.svelte",
 ];
 
-/** A single token reference such as `var(--fs-base)`, with no literal fallback. */
+/** A single token reference such as `var(--font-size-ui)`, with no literal fallback. */
 const TOKEN_REFERENCE = /^var\(--[\w-]+\)$/;
 
 /** CSS-wide keywords, which never carry a literal value. */
@@ -63,6 +69,24 @@ const EASING_LITERAL =
 
 /** `all` as a transitioned property animates everything, including layout. */
 const TRANSITION_ALL = /(^|[\s,])all($|[\s,])/;
+
+/**
+ * Reads a `--breakpoint-*` width in pixels from the token file, so lint and
+ * tokens can't disagree.
+ * @param {string} name
+ * @returns {number}
+ */
+function readBreakpoint(name) {
+  const tokens = readFileSync(new URL("./src/styles/tokens.css", import.meta.url), "utf8");
+  const width = new RegExp(`--breakpoint-${name}:\\s*(\\d+)px;`).exec(tokens)?.[1];
+  if (width === undefined) {
+    throw new Error(`stylelint config: --breakpoint-${name} is missing from src/styles/tokens.css`);
+  }
+  return Number(width);
+}
+
+const PHONE_MAX = readBreakpoint("phone-max");
+const WIDE_MIN = readBreakpoint("wide-min");
 
 /** @type {import("stylelint").Config} */
 export default {
@@ -107,7 +131,20 @@ export default {
       },
       {
         message: (property, value) =>
-          `${property}: ${value} is not allowed. Use motion tokens (var(--dur-…), var(--ease-…)), and name the properties to transition instead of "all".`,
+          `${property}: ${value} is not allowed. Use motion tokens (var(--duration-…), var(--ease-…)), and name the properties to transition instead of "all".`,
+      },
+    ],
+
+    // Viewport widths: min-/max- notation, so the allowed list below sees every width.
+    "media-feature-range-notation": "prefix",
+    "media-feature-name-value-allowed-list": [
+      {
+        "max-width": [`${PHONE_MAX}px`, `${WIDE_MIN - 1}px`],
+        "min-width": [`${PHONE_MAX + 1}px`, `${WIDE_MIN}px`],
+      },
+      {
+        message: (feature, value) =>
+          `${feature}: ${value} is not a shell breakpoint. Use a container query for a component's own responsive rules.`,
       },
     ],
   },

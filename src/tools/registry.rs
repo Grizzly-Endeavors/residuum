@@ -36,10 +36,10 @@ pub struct ToolRegistry {
     /// registration. `None` means minting a key through `exec` isn't
     /// checkpointed (matches `agent_keys: None`'s "not available" story).
     checkpoints: Option<Arc<crate::checkpoints::CheckpointEngine>>,
-    /// Bus publisher injected into `exec` and `agent_key_delete`, so they can
-    /// surface a notice when they overwrite or delete a key the user
-    /// created. `None` means that notice goes unpublished (the action still
-    /// happens).
+    /// Bus publisher injected into `exec`, `agent_key_delete` and
+    /// `user_inbox_add`, so they can surface a notice when they overwrite or
+    /// delete a key the user created, and announce each user inbox item they
+    /// save. `None` means those go unpublished (the action still happens).
     publisher: Option<Publisher>,
 }
 
@@ -185,11 +185,13 @@ impl ToolRegistry {
         self.checkpoints = Some(checkpoints);
     }
 
-    /// Set the bus publisher injected into `exec` and `agent_key_delete`, so
-    /// overwriting or deleting a key the user created is reported.
+    /// Set the bus publisher injected into `exec`, `agent_key_delete` and
+    /// `user_inbox_add`, so overwriting or deleting a key the user created is
+    /// reported and saved user inbox items are announced.
     ///
-    /// Call before [`register_defaults`](Self::register_defaults) and
-    /// [`register_agent_key_tools`](Self::register_agent_key_tools).
+    /// Call before [`register_defaults`](Self::register_defaults),
+    /// [`register_agent_key_tools`](Self::register_agent_key_tools) and
+    /// [`register_inbox_tools`](Self::register_inbox_tools).
     pub fn set_publisher(&mut self, publisher: Publisher) {
         self.publisher = Some(publisher);
     }
@@ -240,11 +242,23 @@ impl ToolRegistry {
             tz,
         )));
         self.register(Box::new(actions::ListActionsTool::new(store, tz)));
-        self.register(Box::new(inbox::UserInboxAddTool::new(
-            user_inbox_dir,
-            user_inbox_attachments_dir,
-            tz,
-        )));
+        self.register_user_inbox_add(user_inbox_dir, user_inbox_attachments_dir, tz);
+    }
+
+    /// Register `user_inbox_add`, announcing each item it saves on this
+    /// registry's publisher when it has one.
+    fn register_user_inbox_add(
+        &mut self,
+        user_inbox_dir: PathBuf,
+        user_inbox_attachments_dir: PathBuf,
+        tz: chrono_tz::Tz,
+    ) {
+        let tool = inbox::UserInboxAddTool::new(user_inbox_dir, user_inbox_attachments_dir, tz);
+        let tool = match &self.publisher {
+            Some(publisher) => tool.with_publisher(publisher.clone()),
+            None => tool,
+        };
+        self.register(Box::new(tool));
     }
 
     /// Get tool definitions for sending to the model.
@@ -404,6 +418,9 @@ impl ToolRegistry {
 
     /// Register inbox management tools (`inbox_list`, `inbox_read`, `inbox_archive`,
     /// `inbox_restore`, `user_inbox_add`).
+    ///
+    /// Call after [`set_publisher`](Self::set_publisher) so `user_inbox_add`
+    /// announces the items it saves.
     pub fn register_inbox_tools(
         &mut self,
         agent_inbox_dir: PathBuf,
@@ -425,11 +442,7 @@ impl ToolRegistry {
             agent_inbox_dir,
             agent_archive_dir,
         )));
-        self.register(Box::new(inbox::UserInboxAddTool::new(
-            user_inbox_dir,
-            user_inbox_attachments_dir,
-            tz,
-        )));
+        self.register_user_inbox_add(user_inbox_dir, user_inbox_attachments_dir, tz);
     }
 
     /// Register `list_endpoints` and `list_conversations` for discovering
@@ -837,6 +850,57 @@ mod tests {
                 "{tool} must be registered exactly once"
             );
         }
+    }
+
+    /// Adds an item through the registry's `user_inbox_add` and returns
+    /// whether the registry's bus announced it.
+    async fn adds_and_announces(registry: &ToolRegistry, bus: &crate::bus::BusHandle) -> bool {
+        let mut added = bus
+            .subscribe::<_, crate::bus::UserInboxAddedEvent>(crate::bus::topics::UserInbox)
+            .await
+            .unwrap();
+        let result = registry
+            .execute(
+                "user_inbox_add",
+                serde_json::json!({"title": "note", "body": "look"}),
+            )
+            .await
+            .unwrap();
+        assert!(!result.is_error, "{}", result.output);
+        tokio::time::timeout(std::time::Duration::from_millis(500), added.recv())
+            .await
+            .is_ok()
+    }
+
+    #[tokio::test]
+    async fn user_inbox_add_announces_through_the_registrys_publisher_and_after_a_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = dir.path().join("inbox/user");
+        let attachments = inbox.join("attachments");
+        std::fs::create_dir_all(&inbox).unwrap();
+        let bus = crate::bus::spawn_broker();
+        let mut registry = ToolRegistry::new();
+        registry.set_publisher(bus.publisher());
+        registry.register_inbox_tools(
+            dir.path().join("inbox/agent"),
+            dir.path().join("archive/inbox/agent"),
+            inbox.clone(),
+            attachments.clone(),
+            chrono_tz::UTC,
+        );
+        assert!(adds_and_announces(&registry, &bus).await, "at registration");
+
+        // A timezone change re-registers the tool, which must keep announcing.
+        registry.reload_timezone_tools(
+            Arc::new(Mutex::new(ActionStore::new_empty(
+                dir.path().join("scheduled_actions.json"),
+            ))),
+            Arc::new(Notify::new()),
+            inbox,
+            attachments,
+            chrono_tz::America::New_York,
+        );
+        assert!(adds_and_announces(&registry, &bus).await, "after a reload");
     }
 
     #[test]

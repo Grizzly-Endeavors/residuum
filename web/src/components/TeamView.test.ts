@@ -5,6 +5,7 @@ import { hub } from "../lib/hub.svelte";
 import { legacyRouter } from "../lib/legacy-router.svelte";
 import { toast } from "../lib/toast.svelte";
 import { notifications } from "../lib/notifications.svelte";
+import { activityFrame, snapshot } from "../test/hub-frames";
 import type { AgentSummary, DeletedAgent } from "../lib/hub-types";
 
 function agent(name: string, overrides: Partial<AgentSummary> = {}): AgentSummary {
@@ -80,23 +81,27 @@ function serveHub(respond?: (call: Call) => Response | undefined): void {
 beforeEach(() => {
   deletedAgents = [];
   deletedListFails = false;
-  hub.handleFrame({
-    type: "agents_snapshot",
-    agents: [
+  hub.handleFrame(
+    snapshot([
       agent("atlas"),
       agent("brittle", {
         state: "failed",
         role: null,
-        last_error: { message: "providers.toml is missing", at: "2026-09-29T10:00:00Z" },
+        last_error: {
+          message: "providers.toml is missing",
+          kind: "config",
+          reason: "config error: providers.toml is missing",
+          at: "2026-09-29T10:00:00Z",
+        },
       }),
       agent("drifter", { state: "stopped", autostart: false, a2a_visibility: "public" }),
-    ],
-  });
+    ]),
+  );
   serveHub();
 });
 
 afterEach(() => {
-  hub.handleFrame({ type: "agents_snapshot", agents: [] });
+  hub.handleFrame(snapshot([]));
   hub.notices = [];
   hub.deleted = [];
   hub.deletedLoaded = false;
@@ -143,7 +148,7 @@ describe("TeamView agent list", () => {
   });
 
   it("shows activity: working and unread", () => {
-    hub.handleFrame({ type: "agent_activity", name: "atlas", busy: true, unread: 2 });
+    hub.handleFrame(activityFrame("atlas", true, 2));
     render(TeamView, { onClose: () => {} });
     expect(row("atlas")).toHaveTextContent("working");
     expect(row("atlas")).toHaveTextContent("2 unread");

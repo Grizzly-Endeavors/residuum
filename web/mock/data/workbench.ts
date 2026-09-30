@@ -1,3 +1,5 @@
+import type { MockClock } from "../env";
+
 /** A workbench artifact the mock serves: its page and when it last changed. */
 export interface MockArtifact {
   html: string;
@@ -54,8 +56,6 @@ export const MOCK_WORKBENCH_ARTIFACT = `<!doctype html>
 </body></html>`;
 
 /** The mock workbench: artifact name to its page. */
-export function createWorkbenchArtifacts(): Map<string, MockArtifact> {
-  return new Map([
-    ["tip-splitter", { html: MOCK_WORKBENCH_ARTIFACT, modifiedAt: new Date().toISOString() }],
-  ]);
+export function createWorkbenchArtifacts(clock: MockClock): Map<string, MockArtifact> {
+  return new Map([["tip-splitter", { html: MOCK_WORKBENCH_ARTIFACT, modifiedAt: clock.iso() }]]);
 }

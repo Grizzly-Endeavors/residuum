@@ -198,4 +198,4 @@ Agent scope:
 - [x] Deep links and back/forward — **Changed:** route model in design §3 with redirects from every current URL
 - [x] macOS notification "Open" link lands on the last-used agent's Files, as today
 - [ ] Persisted preferences: last agent, API cache, setup draft — sidebar open state, settings mode and verbose are **Dropped** with the features they served
-- [ ] Reduced motion respected
+- [x] Reduced motion respected

@@ -1,12 +1,10 @@
-// ── Workspace change feed (client side) ──────────────────────────────
+// ── Workspace watch paths (client side) ─────────────────────────────
 //
-// The gateway keeps one watch set per WebSocket connection: the workspace
-// path prefixes the connection wants `workspace_changed` frames for. The web
-// UI shows one artifact at a time, so the connection's set is the open
-// artifact's prefixes, empty when none is open. A new connection starts with
-// an empty set, so the set is sent again after every reconnect.
+// How a watched path prefix is spelled and matched, the way the gateway and
+// the hub do it. The socket's watch set itself is kept by the watch registry
+// (`watch-registry.ts`).
 
-import type { ClientMessage, WorkspaceChange } from "./types";
+import type { WorkspaceChange } from "./types";
 
 /**
  * Normalize a workspace path prefix the way the gateway does: `/`-separated,
@@ -61,36 +59,4 @@ export function changesUnder(
   prefixes: readonly string[],
 ): WorkspaceChange[] {
   return changes.filter((change) => prefixes.some((p) => changeMatchesPrefix(change.path, p)));
-}
-
-/** Keeps the connection's watch set in step with the open artifact. */
-export class WorkspaceWatchSync {
-  private prefixes: string[] = [];
-
-  constructor(private readonly send: (msg: ClientMessage) => void) {}
-
-  /** The prefixes the connection should watch now. */
-  get current(): readonly string[] {
-    return this.prefixes;
-  }
-
-  /** Replace the watched prefixes, telling the gateway only when they change. */
-  set(prefixes: readonly string[]): void {
-    const next = [...new Set(prefixes)].sort();
-    if (next.length === this.prefixes.length && next.every((p, i) => p === this.prefixes[i])) {
-      return;
-    }
-    this.prefixes = next;
-    this.send({ type: "watch_workspace", prefixes: next });
-  }
-
-  /** Forget the watched prefixes without telling anyone, for a connection about to be discarded. */
-  clear(): void {
-    this.prefixes = [];
-  }
-
-  /** A connection opened: it watches nothing until told again. */
-  connected(): void {
-    if (this.prefixes.length > 0) this.send({ type: "watch_workspace", prefixes: this.prefixes });
-  }
 }

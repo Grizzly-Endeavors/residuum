@@ -7,10 +7,12 @@
 //! `docs/systems-usage/hub.md` and `docs/systems-usage/hub-http.md`.
 
 pub mod activity;
+pub mod agent_watch;
 mod deleted;
 pub mod directory;
 pub mod host;
 pub mod http;
+pub mod inbox;
 pub mod provision;
 mod relay_agents;
 pub mod runtime;
@@ -21,7 +23,7 @@ pub(crate) mod team_embedding;
 pub(crate) mod test_support;
 pub mod types;
 
-pub use directory::{AgentDirectory, DirectoryHandle};
+pub use directory::{AgentDirectory, AgentFiles, DirectoryHandle};
 pub use host::AgentHost;
 pub use provision::{
     AgentSpec, RestoreSource, copy_providers_from, deprovision_agent, first_message,
@@ -32,6 +34,7 @@ pub use team::{
     TeamAddressError, TeamLink, TeamRouter, TeamSendError, TeamTarget, parse_team_address,
 };
 pub use types::{
-    A2aVisibility, Actor, AgentActivity, AgentLastError, AgentPatch, AgentState, AgentSummary,
-    CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError, RestoreAgentRequest,
+    A2aVisibility, Actor, AgentActivity, AgentErrorKind, AgentLastError, AgentPatch, AgentState,
+    AgentSummary, CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError,
+    RestoreAgentRequest,
 };

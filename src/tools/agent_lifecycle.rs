@@ -290,7 +290,7 @@ mod tests {
     use chrono::Utc;
 
     use super::*;
-    use crate::hub::{A2aVisibility, AgentLastError};
+    use crate::hub::{A2aVisibility, AgentErrorKind, AgentLastError};
 
     fn summary(state: AgentState, last_error: Option<&str>) -> AgentSummary {
         AgentSummary {
@@ -298,6 +298,8 @@ mod tests {
             state,
             last_error: last_error.map(|message| AgentLastError {
                 message: message.to_string(),
+                kind: AgentErrorKind::Config,
+                reason: "bad model settings".to_string(),
                 at: Utc::now(),
             }),
             autostart: true,

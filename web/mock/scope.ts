@@ -7,6 +7,28 @@ import type { MockHub, MockState } from "./state";
  */
 const REPAIR_ROUTES = /^\/(config|providers|mcp|workspace|checkpoints)(\/|$)/;
 
+/**
+ * What each scope owns, by path below the scope's prefix. A path outside them
+ * answers `404`, as the backend does: an agent has no workbench, and the hub
+ * has no workspace.
+ *
+ * - An agent: its status, files, config, conversation, sessions, schedule,
+ *   inbox, model calls, and the A2A routes that describe it.
+ * - The hub: secrets and keys, the cloud tunnel, updates, tracing, the
+ *   timezone and MCP catalog, onboarding's provider lookup, and the `hub` and
+ *   `team` checkpoint repositories.
+ * - The team: the workbench. Team files keep their own spelling.
+ */
+const AGENT_ROUTES =
+  /^\/(status|config|providers|mcp|workspace|checkpoints|chat|usage|inbox|agent-inbox|sessions|scheduled|files|memory|model|a2a\/(status|card|agents|outbound))(\/|$)/;
+const HUB_ROUTES =
+  /^\/(secrets|agent-keys|a2a\/keys|cloud|update|tracing|system|mcp-catalog|providers\/models|shutdown|checkpoints)(\/|$)/;
+const TEAM_ROUTES = /^\/workbench(\/|$)/;
+
+function notInScope(path: string, owner: string): ScopeRefusal {
+  return { status: 404, body: { error: `mock: ${path} is not a route of ${owner}` } };
+}
+
 const INBOX_ITEM_ACTIONS = new Set(["read", "archive", "restore"]);
 
 /**
@@ -65,10 +87,13 @@ export interface ScopeRefusal {
  *
  * - `/api/agents/{name}/...` runs against that agent's state, as `/api/...`.
  *   A stopped or failed agent serves only the repair and file-only routes;
- *   any other route answers `409`. An unknown agent answers `404`.
- * - Hub routes run against the shared state. Lifecycle, status and hub config
- *   routes and team files keep their path; any other becomes `/api/...`.
- * - `/api/team/...` likewise, except team files.
+ *   any other route answers `409`. An unknown agent answers `404`, and so
+ *   does a route an agent doesn't own (`AGENT_ROUTES`).
+ * - Hub routes run against the shared state. Lifecycle, status, hub config
+ *   and cross-agent inbox routes and team files keep their path; any other
+ *   the hub owns (`HUB_ROUTES`) becomes `/api/...`, and the rest answer `404`.
+ * - `/api/team/...` likewise, except team files, and with the workbench the
+ *   only other route it owns (`TEAM_ROUTES`).
  * - `/api/mock/...` test controls run against the `?agent=` agent, or the
  *   first running one.
  */
@@ -99,26 +124,36 @@ export function scopeRequest(
         body: { error: `${name} is ${agent.runState}`, state: agent.runState },
       };
     }
-    return { state: agent.state, path: `/api${sub}` };
+    return AGENT_ROUTES.test(sub)
+      ? { state: agent.state, path: `/api${sub}` }
+      : notInScope(path, "an agent");
   }
 
   if (
     path === "/api/hub/status" ||
     path === "/api/hub/stop-all" ||
     path === "/api/hub/agents" ||
-    path.startsWith("/api/hub/agents/")
+    path.startsWith("/api/hub/agents/") ||
+    path === "/api/hub/inbox" ||
+    path.startsWith("/api/hub/inbox/")
   ) {
     return { state: hub.hubState, path };
   }
   // Hub config keeps its path; every other hub route is a hub-level route.
   if (path.startsWith("/api/hub/config/")) return { state: hub.hubState, path };
   if (path.startsWith("/api/hub/")) {
-    return { state: hub.hubState, path: `/api${path.slice("/api/hub".length)}` };
+    const sub = path.slice("/api/hub".length);
+    return HUB_ROUTES.test(sub)
+      ? { state: hub.hubState, path: `/api${sub}` }
+      : notInScope(path, "the hub");
   }
 
   if (path.startsWith("/api/team/workspace/")) return { state: hub.hubState, path };
   if (path.startsWith("/api/team/")) {
-    return { state: hub.hubState, path: `/api${path.slice("/api/team".length)}` };
+    const sub = path.slice("/api/team".length);
+    return TEAM_ROUTES.test(sub)
+      ? { state: hub.hubState, path: `/api${sub}` }
+      : notInScope(path, "the team");
   }
 
   return {

@@ -61,8 +61,15 @@ pub(crate) struct AgentControl {
     /// What the hub cleans up when the event loop dies without shutting the
     /// agent down.
     pub cleanup: AgentCleanup,
-    /// The agent's live sessions, for the hub's bug reports.
+    /// The agent's live sessions, for the hub's bug reports and the hub's
+    /// per-agent watcher.
     pub session_registry: Arc<crate::background::registry::SessionRegistry>,
+    /// Subscribes to the agent's own event bus: how the hub's per-agent
+    /// watcher hears about sessions, outbound tasks, user inbox additions and
+    /// file changes.
+    pub bus: crate::bus::BusHandle,
+    /// Whether the change feed over the agent's directory is running.
+    pub workspace_watch_health: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
     /// The agent's bus publisher, for handing the agent a message.
     publisher: crate::bus::Publisher,
     /// The agent's messenger, which delivers a creating agent's first
@@ -231,6 +238,8 @@ pub(crate) async fn start_agent(inputs: AgentStartInputs) -> Result<StartedAgent
             mcp_registry: Arc::clone(&parts.mcp_registry),
         },
         session_registry: Arc::clone(&parts.session_registry),
+        bus: core.bus_handle.clone(),
+        workspace_watch_health: spawned.workspace_watch_health.clone(),
         publisher: core.publisher.clone(),
         messenger: Arc::clone(&parts.agent_messenger),
     };
@@ -353,6 +362,8 @@ struct SpawnedHandles {
     root_config_watcher_handle: Option<tokio::task::JoinHandle<()>>,
     workbench_watcher_handle: Option<tokio::task::JoinHandle<()>>,
     change_feed_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Whether the change feed over the agent's directory is running.
+    workspace_watch_health: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
     /// Raised by [`build_runtime`] once the session spawn listener is up.
     sessions_ready_tx: tokio::sync::watch::Sender<bool>,
 }
@@ -542,6 +553,7 @@ async fn spawn_agent_tasks(
         root_config_watcher_handle,
         workbench_watcher_handle,
         change_feed_handle,
+        workspace_watch_health,
         sessions_ready_tx,
     })
 }

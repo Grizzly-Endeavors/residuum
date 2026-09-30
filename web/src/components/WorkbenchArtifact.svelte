@@ -107,9 +107,7 @@
         boundAgent: () => ws.agent,
         onFrame: (listener) => ws.onFrame(listener),
         onConnectionChange: (listener) => ws.onConnectionChange(listener),
-        watchWorkspace: (prefixes) => {
-          ws.watchWorkspace(prefixes);
-        },
+        registerWatch: (handler) => ws.watches.register(handler),
         onEscape: () => {
           if (full) onSetFull(false);
         },

@@ -9,12 +9,15 @@
 // routes that change secrets, credentials, raw config, or Residuum's own
 // lifecycle are refused.
 //
-// The bridge also carries the workspace change feed: it hands the artifact's
-// watched prefixes to the WebSocket coordinator, delivers only the changes
-// under them, and tells the artifact when the connection drops and returns.
+// The bridge also carries the workspace change feed: it is the watch owner
+// for its artifact's document, registers the artifact's watched prefixes with
+// the WebSocket coordinator's watch registry, passes on the changes the
+// registry delivers for them, and tells the artifact when the connection
+// drops and returns.
 
-import type { ServerMessage, WorkspaceChange } from "./types";
-import { changesUnder, normalizeWatchPrefix } from "./workspace-watch";
+import type { ServerMessage } from "./types";
+import type { WatchHandler, WatchOwner } from "./watch-registry";
+import { normalizeWatchPrefix } from "./workspace-watch";
 import { NoAgentSelectedError, scopeApiPath } from "./paths";
 
 /** Tag on every message between the SDK and the bridge. Matches sdk.js. */
@@ -388,8 +391,12 @@ export interface BridgeDeps {
   onFrame: (listener: (msg: ServerMessage, agent: string | null) => void) => () => void;
   /** Observe the socket connecting and disconnecting; returns a function that stops observing. */
   onConnectionChange: (listener: (connected: boolean) => void) => () => void;
-  /** Set the workspace prefixes the connection watches for this artifact. `[]` stops watching. */
-  watchWorkspace: (prefixes: readonly string[]) => void;
+  /**
+   * Become a watch owner on the bound agent's socket. The bridge owns its
+   * document's prefixes and no one else's: it registers while the document
+   * watches anything and releases when it watches nothing.
+   */
+  registerWatch: (handler: WatchHandler) => WatchOwner;
   /** The user pressed Esc inside the artifact and the artifact left it unhandled. */
   onEscape: () => void;
   /**
@@ -404,8 +411,8 @@ export interface BridgeDeps {
 
 export class WorkbenchBridge {
   private subscribed = false;
-  /** The artifact's watched workspace prefixes, normalized. */
-  private watched: string[] = [];
+  /** The bridge's claim on the watch registry, held while the document watches anything. */
+  private watch: WatchOwner | null = null;
   /** Whether the current document's SDK announced itself since the last frame load. */
   private readySinceLoad = false;
   /** Whether the socket dropped since the artifact last had a live connection. */
@@ -414,7 +421,18 @@ export class WorkbenchBridge {
   private stopObservingConnection: (() => void) | null = null;
   private readonly requests = new ConcurrencyLimiter(MAX_CONCURRENT_REQUESTS);
   private readonly modelCalls = new ConcurrencyLimiter(MAX_CONCURRENT_MODEL_CALLS);
-  /** Abort controllers for this frame's in-flight model calls, keyed by request id. */
+  /**
+   * Bumped every time the document resets (a `ready`, or a reload with no
+   * `ready`). The SDK numbers requests `req-1`, `req-2`, ... restarting in
+   * every document, so a reply that outlives its document could otherwise
+   * resolve the next document's request of the same id.
+   */
+  private documentGeneration = 0;
+  /**
+   * Abort controllers for this frame's in-flight model calls, keyed by
+   * `<generation>:<id>` so an id reused by a later document can never
+   * collide with an earlier document's controller.
+   */
   private readonly modelCallControllers = new Map<string, AbortController>();
   private readonly sleep: (ms: number) => Promise<void>;
 
@@ -445,7 +463,6 @@ export class WorkbenchBridge {
     this.stopObservingConnection?.();
     this.stopObservingConnection = null;
     this.resetDocument();
-    this.cancelModelCalls();
   }
 
   /** How many model calls this frame has in flight right now. */
@@ -479,16 +496,38 @@ export class WorkbenchBridge {
     this.readySinceLoad = false;
   }
 
-  /** Forget what the previous document subscribed to and watched. */
+  /**
+   * Forget what the previous document subscribed to and watched, and abort
+   * its in-flight model calls so they stop counting toward this frame's
+   * total immediately rather than lingering until they resolve.
+   */
   private resetDocument(): void {
+    this.documentGeneration += 1;
+    this.cancelModelCalls();
     this.subscribed = false;
     this.setWatched([]);
   }
 
+  /**
+   * Watch exactly `prefixes` for the document, which replaces only the
+   * document's own watch. The bridge registers on the first watch and
+   * releases when the document watches nothing.
+   */
   private setWatched(prefixes: string[]): void {
-    if (prefixes.length === 0 && this.watched.length === 0) return;
-    this.watched = prefixes;
-    this.deps.watchWorkspace(prefixes);
+    if (prefixes.length === 0) {
+      this.watch?.release();
+      this.watch = null;
+      return;
+    }
+    this.watch ??= this.deps.registerWatch({
+      changed: (changes) => {
+        this.post({ kind: "event", frame: { type: "workspace_changed", changes } });
+      },
+      resync: (reason) => {
+        this.post({ kind: "event", frame: { type: "workspace_resync", reason } });
+      },
+    });
+    this.watch.set(prefixes);
   }
 
   /**
@@ -500,25 +539,21 @@ export class WorkbenchBridge {
    * another's.
    */
   private forwardFrame(frame: ServerMessage, agent: string | null): void {
-    if (frame.type === "workspace_changed") {
-      this.deliverChanges(frame.changes);
-    } else if (frame.type === "workspace_resync") {
-      if (this.watched.length > 0) this.post({ kind: "event", frame });
-    } else if (frame.type !== "workspace_watch_unavailable" && frame.type !== "pong") {
-      // The web UI shows its own notice when live updates are off, and
-      // keepalive pongs are transport noise, not events an artifact can act on.
-      if (this.subscribed) {
-        this.post({ kind: "event", frame: agent === null ? frame : { ...frame, agent } });
-      }
+    // The change feed reaches the artifact through its watch, for the prefixes
+    // it watches. The web UI shows its own notice when live updates are off,
+    // and keepalive pongs are transport noise, not events an artifact can act
+    // on.
+    if (
+      frame.type === "workspace_changed" ||
+      frame.type === "workspace_resync" ||
+      frame.type === "workspace_watch_unavailable" ||
+      frame.type === "pong"
+    ) {
+      return;
     }
-  }
-
-  /** Deliver the changes under the artifact's watched prefixes, if any. */
-  private deliverChanges(changes: WorkspaceChange[]): void {
-    if (this.watched.length === 0) return;
-    const matching = changesUnder(changes, this.watched);
-    if (matching.length === 0) return;
-    this.post({ kind: "event", frame: { type: "workspace_changed", changes: matching } });
+    if (this.subscribed) {
+      this.post({ kind: "event", frame: agent === null ? frame : { ...frame, agent } });
+    }
   }
 
   /**
@@ -527,10 +562,10 @@ export class WorkbenchBridge {
    */
   private connectionChanged(connected: boolean): void {
     if (!connected) this.missedChanges = true;
-    if (!this.subscribed && this.watched.length === 0) return;
+    if (!this.subscribed && this.watch === null) return;
     const state = connected ? "connected" : "disconnected";
     this.post({ kind: "event", frame: { type: "connection", state } });
-    if (connected && this.missedChanges && this.watched.length > 0) {
+    if (connected && this.missedChanges && this.watch !== null) {
       this.post({ kind: "event", frame: { type: "workspace_resync", reason: "reconnected" } });
     }
     if (connected) this.missedChanges = false;
@@ -583,9 +618,12 @@ export class WorkbenchBridge {
   }
 
   private async handleFetch(request: FetchRequest): Promise<void> {
+    // Captured before any await, so a `ready` arriving while this request is
+    // in flight can never be mistaken for the document that issued it.
+    const generation = this.documentGeneration;
     const check = checkArtifactRequest(request.method, request.path, this.deps.origin);
     if (!check.allowed) {
-      this.replyBlocked(request.id, check.status, check.reason);
+      this.replyBlocked(generation, request.id, check.status, check.reason);
       return;
     }
 
@@ -597,6 +635,7 @@ export class WorkbenchBridge {
     } catch (err) {
       if (!(err instanceof NoAgentSelectedError)) throw err;
       this.replyBlocked(
+        generation,
         request.id,
         409,
         "No agent is open, so this path can't be resolved to one. Name the agent in the path: /api/agents/<name>/...",
@@ -605,29 +644,30 @@ export class WorkbenchBridge {
     }
 
     // Model calls get their own concurrency lane (separate from ordinary
-    // requests) and an abort signal, tracked per frame so the activity panel
-    // and Stop page (design §9) can cancel them later.
+    // requests) and an abort signal, tracked per frame (and generation) so
+    // the activity panel and Stop page (design §9) can cancel them later.
     const isModelCall = isModelCompletePath(url);
     const limiter = isModelCall ? this.modelCalls : this.requests;
     const controller = isModelCall ? new AbortController() : null;
-    if (controller) this.trackModelCall(request.id, controller);
+    const modelCallKey = isModelCall ? `${generation}:${request.id}` : null;
+    if (controller && modelCallKey) this.trackModelCall(modelCallKey, controller);
 
     let resp: Response;
     try {
       resp = await limiter.run(() => this.relayWithRetry(url, request, controller?.signal));
     } catch (err) {
       if (isAbortError(err)) {
-        this.reply(request.id, { error: "The model call was cancelled." });
+        this.replyIfCurrent(generation, request.id, { error: "The model call was cancelled." });
         return;
       }
       // eslint-disable-next-line no-console -- the tool gets a plain-language error; the raw cause is for developers
       console.error("workbench bridge request failed", request.method, url, err);
-      this.reply(request.id, {
+      this.replyIfCurrent(generation, request.id, {
         error: "Couldn't reach Residuum. Check that it's running, then try again.",
       });
       return;
     } finally {
-      if (controller) this.untrackModelCall(request.id);
+      if (controller && modelCallKey) this.untrackModelCall(modelCallKey);
     }
     const body = await resp.arrayBuffer();
     const relayed: RelayedResponse = {
@@ -636,7 +676,7 @@ export class WorkbenchBridge {
       headers: [...resp.headers.entries()],
       body,
     };
-    this.reply(request.id, { result: relayed }, [body]);
+    this.replyIfCurrent(generation, request.id, { result: relayed }, [body]);
   }
 
   /**
@@ -663,9 +703,9 @@ export class WorkbenchBridge {
     }
   }
 
-  private replyBlocked(id: string, status: number, reason: string): void {
+  private replyBlocked(generation: number, id: string, status: number, reason: string): void {
     const body = new TextEncoder().encode(JSON.stringify({ error: reason }));
-    this.reply(id, {
+    this.replyIfCurrent(generation, id, {
       result: {
         status,
         statusText: "Blocked by the workbench",
@@ -673,6 +713,23 @@ export class WorkbenchBridge {
         body: body.buffer,
       } satisfies RelayedResponse,
     });
+  }
+
+  /**
+   * Delivers a reply only if `generation` is still the current document.
+   * A live reload keeps the bridge alive while the old document's in-flight
+   * fetches settle; without this, a stale reply could resolve the new
+   * document's pending request of the same id (the SDK numbers requests
+   * `req-1`, `req-2`, ... restarting fresh in every document).
+   */
+  private replyIfCurrent(
+    generation: number,
+    id: string,
+    outcome: { result: unknown } | { error: string },
+    transfer: Transferable[] = [],
+  ): void {
+    if (generation !== this.documentGeneration) return;
+    this.reply(id, outcome, transfer);
   }
 
   /**

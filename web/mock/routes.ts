@@ -34,24 +34,39 @@ export interface Route {
   handler: (ctx: RouteContext) => void | Promise<void>;
 }
 
+/** The first route that takes a request, and the capture groups of its pattern. */
+export interface RouteMatch {
+  route: Route;
+  params: readonly string[];
+}
+
+/** The first route taking `method` and `path`, or `undefined` when none does. */
+export function matchRoute(
+  routes: readonly Route[],
+  method: string,
+  path: string,
+): RouteMatch | undefined {
+  for (const route of routes) {
+    if (route.method !== method) continue;
+    if (typeof route.pattern === "string") {
+      if (route.pattern === path) return { route, params: [] };
+      continue;
+    }
+    const match = route.pattern.exec(path);
+    if (match !== null) return { route, params: match.slice(1) };
+  }
+  return undefined;
+}
+
 /** Run the first route matching the request, and report whether one did. */
 export async function dispatchRoute(
   routes: readonly Route[],
   request: RouteRequest,
 ): Promise<boolean> {
-  for (const route of routes) {
-    if (route.method !== request.method) continue;
-    if (typeof route.pattern === "string") {
-      if (route.pattern !== request.path) continue;
-      await route.handler({ ...request, params: [] });
-      return true;
-    }
-    const match = route.pattern.exec(request.path);
-    if (match === null) continue;
-    await route.handler({ ...request, params: match.slice(1) });
-    return true;
-  }
-  return false;
+  const found = matchRoute(routes, request.method, request.path);
+  if (found === undefined) return false;
+  await found.route.handler({ ...request, params: found.params });
+  return true;
 }
 
 /** A capture group of the matched pattern, percent-decoded. */

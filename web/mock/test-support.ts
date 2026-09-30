@@ -3,9 +3,11 @@ import type { AddressInfo } from "node:net";
 import { WebSocket } from "ws";
 import type { ServerMessage } from "../src/lib/generated/protocol";
 import { apiRoutes } from "./api-routes";
-import { createHub } from "./hub";
+import { HUB_STATE_NAME } from "./constants";
+import { createMockEnv, type EnvOptions, type MockEnv } from "./env";
+import { createHub, mockListing } from "./hub";
 import { json } from "./http";
-import { createApiHandler, type ApiHandlerOptions } from "./middleware";
+import { createApiHandler } from "./middleware";
 import { dispatchRoute, type Route } from "./routes";
 import { seedAgents } from "./scenario";
 import { frameText } from "./sockets";
@@ -13,12 +15,13 @@ import { createState, type MockAgent, type MockHub, type MockState } from "./sta
 import { sleep } from "./util";
 
 /** A hub with no sockets: agents are plain records, and hub frames go nowhere. */
-export function createStubHub(): MockHub {
+export function createStubHub(env: MockEnv = createMockEnv()): MockHub {
   const agents = new Map<string, MockAgent>();
   return {
     agents,
     deleted: new Map(),
-    hubState: createState("hub"),
+    env,
+    hubState: createState(HUB_STATE_NAME, true, env),
     createAgent(name, options = {}) {
       const agent: MockAgent = {
         name,
@@ -27,10 +30,12 @@ export function createStubHub(): MockHub {
         autostart: true,
         role: options.role ?? null,
         visibility: "private",
-        busy: false,
+        busySince: null,
+        stopping: false,
         unread: 0,
-        state: createState(name, (options.runState ?? "running") === "running"),
+        state: createState(name, (options.runState ?? "running") === "running", env),
         connectedClients: () => 0,
+        dispose: () => undefined,
       };
       agents.set(name, agent);
       return agent;
@@ -43,11 +48,17 @@ export function createStubHub(): MockHub {
       role: agent.role,
       a2a_visibility: agent.visibility,
     }),
+    listing: () => mockListing(agents.values()),
     broadcast: () => {},
     setBusy: () => {},
+    markStopping: () => {},
+    reloadHubConfig: () => {},
     addUnread: () => {},
     clearUnread: () => {},
     transition: () => {},
+    reset: () => {
+      env.reset();
+    },
   };
 }
 
@@ -75,8 +86,11 @@ export interface RouteHarness {
  * request is scoped to one agent's state, matched against the tables, and a
  * handler that throws answers 500.
  */
-export async function startRouteHarness(routes: readonly Route[]): Promise<RouteHarness> {
-  const hub = createStubHub();
+export async function startRouteHarness(
+  routes: readonly Route[],
+  env?: MockEnv,
+): Promise<RouteHarness> {
+  const hub = createStubHub(env);
   const agent = hub.createAgent("atlas");
   const { state } = agent;
   const frames = captureFrames(state);
@@ -236,11 +250,11 @@ export class TestSocket {
   }
 }
 
-export interface MockServerOptions {
+export interface MockServerOptions extends EnvOptions {
   /** Create the mock's agents: scout, atlas, drifter and brittle. On by default. */
   seed?: boolean;
-  /** Answers the requests no route table takes. */
-  fallback?: ApiHandlerOptions["fallback"];
+  /** The route tables to serve in place of the mock's own (`apiRoutes`). */
+  routes?: readonly Route[];
 }
 
 export interface MockServerHarness {
@@ -260,9 +274,11 @@ export interface MockServerHarness {
  */
 export async function startMockServer(options: MockServerOptions = {}): Promise<MockServerHarness> {
   const server = createServer();
-  const hub = createHub(server);
-  if (options.seed ?? true) seedAgents(hub);
-  const handle = createApiHandler({ hub, routes: apiRoutes, fallback: options.fallback });
+  const hub = createHub(server, {
+    env: createMockEnv(options),
+    seed: (options.seed ?? true) ? seedAgents : undefined,
+  });
+  const handle = createApiHandler({ hub, routes: options.routes ?? apiRoutes });
   server.on("request", (req, res) => {
     void handle(req, res).then((handled) => {
       if (!handled) {

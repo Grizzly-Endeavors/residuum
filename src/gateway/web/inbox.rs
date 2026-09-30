@@ -8,20 +8,10 @@ use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 
 use crate::gateway::types::GatewayState;
-use crate::inbox::InboxItem;
+use crate::inbox::{InboxAttachment, InboxItem};
 use crate::workspace::layout::WorkspaceLayout;
 
 use super::AgentFilesState;
-
-/// Attachment metadata exposed to the web client. The on-disk path never leaves
-/// the server — only what's needed to display and fetch the file.
-#[derive(Serialize)]
-pub(super) struct ApiAttachment {
-    pub filename: String,
-    pub mime_type: String,
-    pub size: u64,
-    pub url: String,
-}
 
 /// A wrapper around `InboxItem` that includes the ID (filename stem) and resolves
 /// attachments to servable metadata instead of the raw workspace paths `InboxItem`
@@ -35,47 +25,7 @@ pub(super) struct ApiInboxItem {
     #[serde(with = "crate::time::minute_format")]
     pub timestamp: chrono::NaiveDateTime,
     pub read: bool,
-    pub attachments: Vec<ApiAttachment>,
-}
-
-/// Resolve an item's attachments into servable metadata by statting each file
-/// under `attachments_root/<id>/`. Each URL is under the owning agent's routes,
-/// so a client uses it as given.
-///
-/// An attachment whose file can't be found on disk is dropped from the listing
-/// (rather than shown as a broken link) and logged — this can happen if a
-/// workspace was hand-edited, but should not happen in normal operation.
-async fn resolve_attachments(
-    agent: &str,
-    id: &str,
-    item: &InboxItem,
-    attachments_root: &std::path::Path,
-) -> Vec<ApiAttachment> {
-    let mut resolved = Vec::with_capacity(item.attachments.len());
-    for (index, stored) in item.attachments.iter().enumerate() {
-        let Some(file_name) = stored.file_name().and_then(|f| f.to_str()) else {
-            tracing::warn!(id = %id, stored = %stored.display(), "inbox attachment entry has no filename, omitting");
-            continue;
-        };
-        let path = attachments_root.join(id).join(file_name);
-        match tokio::fs::metadata(&path).await {
-            Ok(meta) => resolved.push(ApiAttachment {
-                filename: file_name.to_string(),
-                mime_type: crate::interfaces::attachment::detect_mime_type(&path),
-                size: meta.len(),
-                url: format!("/api/agents/{agent}/inbox/{id}/attachments/{index}"),
-            }),
-            Err(e) => {
-                tracing::warn!(
-                    id = %id,
-                    filename = %file_name,
-                    error = %e,
-                    "inbox attachment file missing on disk, omitting from listing"
-                );
-            }
-        }
-    }
-    resolved
+    pub attachments: Vec<InboxAttachment>,
 }
 
 /// Build the API-facing representation of an inbox item, resolving its
@@ -86,7 +36,7 @@ async fn to_api_item(
     item: InboxItem,
     attachments_root: &std::path::Path,
 ) -> ApiInboxItem {
-    let attachments = resolve_attachments(agent, &id, &item, attachments_root).await;
+    let attachments = crate::inbox::resolve_attachments(agent, &id, &item, attachments_root).await;
     ApiInboxItem {
         id,
         title: item.title,
@@ -98,16 +48,6 @@ async fn to_api_item(
     }
 }
 
-/// The items in `dir`, or none when the directory doesn't exist. An agent
-/// that has never started (a restored one with autostart off, say) has no
-/// inbox directories yet, and these routes answer for it like any other.
-async fn list_items_or_none(dir: &std::path::Path) -> anyhow::Result<Vec<(String, InboxItem)>> {
-    if matches!(tokio::fs::try_exists(dir).await, Ok(false)) {
-        return Ok(Vec::new());
-    }
-    crate::inbox::list_items(dir).await
-}
-
 /// `GET /api/agents/{name}/inbox` — List all user inbox items.
 pub(super) async fn api_inbox_list(
     State(state): State<AgentFilesState>,
@@ -116,12 +56,14 @@ pub(super) async fn api_inbox_list(
     let user_inbox_dir = layout.user_inbox_dir();
     let attachments_root = layout.user_inbox_attachments_dir();
 
-    let items = list_items_or_none(&user_inbox_dir).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to list user inbox items: {e}"),
-        )
-    })?;
+    let items = crate::inbox::list_items_or_empty(&user_inbox_dir)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to list user inbox items: {e}"),
+            )
+        })?;
 
     let mut api_items = Vec::with_capacity(items.len());
     for (id, item) in items {
@@ -139,12 +81,14 @@ pub(super) async fn api_inbox_archive_list(
     let archive_dir = layout.user_inbox_archive_dir();
     let attachments_root = layout.user_inbox_archive_attachments_dir();
 
-    let items = list_items_or_none(&archive_dir).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to list archived inbox items: {e}"),
-        )
-    })?;
+    let items = crate::inbox::list_items_or_empty(&archive_dir)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to list archived inbox items: {e}"),
+            )
+        })?;
 
     let mut api_items = Vec::with_capacity(items.len());
     for (id, item) in items {
@@ -452,6 +396,7 @@ mod tests {
             activity: crate::hub::activity::ActivityTracker::new(
                 "test-agent",
                 tokio::sync::broadcast::channel(4).0,
+                crate::hub::agent_watch::AgentChangeFeed::new(),
             ),
         }
     }

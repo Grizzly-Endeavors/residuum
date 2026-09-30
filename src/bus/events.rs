@@ -671,6 +671,17 @@ pub struct OutboundA2aTaskEvent {
     pub task: crate::a2a::TrackedTask,
 }
 
+/// An item was added to the user inbox by the `user_inbox_add` tool.
+///
+/// Published after the item is saved, so the hub can tell the user about it
+/// without waiting for a file change. Carried on
+/// [`super::topics::UserInbox`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserInboxAddedEvent {
+    /// The item's id: its filename without the `.json` extension.
+    pub item_id: String,
+}
+
 /// Multi-line command output meant for inline rendering in a chat surface.
 ///
 /// Distinct from [`NoticeEvent`]: notices are transient toasts in the web UI,

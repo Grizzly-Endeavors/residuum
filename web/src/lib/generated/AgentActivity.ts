@@ -9,6 +9,10 @@ export type AgentActivity = {
  */
 busy: boolean, 
 /**
+ * When the current main turn began, while `busy`.
+ */
+busy_since: string | null, 
+/**
  * Main-conversation messages no web client has shown yet.
  */
 unread: number, };
