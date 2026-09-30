@@ -15,8 +15,8 @@
     "lint": "eslint . && npm run lint:css",
     "lint:css": "stylelint 'src/**/*.{css,svelte}'",
     "lint:fix": "eslint . --fix",
-    "format": "prettier --write 'src/**/*.{ts,svelte,js,json,css}'",
-    "format:check": "prettier --check 'src/**/*.{ts,svelte,js,json,css}'",
+    "format": "prettier --write 'src/**/*.{ts,svelte,js,json,css}' 'mock/**/*.ts'",
+    "format:check": "prettier --check 'src/**/*.{ts,svelte,js,json,css}' 'mock/**/*.ts'",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage"
   },
@@ -26,6 +26,7 @@
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/svelte": "^5.4.2",
     "@types/dompurify": "^3.0.5",
+    "@types/node": "^25.4.0",
     "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.56.1",
     "@typescript-eslint/parser": "^8.56.1",

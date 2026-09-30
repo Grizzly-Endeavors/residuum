@@ -19,6 +19,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
+import { artifactIdentity, json, readBody, text } from "./mock/http";
 
 /** Stand-in for `update::CURRENT_VERSION`, embedded the way the real artifacts listener does. */
 const MOCK_RESIDUUM_VERSION = "0.0.0-mock";
@@ -1104,26 +1105,6 @@ const modelsByProvider: Record<string, Array<{ id: string; name: string }>> = {
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve) => {
-    let data = "";
-    req.on("data", (chunk: Buffer) => {
-      data += chunk.toString();
-    });
-    req.on("end", () => resolve(data));
-  });
-}
-
-function json(res: ServerResponse, status: number, body: unknown) {
-  res.writeHead(status, { "Content-Type": "application/json" });
-  res.end(JSON.stringify(body));
-}
-
-function text(res: ServerResponse, status: number, body: string) {
-  res.writeHead(status, { "Content-Type": "text/plain" });
-  res.end(body);
-}
-
 /** A stand-in for the file version token (`ETag`) the workspace API reports. */
 function mockFileVersion(content: string): string {
   let hash = 0;
@@ -1169,13 +1150,6 @@ function applyJsonPatch(target: Record<string, unknown>, diff: Record<string, un
       target[key] = val;
     }
   }
-}
-
-/** The name-shaped `X-Residuum-Artifact` header, or `null` when it's absent or malformed. */
-function artifactIdentity(req: IncomingMessage): string | null {
-  const raw = req.headers["x-residuum-artifact"];
-  const value = Array.isArray(raw) ? raw[0] : raw;
-  return value && /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(value) ? value : null;
 }
 
 // ─── REST middleware ───────────────────────────────────────────────────────────
