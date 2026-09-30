@@ -1008,9 +1008,14 @@ async fn graceful_shutdown(rt: &mut AgentRuntime) {
     // First, so a stopping agent takes no more teammate messages while its
     // sessions wind down.
     rt.services.team_router.unregister(&rt.name);
-    // Messages still waiting for their turn get none now; keep them in
-    // history so they are not lost.
-    let undelivered: Vec<_> = rt.deferred_inbound.drain(..).collect();
+    // Messages still waiting for their turn, plus anything already published
+    // to the bus but not yet read by the select loop below, get none now;
+    // keep them in history so they are not lost even though their senders
+    // (message_agent, the web UI) were already told delivery succeeded.
+    // Drained before the bus infrastructure is aborted further down, while
+    // this subscriber can still see what is queued for it.
+    let mut undelivered: Vec<_> = rt.deferred_inbound.drain(..).collect();
+    undelivered.extend(rt.agent_subscriber.drain());
     super::turns::inject_undelivered_messages(
         &mut rt.agent,
         &rt.agent_messenger,

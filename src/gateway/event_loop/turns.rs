@@ -1875,6 +1875,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn drained_bus_messages_are_folded_in_with_deferred_inbound_at_shutdown() {
+        // Mirrors `graceful_shutdown`'s undelivered-message assembly: a
+        // message still waiting for its turn (`deferred_inbound`) is chained
+        // with whatever was published to the bus but never read
+        // (`agent_subscriber.drain()`) before both are folded into history
+        // and persisted together.
+        let mut agent = hop_test_agent();
+        let messenger = test_messenger();
+        let dir = tempfile::tempdir().unwrap();
+        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        tokio::fs::create_dir_all(layout.memory_dir())
+            .await
+            .unwrap();
+
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let mut agent_subscriber: Subscriber<MessageEvent> =
+            handle.subscribe(topics::UserMessage).await.unwrap();
+
+        let mut on_bus = sample_inbound("still on the bus, unread");
+        on_bus.id = "bus-1".to_string();
+        publisher
+            .publish(topics::UserMessage, on_bus)
+            .await
+            .unwrap();
+        // The broker handles commands one at a time in order, so once a
+        // second subscriber has seen this marker, the broker has already
+        // finished offering the event above to `agent_subscriber` too.
+        let mut barrier: Subscriber<MessageEvent> =
+            handle.subscribe(topics::UserMessage).await.unwrap();
+        let mut marker = sample_inbound("marker");
+        marker.id = "marker".to_string();
+        publisher
+            .publish(topics::UserMessage, marker)
+            .await
+            .unwrap();
+        loop {
+            let seen = barrier.recv().await.unwrap().unwrap();
+            if seen.id == "marker" {
+                break;
+            }
+        }
+
+        let mut deferred = sample_inbound("waiting for its turn");
+        deferred.id = "deferred-1".to_string();
+        let mut undelivered = vec![deferred];
+        undelivered.extend(agent_subscriber.drain());
+
+        inject_undelivered_messages(&mut agent, &messenger, &layout, TEST_TZ, undelivered).await;
+
+        assert_eq!(history_mentions(&agent, "waiting for its turn"), 1);
+        assert_eq!(history_mentions(&agent, "still on the bus, unread"), 1);
+        assert_eq!(history_mentions(&agent, "marker"), 1);
+
+        let persisted =
+            crate::memory::recent_messages::load_recent_messages(&layout.recent_messages_json())
+                .await
+                .unwrap();
+        let contents: Vec<_> = persisted
+            .iter()
+            .map(|m| m.message.content.as_str())
+            .collect();
+        assert!(
+            contents.iter().any(|c| c.contains("waiting for its turn"))
+                && contents
+                    .iter()
+                    .any(|c| c.contains("still on the bus, unread")),
+            "both the deferred message and the drained bus message must be on disk, got {contents:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_late_user_message_after_teammate_traffic_restores_hop_zero() {
         let mut agent = hop_test_agent();
         let messenger = test_messenger();
