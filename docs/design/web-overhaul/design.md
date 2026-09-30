@@ -1,6 +1,6 @@
 # Web UI Overhaul — Design
 
-> **Status:** draft. Owner-approved decisions are listed at the end. The Workbench section is being revised. Work units: [`phases.md`](./phases.md). Capability checklist: [`parity.md`](./parity.md). Visual reference: [`mockup.html`](./mockup.html) (open it in a browser).
+> **Status:** draft, ready for sign-off. Owner-approved decisions are listed at the end. Work units: [`phases.md`](./phases.md). Capability checklist: [`parity.md`](./parity.md). Visual reference: [`mockup.html`](./mockup.html) (open it in a browser).
 
 > Systems level only. No file or line references. This document must stand on its own: it is implemented by subagents that have only this doc, `phases.md`, `parity.md`, the mockup and the codebase, not the conversation that produced it. Where this document and the mockup disagree, this document wins. The mockup's sample data, and the parts it labels "not in this mockup", are not requirements.
 
@@ -344,6 +344,11 @@ While not running, the composer is replaced:
 
   The panel follows a resumed session into its new run.
 
+  **Data path.** The session panel works for a run on any agent:
+  - The transcript loads over HTTP.
+  - **Live frames:** from the bound agent's socket when the run is on the bound agent, and otherwise from a hub `subscribe_session` (§9.8).
+  - **Commands:** message and stop use the per-agent HTTP session routes when the run isn't on the bound agent. Resuming a finished run is a message.
+
 **Schedule** (agent place) replaces the Scheduled page with the same content:
 - Pulses: toggle, schedule, active hours, next run, last result, problems, and the running and overlap badges.
 - Scheduled actions: due time and Cancel.
@@ -367,7 +372,7 @@ In addition:
 
 - **The list** shows each artifact's title, its path as `/team/workbench/<name>`, and when it was edited.
   - An artifact an agent is editing glows with "updating now" for a moment. The list refreshes on the hub's artifact events (§9.8), so it works when no agent is running.
-  - **Open** opens the artifact's URL on the artifacts origin in a new tab (`target="_blank"`, `rel="noopener"`). In the installed app, the platform opens it in the browser.
+  - **Open** opens the artifact's URL on the artifacts origin in a new tab (`target="_blank"`, `rel="noopener"`). In the installed app, the platform decides whether that is the browser or an in-app browser.
   - **Copy link** copies that URL.
   - Delete removes the artifact at once, and the toast offers Undo (the team checkpoint).
   - Each row shows how many sessions the artifact has running, on any agent, from the overview's live sessions matched by source label `artifact:<name>`.
@@ -376,7 +381,7 @@ In addition:
 - **Artifact detail.** `/team/workbench/<name>` selects that artifact's row and expands it, showing:
   - Open and Copy link
   - its running sessions: purpose, agent, state, and Stop; opening one shows it in the context panel (`panel=session:<agent>:<runId>`)
-  - its recently finished sessions
+  - a note that finished sessions are in each agent's Activity
 - **Choosing the artifacts origin** for Open and Copy link:
   - If the UI is on the relay's UI origin and the relay reports an artifacts origin, use it.
   - Otherwise, if the UI page is plain HTTP and the listener's port is known, use the UI's host on that port.
@@ -567,7 +572,7 @@ Existing endpoints and frames keep their shapes, because the macOS client and ol
 **How the hub learns about agents.** The hub already owns each agent's activity tracker and passes it into the agent runtime. The runtime calls it directly for busy, unread and client connections. The hub also needs to watch each running agent:
 
 - **Per-agent watcher.** When an agent starts, the hub attaches a watcher that subscribes to that agent's event bus, through a subscription handle added to the agent's control handle. It listens to:
-  - the Sessions topic. It acts only on started, state-changed and completed; other session events are drained and dropped.
+  - the Sessions topic. Started, state-changed and completed events feed the overview and team events. Every session event also feeds the session relay (§9.8).
   - the system Notification topic, for outbound A2A task changes.
   - a new `UserInbox` topic, carrying `user_inbox_added {item_id}`. It is published by the only in-agent code that creates user-inbox items, the user-inbox tool, after the item is saved.
   - the Workspace topic, filtered to:
@@ -862,13 +867,17 @@ Defaults for a new device: `inbox_item` and `agent_failed` on, the other two off
 #### 9.9 The artifacts origin forwards the API
 
 **Local.** The artifacts listener serves artifact pages as today, and also serves `/api/*`, WebSocket upgrades included.
-- It dispatches these in-process to the same hub router the gateway uses.
-- It marks each request as arriving through the artifacts origin, with an internal request marker a client can't set.
+- It dispatches only `/api/*` in-process to the same hub router the gateway uses. It holds a late-bound handle to that router, because the listener starts before the router is built.
+- It marks each request as arriving through the artifacts origin, with an internal request extension that no client can set.
+- `api` is reserved and is not a valid artifact name.
+- Agent sockets opened through the artifacts origin don't count as clients. They neither reset chat unread nor suppress `reply_while_away` pushes.
 - Requests from the artifacts origin to itself are same-origin, so the cross-site guard passes them. It still refuses other sites.
 
 **Through Residuum Cloud.**
 - **The relay's workbench host** allows every method and WebSocket upgrades. It keeps its owner-session check and its refusal of the relay's own routes. It forwards everything with the workbench surface: HTTP requests as today, and socket opens.
 - **The tunnel protocol.** The tunnel's socket-open frame gains an optional `surface`. The tunnel client opens a workbench-surface socket against the artifacts listener, as it already does for workbench HTTP.
+- **Capability.** The hub advertises a new `workbench-sockets` capability alongside `workbench-surface`. The relay sends workbench socket opens only to hubs that advertise it. For other hubs it refuses the upgrade on the workbench host with a 502 whose body says the Residuum version is too old. An older hub, which ignores the unknown `surface` field, can therefore never receive one against its main listener.
+- **Login.** An unauthenticated request to the workbench host returns to the requested artifact URL after login, not to the UI root.
 - This is a change in the relay project and in the tunnel client. Until the relay change is deployed, remote artifacts can load pages and call HTTP routes but not open sockets. The SDK reports its connection as `disconnected`.
 
 **Block list.** Requests carrying the artifacts-origin marker are refused with 403 `{error}` on:
@@ -895,14 +904,14 @@ Artifacts have never shipped in a release, so the SDK is shaped for standalone p
 
 | Member | Behavior |
 |---|---|
-| `fetch` | Calls `/api` on the page's own origin with `X-Residuum-Artifact`. Unscoped hub prefixes map to `/api/hub` and `/api/workbench/` to `/api/team/workbench/`, as today. An agent path that names no agent is not sent: it resolves to a 400 response whose error says to use `/api/agents/<name>/…`. |
+| `fetch` | Calls `/api` on the page's own origin with `X-Residuum-Artifact`. Unscoped hub prefixes map to `/api/hub` and `/api/workbench/` to `/api/team/workbench/`, as today. An agent path that names no agent is not sent: it resolves to a 400 response whose error says to use `/api/agents/<name>/…`. Concurrency is capped as today: at most 8 ordinary requests and 4 model calls per page, queued in order. The relay's "agent overloaded" 503 is retried up to three times with backoff. |
 | `ask` | Unchanged: requires `agent`, and calls `/api/agents/<agent>/model/complete`. |
-| `on(type, handler)` | Receives only frames that belong to no agent: `artifact_updated`, `artifact_removed` and `connection`. |
-| `watch(prefix)` | Team paths only, `team/…`, over the hub socket's team watch. Any other prefix throws a `TypeError` that says to use `agent(name).watch`. |
-| `agent(name)` (new) | A handle for one named agent. Its `on` receives that agent's frames over its socket, opened on first use and reopened on reconnect. Its `watch` follows that agent's workspace. Its `connection` events follow that socket. |
-| `sessions.start` | Unchanged signature. It subscribes to the artifact's sessions on the hub socket (§9.8), waits for the acknowledgement, then starts the session over HTTP. Handles receive frames whichever agent the session runs on (fixes #292), plus `resync` after relay lag. |
+| `on(type, handler)` | Accepts only `artifact_updated`, `artifact_removed`, `connection` and `"*"`, which covers those three. Any other type throws a `TypeError` that says to use `agent(name).on`. |
+| `watch(prefix)` | Team paths only, `team` or `team/…`, over the hub socket's team watch. Any other prefix, `""` included, throws a `TypeError` that says to use `agent(name).watch`. |
+| `agent(name)` (new) | A handle for one named agent. Its `on` receives that agent's frames over its socket, opened on first use and reopened on reconnect. The socket sets the verbose flag on connect, so tool frames arrive. Its `watch` follows that agent's workspace (`""` for all of it). Its `connection` events follow that socket. |
+| `sessions.start` | Unchanged signature. It subscribes to the artifact's sessions on the hub socket (§9.8), waits for the acknowledgement, then starts the session over HTTP. With no acknowledgement within 10 seconds, it rejects with an error saying Residuum's live connection isn't available, and the session is not started. Handles receive frames whichever agent the session runs on (fixes #292), plus `resync` after relay lag. |
 | `state` | Unchanged. |
-| Connection events | Top-level `connection` follows the hub socket. A reconnect triggers `workspace_resync {reason: "reconnected"}` for active watches on that socket. |
+| Hub socket | Opened when the SDK loads, for live reload, artifact events, team watches and sessions. It reconnects with backoff. Top-level `connection` follows it, and a reconnect triggers `workspace_resync {reason: "reconnected"}` for active watches on it. |
 
 **Live reload.** On `artifact_updated` for its own name, the SDK reloads the page. A page that registers its own `artifact_updated` handler takes over and the SDK doesn't reload. `artifact_removed` for its own name is delivered to handlers only.
 
@@ -1170,6 +1179,7 @@ They chose a combination:
   - the style ignore list is empty
   - every `parity.md` item is checked or marked Changed or Dropped
   - all test layers pass
+  - the relay change (W12d) is deployed, so remote artifacts have sockets
 - The design documents then move to `docs/archive/`.
 
 ## Decisions

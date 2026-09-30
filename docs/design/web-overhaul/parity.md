@@ -100,6 +100,7 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [ ] SDK: `fetch`, `ask`, `on`, `watch`, `state.get`/`set`, `sessions.start` with handle `on`/`send`/`stop`, connection events, `features`, `artifact`, `version` — **Changed:** direct access from the page's own origin; no implicit agent (agent-specific calls name their agent, with `agent(name)` added); `embedded`, `ready` and Esc forwarding removed; **Fix:** session frames arrive for sessions on any agent (#292); no reply crosses documents, because the bridge is gone (#307). Artifacts never shipped in a release, so no migration applies.
 - [ ] Unscoped fetch paths: hub prefixes to the hub, `/api/workbench/` to team — **Changed:** agent paths must name the agent; one that doesn't gets a 400 with a clear error
 - [ ] `watch` of `team/` prefixes, resync on reconnect — **Changed:** agent-workspace watches go through `agent(name).watch`
+- [ ] Request lanes: 8 ordinary, 4 model calls per page; retry on the relay's "agent overloaded" 503 — kept, in the SDK
 - [ ] Request limits — **Changed:** artifacts can call everything the UI can, except shutdown, stop-all, updates and setup, enforced where the artifacts origin forwards the API
 - [ ] Artifacts origin and relay workbench host — **Changed:** they also forward the API and sockets (relay-project change)
 

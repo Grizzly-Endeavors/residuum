@@ -183,7 +183,7 @@ Each unit implements its part of design §9, and updates the mock, the generated
 **Order, after W02:**
 - W05, W06, W07 and W12 together.
 - W08 after W05, then W09, then W10 (which also needs W07), then W11, then W11b.
-- W12b after W12, then W12c. W12d, in the relay project, can run any time.
+- W12b after W12, then W12c, then W12d in the relay project (it uses W12c's protocol types).
 - These share hub runtime, WebSocket and host modules, so they run in sequence.
 
 ### W05 — Hub snapshot, error kind and hub frames (L)
@@ -247,7 +247,7 @@ Each unit implements its part of design §9, and updates the mock, the generated
 - **Preconditions:** W05.
 - **Shape when done:**
   - The watcher, turn hook and events behave per design §9, including the drain, `Resync` and `Unavailable` rules.
-  - The watcher feeds a typed internal hub stream of agent changes: session lifecycle, outbound task changes, `user_inbox_added`, watched path changes, resync.
+  - The watcher feeds a typed internal hub stream of agent changes: session lifecycle, outbound task changes, `user_inbox_added`, watched path changes, resync. It also keeps every session event available to the session relay that W11b builds.
   - Nothing is exposed over HTTP yet.
 - **Verification:** Rust tests drive a running test agent and assert that:
   - each change kind reaches the stream
@@ -335,7 +335,7 @@ Each unit implements its part of design §9, and updates the mock, the generated
 
 ### W12b — API forwarding on the artifacts origin (M)
 
-- **Modules:** artifacts listener (API and WebSocket dispatch to the hub router, the internal marker, the block list); hub router sharing; mock artifacts listener; `workbench.md`.
+- **Modules:** artifacts listener (`/api` and WebSocket dispatch to the hub router through a late-bound handle, the request-extension marker, the block list, the reserved name `api`); the activity tracker (forwarded agent sockets don't count as clients); mock artifacts listener; `workbench.md`, including its security model paragraph.
 - **Preconditions:** W12.
 - **Shape when done:**
   - Design §9.9's local half: the artifacts listener serves `/api/*` and socket upgrades through the hub router, marked as arriving through the artifacts origin.
@@ -352,7 +352,7 @@ Each unit implements its part of design §9, and updates the mock, the generated
 
 ### W12c — Tunnel socket surface (S)
 
-- **Modules:** tunnel protocol types (the socket-open frame's optional `surface`); tunnel client socket forwarding.
+- **Modules:** tunnel protocol types (the socket-open frame's optional `surface`); tunnel client socket forwarding; the `workbench-sockets` capability.
 - **Preconditions:** W12b.
 - **Shape when done:**
   - A socket open with the workbench surface connects to the artifacts listener.
@@ -362,12 +362,12 @@ Each unit implements its part of design §9, and updates the mock, the generated
 
 ### W12d — Relay workbench host (M, target: the relay project)
 
-- **Modules:** in the relay project: the workbench host dispatch (all methods and socket upgrades allowed, owner-session check kept); socket forwarding with the workbench surface; its tests and docs.
-- **Preconditions:** W12c's protocol shape agreed (its types are the contract).
+- **Modules:** in the relay project: the workbench host dispatch (all methods with request bodies, socket upgrades allowed, owner-session check kept, login returning to the artifact URL); socket forwarding with the workbench surface, gated on the `workbench-sockets` capability; its copy of the tunnel protocol types; its tests and docs.
+- **Preconditions:** W12c.
 - **Shape when done:** design §9.9's relay half.
 - **Verification:**
   - Relay tests: writes and socket upgrades on the workbench host forwarded with the surface; unauthenticated requests still redirected or refused; the relay's own routes still unreachable there.
-  - Owner check: deploy, then open an artifact through Residuum Cloud, start a session and see its frames.
+  - Owner check: deploy, then open an artifact through Residuum Cloud, start a session and see its frames. This deploy must happen before the cutover merge (W50).
 
 ---
 
@@ -566,8 +566,8 @@ W19, then W20 and W21 together.
 
 **Groups:**
 - Once W20 and W21 are in: W22, W30 and W31 together.
-- W32a once W27 is in and W11b is merged.
-- W32b once W11b, W12b and W12c are merged; it can run before or after W32a.
+- W32b once W11b, W12b and W12c are merged.
+- W32a after W32b, W26 and W27. Between W32b and W32a, the legacy embedded view on the integration branch no longer works with the new SDK. That is acceptable, because the branch doesn't ship until cutover.
 - W23 after W22, then W24, then W25. W26 after W22.
 - Once W09–W11 are merged: W27, then W28.
 - W29 once W06, W07 and W10 are merged.
@@ -748,7 +748,7 @@ W19, then W20 and W21 together.
 ### W32a — Workbench launcher (M)
 
 - **Modules:** Workbench place (new): list, artifact detail row, Open and Copy link, sessions per artifact from the overview, and the session panel on Workbench routes. It refreshes on hub artifact events. The legacy in-app artifact view, its bar and activity panel, the bridge, and their styles are deleted.
-- **Preconditions:** W20, W21, W27; W11b merged.
+- **Preconditions:** W32b, W26, W27; W11b merged.
 - **Shape when done:**
   - Design §5's Workbench: the launcher list, detail, origin rule (#308), and banner.
   - The redirects for `/team/workbench/:artifact` and `?full`.
@@ -784,7 +784,10 @@ W19, then W20 and W21 together.
     - `watch` on a team prefix
     - `agent(name).watch` on an agent prefix
     - a top-level `watch` of a non-team prefix throwing
-    - `sessions.start` on a non-page agent receiving its frames from the first one (#292)
+    - `sessions.start` on an agent with no open socket in the page, receiving its frames from the first one (#292)
+    - `sessions.start` rejecting after 10 seconds when the hub socket is refused
+    - a top-level `on` of an agent frame type throwing
+    - request lanes capping at 8 and 4, and the overloaded-503 retry
     - `resync` after a simulated lag
     - live reload
     - a page-registered `artifact_updated` handler suppressing the reload
@@ -1052,7 +1055,7 @@ W43 and W45 together. W44 after W43. W46 after W45. W47 after W44 and W46.
 - **Preconditions:** W49.
 - **Shape when done:**
   - A written check against every section of `design.md`, with gaps fixed up to the budget. Larger gaps are listed for the orchestrator to raise with the owner.
-  - One list of every owner check from earlier units.
+  - One list of every owner check from earlier units, confirming the relay deploy (W12d) happened before cutover.
   - The orchestrator then opens the cutover PR, merging `feat/web-overhaul` into `main`, and moves the design documents to `docs/archive/` in it.
 - **Verification:**
   - The written check.
