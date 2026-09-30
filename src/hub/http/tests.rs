@@ -2,6 +2,7 @@
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -19,9 +20,13 @@ use tower::ServiceExt;
 
 use super::{HubHttpState, agent_repair_router, hub_router};
 use crate::bus::{WorkspaceEvent, topics};
+use crate::checkpoints::CheckpointError;
 use crate::config::paths::TeamPaths;
 use crate::gateway::ReloadSignal;
-use crate::gateway::web::{ConfigApiState, WorkspaceScope};
+use crate::gateway::web::{
+    AgentFilesState, CheckpointAccess, ConfigApiState, WorkspaceScope,
+    agent_files_api_router as agent_files_router,
+};
 use crate::hub::{
     A2aVisibility, Actor, AgentActivity, AgentDirectory, AgentPatch, AgentState, AgentSummary,
     CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError, RestoreAgentRequest,
@@ -43,8 +48,9 @@ fn summary(name: &str, state: AgentState) -> AgentSummary {
 }
 
 /// An in-memory directory. Running agents serve a small router that echoes
-/// what it was asked; every agent's repair router is the real one over a
-/// temp directory.
+/// what it was asked, plus the real file routes over their temp directory;
+/// every agent's repair router and every non-running agent's file router are
+/// the real ones over a temp directory.
 struct FakeDirectory {
     root: PathBuf,
     agents: Mutex<Vec<AgentSummary>>,
@@ -54,6 +60,12 @@ struct FakeDirectory {
     primed: Mutex<Option<broadcast::Receiver<HubEvent>>>,
     calls: Mutex<Vec<String>>,
     deleted: Mutex<Vec<DeletedAgent>>,
+    /// How many times the hub asked for a non-running agent's file router.
+    file_routers_built: AtomicUsize,
+    /// How many times a file route opened an agent's checkpoint repositories.
+    checkpoint_opens: Arc<AtomicUsize>,
+    /// Makes those opens fail, as unreadable repositories would.
+    checkpoints_unopenable: Arc<AtomicBool>,
 }
 
 impl FakeDirectory {
@@ -66,6 +78,9 @@ impl FakeDirectory {
             primed: Mutex::new(None),
             calls: Mutex::new(Vec::new()),
             deleted: Mutex::new(Vec::new()),
+            file_routers_built: AtomicUsize::new(0),
+            checkpoint_opens: Arc::new(AtomicUsize::new(0)),
+            checkpoints_unopenable: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -212,7 +227,11 @@ impl AgentDirectory for FakeDirectory {
                 state: agent.state,
             });
         }
-        Ok(running_agent_router(name))
+        Ok(
+            running_agent_router(name).merge(agent_files_router(AgentFilesState::from(
+                &self.config_state(name, true),
+            ))),
+        )
     }
 
     fn agent_repair_router(&self, name: &str) -> Result<Router, LifecycleError> {
@@ -220,6 +239,27 @@ impl AgentDirectory for FakeDirectory {
         Ok(agent_repair_router(
             self.config_state(name, agent.state == AgentState::Running),
         ))
+    }
+
+    fn agent_file_router(&self, name: &str) -> Result<Router, LifecycleError> {
+        self.find(name)?;
+        self.file_routers_built.fetch_add(1, Ordering::SeqCst);
+        let opens = Arc::clone(&self.checkpoint_opens);
+        let unopenable = Arc::clone(&self.checkpoints_unopenable);
+        let config = self.config_state(name, false);
+        Ok(agent_files_router(AgentFilesState {
+            checkpoints: CheckpointAccess::lazy(move || {
+                opens.fetch_add(1, Ordering::SeqCst);
+                if unopenable.load(Ordering::SeqCst) {
+                    Err(CheckpointError::Git(
+                        "the repository is corrupt".to_string(),
+                    ))
+                } else {
+                    Ok(crate::checkpoints::test_engine())
+                }
+            }),
+            ..AgentFilesState::from(&config)
+        }))
     }
 
     fn agent_a2a_router(&self, name: &str) -> Result<Router, LifecycleError> {
@@ -1330,6 +1370,92 @@ async fn routes_that_describe_the_live_agent_still_need_it_running() {
             );
         }
     }
+}
+
+/// The file routes a reader hits, none of which writes.
+const FILE_READ_ROUTES: [&str; 6] = [
+    "chat/history",
+    "usage",
+    "inbox",
+    "inbox/archive",
+    "inbox/item1/attachments/0",
+    "a2a/agents/raw",
+];
+
+#[tokio::test]
+async fn reading_the_file_routes_opens_no_checkpoint_repositories() {
+    let h = Harness::new();
+    h.add_failed_agent();
+    for name in EVERY_STATE {
+        seed_history(&h.agent_dir(name), name).await;
+        seed_inbox_item(&h.agent_dir(name), "item1", "First", b"hello").await;
+    }
+    let opens = || h.directory.checkpoint_opens.load(Ordering::SeqCst);
+    let routers_built = || h.directory.file_routers_built.load(Ordering::SeqCst);
+
+    // A running agent answers from its own router, which the hub never asks
+    // the directory to build.
+    for route in FILE_READ_ROUTES {
+        h.request_ok(Method::GET, &format!("/api/agents/scout/{route}"), "")
+            .await;
+    }
+    assert_eq!(routers_built(), 0, "a running agent serves its own routes");
+    assert_eq!(opens(), 0);
+
+    // A stopped or failed agent gets the file router, and reading through it
+    // works whether or not its repositories could be opened.
+    for unopenable in [false, true] {
+        h.directory
+            .checkpoints_unopenable
+            .store(unopenable, Ordering::SeqCst);
+        for name in ["quiet", "broken"] {
+            for route in FILE_READ_ROUTES {
+                h.request_ok(Method::GET, &format!("/api/agents/{name}/{route}"), "")
+                    .await;
+            }
+            for (method, route) in [
+                (Method::PUT, "inbox/item1/read"),
+                (Method::POST, "inbox/item1/archive"),
+                (Method::POST, "inbox/item1/restore"),
+            ] {
+                h.request_ok(method, &format!("/api/agents/{name}/{route}"), "")
+                    .await;
+            }
+        }
+    }
+    assert!(routers_built() > 0, "stopped agents use the file router");
+    assert_eq!(
+        opens(),
+        0,
+        "history, usage and the inbox never touch the repositories"
+    );
+}
+
+#[tokio::test]
+async fn saving_the_a2a_settings_opens_the_repositories_once_and_saves_without_them() {
+    let h = Harness::new();
+    let opens = || h.directory.checkpoint_opens.load(Ordering::SeqCst);
+    let uri = "/api/agents/quiet/a2a/agents/raw";
+    let saved = r#"{"agents":{"laptop":{"url":"https://laptop.example.com"}}}"#;
+
+    h.request_ok(Method::PUT, uri, saved).await;
+    assert_eq!(opens(), 1, "a write takes a checkpoint, so it opens them");
+
+    h.directory
+        .checkpoints_unopenable
+        .store(true, Ordering::SeqCst);
+    let replaced = r#"{"agents":{}}"#;
+    let (_, report) = h.request_ok(Method::PUT, uri, replaced).await;
+    assert_eq!(opens(), 2);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&report).unwrap(),
+        json!({ "valid": true })
+    );
+    assert_eq!(
+        std::fs::read_to_string(h.agent_dir("quiet").join("config/a2a.json")).unwrap(),
+        replaced,
+        "the write goes ahead without a checkpoint"
+    );
 }
 
 #[tokio::test]

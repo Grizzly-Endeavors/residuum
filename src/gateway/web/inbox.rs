@@ -11,7 +11,7 @@ use crate::gateway::types::GatewayState;
 use crate::inbox::InboxItem;
 use crate::workspace::layout::WorkspaceLayout;
 
-use super::ConfigApiState;
+use super::AgentFilesState;
 
 /// Attachment metadata exposed to the web client. The on-disk path never leaves
 /// the server — only what's needed to display and fetch the file.
@@ -110,7 +110,7 @@ async fn list_items_or_none(dir: &std::path::Path) -> anyhow::Result<Vec<(String
 
 /// `GET /api/agents/{name}/inbox` — List all user inbox items.
 pub(super) async fn api_inbox_list(
-    State(state): State<ConfigApiState>,
+    State(state): State<AgentFilesState>,
 ) -> Result<Json<Vec<ApiInboxItem>>, (StatusCode, String)> {
     let layout = WorkspaceLayout::new(&state.workspace_dir);
     let user_inbox_dir = layout.user_inbox_dir();
@@ -133,7 +133,7 @@ pub(super) async fn api_inbox_list(
 
 /// `GET /api/agents/{name}/inbox/archive` — List all archived user inbox items.
 pub(super) async fn api_inbox_archive_list(
-    State(state): State<ConfigApiState>,
+    State(state): State<AgentFilesState>,
 ) -> Result<Json<Vec<ApiInboxItem>>, (StatusCode, String)> {
     let layout = WorkspaceLayout::new(&state.workspace_dir);
     let archive_dir = layout.user_inbox_archive_dir();
@@ -157,7 +157,7 @@ pub(super) async fn api_inbox_archive_list(
 /// `PUT /api/agents/{name}/inbox/:id/read` — Mark an inbox item as read.
 pub(super) async fn api_inbox_read(
     Path(id): Path<String>,
-    State(state): State<ConfigApiState>,
+    State(state): State<AgentFilesState>,
 ) -> Result<Json<ApiInboxItem>, (StatusCode, String)> {
     let layout = WorkspaceLayout::new(&state.workspace_dir);
     let user_inbox_dir = layout.user_inbox_dir();
@@ -180,7 +180,7 @@ pub(super) async fn api_inbox_read(
 /// `POST /api/agents/{name}/inbox/:id/archive` — Archive an inbox item.
 pub(super) async fn api_inbox_archive(
     Path(id): Path<String>,
-    State(state): State<ConfigApiState>,
+    State(state): State<AgentFilesState>,
 ) -> Result<Json<()>, (StatusCode, String)> {
     let layout = WorkspaceLayout::new(&state.workspace_dir);
     let user_inbox_dir = layout.user_inbox_dir();
@@ -202,7 +202,7 @@ pub(super) async fn api_inbox_archive(
 /// the active inbox — the one way to undo `api_inbox_archive`.
 pub(super) async fn api_inbox_restore(
     Path(id): Path<String>,
-    State(state): State<ConfigApiState>,
+    State(state): State<AgentFilesState>,
 ) -> Result<Json<()>, (StatusCode, String)> {
     let layout = WorkspaceLayout::new(&state.workspace_dir);
     let user_inbox_dir = layout.user_inbox_dir();
@@ -257,7 +257,7 @@ async fn confine(
 /// attachment path as a literal filesystem path — see `confine`.
 pub(super) async fn api_inbox_attachment(
     Path((id, index)): Path<(String, usize)>,
-    State(state): State<ConfigApiState>,
+    State(state): State<AgentFilesState>,
 ) -> Response {
     let layout = WorkspaceLayout::new(&state.workspace_dir);
 
@@ -394,18 +394,8 @@ pub(super) async fn api_agent_inbox_add(
 mod tests {
     use super::*;
 
-    fn make_state(workspace_dir: std::path::PathBuf) -> ConfigApiState {
-        ConfigApiState {
-            team: None,
-            hub_dir: workspace_dir.clone(),
-            config_dir: workspace_dir.clone(),
-            agent_name: "test-agent".to_string(),
-            workspace_dir,
-            memory_dir: None,
-            reload_tx: None,
-            scope: crate::gateway::web::WorkspaceScope::Agent,
-            checkpoints: crate::checkpoints::test_engine(),
-        }
+    fn make_state(workspace_dir: std::path::PathBuf) -> AgentFilesState {
+        AgentFilesState::for_test(workspace_dir, None)
     }
 
     /// A minimal but real `GatewayState`, for exercising the agent-inbox

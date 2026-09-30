@@ -222,6 +222,10 @@ impl AgentDirectory for StaticAgentDirectory {
         Err(unsupported("the agent repair router"))
     }
 
+    fn agent_file_router(&self, _name: &str) -> Result<Router, LifecycleError> {
+        Err(unsupported("the agent file router"))
+    }
+
     fn agent_a2a_router(&self, name: &str) -> Result<Router, LifecycleError> {
         let agents = self
             .agents

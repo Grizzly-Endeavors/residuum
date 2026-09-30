@@ -112,10 +112,11 @@ fn build_feature_routers(state: &GatewayState, extra: ExtraApiStates) -> Feature
 }
 
 /// Build one running agent's router, rooted at `/`: its WebSocket, webhooks,
-/// files, sessions, scheduled work, agent inbox, memory search, model
-/// completion, A2A status and outbound tasks, and status. It carries no
-/// hub-level route, none of the routes that also work on a stopped agent
-/// (config, workspace files, chat history, the user inbox and the rest, see
+/// files, sessions, scheduled work, inbox, memory search, model completion,
+/// A2A settings, and status. The chat history, usage, user inbox, and A2A
+/// settings routes are the same file routes a stopped agent gets from
+/// `hub::AgentDirectory::agent_file_router`, here on the agent's own open
+/// state. It carries no hub-level route, no repair route (see
 /// `hub::http::agent_repair_router`), no static assets and no request guards;
 /// the hub router serves it under `/api/agents/{name}/` and applies those.
 pub fn build_gateway_app(
@@ -143,6 +144,9 @@ pub fn build_gateway_app(
             config: config_api_state.clone(),
             tunnel_status_rx: state_tunnel_status_rx,
         }))
+        .merge(web::agent_files_api_router(web::AgentFilesState::from(
+            &config_api_state,
+        )))
         .merge(web::agent_status_api_router(config_api_state))
 }
 

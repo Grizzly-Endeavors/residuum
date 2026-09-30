@@ -12,7 +12,7 @@ use crate::memory::episode_store::{latest_episode_id, previous_episode_id, read_
 use crate::memory::recent_messages::{RecentMessage, load_recent_messages};
 use crate::memory::types::Visibility;
 
-use super::ConfigApiState;
+use super::AgentFilesState;
 
 /// Query parameters for `GET /api/agents/{name}/chat/history`.
 #[derive(Debug, Deserialize)]
@@ -53,7 +53,7 @@ pub(super) enum ChatHistorySegment {
 /// `RecentMessage`s plus a cursor to the next-older episode. Returns 404
 /// when the episode does not exist.
 pub(super) async fn api_chat_history(
-    State(state): State<ConfigApiState>,
+    State(state): State<AgentFilesState>,
     Query(params): Query<ChatHistoryQuery>,
 ) -> Result<Json<ChatHistorySegment>, StatusCode> {
     let Some(memory_dir) = &state.memory_dir else {
@@ -141,7 +141,7 @@ pub(super) async fn api_chat_history(
 /// way `GET /api/agents/{name}/chat/history` reads `recent_messages.json` rather than
 /// reaching into the live agent — this HTTP layer never holds a reference
 /// to it. Returns the zero default in setup mode (no memory dir yet).
-pub(super) async fn api_usage(State(state): State<ConfigApiState>) -> Json<SessionUsageTotals> {
+pub(super) async fn api_usage(State(state): State<AgentFilesState>) -> Json<SessionUsageTotals> {
     let Some(memory_dir) = &state.memory_dir else {
         return Json(SessionUsageTotals::default());
     };

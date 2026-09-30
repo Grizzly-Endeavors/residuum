@@ -47,12 +47,15 @@ pub(super) fn routes(directory: Arc<dyn AgentDirectory>) -> Router {
 /// Which of an agent's routers serves an inner path.
 #[derive(Debug, PartialEq, Eq)]
 enum AgentRouterKind {
-    /// Routes over the agent's files on disk, which answer for a stopped or
-    /// failed agent as well as a running one: the repair routes (config,
-    /// providers, MCP, workspace files, checkpoints) that let the user fix
-    /// the agent, and the file-only data routes (chat history, usage, the
-    /// user inbox, the raw A2A client settings).
+    /// Config, providers, MCP, workspace-file, and checkpoint routes, which
+    /// work on a stopped or failed agent so the user can repair it.
     Repair,
+    /// Routes that only read and write the agent's files: chat history,
+    /// usage, the user inbox, and the raw A2A client settings. A running
+    /// agent serves them from its own router, at the cost it always had. Any
+    /// other agent gets them from a router that opens no checkpoint
+    /// repository, so they answer even when the repositories can't be opened.
+    Files,
     /// Everything else, which needs a running agent.
     Running,
 }
@@ -61,31 +64,29 @@ impl AgentRouterKind {
     /// The router for a path in the agent's own route table (`/ws`, or
     /// `/api/...`).
     ///
-    /// The file-only data routes are matched whole, not by their first
-    /// segment, because most routes under the same first segment need the
-    /// agent: of `a2a/...` only `a2a/agents/raw` is a file route, while
-    /// `a2a/agents`, `a2a/status`, `a2a/card` and `a2a/outbound...` are live.
+    /// The file routes are matched whole, not by their first segment,
+    /// because most routes under the same first segment need the agent: of
+    /// `a2a/...` only `a2a/agents/raw` is a file route, while `a2a/agents`,
+    /// `a2a/status`, `a2a/card` and `a2a/outbound...` are live.
     fn for_inner_path(inner: &str) -> Self {
         let segments: Vec<&str> = inner.trim_start_matches('/').split('/').collect();
-        let files = match segments.as_slice() {
-            ["api", route @ ..] => is_file_route(route),
-            _ => false,
-        };
-        if files { Self::Repair } else { Self::Running }
+        match segments.as_slice() {
+            [
+                "api",
+                "config" | "providers" | "mcp" | "workspace" | "checkpoints",
+                ..,
+            ] => Self::Repair,
+            ["api", route @ ..] if is_file_data_route(route) => Self::Files,
+            _ => Self::Running,
+        }
     }
 }
 
-/// Whether the route below `/api`, split into its segments, only reads and
-/// writes the agent's files.
-fn is_file_route(route: &[&str]) -> bool {
+/// Whether the route below `/api`, split into its segments, is one of the
+/// file-only data routes.
+fn is_file_data_route(route: &[&str]) -> bool {
     match route {
-        [
-            "config" | "providers" | "mcp" | "workspace" | "checkpoints",
-            ..,
-        ]
-        | ["chat", "history"]
-        | ["usage"]
-        | ["a2a", "agents", "raw"] => true,
+        ["chat", "history"] | ["usage"] | ["a2a", "agents", "raw"] => true,
         ["inbox", rest @ ..] => matches!(
             rest,
             [] | ["archive"] | [_, "read" | "archive" | "restore"] | [_, "attachments", _]
@@ -115,6 +116,10 @@ async fn agent_request(directory: &dyn AgentDirectory, req: Request) -> Response
     let inner = agent_inner_path(after_name);
     let router = match AgentRouterKind::for_inner_path(&inner) {
         AgentRouterKind::Repair => directory.agent_repair_router(name),
+        AgentRouterKind::Files => match directory.agent_router(name) {
+            Err(LifecycleError::NotRunning { .. }) => directory.agent_file_router(name),
+            running_or_unknown => running_or_unknown,
+        },
         AgentRouterKind::Running => directory.agent_router(name),
     };
     forward(name, router, req, &inner).await
@@ -206,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn file_routes_are_repair_routes_plus_history_usage_inbox_and_a2a_raw() {
+    fn repair_routes_are_config_providers_mcp_workspace_and_checkpoints() {
         for repair in [
             "/api/config/raw",
             "/api/providers/patch",
@@ -215,6 +220,18 @@ mod tests {
             "/api/workspace/file",
             "/api/checkpoints",
             "/api/checkpoints/abc/diff",
+        ] {
+            assert_eq!(
+                AgentRouterKind::for_inner_path(repair),
+                AgentRouterKind::Repair,
+                "{repair}"
+            );
+        }
+    }
+
+    #[test]
+    fn file_routes_are_history_usage_the_user_inbox_and_the_raw_a2a_settings() {
+        for files in [
             "/api/chat/history",
             "/api/usage",
             "/api/a2a/agents/raw",
@@ -227,11 +244,15 @@ mod tests {
             "/api/inbox/archive/read",
         ] {
             assert_eq!(
-                AgentRouterKind::for_inner_path(repair),
-                AgentRouterKind::Repair,
-                "{repair}"
+                AgentRouterKind::for_inner_path(files),
+                AgentRouterKind::Files,
+                "{files}"
             );
         }
+    }
+
+    #[test]
+    fn routes_that_need_the_live_agent_stay_running_routes() {
         for running in [
             "/ws",
             "/api/status",
