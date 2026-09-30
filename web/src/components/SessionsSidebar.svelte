@@ -177,7 +177,7 @@
               onclick={() => (collapsed[category] = !collapsed[category])}
             >
               <span class="sessions-disclosure-chevron" class:open={!collapsed[category]}>
-                <Icon name="chevron" size={12} />
+                <Icon name="chevron-down" size={12} />
               </span>
               {categoryHeading(category)}
               {#if liveCount > 0}
@@ -225,7 +225,7 @@
                   onclick={() => (finishedOpen[category] = !finishedOpen[category])}
                 >
                   <span class="sessions-disclosure-chevron" class:open={finishedOpen[category]}>
-                    <Icon name="chevron" size={12} />
+                    <Icon name="chevron-down" size={12} />
                   </span>
                   Finished
                   {#if finished.runs.length > 0}
