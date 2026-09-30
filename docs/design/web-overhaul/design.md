@@ -1,6 +1,6 @@
 # Web UI Overhaul — Design
 
-> **Status:** draft, pending owner sign-off. Work units: [`phases.md`](./phases.md). Capability checklist: [`parity.md`](./parity.md). Visual reference: [`mockup.html`](./mockup.html) (open it in a browser).
+> **Status:** draft. Owner-approved decisions are listed at the end. The Workbench section is being revised. Work units: [`phases.md`](./phases.md). Capability checklist: [`parity.md`](./parity.md). Visual reference: [`mockup.html`](./mockup.html) (open it in a browser).
 
 > Systems level only. No file or line references. This document must stand on its own: it is implemented by subagents that have only this doc, `phases.md`, `parity.md`, the mockup and the codebase, not the conversation that produced it. Where this document and the mockup disagree, this document wins. The mockup's sample data, and the parts it labels "not in this mockup", are not requirements.
 
@@ -786,7 +786,9 @@ HubInboxItem { agent, id, title, body, source, at, read, attachments: [{ filenam
 - **Hashed assets** (files under `/assets/`, which the build names by content hash): `Cache-Control: public, max-age=31536000, immutable`.
 - **Every other embedded file** (`index.html`, `/sw.js`, `/manifest.webmanifest`, icons, `favicon.svg`, `mcp-catalog.json`): `Cache-Control: no-cache` and a strong `ETag` from a content hash, answering `If-None-Match` with 304.
 
-**Compression.** Text assets (HTML, JS, CSS, JSON, SVG, webmanifest) are compressed with brotli or gzip when the request accepts it, with `Vary: Accept-Encoding`.
+**Compression.**
+- JS, CSS, JSON, SVG and webmanifest responses are compressed with brotli or gzip when the request accepts it, with `Vary: Accept-Encoding`.
+- HTML documents are never compressed. Residuum Cloud's relay inserts its instance switcher into top-level HTML, and it can't find the insertion point in a compressed body.
 
 The SPA fallback rules are unchanged.
 
@@ -847,6 +849,10 @@ Defaults for a new device: `inbox_item` and `agent_failed` on, the other two off
 | `agent_failed` | "<agent> couldn't start" | A line chosen by the error's kind | `failed:<agent>` |
 | `outbound_unreachable` | "<agent> can't reach <remote>" | "A task has been waiting since <time>." | `outbound:<agent>:<task_id>` |
 | `reply_while_away` | "<agent> replied" | The reply's preview | `reply:<agent>` (later replies replace earlier ones) |
+
+**Presence.**
+- While an app window is visible and focused on a device with push enabled, the app sends `presence {device_id, active: true}` on the hub socket. It sends `active: false` when the window hides or loses focus.
+- The hub skips pushes to a device that reported active within the last 60 seconds and whose hub socket is still connected. The app re-sends `active: true` every 30 seconds while it stays active.
 
 **Delivery.**
 - Standard Web Push encryption and VAPID authentication, sent from the host to the subscription's endpoint.
@@ -958,8 +964,8 @@ An artifact reaches Residuum only through the bridge, because the cross-site gua
 - **Offline:** the app launches to the shell, and the hub banner explains that Residuum can't be reached. No data is cached for offline reading.
 - **Updates:** a new worker waits. The app shows "Update ready" with Reload, and Reload activates it.
 - **Push:** the same worker handles push and notification-click events.
-  - When any app window is visible and focused, the worker updates the app badge from `badge` but shows no notification. The app itself already shows the change.
-  - Otherwise it shows the notification with the payload's title, body and tag, and updates the badge.
+  - The worker always shows the notification, with the payload's title, body and tag, and updates the app badge from `badge`. Browsers require every push to show a notification: Safari can revoke a subscription after silent pushes, and Chrome substitutes a generic one.
+  - Suppression while the app is in use happens on the hub instead (§9.7).
   - A click focuses an open app window and navigates it to `target`, or opens a window there.
 - **Registration** happens only in production builds, including the mock's preview mode, never in the dev server.
 
@@ -1163,9 +1169,9 @@ They chose a combination:
   - all test layers pass
 - The design documents then move to `docs/archive/`.
 
-## Open questions
+## Decisions
 
-Choices written into this design that the owner has not yet confirmed:
+Choices the owner has approved, recorded here with where each applies:
 
 1. **Home's data** comes from a hub overview contract fed by a per-agent bus watcher (§9, §9.3), not browser fan-out.
 2. **"Across the team"** is an in-memory event log of 500 entries with level-aware eviction, reset on restart (§9.4).
@@ -1173,7 +1179,11 @@ Choices written into this design that the owner has not yet confirmed:
 4. **The hub stops writing** its failure and lifecycle notes into user inboxes (§9.5), at cutover.
 5. **Settings** use explicit Save and Discard per scope, with the staged/immediate split in §8.
 6. **The service worker** is hand-written (§11).
-7. **Web Push** is in scope. It covers the four events and defaults in §9.7 (the outbound event reuses the tracker's existing 10-minute threshold), keys and devices in untracked hub files, a `[push] contact` hub setting for the VAPID contact, and no notification while an app window is focused.
+7. **Web Push** is in scope. It covers:
+   - the four events and defaults in §9.7; the outbound event reuses the tracker's existing 10-minute threshold
+   - keys and devices in untracked hub files
+   - a `[push] contact` hub setting for the VAPID contact
+   - no push to a device whose app is open and focused, reported through presence on the hub socket
 8. **Visual screenshot tests** are in CI, inside a pinned Playwright container. CI end-to-end runs Chromium only (§10).
 9. **Backend units** merge to `main` directly; frontend units go to the integration branch.
 10. **The grain overlay and time-of-day vein intensity** are dropped (§1).

@@ -67,26 +67,36 @@ It does not merge, and does not contact the owner.
 
 ## Phase 1 — Harness and guardrails (target: main)
 
-W01 first. Then W02 and W04 together. Then W03 and W02b after W02, and W04b after W02b.
+W01, then W01b. Then W02 and W04 together. Then W03 and W02b after W02, and W04b after W02b.
 
-### W01 — Mock server as typed modules (L)
+### W01 — Mock server as typed modules, part 1 (L)
 
 - **Modules:** mock server; web type-check, lint and format configuration.
 - **Preconditions:** none.
 - **Shape when done:**
-  - The mock server is split into modules by area: hub, agent chat, sessions, config, files and checkpoints, workbench, inbox, scheduled, test controls.
-  - It is type-checked, linted and formatted with the app's rules.
-  - Response shapes use generated protocol types wherever one exists.
+  - The mock server has a module structure, with shared state, routing and socket plumbing in their own modules.
+  - The hub, agent chat, sessions and config areas are moved into modules, type-checked, linted and formatted with the app's rules, and use generated protocol types wherever one exists.
+  - The remaining areas stay in the original file, excluded from the new checks until W01b.
   - Behavior is unchanged.
 - **Verification:**
-  - The type check and lint cover the mock.
+  - The type check and lint cover the moved modules.
   - Today's manual scenarios behave the same under `just web-mock`: the `spawn`, `drop` and `busy` chat triggers, the test-control endpoints, and setup mode.
   - Existing tests pass.
+
+### W01b — Mock server as typed modules, part 2 (L)
+
+- **Modules:** mock server.
+- **Preconditions:** W01.
+- **Shape when done:**
+  - The files and checkpoints, workbench, inbox, scheduled and test-control areas are moved into modules under the same checks.
+  - The original single file is gone.
+  - Behavior is unchanged.
+- **Verification:** the same as W01, now covering the whole mock.
 
 ### W02 — Mock determinism, preview mode and route parity (M)
 
 - **Modules:** mock server; justfile; pre-commit hook.
-- **Preconditions:** W01.
+- **Preconditions:** W01b.
 - **Shape when done:**
   - **Deterministic mode:**
     - a fixed clock
@@ -147,7 +157,7 @@ W01 first. Then W02 and W04 together. Then W03 and W02b after W02, and W04b afte
 ### W04 — Lint and CI guardrails (M)
 
 - **Modules:** style lint (replacing the grep-based CSS check); ESLint configuration and the rune store modules; svelte-check invocation; CI workflows; package manifest; coverage configuration.
-- **Preconditions:** W01.
+- **Preconditions:** W01b.
 - **Shape when done:**
   - **Style lint.** Checks global stylesheets and component style blocks. Outside a designated token file it forbids literal colors, raw font sizes, raw z-index values, and literal durations and easing curves. Every existing stylesheet and component is on an ignore list.
   - **Stores.** Rune store modules get the strict TypeScript rules, and their violations are fixed.
@@ -331,8 +341,8 @@ Each unit implements its part of design §9, and updates the mock, the generated
 - **Modules:** embedded asset handler; HTTP middleware.
 - **Preconditions:** W02.
 - **Shape when done:**
-  - Headers and compression per design §9.6.
-  - The relay's HTTP forwarding code is read to confirm that `Cache-Control`, `ETag` and `Content-Encoding` pass through; the result goes in the report.
+  - Headers and compression per design §9.6, with HTML never compressed.
+  - The relay's HTTP forwarding code is read to confirm that `Cache-Control`, `ETag` and `Content-Encoding` pass through, and that its switcher insertion still works on uncompressed HTML. The result goes in the report.
 - **Verification:** Rust tests for:
   - headers per asset class
   - 304 on a matching `If-None-Match`
@@ -408,7 +418,7 @@ W13 and W16 together. W14 after W13. W17 and W17b after W16. W15 after W13 and W
 - **Modules:**
   - route parsing and formatting
   - router: push and replace, close semantics, overlay entries, the unsaved-edit guard
-  - settings section registry: ids, scopes, labels, groups, and old-to-new and new-to-old mappings
+  - settings section registry: ids, scopes, labels, groups, old-to-new and new-to-old mappings, and a coarse table from top-level config keys to sections (used by Fix settings until the settings model's full field map exists)
   - the sessions store's router dependency (removed)
   - an adapter for the current app
 - **Preconditions:** W16.
@@ -957,25 +967,27 @@ W43 and W45 together. W44 after W43. W46 after W45. W47 after W44 and W46.
 
 ### W46 — Web Push triggers (M, target: main)
 
-- **Modules:** trigger wiring from `user_inbox_added`, agent failure, the outbound threshold event and the turn hook; payload text per event; preference filtering.
+- **Modules:** trigger wiring from `user_inbox_added`, agent failure, the outbound threshold event and the turn hook; payload text per event; preference filtering; device presence on the hub socket.
 - **Preconditions:** W45, W08, W11.
 - **Shape when done:** the four triggers, payloads and tags in design §9.7.
 - **Verification:** Rust tests:
   - each trigger fires once per its rule
   - preferences filter per device
   - `reply_while_away` is suppressed while a client is connected
+  - no push to a device with fresh active presence, and pushes resume after it goes stale or its socket closes
   - the badge count
 
 ### W47 — Web Push client and Notifications settings (M, target: integration)
 
-- **Modules:** the worker's push and notification-click handling, with focus suppression; the All agents → Notifications section, including the push contact; permission flow.
+- **Modules:** the worker's push and notification-click handling; presence reporting while the window is visible and focused; the All agents → Notifications section, including the push contact; permission flow.
 - **Preconditions:** W44, W41; W46 merged.
 - **Shape when done:** the Notifications section and push handling behave per design §11, including last-failure display and the iOS note.
 - **Verification:**
   - Preview-mode end-to-end with a mocked subscription:
     - preference toggles
     - a test through the mock
-    - a simulated push suppressed while focused
+    - presence sent while focused and cleared on blur
+    - a simulated push always showing a notification
     - a click navigating to its target
   - Owner check: an installed phone app receiving a new-inbox-item push.
 
