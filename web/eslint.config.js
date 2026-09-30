@@ -12,6 +12,8 @@ export default tseslint.config(
   {
     ignores: ["dist/**", "node_modules/**", "*.config.js", "*.config.ts", "mock-server.ts"],
   },
+  // The coverage report ships its own scripts.
+  { ignores: ["coverage/**"] },
 
   // ── Base presets ────────────────────────────────────────────────────
   js.configs.recommended,

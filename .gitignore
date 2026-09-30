@@ -8,6 +8,7 @@
 reference-mats/
 web/node_modules/
 web/dist/
+web/coverage/
 .specify/
 specs/
 audit-results/

@@ -14,7 +14,8 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write 'src/**/*.{ts,svelte,js,json,css}'",
     "format:check": "prettier --check 'src/**/*.{ts,svelte,js,json,css}'",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
