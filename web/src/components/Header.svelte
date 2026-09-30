@@ -216,7 +216,7 @@
     position: absolute;
     top: 2px;
     right: 2px;
-    background: var(--error-bright);
+    background: var(--error);
     color: #fff;
     font-size: 0.6rem;
     font-weight: bold;

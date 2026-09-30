@@ -17,10 +17,29 @@
   flex-shrink: 0;
 }
 
+.settings-heading {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.settings-scope {
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .settings-title {
   font-family: var(--font-display);
   font-size: var(--fs-base);
   font-weight: 500;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   text-shadow:
@@ -29,6 +48,7 @@
 }
 
 .settings-header-actions {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -382,6 +402,15 @@
     background var(--dur-default) var(--ease-out-stone);
 }
 
+.toggle-switch input:focus-visible + .toggle-slider {
+  box-shadow: var(--focus-ring);
+}
+
+.toggle-switch input:disabled + .toggle-slider {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .toggle-switch input:checked + .toggle-slider {
   background: var(--vein-dim);
 }
@@ -421,6 +450,27 @@
 }
 
 @media (max-width: 600px) {
+  .settings-header {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+  .settings-heading {
+    flex: 1 1 100%;
+  }
+  .settings-header-actions {
+    flex: 1 1 100%;
+    justify-content: space-between;
+    gap: 6px;
+  }
+  .settings-title {
+    font-size: var(--fs-md);
+    letter-spacing: 0.08em;
+  }
+  .settings-mode-btn {
+    padding: 6px 8px;
+  }
+
   /* Settings sidebar → collapsible overlay on mobile */
   .settings-body {
     flex-direction: column;
@@ -467,7 +517,8 @@
   }
 
   .settings-content {
-    padding: 16px;
+    /* Bottom room so the fixed notification corner never covers the last control. */
+    padding: 16px 16px 64px;
   }
   .provider-entry-fields {
     grid-template-columns: 1fr;
