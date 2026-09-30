@@ -16,14 +16,20 @@ export function resolveArtifactsOrigin(
   if (info.relay !== null && page.origin === info.relay.ui_origin) {
     return { ok: true, origin: info.relay.artifacts_origin };
   }
-  if (info.port !== null) {
+  // The port fallback only ever works when this page itself is plain HTTP: the
+  // artifacts listener has no TLS of its own, so `https://host:port` never loads,
+  // whether that's Residuum Cloud before the relay announces its origin or a
+  // reverse proxy terminating TLS in front of Residuum.
+  if (page.protocol === "http:" && info.port !== null) {
     return { ok: true, origin: `${page.protocol}//${page.hostname}:${info.port}` };
   }
   return {
     ok: false,
     reason:
       info.unavailable_reason ??
-      "Workbench artifacts aren't being served right now. Restart Residuum, and check its logs if this keeps happening.",
+      (page.protocol === "http:"
+        ? "Workbench artifacts aren't being served right now. Restart Residuum, and check its logs if this keeps happening."
+        : "This page is loaded over HTTPS, but no secure artifacts origin is available yet. If you're using Residuum Cloud, wait for the tunnel to finish connecting. If you're behind your own HTTPS proxy, make sure it also serves the workbench artifacts origin."),
   };
 }
 
