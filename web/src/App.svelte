@@ -21,6 +21,7 @@
   import { notifications } from "./lib/notifications.svelte";
   import { userErrorMessage } from "./lib/errors";
   import { router } from "./lib/router.svelte";
+  import { legacyRouter } from "./lib/legacy-router.svelte";
 
   // Below this width the sessions sidebar becomes a drawer over the page.
   const NARROW_QUERY = "(max-width: 900px)";
@@ -28,44 +29,19 @@
 
   let mode = $state<"loading" | "setup" | "running">("loading");
 
-  // A native OS notification's "Open" action (see the macOS bridge in
-  // src/notify/) points here. Every result it shows was filed to the agent
-  // inbox, whose files are under inbox/agent in the workspace, so open the
-  // workspace panel. Read before `router.start()` replaces the unrecognized
-  // path.
-  const openedFromNotification = window.location.pathname.startsWith("/notification");
-
   router.start();
 
-  let activeView = $derived.by<
-    | "chat"
-    | "workspace"
-    | "settings"
-    | "hub-settings"
-    | "workbench"
-    | "scheduled"
-    | "team"
-    | "team-files"
-  >(() => {
-    if (router.settings !== null) {
-      return router.settings.scope === "hub" ? "hub-settings" : "settings";
-    }
-    if (router.workbench !== null) return "workbench";
-    if (router.team === "overview") return "team";
-    if (router.team === "files") return "team-files";
-    if (router.scheduled) return "scheduled";
-    return router.chat.workspace ? "workspace" : "chat";
-  });
+  const activeView = $derived(legacyRouter.view);
   let workspaceMounted = $state(false);
   let helpOpen = $state(false);
   let feedbackOpen = $state(false);
-  let inboxOpen = $state(false);
   let feedbackTab = $state<"bug" | "feedback">("bug");
   let narrow = $state(window.matchMedia(NARROW_QUERY).matches);
   let sidebarPreferredOpen = $state(readSidebarPref());
   let drawerOpen = $state(false);
 
-  let sidebarOpen = $derived(narrow ? drawerOpen : sidebarPreferredOpen);
+  // The sessions list is the Activity place, so it shows there whatever the preference.
+  let sidebarOpen = $derived(legacyRouter.activity || (narrow ? drawerOpen : sidebarPreferredOpen));
   const sessions = $derived(ws.sessions);
 
   function readSidebarPref(): boolean {
@@ -80,6 +56,10 @@
     // Closing removes the focused control, so hand focus back to the toggle.
     if (!open) {
       void tick().then(() => document.querySelector<HTMLElement>(".sessions-toggle")?.focus());
+      if (legacyRouter.activity) {
+        legacyRouter.openMainChat();
+        return;
+      }
     }
     if (narrow) {
       drawerOpen = open;
@@ -94,12 +74,12 @@
   }
 
   function selectSession(runId: string) {
-    sessions.openRun(runId);
+    legacyRouter.openSession(runId);
     if (narrow) drawerOpen = false;
   }
 
   function backToChat() {
-    router.openMainChat();
+    legacyRouter.openMainChat();
     void tick().then(() =>
       document.querySelector<HTMLTextAreaElement>(".chat-view .chat-input")?.focus(),
     );
@@ -137,10 +117,19 @@
 
   // The location decides which run the main pane shows.
   $effect(() => {
-    const runId = router.chat.runId;
+    const runId = legacyRouter.chat.runId;
     untrack(() => {
       if (runId === null) sessions.closeView();
       else sessions.showRun(runId);
+    });
+  });
+
+  // A session that continues in a new run takes the location with it.
+  $effect(() => {
+    const followed = sessions.view?.runId;
+    if (followed === undefined) return;
+    untrack(() => {
+      if (legacyRouter.chat.runId !== followed) legacyRouter.replaceSession(followed);
     });
   });
 
@@ -161,9 +150,6 @@
         );
         mode = "running";
       }
-      if (openedFromNotification) {
-        router.setWorkspace(true);
-      }
     })();
     return () => {
       hub.disconnect();
@@ -171,12 +157,12 @@
     };
   });
 
-  // Settle on an agent that exists: `/` and unknown agents go to the last-used
-  // or first one.
+  // Settle on agents that exist: a URL on an agent that doesn't goes to Home,
+  // and one that resolves under the last-used agent finds it.
   $effect(() => {
     if (mode !== "running" || !hub.loaded) return;
     const names = hub.agents.map((agent) => agent.name);
-    untrack(() => router.resolveAgent(names));
+    untrack(() => router.setKnownAgents(names));
   });
 
   async function finishSetup() {
@@ -232,39 +218,39 @@
   <Setup onComplete={() => void finishSetup()} />
 {:else}
   <!-- A workbench artifact in full view fills the window on its own. -->
-  {#if !router.workbench?.full}
+  {#if !legacyRouter.workbench?.full}
     <Header
       status={ws.transport.status}
       {activeView}
-      onOpenChat={() => router.setWorkspace(false)}
-      onOpenWorkspace={() => router.setWorkspace(activeView !== "workspace")}
+      onOpenChat={() => legacyRouter.setWorkspace(false)}
+      onOpenWorkspace={() => legacyRouter.setWorkspace(activeView !== "workspace")}
       onOpenSettings={() => {
-        if (activeView === "settings") router.closeSettings();
-        else router.openSettings();
+        if (activeView === "settings") legacyRouter.closeSettings();
+        else legacyRouter.openSettings();
       }}
       onOpenTeam={() => {
-        if (activeView === "team") router.closeTeam();
-        else router.openTeam("overview");
+        if (activeView === "team") legacyRouter.closeTeam();
+        else legacyRouter.openTeam("overview");
       }}
       onOpenTeamFiles={() => {
-        if (activeView === "team-files") router.closeTeam();
-        else router.openTeam("files");
+        if (activeView === "team-files") legacyRouter.closeTeam();
+        else legacyRouter.openTeam("files");
       }}
       onOpenHubSettings={() => {
-        if (activeView === "hub-settings") router.closeSettings();
-        else router.openSettings(undefined, "hub");
+        if (activeView === "hub-settings") legacyRouter.closeSettings();
+        else legacyRouter.openSettings(undefined, "hub");
       }}
       onOpenWorkbench={() => {
-        if (activeView === "workbench") router.closeWorkbench();
-        else router.openWorkbench();
+        if (activeView === "workbench") legacyRouter.closeWorkbench();
+        else legacyRouter.openWorkbench();
       }}
       onOpenScheduled={() => {
-        if (activeView === "scheduled") router.closeScheduled();
-        else router.openScheduled();
+        if (activeView === "scheduled") legacyRouter.closeScheduled();
+        else legacyRouter.openScheduled();
       }}
       onOpenFeedback={() => openFeedback("bug")}
       onOpenInbox={() => {
-        inboxOpen = true;
+        legacyRouter.openInbox();
       }}
       sessionsToggle={activeView === "settings" ||
       activeView === "hub-settings" ||
@@ -280,34 +266,33 @@
           }}
     />
   {/if}
-  {#key router.agent}
+  {#key legacyRouter.agent}
     {#if activeView === "settings" || activeView === "hub-settings"}
-      {#key router.settings?.scope}
+      {#key `${legacyRouter.settings?.scope}/${legacyRouter.settingsAgent}`}
         <Settings
-          scope={router.settings?.scope ?? "agent"}
-          agent={router.agent}
-          section={router.settings?.section ?? "runtime"}
-          onSelectSection={(section) =>
-            router.openSettings(section, router.settings?.scope ?? "agent")}
-          onClose={() => router.closeSettings()}
+          scope={legacyRouter.settings?.scope ?? "agent"}
+          agent={legacyRouter.settingsAgent}
+          section={legacyRouter.settings?.section ?? "runtime"}
+          onSelectSection={(section) => legacyRouter.selectSettingsSection(section)}
+          onClose={() => legacyRouter.closeSettings()}
         />
       {/key}
     {:else if activeView === "team"}
-      <TeamView onClose={() => router.closeTeam()} />
+      <TeamView onClose={() => legacyRouter.closeTeam()} />
     {:else if activeView === "team-files"}
       <div class="app-body">
         <div class="app-main">
-          <Workspace agent={null} scope="team" onClose={() => router.closeTeam()} />
+          <Workspace agent={null} scope="team" onClose={() => legacyRouter.closeTeam()} />
         </div>
       </div>
     {:else if activeView === "workbench"}
       <Workbench
-        artifact={router.workbench?.artifact ?? null}
-        full={router.workbench?.full ?? false}
-        onClose={() => router.closeWorkbench()}
+        artifact={legacyRouter.workbench?.artifact ?? null}
+        full={legacyRouter.workbench?.full ?? false}
+        onClose={() => legacyRouter.closeWorkbench()}
       />
     {:else if activeView === "scheduled"}
-      <Scheduled onClose={() => router.closeScheduled()} />
+      <Scheduled onClose={() => legacyRouter.closeScheduled()} />
     {:else}
       <div class="app-body">
         {#if sidebarOpen}
@@ -335,7 +320,10 @@
         >
           <div class="workspace-slot" aria-hidden={activeView !== "workspace"}>
             {#if workspaceMounted}
-              <Workspace agent={router.agent} onClose={() => router.setWorkspace(false)} />
+              <Workspace
+                agent={legacyRouter.agent}
+                onClose={() => legacyRouter.setWorkspace(false)}
+              />
             {/if}
           </div>
           <div class="main-pane">
@@ -370,8 +358,8 @@
   }}
 />
 <UserInboxDrawer
-  open={inboxOpen}
+  open={legacyRouter.inbox}
   onClose={() => {
-    inboxOpen = false;
+    legacyRouter.closeInbox();
   }}
 />

@@ -2,6 +2,7 @@
   import { onMount, untrack } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
   import { ws } from "../lib/ws.svelte";
+  import { legacyRouter } from "../lib/legacy-router.svelte";
   import { router } from "../lib/router.svelte";
   import { deleteWorkbenchArtifact, fetchWorkbenchInfo, fetchWorkbenchArtifacts } from "../lib/api";
   import { resolveArtifactsOrigin, type ArtifactsOrigin } from "../lib/workbench";
@@ -36,6 +37,7 @@
       artifacts = list;
       artifactsOrigin = resolveArtifactsOrigin(info, window.location);
       loadState = "ready";
+      router.resolveArtifacts(list.map((a) => a.name));
     } catch (err) {
       loadError = userErrorMessage(err, { action: "Couldn't load the workbench." });
       loadState = "failed";
@@ -84,7 +86,7 @@
     // Let modified clicks open the artifact in a new tab.
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
     event.preventDefault();
-    router.openWorkbench(name);
+    legacyRouter.openWorkbench(name);
   }
 
   async function remove(item: ArtifactSummary) {
@@ -116,8 +118,8 @@
         title={currentTitle}
         origin={artifactsOrigin}
         {full}
-        onBack={() => router.openWorkbench(null)}
-        onSetFull={(next) => router.setWorkbenchFull(next)}
+        onBack={() => legacyRouter.openWorkbench(null)}
+        onSetFull={(next) => legacyRouter.setWorkbenchFull(next)}
       />
     {/key}
   {:else}

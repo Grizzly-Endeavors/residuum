@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, jsonResponse, mockFetch, render, screen, settle } from "../test/component";
 import TeamView from "./TeamView.svelte";
 import { hub } from "../lib/hub.svelte";
-import { router } from "../lib/router.svelte";
+import { legacyRouter } from "../lib/legacy-router.svelte";
 import { toast } from "../lib/toast.svelte";
 import { notifications } from "../lib/notifications.svelte";
 import type { AgentSummary, DeletedAgent } from "../lib/hub-types";
@@ -191,7 +191,7 @@ describe("TeamView agent list", () => {
   });
 
   it("opens an agent from its name", async () => {
-    const open = vi.spyOn(router, "openAgent").mockImplementation(() => {});
+    const open = vi.spyOn(legacyRouter, "openAgent").mockImplementation(() => {});
     render(TeamView, { onClose: () => {} });
     await fireEvent.click(screen.getByRole("button", { name: /^atlas$/ }));
     expect(open).toHaveBeenCalledWith("atlas");

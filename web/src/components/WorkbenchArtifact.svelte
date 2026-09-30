@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
   import { ws } from "../lib/ws.svelte";
+  import { legacyRouter } from "../lib/legacy-router.svelte";
   import { artifactUrl, type ArtifactsOrigin } from "../lib/workbench";
   import { WorkbenchBridge } from "../lib/workbench-bridge";
   import { isStoppableState, sessionsStartedByArtifact, stateLabel } from "../lib/session-format";
@@ -161,7 +162,7 @@
 
   function openSession(session: SessionSummary) {
     panelOpen = false;
-    ws.sessions.openRun(session.run_id);
+    legacyRouter.openSession(session.run_id);
   }
 
   function handleClickOutsidePanel(event: MouseEvent) {

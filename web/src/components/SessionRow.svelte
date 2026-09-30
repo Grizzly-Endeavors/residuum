@@ -1,6 +1,6 @@
 <script lang="ts">
   import { ws } from "../lib/ws.svelte";
-  import { router } from "../lib/router.svelte";
+  import { legacyRouter } from "../lib/legacy-router.svelte";
   import {
     formatStarted,
     isStoppableState,
@@ -65,7 +65,7 @@
           type="button"
           class="session-row-source session-row-artifact-link"
           title="Open the artifact {artifact}"
-          onclick={() => router.openWorkbench(artifact)}
+          onclick={() => legacyRouter.openWorkbench(artifact)}
         >
           {sessionSourceText(session)}
         </button>
