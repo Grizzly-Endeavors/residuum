@@ -1135,3 +1135,76 @@ async fn an_agent_with_a_broken_config_fails_alone_with_a_plain_message() {
     assert!(message.contains("scout couldn't start"), "{message}");
     assert!(message.contains("start it again"), "{message}");
 }
+
+/// Waits until the relay-facing list satisfies `check`, so a test doesn't
+/// depend on how the settle window lines up with the lifecycle call.
+async fn relay_list_where(
+    rx: &mut tokio::sync::watch::Receiver<Vec<crate::tunnel::protocol::AgentInfo>>,
+    check: impl Fn(&[crate::tunnel::protocol::AgentInfo]) -> bool,
+) -> Vec<crate::tunnel::protocol::AgentInfo> {
+    tokio::time::timeout(POLL_TIMEOUT, async {
+        loop {
+            let current = rx.borrow_and_update().clone();
+            if check(&current) {
+                return current;
+            }
+            rx.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the relay's agent list never reached the expected state")
+}
+
+#[tokio::test]
+async fn the_relay_agent_list_follows_every_lifecycle_and_visibility_change() {
+    let hub = Fixture::new(&["atlas", "scout"], "").await;
+    let relay_agents = crate::hub::relay_agents::RelayAgents::spawn(
+        Arc::clone(&hub.host) as Arc<dyn AgentDirectory>,
+        true,
+    );
+    let mut rx = relay_agents.subscribe();
+    let enabled = |list: &[crate::tunnel::protocol::AgentInfo], name: &str| {
+        list.iter().find(|a| a.name == name).map(|a| a.a2a_enabled)
+    };
+
+    // Nothing runs yet: both agents are listed but can't answer.
+    let initial = relay_list_where(&mut rx, |list| list.len() == 2).await;
+    assert!(initial.iter().all(|a| !a.a2a_enabled));
+
+    hub.host.start_autostart().await;
+    relay_list_where(&mut rx, |list| list.iter().all(|a| a.a2a_enabled)).await;
+
+    hub.host.stop("scout").await.unwrap();
+    let stopped = relay_list_where(&mut rx, |list| enabled(list, "scout") == Some(false)).await;
+    assert_eq!(enabled(&stopped, "atlas"), Some(true));
+
+    hub.host.start("scout").await.unwrap();
+    relay_list_where(&mut rx, |list| enabled(list, "scout") == Some(true)).await;
+
+    hub.host
+        .patch(
+            "scout",
+            AgentPatch {
+                a2a_visibility: Some(A2aVisibility::Private),
+                ..AgentPatch::default()
+            },
+        )
+        .await
+        .unwrap();
+    relay_list_where(&mut rx, |list| {
+        list.iter().any(|a| a.name == "scout" && a.a2a_private)
+    })
+    .await;
+
+    hub.host
+        .create(create_request("nova", None), Actor::User)
+        .await
+        .unwrap();
+    relay_list_where(&mut rx, |list| enabled(list, "nova") == Some(true)).await;
+
+    hub.host.delete("nova", Actor::User).await.unwrap();
+    let after_delete = relay_list_where(&mut rx, |list| list.len() == 2).await;
+    assert!(after_delete.iter().all(|a| a.name != "nova"));
+
+    relay_agents.stop();
+}
