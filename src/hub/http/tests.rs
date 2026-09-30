@@ -1404,6 +1404,48 @@ async fn client_routes_get_the_app_shell_and_unknown_api_paths_404() {
 }
 
 #[tokio::test]
+async fn only_the_embedded_app_is_cached_and_compressed() {
+    let h = Harness::new();
+    let accepting = |uri: &str| {
+        Request::get(uri)
+            .header("accept-encoding", "br, gzip")
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let (icon_status, icon_headers, _icon) = h.send(accepting("/favicon.svg")).await;
+    assert_eq!(icon_status, StatusCode::OK);
+    assert!(icon_headers.contains_key("content-encoding"));
+    assert_eq!(icon_headers["cache-control"], "no-cache");
+    assert!(icon_headers.contains_key("etag"));
+
+    let (shell_status, shell_headers, _shell) = h.send(accepting("/agent/scout/chat")).await;
+    assert_eq!(shell_status, StatusCode::OK);
+    assert!(
+        !shell_headers.contains_key("content-encoding"),
+        "the app shell is never compressed"
+    );
+
+    let (api_status, api_headers, api_body) = h.send(accepting("/api/hub/agents")).await;
+    assert_eq!(api_status, StatusCode::OK);
+    assert!(
+        !api_headers.contains_key("content-encoding"),
+        "API responses are left as they are"
+    );
+    assert!(!api_headers.contains_key("cache-control"));
+    assert!(serde_json::from_slice::<Value>(&api_body).is_ok());
+}
+
+#[tokio::test]
+async fn the_cross_site_guard_covers_the_embedded_app() {
+    let h = Harness::new();
+    let status = h
+        .status(cross_site(Method::POST, "/agent/scout/chat"))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn the_cloud_callback_stays_at_the_root() {
     let h = Harness::new();
     let (status, bytes) = h

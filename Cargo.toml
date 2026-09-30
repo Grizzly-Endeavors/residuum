@@ -84,6 +84,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 ring = "0.17"
 futures-util = "0.3"
 tower = { version = "0.5", features = ["util"] }
+# Brotli and gzip for the embedded web app's scripts, styles and JSON
+tower-http = { version = "0.7.1", default-features = false, features = ["compression-br", "compression-gzip"] }
 uuid = { version = "1", features = ["v4"] }
 url = "2"
 rust-embed = "8"
