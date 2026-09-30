@@ -46,6 +46,11 @@ export interface MockState {
   workspaceFiles: Record<string, MockWorkspaceEntry[]>;
   workspaceFileContents: Record<string, string>;
   inboxItems: UserInboxItem[];
+  /**
+   * Whether the agent has a conversation: the sample history and episodes
+   * sit behind `extraRecent`. An agent has one once it has run.
+   */
+  hasConversation: boolean;
   sessions: MockSessions;
   /** Workbench artifacts: name → page HTML and modification time. */
   workbenchArtifacts: Map<string, MockArtifact>;
@@ -120,8 +125,34 @@ export interface MockHub {
   transition: (agent: MockAgent, runState: AgentState) => void;
 }
 
-export function createState(agentName: string): MockState {
-  return {
+/** The remote agents an agent that has run has listed in its A2A client settings. */
+const SAMPLE_A2A_AGENTS_JSON =
+  JSON.stringify(
+    { agents: { "research-buddy": { url: "https://example.com/a2a/research-buddy" } } },
+    null,
+    2,
+  ) + "\n";
+
+/** The A2A client settings of an agent with no remote agents listed. */
+const EMPTY_A2A_AGENTS_JSON = '{"agents":{}}';
+
+/**
+ * Give an agent the data it has once it has run: a conversation, the sample
+ * inbox and its A2A client settings. An agent that has never run has none of
+ * it, and its file-only routes answer with empty data.
+ */
+export function seedAgentData(state: MockState): void {
+  state.hasConversation = true;
+  state.inboxItems = createInboxItems();
+  state.a2aAgentsJson = SAMPLE_A2A_AGENTS_JSON;
+}
+
+/**
+ * A fresh state with the sample data of an agent that has run, or with none
+ * of it when `hasRun` is false.
+ */
+export function createState(agentName: string, hasRun = true): MockState {
+  const state: MockState = {
     agentName,
     mode: process.env.VITE_MOCK_SETUP === "1" ? "setup" : "running",
     workbenchPort: null,
@@ -157,12 +188,7 @@ export function createState(agentName: string): MockState {
         },
       ],
     ]),
-    a2aAgentsJson:
-      JSON.stringify(
-        { agents: { "research-buddy": { url: "https://example.com/a2a/research-buddy" } } },
-        null,
-        2,
-      ) + "\n",
+    a2aAgentsJson: EMPTY_A2A_AGENTS_JSON,
     configToml: loadAsset("config.example.toml"),
     hubConfigToml: loadAsset("hub-config.example.toml"),
     providersToml: loadAsset("providers.example.toml"),
@@ -196,6 +222,9 @@ export function createState(agentName: string): MockState {
     dropSockets: () => {},
     broadcast: () => {},
     compressedAt: null,
-    inboxItems: createInboxItems(),
+    inboxItems: [],
+    hasConversation: false,
   };
+  if (hasRun) seedAgentData(state);
+  return state;
 }

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
-import type { OutboundA2aTaskSummary } from "../src/lib/generated/protocol";
+import type { OutboundA2aTaskSummary, RepoStats } from "../src/lib/generated/protocol";
 import type {
   A2aAgentCard,
   A2aCardSkill,
@@ -108,18 +108,36 @@ function applyJsonPatch(target: JsonObject, diff: JsonObject): void {
 
 // ─── Status & system ───────────────────────────────────────────────────────────
 
+/** A checkpoint repository's size and history, as the status route reports it. */
+function repoStats(bytes: number, count: number, daysOld: number): RepoStats {
+  return {
+    on_disk_bytes: bytes,
+    checkpoint_count: count,
+    oldest: new Date(Date.now() - daysOld * 86_400_000).toISOString(),
+  };
+}
+
+/** Plausible stats for the four checkpoint repositories. */
+function checkpointStats(): StatusResponse["checkpoints"] {
+  return {
+    workspace: repoStats(18_874_368, 142, 45),
+    team: repoStats(6_291_456, 57, 45),
+    agent_config: repoStats(1_048_576, 23, 30),
+    hub: repoStats(524_288, 11, 30),
+  };
+}
+
 const systemRoutes: readonly Route[] = [
   {
     method: "GET",
     pattern: "/api/status",
     handler: ({ res, state }) => {
-      // The mock keeps no checkpoint repositories, so the response has no `checkpoints`.
       json(res, 200, {
-        agent: state.agentName,
         mode: state.mode,
         version: MOCK_RESIDUUM_VERSION,
         features: [...MOCK_FEATURES],
-      } satisfies Omit<StatusResponse, "checkpoints"> & { agent: string });
+        checkpoints: checkpointStats(),
+      } satisfies StatusResponse);
     },
   },
   {
@@ -399,20 +417,27 @@ function closeOutboundTask(ctx: RouteContext): void {
   json(res, 200, closed);
 }
 
+/** The port of the mock's A2A listener. */
+const A2A_PORT = 7702;
+
 const a2aRoutes: readonly Route[] = [
   {
     method: "GET",
     pattern: "/api/a2a/status",
-    handler: ({ res }) => {
-      // The mock has no relay, so the response has none of the local and relay addresses.
+    handler: ({ res, state }) => {
+      // The mock has no relay and no address of the user's own: the agent is reachable locally.
       json(res, 200, {
         enabled: true,
-        port: 7702,
+        port: A2A_PORT,
         visibility: "public",
         public_url: null,
+        local_url: `http://127.0.0.1:${A2A_PORT}/agents/${state.agentName}`,
+        relay_access: false,
+        relay_access_note:
+          "Reachable locally. Connect to the Residuum relay in Cloud settings to make it reachable from other places, or set an address of your own below if you run your own tunnel.",
         listener_running: true,
         card_error: null,
-      } satisfies Omit<A2aStatusResponse, "local_url" | "relay_access" | "relay_access_note">);
+      } satisfies A2aStatusResponse);
     },
   },
   {
@@ -517,7 +542,9 @@ const a2aRoutes: readonly Route[] = [
     method: "GET",
     pattern: "/api/a2a/agents/raw",
     handler: ({ res, state }) => {
-      text(res, 200, state.a2aAgentsJson);
+      // The backend serves the file as it is, labeled JSON.
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(state.a2aAgentsJson);
     },
   },
   {

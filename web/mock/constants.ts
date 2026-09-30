@@ -10,6 +10,10 @@ export const MOCK_FEATURES: readonly string[] = [
   "artifact-state",
 ];
 
+/** Why `brittle`, the mock's agent with a broken model config, is failed, and fails every start. */
+export const MOCK_BRITTLE_ERROR =
+  "providers.toml: model 'gpt-9' is not offered by provider 'openai'";
+
 /** What `GET /api/hub/cloud/status` reports, and the `tunnel` of `GET /api/hub/status`. */
 export const MOCK_CLOUD_STATUS: CloudStatusResponse = {
   status: "disconnected",

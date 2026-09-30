@@ -32,8 +32,8 @@ With [`just`](https://github.com/casey/just), `just web-mock` from the repo root
 ### What's mocked
 
 - All REST endpoints return realistic fake data
-- WebSocket simulates chat responses with tool calls and delays
-- The multi-agent hub contract: four agents (`scout` and `atlas` running, `drifter` stopped, `brittle` failed), each with its own chat, sessions, inbox and config under `/api/agents/{name}/...`. `/api/hub/agents` lists, creates, deletes, starts, stops and restarts them and toggles autostart, and `/api/hub/ws` sends the agent snapshot, state changes, busy/unread activity and notices. Unscoped `/api/...` paths answer 404. Team files and the workbench are shared under `/api/team/...`. `POST /api/mock/teammate-message?agent=atlas` sends atlas a teammate message and lights its unread indicator until you open it
+- WebSocket simulates chat responses with tool calls and delays. Like the backend, it sends tool calls and results only to pages that turned verbose mode on, reads client frames strictly (a frame it can't read gets an `error` frame), and `/stop` ends a running turn
+- The multi-agent hub contract: four agents (`scout` and `atlas` running, `drifter` stopped, `brittle` failed), each with its own chat, sessions, inbox and config under `/api/agents/{name}/...`. `/api/hub/agents` lists, creates, deletes, starts, stops and restarts them and toggles autostart, and `/api/hub/ws` sends the agent snapshot, state changes, busy/unread activity and notices. Unscoped `/api/...` paths answer 404. A stopped or failed agent serves the routes the backend serves for one: the repair routes (config, providers, MCP, workspace, checkpoints) and the file-only ones (chat history, usage, inbox, raw A2A settings). Every other agent route answers `409`, and an unknown agent `404`. An agent that has never run (`drifter`, `brittle`) has no conversation, inbox or A2A agents until it first runs. Team files and the workbench are shared under `/api/team/...`. `POST /api/mock/teammate-message?agent=atlas` sends atlas a teammate message and lights its unread indicator until you open it
 - Agent sessions: live sessions (including a Discord conversation session) and a page-able list of finished ones. Messaging a session simulates a turn (include "busy" in the message to see a delivery failure), messaging a finished one resumes it, and a chat message starting with `spawn` starts a spawned session that relays its result to the main chat. Transcripts load after a short delay, so the loading state and anything racing it can be tried by hand
 - The `POST /api/sessions` / `.../stop` / `.../messages` HTTP endpoints an artifact's `residuum.sessions.start` uses: the bundled "Tip Splitter" artifact (`/workbench/tip-splitter`) has "Start a background session" and "Fire 3 calls at once" buttons for trying the artifact bar's activity panel, Cancel calls, and Stop page by hand; model calls are slowed down (`MODEL_CALL_DELAY_MS`) so they're visibly "in flight" long enough to cancel
 - Tasks sent to other agents in the sessions sidebar's External group: stopping `research-buddy`'s task succeeds, while `laptop` is unreachable, so its Stop fails and the row offers "Stop watching"
@@ -112,13 +112,24 @@ web/
 │       └── secrets.ts            # secret:/${ENV_VAR} reference detection for settings fields
 ├── mock/                     # Typed mock modules, checked like src/ (only used in dev:mock)
 │   ├── routes.ts             # Route tables: each endpoint is a method, a path pattern and a handler
+│   ├── api-routes.ts         # Every route table the mock serves
+│   ├── scope.ts              # Scoped routing: agent, hub and team paths to state and unscoped path; stopped-agent rules
+│   ├── middleware.ts         # The /api request handler and its Connect middleware
 │   ├── state.ts              # Per-agent and hub state, and the agent and hub types
 │   ├── http.ts               # Request and response helpers, typed body parsing
+│   ├── hub.ts                # The hub: agents, activity and unread, run state changes
+│   ├── lifecycle.ts          # Agent lifecycle routes and hub status
+│   ├── hub-socket.ts         # The hub WebSocket
+│   ├── agent-socket.ts       # An agent's WebSocket: client frames, commands, verbose mode
+│   ├── sockets.ts            # Upgrade routing and frame helpers shared by the sockets
+│   ├── chat.ts               # Chat history and usage routes, the chat turn simulation
+│   ├── scenario.ts           # The agents the mock starts with
 │   ├── sessions.ts           # Sessions endpoints, session socket commands, the session lifecycle
 │   ├── config.ts             # Status, config, providers, MCP, secrets, agent keys, A2A, setup, tracing
-│   ├── data/                 # Sample data: sessions, workspace files, inbox, the workbench artifact
+│   ├── data/                 # Sample data: chat, sessions, workspace files, inbox, the workbench artifact
+│   ├── test-support.ts       # Test harnesses: route tables over HTTP, the whole mock with its sockets
 │   └── *.test.ts             # Unit tests, run by `npm test`
-├── mock-server.ts            # Mock plugin entry, plus the hub, agent sockets, chat, files, workbench, inbox and test controls
+├── mock-server.ts            # Mock plugin entry, plus the artifacts listener and the files, workbench, inbox and test-control handlers
 ├── vite.config.ts
 └── package.json
 ```
@@ -166,7 +177,7 @@ npm run test:coverage # The same tests with a coverage summary (HTML report in c
 
 **Generated types.** `src/lib/generated/` comes from the Rust types. After changing an exported Rust type, run `just types` and commit the result; `just types-check` (and CI) fails when the committed files are out of date.
 
-**Mock modules.** Everything under `mock/` is formatted, linted and type-checked with the same rules as `src/`, and its tests (`mock/**/*.test.ts`) run in Node through the same `npm test`. Route handlers live in route tables (`Route` in `mock/routes.ts`), and response bodies are checked against the generated protocol types in `src/lib/generated/` wherever one exists. `mock-server.ts`, the plugin entry, is the one mock file outside those checks; it also holds the hub, agent sockets, chat, files, workbench, inbox and test controls.
+**Mock modules.** Everything under `mock/` is formatted, linted and type-checked with the same rules as `src/`, and its tests (`mock/**/*.test.ts`) run in Node through the same `npm test`. Route handlers live in route tables (`Route` in `mock/routes.ts`), and response bodies are checked against the generated protocol types in `src/lib/generated/` wherever one exists. `mock-server.ts`, the plugin entry, is the one mock file outside those checks; it also holds the artifacts listener and the files, workbench, inbox and test-control handlers. `mock/test-support.ts` has two harnesses: one serves route tables over HTTP against a stub hub, and `startMockServer` runs the whole mock (hub, agents, sockets, scoped routing) on a real HTTP server, with a WebSocket client that keeps the frames it receives.
 
 Component tests live next to the component as `src/components/**/*.test.ts` (or `*.component.test.ts` anywhere under `src/`). They run in jsdom, through the same `npm test` command as the Node unit tests under `src/lib/`. Mount with `render` and mock `fetch` using `src/test/component.ts`.
 
