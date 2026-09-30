@@ -228,6 +228,20 @@ A short text artifact (≤4 KB) is inlined in the same message; a longer one, or
 
 **Persistence.** Every tracked task — its sender, agent, task and context ids, state, and last status text — is persisted at `{workspace}/a2a/outbound.json`, so open tasks resume being watched across a restart.
 
+## Teammates and siblings
+
+Two different things can look like "another agent of mine", and they have different addresses.
+
+| | Teammate | Sibling |
+|---|---|---|
+| What | Another agent in the same hub | Another Residuum install of the same user |
+| Address | `agent:<name>` or `agent:<name>/<session-address>` | `a2a:<slug>` |
+| Path | The hub's team router, straight to the agent's messenger | A2A over the relay |
+| Listed by `list_agents` as | `[agent:<name>]` with state and role | `[a2a:<slug>] (your instance)` |
+| Reply | `message_agent` to the sender's `agent:` address | An agent message from `a2a:<slug>` once its task needs attention |
+
+The prefixes can't be confused: `agent:` and `a2a:` are matched exactly, and neither an agent name (lowercase letters, digits, hyphens) nor an A2A name can contain `:` or `/`. Sibling discovery filters this hub's own instance out of every result, so a teammate is never also listed as a sibling. See [Teammates](background-tasks.md#teammates).
+
 ## Siblings
 
 One user's own other Residuum instances find and trust each other automatically through the relay, with no `config/a2a.json` entry or caller key needed.

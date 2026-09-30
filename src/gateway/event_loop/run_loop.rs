@@ -215,6 +215,8 @@ pub(crate) async fn start_agent(inputs: AgentStartInputs) -> Result<StartedAgent
         publisher: core.publisher.clone(),
     };
     let sibling_fanout = Arc::clone(&services.sibling_fanout);
+    let team_router = Arc::clone(&services.team_router);
+    let team_messenger = Arc::clone(&parts.agent_messenger);
     let runtime = build_runtime(
         parts,
         core,
@@ -238,6 +240,8 @@ pub(crate) async fn start_agent(inputs: AgentStartInputs) -> Result<StartedAgent
     sibling_fanout
         .register(&runtime.name, Arc::clone(&runtime.a2a_hub))
         .await;
+    // From here teammates can message this agent, until it stops.
+    team_router.register(&runtime.name, team_messenger);
     Ok(StartedAgent { runtime, control })
 }
 
@@ -1006,6 +1010,9 @@ async fn graceful_shutdown(rt: &mut AgentRuntime) {
         bus_infra_handles = rt.bus_infra_handles.len(),
         "beginning graceful shutdown"
     );
+    // First, so a stopping agent takes no more teammate messages while its
+    // sessions wind down.
+    rt.services.team_router.unregister(&rt.name);
     // Before sessions: a post-turn cycle may itself be about to publish a
     // notice or spawn a learner, which still needs the bus infrastructure
     // (aborted further down) alive to land.

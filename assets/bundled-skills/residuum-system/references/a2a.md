@@ -31,6 +31,10 @@ You can also delegate to other agents over A2A with your ordinary tools — `lis
 
 Editing `config/a2a.json` via `write_file`/`edit_file`, the workspace editor, `POST /api/workspace/validate`, or the Settings page's raw editor reports invalid JSON, an invalid agent name, or an empty url as a diagnostic alongside the save — the write always goes through rather than being rejected.
 
+## Teammates versus siblings
+
+Agents in your own hub are teammates, addressed `agent:<name>` and reached directly through the hub, not over A2A. Your other Residuum installs are siblings, addressed `a2a:<slug>`. The two prefixes never overlap, and a teammate is never listed as a sibling.
+
 ## Your other instances (siblings)
 
 If the user runs more than one Residuum install, they find and trust each other automatically through the relay when the installs' tunnels carry A2A — no `config/a2a.json` entry or caller key needed. `list_agents` marks one with `(your instance)`; a message from it reads as coming from that instance by name (e.g. `laptop`), described as your own other instance rather than an external caller. Talk to it the same way as any other remote agent, with `a2a:<name>`.

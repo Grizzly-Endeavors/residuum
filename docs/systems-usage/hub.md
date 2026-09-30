@@ -7,7 +7,7 @@ One Residuum process, the **hub**, hosts every agent under `~/.residuum/`. The h
 | HTTP server, relay tunnel, A2A listener, workbench server | Message bus, event loop, and the agent itself |
 | Tracing, log level, updater, auto error reports | Memory, sessions, messenger, pulses, subconscious |
 | Secrets and the agent-key and A2A-key stores | Discord, Telegram, Teams and webhook adapters |
-| Team write coordinator, team wiki index, shared checkpoint repositories | MCP servers, skills, workspace watcher |
+| Team write coordinator, team wiki index, shared checkpoint repositories, team router | MCP servers, skills, workspace watcher |
 | Session budget (`[background] max_concurrent`) | Its own `config.toml` and `providers.toml` |
 
 Each agent loads its own config against the hub config, and keeps its own last-known-good copies, so a bad agent config fails only that agent, and a bad hub config reload keeps the hub on its last-known-good config.
@@ -43,6 +43,7 @@ Two agents can't run with the same Teams adapter port: the second one to start i
 
 - **Team write coordinator**: one per hub; each agent takes its own view with its name.
 - **Team wiki index**: opened once, with the embedding model of the first agent (by name) that configures one, or text-only when none does. Every agent's memory search holds a clone of the same handle.
+- **Team router**: one per hub. Each running agent registers its messenger at start and unregisters when its stop begins. A `message_agent` call to `agent:<name>` (or `agent:<name>/<session>`) goes to the router, which checks the target's state against the agent host and hands the message to the target's messenger; nothing queues for an agent that isn't running. The router also supplies the teammate roster that `list_agents` and every agent's `TEAM` prompt block show. See [Teammates](background-tasks.md#teammates).
 - **Session budget**: one semaphore sized by the hub's `[background] max_concurrent`, taken by every agent's session turns. Main turns don't take a permit. A session waiting for a permit shows as `queued` in its agent's session list. Changing `max_concurrent` takes effect on the next restart.
 - **Checkpoints**: the team and hub-config repositories are shared; each agent has its own workspace and config repositories. See [Checkpoints](checkpoints.md).
 - **Tunnel status, secrets, key stores, tracing**: one of each, passed to every agent.

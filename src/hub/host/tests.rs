@@ -1135,3 +1135,372 @@ async fn an_agent_with_a_broken_config_fails_alone_with_a_plain_message() {
     assert!(message.contains("scout couldn't start"), "{message}");
     assert!(message.contains("start it again"), "{message}");
 }
+
+// ─── Teamwork messaging ───────────────────────────────────────────────
+
+/// The `(role, content)` of the last chat message in a model request.
+fn last_chat_message(request: &wiremock::Request) -> (String, String) {
+    let body: Value = serde_json::from_slice(&request.body).unwrap_or_default();
+    let last = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .and_then(|messages| messages.last())
+        .cloned()
+        .unwrap_or_default();
+    let text = |key: &str| {
+        last.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    (text("role"), text("content"))
+}
+
+/// How long a scripted model takes to decide on a tool call. A message that
+/// reaches a main agent during the last model call of its turn is not acted
+/// on until its next turn, so scripted agents pause before replying to let
+/// the sender's turn finish first.
+const SCRIPTED_TOOL_CALL_DELAY: Duration = Duration::from_millis(300);
+
+/// A model reply that calls `tool` with `arguments`.
+fn tool_call_reply(tool: &str, arguments: &Value) -> ResponseTemplate {
+    static NEXT_CALL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let id = NEXT_CALL.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    ResponseTemplate::new(200)
+        .set_delay(SCRIPTED_TOOL_CALL_DELAY)
+        .set_body_json(json!({
+            "choices": [{ "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": format!("call_{id}"),
+                    "type": "function",
+                    "function": { "name": tool, "arguments": arguments.to_string() }
+                }]
+            } }]
+        }))
+}
+
+/// Script the model behind `server`: `script` sees the role and content of
+/// the last chat message and returns a tool call to make, or `None` to
+/// answer with `fallback` text.
+async fn mount_script<F>(server: &MockServer, fallback: &str, script: F)
+where
+    F: Fn(&str, &str) -> Option<(&'static str, Value)> + Send + Sync + 'static,
+{
+    server.reset().await;
+    let fallback = fallback.to_string();
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(move |request: &wiremock::Request| {
+            let (role, content) = last_chat_message(request);
+            match script(&role, &content) {
+                Some((tool, arguments)) => tool_call_reply(tool, &arguments),
+                None => ResponseTemplate::new(200).set_body_json(json!({
+                    "choices": [{ "message": { "role": "assistant", "content": fallback } }]
+                })),
+            }
+        })
+        .mount(server)
+        .await;
+}
+
+/// The address a teammate message tells its receiver to reply to.
+fn reply_address(message: &str) -> String {
+    let (_, rest) = message
+        .split_once("to=\"")
+        .expect("a teammate message names its reply address");
+    rest.split('"').next().unwrap().to_string()
+}
+
+fn is_user_message_with(role: &str, content: &str, needle: &str) -> bool {
+    role == "user" && content.contains(needle)
+}
+
+fn is_teammate_message_with(role: &str, content: &str, needle: &str) -> bool {
+    role == "user" && content.contains("[Message from teammate ") && content.contains(needle)
+}
+
+/// Start `names`, in order.
+async fn start_all(hub: &Fixture, names: &[&str]) {
+    for name in names {
+        hub.host.start(name).await.unwrap();
+    }
+}
+
+/// Write beta's role page, so teammates see a role line for it.
+fn write_beta_role(hub: &Fixture) {
+    let team = hub.host.team_paths();
+    std::fs::create_dir_all(team.wiki_dir().join("agents")).unwrap();
+    std::fs::write(
+        team.agent_role_page("beta"),
+        "---\ndescription: Reviews drafts\n---\n\nBeta's page.\n",
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_teammate_message_is_attributed_and_the_reply_finds_its_way_back() {
+    let hub = Fixture::new(&["alpha", "beta"], "").await;
+    mount_script(hub.mock("alpha"), "alpha idle", |role, content| {
+        is_user_message_with(role, content, "kickoff").then(|| {
+            (
+                "message_agent",
+                json!({ "to": "agent:beta", "message": "ping from alpha" }),
+            )
+        })
+    })
+    .await;
+    mount_script(hub.mock("beta"), "beta idle", |role, content| {
+        is_teammate_message_with(role, content, "ping from alpha").then(|| {
+            (
+                "message_agent",
+                json!({ "to": reply_address(content), "message": "pong from beta" }),
+            )
+        })
+    })
+    .await;
+    start_all(&hub, &["alpha", "beta"]).await;
+
+    hub.chat("alpha", "kickoff").await;
+
+    eventually("alpha to receive beta's reply", || async {
+        model_was_told(hub.mock("alpha"), "pong from beta")
+            .await
+            .then_some(())
+    })
+    .await;
+    assert!(
+        model_was_told(
+            hub.mock("beta"),
+            "[Message from teammate agent:alpha, not the user."
+        )
+        .await,
+        "beta sees alpha's message labeled as a teammate's, with alpha's address"
+    );
+    assert!(
+        model_was_told(hub.mock("alpha"), "[Message from teammate agent:beta,").await,
+        "alpha sees beta's reply attributed to beta"
+    );
+}
+
+#[tokio::test]
+async fn a_sessions_teammate_message_is_answered_at_the_sessions_own_address() {
+    let hub = Fixture::new(&["alpha", "beta"], "").await;
+    mount_script(hub.mock("alpha"), "alpha idle", |role, content| {
+        if is_user_message_with(role, content, "kickoff-session") {
+            Some((
+                "subagent_spawn",
+                json!({ "task": "session-task: ask beta" }),
+            ))
+        } else if is_user_message_with(role, content, "session-task") {
+            Some((
+                "message_agent",
+                json!({ "to": "agent:beta", "message": "session ping" }),
+            ))
+        } else {
+            None
+        }
+    })
+    .await;
+    mount_script(hub.mock("beta"), "beta idle", |role, content| {
+        is_teammate_message_with(role, content, "session ping").then(|| {
+            (
+                "message_agent",
+                json!({ "to": reply_address(content), "message": "session pong" }),
+            )
+        })
+    })
+    .await;
+    start_all(&hub, &["alpha", "beta"]).await;
+
+    hub.chat("alpha", "kickoff-session").await;
+
+    eventually("alpha's session to receive beta's reply", || async {
+        model_was_told(hub.mock("alpha"), "session pong")
+            .await
+            .then_some(())
+    })
+    .await;
+    assert!(
+        model_was_told(
+            hub.mock("beta"),
+            "[Message from teammate agent:alpha/spawned-"
+        )
+        .await,
+        "beta sees the sender as alpha's session, fully qualified"
+    );
+    assert!(
+        model_was_told(hub.mock("alpha"), "[Message from teammate agent:beta,").await,
+        "the session sees beta's reply attributed to beta"
+    );
+    assert!(
+        !model_was_told(hub.mock("beta"), "no session at").await,
+        "beta's reply found the session"
+    );
+}
+
+#[tokio::test]
+async fn a_two_agent_loop_hits_the_hard_hop_limit_and_the_refusal_is_seen() {
+    let hub = Fixture::new(
+        &["alpha", "beta"],
+        "[background]\nhop_soft_limit = 2\nhop_hard_limit = 5\n",
+    )
+    .await;
+    let bounce = |peer: &'static str| {
+        move |role: &str, content: &str| {
+            if is_user_message_with(role, content, "kickoff") {
+                Some((
+                    "message_agent",
+                    json!({ "to": format!("agent:{peer}"), "message": "loop" }),
+                ))
+            } else if is_teammate_message_with(role, content, "loop") {
+                Some((
+                    "message_agent",
+                    json!({ "to": reply_address(content), "message": "loop" }),
+                ))
+            } else {
+                None
+            }
+        }
+    };
+    mount_script(hub.mock("alpha"), "alpha done", bounce("beta")).await;
+    mount_script(hub.mock("beta"), "beta done", bounce("alpha")).await;
+    start_all(&hub, &["alpha", "beta"]).await;
+
+    hub.chat("alpha", "kickoff").await;
+
+    let refusal = "message loop limit reached";
+    eventually("one side to be refused at the hard limit", || async {
+        let alpha = model_was_told(hub.mock("alpha"), refusal).await;
+        let beta = model_was_told(hub.mock("beta"), refusal).await;
+        (alpha || beta).then_some(())
+    })
+    .await;
+    let soft_note = "This exchange has reached";
+    assert!(
+        model_was_told(hub.mock("alpha"), soft_note).await
+            || model_was_told(hub.mock("beta"), soft_note).await,
+        "the soft limit asked a receiver to reply only if needed"
+    );
+    // The loop ended: nothing more is sent once both agents settle.
+    let total_requests = || async {
+        hub.mock("alpha").received_requests().await.unwrap().len()
+            + hub.mock("beta").received_requests().await.unwrap().len()
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let settled = total_requests().await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(settled, total_requests().await, "the refused loop stops");
+}
+
+#[tokio::test]
+async fn messaging_a_stopped_or_unknown_teammate_is_a_tool_error_and_queues_nothing() {
+    let hub = Fixture::new(&["alpha", "beta"], "").await;
+    mount_script(hub.mock("alpha"), "alpha idle", |role, content| {
+        if is_user_message_with(role, content, "to-stopped") {
+            Some((
+                "message_agent",
+                json!({ "to": "agent:beta", "message": "anyone home?" }),
+            ))
+        } else if is_user_message_with(role, content, "to-ghost") {
+            Some((
+                "message_agent",
+                json!({ "to": "agent:ghost", "message": "hello" }),
+            ))
+        } else if is_user_message_with(role, content, "to-no-session") {
+            Some((
+                "message_agent",
+                json!({ "to": "agent:beta/spawned-nothing-0000", "message": "hello" }),
+            ))
+        } else {
+            None
+        }
+    })
+    .await;
+    mount_script(hub.mock("beta"), "beta idle", |_, _| None).await;
+    start_all(&hub, &["alpha"]).await;
+
+    hub.chat("alpha", "to-stopped").await;
+    hub.chat("alpha", "to-ghost").await;
+    let alpha = hub.mock("alpha");
+    assert!(
+        model_was_told(alpha, "teammate 'beta' is stopped; nothing was queued").await
+            && model_was_told(alpha, "they can start it from the team view").await,
+        "a stopped teammate is a tool error that says so"
+    );
+    assert!(
+        model_was_told(alpha, "no teammate named 'ghost'").await
+            && model_was_told(alpha, "Your teammates are: beta").await,
+        "an unknown name lists the teammates"
+    );
+
+    // Starting beta later delivers nothing from before: it was never queued.
+    hub.host.start("beta").await.unwrap();
+    hub.chat("alpha", "to-no-session").await;
+    assert!(
+        model_was_told(alpha, "has no session 'spawned-nothing-0000'").await,
+        "a missing session is a tool error"
+    );
+    assert!(
+        !model_was_told(hub.mock("beta"), "anyone home?").await,
+        "nothing queued for the agent while it was stopped"
+    );
+}
+
+#[tokio::test]
+async fn list_agents_shows_teammates_with_state_and_role_and_marks_the_caller() {
+    let hub = Fixture::new(&["alpha", "beta"], "").await;
+    write_beta_role(&hub);
+    mount_script(hub.mock("alpha"), "alpha idle", |role, content| {
+        is_user_message_with(role, content, "who is here").then(|| ("list_agents", json!({})))
+    })
+    .await;
+    start_all(&hub, &["alpha"]).await;
+
+    hub.chat("alpha", "who is here").await;
+
+    let alpha = hub.mock("alpha");
+    assert!(model_was_told(alpha, "1 teammate(s):").await);
+    assert!(
+        model_was_told(alpha, "[agent:beta] stopped — Reviews drafts").await,
+        "teammates carry their state and role line"
+    );
+    assert!(
+        model_was_told(alpha, "[agent:alpha] (you)").await,
+        "the caller is marked"
+    );
+}
+
+#[tokio::test]
+async fn the_team_block_lists_teammates_and_follows_their_state() {
+    let hub = Fixture::new(&["alpha", "beta"], "").await;
+    write_beta_role(&hub);
+    start_all(&hub, &["alpha", "beta"]).await;
+
+    hub.chat("alpha", "first turn").await;
+    let alpha = hub.mock("alpha");
+    assert!(
+        model_was_told(alpha, "<TEAM>").await
+            && model_was_told(alpha, "beta (running): Reviews drafts").await,
+        "the prompt lists beta as running with its role line"
+    );
+    assert!(
+        !model_was_told(alpha, "alpha (running)").await,
+        "the roster lists teammates, not the agent itself"
+    );
+
+    hub.host.stop("beta").await.unwrap();
+    hub.chat("alpha", "second turn").await;
+    let requests = alpha.received_requests().await.unwrap();
+    let second_turn_prompt = requests
+        .iter()
+        .rev()
+        .map(|request| String::from_utf8_lossy(&request.body).into_owned())
+        .find(|body| body.contains("second turn"))
+        .expect("alpha's second turn reached the model");
+    assert!(
+        second_turn_prompt.contains("beta (stopped): Reviews drafts"),
+        "the next turn shows the state change"
+    );
+}

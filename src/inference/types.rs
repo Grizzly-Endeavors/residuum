@@ -64,9 +64,11 @@ pub struct MessageSender {
 /// The agent behind a message one agent sent another.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSender {
-    /// Sender's address (`"main"` or a session address).
+    /// Sender's address (`"main"` or a session address, or `agent:<name>` /
+    /// `agent:<name>/<session>` for a teammate).
     pub address: String,
-    /// Sender's category label (`"main"`, `"scheduled"`, `"external"`, or `"spawned"`).
+    /// Sender's category label (`"main"`, `"scheduled"`, `"external"`,
+    /// `"spawned"`, or `"teammate"`).
     pub category: String,
 }
 
