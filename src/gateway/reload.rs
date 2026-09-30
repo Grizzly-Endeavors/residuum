@@ -973,6 +973,7 @@ async fn reload_a2a(rt: &mut AgentRuntime, new_cfg: &Config) {
             bus_handle: rt.bus_handle.clone(),
             // The session spawner has been running since startup.
             sessions_ready: tokio::sync::watch::channel(true).1,
+            tunnel_status_rx: rt.services.tunnel_status_rx.clone(),
         };
         rt.a2a = crate::gateway::event_loop::build_agent_a2a(new_cfg, deps).await;
         if rt.a2a.is_none() {

@@ -381,11 +381,15 @@ export interface A2aStatusResponse {
   enabled: boolean;
   port: number;
   visibility: "public" | "private";
-  /** This agent's address under the user's own tunnel/reverse proxy, or null when none is set. */
+  /**
+   * The address other agents reach this one at from outside this machine: under the user's own
+   * tunnel/reverse proxy when one is set, otherwise through the Residuum relay while it is
+   * connected, otherwise null.
+   */
   public_url: string | null;
   /** This agent's address on the local A2A listener. */
   local_url: string;
-  /** Whether other Residuum installs can reach this agent through the relay. */
+  /** Whether other Residuum installs can reach this agent through the relay right now. */
   relay_access: boolean;
   /** Plain-language statement of how far the agent can be reached. */
   relay_access_note: string;

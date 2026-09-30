@@ -11,6 +11,7 @@ pub mod directory;
 pub mod host;
 pub mod http;
 pub mod provision;
+mod relay_agents;
 pub mod runtime;
 pub mod services;
 pub mod team;

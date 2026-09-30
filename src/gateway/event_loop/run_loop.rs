@@ -414,6 +414,7 @@ fn build_gateway_state(
 fn a2a_serving_deps(
     core: &GatewayCore,
     parts: &crate::gateway::startup::GatewayComponents,
+    services: &HubServices,
 ) -> (A2aServingDeps, tokio::sync::watch::Sender<bool>) {
     let (sessions_ready_tx, sessions_ready_rx) = tokio::sync::watch::channel(false);
     let deps = A2aServingDeps {
@@ -422,6 +423,7 @@ fn a2a_serving_deps(
         skill_state: Arc::clone(&parts.skill_state),
         bus_handle: core.bus_handle.clone(),
         sessions_ready: sessions_ready_rx,
+        tunnel_status_rx: services.tunnel_status_rx.clone(),
     };
     (deps, sessions_ready_tx)
 }
@@ -502,9 +504,10 @@ async fn spawn_agent_tasks(
                 hub: Arc::clone(&parts.a2a_hub),
                 tracker: Arc::clone(&parts.a2a_tracker),
             },
+            tunnel_status_rx: services.tunnel_status_rx.clone(),
         },
     );
-    let (a2a_deps, sessions_ready_tx) = a2a_serving_deps(core, parts);
+    let (a2a_deps, sessions_ready_tx) = a2a_serving_deps(core, parts, services);
     let adapters = spawn_adapters(cfg, &adapter_senders, parts.tz, activity);
     let a2a = if cfg.a2a.enabled {
         build_agent_a2a(cfg, a2a_deps).await
@@ -835,10 +838,18 @@ async fn reload_channels_note(rt: &mut AgentRuntime) -> String {
 /// and, when this reload was agent-triggered, the agent — still need to
 /// know).
 async fn reload_agent_card_note(rt: &mut AgentRuntime) -> Option<String> {
-    let card_state = &rt.a2a.as_ref()?.card_state;
-    let card_runtime =
-        crate::a2a::CardRuntime::from_config(&rt.cfg.a2a, &rt.cfg.gateway.bind, &rt.cfg.agent_name);
-    let Err(e) = card_state.reload(&rt.layout.agent_card_json(), &card_runtime) else {
+    let a2a = rt.a2a.as_ref()?;
+    let relay_base = a2a.relay_base();
+    let card_runtime = crate::a2a::CardRuntime::from_config(
+        &rt.cfg.a2a,
+        &rt.cfg.gateway.bind,
+        &rt.cfg.agent_name,
+        relay_base.as_deref(),
+    );
+    let Err(e) = a2a
+        .card_state
+        .reload(&rt.layout.agent_card_json(), &card_runtime)
+    else {
         return None;
     };
     let message = format!("agent-card.json failed to reload, still serving the previous card: {e}");

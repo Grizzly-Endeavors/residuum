@@ -581,7 +581,7 @@ mod tests {
         let cfg = Config::load_agent_at(&dir, &hub).unwrap();
         assert_eq!(cfg.agent_name, "scout");
         assert!(cfg.autostart);
-        assert_eq!(cfg.a2a.visibility, crate::tunnel::A2aVisibility::Private);
+        assert_eq!(cfg.a2a.visibility, crate::config::A2aVisibility::Private);
         assert_eq!(discover_agents(fx.root()).unwrap(), vec!["scout"]);
         for required in WorkspaceLayout::new(&dir).required_dirs() {
             assert!(required.is_dir(), "{} should exist", required.display());
@@ -610,7 +610,7 @@ mod tests {
 
         let hub = HubConfig::load_at(&hub_dir(fx.root())).unwrap();
         let cfg = Config::load_agent_at(&dir, &hub).unwrap();
-        assert_eq!(cfg.a2a.visibility, crate::tunnel::A2aVisibility::Public);
+        assert_eq!(cfg.a2a.visibility, crate::config::A2aVisibility::Public);
     }
 
     #[tokio::test]

@@ -73,60 +73,30 @@ const WORKBENCH_SURFACE_CAPABILITY: &str = "workbench-surface";
 /// instead of a single buffered `HttpResponse`. Always advertised.
 const HTTP_STREAMING_CAPABILITY: &str = "http-streaming";
 
-/// Capability: this instance has A2A enabled and will answer requests on the
-/// [`protocol::Surface::A2a`] surface.
+/// Capability: this hub has A2A enabled and will answer requests on the
+/// [`protocol::Surface::A2a`] surface, dispatched to the agent named in each
+/// request.
 const A2A_CAPABILITY: &str = "a2a";
 
-/// Capability: this instance's A2A agent is private — only a caller with a
-/// valid key, or an attested sibling, can see or reach it.
-const A2A_PRIVATE_CAPABILITY: &str = "a2a-private";
-
-pub(crate) use crate::config::A2aVisibility;
-
-/// A2A capability advertised on the tunnel upgrade. `None` means A2A is
-/// disabled and the `a2a`/`a2a-private` capabilities are omitted entirely.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TunnelA2a {
-    pub visibility: A2aVisibility,
-}
-
-/// Whether the tunnel declares the `a2a` capability. The relay routes A2A per
-/// instance, but this hub serves A2A per agent under `/agents/<name>/`, which
-/// the relay can't address. Declaring `a2a` would make it forward requests
-/// the listener answers `404`, so the tunnel stays out of A2A and agents are
-/// reachable locally only.
-const TUNNEL_CARRIES_A2A: bool = false;
-
-/// The `(a2a_port, a2a)` pair [`start_tunnel`] takes, derived from `[a2a]`
-/// config: `None`/`None` when A2A is disabled or the tunnel doesn't carry it
-/// ([`TUNNEL_CARRIES_A2A`]), otherwise the configured port and visibility.
-#[must_use]
-pub(crate) fn a2a_tunnel_params(
-    a2a: &crate::config::A2aConfig,
-) -> (Option<u16>, Option<TunnelA2a>) {
-    if a2a.enabled && TUNNEL_CARRIES_A2A {
-        (
-            Some(a2a.port),
-            Some(TunnelA2a {
-                visibility: a2a.visibility,
-            }),
-        )
-    } else {
-        (None, None)
-    }
-}
+/// Capability: this hub reports its agents to the relay with
+/// [`protocol::TunnelFrame::AgentsUpdate`], so the relay can route
+/// `/a2a/{instance}/{agent}` requests and list each agent in its directory.
+/// Always advertised.
+const AGENTS_CAPABILITY: &str = "agents";
 
 /// Build the `x-residuum-capabilities` header value: always
-/// `workbench-surface,http-streaming`, plus `a2a` when A2A is enabled and
-/// `a2a-private` when its visibility is private.
+/// `workbench-surface,http-streaming,agents`, plus `a2a` when the hub's A2A
+/// listener is enabled. Each agent's visibility travels in its
+/// [`protocol::AgentInfo`], not in a capability.
 #[must_use]
-fn build_capabilities_header(a2a: Option<TunnelA2a>) -> String {
-    let mut capabilities = vec![WORKBENCH_SURFACE_CAPABILITY, HTTP_STREAMING_CAPABILITY];
-    if let Some(a2a) = a2a {
+fn build_capabilities_header(a2a_enabled: bool) -> String {
+    let mut capabilities = vec![
+        WORKBENCH_SURFACE_CAPABILITY,
+        HTTP_STREAMING_CAPABILITY,
+        AGENTS_CAPABILITY,
+    ];
+    if a2a_enabled {
         capabilities.push(A2A_CAPABILITY);
-        if a2a.visibility == A2aVisibility::Private {
-            capabilities.push(A2A_PRIVATE_CAPABILITY);
-        }
     }
     capabilities.join(",")
 }
@@ -251,34 +221,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_tunnel_does_not_declare_a2a_even_when_it_is_enabled() {
-        let cfg = crate::config::A2aConfig::default();
-        assert!(cfg.enabled);
-        assert_eq!(a2a_tunnel_params(&cfg), (None, None));
-    }
-
-    #[test]
     fn capabilities_header_without_a2a() {
         assert_eq!(
-            build_capabilities_header(None),
-            "workbench-surface,http-streaming"
+            build_capabilities_header(false),
+            "workbench-surface,http-streaming,agents"
         );
     }
 
     #[test]
-    fn capabilities_header_with_public_a2a() {
-        let header = build_capabilities_header(Some(TunnelA2a {
-            visibility: A2aVisibility::Public,
-        }));
-        assert_eq!(header, "workbench-surface,http-streaming,a2a");
-    }
-
-    #[test]
-    fn capabilities_header_with_private_a2a() {
-        let header = build_capabilities_header(Some(TunnelA2a {
-            visibility: A2aVisibility::Private,
-        }));
-        assert_eq!(header, "workbench-surface,http-streaming,a2a,a2a-private");
+    fn capabilities_header_with_a2a() {
+        assert_eq!(
+            build_capabilities_header(true),
+            "workbench-surface,http-streaming,agents,a2a"
+        );
     }
 
     #[test]

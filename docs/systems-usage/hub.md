@@ -54,10 +54,12 @@ The `autostart` and `a2a_visibility` an agent's summary reports come from the la
 - **Checkpoints**: the team and hub-config repositories are shared; each agent has its own workspace and config repositories. See [Checkpoints](checkpoints.md).
 - **Tunnel status, secrets, key stores, tracing**: one of each, passed to every agent.
 - **Team change feed**: one watcher over the team directory, publishing `team/...` paths on its own bus. The hub WebSocket, every agent's `/ws` (for clients that watch `team/...` prefixes), and every agent's artifact reload watcher read it, so a change to a team file is watched once however many agents run. Each agent also has a feed over its own directory.
+- **Relay agent list**: the hub keeps the relay's copy of its agent list current from the hub bus (created, deleted, state and visibility changes), so each agent is reachable at `{origin}/a2a/{instance}/{agent}` while it runs. See [Cloud tunnel](cloud-tunnel.md#agents-on-the-relay).
+- **Sibling discovery**: one per hub, fanned out to every running agent's A2A client. See [A2A](a2a.md#siblings).
 
 ## Hub config reloads
 
-`hub/config.toml` is watched. A change is applied where the hub owns it: a new `[gateway]` address rebinds the HTTP server (a failed bind keeps the current server), `[cloud]` restarts the tunnel, `[tracing]` updates the tracing service and the log level, and `[a2a]` restarts the A2A listener. Every running agent then reloads against the new hub config for what it reads from it (the timezone, its A2A card, and the hop limits).
+`hub/config.toml` is watched. A change is applied where the hub owns it: a new `[gateway]` address rebinds the HTTP server (a failed bind keeps the current server), `[cloud]` restarts the tunnel (a changed `[a2a] enabled` is passed to the relay's agent list too), `[tracing]` updates the tracing service and the log level, and `[a2a]` restarts the A2A listener. Every running agent then reloads against the new hub config for what it reads from it (the timezone, its A2A card, and the hop limits).
 
 The hub's reload queue carries two signals. `Hub` (from the config watcher, hub config writes, key stores, and the cloud settings) reloads the hub config as above. `Workspace`, sent when an edit through `/api/team/workspace/...` changes the team's `AGENTS.md` or `USER.md`, makes every running agent reload its workspace so it picks up the new identity files.
 
