@@ -178,6 +178,18 @@ describe("notifyWithWorkspaceUndo", () => {
     expect(undoLastAction).toHaveBeenCalledWith(null, "team-cp", "team", "wiki/a.md");
   });
 
+  it("restores an agent's own path through the agent the action ran on", async () => {
+    undoLastAction.mockResolvedValue({ checkpoint_id: "x", restored_paths: [] });
+    notifyWithWorkspaceUndo("atlas", "Deleted a.md.", "notes/a.md", [
+      { id: "ws-cp", repo: "workspace" },
+    ]);
+    [...toast.toasts.values()].at(-1)?.action?.onClick();
+    await vi.waitFor(() => {
+      expect(undoLastAction).toHaveBeenCalledTimes(1);
+    });
+    expect(undoLastAction).toHaveBeenCalledWith("atlas", "ws-cp", "workspace", "notes/a.md");
+  });
+
   it("offers no Undo when no checkpoint applies to the path", () => {
     notifyWithWorkspaceUndo(null, "Deleted a.md.", "team/a.md", []);
     expect([...toast.toasts.values()].at(-1)?.action).toBeUndefined();
