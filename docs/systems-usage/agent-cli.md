@@ -8,7 +8,9 @@
 |---|---|---|
 | `residuum agent list` | `GET /api/hub/agents` | A table of name, state, autostart and role. A failed agent gets an extra line with its last error and when it happened. |
 | `residuum agent create <name> [--description <text>] [--models-from <agent>] [--public]` | `POST /api/hub/agents` | The new agent's state and visibility, and which agent its model settings were copied from. |
-| `residuum agent delete <name>` | `DELETE /api/hub/agents/<name>` | The checkpoint id taken before removal. No confirmation prompt. |
+| `residuum agent delete <name>` | `DELETE /api/hub/agents/<name>` | The checkpoint id taken before removal, and the command that restores the agent. No confirmation prompt. |
+| `residuum agent deleted` | `GET /api/hub/agents/deleted` | A table of the deleted agents that can be restored: name, when it was deleted, and the checkpoint a restore uses. |
+| `residuum agent restore <name> [--checkpoint <id>]` | `POST /api/hub/agents/restore` | The restored agent's state, plus its last error if it failed to start. |
 | `residuum agent start <name>` | `POST /api/hub/agents/<name>/start` | The agent's state afterwards, plus its last error if it failed. |
 | `residuum agent stop <name>` | `POST /api/hub/agents/<name>/stop` | Same. |
 | `residuum agent restart <name>` | `POST /api/hub/agents/<name>/restart` | Same. |
@@ -21,9 +23,13 @@
 - Visibility is private unless `--public` is given.
 - `--description` becomes the new agent's first message and seeds its role page.
 
-## Delete
+## Delete and restore
 
-Deleting checkpoints the agent's directory before removing it, and prints the checkpoint id. Checkpoints are never pruned, and they are keyed by agent name: creating an agent with the same name again uses the same checkpoint history, and its checkpoint view lists the deleted agent's checkpoints for restoring files from.
+Deleting checkpoints the agent's directory before removing it, and prints the checkpoint id and `residuum agent restore <name>`, the command that undoes it. Checkpoints are never pruned.
+
+`residuum agent deleted` lists the agents that can be restored. `residuum agent restore <name>` brings one back with its files, settings and role page, and starts it when its `autostart` is on. `--checkpoint <id>` restores its files from that workspace checkpoint instead of the one the deletion took (the ids are in the agent's checkpoint history); its settings and role page are still the ones it was deleted with. A name that exists is refused (`409`) and a name with no history is `404`; both print the server's message.
+
+Checkpoints are keyed by agent name, so creating an agent with a deleted agent's name continues the same history. The new agent replaces the old one in the deleted list. See [Agent Creation, Deletion and Restore](agent-lifecycle.md#creating-an-agent-with-a-deleted-agents-name).
 
 ## Errors
 

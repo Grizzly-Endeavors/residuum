@@ -46,7 +46,13 @@ Agents see the shared folder under the `team/` prefix, for example `team/wiki/pe
 
 Delete from the **Team** view (with a confirmation), with `residuum agent delete <name>`, or by asking any agent to delete one. Deleting stops the agent, saves a checkpoint of its directory, removes it, and removes its role page from the wiki. The checkpoint id is shown, and checkpoints are never pruned, so nothing is lost. An agent asked to delete itself does its last work first, because the delete takes effect as soon as it stops.
 
-To bring one back, create a new agent with the same name. It uses the same checkpoint history, so the deleted agent's checkpoints are listed in its Checkpoints view and you can restore its files from there.
+To undo a deletion, restore the agent:
+
+- Click **Undo** on the "deleted" toast, or on the note the Team view shows right after you delete.
+- Open the **Team** view and use **Restore** on an agent under **Recently deleted**.
+- Run `residuum agent deleted` to see what can be restored, then `residuum agent restore <name>`.
+
+A restored agent comes back with its notes, memory, sessions, settings, role page and roster entry, and starts if it was set to start automatically. Only you can restore an agent; agents have no restore tool. `residuum agent restore <name> --checkpoint <id>` restores its files from an earlier checkpoint instead. If you create a new agent with a deleted agent's name, it continues the same checkpoint history: the old agent's checkpoints stay in its Checkpoints view, and it stops appearing under Recently deleted.
 
 ## Choose who else can reach an agent
 
