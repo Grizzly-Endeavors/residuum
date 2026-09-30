@@ -313,10 +313,7 @@
             <code class="a2a-address">{status.local_url}</code>
           </div>
         {/if}
-        <p class="field-hint">
-          {status.relay_access_note}
-          {#if !status.public_url}Set an address of your own below if you run your own tunnel.{/if}
-        </p>
+        <p class="field-hint">{status.relay_access_note}</p>
 
         {#if !status.listener_running}
           <p class="validation-msg error">
@@ -377,9 +374,8 @@
           placeholder="https://your-own-tunnel.example/a2a (optional)"
         />
         <span class="field-hint"
-          >Only needed if you run your own tunnel. Each agent is served under <code
-            >/agents/name</code
-          > at this address.</span
+          >The Residuum relay gives each agent its own address, so this is only needed if you run
+          your own tunnel. Each agent is served under <code>/agents/name</code> at this address.</span
         >
       </div>
     {/if}
@@ -519,7 +515,7 @@
     <div class="settings-group-label">Remote agents</div>
     <p class="roles-section-hint">
       Agents this one can hand work to. Listed here from <code>config/a2a.json</code>, plus any of
-      your other installs found automatically through the relay.
+      every agent on your other installs, found automatically through the relay.
     </p>
 
     {#if rawMode}
