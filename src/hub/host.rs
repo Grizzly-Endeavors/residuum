@@ -1455,15 +1455,38 @@ impl AgentHost {
         dir: &Path,
     ) -> Result<Arc<crate::checkpoints::CheckpointEngine>, crate::checkpoints::CheckpointError>
     {
-        crate::checkpoints::CheckpointEngine::with_shared_repos(
-            Arc::clone(&self.services.checkpoints),
-            name,
-            dir.to_path_buf(),
-            dir.join("config"),
-            &self.checkpoints_dir(),
-            None,
-        )
-        .map(|engine| Arc::new(engine.with_team_coordinator(self.services.team.clone())))
+        self.checkpoint_opener(name, dir)()
+    }
+
+    /// A function that opens the checkpoint engine over the agent's
+    /// repositories each time it is called. It owns everything it needs, so
+    /// a router can hold it past the borrow of `self`.
+    fn checkpoint_opener(
+        &self,
+        name: &str,
+        dir: &Path,
+    ) -> impl Fn() -> Result<
+        Arc<crate::checkpoints::CheckpointEngine>,
+        crate::checkpoints::CheckpointError,
+    > + Send
+    + Sync
+    + 'static {
+        let shared = Arc::clone(&self.services.checkpoints);
+        let team = self.services.team.clone();
+        let checkpoints_dir = self.checkpoints_dir();
+        let name = name.to_string();
+        let dir = dir.to_path_buf();
+        move || {
+            crate::checkpoints::CheckpointEngine::with_shared_repos(
+                Arc::clone(&shared),
+                &name,
+                dir.clone(),
+                dir.join("config"),
+                &checkpoints_dir,
+                None,
+            )
+            .map(|engine| Arc::new(engine.with_team_coordinator(team.clone())))
+        }
     }
 
     fn checkpoints_dir(&self) -> PathBuf {
@@ -1500,6 +1523,28 @@ impl AgentHost {
             scope: crate::gateway::web::WorkspaceScope::Agent,
         };
         Ok(crate::gateway::web::agent_repair_api_router(state))
+    }
+
+    /// The agent's chat history, usage, user inbox, and A2A settings routes,
+    /// over its files on disk. Unlike [`Self::repair_router_for`] it opens no
+    /// checkpoint repository: the one write that takes a checkpoint opens them
+    /// when it runs, so these routes answer even when the repositories
+    /// can't be opened.
+    fn file_router_for(&self, slot: &AgentSlot) -> Router {
+        let reload_tx = slot
+            .lock()
+            .running
+            .as_ref()
+            .map(|running| running.control.reload_tx.clone());
+        crate::gateway::web::agent_files_api_router(crate::gateway::web::AgentFilesState {
+            agent_name: slot.name.clone(),
+            workspace_dir: slot.dir.clone(),
+            memory_dir: Some(WorkspaceLayout::new(&slot.dir).memory_dir()),
+            reload_tx,
+            checkpoints: crate::gateway::web::CheckpointAccess::lazy(
+                self.checkpoint_opener(&slot.name, &slot.dir),
+            ),
+        })
     }
 }
 
@@ -1626,6 +1671,11 @@ impl AgentDirectory for AgentHost {
     fn agent_repair_router(&self, name: &str) -> Result<Router, LifecycleError> {
         let slot = self.slot(name)?;
         self.repair_router_for(&slot)
+    }
+
+    fn agent_file_router(&self, name: &str) -> Result<Router, LifecycleError> {
+        let slot = self.slot(name)?;
+        Ok(self.file_router_for(&slot))
     }
 
     fn agent_a2a_router(&self, name: &str) -> Result<Router, LifecycleError> {

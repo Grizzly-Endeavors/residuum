@@ -73,7 +73,7 @@ Every change to an agent's state, autostart, or visibility is published in order
 
 ## HTTP
 
-One router serves everything the hub offers: the hub, team and per-agent routes, the hub WebSocket, and the web app. Agent routes are resolved per request under `/api/agents/{name}/`; an unknown agent answers `404` and an agent that isn't running answers `409`, except for its repair routes. No agent's router serves a root path. The routes, their layout and the request guards are in [Hub HTTP Surface](hub-http.md).
+One router serves everything the hub offers: the hub, team and per-agent routes, the hub WebSocket, and the web app. Agent routes are resolved per request under `/api/agents/{name}/`; an unknown agent answers `404` and an agent that isn't running answers `409`, except on its file routes (config, workspace files, chat history, inbox, and the other routes that only read or write its files). No agent's router serves a root path. The routes, their layout and the request guards are in [Hub HTTP Surface](hub-http.md).
 
 ## Logging
 

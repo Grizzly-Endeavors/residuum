@@ -50,6 +50,12 @@ enum AgentRouterKind {
     /// Config, providers, MCP, workspace-file, and checkpoint routes, which
     /// work on a stopped or failed agent so the user can repair it.
     Repair,
+    /// Routes that only read and write the agent's files: chat history,
+    /// usage, the user inbox, and the raw A2A client settings. A running
+    /// agent serves them from its own router, at the cost it always had. Any
+    /// other agent gets them from a router that opens no checkpoint
+    /// repository, so they answer even when the repositories can't be opened.
+    Files,
     /// Everything else, which needs a running agent.
     Running,
 }
@@ -57,14 +63,35 @@ enum AgentRouterKind {
 impl AgentRouterKind {
     /// The router for a path in the agent's own route table (`/ws`, or
     /// `/api/...`).
+    ///
+    /// The file routes are matched whole, not by their first segment,
+    /// because most routes under the same first segment need the agent: of
+    /// `a2a/...` only `a2a/agents/raw` is a file route, while `a2a/agents`,
+    /// `a2a/status`, `a2a/card` and `a2a/outbound...` are live.
     fn for_inner_path(inner: &str) -> Self {
-        let mut segments = inner.trim_start_matches('/').split('/');
-        let repair = segments.next() == Some("api")
-            && matches!(
-                segments.next(),
-                Some("config" | "providers" | "mcp" | "workspace" | "checkpoints")
-            );
-        if repair { Self::Repair } else { Self::Running }
+        let segments: Vec<&str> = inner.trim_start_matches('/').split('/').collect();
+        match segments.as_slice() {
+            [
+                "api",
+                "config" | "providers" | "mcp" | "workspace" | "checkpoints",
+                ..,
+            ] => Self::Repair,
+            ["api", route @ ..] if is_file_data_route(route) => Self::Files,
+            _ => Self::Running,
+        }
+    }
+}
+
+/// Whether the route below `/api`, split into its segments, is one of the
+/// file-only data routes.
+fn is_file_data_route(route: &[&str]) -> bool {
+    match route {
+        ["chat", "history"] | ["usage"] | ["a2a", "agents", "raw"] => true,
+        ["inbox", rest @ ..] => matches!(
+            rest,
+            [] | ["archive"] | [_, "read" | "archive" | "restore"] | [_, "attachments", _]
+        ),
+        _ => false,
     }
 }
 
@@ -89,6 +116,10 @@ async fn agent_request(directory: &dyn AgentDirectory, req: Request) -> Response
     let inner = agent_inner_path(after_name);
     let router = match AgentRouterKind::for_inner_path(&inner) {
         AgentRouterKind::Repair => directory.agent_repair_router(name),
+        AgentRouterKind::Files => match directory.agent_router(name) {
+            Err(LifecycleError::NotRunning { .. }) => directory.agent_file_router(name),
+            running_or_unknown => running_or_unknown,
+        },
         AgentRouterKind::Running => directory.agent_router(name),
     };
     forward(name, router, req, &inner).await
@@ -196,15 +227,52 @@ mod tests {
                 "{repair}"
             );
         }
+    }
+
+    #[test]
+    fn file_routes_are_history_usage_the_user_inbox_and_the_raw_a2a_settings() {
+        for files in [
+            "/api/chat/history",
+            "/api/usage",
+            "/api/a2a/agents/raw",
+            "/api/inbox",
+            "/api/inbox/archive",
+            "/api/inbox/2026-09-30-note/read",
+            "/api/inbox/2026-09-30-note/archive",
+            "/api/inbox/2026-09-30-note/restore",
+            "/api/inbox/2026-09-30-note/attachments/0",
+            "/api/inbox/archive/read",
+        ] {
+            assert_eq!(
+                AgentRouterKind::for_inner_path(files),
+                AgentRouterKind::Files,
+                "{files}"
+            );
+        }
+    }
+
+    #[test]
+    fn routes_that_need_the_live_agent_stay_running_routes() {
         for running in [
             "/ws",
             "/api/status",
             "/api/sessions",
-            "/api/a2a/agents/raw",
             "/api/configuration",
             "/api/workspaces",
             "/api/files/workspace",
-            "/api/inbox",
+            "/api/agent-inbox",
+            "/api/chat",
+            "/api/chat/history/extra",
+            "/api/usage/totals",
+            "/api/a2a/agents",
+            "/api/a2a/agents/raw/extra",
+            "/api/a2a/status",
+            "/api/a2a/card",
+            "/api/a2a/outbound",
+            "/api/inbox/item",
+            "/api/inbox/item/unknown",
+            "/api/inbox/item/attachments",
+            "/api/inbox/item/attachments/0/extra",
         ] {
             assert_eq!(
                 AgentRouterKind::for_inner_path(running),

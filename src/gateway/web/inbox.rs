@@ -11,7 +11,7 @@ use crate::gateway::types::GatewayState;
 use crate::inbox::InboxItem;
 use crate::workspace::layout::WorkspaceLayout;
 
-use super::ConfigApiState;
+use super::AgentFilesState;
 
 /// Attachment metadata exposed to the web client. The on-disk path never leaves
 /// the server — only what's needed to display and fetch the file.
@@ -98,22 +98,30 @@ async fn to_api_item(
     }
 }
 
+/// The items in `dir`, or none when the directory doesn't exist. An agent
+/// that has never started (a restored one with autostart off, say) has no
+/// inbox directories yet, and these routes answer for it like any other.
+async fn list_items_or_none(dir: &std::path::Path) -> anyhow::Result<Vec<(String, InboxItem)>> {
+    if matches!(tokio::fs::try_exists(dir).await, Ok(false)) {
+        return Ok(Vec::new());
+    }
+    crate::inbox::list_items(dir).await
+}
+
 /// `GET /api/agents/{name}/inbox` — List all user inbox items.
 pub(super) async fn api_inbox_list(
-    State(state): State<ConfigApiState>,
+    State(state): State<AgentFilesState>,
 ) -> Result<Json<Vec<ApiInboxItem>>, (StatusCode, String)> {
     let layout = WorkspaceLayout::new(&state.workspace_dir);
     let user_inbox_dir = layout.user_inbox_dir();
     let attachments_root = layout.user_inbox_attachments_dir();
 
-    let items = crate::inbox::list_items(&user_inbox_dir)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to list user inbox items: {e}"),
-            )
-        })?;
+    let items = list_items_or_none(&user_inbox_dir).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to list user inbox items: {e}"),
+        )
+    })?;
 
     let mut api_items = Vec::with_capacity(items.len());
     for (id, item) in items {
@@ -125,13 +133,13 @@ pub(super) async fn api_inbox_list(
 
 /// `GET /api/agents/{name}/inbox/archive` — List all archived user inbox items.
 pub(super) async fn api_inbox_archive_list(
-    State(state): State<ConfigApiState>,
+    State(state): State<AgentFilesState>,
 ) -> Result<Json<Vec<ApiInboxItem>>, (StatusCode, String)> {
     let layout = WorkspaceLayout::new(&state.workspace_dir);
     let archive_dir = layout.user_inbox_archive_dir();
     let attachments_root = layout.user_inbox_archive_attachments_dir();
 
-    let items = crate::inbox::list_items(&archive_dir).await.map_err(|e| {
+    let items = list_items_or_none(&archive_dir).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("failed to list archived inbox items: {e}"),
@@ -149,7 +157,7 @@ pub(super) async fn api_inbox_archive_list(
 /// `PUT /api/agents/{name}/inbox/:id/read` — Mark an inbox item as read.
 pub(super) async fn api_inbox_read(
     Path(id): Path<String>,
-    State(state): State<ConfigApiState>,
+    State(state): State<AgentFilesState>,
 ) -> Result<Json<ApiInboxItem>, (StatusCode, String)> {
     let layout = WorkspaceLayout::new(&state.workspace_dir);
     let user_inbox_dir = layout.user_inbox_dir();
@@ -172,7 +180,7 @@ pub(super) async fn api_inbox_read(
 /// `POST /api/agents/{name}/inbox/:id/archive` — Archive an inbox item.
 pub(super) async fn api_inbox_archive(
     Path(id): Path<String>,
-    State(state): State<ConfigApiState>,
+    State(state): State<AgentFilesState>,
 ) -> Result<Json<()>, (StatusCode, String)> {
     let layout = WorkspaceLayout::new(&state.workspace_dir);
     let user_inbox_dir = layout.user_inbox_dir();
@@ -194,7 +202,7 @@ pub(super) async fn api_inbox_archive(
 /// the active inbox — the one way to undo `api_inbox_archive`.
 pub(super) async fn api_inbox_restore(
     Path(id): Path<String>,
-    State(state): State<ConfigApiState>,
+    State(state): State<AgentFilesState>,
 ) -> Result<Json<()>, (StatusCode, String)> {
     let layout = WorkspaceLayout::new(&state.workspace_dir);
     let user_inbox_dir = layout.user_inbox_dir();
@@ -249,7 +257,7 @@ async fn confine(
 /// attachment path as a literal filesystem path — see `confine`.
 pub(super) async fn api_inbox_attachment(
     Path((id, index)): Path<(String, usize)>,
-    State(state): State<ConfigApiState>,
+    State(state): State<AgentFilesState>,
 ) -> Response {
     let layout = WorkspaceLayout::new(&state.workspace_dir);
 
@@ -386,18 +394,8 @@ pub(super) async fn api_agent_inbox_add(
 mod tests {
     use super::*;
 
-    fn make_state(workspace_dir: std::path::PathBuf) -> ConfigApiState {
-        ConfigApiState {
-            team: None,
-            hub_dir: workspace_dir.clone(),
-            config_dir: workspace_dir.clone(),
-            agent_name: "test-agent".to_string(),
-            workspace_dir,
-            memory_dir: None,
-            reload_tx: None,
-            scope: crate::gateway::web::WorkspaceScope::Agent,
-            checkpoints: crate::checkpoints::test_engine(),
-        }
+    fn make_state(workspace_dir: std::path::PathBuf) -> AgentFilesState {
+        AgentFilesState::for_test(workspace_dir, None)
     }
 
     /// A minimal but real `GatewayState`, for exercising the agent-inbox
@@ -775,6 +773,41 @@ mod tests {
         assert!(
             archived_after_restore.0.is_empty(),
             "archive should be empty after restore"
+        );
+    }
+
+    #[tokio::test]
+    async fn inbox_listings_are_empty_before_the_directories_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_state(dir.path().to_path_buf());
+
+        let Json(active) = api_inbox_list(State(state.clone())).await.unwrap();
+        let Json(archived) = api_inbox_archive_list(State(state)).await.unwrap();
+
+        assert!(active.is_empty(), "no inbox directory means no items");
+        assert!(archived.is_empty(), "no archive directory means no items");
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_inbox_directory_is_still_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        tokio::fs::create_dir_all(layout.user_inbox_dir().parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(layout.user_inbox_dir(), b"not a directory")
+            .await
+            .unwrap();
+        let state = make_state(dir.path().to_path_buf());
+
+        let Err((status, message)) = api_inbox_list(State(state)).await else {
+            panic!("a directory that can't be read is not an empty inbox");
+        };
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            message.contains("failed to list user inbox items"),
+            "{message}"
         );
     }
 

@@ -29,7 +29,7 @@ use crate::tunnel::TunnelStatus;
 use crate::workspace::layout::WorkspaceLayout;
 
 use super::config::ValidateResponse;
-use super::{ConfigApiState, HubApiState};
+use super::{AgentFilesState, ConfigApiState, HubApiState};
 
 /// Request body for `POST /api/hub/a2a/keys`.
 #[derive(Deserialize)]
@@ -303,7 +303,7 @@ const DEFAULT_A2A_AGENTS_JSON: &str = r#"{"agents":{}}"#;
 
 /// `GET /api/agents/{name}/a2a/agents/raw` — return raw `config/a2a.json` contents.
 pub(super) async fn api_a2a_agents_raw_get(
-    State(state): State<ConfigApiState>,
+    State(state): State<AgentFilesState>,
 ) -> Result<Response, (StatusCode, String)> {
     let path =
         crate::workspace::layout::WorkspaceLayout::new(&state.workspace_dir).a2a_agents_json();
@@ -338,7 +338,7 @@ pub(super) async fn api_a2a_agents_raw_get(
 /// consistent with `write_file`/`edit_file`, `config.toml`/`providers.toml`,
 /// and the workspace file editor.
 pub(super) async fn api_a2a_agents_raw_put(
-    State(state): State<ConfigApiState>,
+    State(state): State<AgentFilesState>,
     body: String,
 ) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
     let diagnostics = crate::a2a::client::config::diagnose_a2a_json(&body);
@@ -660,6 +660,10 @@ mod tests {
         }
     }
 
+    fn files_state(dir: &std::path::Path) -> AgentFilesState {
+        AgentFilesState::for_test(dir.join("workspace"), None)
+    }
+
     fn test_state(dir: &std::path::Path) -> ConfigApiState {
         ConfigApiState {
             team: None,
@@ -938,7 +942,7 @@ mod tests {
     #[tokio::test]
     async fn agents_raw_get_returns_default_template_when_missing() {
         let dir = tempfile::tempdir().unwrap();
-        let resp = api_a2a_agents_raw_get(State(test_state(dir.path())))
+        let resp = api_a2a_agents_raw_get(State(files_state(dir.path())))
             .await
             .unwrap();
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -951,12 +955,12 @@ mod tests {
     async fn agents_raw_put_writes_file_and_get_reads_it_back() {
         let dir = tempfile::tempdir().unwrap();
         let content = r#"{"agents":{"laptop":{"url":"https://laptop.example.com"}}}"#;
-        let result = api_a2a_agents_raw_put(State(test_state(dir.path())), content.to_string())
+        let result = api_a2a_agents_raw_put(State(files_state(dir.path())), content.to_string())
             .await
             .unwrap();
         assert!(result.valid);
 
-        let resp = api_a2a_agents_raw_get(State(test_state(dir.path())))
+        let resp = api_a2a_agents_raw_get(State(files_state(dir.path())))
             .await
             .unwrap();
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -968,7 +972,7 @@ mod tests {
     #[tokio::test]
     async fn agents_raw_put_saves_invalid_json_with_diagnostics() {
         let dir = tempfile::tempdir().unwrap();
-        let state = test_state(dir.path());
+        let state = files_state(dir.path());
         let result = api_a2a_agents_raw_put(State(state.clone()), "not json".to_string())
             .await
             .unwrap();
@@ -983,11 +987,55 @@ mod tests {
         );
     }
 
+    /// A state whose checkpoint repositories can't be opened, counting the
+    /// attempts.
+    fn unopenable_checkpoints(
+        dir: &std::path::Path,
+    ) -> (AgentFilesState, Arc<std::sync::atomic::AtomicUsize>) {
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&attempts);
+        let mut state = files_state(dir);
+        state.checkpoints = crate::gateway::web::CheckpointAccess::lazy(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(crate::checkpoints::CheckpointError::Git(
+                "the repository is corrupt".to_string(),
+            ))
+        });
+        (state, attempts)
+    }
+
+    #[tokio::test]
+    async fn agents_raw_put_opens_the_checkpoint_repositories_once_and_saves_without_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, attempts) = unopenable_checkpoints(dir.path());
+        let content = r#"{"agents":{"laptop":{"url":"https://laptop.example.com"}}}"#;
+
+        let result = api_a2a_agents_raw_put(State(state.clone()), content.to_string())
+            .await
+            .unwrap();
+
+        assert!(result.valid);
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let path = WorkspaceLayout::new(&state.workspace_dir).a2a_agents_json();
+        assert_eq!(tokio::fs::read_to_string(&path).await.unwrap(), content);
+    }
+
+    #[tokio::test]
+    async fn agents_raw_get_never_opens_the_checkpoint_repositories() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, attempts) = unopenable_checkpoints(dir.path());
+
+        let resp = api_a2a_agents_raw_get(State(state)).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
     #[tokio::test]
     async fn agents_raw_put_reports_bad_agent_name_without_blocking_the_save() {
         let dir = tempfile::tempdir().unwrap();
         let content = r#"{"agents":{"Bad Name":{"url":"https://x.example.com"}}}"#;
-        let result = api_a2a_agents_raw_put(State(test_state(dir.path())), content.to_string())
+        let result = api_a2a_agents_raw_put(State(files_state(dir.path())), content.to_string())
             .await
             .unwrap();
         assert!(!result.valid, "a bad agent name should be flagged invalid");

@@ -43,6 +43,17 @@ pub trait AgentDirectory: Send + Sync {
     /// [`LifecycleError::NotFound`] for an unknown agent.
     fn agent_repair_router(&self, name: &str) -> Result<axum::Router, LifecycleError>;
 
+    /// The agent's routes that only read and write its files (chat history,
+    /// usage, the user inbox, the raw A2A settings), over its files on disk
+    /// and with no checkpoint repository opened until a write needs one. The
+    /// hub serves them from [`Self::agent_router`] while the agent is
+    /// running, and from this router otherwise. Same rooting as
+    /// [`Self::agent_router`].
+    ///
+    /// # Errors
+    /// [`LifecycleError::NotFound`] for an unknown agent.
+    fn agent_file_router(&self, name: &str) -> Result<axum::Router, LifecycleError>;
+
     /// The agent's A2A server router (card, JSON-RPC, REST), rooted at `/`.
     /// The A2A listener serves it under `/agents/{name}/`.
     ///

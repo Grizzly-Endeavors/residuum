@@ -52,15 +52,15 @@ A lifecycle request is always made on the user's behalf. Errors are `{ "error": 
 
 An agent's routes come in two groups:
 
-- **Repair routes** work on a stopped or failed agent, so the user can fix its configuration: `config/...`, `providers/...` (including `providers/models`), `mcp/...`, `workspace/...`, and `checkpoints...` (the agent's `workspace` and `agent_config` repositories).
-- **Everything else** needs the agent to be running: `ws`, `status`, `chat/history`, `usage`, `sessions...`, `scheduled/...`, `inbox...`, `agent-inbox`, `files/...`, `memory/search`, `model/complete`, and `a2a/{agents,agents/raw,status,card,outbound...}`.
+- **File routes** work on a running, stopped, or failed agent, because they only read and write the agent's files on disk. They are the repair routes, which let the user fix a configuration (`config/...`, `providers/...` including `providers/models`, `mcp/...`, `workspace/...`, and `checkpoints...` for the agent's `workspace` and `agent_config` repositories), and the routes that show what the agent kept: `chat/history` (recent messages, and `?episode=` for an archived episode), `usage`, the user inbox (`inbox`, `inbox/archive`, `inbox/{id}/read`, `inbox/{id}/archive`, `inbox/{id}/restore`, `inbox/{id}/attachments/{index}`), and `a2a/agents/raw` (`GET` and `PUT`). Requests and responses have the same shape in every state. A write to a stopped or failed agent only touches disk, and the agent reads it when it next starts; a write to a running agent signals it to reload where that applies, as a config or A2A settings write does. A stopped or failed agent's `chat/history`, `usage`, inbox, and `a2a/agents/raw` routes never open its checkpoint repositories, so they answer even when those can't be opened; the raw A2A settings write opens them to take its checkpoint and, when it can't, saves without one and logs a warning. The repair routes do open them, and answer `500` naming the checkpoint history when they can't.
+- **Live routes** need the agent to be running: `ws`, `status`, `sessions...`, `scheduled/...`, `agent-inbox`, `files/...`, `memory/search`, `model/complete`, and `a2a/{agents,status,card,outbound...}`. `status` reports the running process, so it answers `409` for an agent in any other state.
 
 Resolution answers before the agent's router sees the request:
 
 | Condition | Response |
 |-----------|----------|
 | Unknown agent | `404 { "error": "no agent named '<name>'" }` |
-| Agent not `running` (on a non-repair route) | `409 { "error": "<name> is <state>", "state": "<state>" }` |
+| Agent not `running` (on a live route) | `409 { "error": "<name> is <state>", "state": "<state>" }` |
 
 `POST /webhook/{agent}/{name}` is handled by that agent's `/webhook/{name}` route under the same rules.
 

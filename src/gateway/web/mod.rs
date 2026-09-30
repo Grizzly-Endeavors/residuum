@@ -13,6 +13,7 @@ use axum::routing::{delete, get, patch, post, put};
 use tokio::sync::watch;
 
 pub(crate) mod a2a;
+mod agent_files;
 mod agent_keys;
 pub(crate) mod artifact_identity;
 pub(super) mod chat;
@@ -49,6 +50,8 @@ mod embedded {
     pub(super) struct WebAssets;
 }
 use embedded::WebAssets;
+
+pub use agent_files::{AgentFilesState, CheckpointAccess, agent_files_api_router};
 
 /// Shared state for the config API.
 #[derive(Clone)]
@@ -486,24 +489,11 @@ pub(crate) fn team_workspace_api_router(state: ConfigApiState) -> axum::Router {
     workspace_api_router("/api/team").with_state(state)
 }
 
-/// The routes of a running agent that are not repair routes: its status, chat
-/// history and usage, inbox, and A2A client settings.
-pub(crate) fn agent_data_api_router(state: ConfigApiState) -> axum::Router {
+/// The running agent's `status` route: the one per-agent data route that
+/// describes the live process, so it needs a running agent.
+pub(crate) fn agent_status_api_router(state: ConfigApiState) -> axum::Router {
     axum::Router::new()
         .route("/api/status", get(config::api_status))
-        .route("/api/chat/history", get(chat::api_chat_history))
-        .route("/api/usage", get(chat::api_usage))
-        .route("/api/a2a/agents/raw", get(a2a::api_a2a_agents_raw_get))
-        .route("/api/a2a/agents/raw", put(a2a::api_a2a_agents_raw_put))
-        .route("/api/inbox", get(inbox::api_inbox_list))
-        .route("/api/inbox/archive", get(inbox::api_inbox_archive_list))
-        .route("/api/inbox/{id}/read", put(inbox::api_inbox_read))
-        .route("/api/inbox/{id}/archive", post(inbox::api_inbox_archive))
-        .route("/api/inbox/{id}/restore", post(inbox::api_inbox_restore))
-        .route(
-            "/api/inbox/{id}/attachments/{index}",
-            get(inbox::api_inbox_attachment),
-        )
         .with_state(state)
 }
 
@@ -703,17 +693,10 @@ mod tests {
         use axum::Json;
         use axum::extract::{Query, State};
 
-        let state = ConfigApiState {
-            team: None,
-            config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
-            hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
-            agent_name: "test-agent".to_string(),
-            workspace_dir: PathBuf::from("/tmp/residuum-test-nonexistent/workspace"),
-            memory_dir: None,
-            reload_tx: None,
-            scope: WorkspaceScope::Agent,
-            checkpoints: crate::checkpoints::test_engine(),
-        };
+        let state = AgentFilesState::for_test(
+            PathBuf::from("/tmp/residuum-test-nonexistent/workspace"),
+            None,
+        );
         let Json(segment) = chat::api_chat_history(
             State(state),
             Query(chat::ChatHistoryQuery { episode: None }),
@@ -739,17 +722,10 @@ mod tests {
         use axum::Json;
         use axum::extract::State;
 
-        let state = ConfigApiState {
-            team: None,
-            config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
-            hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
-            agent_name: "test-agent".to_string(),
-            workspace_dir: PathBuf::from("/tmp/residuum-test-nonexistent/workspace"),
-            memory_dir: None,
-            reload_tx: None,
-            scope: WorkspaceScope::Agent,
-            checkpoints: crate::checkpoints::test_engine(),
-        };
+        let state = AgentFilesState::for_test(
+            PathBuf::from("/tmp/residuum-test-nonexistent/workspace"),
+            None,
+        );
         let Json(totals) = chat::api_usage(State(state)).await;
         assert_eq!(totals, crate::agent::usage::SessionUsageTotals::default());
     }
@@ -775,17 +751,7 @@ mod tests {
         )
         .await;
 
-        let state = ConfigApiState {
-            team: None,
-            config_dir: dir.path().to_path_buf(),
-            hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
-            agent_name: "test-agent".to_string(),
-            workspace_dir: dir.path().to_path_buf(),
-            memory_dir: Some(memory_dir),
-            reload_tx: None,
-            scope: WorkspaceScope::Agent,
-            checkpoints: crate::checkpoints::test_engine(),
-        };
+        let state = AgentFilesState::for_test(dir.path().to_path_buf(), Some(memory_dir));
         let Json(loaded) = chat::api_usage(State(state)).await;
         assert_eq!(loaded, totals);
     }
@@ -795,17 +761,10 @@ mod tests {
         use axum::Json;
         use axum::extract::{Query, State};
 
-        let state = ConfigApiState {
-            team: None,
-            config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
-            hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
-            agent_name: "test-agent".to_string(),
-            workspace_dir: PathBuf::from("/tmp/residuum-test-nonexistent/workspace"),
-            memory_dir: Some(PathBuf::from("/tmp/residuum-test-nonexistent-memory")),
-            reload_tx: None,
-            scope: WorkspaceScope::Agent,
-            checkpoints: crate::checkpoints::test_engine(),
-        };
+        let state = AgentFilesState::for_test(
+            PathBuf::from("/tmp/residuum-test-nonexistent/workspace"),
+            Some(PathBuf::from("/tmp/residuum-test-nonexistent-memory")),
+        );
         let Json(segment) = chat::api_chat_history(
             State(state),
             Query(chat::ChatHistoryQuery { episode: None }),
@@ -865,17 +824,7 @@ mod tests {
             assert!(episode_jsonl_path(&episodes_dir, &episode).exists());
         }
 
-        let state = ConfigApiState {
-            team: None,
-            config_dir: tmp.path().to_path_buf(),
-            hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
-            agent_name: "test-agent".to_string(),
-            workspace_dir: tmp.path().to_path_buf(),
-            memory_dir: Some(memory_dir),
-            reload_tx: None,
-            scope: WorkspaceScope::Agent,
-            checkpoints: crate::checkpoints::test_engine(),
-        };
+        let state = AgentFilesState::for_test(tmp.path().to_path_buf(), Some(memory_dir));
         let Json(segment) = chat::api_chat_history(
             State(state),
             Query(chat::ChatHistoryQuery { episode: None }),
@@ -934,17 +883,7 @@ mod tests {
             .unwrap();
         }
 
-        let state = ConfigApiState {
-            team: None,
-            config_dir: tmp.path().to_path_buf(),
-            hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
-            agent_name: "test-agent".to_string(),
-            workspace_dir: tmp.path().to_path_buf(),
-            memory_dir: Some(memory_dir),
-            reload_tx: None,
-            scope: WorkspaceScope::Agent,
-            checkpoints: crate::checkpoints::test_engine(),
-        };
+        let state = AgentFilesState::for_test(tmp.path().to_path_buf(), Some(memory_dir));
 
         let Json(segment) = chat::api_chat_history(
             State(state),
@@ -984,17 +923,7 @@ mod tests {
         let memory_dir = tmp.path().join("memory");
         tokio::fs::create_dir_all(&memory_dir).await.unwrap();
 
-        let state = ConfigApiState {
-            team: None,
-            config_dir: tmp.path().to_path_buf(),
-            hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
-            agent_name: "test-agent".to_string(),
-            workspace_dir: tmp.path().to_path_buf(),
-            memory_dir: Some(memory_dir),
-            reload_tx: None,
-            scope: WorkspaceScope::Agent,
-            checkpoints: crate::checkpoints::test_engine(),
-        };
+        let state = AgentFilesState::for_test(tmp.path().to_path_buf(), Some(memory_dir));
 
         let err = chat::api_chat_history(
             State(state),
@@ -1028,17 +957,7 @@ mod tests {
             .await
             .unwrap();
 
-        let state = ConfigApiState {
-            team: None,
-            config_dir: tmp.path().to_path_buf(),
-            hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
-            agent_name: "test-agent".to_string(),
-            workspace_dir: tmp.path().to_path_buf(),
-            memory_dir: Some(memory_dir),
-            reload_tx: None,
-            scope: WorkspaceScope::Agent,
-            checkpoints: crate::checkpoints::test_engine(),
-        };
+        let state = AgentFilesState::for_test(tmp.path().to_path_buf(), Some(memory_dir));
 
         let err = chat::api_chat_history(
             State(state),

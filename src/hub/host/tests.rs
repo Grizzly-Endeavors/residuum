@@ -196,6 +196,31 @@ impl Fixture {
         self.host.summary(name).unwrap().state
     }
 
+    /// Replace the agent's workspace checkpoint repository with a plain
+    /// file, so that opening it fails.
+    fn make_checkpoints_unopenable(&self, name: &str) {
+        let repo = crate::checkpoints::agent_repos_dir(
+            &crate::config::HubPaths::new(&self.services.hub_dir).checkpoints_dir(),
+            name,
+        )
+        .join("workspace.git");
+        if repo.exists() {
+            std::fs::remove_dir_all(&repo).unwrap();
+        }
+        std::fs::write(&repo, "not a repository").unwrap();
+    }
+
+    /// Write a user-inbox item named `id` into the agent's workspace.
+    fn add_inbox_item(&self, name: &str, id: &str) {
+        let dir = self.root.path().join(name).join("inbox/user");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{id}.json")),
+            r#"{"title":"Pelican","body":"seen at the pier","source":"agent","timestamp":"2026-09-30T08:15","read":false}"#,
+        )
+        .unwrap();
+    }
+
     fn mock(&self, name: &str) -> &MockServer {
         self.mocks
             .get(name)
@@ -329,6 +354,151 @@ async fn an_unknown_agent_is_404_and_a_stopped_one_is_409_except_for_repair_rout
     // The config route still answers, so a stopped agent can be repaired.
     let (repair_status, repair_body) = hub.get("/api/agents/scout/config/raw").await;
     assert_eq!(repair_status, 200, "{repair_body}");
+}
+
+#[tokio::test]
+async fn a_stopped_agent_serves_what_it_kept_and_only_status_needs_it_running() {
+    let hub = Fixture::new(&["scout"], "").await;
+    hub.host.start_autostart().await;
+    assert_eq!(
+        hub.chat("scout", "remember the pelican").await,
+        "scout here"
+    );
+    eventually("the conversation to reach history", || async {
+        let (_, history) = hub.get("/api/agents/scout/chat/history").await;
+        history.contains("remember the pelican").then_some(())
+    })
+    .await;
+    hub.add_inbox_item("scout", "20260930_pelican");
+
+    let (running_usage_status, running_usage) = hub.get("/api/agents/scout/usage").await;
+    assert_eq!(running_usage_status, 200, "{running_usage}");
+    let (running_inbox_status, running_inbox) = hub.get("/api/agents/scout/inbox").await;
+    assert_eq!(running_inbox_status, 200, "{running_inbox}");
+    assert!(
+        running_inbox.contains("20260930_pelican"),
+        "{running_inbox}"
+    );
+
+    hub.host.stop("scout").await.unwrap();
+    assert_eq!(hub.state_of("scout"), AgentState::Stopped);
+
+    let (history_status, history) = hub.get("/api/agents/scout/chat/history").await;
+    assert_eq!(history_status, 200, "{history}");
+    assert!(history.contains("remember the pelican"), "{history}");
+    assert_eq!(
+        hub.get("/api/agents/scout/usage").await,
+        (200, running_usage)
+    );
+    assert_eq!(
+        hub.get("/api/agents/scout/inbox").await,
+        (200, running_inbox)
+    );
+    let (archive_status, archive) = hub.get("/api/agents/scout/inbox/archive").await;
+    assert_eq!(archive_status, 200, "{archive}");
+    assert_eq!(archive, "[]");
+    let (a2a_status, a2a) = hub.get("/api/agents/scout/a2a/agents/raw").await;
+    assert_eq!(a2a_status, 200, "{a2a}");
+    assert_eq!(a2a, r#"{"agents":{}}"#);
+
+    // `status` describes the running process, and the other live routes
+    // stay refused.
+    for route in ["status", "sessions", "a2a/agents"] {
+        let (refused_status, refused) = hub.get(&format!("/api/agents/scout/{route}")).await;
+        assert_eq!(refused_status, 409, "{route}: {refused}");
+        let value: Value = serde_json::from_str(&refused).unwrap();
+        assert_eq!(str_at(&value, "state"), "stopped", "{route}");
+    }
+
+    // Starting it again serves the same files through the same routes.
+    hub.host.start("scout").await.unwrap();
+    assert_eq!(hub.get("/api/agents/scout/inbox").await.0, 200);
+    let (status_status, status_body) = hub.get("/api/agents/scout/status").await;
+    assert_eq!(status_status, 200, "{status_body}");
+}
+
+/// Assert that the agent's history, usage, inbox, and raw A2A settings
+/// answer with what is on disk.
+async fn assert_file_routes_answer(hub: &Fixture, name: &str) {
+    let (history_status, history) = hub.get(&format!("/api/agents/{name}/chat/history")).await;
+    assert_eq!(history_status, 200, "{history}");
+    assert!(history.contains("remember the pelican"), "{history}");
+    let (usage_status, usage) = hub.get(&format!("/api/agents/{name}/usage")).await;
+    assert_eq!(usage_status, 200, "{usage}");
+    let (inbox_status, inbox) = hub.get(&format!("/api/agents/{name}/inbox")).await;
+    assert_eq!(inbox_status, 200, "{inbox}");
+    assert!(inbox.contains("20260930_pelican"), "{inbox}");
+    let (archive_status, archive) = hub.get(&format!("/api/agents/{name}/inbox/archive")).await;
+    assert_eq!(archive_status, 200, "{archive}");
+    let (a2a_status, a2a) = hub.get(&format!("/api/agents/{name}/a2a/agents/raw")).await;
+    assert_eq!(a2a_status, 200, "{a2a}");
+}
+
+#[tokio::test]
+async fn a_stopped_agents_history_and_inbox_answer_when_its_checkpoint_repositories_are_unopenable()
+{
+    let hub = Fixture::new(&["scout"], "").await;
+    hub.host.start_autostart().await;
+    assert_eq!(
+        hub.chat("scout", "remember the pelican").await,
+        "scout here"
+    );
+    eventually("the conversation to reach history", || async {
+        let (_, history) = hub.get("/api/agents/scout/chat/history").await;
+        history.contains("remember the pelican").then_some(())
+    })
+    .await;
+    hub.host.stop("scout").await.unwrap();
+    hub.add_inbox_item("scout", "20260930_pelican");
+    hub.make_checkpoints_unopenable("scout");
+
+    // The repair routes open the repositories, which shows they can't be
+    // opened.
+    let (repair_status, repair_body) = hub.get("/api/agents/scout/workspace/files").await;
+    assert_eq!(repair_status, 500, "{repair_body}");
+    assert!(repair_body.contains("checkpoint history"), "{repair_body}");
+
+    assert_file_routes_answer(&hub, "scout").await;
+
+    // Saving the A2A settings goes ahead without a checkpoint.
+    let saved = r#"{"agents":{}}"#;
+    let response = hub
+        .http
+        .put(hub.url("/api/agents/scout/a2a/agents/raw"))
+        .body(saved)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(
+        std::fs::read_to_string(hub.root.path().join("scout/config/a2a.json")).unwrap(),
+        saved
+    );
+}
+
+#[tokio::test]
+async fn a_running_agents_history_and_inbox_do_not_open_its_checkpoint_repositories() {
+    let hub = Fixture::new(&["scout"], "").await;
+    hub.host.start_autostart().await;
+    assert_eq!(
+        hub.chat("scout", "remember the pelican").await,
+        "scout here"
+    );
+    eventually("the conversation to reach history", || async {
+        let (_, history) = hub.get("/api/agents/scout/chat/history").await;
+        history.contains("remember the pelican").then_some(())
+    })
+    .await;
+    hub.add_inbox_item("scout", "20260930_pelican");
+    hub.make_checkpoints_unopenable("scout");
+
+    // A route that opens the repositories now fails, so the file routes
+    // answering means they never tried.
+    let (repair_status, repair_body) = hub.get("/api/agents/scout/workspace/files").await;
+    assert_eq!(repair_status, 500, "{repair_body}");
+
+    assert_file_routes_answer(&hub, "scout").await;
+    assert_eq!(hub.state_of("scout"), AgentState::Running);
 }
 
 #[tokio::test]
