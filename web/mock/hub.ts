@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { AgentActivity, AgentListResponse, AgentSummary } from "../src/lib/generated/protocol";
 import type { HubServerMessage } from "../src/lib/hub-types";
 import { openAgentSocket } from "./agent-socket";
+import { HUB_STATE_NAME, MOCK_DETERMINISTIC_BOOT_ID } from "./constants";
+import { createMockEnv, type MockEnv } from "./env";
 import { createHubConfigReloader } from "./hub-config-reload";
 import { openHubSocket } from "./hub-socket";
 import type { UpgradeHost } from "./sockets";
@@ -52,49 +54,59 @@ function startConversation(agent: MockAgent): void {
     agent.state.extraRecent.push({
       role: "assistant",
       content: `Hi, this is ${agent.name}. You are in my conversation, not scout's.`,
-      timestamp: new Date().toISOString(),
+      timestamp: agent.state.env.clock.iso(),
       visibility: "user",
     });
   }
 }
 
+export interface HubOptions {
+  /** The clock, delays and timers the hub and its agents share. Live ones by default. */
+  env?: MockEnv;
+  /** Creates the agents the hub starts with, and again after every reset. The hub starts with none by default. */
+  seed?: (hub: MockHub) => void;
+}
+
 /**
  * The hub: its agents, the hub WebSocket, and the agent WebSockets it opens on
- * the HTTP server. It starts with no agents.
+ * the HTTP server.
  */
-export function createHub(host: UpgradeHost | null): MockHub {
+export function createHub(
+  host: UpgradeHost | null,
+  { env = createMockEnv(), seed }: HubOptions = {},
+): MockHub {
   const agents = new Map<string, MockAgent>();
-  const hubState = createState("hub");
+  const hubState = createState(HUB_STATE_NAME, true, env);
 
   const listing = (): AgentListResponse => mockListing(agents.values());
-  const { broadcast } = openHubSocket(host, randomUUID(), listing);
-  const reloadHubConfig = createHubConfigReloader(hubState, broadcast);
+  const bootId = env.deterministic ? MOCK_DETERMINISTIC_BOOT_ID : randomUUID();
+  const { broadcast, dropClients } = openHubSocket(host, bootId, listing);
 
   const hub: MockHub = {
+    env,
     agents,
     deleted: new Map(),
     hubState,
     broadcast,
     summary: mockAgentSummary,
     listing,
-    reloadHubConfig,
+    reloadHubConfig: createHubConfigReloader(hubState, broadcast),
     createAgent(name, options = {}) {
       const runState = options.runState ?? "running";
       const agent: MockAgent = {
         name,
         runState,
         lastError:
-          options.lastError === undefined
-            ? null
-            : { ...options.lastError, at: new Date().toISOString() },
+          options.lastError === undefined ? null : { ...options.lastError, at: env.clock.iso() },
         autostart: options.runState !== "stopped",
         role: options.role ?? null,
         visibility: "private",
         busySince: null,
         stopping: false,
         unread: 0,
-        state: createState(name, false),
+        state: createState(name, false, env),
         connectedClients: () => 0,
+        dispose: () => undefined,
       };
       if (runState === "running") startConversation(agent);
       agents.set(name, agent);
@@ -102,7 +114,7 @@ export function createHub(host: UpgradeHost | null): MockHub {
       return agent;
     },
     setBusy(agent, busy) {
-      agent.busySince = busy ? (agent.busySince ?? new Date().toISOString()) : null;
+      agent.busySince = busy ? (agent.busySince ?? env.clock.iso()) : null;
       broadcast(activityFrame(agent));
     },
     addUnread(agent) {
@@ -132,7 +144,23 @@ export function createHub(host: UpgradeHost | null): MockHub {
       }
       broadcast({ type: "agent_state", agent: mockAgentSummary(agent) });
     },
+    reset() {
+      env.reset();
+      dropClients();
+      const gone = [...hub.deleted.values()].map((deleted) => deleted.agent);
+      for (const agent of [...agents.values(), ...gone]) agent.dispose();
+      agents.clear();
+      hub.deleted.clear();
+      // The state is replaced in place: the artifacts listener holds it, and
+      // the port it listens on is not part of the scenario.
+      const { workbenchPort } = hubState;
+      Object.assign(hubState, createState(HUB_STATE_NAME, true, env));
+      hubState.workbenchPort = workbenchPort;
+      hub.reloadHubConfig = createHubConfigReloader(hubState, broadcast);
+      seed?.(hub);
+    },
   };
 
+  seed?.(hub);
   return hub;
 }

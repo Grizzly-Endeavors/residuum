@@ -4,7 +4,7 @@ import type {
   SessionUsageTotals,
 } from "../src/lib/generated/protocol";
 import type { ChatHistorySegment } from "../src/lib/types";
-import { cannedResponses, isoDateDaysAgo, sampleEpisodes, sampleRecentMessages } from "./data/chat";
+import { cannedResponses, sampleEpisodes, sampleRecentMessages } from "./data/chat";
 import { json } from "./http";
 import type { Route } from "./routes";
 import type { MockAgent, MockHub, MockState } from "./state";
@@ -27,8 +27,9 @@ export function chatHistorySegment(
   state: MockState,
   cursor: string | null,
 ): ChatHistorySegment | null {
-  const sample = state.hasConversation ? sampleRecentMessages() : [];
-  const episodes = state.hasConversation ? sampleEpisodes() : [];
+  const { clock } = state.env;
+  const sample = state.hasConversation ? sampleRecentMessages(clock) : [];
+  const episodes = state.hasConversation ? sampleEpisodes(clock) : [];
 
   if (state.compressedAt !== null) {
     if (cursor === null) {
@@ -43,7 +44,7 @@ export function chatHistorySegment(
       return {
         kind: "episode",
         episode_id: "ep-004",
-        date: isoDateDaysAgo(0),
+        date: clock.dateDaysAgo(0),
         // Episodes don't record visibility.
         messages: compressed.map((m) => ({ ...m, visibility: "user" })),
         next_cursor: episodes[0]?.id ?? null,
@@ -110,7 +111,7 @@ function turnLengthMs(drop: boolean, finishWhileDown: boolean): number {
 /** A main-agent turn that has started and not yet ended. */
 interface TurnInFlight {
   content: string;
-  timers: NodeJS.Timeout[];
+  cancels: Array<() => void>;
 }
 
 /** Runs simulated main-agent turns for one agent. */
@@ -134,6 +135,7 @@ export interface ChatSimulator {
  */
 export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulator {
   const { state } = agent;
+  const { env } = hub;
   const inFlight = new Map<string, TurnInFlight>();
   let responseIndex = 0;
 
@@ -141,7 +143,7 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     state.extraRecent.push({
       role: "user",
       content,
-      timestamp: new Date().toISOString(),
+      timestamp: env.clock.iso(),
       visibility: "user",
     });
   }
@@ -153,22 +155,22 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     const drop = lower.startsWith("drop");
     const finishWhileDown = lower.startsWith("drop finish");
     const compress = lower.startsWith("drop compress");
-    const toolCallId = `tc_mock_${Date.now()}`;
+    const toolCallId = `tc_mock_${String(env.nextId())}`;
     const toolArgs = { query: content.slice(0, 100), limit: 5 };
     const toolOutput = JSON.stringify([
       {
         text: "Found 3 relevant observations from recent conversations.",
         score: 0.87,
-        timestamp: new Date().toISOString(),
+        timestamp: env.clock.iso(),
       },
     ]);
     const response = cannedResponses[responseIndex % cannedResponses.length] ?? "";
     responseIndex++;
 
-    const turn: TurnInFlight = { content, timers: [] };
+    const turn: TurnInFlight = { content, cancels: [] };
     inFlight.set(replyTo, turn);
     const later = (ms: number, action: () => void): void => {
-      turn.timers.push(setTimeout(action, ms));
+      turn.cancels.push(env.after(ms, action));
     };
 
     // Live frames stop while the connection is down.
@@ -211,7 +213,7 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
       live({ type: "turn_ended", reply_to: replyTo });
       hub.setBusy(agent, false);
       if (agent.connectedClients() === 0) hub.addUnread(agent);
-      const now = new Date().toISOString();
+      const now = env.clock.iso();
       state.extraRecent.push(
         { role: "user", content, timestamp: now, visibility: "user" },
         {
@@ -237,7 +239,7 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     const turn = inFlight.get(replyTo);
     if (turn === undefined) return;
     inFlight.delete(replyTo);
-    for (const timer of turn.timers) clearTimeout(timer);
+    for (const stop of turn.cancels) stop();
     state.broadcast({ type: "turn_ended", reply_to: replyTo });
     hub.setBusy(agent, false);
     recordUserMessage(turn.content);

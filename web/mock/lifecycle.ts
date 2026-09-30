@@ -9,7 +9,7 @@ import { MOCK_BRITTLE_FAILURE, MOCK_CLOUD_STATUS, MOCK_RESIDUUM_VERSION } from "
 import { json, readJsonObject, stringField, type JsonObject } from "./http";
 import { decodedParam, type Route, type RouteContext } from "./routes";
 import type { MockAgent, MockHub } from "./state";
-import { byName, sleep } from "./util";
+import { byName } from "./util";
 
 /** How long an agent takes to start. */
 const STARTUP_MS = 400;
@@ -124,6 +124,8 @@ async function createAgent(ctx: RouteContext): Promise<void> {
     json(res, 400, { error: "give models_from or providers_toml" });
     return;
   }
+  // A new agent replaces the deleted one of that name, whose socket route would answer for it too.
+  hub.deleted.get(name)?.agent.dispose();
   hub.deleted.delete(name);
   const agent = hub.createAgent(name, { role: stringField(body, "description") ?? null });
   if (body.a2a_visibility === "public") agent.visibility = "public";
@@ -137,7 +139,7 @@ function hubStatus(ctx: RouteContext): void {
   for (const agent of ctx.hub.agents.values()) counts[agent.runState]++;
   json(ctx.res, 200, {
     version: MOCK_RESIDUUM_VERSION,
-    uptime_secs: Math.floor(process.uptime()),
+    uptime_secs: Math.floor(ctx.hub.env.clock.elapsedMs() / 1000),
     tunnel: MOCK_CLOUD_STATUS,
     agents: counts,
   } satisfies HubStatusResponse);
@@ -151,7 +153,7 @@ async function stopAgent(hub: MockHub, agent: MockAgent): Promise<void> {
   if (agent.stopping) return;
   if (agent.runState === "running") {
     hub.markStopping(agent);
-    await sleep(STOP_MS);
+    await hub.env.sleep(STOP_MS);
   }
   hub.transition(agent, "stopped");
 }
@@ -178,8 +180,8 @@ function deleteAgent(ctx: RouteContext): void {
   agent.busySince = null;
   agent.stopping = false;
   hub.agents.delete(agent.name);
-  const checkpointId = `ckpt-${agent.name}-${Date.now()}`;
-  hub.deleted.set(agent.name, { agent, deletedAt: new Date().toISOString(), checkpointId });
+  const checkpointId = `ckpt-${agent.name}-${String(hub.env.nextId())}`;
+  hub.deleted.set(agent.name, { agent, deletedAt: hub.env.clock.iso(), checkpointId });
   hub.broadcast({ type: "agent_deleted", name: agent.name, by: "user" });
   json(ctx.res, 200, { deleted: true, checkpoint_id: checkpointId } satisfies DeleteOutcome);
 }
@@ -219,9 +221,9 @@ async function runAgentAction(ctx: RouteContext): Promise<void> {
     // A restart stops the agent first, like the hub.
     if (action === "restart" && agent.runState === "running") await stopAgent(hub, agent);
     hub.transition(agent, "starting");
-    await sleep(STARTUP_MS);
+    await hub.env.sleep(STARTUP_MS);
     if (agent.name === "brittle") {
-      agent.lastError = { ...MOCK_BRITTLE_FAILURE, at: new Date().toISOString() };
+      agent.lastError = { ...MOCK_BRITTLE_FAILURE, at: hub.env.clock.iso() };
       hub.transition(agent, "failed");
     } else {
       hub.transition(agent, "running");
