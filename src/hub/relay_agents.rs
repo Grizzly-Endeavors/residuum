@@ -49,7 +49,10 @@ pub(crate) fn agent_infos(agents: &[AgentSummary], a2a_listener_enabled: bool) -
 fn changes_agent_list(event: &HubEvent) -> bool {
     matches!(
         event,
-        HubEvent::AgentState { .. } | HubEvent::AgentCreated { .. } | HubEvent::AgentDeleted { .. }
+        HubEvent::AgentState { .. }
+            | HubEvent::AgentCreated { .. }
+            | HubEvent::AgentRestored { .. }
+            | HubEvent::AgentDeleted { .. }
     )
 }
 

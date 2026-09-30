@@ -104,6 +104,41 @@ impl SharedCheckpointRepos {
 /// deleted agent's subdirectory stays, so its history can still be restored.
 const AGENT_REPOS_DIR: &str = "agents";
 
+/// The directory holding the agent `name`'s checkpoint repositories under
+/// `checkpoints_dir`.
+#[must_use]
+pub fn agent_repos_dir(checkpoints_dir: &Path, name: &str) -> PathBuf {
+    checkpoints_dir.join(AGENT_REPOS_DIR).join(name)
+}
+
+/// The names of the agents that have a workspace checkpoint repository under
+/// `checkpoints_dir`, sorted. Whether the agent still exists is not
+/// considered: a deleted agent's repositories stay.
+///
+/// # Errors
+/// Returns [`CheckpointError::Io`] if the agents directory can't be read. A
+/// missing directory is an empty list.
+pub fn agents_with_history(checkpoints_dir: &Path) -> Result<Vec<String>, CheckpointError> {
+    let dir = checkpoints_dir.join(AGENT_REPOS_DIR);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            return Err(CheckpointError::Io(format!(
+                "failed to read {}: {e}",
+                dir.display()
+            )));
+        }
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().join(RepoKind::Workspace.dir_name()).is_dir())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
 /// One agent's checkpoint repositories (its workspace and its config), plus
 /// the team and hub-config repositories every agent shares, and everything
 /// needed to take, list, and act on checkpoints in any of them.
@@ -173,7 +208,7 @@ impl CheckpointEngine {
         checkpoints_dir: &Path,
         publisher: Option<Publisher>,
     ) -> Result<Self, CheckpointError> {
-        let agent_repos_dir = checkpoints_dir.join(AGENT_REPOS_DIR).join(agent_name);
+        let agent_repos_dir = agent_repos_dir(checkpoints_dir, agent_name);
         Ok(Self {
             workspace: TreeRepo::open(
                 workspace_root,

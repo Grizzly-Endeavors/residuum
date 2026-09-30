@@ -15,7 +15,9 @@ use crate::config::paths::{TeamPaths, agent_dir, hub_dir, validate_agent_name};
 use crate::config::{Config, HubConfig};
 use crate::workspace::bootstrap::blank_agent_template;
 use crate::workspace::layout::WorkspaceLayout;
-use crate::workspace::team::{ensure_agent_role_page_as, remove_agent_role_page};
+use crate::workspace::team::{
+    ensure_agent_role_page_as, remove_agent_role_page, restore_agent_role_page,
+};
 use crate::workspace::team_files::{TeamWriteCoordinator, TeamWriter};
 
 use super::types::{A2aVisibility, LifecycleError};
@@ -372,17 +374,28 @@ fn checkpoint_note(checkpoint_id: Option<&str>) -> String {
     checkpoint_id.map_or_else(String::new, |id| format!(" Its checkpoint is {id}."))
 }
 
+/// What a deleted agent is restored from.
+pub struct RestoreSource<'a> {
+    /// The agent's own checkpoint engine, built the way it was when the agent
+    /// ran (workspace root = the agent's directory, config root = its
+    /// `config/` directory, over the agent's checkpoint repositories).
+    pub checkpoints: &'a CheckpointEngine,
+    /// The workspace checkpoint to restore the directory from, such as the id
+    /// [`deprovision_agent`] returned.
+    pub workspace_checkpoint: &'a str,
+    /// The text of the agent's role page when it was deleted. Without it the
+    /// page comes back with the placeholder role.
+    pub role_page: Option<&'a str>,
+}
+
 /// Bring a deleted agent back from the checkpoint [`deprovision_agent`]
 /// returned.
 ///
-/// `checkpoints` is the agent's own engine, built the way it was when the
-/// agent ran (workspace root = the agent's directory, config root = its
-/// `config/` directory, over the agent's checkpoint repositories).
-/// `workspace_checkpoint` is the id `deprovision_agent` returned. The
-/// directory comes back from the workspace repository, then
-/// `providers.toml` and `config.toml` from the tip of the agent-config
-/// repository, `config.toml` last, so the agent is discoverable only once it
-/// is complete. The role page is recreated with the placeholder role, which
+/// The directory comes back from the workspace repository at
+/// `source.workspace_checkpoint`, then `providers.toml` and `config.toml`
+/// from the tip of the agent-config repository, `config.toml` last, so the
+/// agent is discoverable only once it is complete. The role page is
+/// recreated from `source.role_page`, or with the placeholder role, which
 /// the agent replaces on its next turn. The restored agent is stopped; the
 /// caller starts it. The role page is written under `coordinator`'s path
 /// locks (it must guard `team`) with `actor` recorded as its writer; the
@@ -402,10 +415,14 @@ pub async fn restore_agent(
     coordinator: &TeamWriteCoordinator,
     actor: &TeamWriter,
     name: &str,
-    checkpoints: &CheckpointEngine,
-    workspace_checkpoint: &str,
+    source: &RestoreSource<'_>,
 ) -> Result<(), LifecycleError> {
     validate_agent_name(name).map_err(LifecycleError::InvalidName)?;
+    let RestoreSource {
+        checkpoints,
+        workspace_checkpoint,
+        role_page,
+    } = *source;
     let dir = agent_dir(root, name);
     if path_exists(&dir.join("config").join("config.toml")).await? {
         return Err(LifecycleError::AlreadyExists(name.to_string()));
@@ -466,9 +483,11 @@ pub async fn restore_agent(
         .await
         .map_err(|e| fail("restore the agent's settings", &e))?;
 
-    ensure_agent_role_page_as(team, coordinator, actor, name, None)
-        .await
-        .map_err(|e| {
+    let role_page_result = match role_page {
+        Some(text) => restore_agent_role_page(team, coordinator, actor, name, text).await,
+        None => ensure_agent_role_page_as(team, coordinator, actor, name, None).await,
+    };
+    role_page_result.map_err(|e| {
         tracing::error!(error = %e, agent = %name, "failed to recreate the restored agent's role page");
         LifecycleError::Failed(format!(
             "The agent '{name}' was restored, but its role page in the team wiki couldn't be recreated ({e})."
@@ -940,8 +959,11 @@ mod tests {
             &fx.coordinator,
             &fx.actor,
             "scout",
-            &engine,
-            &checkpoint,
+            &RestoreSource {
+                checkpoints: &engine,
+                workspace_checkpoint: &checkpoint,
+                role_page: None,
+            },
         )
         .await
         .unwrap();
@@ -1007,8 +1029,11 @@ mod tests {
             &fx.coordinator,
             &fx.actor,
             "scout",
-            &engine,
-            "abc123",
+            &RestoreSource {
+                checkpoints: &engine,
+                workspace_checkpoint: "abc123",
+                role_page: None,
+            },
         )
         .await
         .unwrap_err();

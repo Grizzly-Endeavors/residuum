@@ -46,6 +46,9 @@ fn lifecycle_error_text(error: &LifecycleError, action: &str) -> String {
         LifecycleError::AlreadyExists(name) => format!(
             "can't {action}: an agent named '{name}' already exists. Pick a different name, or message the existing agent at agent:{name}."
         ),
+        LifecycleError::NoDeletedAgent(name) => {
+            format!("can't {action}: there is no deleted agent named '{name}'.")
+        }
         LifecycleError::NotFound(name) => format!(
             "can't {action}: there is no agent named '{name}'. Check the name against the team roster."
         ),
@@ -200,8 +203,9 @@ impl Tool for AgentDeleteTool {
         ToolDefinition {
             name: self.name().to_string(),
             description: "Stop a teammate and remove its directory, role page, and roster entry. Its files \
-                 are checkpointed first; the result gives the checkpoint id, and the user can restore the \
-                 teammate from checkpoints.\n\n\
+                 are checkpointed first; the result gives the checkpoint id. The user can restore the \
+                 teammate from the team view's recently deleted list or with `residuum agent restore <name>`; \
+                 you have no tool to restore one.\n\n\
                  You can delete yourself. That stops your turn the moment this call returns, so send your \
                  messages and save your files first, and call it last."
                 .to_string(),
@@ -233,14 +237,15 @@ impl Tool for AgentDeleteTool {
             // agent stopped and before its directory was checkpointed and
             // removed. A detached task finishes the delete on its own; a
             // failure reaches the user as a hub notice (see `AgentHost`).
+            let told = format!(
+                "Deleting yourself now. You are stopped as soon as this call returns; your files are checkpointed first, and the user can restore you from the team view or with `residuum agent restore {name}`."
+            );
             crate::util::spawn_in_span(async move {
                 if let Err(e) = directory.delete(&name, by).await {
                     tracing::error!(agent = %name, error = %e, "self-delete failed");
                 }
             });
-            return Ok(ToolResult::success(
-                "Deleting yourself now. You are stopped as soon as this call returns; your files are checkpointed first, and the user can restore you from checkpoints.",
-            ));
+            return Ok(ToolResult::success(told));
         }
 
         let target = name.clone();
@@ -254,7 +259,7 @@ impl Tool for AgentDeleteTool {
                     || "No checkpoint could be recorded, so it can't be restored.".to_string(),
                     |id| {
                         format!(
-                            "Its files were checkpointed as {id}; the user can restore it from checkpoints."
+                            "Its files were checkpointed as {id}; the user can restore it from the team view or with `residuum agent restore {name}`."
                         )
                     },
                 );

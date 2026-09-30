@@ -16,7 +16,7 @@ use tokio::sync::broadcast;
 use crate::hub::AgentDirectory;
 use crate::hub::{
     A2aVisibility, Actor, AgentActivity, AgentPatch, AgentState, AgentSummary, CreateAgentRequest,
-    DeleteOutcome, HubEvent, LifecycleError,
+    DeleteOutcome, DeletedAgent, HubEvent, LifecycleError, RestoreAgentRequest,
 };
 
 struct Entry {
@@ -220,6 +220,18 @@ impl AgentDirectory for StaticAgentDirectory {
 
     async fn delete(&self, _name: &str, _by: Actor) -> Result<DeleteOutcome, LifecycleError> {
         Err(unsupported("deleting an agent"))
+    }
+
+    async fn list_deleted(&self) -> Result<Vec<DeletedAgent>, LifecycleError> {
+        Ok(Vec::new())
+    }
+
+    async fn restore(
+        &self,
+        _request: RestoreAgentRequest,
+        _by: Actor,
+    ) -> Result<AgentSummary, LifecycleError> {
+        Err(unsupported("restoring an agent"))
     }
 
     async fn start(&self, _name: &str) -> Result<AgentSummary, LifecycleError> {

@@ -7,6 +7,7 @@
 //! `docs/systems-usage/hub.md` and `docs/systems-usage/hub-http.md`.
 
 pub mod activity;
+mod deleted;
 pub mod directory;
 pub mod host;
 pub mod http;
@@ -23,8 +24,8 @@ pub mod types;
 pub use directory::{AgentDirectory, DirectoryHandle};
 pub use host::AgentHost;
 pub use provision::{
-    AgentSpec, copy_providers_from, deprovision_agent, first_message, provision_agent,
-    restore_agent,
+    AgentSpec, RestoreSource, copy_providers_from, deprovision_agent, first_message,
+    provision_agent, restore_agent,
 };
 pub use runtime::run_hub;
 pub use team::{
@@ -32,5 +33,5 @@ pub use team::{
 };
 pub use types::{
     A2aVisibility, Actor, AgentActivity, AgentLastError, AgentPatch, AgentState, AgentSummary,
-    CreateAgentRequest, DeleteOutcome, HubEvent, LifecycleError,
+    CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError, RestoreAgentRequest,
 };

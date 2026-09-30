@@ -246,6 +246,7 @@ fn state_changes(events: &[HubEvent]) -> Vec<(String, AgentState)> {
         .filter_map(|event| match event {
             HubEvent::AgentState { agent } => Some((agent.name.clone(), agent.state)),
             HubEvent::AgentCreated { .. }
+            | HubEvent::AgentRestored { .. }
             | HubEvent::AgentDeleted { .. }
             | HubEvent::AgentActivity { .. }
             | HubEvent::Notice { .. } => None,
@@ -635,6 +636,7 @@ async fn unread_counts_messages_while_no_client_is_connected_and_resets_on_conne
             HubEvent::AgentActivity { .. }
             | HubEvent::AgentState { .. }
             | HubEvent::AgentCreated { .. }
+            | HubEvent::AgentRestored { .. }
             | HubEvent::AgentDeleted { .. }
             | HubEvent::Notice { .. } => None,
         })
@@ -1150,32 +1152,23 @@ async fn deleting_an_agent_stops_it_and_keeps_its_history_for_a_restore() {
         "the deletion is published with who did it"
     );
 
-    // The agent's checkpoint history outlived it: an engine rebuilt from its
-    // name and paths restores the directory.
-    let checkpoints_dir = crate::config::HubPaths::new(&hub.services.hub_dir).checkpoints_dir();
-    let engine = crate::checkpoints::CheckpointEngine::with_shared_repos(
-        Arc::clone(&hub.services.checkpoints),
-        "scout",
-        hub.root.path().join("scout"),
-        hub.root.path().join("scout").join("config"),
-        &checkpoints_dir,
-        None,
-    )
-    .unwrap()
-    .with_team_coordinator(hub.services.team.clone());
-    crate::hub::provision::restore_agent(
-        hub.root.path(),
-        &hub.host.team_paths(),
-        &hub.services.team,
-        &TeamWriter::User,
-        "scout",
-        &engine,
-        &checkpoint_id,
-    )
-    .await
-    .unwrap();
-    hub.host.adopt("scout");
-    hub.host.start("scout").await.unwrap();
+    // The agent's checkpoint history outlived it, so it restores by name.
+    let listed = hub.host.list_deleted().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    let deleted_scout = listed.first().unwrap();
+    assert_eq!(deleted_scout.name, "scout");
+    assert_eq!(deleted_scout.checkpoint_id, checkpoint_id);
+    hub.host
+        .restore(
+            RestoreAgentRequest {
+                name: "scout".to_string(),
+                checkpoint_id: None,
+            },
+            Actor::User,
+        )
+        .await
+        .unwrap();
+    assert_eq!(hub.state_of("scout"), AgentState::Running);
     assert_eq!(hub.chat("scout", "am I back?").await, "scout here");
     let (_, history) = hub.get("/api/agents/scout/chat/history").await;
     assert!(history.contains("remember this"), "{history}");
@@ -1623,6 +1616,7 @@ async fn a_teams_bind_failure_is_a_hub_notice_naming_the_agent_and_port() {
                 HubEvent::Notice { .. }
                 | HubEvent::AgentState { .. }
                 | HubEvent::AgentCreated { .. }
+                | HubEvent::AgentRestored { .. }
                 | HubEvent::AgentDeleted { .. }
                 | HubEvent::AgentActivity { .. } => None,
             });
@@ -2092,6 +2086,7 @@ async fn the_team_block_lists_teammates_and_follows_their_state() {
 }
 
 mod lifecycle_tools;
+mod restore;
 
 #[tokio::test]
 async fn the_team_router_never_reaches_a_stopped_or_deleted_teammate() {
