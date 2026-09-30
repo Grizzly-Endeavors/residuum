@@ -16,10 +16,10 @@
 //   under us, subscribers are told, so every view that shows a config value
 //   can refresh.
 //
-// Where external changes come from is wired in `config-sync.ts`. The agent
-// whose files are being written need not be the bound one, and only the bound
-// agent and the hub have a change feed, so for any other agent's files the
-// re-read before a save is the only protection.
+// Where external changes come from is wired in `config-sync.ts`. Any agent's
+// files can be written, but only the bound agent's `config/` folder and the
+// hub's config have a change feed. Other agents' files have none, so for them
+// the re-read before a save is the only protection.
 
 import { parse as parseToml } from "smol-toml";
 import {
