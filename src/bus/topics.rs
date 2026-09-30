@@ -8,7 +8,8 @@ use super::events::{
     A2aTaskSignalEvent, AgentResultEvent, ConversationTypingEvent, ErrorEvent, InlineOutputEvent,
     IntermediateEvent, MessageEvent, NoticeEvent, NotificationEvent, OutboundA2aTaskEvent,
     PostTurnActivityEvent, ResponseEvent, SessionEvent, SessionResponseEvent, SpawnRequestEvent,
-    ToolActivityEvent, TurnLifecycleEvent, TurnUsageEvent, WorkbenchEvent, WorkspaceEvent,
+    ToolActivityEvent, TurnLifecycleEvent, TurnUsageEvent, UserInboxAddedEvent, WorkbenchEvent,
+    WorkspaceEvent,
 };
 use super::types::{EndpointName, NotifyName, TopicId};
 
@@ -218,6 +219,22 @@ impl Carries<NotificationEvent> for Inbox {
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
 
+/// Items added to the user inbox, for the hub's per-agent watcher.
+pub struct UserInbox;
+
+impl Topic for UserInbox {
+    fn topic_id(&self) -> TopicId {
+        TopicId::UserInbox
+    }
+}
+
+impl Carries<UserInboxAddedEvent> for UserInbox {
+    // The only signal that an agent filed something for the user: the hub
+    // tells the user about it, and a dropped one would leave the inbox count
+    // stale until the next file change.
+    const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
+}
+
 /// Explicit task-outcome signals from a session's `a2a_task_update` tool
 /// call, consumed by the A2A executor waiting on that session's address.
 pub struct A2aTaskSignal;
@@ -311,6 +328,11 @@ mod tests {
     }
 
     #[test]
+    fn user_inbox_topic_id() {
+        assert_eq!(UserInbox.topic_id(), TopicId::UserInbox);
+    }
+
+    #[test]
     fn a2a_task_signal_topic_id() {
         assert_eq!(A2aTaskSignal.topic_id(), TopicId::A2aTaskSignal);
     }
@@ -386,6 +408,11 @@ mod tests {
 
         assert_eq!(
             <Inbox as Carries<NotificationEvent>>::DELIVERY_MODE,
+            DeliveryMode::Lossless
+        );
+
+        assert_eq!(
+            <UserInbox as Carries<UserInboxAddedEvent>>::DELIVERY_MODE,
             DeliveryMode::Lossless
         );
 
