@@ -78,3 +78,9 @@ One router serves everything the hub offers: the hub, team and per-agent routes,
 ## Logging
 
 There is one log level for the whole hub. Every log line and span an agent produces carries an `agent` field: the agent's tasks, and everything they spawn, run inside a root span named `agent`. `residuum logs --agent <name>` filters on it. The span buffer that feeds bug reports and trace exports gives every span inside an agent's root span the same `agent` field.
+
+## Running in Docker
+
+The images (`docker/Dockerfile`, `docker/Dockerfile.release`) run `residuum serve --foreground` as the non-root `residuum` user with `RESIDUUM_GATEWAY_BIND=0.0.0.0`, and expose the gateway port `7700`. The volume `/home/residuum/.residuum` holds the whole layout: `hub/`, `team/`, and one directory per agent. On an empty volume the hub starts without an agent and the web app runs onboarding, so the first agent is created from the browser. The A2A listener (`7702`) is not published by `docker/docker-compose.yml`; publish it only for callers that should reach it directly.
+
+Only hub-level environment overrides apply in a container: `RESIDUUM_GATEWAY_BIND`, `RESIDUUM_GATEWAY_PORT`, `RESIDUUM_CLOUD_TOKEN` and `RESIDUUM_TIMEZONE`. Agent-scoped variables have no effect (see [Config](config.md#environment-overrides)); provider key variables such as `OPENAI_API_KEY` and `${ENV_VAR}` references inside an agent's config files still read the container's environment.

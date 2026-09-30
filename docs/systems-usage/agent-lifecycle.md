@@ -35,7 +35,7 @@ An unknown agent is reported as not found. Checkpoints are never pruned, so the 
 
 ## Restoring a deleted agent
 
-`restore_agent` brings an agent back from the id `deprovision_agent` returned, using the agent's own checkpoint engine. It restores the whole workspace tree from the workspace repository, then `providers.toml` and `config.toml` from the latest checkpoint of the agent-config repository, `config.toml` last, so the agent is discoverable only once it is complete. It recreates the role page with the placeholder role; the agent fills it in again. It refuses when the agent exists again, and can be retried after a failure. The restored agent is stopped until it is started.
+`restore_agent` brings an agent back from the id `deprovision_agent` returned, using the agent's own checkpoint engine. It restores the whole workspace tree from the workspace repository, then `providers.toml` and `config.toml` from the latest checkpoint of the agent-config repository, `config.toml` last, so the agent is discoverable only once it is complete. It recreates the role page with the placeholder role; the agent fills it in again. It refuses when the agent exists again, and can be retried after a failure. The restored agent is stopped until it is started. Nothing in the HTTP API, the CLI or the agent tools calls it; a user brings an agent back by creating one with the same name, which reuses the deleted agent's checkpoint history (see [Agent CLI](agent-cli.md#delete)).
 
 ## Agent tools
 

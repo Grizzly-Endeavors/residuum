@@ -23,4 +23,4 @@ VOLUME ["/home/residuum/.residuum"]
 
 EXPOSE 7700
 
-CMD ["./residuum", "serve", "--foreground", "--debug"]
+CMD ["./residuum", "serve", "--foreground"]

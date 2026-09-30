@@ -4,7 +4,7 @@
 //! and the hub WebSocket; [`directory`] is the interface the HTTP surface
 //! and the A2A listener use to reach hosted agents; [`provision`] writes and
 //! removes agent directories; [`http`] is the hub's HTTP app. See
-//! `docs/design/multi-agent-hub/design.md` and `http-contract.md`.
+//! `docs/systems-usage/hub.md` and `docs/systems-usage/hub-http.md`.
 
 pub mod activity;
 pub mod directory;

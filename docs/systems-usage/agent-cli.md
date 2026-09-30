@@ -1,6 +1,6 @@
 # Agent CLI
 
-`residuum agent` manages the agents in a running hub. Each subcommand is an HTTP client of the hub's `/api/hub/agents` routes on the local gateway address, so the hub must be running (`residuum serve`). The hub owns the lifecycle; the CLI never edits agent directories itself. The routes and their bodies are defined in `docs/design/multi-agent-hub/http-contract.md`.
+`residuum agent` manages the agents in a running hub. Each subcommand is an HTTP client of the hub's `/api/hub/agents` routes on the local gateway address, so the hub must be running (`residuum serve`). The hub owns the lifecycle; the CLI never edits agent directories itself. The routes and their bodies are in [Hub HTTP Surface](hub-http.md).
 
 ## Commands
 
@@ -23,7 +23,7 @@
 
 ## Delete
 
-Deleting checkpoints the agent's directory before removing it, and prints the checkpoint id. Checkpoints are never pruned, so the agent can be restored from the hub's checkpoint history. The CLI has no restore command; restore through the web UI's checkpoint history or the `workspace_restore` tool.
+Deleting checkpoints the agent's directory before removing it, and prints the checkpoint id. Checkpoints are never pruned, and they are keyed by agent name: creating an agent with the same name again uses the same checkpoint history, and its checkpoint view lists the deleted agent's checkpoints for restoring files from.
 
 ## Errors
 

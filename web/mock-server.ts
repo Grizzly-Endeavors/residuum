@@ -6,7 +6,7 @@
  * Nothing persists across restarts.
  *
  * The mock serves the multi-agent hub HTTP contract
- * (docs/design/multi-agent-hub/http-contract.md): `/api/agents/{name}/...`,
+ * (docs/systems-usage/hub-http.md): `/api/agents/{name}/...`,
  * `/api/hub/...` (lifecycle, hub config, secrets, and `/api/hub/ws`) and
  * `/api/team/...`. Each agent has its own state and its own WebSocket. The
  * hub-level and team-level data (secrets, hub config, team files, workbench)

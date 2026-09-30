@@ -6,8 +6,10 @@ A2A is on by default. The steps below are about who can reach your agent, and wh
 
 ## Your agent's address
 
-Every agent in your team has its own address on the A2A port, `http://<bind>:7702/agents/<agent name>`, shown in **Settings → A2A → Status**. That address works from the same machine or network. The Residuum relay doesn't carry A2A yet, so the status page says "Reachable locally; remote access through the relay arrives with relay support." To reach an agent from elsewhere, use your own tunnel:
+Every agent in your team has its own address, shown in **Settings → A2A → Status**. Which address you get depends on how your install is reachable:
 
+- **Through the Residuum relay**: once Residuum Cloud is connected, each running agent is reachable at `{origin}/a2a/{instance}/{agent name}`, where `{origin}` and `{instance}` are your relay's address and this install's name. Your other installs find it automatically. Anyone else needs a caller key. A stopped or failed agent is not listed and answers `404` until it runs again.
+- **On the same machine or network**: `http://<bind>:7702/agents/<agent name>`.
 - **Through your own tunnel or reverse proxy**: point it at the A2A port (`7702` by default), never at the gateway port (`7700`), which serves the settings API without a login. Then enter the tunnel's URL as **Your own address** in **Settings → A2A** (under the advanced settings), or set it in `hub/config.toml`:
 
   ```toml
@@ -21,16 +23,16 @@ Other agents find your agent from its Agent Card at `<address>/.well-known/agent
 
 ## Choose what your agent advertises
 
-The Agent Card lives in your workspace at `config/agent-card.json`. Edit it from the workspace panel, or ask your agent to edit it. You can set:
+Each agent's Agent Card lives in its own directory at `config/agent-card.json`. Edit it from the agent's workspace panel, or ask your agent to edit it. You can set:
 
 - **`name`** and **`description`**: how other agents see yours.
-- **`skills`**: what it offers. A skill whose `id` matches one of your workspace skills runs with that skill when a caller asks for it.
+- **`skills`**: what it offers. A skill whose `id` matches one of the agent's skills runs with that skill when a caller asks for it.
 
 Changes take effect as soon as the file is saved. If an edit is invalid, the last valid card keeps being served, and **Settings → A2A** shows what's wrong.
 
 ## Let another agent in
 
-Every caller needs a key. Create one per agent you want to allow, so you can revoke each separately:
+Every caller needs a key. Keys belong to the whole hub, so a key reaches every agent in your team, private ones included. Create one per caller you want to allow, so you can revoke each separately:
 
 - In **Settings → A2A → Caller keys**, choose **Create key**, or
 - run `residuum a2a keys create <name>` in a terminal.
@@ -42,7 +44,7 @@ Each caller's conversations with your agent run as their own sessions, which you
 ### Public or private
 
 - **Public** (the default): anyone can read your Agent Card, but only callers with a key can send tasks.
-- **Private**: without a key, your agent looks like it doesn't exist. Its card is hidden.
+- **Private**: without a key, and without being one of your own other installs, your agent looks like it doesn't exist. Its card is hidden. A caller with a valid key sees it normally.
 
 Visibility is per agent. Switch it with the **Visibility** setting in **Settings → A2A**, or with `visibility = "private"` under `[a2a]` in the agent's own `config/config.toml`.
 
@@ -65,7 +67,7 @@ Store the key the other agent gave you as an agent key first, for example with `
 
 ## Link your own instances
 
-If you run several Residuum installs on the same relay account (a laptop and a server, for example), they find and trust each other automatically once their tunnels carry A2A. You don't need keys or `config/a2a.json` entries for them. Each install appears to the others as `a2a:<instance>`, marked "(your instance)" in `list_agents`. The agents inside one install are teammates and message each other directly, so they never appear as siblings.
+If you run several Residuum installs on the same relay account (a laptop and a server, for example), they find and trust each other automatically once their tunnels are connected. You don't need keys or `config/a2a.json` entries for them. Each agent of another install appears as `a2a:<instance>/<agent>`, marked "(your instance)" in `list_agents`. The agents inside one install are teammates and message each other directly, so they never appear as siblings.
 
 ## Check it works
 

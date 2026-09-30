@@ -29,10 +29,10 @@ This skill provides reference documentation for every major workspace system. Ac
 | Subconscious | *(none — automatic)* | `SUBCONSCIOUS.md`, `[subconscious]` in config.toml | [subconscious](references/subconscious.md) |
 | A2A | `list_agents`, `message_agent`, `stop_agent` (address `a2a:<name>`); `a2a_task_update` (session-only, in `a2a` conversation sessions) | `config/agent-card.json`, `config/a2a.json`, `[a2a]` in config.toml | [a2a](references/a2a.md) |
 
-## Workspace Directory Layout
+## Agent Directory Layout
 
 ```
-workspace/
+<agent>/
 ├── SOUL.md                  # Core identity and personality
 ├── BOOTSTRAP.md             # First-run guidance (deleted after first conversation)
 ├── HEARTBEAT.yml            # Pulse scheduling

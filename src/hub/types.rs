@@ -1,6 +1,6 @@
 //! Shapes shared by the agent host, the hub HTTP API, and the hub
 //! WebSocket. Field names and JSON forms follow
-//! `docs/design/multi-agent-hub/http-contract.md`.
+//! `docs/systems-usage/hub-http.md`.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
