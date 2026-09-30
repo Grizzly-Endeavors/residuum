@@ -1,6 +1,6 @@
 # Hub HTTP Surface
 
-The hub serves everything the backend offers from one router over its `AgentDirectory` (`src/hub/http/`, built by `hub_router`). Every API path lives under `/api/`. The only paths outside it are the relay callback (`/cloud/callback`), webhooks (`/webhook/{agent}/{name}`), and the embedded web app, which answers every other path.
+The hub serves everything the backend offers from one router over its `AgentDirectory` (`src/hub/http/`, built by `hub_router`). Every API path lives under `/api/`. The only paths outside it are the relay callback (`/cloud/callback`), webhooks (`/webhook/{agent}/{name}`), and the embedded web app (see [Embedded web app](#embedded-web-app)), which answers every other path.
 
 ## Route layout
 
@@ -72,6 +72,21 @@ A session runs on one agent, so an artifact names it (`residuum.sessions.start({
 
 - The **cross-site guard** covers every route: state-changing requests and WebSocket upgrades from another site are refused with `403` (see [workbench.md](workbench.md#security-model)).
 - The **remote-control guard** covers `POST /api/hub/shutdown` and `POST /api/hub/cloud/disconnect` (see [cloud-tunnel.md](cloud-tunnel.md)): a request that arrived through the relay tunnel is refused with `403`.
+
+## Embedded web app
+
+The web app is embedded in the binary (`web/dist/`, served by `src/gateway/web/assets.rs`) and answers every path the routes above don't claim. A path naming an embedded file serves that file. A path with no dot that doesn't start with `api` or `ws`, a client-side route such as `/agent/atlas/files`, serves `index.html` so the app's router takes over. Every other path answers `404`, including a missing file and an unknown `/api` or `/ws` path, so a client calling a missing endpoint sees the failure rather than HTML.
+
+| Files | `Cache-Control` | Validator |
+|-------|-----------------|-----------|
+| Everything under `/assets/`, which the build names by content hash | `public, max-age=31536000, immutable` | None. |
+| Every other embedded file: `index.html` (also when it answers a client route), `/manifest.webmanifest`, the icons, `favicon.svg`, `mcp-catalog.json` | `no-cache` | A strong `ETag` from a hash of the file's content. |
+
+A `GET` or `HEAD` whose `If-None-Match` lists the file's `ETag` (or `*`; a `W/` prefix on the client's copy is ignored) gets `304` with no body, carrying the `ETag`, `Cache-Control`, and `Vary`.
+
+JavaScript, CSS, JSON, SVG, and the web manifest are compressed with brotli or gzip, whichever the request's `Accept-Encoding` prefers. They carry `Vary: Accept-Encoding` whether or not the request accepted compression, and a file has the same `ETag` in every encoding. HTML and images are never compressed. HTML stays plain because Residuum Cloud's relay inserts its instance switcher before the `</body>` of a top-level page, and it finds that tag by searching the body as text. API responses are not compressed.
+
+Through Residuum Cloud the tunnel's loopback client passes the browser's `Accept-Encoding` and `If-None-Match` to this router unchanged and returns the answer's headers and body as received, without decompressing (see [Residuum Cloud Tunnel](cloud-tunnel.md)).
 
 ## Hub WebSocket
 
