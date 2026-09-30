@@ -48,17 +48,28 @@
   let otherActive = $state<Record<string, boolean>>({});
   let otherValues = $state<Record<string, string>>({});
 
+  // A role's stored provider can go stale (or start unset) when the
+  // Providers step is revisited and a provider gets deselected — fall back
+  // to the main provider rather than surfacing a picker pointed at a
+  // provider with no `providers.toml` section.
+  function validProvider(candidate: string | undefined): string | undefined {
+    return candidate && wizardState.selectedProviders.includes(candidate as ProviderKey)
+      ? candidate
+      : undefined;
+  }
+
   function getRoleProvider(role: string): string {
     if (role === "main") return wizardState.mainProvider;
     if (role === "embedding") {
-      const chosen = wizardState.embeddingModel.provider;
-      return chosen !== "" ? chosen : defaultEmbeddingProvider();
+      return validProvider(wizardState.embeddingModel.provider) ?? defaultEmbeddingProvider();
     }
     if (role.startsWith("bg-")) {
       const tier = role.slice(3);
-      return wizardState.backgroundModels[tier]?.provider ?? wizardState.mainProvider;
+      return (
+        validProvider(wizardState.backgroundModels[tier]?.provider) ?? wizardState.mainProvider
+      );
     }
-    return wizardState.roles[role]?.provider ?? wizardState.mainProvider;
+    return validProvider(wizardState.roles[role]?.provider) ?? wizardState.mainProvider;
   }
 
   function getRoleModel(role: string): string {
@@ -217,7 +228,7 @@
     };
     return {
       label: labels[role] ?? role,
-      providerOptions: Object.keys(providers),
+      providerOptions: [...wizardState.selectedProviders],
     };
   }
 </script>

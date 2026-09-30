@@ -345,12 +345,17 @@ export async function fetchProviderModels(
   });
 }
 
+/** Fetches the MCP catalog, rejecting on failure — for callers that show their own error + retry UI. */
+export async function fetchMcpCatalogOrThrow(): Promise<McpCatalogEntry[]> {
+  return cachedFetch(CACHE_KEY_MCP_CATALOG, () =>
+    apiFetch<McpCatalogEntry[]>(hubPath("/mcp-catalog")),
+  );
+}
+
 /** Graceful fallback: catalog is optional — returns empty on failure. */
 export async function fetchMcpCatalog(): Promise<McpCatalogEntry[]> {
   try {
-    return await cachedFetch(CACHE_KEY_MCP_CATALOG, () =>
-      apiFetch<McpCatalogEntry[]>(hubPath("/mcp-catalog")),
-    );
+    return await fetchMcpCatalogOrThrow();
   } catch {
     return [];
   }

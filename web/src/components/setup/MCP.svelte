@@ -4,11 +4,22 @@
   interface Props {
     wizardState: SetupWizardState;
     catalog: McpCatalogEntry[];
+    catalogLoading: boolean;
+    catalogError: string | null;
+    onRetryCatalog: () => void;
     onNext: () => void;
     onBack: () => void;
   }
 
-  let { wizardState, catalog, onNext, onBack }: Props = $props();
+  let {
+    wizardState,
+    catalog,
+    catalogLoading,
+    catalogError,
+    onRetryCatalog,
+    onNext,
+    onBack,
+  }: Props = $props();
 
   let pendingIdx = $state<number | null>(null);
   let pendingInputs = $state<Record<string, string>>({});
@@ -83,7 +94,17 @@
 <h2>MCP Servers</h2>
 <p class="subtitle">Optionally add tool servers. You can always add more later in settings.</p>
 
-{#if catalog.length === 0}
+{#if catalogError}
+  <div class="provider-warning">
+    <span class="provider-warning-icon">&#9888;</span>
+    <span>{catalogError}</span>
+  </div>
+  <button class="btn btn-secondary" onclick={onRetryCatalog} disabled={catalogLoading}>
+    {catalogLoading ? "Retrying..." : "Try again"}
+  </button>
+{:else if catalogLoading}
+  <p style="color:var(--text-dim)">Loading catalog...</p>
+{:else if catalog.length === 0}
   <p style="color:var(--text-dim)">No catalog entries available.</p>
 {:else}
   {#each catalog as srv, i (srv.name)}
