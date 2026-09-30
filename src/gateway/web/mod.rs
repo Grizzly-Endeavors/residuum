@@ -7,8 +7,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::http::Uri;
-use axum::response::Response;
 use axum::routing::{delete, get, patch, post, put};
 use tokio::sync::watch;
 
@@ -16,6 +14,7 @@ pub(crate) mod a2a;
 mod agent_files;
 mod agent_keys;
 pub(crate) mod artifact_identity;
+mod assets;
 pub(super) mod chat;
 pub mod checkpoints;
 pub mod cloud;
@@ -49,6 +48,7 @@ mod embedded {
     #[folder = "web/dist/"]
     pub(super) struct WebAssets;
 }
+pub(crate) use assets::static_assets;
 use embedded::WebAssets;
 
 pub use agent_files::{AgentFilesState, CheckpointAccess, agent_files_api_router};
@@ -542,53 +542,6 @@ pub(crate) fn hub_api_router(state: HubApiState) -> axum::Router {
         .with_state(state)
 }
 
-/// Fallback handler for serving embedded static files.
-///
-/// Serves the file at the requested URI path, falling back to `index.html`
-/// for the web UI's client-side routes (paths without file extensions).
-/// Unknown API and WebSocket paths get a 404 rather than the app shell, so a
-/// client calling a missing endpoint sees the failure instead of HTML.
-pub(crate) async fn static_handler(uri: Uri) -> Response {
-    let path = uri.path().trim_start_matches('/');
-
-    // Try the exact path first
-    if let Some(resp) = serve_embedded(path) {
-        return resp;
-    }
-
-    if is_client_route(path)
-        && let Some(resp) = serve_embedded("index.html")
-    {
-        return resp;
-    }
-
-    Response::builder()
-        .status(axum::http::StatusCode::NOT_FOUND)
-        .body(axum::body::Body::from("not found"))
-        .unwrap_or_default()
-}
-
-/// Whether `path` (without its leading slash) is a web UI route that the
-/// client-side router handles, rather than a missing asset or server endpoint.
-fn is_client_route(path: &str) -> bool {
-    let first_segment = path.split('/').next().unwrap_or_default();
-    !path.contains('.') && first_segment != "api" && first_segment != "ws"
-}
-
-/// Serve an embedded file by path, returning `None` if it doesn't exist.
-fn serve_embedded(path: &str) -> Option<Response> {
-    use axum::body::Body;
-    use axum::http::header;
-
-    let asset = WebAssets::get(path)?;
-    let mime = mime_guess::from_path(path).first_or_octet_stream();
-    let mut resp = Response::new(Body::from(asset.data.to_vec()));
-    if let Ok(val) = axum::http::HeaderValue::from_str(mime.as_ref()) {
-        resp.headers_mut().insert(header::CONTENT_TYPE, val);
-    }
-    Some(resp)
-}
-
 #[cfg(test)]
 #[expect(
     clippy::indexing_slicing,
@@ -596,97 +549,6 @@ fn serve_embedded(path: &str) -> Option<Response> {
 )]
 mod tests {
     use super::*;
-    use axum::http::{StatusCode, header};
-
-    #[test]
-    fn web_assets_contains_index_html() {
-        assert!(
-            WebAssets::get("index.html").is_some(),
-            "index.html should be embedded"
-        );
-    }
-
-    #[test]
-    fn serve_embedded_returns_html_content_type() {
-        let resp = serve_embedded("index.html").unwrap();
-        let ct = resp
-            .headers()
-            .get(axum::http::header::CONTENT_TYPE)
-            .unwrap();
-        assert!(
-            ct.to_str().unwrap().contains("html"),
-            "content type should be html"
-        );
-    }
-
-    #[test]
-    fn serve_embedded_returns_json_content_type() {
-        let resp = serve_embedded("mcp-catalog.json").unwrap();
-        let ct = resp
-            .headers()
-            .get(axum::http::header::CONTENT_TYPE)
-            .unwrap();
-        assert!(
-            ct.to_str().unwrap().contains("json"),
-            "content type should be json"
-        );
-    }
-
-    #[test]
-    fn serve_embedded_returns_manifest_content_type() {
-        let resp = serve_embedded("manifest.webmanifest").unwrap();
-        let ct = resp
-            .headers()
-            .get(axum::http::header::CONTENT_TYPE)
-            .unwrap();
-        assert_eq!(
-            ct.to_str().unwrap(),
-            "application/manifest+json",
-            "web app manifest should be served with the manifest content type"
-        );
-    }
-
-    #[tokio::test]
-    async fn static_handler_serves_app_shell_for_client_routes() {
-        for path in [
-            "/",
-            "/sessions/run-1790000000000-0a1b2c3d",
-            "/settings/memory",
-        ] {
-            let resp = static_handler(Uri::from_static(path)).await;
-            assert_eq!(resp.status(), StatusCode::OK, "{path} should be served");
-            let ct = resp.headers().get(header::CONTENT_TYPE).unwrap();
-            assert!(
-                ct.to_str().unwrap().contains("html"),
-                "{path} should get index.html"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn static_handler_404s_for_missing_endpoints_and_assets() {
-        for path in [
-            "/api/nope",
-            "/api",
-            "/ws/extra",
-            "/assets/missing-abc123.js",
-        ] {
-            let resp = static_handler(Uri::from_static(path)).await;
-            assert_eq!(
-                resp.status(),
-                StatusCode::NOT_FOUND,
-                "{path} should not get the app shell"
-            );
-        }
-    }
-
-    #[test]
-    fn serve_embedded_returns_none_for_missing() {
-        assert!(
-            serve_embedded("does-not-exist.txt").is_none(),
-            "missing file should return None"
-        );
-    }
 
     #[tokio::test]
     async fn chat_history_returns_empty_when_no_memory_dir() {

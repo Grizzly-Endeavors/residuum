@@ -71,7 +71,7 @@ pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Rout
         .merge(process::team_routes(&hub))
         .merge(dispatch::routes(directory))
         .route("/api/sessions", post(sessions_need_an_agent))
-        .fallback(web::static_handler)
+        .fallback_service(web::static_assets())
         .layer(axum::middleware::from_fn(
             crate::gateway::cross_site::reject_cross_site_requests,
         ));
