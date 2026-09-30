@@ -94,7 +94,7 @@ just web-mock-preview 4173   # builds, then: MOCK_DETERMINISTIC=1 npm run previe
 
 ### Route parity
 
-`mock/route-parity.test.ts` calls every function `src/lib/api.ts` exports, with sample arguments, against a `fetch` that records the requests. It checks each recorded method and path against the mock: scoped the way the mock's handler scopes it, then matched against `apiRoutes` (the route table every mock route is in), plus the hub and agent socket paths and the routes artifacts reach through the bridge. A client function without a sample call, or a request the mock doesn't serve, fails `npm test` and names the function and route. When you add an API client function, add its sample call there, and the route to the mock in the same change.
+`mock/route-parity.test.ts` calls every function `src/lib/api.ts` exports, with sample arguments, against a `fetch` that records the requests. An agent-scoped call samples with an agent (`"atlas"`), and a call that also serves the team, the hub or onboarding samples with `null` for that scope as well as an agent for the agent scope. It checks each recorded method and path against the mock: scoped the way the mock's handler scopes it, then matched against `apiRoutes` (the route table every mock route is in), plus the hub and agent socket paths and the routes artifacts reach through the bridge. A client function without a sample call, or a request the mock doesn't serve, fails `npm test` and names the function and route. When you add an API client function, add its sample call there, and the route to the mock in the same change.
 
 ## Project Structure
 

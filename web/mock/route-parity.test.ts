@@ -20,8 +20,11 @@ import { createStubHub } from "./test-support";
 
 type Api = typeof ApiModule;
 
-/** What a sample call may do: call the client, and choose the agent its scoped calls address. */
-type Sample = (client: Api, setAgent: (name: string | null) => void) => Promise<unknown>;
+/** The agent every agent-scoped sample addresses, and the one the stub hub runs. */
+const AGENT = "atlas";
+
+/** A sample call: calls one client function with arguments it could really receive. */
+type Sample = (client: Api) => Promise<unknown>;
 
 /** The client's exports that only work on values the caller has, and make no requests. */
 const MAKES_NO_REQUESTS = [
@@ -45,11 +48,21 @@ type RequestFunction = Exclude<
 const SCOPES: readonly WorkspaceScope[] = ["agent", "team"];
 const REPOS: readonly RepoKind[] = ["workspace", "agent_config", "team", "hub"];
 
+/** The team scope is addressed without an agent; the agent scope needs one. */
+function agentForScope(scope: WorkspaceScope): string | null {
+  return scope === "team" ? null : AGENT;
+}
+
+/** The hub-level repositories are addressed without an agent; the agent-level ones need one. */
+function agentForRepo(repo: RepoKind): string | null {
+  return repo === "hub" || repo === "team" ? null : AGENT;
+}
+
 const SAMPLES: Record<RequestFunction, Sample[]> = {
-  fetchStatus: [(a) => a.fetchStatus()],
-  fetchChatHistory: [(a) => a.fetchChatHistory()],
-  fetchUsageTotals: [(a) => a.fetchUsageTotals()],
-  fetchChatSegment: [(a) => a.fetchChatSegment("ep-003")],
+  fetchStatus: [(a) => a.fetchStatus(AGENT)],
+  fetchChatHistory: [(a) => a.fetchChatHistory(AGENT)],
+  fetchUsageTotals: [(a) => a.fetchUsageTotals(AGENT)],
+  fetchChatSegment: [(a) => a.fetchChatSegment(AGENT, "ep-003")],
   submitBugReport: [
     (a) =>
       a.submitBugReport({
@@ -62,12 +75,9 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
   submitFeedback: [(a) => a.submitFeedback({ message: "hello", category: "idea" })],
   fetchTimezone: [(a) => a.fetchTimezone()],
   fetchProviderModels: [
-    (a) => a.fetchProviderModels("openai", "key", "http://localhost"),
+    (a) => a.fetchProviderModels(AGENT, "openai", "key", "http://localhost"),
     // Onboarding lists models before any agent exists.
-    (a, setAgent) => {
-      setAgent(null);
-      return a.fetchProviderModels("openai");
-    },
+    (a) => a.fetchProviderModels(null, "openai"),
   ],
   fetchMcpCatalogOrThrow: [(a) => a.fetchMcpCatalogOrThrow()],
   fetchMcpCatalog: [(a) => a.fetchMcpCatalog()],
@@ -83,45 +93,45 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
         mcpJson: "{}",
       }),
   ],
-  fetchConfigRaw: [(a) => a.fetchConfigRaw()],
-  putConfigRaw: [(a) => a.putConfigRaw("a = 1")],
-  patchConfig: [(a) => a.patchConfig({ a: 1 })],
-  validateConfig: [(a) => a.validateConfig("a = 1")],
+  fetchConfigRaw: [(a) => a.fetchConfigRaw(AGENT)],
+  putConfigRaw: [(a) => a.putConfigRaw(AGENT, "a = 1")],
+  patchConfig: [(a) => a.patchConfig(AGENT, { a: 1 })],
+  validateConfig: [(a) => a.validateConfig(AGENT, "a = 1")],
   fetchHubConfigRaw: [(a) => a.fetchHubConfigRaw()],
   putHubConfigRaw: [(a) => a.putHubConfigRaw("a = 1")],
   patchHubConfig: [(a) => a.patchHubConfig({ a: 1 })],
   validateHubConfig: [(a) => a.validateHubConfig("a = 1")],
-  fetchProvidersRaw: [(a) => a.fetchProvidersRaw()],
-  putProvidersRaw: [(a) => a.putProvidersRaw("a = 1")],
-  patchProviders: [(a) => a.patchProviders({ a: 1 })],
-  validateProviders: [(a) => a.validateProviders("a = 1")],
-  fetchMcpRaw: [(a) => a.fetchMcpRaw()],
-  putMcpRaw: [(a) => a.putMcpRaw("{}")],
-  patchMcp: [(a) => a.patchMcp({ a: 1 })],
+  fetchProvidersRaw: [(a) => a.fetchProvidersRaw(AGENT)],
+  putProvidersRaw: [(a) => a.putProvidersRaw(AGENT, "a = 1")],
+  patchProviders: [(a) => a.patchProviders(AGENT, { a: 1 })],
+  validateProviders: [(a) => a.validateProviders(AGENT, "a = 1")],
+  fetchMcpRaw: [(a) => a.fetchMcpRaw(AGENT)],
+  putMcpRaw: [(a) => a.putMcpRaw(AGENT, "{}")],
+  patchMcp: [(a) => a.patchMcp(AGENT, { a: 1 })],
   fetchSecretNames: [(a) => a.fetchSecretNames()],
   listSecrets: [(a) => a.listSecrets()],
   deleteSecret: [(a) => a.deleteSecret("name")],
   fetchAgentKeys: [(a) => a.fetchAgentKeys()],
   storeAgentKey: [(a) => a.storeAgentKey("name", "value", "what it is for")],
   deleteAgentKey: [(a) => a.deleteAgentKey("name")],
-  fetchA2aStatus: [(a) => a.fetchA2aStatus()],
-  fetchA2aCard: [(a) => a.fetchA2aCard()],
+  fetchA2aStatus: [(a) => a.fetchA2aStatus(AGENT)],
+  fetchA2aCard: [(a) => a.fetchA2aCard(AGENT)],
   fetchA2aKeys: [(a) => a.fetchA2aKeys()],
   createA2aKey: [(a) => a.createA2aKey("laptop", "my laptop")],
   revokeA2aKey: [(a) => a.revokeA2aKey("laptop")],
-  fetchA2aAgents: [(a) => a.fetchA2aAgents()],
-  markUserInboxItemRead: [(a) => a.markUserInboxItemRead("item-1")],
-  archiveUserInboxItem: [(a) => a.archiveUserInboxItem("item-1")],
-  fetchArchivedUserInbox: [(a) => a.fetchArchivedUserInbox()],
-  restoreUserInboxItem: [(a) => a.restoreUserInboxItem("item-1")],
-  fetchOutboundA2aTasks: [(a) => a.fetchOutboundA2aTasks()],
-  stopOutboundA2aTask: [(a) => a.stopOutboundA2aTask("task-1")],
-  stopWatchingOutboundA2aTask: [(a) => a.stopWatchingOutboundA2aTask("task-1")],
-  fetchA2aAgentsRaw: [(a) => a.fetchA2aAgentsRaw()],
-  putA2aAgentsRaw: [(a) => a.putA2aAgentsRaw('{"agents":{}}')],
+  fetchA2aAgents: [(a) => a.fetchA2aAgents(AGENT)],
+  markUserInboxItemRead: [(a) => a.markUserInboxItemRead(AGENT, "item-1")],
+  archiveUserInboxItem: [(a) => a.archiveUserInboxItem(AGENT, "item-1")],
+  fetchArchivedUserInbox: [(a) => a.fetchArchivedUserInbox(AGENT)],
+  restoreUserInboxItem: [(a) => a.restoreUserInboxItem(AGENT, "item-1")],
+  fetchOutboundA2aTasks: [(a) => a.fetchOutboundA2aTasks(AGENT)],
+  stopOutboundA2aTask: [(a) => a.stopOutboundA2aTask(AGENT, "task-1")],
+  stopWatchingOutboundA2aTask: [(a) => a.stopWatchingOutboundA2aTask(AGENT, "task-1")],
+  fetchA2aAgentsRaw: [(a) => a.fetchA2aAgentsRaw(AGENT)],
+  putA2aAgentsRaw: [(a) => a.putA2aAgentsRaw(AGENT, '{"agents":{}}')],
   fetchSessions: [
     (a) =>
-      a.fetchSessions({
+      a.fetchSessions(AGENT, {
         category: "spawned",
         before: "run-1",
         limit: 10,
@@ -129,83 +139,89 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
         artifact: "tip-splitter",
       }),
   ],
-  fetchSessionTranscript: [(a) => a.fetchSessionTranscript("run-1")],
-  fetchScheduledPulses: [(a) => a.fetchScheduledPulses()],
-  setPulseEnabled: [(a) => a.setPulseEnabled("inbox_check", false)],
-  fetchScheduledActions: [(a) => a.fetchScheduledActions()],
-  cancelScheduledAction: [(a) => a.cancelScheduledAction("act-1")],
+  fetchSessionTranscript: [(a) => a.fetchSessionTranscript(AGENT, "run-1")],
+  fetchScheduledPulses: [(a) => a.fetchScheduledPulses(AGENT)],
+  setPulseEnabled: [(a) => a.setPulseEnabled(AGENT, "inbox_check", false)],
+  fetchScheduledActions: [(a) => a.fetchScheduledActions(AGENT)],
+  cancelScheduledAction: [(a) => a.cancelScheduledAction(AGENT, "act-1")],
   fetchWorkbenchArtifacts: [(a) => a.fetchWorkbenchArtifacts()],
   fetchWorkbenchInfo: [(a) => a.fetchWorkbenchInfo()],
   deleteWorkbenchArtifact: [(a) => a.deleteWorkbenchArtifact("tip-splitter")],
   fetchWorkspaceFiles: SCOPES.map(
     (scope): Sample =>
       (a) =>
-        a.fetchWorkspaceFiles("notes", scope),
+        a.fetchWorkspaceFiles(agentForScope(scope), "notes", scope),
   ),
   fetchWorkspaceFile: SCOPES.map(
     (scope): Sample =>
       (a) =>
-        a.fetchWorkspaceFile("a.md", scope),
+        a.fetchWorkspaceFile(agentForScope(scope), "a.md", scope),
   ),
   putWorkspaceFile: SCOPES.map(
     (scope): Sample =>
       (a) =>
-        a.putWorkspaceFile("a.md", "text", "v1", scope),
+        a.putWorkspaceFile(agentForScope(scope), "a.md", "text", "v1", scope),
   ),
   validateWorkspaceFile: SCOPES.map(
     (scope): Sample =>
       (a) =>
-        a.validateWorkspaceFile("a.md", "text", scope),
+        a.validateWorkspaceFile(agentForScope(scope), "a.md", "text", scope),
   ),
   deleteWorkspaceFile: SCOPES.map(
     (scope): Sample =>
       (a) =>
-        a.deleteWorkspaceFile("a.md", scope),
+        a.deleteWorkspaceFile(agentForScope(scope), "a.md", scope),
   ),
   moveWorkspaceFile: SCOPES.map(
     (scope): Sample =>
       (a) =>
-        a.moveWorkspaceFile("a.md", "b.md", true, scope),
+        a.moveWorkspaceFile(agentForScope(scope), "a.md", "b.md", true, scope),
   ),
   fetchCheckpoints: REPOS.map(
     (repo): Sample =>
       (a) =>
-        a.fetchCheckpoints({ repo, path: "a.md", turnId: "turn-1", before: "abc", limit: 5 }),
+        a.fetchCheckpoints(agentForRepo(repo), {
+          repo,
+          path: "a.md",
+          turnId: "turn-1",
+          before: "abc",
+          limit: 5,
+        }),
   ),
   fetchCheckpointStats: REPOS.map(
     (repo): Sample =>
       (a) =>
-        a.fetchCheckpointStats(repo),
+        a.fetchCheckpointStats(agentForRepo(repo), repo),
   ),
   fetchCheckpointDetail: REPOS.map(
     (repo): Sample =>
       (a) =>
-        a.fetchCheckpointDetail("abc", repo),
+        a.fetchCheckpointDetail(agentForRepo(repo), "abc", repo),
   ),
   fetchCheckpointDiff: REPOS.map(
     (repo): Sample =>
       (a) =>
-        a.fetchCheckpointDiff("abc", repo, "a.md"),
+        a.fetchCheckpointDiff(agentForRepo(repo), "abc", repo, "a.md"),
   ),
   fetchCheckpointFile: REPOS.map(
     (repo): Sample =>
       (a) =>
-        a.fetchCheckpointFile("abc", repo, "a.md"),
+        a.fetchCheckpointFile(agentForRepo(repo), "abc", repo, "a.md"),
   ),
   restoreCheckpoint: REPOS.map(
     (repo): Sample =>
       (a) =>
-        a.restoreCheckpoint("abc", repo, "a.md"),
+        a.restoreCheckpoint(agentForRepo(repo), "abc", repo, "a.md"),
   ),
   undoCheckpoint: REPOS.map(
     (repo): Sample =>
       (a) =>
-        a.undoCheckpoint("abc", repo),
+        a.undoCheckpoint(agentForRepo(repo), "abc", repo),
   ),
   undoLastAction: REPOS.map(
     (repo): Sample =>
       (a) =>
-        a.undoLastAction("abc", repo, "a.md"),
+        a.undoLastAction(agentForRepo(repo), "abc", repo, "a.md"),
   ),
   fetchCloudStatus: [(a) => a.fetchCloudStatus()],
   disconnectCloud: [(a) => a.disconnectCloud()],
@@ -267,7 +283,7 @@ interface Request {
 /** The problem with a request the mock would not serve, or `null` when it would. */
 function problemWith(routes: readonly Route[], { method, url }: Request): string | null {
   const hub = createStubHub();
-  hub.createAgent("atlas");
+  hub.createAgent(AGENT);
   const { pathname, searchParams } = new URL(url, "http://mock.invalid");
   const scoped = scopeRequest(hub, pathname, searchParams);
   if (isRefusal(scoped)) return `refused ${String(scoped.status)}: ${scoped.body.error}`;
@@ -286,10 +302,8 @@ async function requestsOf(sample: Sample): Promise<Request[]> {
   });
   vi.resetModules();
   const client = await import("../src/lib/api");
-  const paths = await import("../src/lib/paths");
-  paths.setCurrentAgent("atlas");
   try {
-    await sample(client, paths.setCurrentAgent);
+    await sample(client);
   } catch {
     // The empty answers the stub gives may not be what the client does next, but the request it made is already recorded.
   }
@@ -341,13 +355,13 @@ describe("route parity between the API client and the mock", () => {
     expect(withoutPulses).toHaveLength(apiRoutes.length - 1);
     const unserved = await unservedBy(withoutPulses);
     expect(unserved).toEqual([
-      "fetchScheduledPulses: GET /api/agents/atlas/scheduled/pulses (no route for GET /api/scheduled/pulses)",
+      `fetchScheduledPulses: GET /api/agents/${AGENT}/scheduled/pulses (no route for GET /api/scheduled/pulses)`,
     ]);
   });
 
   it("serves every route an artifact can reach through the bridge", () => {
     const unserved = ARTIFACT_CALLS.flatMap(([method, path]) => {
-      const problem = problemWith(apiRoutes, { method, url: scopeApiPath(path, "atlas") });
+      const problem = problemWith(apiRoutes, { method, url: scopeApiPath(path, AGENT) });
       return problem === null ? [] : [`${method} ${path} (${problem})`];
     });
     expect(unserved).toEqual([]);
@@ -360,7 +374,7 @@ describe("route parity between the API client and the mock", () => {
 
     it("opens the hub and agent sockets where the mock accepts them", () => {
       expect(new URL(hubWsUrl()).pathname).toBe(HUB_SOCKET_PATH);
-      expect(new URL(agentWsUrl("atlas")).pathname).toBe(agentSocketPath("atlas"));
+      expect(new URL(agentWsUrl(AGENT)).pathname).toBe(agentSocketPath(AGENT));
     });
   });
 });
