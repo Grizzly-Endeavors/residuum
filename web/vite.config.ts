@@ -1,7 +1,7 @@
 import { defineConfig } from "vitest/config";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { svelteTesting } from "@testing-library/svelte/vite";
-import { mockServerPlugin } from "./mock-server";
+import { mockServerPlugin } from "./mock/plugin";
 
 const isMock = process.env.VITE_MOCK === "1";
 // Vitest sets this before loading the config. HMR stays on for `vite dev`.

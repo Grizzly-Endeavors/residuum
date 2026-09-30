@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { json } from "./http";
 import { fetchJson, startMockServer, type MockServerHarness } from "./test-support";
 
 describe("the API handler", () => {
@@ -21,7 +22,7 @@ describe("the API handler", () => {
     expect(await res.text()).toBe("");
   });
 
-  it("names the endpoint when no route and no fallback takes the request", async () => {
+  it("names the endpoint when no route takes the request", async () => {
     harness = await startMockServer();
     expect(await fetchJson(`${harness.baseUrl}/api/agents/atlas/nothing-here?x=1`)).toEqual({
       status: 404,
@@ -36,13 +37,17 @@ describe("the API handler", () => {
     expect((res.body as { error: string }).error).toContain("is not a hub, team, or agent route");
   });
 
-  it("gives a request no table matched to the fallback, with the scoped state", async () => {
+  it("runs the route tables it is given, against the scoped state", async () => {
     harness = await startMockServer({
-      fallback: ({ res, state, path, query }) => {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ agent: state.agentName, path, q: query.get("q") }));
-        return Promise.resolve(true);
-      },
+      routes: [
+        {
+          method: "GET",
+          pattern: "/api/custom",
+          handler: ({ res, state, path, query }) => {
+            json(res, 200, { agent: state.agentName, path, q: query.get("q") });
+          },
+        },
+      ],
     });
     const res = await fetchJson(`${harness.baseUrl}/api/agents/scout/custom?q=1`);
     expect(res).toEqual({ status: 200, body: { agent: "scout", path: "/api/custom", q: "1" } });
@@ -50,12 +55,18 @@ describe("the API handler", () => {
 
   it("answers 500 when a handler throws", async () => {
     harness = await startMockServer({
-      fallback: () => Promise.reject(new Error("the fallback failed")),
+      routes: [
+        {
+          method: "GET",
+          pattern: "/api/custom",
+          handler: () => Promise.reject(new Error("the handler failed")),
+        },
+      ],
     });
     const res = await fetchJson(`${harness.baseUrl}/api/agents/scout/custom`);
     expect(res).toEqual({
       status: 500,
-      body: { error: "mock server error: the fallback failed" },
+      body: { error: "mock server error: the handler failed" },
     });
   });
 

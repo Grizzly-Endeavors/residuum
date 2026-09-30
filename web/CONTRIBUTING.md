@@ -38,6 +38,9 @@ With [`just`](https://github.com/casey/just), `just web-mock` from the repo root
 - The `POST /api/sessions` / `.../stop` / `.../messages` HTTP endpoints an artifact's `residuum.sessions.start` uses: the bundled "Tip Splitter" artifact (`/workbench/tip-splitter`) has "Start a background session" and "Fire 3 calls at once" buttons for trying the artifact bar's activity panel, Cancel calls, and Stop page by hand; model calls are slowed down (`MODEL_CALL_DELAY_MS`) so they're visibly "in flight" long enough to cancel
 - Tasks sent to other agents in the sessions sidebar's External group: stopping `research-buddy`'s task succeeds, while `laptop` is unreachable, so its Stop fails and the row offers "Stop watching"
 - `POST /api/mock/missed-relay` records a session result in the main chat's history and drops the WebSocket, to exercise catching up after a reconnect
+- Workspace files, for an agent (`/api/agents/{name}/workspace/...`) and for the shared team tree (`/api/team/workspace/...`): directory listings with size, modification time and version, reads with the version as the `ETag`, writes that answer `412` when the client's `If-Match` no longer matches, and delete, move and validate. Edits change the listings, and the team tree is the same one under an agent's `team/`
+- The user inbox: a listing, an archive, mark read, archive, restore and attachments (`/api/agents/{name}/inbox/...`), with the backend's response shapes, including its `500` for an item that isn't there. No sample item carries an attachment; an attachment serves a stand-in file of its type
+- The workbench (`/api/team/workbench/...`): the artifact list, where artifacts are served, and deleting an artifact along with its saved state. `POST /api/agents/{name}/model/complete` answers from a canned model, with parsed JSON when the call asks for a schema
 - Main chat turns are recorded in history when they end. A chat message starting with `drop` loses the connection mid-turn: `drop finish …` ends the turn while disconnected, `drop compress …` also compresses history into a new episode (forcing a history reload), and any other `drop …` finishes the turn live after the page reconnects
 - Config files are loaded from `../assets/*.example.*` and can be edited in the UI
 - Secrets can be added and removed (stored in memory)
@@ -48,6 +51,7 @@ With [`just`](https://github.com/casey/just), `just web-mock` from the repo root
 - No real LLM calls happen — responses are canned
 - Config saves don't persist across server restarts
 - Some edge cases (rate limits, network errors) aren't simulated
+- The Scheduled view's endpoints (`/scheduled/...`), the checkpoint endpoints, and the workspace's `dir`, `raw`, `tree` and `read` routes answer `404`. The workspace routes don't block paths the backend blocks, and a delete or move records no checkpoint
 - `POST /api/secrets` doesn't validate the value like the real server does — it accepts anything, including a `secret:` or `${ENV_VAR}` reference the real server would reject with a 400. The frontend already avoids sending those (see `lib/secrets.ts`), so this only matters if you're testing the rejection path itself
 
 ### Setup Wizard Mode
@@ -128,10 +132,17 @@ web/
 │   ├── scenario.ts           # The agents the mock starts with
 │   ├── sessions.ts           # Sessions endpoints, session socket commands, the session lifecycle
 │   ├── config.ts             # Status, config, providers, MCP, secrets, agent keys, A2A, setup, tracing
+│   ├── workspace.ts          # Workspace file routes, for an agent and for the team tree
+│   ├── workspace-tree.ts     # The workspace tree in state: listings, versions, writes, moves
+│   ├── inbox.ts              # The user inbox: listing, archive, read, restore, attachments
+│   ├── workbench.ts          # Workbench artifact list, info and delete
+│   ├── model.ts              # The artifact model call
+│   ├── controls.ts           # Test controls: missed-relay and teammate-message
+│   ├── artifacts-listener.ts # The second origin that serves artifact pages
+│   ├── plugin.ts             # The Vite plugin: creates the hub and its agents, serves the route tables
 │   ├── data/                 # Sample data: chat, sessions, workspace files, inbox, the workbench artifact
 │   ├── test-support.ts       # Test harnesses: route tables over HTTP, the whole mock with its sockets
 │   └── *.test.ts             # Unit tests, run by `npm test`
-├── mock-server.ts            # Mock plugin entry, plus the artifacts listener and the files, workbench, inbox and test-control handlers
 ├── vite.config.ts
 └── package.json
 ```
@@ -185,7 +196,7 @@ npm run test:coverage # The same tests with a coverage summary (HTML report in c
 
 **Generated types.** `src/lib/generated/` comes from the Rust types. After changing an exported Rust type, run `just types` and commit the result; `just types-check` (and CI) fails when the committed files are out of date.
 
-**Mock modules.** Everything under `mock/` is formatted, linted and type-checked with the same rules as `src/`, and its tests (`mock/**/*.test.ts`) run in Node through the same `npm test`. Route handlers live in route tables (`Route` in `mock/routes.ts`), and response bodies are checked against the generated protocol types in `src/lib/generated/` wherever one exists. `mock-server.ts`, the plugin entry, is the one mock file outside those checks; it also holds the artifacts listener and the files, workbench, inbox and test-control handlers. `mock/test-support.ts` has two harnesses: one serves route tables over HTTP against a stub hub, and `startMockServer` runs the whole mock (hub, agents, sockets, scoped routing) on a real HTTP server, with a WebSocket client that keeps the frames it receives.
+**Mock modules.** Everything under `mock/` is formatted, linted and type-checked with the same rules as `src/`, and its tests (`mock/**/*.test.ts`) run in Node through the same `npm test`. Route handlers live in route tables (`Route` in `mock/routes.ts`), and response bodies are checked against the generated protocol types in `src/lib/generated/` wherever one exists. The Vite plugin entry is `mock/plugin.ts`, and nothing in the mock is left out of these checks. `mock/test-support.ts` has two harnesses: one serves route tables over HTTP against a stub hub, and `startMockServer` runs the whole mock (hub, agents, sockets, scoped routing) on a real HTTP server, with a WebSocket client that keeps the frames it receives.
 
 Component tests live next to the component as `src/components/**/*.test.ts` (or `*.component.test.ts` anywhere under `src/`). They run in jsdom, through the same `npm test` command as the Node unit tests under `src/lib/`. Mount with `render` and mock `fetch` using `src/test/component.ts`.
 
