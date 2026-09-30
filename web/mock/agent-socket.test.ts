@@ -177,7 +177,7 @@ describe("agent socket", () => {
       expect(await socket.nextOfType("turn_ended")).toEqual({ type: "turn_ended", reply_to: "m1" });
       const rest = await socket.quietFrames(1800);
       expect(rest.map((f) => f.type)).not.toContain("response");
-      expect(harness.hub.agents.get("atlas")?.busy).toBe(false);
+      expect(harness.hub.agents.get("atlas")?.busySince).toBeNull();
     });
   });
 
@@ -272,10 +272,14 @@ describe("agent socket", () => {
         type: "agent_activity",
         name: "atlas",
         busy: true,
+        busy_since: expect.any(String) as unknown,
         unread: 0,
       });
       await socket.nextOfType("turn_ended");
-      expect(await hubSocket.nextOfType("agent_activity")).toMatchObject({ busy: false });
+      expect(await hubSocket.nextOfType("agent_activity")).toMatchObject({
+        busy: false,
+        busy_since: null,
+      });
       const history = harness.hub.agents.get("atlas")?.state.extraRecent ?? [];
       // Every agent but scout opens its conversation with a greeting.
       expect(history.slice(-4).map((m) => m.role)).toEqual([

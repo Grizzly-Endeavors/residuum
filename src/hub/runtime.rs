@@ -27,7 +27,7 @@ use super::http::{HubHttpState, hub_router};
 use super::relay_agents::RelayAgents;
 use super::services::{HubControl, HubServices};
 use super::team_embedding::EmbeddingSource;
-use super::types::NoticeLevel;
+use super::types::{HubEvent, NoticeLevel};
 
 /// How often the hub checks for a newer version.
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_hours(6);
@@ -521,11 +521,14 @@ impl HubRuntime {
             Ok(hub) => hub,
             Err(err) => {
                 tracing::warn!(error = %err, "hub config reload failed, keeping current hub config");
-                self.host.notice(
-                    NoticeLevel::Warn,
-                    format!("hub config reload failed (keeping current hub config): {err}"),
-                    None,
-                );
+                let message =
+                    format!("hub config reload failed (keeping current hub config): {err}");
+                self.host.notice(NoticeLevel::Warn, message.clone(), None);
+                self.host.publish(HubEvent::HubConfigReloaded {
+                    ok: false,
+                    changed: false,
+                    message: Some(message),
+                });
                 return;
             }
         };
@@ -535,6 +538,11 @@ impl HubRuntime {
         if new_hub == self.hub_cfg {
             last_known_good::hub::save(&self.hub_dir);
             tracing::info!("hub config reload: no changes detected");
+            self.host.publish(HubEvent::HubConfigReloaded {
+                ok: true,
+                changed: false,
+                message: None,
+            });
             return;
         }
 
@@ -576,11 +584,13 @@ impl HubRuntime {
         last_known_good::hub::save(&self.hub_dir);
         let summary = changed.join(", ");
         tracing::info!(changes = %summary, "hub configuration reloaded successfully");
-        self.host.notice(
-            NoticeLevel::Info,
-            format!("hub configuration reloaded: {summary}"),
-            None,
-        );
+        let message = format!("hub configuration reloaded: {summary}");
+        self.host.notice(NoticeLevel::Info, message.clone(), None);
+        self.host.publish(HubEvent::HubConfigReloaded {
+            ok: true,
+            changed: true,
+            message: Some(message),
+        });
     }
 
     /// Serve the hub's HTTP app on the new address, then retire the old
@@ -708,6 +718,7 @@ pub(super) fn build_app(
         team_bus: services.team_feed.bus.clone(),
         team_watch_health: services.team_feed.health.clone(),
         started_at: std::time::Instant::now(),
+        boot_id: uuid::Uuid::new_v4().to_string(),
     };
     Ok(hub_router(
         Arc::clone(host) as Arc<dyn AgentDirectory>,
@@ -811,8 +822,16 @@ pub async fn run_hub(root: &Path) -> Result<GatewayExit, FatalError> {
 mod tests {
     use super::*;
     use crate::hub::test_support::{free_port, mount_reply, write_agent};
-    use crate::hub::types::HubEvent;
     use wiremock::MockServer;
+
+    /// What the hub said about one config reload.
+    struct Reload {
+        ok: bool,
+        changed: bool,
+        message: Option<String>,
+        /// The notices sent before the `hub_config_reloaded` frame.
+        notices: Vec<String>,
+    }
 
     /// A hub started on temp directories with two agents, running on free
     /// ports, with the model server all its agents talk to.
@@ -890,6 +909,39 @@ mod tests {
 
         fn hub_config_path(&self) -> std::path::PathBuf {
             self.root.path().join("hub").join("config.toml")
+        }
+
+        /// Wait for the hub to announce a finished config reload, and return
+        /// its frame with the notices that came before it.
+        async fn next_reload(&mut self) -> Reload {
+            tokio::time::timeout(Duration::from_secs(20), async {
+                let mut notices = Vec::new();
+                loop {
+                    match self.events.recv().await.unwrap() {
+                        HubEvent::Notice { message, .. } => notices.push(message),
+                        HubEvent::HubConfigReloaded {
+                            ok,
+                            changed,
+                            message,
+                        } => {
+                            return Reload {
+                                ok,
+                                changed,
+                                message,
+                                notices,
+                            };
+                        }
+                        HubEvent::AgentState { .. }
+                        | HubEvent::AgentStopping { .. }
+                        | HubEvent::AgentCreated { .. }
+                        | HubEvent::AgentRestored { .. }
+                        | HubEvent::AgentDeleted { .. }
+                        | HubEvent::AgentActivity { .. } => {}
+                    }
+                }
+            })
+            .await
+            .expect("the hub announces the reload")
         }
 
         async fn shut_down(self) {
@@ -984,20 +1036,62 @@ mod tests {
 
         std::fs::write(hub.hub_config_path(), "not valid toml [[[").unwrap();
 
-        let notice = tokio::time::timeout(Duration::from_secs(20), async {
-            loop {
-                if let HubEvent::Notice { message, .. } = hub.events.recv().await.unwrap()
-                    && message.contains("keeping current hub config")
-                {
-                    return message;
-                }
-            }
-        })
-        .await
-        .expect("the failed reload is announced");
-        assert!(notice.starts_with("hub config reload failed"), "{notice}");
+        let reload = hub.next_reload().await;
+        assert!(
+            !reload.ok && !reload.changed,
+            "a failed reload changes nothing"
+        );
+        let message = reload.message.expect("a failed reload says why");
+        assert!(message.starts_with("hub config reload failed"), "{message}");
+        assert!(message.contains("keeping current hub config"), "{message}");
+        assert_eq!(
+            reload.notices,
+            [message],
+            "the notice says what the frame says"
+        );
         hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", Some(200))
             .await;
+        hub.shut_down().await;
+    }
+
+    #[tokio::test]
+    async fn a_hub_config_reload_that_changes_a_setting_says_what_changed() {
+        let mut hub = RunningHub::start().await;
+        hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", Some(200))
+            .await;
+
+        let config = std::fs::read_to_string(hub.hub_config_path()).unwrap();
+        std::fs::write(
+            hub.hub_config_path(),
+            config.replace("timezone = \"UTC\"", "timezone = \"America/Chicago\""),
+        )
+        .unwrap();
+
+        let reload = hub.next_reload().await;
+        assert!(reload.ok && reload.changed);
+        assert_eq!(
+            reload.message.as_deref(),
+            Some("hub configuration reloaded: timezone")
+        );
+        assert_eq!(reload.notices, ["hub configuration reloaded: timezone"]);
+        hub.shut_down().await;
+    }
+
+    #[tokio::test]
+    async fn a_hub_config_reload_that_finds_nothing_new_says_so_without_a_notice() {
+        let mut hub = RunningHub::start().await;
+        hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", Some(200))
+            .await;
+
+        // A comment changes the file and not the settings in it.
+        let config = std::fs::read_to_string(hub.hub_config_path()).unwrap();
+        std::fs::write(hub.hub_config_path(), format!("# a note to self\n{config}")).unwrap();
+
+        let reload = hub.next_reload().await;
+        assert!(reload.ok, "the file loaded");
+        assert!(!reload.changed, "and it matches what was running");
+        assert_eq!(reload.message, None);
+        assert!(reload.notices.is_empty(), "{:?}", reload.notices);
         hub.shut_down().await;
     }
 

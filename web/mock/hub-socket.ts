@@ -1,5 +1,5 @@
 import { WebSocketServer, type WebSocket } from "ws";
-import type { HubServerMessage } from "../src/lib/hub-types";
+import type { AgentListResponse, HubServerMessage } from "../src/lib/hub-types";
 import { parseJsonObject } from "./http";
 import {
   frameText,
@@ -46,18 +46,20 @@ function watchTeamRefusal(raw: string): string | null {
 
 /**
  * Open the hub WebSocket on the HTTP server. A page that connects first gets
- * `greeting()`, the frames that bring it up to date. The mock has no team
- * files changing, so no change frames follow a `watch_team`.
+ * `hub_boot` with `bootId`, then an `agents_snapshot` of `listing()`. The
+ * mock has no team files changing, so no change frames follow a `watch_team`.
  */
 export function openHubSocket(
   host: UpgradeHost | null,
-  greeting: () => HubServerMessage[],
+  bootId: string,
+  listing: () => AgentListResponse,
 ): HubSocket {
   const wss = new WebSocketServer({ noServer: true });
   routeUpgrades(host, wss, "/api/hub/ws");
 
   wss.on("connection", (ws: WebSocket) => {
-    for (const frame of greeting()) sendFrame(ws, frame);
+    sendFrame(ws, { type: "hub_boot", boot_id: bootId } satisfies HubServerMessage);
+    sendFrame(ws, { type: "agents_snapshot", ...listing() } satisfies HubServerMessage);
     ws.on("message", (raw) => {
       const refusal = watchTeamRefusal(frameText(raw));
       if (refusal !== null) {

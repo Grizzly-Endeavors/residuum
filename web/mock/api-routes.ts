@@ -1,6 +1,7 @@
 import { chatRoutes } from "./chat";
 import { configRoutes } from "./config";
 import { controlRoutes } from "./controls";
+import { hubInboxRoutes } from "./hub-inbox";
 import { inboxRoutes } from "./inbox";
 import { lifecycleRoutes } from "./lifecycle";
 import { modelRoutes } from "./model";
@@ -16,6 +17,7 @@ export const apiRoutes: readonly Route[] = [
   ...configRoutes,
   ...chatRoutes,
   ...inboxRoutes,
+  ...hubInboxRoutes,
   ...workspaceRoutes,
   ...workbenchRoutes,
   ...modelRoutes,

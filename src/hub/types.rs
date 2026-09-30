@@ -2,9 +2,13 @@
 //! WebSocket. Field names and JSON forms follow
 //! `docs/systems-usage/hub-http.md`.
 
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
+
+use super::directory::AgentDirectory;
 
 /// Lifecycle state of a hosted agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -43,12 +47,33 @@ pub enum A2aVisibility {
     Private,
 }
 
+/// What kind of failure moved an agent to [`AgentState::Failed`], so a client
+/// can offer the matching next step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum AgentErrorKind {
+    /// Start-up rejected the agent's configuration.
+    Config,
+    /// Another agent already uses the agent's Teams port.
+    PortConflict,
+    /// The agent panicked, or its event loop ended on its own.
+    Crash,
+    /// Any other failure.
+    Other,
+}
+
 /// The error that moved an agent to [`AgentState::Failed`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct AgentLastError {
     /// Plain-language description, safe to show the user.
     pub message: String,
+    /// What kind of failure this was.
+    pub kind: AgentErrorKind,
+    /// The underlying error text, without the explanation and next steps
+    /// that `message` wraps around it.
+    pub reason: String,
     /// When the failure happened.
     #[ts(type = "string")]
     pub at: DateTime<Utc>,
@@ -73,7 +98,8 @@ pub struct AgentSummary {
 }
 
 /// Who performed a lifecycle action.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, TS)]
+#[ts(export, type = "\"user\" | `agent:${string}`")]
 pub enum Actor {
     /// The user, through the web UI, CLI, or API.
     User,
@@ -188,14 +214,18 @@ pub struct DeletedAgent {
 pub struct AgentActivity {
     /// A main turn is in progress.
     pub busy: bool,
+    /// When the current main turn began, while `busy`.
+    #[ts(type = "string | null")]
+    pub busy_since: Option<DateTime<Utc>>,
     /// Main-conversation messages no web client has shown yet.
     pub unread: u32,
 }
 
 /// Hub-level events, published on the hub bus and sent over `/api/hub/ws`
 /// (one frame each, tagged by `type`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[ts(export)]
 pub enum HubEvent {
     /// An agent's state, autostart, or visibility changed.
     AgentState { agent: AgentSummary },
@@ -222,17 +252,92 @@ pub enum HubEvent {
         level: NoticeLevel,
         message: String,
         #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         agent: Option<String>,
+    },
+    /// The hub finished an attempt to reload `hub/config.toml`. Sent after
+    /// every attempt, beside the notice that tells the user about it.
+    HubConfigReloaded {
+        /// The file loaded, so the running config now matches it. False when
+        /// the load failed and the previous config stays in effect.
+        ok: bool,
+        /// The loaded config differs from the one that was running.
+        changed: bool,
+        /// The text of the notice sent beside this frame: what changed, or
+        /// why the reload failed. Null when nothing changed.
+        message: Option<String>,
     },
 }
 
 /// Severity of a [`HubEvent::Notice`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export)]
 pub enum NoticeLevel {
     Info,
     Warn,
     Error,
+}
+
+/// Every hosted agent with its activity and stopping set: the answer to
+/// `GET /api/hub/agents` and the body of the hub WebSocket's snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[ts(export)]
+pub struct AgentListResponse {
+    /// Every agent, sorted by name.
+    pub agents: Vec<AgentSummary>,
+    /// Main-conversation activity of every agent, by name.
+    pub activity: BTreeMap<String, AgentActivity>,
+    /// Names of running agents whose stop has begun but not finished.
+    pub stopping: Vec<String>,
+}
+
+impl AgentListResponse {
+    /// Read the directory's agents, activity and stopping set.
+    #[must_use]
+    pub fn of(directory: &dyn AgentDirectory) -> Self {
+        let mut agents = directory.list();
+        agents.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut stopping = directory.stopping();
+        stopping.sort();
+        Self {
+            agents,
+            activity: directory.activity().into_iter().collect(),
+            stopping,
+        }
+    }
+}
+
+/// The deleted agents that can be restored: the answer to
+/// `GET /api/hub/agents/deleted`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[ts(export)]
+pub struct DeletedAgentListResponse {
+    /// Newest deletion first.
+    pub agents: Vec<DeletedAgent>,
+}
+
+/// Frames the hub WebSocket sends on its own account, rather than forwarding
+/// a [`HubEvent`] from the hub bus.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[ts(export)]
+pub enum HubSocketFrame {
+    /// The first frame of every connection: which hub process answered.
+    HubBoot { boot_id: String },
+    /// The agents with their activity, sent after `hub_boot` and again
+    /// whenever the connection fell behind and lost events.
+    AgentsSnapshot(AgentListResponse),
+}
+
+/// The one message a client sends on the hub WebSocket.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[ts(export)]
+pub enum HubClientMessage {
+    /// Replace the set of team paths this connection watches. A prefix is
+    /// `team` or a path under `team/`, the spelling the change feed uses.
+    WatchTeam { prefixes: Vec<String> },
 }
 
 /// Why a lifecycle or lookup call failed. The HTTP layer maps these to
@@ -308,16 +413,34 @@ mod tests {
         assert_eq!(value.get("type"), Some(&json!("agent_created")));
         assert_eq!(value.get("by"), Some(&json!("agent:atlas")));
 
+        let since = DateTime::parse_from_rfc3339("2026-09-30T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
         let activity = HubEvent::AgentActivity {
             name: "scout".to_string(),
             activity: AgentActivity {
                 busy: true,
+                busy_since: Some(since),
                 unread: 2,
             },
         };
         assert_eq!(
             serde_json::to_value(activity).unwrap(),
-            json!({ "type": "agent_activity", "name": "scout", "busy": true, "unread": 2 })
+            json!({
+                "type": "agent_activity",
+                "name": "scout",
+                "busy": true,
+                "busy_since": "2026-09-30T12:00:00Z",
+                "unread": 2,
+            })
+        );
+        let idle = HubEvent::AgentActivity {
+            name: "scout".to_string(),
+            activity: AgentActivity::default(),
+        };
+        assert_eq!(
+            serde_json::to_value(idle).unwrap(),
+            json!({ "type": "agent_activity", "name": "scout", "busy": false, "busy_since": null, "unread": 0 })
         );
 
         let deleted = HubEvent::AgentDeleted {
@@ -327,6 +450,109 @@ mod tests {
         assert_eq!(
             serde_json::to_value(deleted).unwrap(),
             json!({ "type": "agent_deleted", "name": "scout", "by": "user" })
+        );
+    }
+
+    #[test]
+    fn a_stopping_agent_is_announced_by_name() {
+        let stopping = HubEvent::AgentStopping {
+            name: "scout".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(stopping).unwrap(),
+            json!({ "type": "agent_stopping", "name": "scout" })
+        );
+    }
+
+    #[test]
+    fn a_config_reload_frame_says_whether_it_worked_and_whether_anything_changed() {
+        let changed = HubEvent::HubConfigReloaded {
+            ok: true,
+            changed: true,
+            message: Some("hub configuration reloaded: timezone".to_string()),
+        };
+        assert_eq!(
+            serde_json::to_value(changed).unwrap(),
+            json!({
+                "type": "hub_config_reloaded",
+                "ok": true,
+                "changed": true,
+                "message": "hub configuration reloaded: timezone",
+            })
+        );
+        let unchanged = HubEvent::HubConfigReloaded {
+            ok: true,
+            changed: false,
+            message: None,
+        };
+        assert_eq!(
+            serde_json::to_value(unchanged).unwrap(),
+            json!({ "type": "hub_config_reloaded", "ok": true, "changed": false, "message": null })
+        );
+    }
+
+    #[test]
+    fn a_last_error_carries_its_kind_and_the_reason_without_the_wrapper() {
+        let error = AgentLastError {
+            message: "scout couldn't start: config error: bad model. Fix its settings.".to_string(),
+            kind: AgentErrorKind::PortConflict,
+            reason: "config error: bad model".to_string(),
+            at: DateTime::parse_from_rfc3339("2026-09-30T12:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        };
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            json!({
+                "message": "scout couldn't start: config error: bad model. Fix its settings.",
+                "kind": "port_conflict",
+                "reason": "config error: bad model",
+                "at": "2026-09-30T12:00:00Z",
+            })
+        );
+        for (kind, wire) in [
+            (AgentErrorKind::Config, "config"),
+            (AgentErrorKind::Crash, "crash"),
+            (AgentErrorKind::Other, "other"),
+        ] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), json!(wire));
+        }
+    }
+
+    #[test]
+    fn the_socket_frames_the_hub_sends_itself_are_tagged() {
+        let boot = HubSocketFrame::HubBoot {
+            boot_id: "b-1".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(boot).unwrap(),
+            json!({ "type": "hub_boot", "boot_id": "b-1" })
+        );
+        let snapshot = HubSocketFrame::AgentsSnapshot(AgentListResponse {
+            agents: vec![scout()],
+            activity: BTreeMap::from([("scout".to_string(), AgentActivity::default())]),
+            stopping: vec!["scout".to_string()],
+        });
+        let value = serde_json::to_value(snapshot).unwrap();
+        assert_eq!(value.get("type"), Some(&json!("agents_snapshot")));
+        assert_eq!(value.get("stopping"), Some(&json!(["scout"])));
+        assert_eq!(
+            value.get("activity"),
+            Some(&json!({ "scout": { "busy": false, "busy_since": null, "unread": 0 } }))
+        );
+        assert_eq!(value.pointer("/agents/0/name"), Some(&json!("scout")));
+    }
+
+    #[test]
+    fn the_client_message_is_watch_team() {
+        let message: HubClientMessage =
+            serde_json::from_value(json!({ "type": "watch_team", "prefixes": ["team/wiki"] }))
+                .unwrap();
+        assert_eq!(
+            message,
+            HubClientMessage::WatchTeam {
+                prefixes: vec!["team/wiki".to_string()]
+            }
         );
     }
 

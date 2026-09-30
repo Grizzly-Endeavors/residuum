@@ -35,13 +35,13 @@ use crate::util::FatalError;
 use crate::workspace::layout::WorkspaceLayout;
 
 use super::activity::ActivityTracker;
-use super::directory::AgentDirectory;
+use super::directory::{AgentDirectory, AgentFiles};
 use super::services::HubServices;
 use super::team_embedding::EmbeddingSource;
 use super::types::{
-    A2aVisibility, Actor, AgentActivity, AgentLastError, AgentPatch, AgentState, AgentSummary,
-    CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError, NoticeLevel,
-    RestoreAgentRequest,
+    A2aVisibility, Actor, AgentActivity, AgentErrorKind, AgentLastError, AgentPatch, AgentState,
+    AgentSummary, CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError,
+    NoticeLevel, RestoreAgentRequest,
 };
 use crate::workspace::team_files::TeamWriter;
 
@@ -575,8 +575,15 @@ impl AgentHost {
                 "{} can't start: its Teams adapter uses port {port}, which the agent '{other}' is already using. Give one of them a different Teams port, then start it again.",
                 slot.name
             );
+            let reason = format!("Teams port {port} is already used by the agent '{other}'");
             return Err(self
-                .record_failure(slot, message, "the Teams port is taken", preview.as_ref())
+                .record_failure(
+                    slot,
+                    AgentErrorKind::PortConflict,
+                    message,
+                    &reason,
+                    preview.as_ref(),
+                )
                 .await);
         }
 
@@ -603,8 +610,14 @@ impl AgentHost {
                     "{} couldn't start: {err}. Fix its settings or model configuration, then start it again.",
                     slot.name
                 );
+                let kind = match &err {
+                    FatalError::Config(_) => AgentErrorKind::Config,
+                    FatalError::Workspace(_) | FatalError::Gateway(_) | FatalError::Other(_) => {
+                        AgentErrorKind::Other
+                    }
+                };
                 Err(self
-                    .record_failure(slot, message, &err.to_string(), preview.as_ref())
+                    .record_failure(slot, kind, message, &err.to_string(), preview.as_ref())
                     .await)
             }
             Err(join_err) => {
@@ -614,7 +627,13 @@ impl AgentHost {
                     slot.name
                 );
                 Err(self
-                    .record_failure(slot, message, &detail, preview.as_ref())
+                    .record_failure(
+                        slot,
+                        AgentErrorKind::Crash,
+                        message,
+                        &detail,
+                        preview.as_ref(),
+                    )
                     .await)
             }
         }
@@ -671,21 +690,23 @@ impl AgentHost {
         }
     }
 
-    /// Put the agent in `failed` with `message`, log and auto-report
-    /// `detail`, and leave the user an inbox item. Returns the error a
-    /// caller of `start` gets back.
+    /// Put the agent in `failed` with `message` and `kind`, log and
+    /// auto-report `reason` (the underlying error, which the agent's
+    /// last-error record also carries), and leave the user an inbox item.
+    /// Returns the error a caller of `start` gets back.
     async fn record_failure(
         &self,
         slot: &Arc<AgentSlot>,
+        kind: AgentErrorKind,
         message: String,
-        detail: &str,
+        reason: &str,
         cfg: Option<&Config>,
     ) -> LifecycleError {
-        tracing::error!(agent = %slot.name, error = %detail, "agent failed");
+        tracing::error!(agent = %slot.name, error = %reason, "agent failed");
         self.services
             .tracing_service
             .on_error(
-                &format!("agent failed: {detail}"),
+                &format!("agent failed: {reason}"),
                 crate::tracing_service::client_context::gather_for_agent(&slot.name, cfg),
             )
             .await;
@@ -694,6 +715,8 @@ impl AgentHost {
             AgentState::Failed,
             Some(AgentLastError {
                 message: message.clone(),
+                kind,
+                reason: reason.to_string(),
                 at: Utc::now(),
             }),
         );
@@ -868,6 +891,8 @@ impl AgentHost {
     async fn supervise(&self, run: Supervised, join: tokio::task::JoinHandle<AgentExit>) {
         let exit = join.await;
         let requested = run.stop_requested.load(Ordering::SeqCst);
+        // A failure is its message for the user and the underlying reason. A
+        // run that ends on its own is always a crash.
         let failure: Option<(String, String)> = match exit {
             Ok(AgentExit::Stopped) => None,
             Ok(AgentExit::BusClosed) => Some((
@@ -906,11 +931,17 @@ impl AgentHost {
         if current {
             match failure {
                 None => self.set_state(&run.slot, AgentState::Stopped, None),
-                Some((message, detail)) => {
+                Some((message, reason)) => {
                     let cfg = Config::load_agent_at(&run.slot.dir, &self.hub_config()).ok();
                     // Reported once, from here; `record_failure` does the rest.
-                    self.record_failure(&run.slot, message, &detail, cfg.as_ref())
-                        .await;
+                    self.record_failure(
+                        &run.slot,
+                        AgentErrorKind::Crash,
+                        message,
+                        &reason,
+                        cfg.as_ref(),
+                    )
+                    .await;
                 }
             }
         }
@@ -1676,6 +1707,14 @@ impl AgentDirectory for AgentHost {
     fn agent_file_router(&self, name: &str) -> Result<Router, LifecycleError> {
         let slot = self.slot(name)?;
         Ok(self.file_router_for(&slot))
+    }
+
+    fn agent_files(&self, name: &str) -> Result<AgentFiles, LifecycleError> {
+        let slot = self.slot(name)?;
+        Ok(AgentFiles {
+            dir: slot.dir.clone(),
+            timezone: self.hub_config().timezone,
+        })
     }
 
     fn agent_a2a_router(&self, name: &str) -> Result<Router, LifecycleError> {

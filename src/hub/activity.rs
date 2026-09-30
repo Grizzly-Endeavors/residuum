@@ -1,20 +1,23 @@
 //! Main-conversation activity for one agent: whether a main turn is running,
 //! and how many messages the web UI has not shown yet.
 //!
-//! The switcher shows both. `busy` follows the main turn. `unread` counts
+//! The switcher shows both. `busy` follows the main turn, and `busy_since`
+//! says when that turn began. `unread` counts
 //! main-conversation messages published while no web client is connected to
 //! the agent's WebSocket, and resets when a client connects. Every change is
 //! published on the hub bus as a [`HubEvent::AgentActivity`].
 
 use std::sync::{Arc, Mutex, PoisonError};
 
+use chrono::{DateTime, Utc};
 use tokio::sync::broadcast;
 
 use super::types::{AgentActivity, HubEvent, NoticeLevel};
 
 #[derive(Default)]
 struct ActivityState {
-    busy: bool,
+    /// When the current main turn began, while one is running.
+    busy_since: Option<DateTime<Utc>>,
     unread: u32,
     /// Web clients currently connected to the agent's `/ws`.
     clients: usize,
@@ -50,7 +53,8 @@ impl ActivityTracker {
 
     fn activity_of(state: &ActivityState) -> AgentActivity {
         AgentActivity {
-            busy: state.busy,
+            busy: state.busy_since.is_some(),
+            busy_since: state.busy_since,
             unread: state.unread,
         }
     }
@@ -78,7 +82,9 @@ impl ActivityTracker {
     /// Mark a main turn as running until the returned guard drops.
     #[must_use]
     pub fn main_turn(self: &Arc<Self>) -> MainTurnGuard {
-        self.update(|state| state.busy = true);
+        self.update(|state| {
+            state.busy_since.get_or_insert_with(Utc::now);
+        });
         MainTurnGuard {
             tracker: Arc::clone(self),
         }
@@ -125,7 +131,7 @@ impl ActivityTracker {
     /// more. The unread count is kept.
     pub fn run_ended(&self) {
         self.update(|state| {
-            state.busy = false;
+            state.busy_since = None;
             state.clients = 0;
             state.run += 1;
         });
@@ -139,7 +145,7 @@ pub struct MainTurnGuard {
 
 impl Drop for MainTurnGuard {
     fn drop(&mut self) {
-        self.tracker.update(|state| state.busy = false);
+        self.tracker.update(|state| state.busy_since = None);
     }
 }
 
@@ -181,25 +187,69 @@ mod tests {
     }
 
     #[test]
-    fn a_main_turn_marks_the_agent_busy_until_it_ends() {
+    fn a_main_turn_marks_the_agent_busy_from_its_start_until_it_ends() {
         let (tracker, mut rx) = tracker();
+        let before = Utc::now();
         let guard = tracker.main_turn();
-        assert!(tracker.snapshot().busy);
+        let after = Utc::now();
+        let during = tracker.snapshot();
+        assert!(during.busy);
+        let since = during.busy_since.expect("a running turn has a start time");
+        assert!(
+            before <= since && since <= after,
+            "the turn started between {before} and {after}, not at {since}"
+        );
+
         drop(guard);
-        assert!(!tracker.snapshot().busy);
+        assert_eq!(
+            tracker.snapshot(),
+            AgentActivity {
+                busy: false,
+                busy_since: None,
+                unread: 0
+            }
+        );
         assert_eq!(
             drain(&mut rx),
             [
                 AgentActivity {
                     busy: true,
+                    busy_since: Some(since),
                     unread: 0
                 },
                 AgentActivity {
                     busy: false,
+                    busy_since: None,
                     unread: 0
                 },
             ]
         );
+    }
+
+    #[test]
+    fn an_overlapping_guard_keeps_the_turn_start() {
+        let (tracker, mut rx) = tracker();
+        let first = tracker.main_turn();
+        let since = tracker.snapshot().busy_since;
+        let second = tracker.main_turn();
+        assert_eq!(tracker.snapshot().busy_since, since);
+        assert_eq!(
+            drain(&mut rx).len(),
+            1,
+            "only the first guard changes anything"
+        );
+        drop(second);
+        drop(first);
+    }
+
+    #[test]
+    fn a_stopped_agent_is_not_busy() {
+        let (tracker, _rx) = tracker();
+        let guard = tracker.main_turn();
+        tracker.run_ended();
+        assert_eq!(tracker.snapshot().busy_since, None);
+        assert!(!tracker.snapshot().busy);
+        drop(guard);
     }
 
     #[test]
