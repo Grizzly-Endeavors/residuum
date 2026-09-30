@@ -6,32 +6,30 @@
     SettingsProviderEntry,
     SettingsModelAssignments,
     Diagnostic,
-    ValidateResponse,
   } from "./lib/types";
   import {
     fetchConfigRaw,
     fetchHubConfigRaw,
     fetchProvidersRaw,
     fetchMcpRaw,
-    putConfigRaw,
-    putHubConfigRaw,
-    putProvidersRaw,
-    putMcpRaw,
-    patchConfig,
-    patchHubConfig,
-    patchProviders,
-    patchMcp,
     storeSecret,
     validateConfig,
     validateHubConfig,
     validateProviders,
     validateWorkspaceFile,
-    cacheKeyConfigRaw,
-    CACHE_KEY_HUB_CONFIG_RAW,
-    cacheKeyProvidersRaw,
-    cacheKeyMcpRaw,
   } from "./lib/api";
-  import { invalidate } from "./lib/cache";
+  import {
+    agentConfigFile,
+    configCoordinator,
+    configFileName,
+    HUB_CONFIG_FILE,
+    type ConfigChange,
+    type ConfigChoice,
+    type ConfigConflict,
+    type ConfigEdit,
+    type ConfigFile,
+    type ConfigSaved,
+  } from "./lib/config-coordinator";
   import { isStoredReference } from "./lib/secrets";
   import { formatDiagnosticLocation } from "./lib/diagnostics";
   import { PendingSaveTracker } from "./lib/pending-save";
@@ -187,22 +185,29 @@
 
   // ── Load ───────────────────────────────────────────────────────────
 
+  /** Names this page in the coordinator's notifications, so it can skip the changes it made. */
+  const SELF = Symbol("settings");
+
   /**
    * Fetch the files this scope edits. An agent's page also reads the hub's
    * config, because a few of the agent's fields show hub values, but it never
-   * writes it. The hub's page touches no agent files.
+   * writes it. The hub's page touches no agent files. `fresh` reads from disk
+   * and tells every other view of these files to do the same; without it a
+   * cached copy will do.
    */
-  async function fetchScopeFiles(): Promise<void> {
+  async function fetchScopeFiles(fresh: boolean): Promise<void> {
+    const read = (file: ConfigFile, cached: () => Promise<string>): Promise<string> =>
+      fresh ? configCoordinator.reload(file, SELF) : cached();
     if (isHub) {
-      rawHubConfig = await fetchHubConfigRaw();
+      rawHubConfig = await read(HUB_CONFIG_FILE, fetchHubConfigRaw);
       return;
     }
     const name = scopeAgent();
     const [cfgRaw, hubRaw, provRaw, mcpRaw] = await Promise.all([
-      fetchConfigRaw(name),
-      fetchHubConfigRaw(),
-      fetchProvidersRaw(name),
-      fetchMcpRaw(name),
+      read(agentConfigFile(name, "config"), () => fetchConfigRaw(name)),
+      read(HUB_CONFIG_FILE, fetchHubConfigRaw),
+      read(agentConfigFile(name, "providers"), () => fetchProvidersRaw(name)),
+      read(agentConfigFile(name, "mcp"), () => fetchMcpRaw(name)),
     ]);
     rawConfig = cfgRaw;
     rawHubConfig = hubRaw;
@@ -210,9 +215,14 @@
     rawMcp = mcpRaw;
   }
 
-  onMount(async () => {
+  onMount(() => {
+    void loadInitial();
+    return followFileChanges();
+  });
+
+  async function loadInitial(): Promise<void> {
     try {
-      await fetchScopeFiles();
+      await fetchScopeFiles(false);
       parseAllToForm();
     } catch (err: unknown) {
       statusMsg = userErrorMessage(err, { action: "Couldn't load settings." });
@@ -223,7 +233,7 @@
       lastSavedSnapshot = currentSnapshot();
       initialized = true;
     }
-  });
+  }
 
   function parseAllToForm() {
     configFields = parseConfigToml(rawConfig, rawHubConfig);
@@ -244,20 +254,24 @@
     baselineMcpServers = $state.snapshot(mcpServers);
   }
 
-  /**
-   * Reload just `providers.toml`/`config.toml`/`mcp.json` from disk into
-   * form state, after something outside the normal save path (a
-   * checkpoint restore) changed it on the server. Deliberately doesn't
-   * touch `lastSavedSnapshot`: if another file still has an unsaved edit,
-   * the next autosave cycle must still see it and save it. Once this
-   * file's baseline matches what was just reloaded, that cycle's diff for
-   * it is empty (a no-op) regardless.
-   */
+  // ── Following changes made elsewhere ───────────────────────────────
+  //
+  // The coordinator reads a file from disk before it tells anyone it
+  // changed, so the fetches below find the current text in the cache.
+  //
+  // Each reload puts a file's current text into the form, or into its raw
+  // editor. It deliberately doesn't touch `lastSavedSnapshot`: if another
+  // file still has an unsaved edit, the next autosave cycle must still see it
+  // and save it. Once this file's baseline matches what was just reloaded,
+  // that cycle's diff for it is empty (a no-op) regardless.
+
   async function reloadProvidersFile(): Promise<void> {
     try {
-      const name = scopeAgent();
-      invalidate(cacheKeyProvidersRaw(name));
-      rawProviders = await fetchProvidersRaw(name);
+      rawProviders = await fetchProvidersRaw(scopeAgent());
+      if (settingsMode === "raw") {
+        editProviders = rawProviders;
+        return;
+      }
       const prov = parseProvidersToml(rawProviders);
       providerEntries = prov.providers;
       modelAssignments = prov.models;
@@ -268,12 +282,20 @@
     }
   }
 
+  /** The agent's `config.toml` and the hub's together, since the form shows both. */
   async function reloadConfigFile(): Promise<void> {
     try {
-      const name = scopeAgent();
-      invalidate(cacheKeyConfigRaw(name));
-      invalidate(CACHE_KEY_HUB_CONFIG_RAW);
-      [rawConfig, rawHubConfig] = await Promise.all([fetchConfigRaw(name), fetchHubConfigRaw()]);
+      if (isHub) {
+        rawHubConfig = await fetchHubConfigRaw();
+      } else {
+        const name = scopeAgent();
+        [rawConfig, rawHubConfig] = await Promise.all([fetchConfigRaw(name), fetchHubConfigRaw()]);
+      }
+      if (settingsMode === "raw") {
+        editConfig = rawConfig;
+        editHubConfig = rawHubConfig;
+        return;
+      }
       configFields = parseConfigToml(rawConfig, rawHubConfig);
       baselineConfigFields = $state.snapshot(configFields);
     } catch (err: unknown) {
@@ -283,14 +305,85 @@
 
   async function reloadMcpFile(): Promise<void> {
     try {
-      const name = scopeAgent();
-      invalidate(cacheKeyMcpRaw(name));
-      rawMcp = await fetchMcpRaw(name);
+      rawMcp = await fetchMcpRaw(scopeAgent());
+      if (settingsMode === "raw") {
+        editMcp = rawMcp;
+        return;
+      }
       mcpServers = parseMcpJson(rawMcp);
       baselineMcpServers = $state.snapshot(mcpServers);
     } catch (err: unknown) {
       toast.error(userErrorMessage(err, { action: "Couldn't reload mcp.json." }));
     }
+  }
+
+  /**
+   * Whether the page holds edits to a file that no save has written: what the
+   * next save would send for it. (The panels also fill in empty values the
+   * file doesn't have, which isn't an edit.)
+   */
+  function hasUnsavedEdits(file: "config" | "providers" | "mcp"): boolean {
+    if (settingsMode === "raw") {
+      if (file === "config") return editConfig !== rawConfig || editHubConfig !== rawHubConfig;
+      return file === "providers" ? editProviders !== rawProviders : editMcp !== rawMcp;
+    }
+    if (file === "config") {
+      return (
+        Object.keys(diffConfigFields(baselineConfigFields, $state.snapshot(configFields))).length >
+        0
+      );
+    }
+    if (file === "providers") {
+      const changes = diffProviders(
+        baselineProviderEntries,
+        $state.snapshot(providerEntries),
+        baselineModelAssignments,
+        $state.snapshot(modelAssignments),
+      );
+      return Object.keys(changes).length > 0;
+    }
+    return Object.keys(diffMcpServers(baselineMcpServers, $state.snapshot(mcpServers))).length > 0;
+  }
+
+  /**
+   * Listen for one file changing. A restore is the user's own request, so it
+   * replaces what the page shows. Any other change waits while the page holds
+   * unsaved edits to that file, so typing isn't lost; the coordinator checks
+   * those edits against the file when they are saved.
+   */
+  function whenChanged(
+    file: "config" | "providers" | "mcp",
+    reload: () => Promise<void>,
+  ): (change: ConfigChange) => void {
+    return (change) => {
+      if (change.source === SELF || !initialized) return;
+      if (change.cause !== "restore" && hasUnsavedEdits(file)) return;
+      void reload();
+    };
+  }
+
+  /** Follow the files this scope shows. Returns a function that stops. */
+  function followFileChanges(): () => void {
+    if (isHub) {
+      return configCoordinator.subscribe(HUB_CONFIG_FILE, whenChanged("config", reloadConfigFile));
+    }
+    if (agent === null) return () => {};
+    const stops = [
+      configCoordinator.subscribe(
+        agentConfigFile(agent, "config"),
+        whenChanged("config", reloadConfigFile),
+      ),
+      // The agent's form shows a few hub values too.
+      configCoordinator.subscribe(HUB_CONFIG_FILE, whenChanged("config", reloadConfigFile)),
+      configCoordinator.subscribe(
+        agentConfigFile(agent, "providers"),
+        whenChanged("providers", reloadProvidersFile),
+      ),
+      configCoordinator.subscribe(agentConfigFile(agent, "mcp"), whenChanged("mcp", reloadMcpFile)),
+    ];
+    return () => {
+      for (const stop of stops) stop();
+    };
   }
 
   // ── Mode switching ────────────────────────────────────────────────
@@ -337,7 +430,7 @@
     statusMsg = "";
     statusKind = "";
     try {
-      await fetchScopeFiles();
+      await fetchScopeFiles(true);
 
       if (settingsMode === "raw") {
         editConfig = rawConfig;
@@ -464,55 +557,92 @@
     }
   }
 
+  // ── Saving through the coordinator ────────────────────────────────
+
+  /** Names a file in the page's messages. */
+  function describeFile(file: ConfigFile): string {
+    return file.kind === "hub" ? "the hub's config.toml" : configFileName(file);
+  }
+
   /**
-   * Raw mode: PUT the whole text the user typed, unchanged from before.
+   * This page keeps its own changes when a file changed on disk under them,
+   * and says what it replaced.
+   */
+  function keepMine(conflict: ConfigConflict): Promise<ConfigChoice> {
+    const where = conflict.keys.length > 0 ? ` to ${conflict.keys.join(", ")}` : "";
+    toast.info(`Saving replaced changes made elsewhere${where} in ${describeFile(conflict.file)}.`);
+    return Promise.resolve("keep-mine");
+  }
+
+  /** Save `edit` to a file through the coordinator, against the text this page last loaded or saved. */
+  async function saveFile(
+    file: ConfigFile,
+    baseline: string,
+    edit: ConfigEdit,
+  ): Promise<ConfigSaved> {
+    const outcome = await configCoordinator.save(file, {
+      baseline,
+      edit,
+      choose: keepMine,
+      source: SELF,
+    });
+    // `keepMine` never asks for the file on disk, so the coordinator always writes.
+    if (outcome.kind === "used-disk") {
+      throw new Error(`${describeFile(file)} was left as it is on disk instead of being saved`);
+    }
+    return outcome;
+  }
+
+  /**
+   * Raw mode: PUT the whole text the user typed, for each file they edited.
    *
    * The hub's `config.toml`, the agent's `config.toml` and `providers.toml`,
    * and `mcp.json` all always save, even when invalid — the reload that picks each one up keeps the
    * gateway running on its current config/workspace state and reports a
-   * diagnostic instead of losing the edit.
+   * diagnostic instead of losing the edit. A file the user didn't edit is
+   * left alone: writing this page's older copy of it would put it over any
+   * change made to that file elsewhere.
    */
   async function autoSaveRaw(): Promise<void> {
-    const cfgToml = editConfig;
-    const hubToml = editHubConfig;
-    const provToml = editProviders;
-    const mcpJson = editMcp;
+    const diagnostics = { ...rawDiagnostics };
 
     if (isHub) {
-      const hubResult = await putHubConfigRaw(hubToml);
-      rawHubConfig = hubToml;
-      rawDiagnostics = { ...rawDiagnostics, hub: hubResult.diagnostics ?? [] };
-      lastSavedSnapshot = currentSnapshot();
-      showStatus(
-        (hubResult.diagnostics?.length ?? 0) > 0 ? "Saved — see the problems noted below" : "Saved",
-        "success",
-      );
-      return;
+      const hubToml = editHubConfig;
+      if (hubToml !== rawHubConfig) {
+        const saved = await saveFile(HUB_CONFIG_FILE, rawHubConfig, { text: hubToml });
+        rawHubConfig = hubToml;
+        diagnostics.hub = saved.result.diagnostics ?? [];
+      }
+    } else {
+      // The agent's page never rewrites the hub's config.
+      const name = scopeAgent();
+      const provToml = editProviders;
+      if (provToml !== rawProviders) {
+        const saved = await saveFile(agentConfigFile(name, "providers"), rawProviders, {
+          text: provToml,
+        });
+        rawProviders = provToml;
+        diagnostics.providers = saved.result.diagnostics ?? [];
+      }
+      const cfgToml = editConfig;
+      if (cfgToml !== rawConfig) {
+        const saved = await saveFile(agentConfigFile(name, "config"), rawConfig, {
+          text: cfgToml,
+        });
+        rawConfig = cfgToml;
+        diagnostics.config = saved.result.diagnostics ?? [];
+      }
+      const mcpJson = editMcp;
+      if (mcpJson !== rawMcp) {
+        const saved = await saveFile(agentConfigFile(name, "mcp"), rawMcp, { text: mcpJson });
+        rawMcp = mcpJson;
+        diagnostics.mcp = saved.result.diagnostics ?? [];
+      }
     }
 
-    // The agent's page never rewrites the hub's config.
-    const name = scopeAgent();
-    const provResult = await putProvidersRaw(name, provToml);
-    rawProviders = provToml;
-
-    const cfgResult = await putConfigRaw(name, cfgToml);
-    rawConfig = cfgToml;
-
-    const mcpResult = await putMcpRaw(name, mcpJson);
-    rawMcp = mcpJson;
-
-    rawDiagnostics = {
-      config: cfgResult.diagnostics ?? [],
-      hub: rawDiagnostics.hub,
-      providers: provResult.diagnostics ?? [],
-      mcp: mcpResult.diagnostics ?? [],
-    };
-
+    rawDiagnostics = diagnostics;
     lastSavedSnapshot = currentSnapshot();
-    const hadProblems =
-      (cfgResult.diagnostics?.length ?? 0) > 0 ||
-      (provResult.diagnostics?.length ?? 0) > 0 ||
-      (mcpResult.diagnostics?.length ?? 0) > 0;
+    const hadProblems = Object.values(diagnostics).some((list) => list.length > 0);
     showStatus(hadProblems ? "Saved — see the problems noted below" : "Saved", "success");
   }
 
@@ -521,16 +651,17 @@
     hubDiff: Record<string, unknown>,
     currentConfig: ConfigFields,
   ): Promise<void> {
-    const changed = Object.keys(hubDiff).length > 0;
-    const result: ValidateResponse = changed ? await patchHubConfig(hubDiff) : { valid: true };
+    const saved = await saveFile(HUB_CONFIG_FILE, rawHubConfig, { patch: hubDiff });
     statusMsg = "";
     statusKind = "";
-    if (!result.valid) {
-      toast.error(`Failed to save hub config.toml: ${result.error ?? "unknown error"}.`);
+    if (!saved.result.valid) {
+      toast.error(`Failed to save hub config.toml: ${saved.result.error ?? "unknown error"}.`);
       return;
     }
     baselineConfigFields = currentConfig;
-    if (changed) pendingSave.recordWrite("hub/config.toml", result.checkpoint_id ?? null);
+    if (saved.raw !== null) rawHubConfig = saved.raw;
+    if (saved.written)
+      pendingSave.recordWrite("hub/config.toml", saved.result.checkpoint_id ?? null);
     lastSavedSnapshot = currentSnapshot();
     showStatus("Saved", "success");
   }
@@ -575,44 +706,72 @@
     const saved: string[] = [];
     const failed: { file: string; error: string }[] = [];
 
+    /**
+     * Patch one file. `true` when the file now has what the form holds;
+     * otherwise the reason is in `failed`. `recorded` is the file's name in
+     * the pending-save tracker.
+     */
+    const patchFile = async (
+      file: ConfigFile,
+      baseline: string,
+      patch: Record<string, unknown>,
+      recorded: string,
+      setRaw: (raw: string) => void,
+    ): Promise<boolean> => {
+      const label = configFileName(file);
+      const result = await saveFile(file, baseline, { patch });
+      if (!result.result.valid) {
+        failed.push({ file: label, error: result.result.error ?? "unknown error" });
+        return false;
+      }
+      if (result.raw !== null) setRaw(result.raw);
+      if (result.written) {
+        saved.push(label);
+        pendingSave.recordWrite(recorded, result.result.checkpoint_id ?? null);
+      }
+      return true;
+    };
+
     const name = scopeAgent();
-    const provResult = await patchProviders(name, providersDiff);
-    if (provResult.valid) {
+    const providersSaved = await patchFile(
+      agentConfigFile(name, "providers"),
+      rawProviders,
+      providersDiff,
+      "providers.toml",
+      (raw) => {
+        rawProviders = raw;
+      },
+    );
+    if (providersSaved) {
       baselineProviderEntries = currentProviders;
       baselineModelAssignments = currentModels;
-      if (Object.keys(providersDiff).length > 0) {
-        saved.push("providers.toml");
-        pendingSave.recordWrite("providers.toml", provResult.checkpoint_id ?? null);
-      }
-    } else {
-      failed.push({ file: "providers.toml", error: provResult.error ?? "unknown error" });
     }
 
     // config.toml validation reads providers.toml from disk, so only
     // attempt it once providers.toml is in the state config expects.
-    if (provResult.valid) {
-      const cfgResult = await patchConfig(name, configDiff);
-      if (cfgResult.valid) {
-        baselineConfigFields = currentConfig;
-        if (Object.keys(configDiff).length > 0) {
-          saved.push("config.toml");
-          pendingSave.recordWrite("config.toml", cfgResult.checkpoint_id ?? null);
-        }
-      } else {
-        failed.push({ file: "config.toml", error: cfgResult.error ?? "unknown error" });
-      }
+    if (providersSaved) {
+      const configSaved = await patchFile(
+        agentConfigFile(name, "config"),
+        rawConfig,
+        configDiff,
+        "config.toml",
+        (raw) => {
+          rawConfig = raw;
+        },
+      );
+      if (configSaved) baselineConfigFields = currentConfig;
     }
 
-    const mcpResult = await patchMcp(name, mcpDiff);
-    if (mcpResult.valid) {
-      baselineMcpServers = currentMcp;
-      if (Object.keys(mcpDiff).length > 0) {
-        saved.push("mcp.json");
-        pendingSave.recordWrite("config/mcp.json", mcpResult.checkpoint_id ?? null);
-      }
-    } else {
-      failed.push({ file: "mcp.json", error: mcpResult.error ?? "unknown error" });
-    }
+    const mcpSaved = await patchFile(
+      agentConfigFile(name, "mcp"),
+      rawMcp,
+      mcpDiff,
+      "config/mcp.json",
+      (raw) => {
+        rawMcp = raw;
+      },
+    );
+    if (mcpSaved) baselineMcpServers = currentMcp;
 
     statusMsg = "";
     statusKind = "";
