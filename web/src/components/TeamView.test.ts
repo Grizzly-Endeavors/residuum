@@ -81,7 +81,7 @@ afterEach(() => {
 });
 
 function row(name: string): HTMLElement {
-  const link = screen.getByRole("button", { name });
+  const link = screen.getByRole("button", { name: new RegExp(`^${name}$`) });
   const li = link.closest("li");
   if (!li) throw new Error(`no row for ${name}`);
   return li;
@@ -139,10 +139,36 @@ describe("TeamView agent list", () => {
     expect(failed.button("Restart")).toBeEnabled();
   });
 
+  it("says why a lifecycle button is unavailable, and gives every control the agent's name", () => {
+    render(TeamView, { onClose: () => {} });
+    const start = within(row("atlas")).button("Start");
+    expect(start).toBeDisabled();
+    expect(start).toHaveAttribute("title", "atlas is already running");
+    expect(start).toHaveAccessibleName("Start atlas");
+    const stop = within(row("drifter")).button("Stop");
+    expect(stop).toBeDisabled();
+    expect(stop).toHaveAttribute("title", "drifter is not running");
+    expect(within(row("atlas")).button("Stop")).not.toHaveAttribute("title");
+    expect(screen.getByLabelText("A2A card for atlas")).toBe(visibilityOf("atlas"));
+    expect(screen.getByLabelText("Start automatically for drifter")).not.toBeChecked();
+  });
+
+  it("keeps the whole row disabled and marks the running action while it is pending", async () => {
+    mockFetch(() => new Promise<Response>(() => {}));
+    render(TeamView, { onClose: () => {} });
+    await fireEvent.click(within(row("atlas")).button("Stop"));
+    const pending = within(row("atlas")).button("Stopping");
+    expect(pending).toBeDisabled();
+    expect(pending).toHaveAccessibleName("Stopping atlas");
+    expect(pending).not.toHaveAttribute("title");
+    expect(row("atlas")).toHaveAttribute("aria-busy", "true");
+    expect(within(row("atlas")).button("Delete")).toBeDisabled();
+  });
+
   it("opens an agent from its name", async () => {
     const open = vi.spyOn(router, "openAgent").mockImplementation(() => {});
     render(TeamView, { onClose: () => {} });
-    await fireEvent.click(screen.getByRole("button", { name: "atlas" }));
+    await fireEvent.click(screen.getByRole("button", { name: /^atlas$/ }));
     expect(open).toHaveBeenCalledWith("atlas");
   });
 });
@@ -294,7 +320,7 @@ describe("TeamView delete", () => {
     render(TeamView, { onClose: () => {} });
     await fireEvent.click(screen.getByRole("button", { name: "Delete drifter" }));
     await fireEvent.click(screen.getByRole("button", { name: "Delete agent" }));
-    expect(await screen.findByRole("status")).toHaveTextContent("ckpt-9");
+    expect((await screen.findByText("ckpt-9")).closest("[role=status]")).toBeTruthy();
     expect(calls).toEqual([{ method: "DELETE", url: "/api/hub/agents/drifter", body: undefined }]);
     expect(screen.queryByRole("button", { name: "Delete drifter" })).toBeNull();
   });
@@ -306,7 +332,7 @@ describe("TeamView delete", () => {
     render(TeamView, { onClose: () => {} });
     await fireEvent.click(screen.getByRole("button", { name: "Delete drifter" }));
     await fireEvent.click(screen.getByRole("button", { name: "Delete agent" }));
-    expect(await screen.findByRole("status")).toHaveTextContent("No checkpoint was taken");
+    expect(await screen.findByText(/No checkpoint was taken/)).toBeTruthy();
   });
 });
 

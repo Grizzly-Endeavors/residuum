@@ -21,6 +21,7 @@
     id="welcome-name"
     type="text"
     bind:value={wizardState.userName}
+    autocomplete="name"
     placeholder="What should your agent call you?"
     aria-describedby="welcome-name-hint"
   />
@@ -37,6 +38,7 @@
     bind:value={wizardState.agentName}
     placeholder="assistant"
     autocapitalize="off"
+    autocomplete="off"
     spellcheck="false"
     aria-invalid={agentNameError !== null}
     aria-describedby="welcome-agent-name-hint"
@@ -59,6 +61,9 @@
     type="text"
     bind:value={wizardState.timezone}
     placeholder="America/New_York"
+    autocapitalize="off"
+    autocomplete="off"
+    spellcheck="false"
   />
 </div>
 

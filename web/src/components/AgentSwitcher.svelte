@@ -25,6 +25,12 @@
     return [...listed, unlisted];
   });
 
+  // Team pages and hub settings belong to the whole install, so the Team chip
+  // is the current place there and no single agent is.
+  let onTeamSide = $derived(
+    router.team !== null || router.workbench !== null || router.settings?.scope === "hub",
+  );
+
   // A failed agent's last error, shown while its chip is hovered or focused.
   let tipFor = $state<string | null>(null);
   let tipText = $derived.by(() => {
@@ -77,7 +83,7 @@
   <ul class="switcher-list">
     {#each entries as agent (agent.name)}
       {@const activity = hub.activityOf(agent.name)}
-      {@const current = agent.name === router.agent}
+      {@const current = !onTeamSide && agent.name === router.agent}
       <li>
         <button
           type="button"
@@ -114,20 +120,18 @@
         </button>
       </li>
     {/each}
-    <li class="switcher-end">
-      <button
-        type="button"
-        class="switcher-chip switcher-team"
-        class:current={router.team === "overview"}
-        aria-current={router.team === "overview" ? "page" : undefined}
-        onclick={() => {
-          router.openTeam("overview");
-        }}
-      >
-        <span class="chip-name">Team</span>
-      </button>
-    </li>
   </ul>
+  <button
+    type="button"
+    class="switcher-chip switcher-team"
+    class:current={onTeamSide}
+    aria-current={onTeamSide ? "page" : undefined}
+    onclick={() => {
+      router.openTeam("overview");
+    }}
+  >
+    <span class="chip-name">Team</span>
+  </button>
   {#if hub.transport.status === "disconnected"}
     <p class="switcher-offline" role="status">
       Agent states may be out of date while the connection is down.
@@ -171,8 +175,8 @@
     flex: none;
   }
 
-  .switcher-end {
-    margin-left: auto;
+  .switcher-team {
+    flex: none;
   }
 
   .switcher-chip {
@@ -305,6 +309,16 @@
   @media (max-width: 600px) {
     .agent-switcher {
       padding: 0 var(--s-3);
+      min-height: 48px;
+    }
+
+    .switcher-chip {
+      min-height: 40px;
+    }
+
+    /* The row scrolls; fade its right edge so a clipped chip reads as "more". */
+    .switcher-list {
+      mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
     }
 
     .switcher-offline {
