@@ -770,27 +770,27 @@ W19, then W20 and W21 together.
 
 - **Modules:**
   - the SDK
-  - page's-agent injection in the artifacts listener, plus the durable last-writer record in the team write coordinator if one doesn't exist
   - the mock artifacts listener
   - the bundled workbench skill and its API reference
   - `workbench.md`
 - **Preconditions:** W02b; W11b, W12b and W12c merged.
 - **Shape when done:**
-  - Design §9.10 in full: every SDK member's behavior, `agent(name)`, the page's agent, live reload, removed host messages, and the rewritten docs.
+  - Design §9.10 in full: every SDK member's behavior, `agent(name)`, no implicit agent, live reload, removed host messages, and the rewritten docs.
   - Existing pages that name their agent keep working opened standalone.
 - **Verification:**
   - End-to-end, opening artifact URLs directly on the mock artifacts origin:
-    - `fetch` to hub, team and agent paths
-    - an unscoped agent path using the page's agent
-    - a 409 when there is none
-    - `on` receiving the page's agent's turn frames
-    - `watch` on team and agent prefixes
+    - `fetch` to hub, team and named-agent paths
+    - an unscoped agent path answering 400 with the guidance error
+    - `agent(name).on` receiving that agent's turn frames
+    - `watch` on a team prefix
+    - `agent(name).watch` on an agent prefix
+    - a top-level `watch` of a non-team prefix throwing
     - `sessions.start` on a non-page agent receiving its frames from the first one (#292)
     - `resync` after a simulated lag
     - live reload
     - a page-registered `artifact_updated` handler suppressing the reload
     - a block-list route answering 403
-  - Unit tests for the page's-agent selection order.
+  - Unit tests for unscoped-path mapping and the guidance errors.
 
 ### W33 — Settings model (M)
 

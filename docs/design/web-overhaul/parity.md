@@ -97,9 +97,9 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [ ] In-flight model call count and Cancel calls — **Dropped:** a page manages its own calls
 - [ ] Live reload on agent edits — **Changed:** the SDK reloads the page itself, unless the page handles `artifact_updated`
 - [ ] Unknown artifact — **Fix:** the route redirects to the list with a toast
-- [ ] SDK: `fetch`, `ask`, `on`, `watch`, `state.get`/`set`, `sessions.start` with handle `on`/`send`/`stop`, connection events, `features`, `embedded`, `artifact`, `version` — kept — **Changed:** direct access from the page's own origin; defaults follow the page's agent; `agent(name)` added; `ready` and Esc forwarding removed; **Fix:** session frames arrive for sessions on any agent (#292); no reply crosses documents, because the bridge is gone (#307)
-- [ ] Unscoped fetch paths: hub prefixes to the hub, `/api/workbench/` to team, agent paths to the page's agent (409 with a clear error when it has none)
-- [ ] `watch` of agent-workspace and `team/` prefixes, resync on reconnect
+- [ ] SDK: `fetch`, `ask`, `on`, `watch`, `state.get`/`set`, `sessions.start` with handle `on`/`send`/`stop`, connection events, `features`, `embedded`, `artifact`, `version` — kept — **Changed:** direct access from the page's own origin; no implicit agent (agent-specific calls name their agent, with `agent(name)` added); `ready` and Esc forwarding removed; **Fix:** session frames arrive for sessions on any agent (#292); no reply crosses documents, because the bridge is gone (#307)
+- [ ] Unscoped fetch paths: hub prefixes to the hub, `/api/workbench/` to team — **Changed:** agent paths must name the agent; one that doesn't gets a 400 with a clear error
+- [ ] `watch` of `team/` prefixes, resync on reconnect — **Changed:** agent-workspace watches go through `agent(name).watch`
 - [ ] Request limits — **Changed:** artifacts can call everything the UI can, except shutdown, stop-all, updates and setup, enforced where the artifacts origin forwards the API
 - [ ] Artifacts origin and relay workbench host — **Changed:** they also forward the API and sockets (relay-project change)
 
