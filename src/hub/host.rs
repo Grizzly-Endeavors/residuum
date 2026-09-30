@@ -35,7 +35,7 @@ use crate::util::FatalError;
 use crate::workspace::layout::WorkspaceLayout;
 
 use super::activity::ActivityTracker;
-use super::directory::AgentDirectory;
+use super::directory::{AgentDirectory, AgentFiles};
 use super::services::HubServices;
 use super::team_embedding::EmbeddingSource;
 use super::types::{
@@ -1676,6 +1676,14 @@ impl AgentDirectory for AgentHost {
     fn agent_file_router(&self, name: &str) -> Result<Router, LifecycleError> {
         let slot = self.slot(name)?;
         Ok(self.file_router_for(&slot))
+    }
+
+    fn agent_files(&self, name: &str) -> Result<AgentFiles, LifecycleError> {
+        let slot = self.slot(name)?;
+        Ok(AgentFiles {
+            dir: slot.dir.clone(),
+            timezone: self.hub_config().timezone,
+        })
     }
 
     fn agent_a2a_router(&self, name: &str) -> Result<Router, LifecycleError> {

@@ -17,10 +17,12 @@ mod ts_export {
         ActionInfo, ArtifactSummary, ClientMessage, PulseInfo, ServerMessage, SessionListResponse,
         WorkbenchInfo,
     };
+    use residuum::hub::inbox::{HubInboxItem, HubInboxPage, HubInboxUnread, InboxStatus};
     use residuum::hub::types::{
         A2aVisibility, AgentActivity, AgentLastError, AgentPatch, AgentState, AgentSummary,
         CreateAgentRequest, DeleteOutcome, DeletedAgent, RestoreAgentRequest,
     };
+    use residuum::inbox::InboxAttachment;
     use residuum::inference::ImageData;
 
     #[test]
@@ -76,6 +78,17 @@ mod ts_export {
         DeletedAgent::export_all(&cfg).unwrap();
         RestoreAgentRequest::export_all(&cfg).unwrap();
         AgentActivity::export_all(&cfg).unwrap();
+
+        // The cross-agent inbox: `HubInboxPage` (with its `HubInboxItem` and
+        // `InboxAttachment` items) answers `GET /api/hub/inbox`,
+        // `HubInboxUnread` answers `GET /api/hub/inbox/unread`, and
+        // `HubInboxItem` is the `item` of the per-item routes. `InboxStatus`
+        // is the `status` query parameter.
+        HubInboxPage::export_all(&cfg).unwrap();
+        HubInboxItem::export_all(&cfg).unwrap();
+        InboxAttachment::export_all(&cfg).unwrap();
+        HubInboxUnread::export_all(&cfg).unwrap();
+        InboxStatus::export_all(&cfg).unwrap();
 
         // Verify the generated files exist
         assert!(
