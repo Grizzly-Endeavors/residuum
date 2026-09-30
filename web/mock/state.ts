@@ -44,6 +44,8 @@ export interface MockState {
   /** File path to its content. */
   workspaceFileContents: Record<string, string>;
   inboxItems: UserInboxItem[];
+  /** The items the user archived, which `restore` brings back to `inboxItems`. */
+  inboxArchive: UserInboxItem[];
   /**
    * Whether the agent has a conversation: the sample history and episodes
    * sit behind `extraRecent`. An agent has one once it has run.
@@ -222,6 +224,7 @@ export function createState(agentName: string, hasRun = true): MockState {
     broadcast: () => {},
     compressedAt: null,
     inboxItems: [],
+    inboxArchive: [],
     hasConversation: false,
   };
   if (hasRun) seedAgentData(state);

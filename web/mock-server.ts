@@ -204,33 +204,6 @@ async function handleRemaining({
     return true;
   }
 
-  // ── Inbox ─────────────────────────────────────────────────────────
-  if (path === "/api/inbox" && method === "GET") {
-    json(res, 200, state.inboxItems);
-    return true;
-  }
-
-  const readMatch = path.match(/^\/api\/inbox\/(.+)\/read$/);
-  if (readMatch && method === "PUT") {
-    const id = decodeURIComponent(readMatch[1]);
-    const item = state.inboxItems.find((i) => i.id === id);
-    if (item) {
-      item.read = true;
-      json(res, 200, item);
-    } else {
-      json(res, 404, { error: "not found" });
-    }
-    return true;
-  }
-
-  const archiveMatch = path.match(/^\/api\/inbox\/(.+)\/archive$/);
-  if (archiveMatch && method === "POST") {
-    const id = decodeURIComponent(archiveMatch[1]);
-    state.inboxItems = state.inboxItems.filter((i) => i.id !== id);
-    json(res, 200, {});
-    return true;
-  }
-
   return false;
 }
 

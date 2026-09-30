@@ -1,5 +1,6 @@
 import { chatRoutes } from "./chat";
 import { configRoutes } from "./config";
+import { inboxRoutes } from "./inbox";
 import { lifecycleRoutes } from "./lifecycle";
 import type { Route } from "./routes";
 import { sessionRoutes } from "./sessions";
@@ -11,5 +12,6 @@ export const apiRoutes: readonly Route[] = [
   ...sessionRoutes,
   ...configRoutes,
   ...chatRoutes,
+  ...inboxRoutes,
   ...workspaceRoutes,
 ];
