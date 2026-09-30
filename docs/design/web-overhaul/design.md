@@ -929,9 +929,9 @@ Artifacts have never shipped in a release, so the SDK is shaped for standalone p
 |---|---|---|
 | Unit | Node | Stores, routing, formatters, the settings model, the action registry, activity-line labeling. |
 | Component | jsdom and Testing Library | Every primitive, and every surface's empty, loading, error, populated and live states. Shared fixtures build hub, agent and feed state without a socket. |
-| End-to-end | Playwright against the mock server | Navigation and flows in two Chromium projects, desktop 1440×900 and phone 390×844 with touch, both in CI. A WebKit phone project runs locally only. |
+| End-to-end | Playwright against the mock server | Navigation and flows in two Chromium projects, desktop 1440×900 and phone 390×844 with touch. A WebKit phone project is also available. |
 | Accessibility | axe-core inside end-to-end | Every place and overlay. Serious and critical violations fail. |
-| Visual | Playwright screenshots | A small set of baselines per surface at both sizes, with frozen time and animation and masked dynamic regions. They run inside the official Playwright container image, pinned to the Playwright version, so rendering matches wherever they run. `just web-e2e-update` regenerates baselines in that container. If the CI runner can't run the container, CI skips visual comparisons; the orchestrator runs them locally before each integration merge, and a follow-up issue tracks enabling them in CI. |
+| Visual | Playwright screenshots | A small set of baselines per surface at both sizes, with frozen time and animation and masked dynamic regions. They run inside the official Playwright container image, pinned to the Playwright version, so rendering matches wherever they run. `just web-e2e-update` regenerates baselines in that container. |
 
 **Mock server as a harness.**
 - Split into modules; type-checked, linted and formatted like the app.
@@ -956,10 +956,11 @@ Artifacts have never shipped in a release, so the SDK is shaped for standalone p
 - A style linter checks global and component styles for token use. Legacy styles are on an ignore list that must be empty at cutover.
 - Rune store modules get the same strict TypeScript lint rules as other modules.
 - `svelte-check` fails on warnings. The one existing suppressed accessibility warning (labels without an associated control) stays suppressed until cutover removes the suppression.
-- **Generated types.** The Rust job in CI regenerates the TypeScript types and fails on any difference.
-- **Pre-commit** runs on any change under the web app, including the mock server and config: format, lint, type check, unit and component tests. End-to-end, accessibility and visual tests run in CI, and on demand through `just web-e2e`.
-- Coverage is reported in CI, with no threshold.
-- The initial-route bundle size is reported in CI. At cutover a budget is set from the measured size and enforced from then on.
+**Where checks run.** The repository has a single maintainer, so pull requests don't run CI. The pre-commit hook is the per-change gate, and the quality-checks workflow runs everything at release.
+- **Pre-commit:** format, lint, type check, unit and component tests, on any change under the web app, including the mock server and config. For commits that touch Rust, it also runs the generated-types check, which regenerates the TypeScript types and fails on any difference.
+- **End-to-end, accessibility and visual tests** run locally through `just web-e2e`: by each frontend unit before it reports, and by the orchestrator before each merge. The release workflow runs them too.
+- **Coverage** is reported by `just web-coverage` and at release, with no threshold.
+- **The initial-route bundle size** is reported by a `just` recipe and at release. At cutover a budget is set from the measured size, and enforced from then on by the same recipe, which is part of the pre-merge checks.
 
 ### 11. PWA
 
@@ -1197,7 +1198,7 @@ Choices the owner has approved, recorded here with where each applies:
    - keys and devices in untracked hub files
    - a `[push] contact` hub setting for the VAPID contact
    - no push to a device whose app is open and focused, reported through presence on the hub socket
-8. **Visual screenshot tests** are in CI, inside a pinned Playwright container. CI end-to-end runs Chromium only (§10).
+8. **No CI on pull requests.** The pre-commit hook gates each change, the end-to-end, accessibility and visual suites run locally before each merge, and the full workflow runs at release. Visual tests run inside a pinned Playwright container (§10).
 9. **Backend units** merge to `main` directly; frontend units go to the integration branch.
 10. **The grain overlay and time-of-day vein intensity** are dropped (§1).
 11. **Modal overlays push history entries** so that Back closes them (§3).
