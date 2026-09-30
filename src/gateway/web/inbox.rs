@@ -396,6 +396,7 @@ mod tests {
             activity: crate::hub::activity::ActivityTracker::new(
                 "test-agent",
                 tokio::sync::broadcast::channel(4).0,
+                crate::hub::agent_watch::AgentChangeFeed::new(),
             ),
         }
     }
