@@ -147,6 +147,51 @@ impl Fixture {
         (live, array_at(&value, "completed").len())
     }
 
+    /// Send `name` a request on a repair route that logs, an unauthenticated
+    /// webhook delivery, and an A2A message. Their handlers, and the tasks
+    /// they spawn, are outside the agent's running router.
+    async fn exercise_repair_webhook_and_a2a_routes(&self, name: &str) {
+        let rejected = self
+            .http
+            .patch(self.url(&format!("/api/agents/{name}/config/patch")))
+            .json(&json!({ "webhooks": { "$inline": {}, "extra": 1 } }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(rejected.status().as_u16(), 400);
+
+        let webhook = self
+            .http
+            .post(self.url(&format!("/webhook/{name}/deploy")))
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(webhook.status().as_u16(), 401);
+
+        let message = a2a::SendMessageRequest {
+            message: a2a::Message::new(a2a::Role::User, vec![a2a::Part::text("hello over a2a")]),
+            configuration: None,
+            metadata: None,
+            tenant: None,
+        };
+        let router = self.host.agent_a2a_router(name).unwrap();
+        let request = axum::http::Request::post("/")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "SendMessage",
+                    "params": message,
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let response = tower::ServiceExt::oneshot(router, request).await.unwrap();
+        assert!(response.status().is_success(), "{}", response.status());
+    }
+
     fn state_of(&self, name: &str) -> AgentState {
         self.host.summary(name).unwrap().state
     }
@@ -787,12 +832,22 @@ fn agent_log_lines_scenario() {
         .unwrap();
     runtime.block_on(async {
         let hub = Fixture::new(&["atlas", "scout"], "").await;
+        std::fs::write(
+            hub.root
+                .path()
+                .join("scout")
+                .join("config")
+                .join("config.toml"),
+            "[webhooks.deploy]\nsecret = \"s3cret\"\n",
+        )
+        .unwrap();
         // Building the hub is the hub's own doing; what follows is the agents'.
         capture.events.lock().unwrap().clear();
 
         hub.host.start_autostart().await;
         hub.chat("scout", "hello").await;
         hub.chat("atlas", "hello").await;
+        hub.exercise_repair_webhook_and_a2a_routes("scout").await;
         hub.host.stop_all().await;
     });
 
@@ -825,6 +880,36 @@ fn agent_log_lines_scenario() {
             .into_iter()
             .collect()
     );
+}
+
+#[tokio::test]
+async fn a_user_edit_through_the_repair_routes_is_attributed_to_the_user() {
+    let hub = Fixture::new(&["scout"], "").await;
+    let wiki = hub.host.team_paths().wiki_dir();
+    std::fs::create_dir_all(&wiki).unwrap();
+    let note = wiki.join("note.md");
+    std::fs::write(&note, "as the agent read it").unwrap();
+    let agent_view = hub
+        .services
+        .team
+        .view_for_agent("scout", hub.root.path().join("scout"));
+    let seen = hub.services.team.stamp(&note).await.unwrap();
+
+    let saved = hub
+        .http
+        .put(hub.url("/api/agents/scout/workspace/file"))
+        .json(&json!({ "path": "team/wiki/note.md", "content": "edited by the user, longer" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(saved.status().as_u16(), 200);
+
+    let err = agent_view
+        .lock_unchanged(&note, Some(&seen))
+        .await
+        .err()
+        .expect("the agent's stale write conflicts with the user's edit");
+    assert!(err.contains("the user"), "{err}");
 }
 
 #[tokio::test]

@@ -11,6 +11,6 @@ pub(crate) use http::A2aServingDeps;
 pub(crate) use http::AdapterSenders;
 pub(crate) use http::build_agent_a2a;
 pub(crate) use run_loop::{
-    AgentCleanup, AgentControl, AgentExit, AgentStartInputs, agent_span, spawn_agent_loop,
-    start_agent,
+    AgentCleanup, AgentControl, AgentExit, AgentStartInputs, agent_span, agent_span_layer,
+    spawn_agent_loop, start_agent,
 };

@@ -251,7 +251,10 @@ pub(crate) async fn build_agent_a2a(
     })
     .await
     {
-        Ok(agent) => {
+        Ok(mut agent) => {
+            // Its handlers run under the hub's A2A listener, outside any agent
+            // span, so the router carries the span itself.
+            agent.router = super::agent_span_layer(&cfg.agent_name, agent.router);
             tracing::info!(
                 visibility = %cfg.a2a.visibility,
                 public_url = %agent.public_url,

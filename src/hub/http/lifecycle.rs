@@ -27,8 +27,7 @@ pub(super) struct LifecycleState {
     pub started_at: std::time::Instant,
 }
 
-/// The agent list, create, per-agent lifecycle, and status routes. Stopping
-/// every agent is returned separately so the caller can guard it.
+/// The agent list, create, per-agent lifecycle, stop-all, and status routes.
 pub(super) fn routes(state: LifecycleState) -> Router {
     Router::new()
         .route("/api/hub/agents", get(list_agents).post(create_agent))
@@ -39,15 +38,8 @@ pub(super) fn routes(state: LifecycleState) -> Router {
         .route("/api/hub/agents/{name}/start", post(start_agent))
         .route("/api/hub/agents/{name}/stop", post(stop_agent))
         .route("/api/hub/agents/{name}/restart", post(restart_agent))
-        .route("/api/hub/status", get(hub_status))
-        .with_state(state)
-}
-
-/// `POST /api/hub/stop-all`, guarded against remote use by the caller: it
-/// stops every agent and leaves the hub itself running.
-pub(super) fn stop_all_route(state: LifecycleState) -> Router {
-    Router::new()
         .route("/api/hub/stop-all", post(stop_all))
+        .route("/api/hub/status", get(hub_status))
         .with_state(state)
 }
 

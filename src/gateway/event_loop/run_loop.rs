@@ -246,8 +246,8 @@ pub(crate) async fn start_agent(inputs: AgentStartInputs) -> Result<StartedAgent
 
 /// Wrap `router` so every request it handles runs inside the agent's root
 /// span, giving handler logs and the tasks they spawn the `agent` field.
-fn agent_span_layer(name: &str, router: axum::Router) -> axum::Router {
-    let span = tracing::info_span!("agent", agent = %name);
+pub(crate) fn agent_span_layer(name: &str, router: axum::Router) -> axum::Router {
+    let span = agent_span(name);
     router.layer(axum::middleware::from_fn(
         move |request: axum::extract::Request, next: axum::middleware::Next| {
             let span = span.clone();

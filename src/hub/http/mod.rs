@@ -15,7 +15,7 @@
 //! - `/cloud/callback`, and the embedded web app for every other path.
 //!
 //! The cross-site guard covers the whole app. The remote-control guard covers
-//! hub shutdown, cloud disconnect, and stopping every agent.
+//! hub shutdown and cloud disconnect.
 
 mod dispatch;
 mod error;
@@ -42,7 +42,6 @@ pub use crate::gateway::web::{
 };
 pub use state::HubHttpState;
 
-use crate::gateway::remote_control_guard::reject_remote_shutdown_and_disconnect;
 use crate::gateway::web;
 use crate::hub::AgentDirectory;
 
@@ -61,25 +60,21 @@ pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Rout
         team_watch_health: hub.team_watch_health.clone(),
     };
 
-    let app =
-        Router::new()
-            .merge(lifecycle::routes(lifecycle_state.clone()))
-            .merge(lifecycle::stop_all_route(lifecycle_state).route_layer(
-                axum::middleware::from_fn(reject_remote_shutdown_and_disconnect),
-            ))
-            .merge(ws::routes(ws_state))
-            .merge(process::hub_config_routes(&hub))
-            .merge(process::cloud_routes(&hub))
-            .merge(process::update_routes(&hub))
-            .merge(process::tracing_routes(&hub))
-            .merge(process::checkpoint_routes(&hub))
-            .merge(process::team_routes(&hub))
-            .merge(dispatch::routes(directory))
-            .route("/api/sessions", post(sessions_need_an_agent))
-            .fallback(web::static_handler)
-            .layer(axum::middleware::from_fn(
-                crate::gateway::cross_site::reject_cross_site_requests,
-            ));
+    let app = Router::new()
+        .merge(lifecycle::routes(lifecycle_state))
+        .merge(ws::routes(ws_state))
+        .merge(process::hub_config_routes(&hub))
+        .merge(process::cloud_routes(&hub))
+        .merge(process::update_routes(&hub))
+        .merge(process::tracing_routes(&hub))
+        .merge(process::checkpoint_routes(&hub))
+        .merge(process::team_routes(&hub))
+        .merge(dispatch::routes(directory))
+        .route("/api/sessions", post(sessions_need_an_agent))
+        .fallback(web::static_handler)
+        .layer(axum::middleware::from_fn(
+            crate::gateway::cross_site::reject_cross_site_requests,
+        ));
     // The routers above hold their own clones of the handles they need.
     drop(hub);
     app

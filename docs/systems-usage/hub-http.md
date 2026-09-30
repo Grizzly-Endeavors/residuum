@@ -20,7 +20,7 @@ The hub serves everything the backend offers from one router over its `AgentDire
 | `DELETE /api/hub/agents/{name}` | `{ "deleted": true, "checkpoint_id": ... }`. |
 | `POST /api/hub/agents/{name}/start`, `/stop`, `/restart` | The agent's new summary. |
 | `PATCH /api/hub/agents/{name}` | Sets `autostart` and/or `a2a_visibility` (at least one); the agent's new summary. |
-| `POST /api/hub/stop-all` | Stops every running or starting agent and leaves the hub running. `200` with `{ stopped, failed }` when all stopped, `500` with the same body when some did not. Refused over the tunnel (see [cloud-tunnel.md](cloud-tunnel.md)). |
+| `POST /api/hub/stop-all` | Stops every running or starting agent and leaves the hub running. `200` with `{ stopped, failed }` when all stopped, `500` with the same body when some did not. Reachable over the tunnel, since the hub keeps running and agents can be started again. |
 | `GET /api/hub/status` | `{ version, uptime_secs, tunnel, agents }`. `tunnel` has the shape of `GET /api/hub/cloud/status`; `agents` counts `starting`, `running`, `stopped`, and `failed` agents. |
 | `GET /api/hub/ws` | The hub WebSocket, below. |
 | `GET`/`PUT /api/hub/config/raw`, `PATCH /api/hub/config/patch`, `POST /api/hub/config/validate` | The hub's `config.toml`. |
@@ -69,7 +69,7 @@ A session runs on one agent, so an artifact names it (`residuum.sessions.start({
 ## Request guards
 
 - The **cross-site guard** covers every route: state-changing requests and WebSocket upgrades from another site are refused with `403` (see [workbench.md](workbench.md#security-model)).
-- The **remote-control guard** covers `POST /api/hub/shutdown`, `POST /api/hub/cloud/disconnect`, and `POST /api/hub/stop-all`: a request that arrived through the relay tunnel is refused with `403`.
+- The **remote-control guard** covers `POST /api/hub/shutdown` and `POST /api/hub/cloud/disconnect` (see [cloud-tunnel.md](cloud-tunnel.md)): a request that arrived through the relay tunnel is refused with `403`.
 
 ## Hub WebSocket
 
