@@ -1,11 +1,7 @@
 <script lang="ts">
-  import {
-    fetchCheckpointDiff,
-    fetchCheckpointFile,
-    fetchCheckpoints,
-    restoreCheckpoint,
-  } from "../lib/api";
+  import { fetchCheckpointDiff, fetchCheckpointFile, fetchCheckpoints } from "../lib/api";
   import { triggerLabel } from "../lib/checkpoints";
+  import { configCoordinator } from "../lib/config-coordinator";
   import { userErrorMessage } from "../lib/errors";
   import { relativeTime } from "../lib/time";
   import { toast } from "../lib/toast.svelte";
@@ -90,7 +86,7 @@
   async function handleRestore(id: string): Promise<void> {
     restoring = true;
     try {
-      const outcome = await restoreCheckpoint(agent, id, target.repo, target.path);
+      const outcome = await configCoordinator.restore(agent, id, target.repo, target.path);
       toast.success(`Restored ${path} (${outcome.restored_paths.length} path(s)).`);
       onRestored();
       await load();

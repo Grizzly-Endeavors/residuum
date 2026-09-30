@@ -8,7 +8,8 @@
 // `docs/systems-usage/checkpoints.md` — so undoing is always just restoring
 // that pre-action checkpoint.
 
-import { undoLastAction, type WorkspaceCheckpoint } from "./api";
+import type { WorkspaceCheckpoint } from "./api";
+import { configCoordinator } from "./config-coordinator";
 import { userErrorMessage } from "./errors";
 import { toast } from "./toast.svelte";
 import type { RepoKind } from "./types";
@@ -56,7 +57,7 @@ async function runUndo(
 ): Promise<void> {
   try {
     for (const each of Array.isArray(path) ? path : [path]) {
-      await undoLastAction(agent, checkpointId, repo, each);
+      await configCoordinator.restore(agent, checkpointId, repo, each);
     }
     toast.success("Restored.");
     await onRestored?.();
@@ -139,7 +140,7 @@ async function runRestoreTargets(
 ): Promise<void> {
   try {
     for (const target of targets) {
-      await undoLastAction(agent, target.checkpointId, target.repo, target.path);
+      await configCoordinator.restore(agent, target.checkpointId, target.repo, target.path);
     }
     toast.success("Restored.");
     await onRestored?.();

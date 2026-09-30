@@ -195,11 +195,6 @@ const AREAS: Record<string, Row[]> = {
       (a) => api.undoCheckpoint(a, "c1", "workspace"),
       "POST /api/agents/{agent}/checkpoints/c1/undo",
     ],
-    [
-      "undoLastAction",
-      (a) => api.undoLastAction(a, "c1", "workspace", "a.md"),
-      "POST /api/agents/{agent}/checkpoints/c1/restore",
-    ],
   ],
   sessions: [
     [

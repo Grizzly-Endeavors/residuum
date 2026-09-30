@@ -160,6 +160,8 @@ web/
 │       ├── format-usage.ts       # Elapsed time / token count formatting for the indicator and footer
 │       ├── format-tool-result.ts # Tool result display: JSON, file dumps, lists, errors, long-output collapse
 │       ├── settings-toml.ts      # Config parsing (for display) and diffing (for the patch endpoints)
+│       ├── config-coordinator.ts # Config write coordinator: serialized writes, re-read before a save, change notifications, checkpoint restore and undo
+│       ├── config-sync.ts        # Passes config changes made elsewhere (the agent's config/ watch, hub_config_reloaded) to the coordinator
 │       └── secrets.ts            # secret:/${ENV_VAR} reference detection for settings fields
 ├── mock/                     # Typed mock modules, checked like src/ (only used in dev:mock and preview:mock)
 │   ├── routes.ts             # Route tables: each endpoint is a method, a path pattern and a handler
@@ -247,6 +249,22 @@ The current views (the header menu, the Settings page, the workbench, the schedu
 No request reads the viewed agent. Every agent-scoped function in `lib/api.ts` takes the agent name as its first argument, and its cache key includes that agent. Components take the agent from their props (`Settings`, `Workspace`), stores hold the agent they were bound to (`ws.sessions`, `scheduled`, `userInbox`), and the chat's controls use `ws.agent`, the agent the WebSocket is bound to. The workbench bridge maps an artifact's unscoped paths onto `ws.agent` per request.
 
 Calls that serve more than one scope take `agent: string | null`: the workspace and checkpoint functions accept `null` for the team's files and the hub and team repositories, and `fetchProviderModels(null, …)` asks the hub before any agent exists. Asking for an agent's own resource with `null` throws `NoAgentSelectedError` before any request is made.
+
+### Config writes
+
+Every write to a config file goes through `configCoordinator` in `lib/config-coordinator.ts`: an agent's `config.toml`, `providers.toml` and `mcp.json`, and the hub's `config.toml`. Name a file with `agentConfigFile(agent, "providers")` or `HUB_CONFIG_FILE`. Never call a `patch…`, `put…` or checkpoint restore function from `lib/api.ts` for one of these files directly.
+
+| Call | Does |
+|------|------|
+| `save(file, { baseline, edit, choose, source? })` | Writes `edit`, either `{ patch }` (merged into the file) or `{ text }` (the whole file). `baseline` is the file's text as the caller's view last loaded or saved it. Resolves to `{ kind: "saved", result, written, raw }`, where `raw` is the file's text now and becomes the caller's next baseline, or `{ kind: "used-disk", raw }`. |
+| `edit(file, build, source?)` | Reads the file, builds a patch from its text and writes it with no other write to that file in between. For a control that changes one key from the current text, like the composer's model and thinking controls. |
+| `reload(file, source?)` | Reads the file from disk and tells subscribers to do the same. |
+| `restore(agent, id, repo, path)` and `undo(agent, id, repo)` | Restore or undo a checkpoint and tell subscribers about any config file it wrote. Every caller that restores from a checkpoint uses these, whatever it restores. |
+| `subscribe(file, listener)` | Hears every change to `file`: `{ file, cause, source }`, with `cause` one of `write`, `reload`, `restore` or `external`. A view that shows a config value subscribes and reads the file again. Pass `source` to a write and skip notifications that carry it to ignore your own. |
+
+Writes to one file are serialized. Before a save the coordinator reads the file again. When it differs from `baseline` and the keys that changed overlap the keys the edit sets (a raw `{ text }` save overlaps every change), it calls `choose` with `{ file, keys, disk }`. `choose` answers `"keep-mine"` ("Keep my changes"), which goes on with the write, or `"use-disk"` ("Use what's on disk"), which writes nothing and resolves `used-disk`. No lock is held while `choose` waits, so it can ask the user. When the changes don't overlap, a patch goes ahead and the other keys' changes survive.
+
+Changes made outside the coordinator reach its subscribers through `lib/config-sync.ts`, started in `main.ts`: `workspace_changed` frames under the bound agent's `config/` folder (a watch owner on the agent's socket, tied to that agent), and the hub's `hub_config_reloaded` frame. Another agent's files have no change feed, so the re-read before a save is the only protection for them.
 
 ## Code Quality
 

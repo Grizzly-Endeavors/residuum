@@ -218,11 +218,6 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
       (a) =>
         a.undoCheckpoint(agentForRepo(repo), "abc", repo),
   ),
-  undoLastAction: REPOS.map(
-    (repo): Sample =>
-      (a) =>
-        a.undoLastAction(agentForRepo(repo), "abc", repo, "a.md"),
-  ),
   fetchCloudStatus: [(a) => a.fetchCloudStatus()],
   disconnectCloud: [(a) => a.disconnectCloud()],
   fetchUpdateStatus: [(a) => a.fetchUpdateStatus()],

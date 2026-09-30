@@ -5,8 +5,6 @@
     fetchCheckpointFile,
     fetchCheckpointStats,
     fetchCheckpoints,
-    restoreCheckpoint,
-    undoCheckpoint,
   } from "../../lib/api";
   import {
     encryptedRestoreHint,
@@ -14,6 +12,7 @@
     isEncryptedConfigFile,
     triggerLabel,
   } from "../../lib/checkpoints";
+  import { configCoordinator } from "../../lib/config-coordinator";
   import { userErrorMessage } from "../../lib/errors";
   import { relativeTime } from "../../lib/time";
   import { toast } from "../../lib/toast.svelte";
@@ -141,7 +140,7 @@
     if (!selectedId) return;
     restoringPath = path;
     try {
-      const outcome = await restoreCheckpoint(agent, selectedId, repo, path);
+      const outcome = await configCoordinator.restore(agent, selectedId, repo, path);
       toast.success(`Restored ${path}.`);
       void loadStats();
       if (repo === "workspace" || repo === "team" || outcome.restored_paths.length > 0)
@@ -157,7 +156,7 @@
     if (!selectedId) return;
     undoing = true;
     try {
-      const outcome = await undoCheckpoint(agent, selectedId, repo);
+      const outcome = await configCoordinator.undo(agent, selectedId, repo);
       const parts = [`Reverted ${outcome.reverted_paths.length} path(s).`];
       if (outcome.skipped_paths.length > 0) {
         parts.push(`Skipped (changed again since): ${outcome.skipped_paths.join(", ")}.`);

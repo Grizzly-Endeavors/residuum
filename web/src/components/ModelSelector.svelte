@@ -1,11 +1,11 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { ws } from "../lib/ws.svelte";
-  import { fetchProvidersRaw, patchProviders } from "../lib/api";
+  import { fetchProvidersRaw } from "../lib/api";
+  import { agentConfigFile, configCoordinator } from "../lib/config-coordinator";
   import { requireAgent } from "../lib/paths";
   import { parseProvidersToml, modelRoleJson } from "../lib/settings-toml";
   import { fetchModels, type ModelEntry } from "../lib/models";
-  import { withConfigLock } from "../lib/config-lock";
   import { toast } from "../lib/toast.svelte";
   import { userErrorMessage } from "../lib/errors";
   import { clickOutside } from "../lib/actions/clickOutside";
@@ -30,19 +30,40 @@
     settled = true;
   });
 
+  // The chip shows what providers.toml says, so it follows the file: a change
+  // made in settings, by history restore, or outside this page reloads it.
+  $effect(() => {
+    const agent = ws.agent;
+    if (agent === null) return;
+    return configCoordinator.subscribe(agentConfigFile(agent, "providers"), () => {
+      void loadCurrentModel();
+    });
+  });
+
+  /** Sequences loads, so a slow one can't overwrite what a later one found. */
+  let loadCount = 0;
+
   async function loadCurrentModel(): Promise<void> {
+    const load = ++loadCount;
     try {
       const agent = requireAgent(ws.agent);
       const raw = await fetchProvidersRaw(agent);
       const parsed = parseProvidersToml(raw);
       const mainValue = parsed.models.main;
-      if (!mainValue) return;
+      if (load !== loadCount) return;
+      if (!mainValue) {
+        currentProvider = "";
+        currentModel = "";
+        models = [];
+        return;
+      }
 
       const slashIdx = mainValue.indexOf("/");
       if (slashIdx > 0) {
         currentProvider = mainValue.slice(0, slashIdx);
         currentModel = mainValue.slice(slashIdx + 1);
       } else {
+        currentProvider = "";
         currentModel = mainValue;
       }
 
@@ -50,7 +71,7 @@
       const provEntry = parsed.providers.find((p) => p.name === currentProvider);
       if (provEntry) {
         const result = await fetchModels(agent, provEntry.type, provEntry.apiKey, provEntry.url);
-        models = result.models;
+        if (load === loadCount) models = result.models;
       }
     } catch {
       // config not available yet
@@ -62,23 +83,23 @@
     saving = true;
     open = false;
 
-    await withConfigLock(async () => {
-      try {
-        const agent = requireAgent(ws.agent);
-        const raw = await fetchProvidersRaw(agent);
-        const parsed = parseProvidersToml(raw);
-        const newMain = currentProvider + "/" + modelId;
-        const value = modelRoleJson(newMain, parsed.models.overrides.main);
-        const result = await patchProviders(agent, { models: { main: value } });
-        if (!result.valid) throw new Error(result.error ?? "unknown error");
-        ws.send({ type: "reload" });
-        currentModel = modelId;
-      } catch (err: unknown) {
-        toast.error(userErrorMessage(err, { action: "Couldn't switch the model." }));
-      }
-    });
-
-    saving = false;
+    try {
+      const agent = requireAgent(ws.agent);
+      const provider = currentProvider;
+      // The model is chosen from the main provider's list, so it goes with
+      // that provider; the thinking level and temperature stay as they are.
+      const saved = await configCoordinator.edit(agentConfigFile(agent, "providers"), (raw) => {
+        const overrides = parseProvidersToml(raw).models.overrides.main;
+        return { models: { main: modelRoleJson(provider + "/" + modelId, overrides) } };
+      });
+      if (!saved.result.valid) throw new Error(saved.result.error ?? "unknown error");
+      ws.send({ type: "reload" });
+      currentModel = modelId;
+    } catch (err: unknown) {
+      toast.error(userErrorMessage(err, { action: "Couldn't switch the model." }));
+    } finally {
+      saving = false;
+    }
   }
 
   function toggle(): void {

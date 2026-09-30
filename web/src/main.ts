@@ -4,6 +4,7 @@ import "./styles/index.css";
 import "./styles/ui-base.css";
 import { mount } from "svelte";
 import App from "./App.svelte";
+import { startConfigSync } from "./lib/config-sync";
 
 // Time-aware vein intensity: vein glows are slightly brighter at night,
 // dimmer at midday. ±10% range, computed once on mount. The shift is too
@@ -26,5 +27,7 @@ if (__UI_GALLERY__ && window.location.pathname === UI_GALLERY_PATH) {
     mount(Gallery, { target }),
   );
 } else {
+  // Config changes made outside this page reach the views that show them.
+  startConfigSync();
   mount(App, { target });
 }

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { fetchProvidersRaw } from "../lib/api";
+  import { agentConfigFile, configCoordinator } from "../lib/config-coordinator";
   import { requireAgent } from "../lib/paths";
   import { ws } from "../lib/ws.svelte";
   import { parseProvidersToml } from "../lib/settings-toml";
@@ -37,21 +38,43 @@
 
   // `undefined` (the default) means "self-fetch the main model"; any other
   // value — including `null` — means the caller has already decided what
-  // to show and no fetch should happen. Checked once at mount: which mode
-  // a given `ChatFooter` instance runs in doesn't change over its lifetime.
-  onMount(async () => {
-    if (model !== undefined) return;
+  // to show and no fetch should happen. Which mode a given `ChatFooter`
+  // instance runs in doesn't change over its lifetime.
+  onMount(() => {
+    if (model === undefined) void loadModel();
+  });
+
+  // The label shows what providers.toml says, so it follows the file: a
+  // change made in settings, by history restore, or outside this page
+  // updates it.
+  $effect(() => {
+    const agent = ws.agent;
+    if (model !== undefined || agent === null) return;
+    return configCoordinator.subscribe(agentConfigFile(agent, "providers"), () => {
+      void loadModel();
+    });
+  });
+
+  /** Sequences loads, so a slow one can't overwrite what a later one found. */
+  let loadCount = 0;
+
+  async function loadModel(): Promise<void> {
+    const load = ++loadCount;
     try {
       const raw = await fetchProvidersRaw(requireAgent(ws.agent));
       const main = parseProvidersToml(raw).models.main;
-      if (!main) return;
+      if (load !== loadCount) return;
+      if (!main) {
+        fetchedModel = null;
+        return;
+      }
       const slashIdx = main.indexOf("/");
       fetchedModel = slashIdx > 0 ? main.slice(slashIdx + 1) : main;
     } catch {
       // Quiet degradation, by design — this is a quiet status line, not
       // worth a toast over. The model segment is simply omitted.
     }
-  });
+  }
 
   let modelLabel = $derived(model === undefined ? fetchedModel : model);
 
