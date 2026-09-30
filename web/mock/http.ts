@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { isValidArtifactName } from "./artifact-name";
 
 /** A parsed JSON request body: an object whose fields still have to be checked. */
 export type JsonObject = Record<string, unknown>;
@@ -44,9 +45,9 @@ export function text(res: ServerResponse, status: number, body: string): void {
   res.end(body);
 }
 
-/** The name-shaped `X-Residuum-Artifact` header, or `null` when it's absent or malformed. */
+/** The `X-Residuum-Artifact` header, or `null` when it's absent or isn't an artifact's name. */
 export function artifactIdentity(req: IncomingMessage): string | null {
   const raw = req.headers["x-residuum-artifact"];
   const value = Array.isArray(raw) ? raw[0] : raw;
-  return value !== undefined && /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(value) ? value : null;
+  return value !== undefined && isValidArtifactName(value) ? value : null;
 }

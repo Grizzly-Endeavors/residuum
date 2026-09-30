@@ -134,6 +134,20 @@ function record(state: MockState, repo: RepoKind, files: Files, meta: Recorded):
   return checkpoint;
 }
 
+/**
+ * The id of the checkpoint that holds `repo` as it is now, which an action is
+ * about to change: a new one, unless the newest already holds the same tree.
+ * Undo restores from it.
+ */
+export function checkpointBeforeAction(state: MockState, repo: RepoKind, summary: string): string {
+  const files = liveFiles(state, repo);
+  const newest = state.checkpoints[repo]?.at(-1);
+  if (newest !== undefined && changedPaths(newest.files, files).length === 0) {
+    return newest.summary.id;
+  }
+  return record(state, repo, files, { trigger: "pre_action", summary }).summary.id;
+}
+
 /** What `text` was before its last three lines, for the earlier version of a sample file. */
 function earlier(content: string | undefined): string {
   return `${(content ?? "").split("\n").slice(0, -3).join("\n")}\n`;

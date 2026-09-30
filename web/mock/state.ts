@@ -13,7 +13,6 @@ import { loadAsset } from "./assets";
 import { seedCheckpoints, type MockCheckpoints } from "./checkpoints";
 import { createArchivedInboxItems, createInboxItems } from "./data/inbox";
 import { createSessions, type MockSessions } from "./data/sessions";
-import { createWorkbenchArtifacts, type MockArtifact } from "./data/workbench";
 import { createWorkspaceFileContents, createWorkspaceFiles } from "./data/workspace";
 import { createMockEnv, type MockEnv } from "./env";
 import { createScheduled, type MockScheduled } from "./scheduled";
@@ -76,8 +75,6 @@ export interface MockState {
    */
   hasConversation: boolean;
   sessions: MockSessions;
-  /** Workbench artifacts: name → page HTML and modification time. */
-  workbenchArtifacts: Map<string, MockArtifact>;
   /** Port of the mock artifacts listener, once it is listening. */
   workbenchPort: number | null;
   /** Main-agent messages recorded after the sample history (see `/api/mock/missed-relay`). */
@@ -214,7 +211,6 @@ export function createState(
     env,
     mode: process.env.VITE_MOCK_SETUP === "1" ? "setup" : "running",
     workbenchPort: null,
-    workbenchArtifacts: createWorkbenchArtifacts(clock),
     secrets: new Map([
       ["anthropic_key", "sk-ant-mock-xxxx"],
       ["openai_key", "sk-mock-xxxx"],
