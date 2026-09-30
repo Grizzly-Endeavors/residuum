@@ -943,6 +943,12 @@ impl AgentHost {
         // From the stop request on, no teammate message reaches the agent;
         // its event loop only unregisters once it sees the request.
         self.services.team_router.unregister(&slot.name);
+        // Mirror that timing for the relay's A2A directory: it stops
+        // advertising the agent now rather than waiting for the stop to
+        // finish, which can take up to `STOP_TIMEOUT` plus `ABORT_SETTLE`.
+        self.publish(HubEvent::AgentStopping {
+            name: slot.name.clone(),
+        });
         // A closed channel means the event loop is already gone.
         stop_tx.send(()).await.ok();
         if tokio::time::timeout(STOP_TIMEOUT, done.wait_for(|finished| *finished))
@@ -1644,6 +1650,19 @@ impl AgentDirectory for AgentHost {
         self.slots()
             .iter()
             .map(|slot| (slot.name.clone(), slot.activity.snapshot()))
+            .collect()
+    }
+
+    fn stopping(&self) -> Vec<String> {
+        self.slots()
+            .iter()
+            .filter(|slot| {
+                slot.lock()
+                    .running
+                    .as_ref()
+                    .is_some_and(|running| running.stop_requested.load(Ordering::SeqCst))
+            })
+            .map(|slot| slot.name.clone())
             .collect()
     }
 

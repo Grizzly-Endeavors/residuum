@@ -1,9 +1,10 @@
 //! The hub WebSocket, `/api/hub/ws`.
 //!
 //! Server to client: an `agents_snapshot` on connect, then every hub event
-//! (`agent_state`, `agent_created`, `agent_restored`, `agent_deleted`, `agent_activity`,
-//! `notice`), then `workspace_changed` frames for the team paths the client
-//! watches. Client to server: `watch_team`, the only message.
+//! (`agent_state`, `agent_stopping`, `agent_created`, `agent_restored`,
+//! `agent_deleted`, `agent_activity`, `notice`), then `workspace_changed`
+//! frames for the team paths the client watches. Client to server:
+//! `watch_team`, the only message.
 //!
 //! A connection that falls behind the hub's event stream can't know what it
 //! missed, so it gets a fresh `agents_snapshot` in place of the lost events.

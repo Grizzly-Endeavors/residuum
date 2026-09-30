@@ -22,6 +22,9 @@ use crate::hub::{
 struct Entry {
     visibility: A2aVisibility,
     state: AgentState,
+    /// Set by [`StaticAgentDirectory::begin_stopping`], as a real stop
+    /// request would from the moment it is made until the state changes.
+    stopping: bool,
     router: Router,
 }
 
@@ -63,6 +66,7 @@ impl StaticAgentDirectory {
                 Entry {
                     visibility,
                     state: AgentState::Running,
+                    stopping: false,
                     router,
                 },
             );
@@ -70,10 +74,39 @@ impl StaticAgentDirectory {
     }
 
     /// Move an agent to `state`, as a stop or failure would, and publish the
-    /// change.
+    /// change. Clears [`Self::begin_stopping`]'s flag, as a real state
+    /// change does by replacing the agent's running handle.
     #[cfg(test)]
     pub(crate) fn set_state(&self, name: &str, state: AgentState) {
-        self.change(name, |entry| entry.state = state);
+        self.change(name, |entry| {
+            entry.state = state;
+            entry.stopping = false;
+        });
+    }
+
+    /// Mark a running agent as having begun stopping, as
+    /// `AgentHost::stop_locked` does before the agent's event loop actually
+    /// exits, and publish [`HubEvent::AgentStopping`].
+    #[cfg(test)]
+    pub(crate) fn begin_stopping(&self, name: &str) {
+        let found = {
+            let mut agents = self
+                .agents
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(entry) = agents.get_mut(name) else {
+                return;
+            };
+            entry.stopping = true;
+            true
+        };
+        if found {
+            self.events
+                .send(HubEvent::AgentStopping {
+                    name: name.to_string(),
+                })
+                .ok();
+        }
     }
 
     /// Change an agent's A2A visibility and publish the change.
@@ -93,6 +126,7 @@ impl StaticAgentDirectory {
             let entry = Entry {
                 visibility,
                 state: AgentState::Running,
+                stopping: false,
                 router,
             };
             let summary = Self::summary_of(name, &entry);
@@ -208,6 +242,16 @@ impl AgentDirectory for StaticAgentDirectory {
 
     fn activity(&self) -> Vec<(String, AgentActivity)> {
         Vec::new()
+    }
+
+    fn stopping(&self) -> Vec<String> {
+        self.agents
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|(_, entry)| entry.stopping)
+            .map(|(name, _)| name.clone())
+            .collect()
     }
 
     async fn create(

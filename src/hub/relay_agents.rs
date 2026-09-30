@@ -10,8 +10,12 @@
 //! An agent is advertised as A2A-enabled while the hub's A2A listener is
 //! enabled and the agent is running. A stopped or failed agent can't answer,
 //! so the relay hides it from its directory and answers `404` for it instead
-//! of forwarding requests the listener would refuse.
+//! of forwarding requests the listener would refuse. An agent whose stop has
+//! begun (see [`HubEvent::AgentStopping`]) is hidden the same way, even
+//! though it still reports `Running`, so the relay stops forwarding to it as
+//! soon as the team router does rather than waiting for the stop to finish.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -31,18 +35,32 @@ const SETTLE: Duration = Duration::from_millis(250);
 
 /// The relay-facing description of `agents`: one entry per agent, in the
 /// order given, with `a2a_enabled` set for running agents when the hub's A2A
-/// listener is enabled. The agent's name doubles as its display name.
+/// listener is enabled, excluding names in `stopping` (see
+/// [`AgentDirectory::stopping`]). The agent's name doubles as its display
+/// name.
 #[must_use]
-pub(crate) fn agent_infos(agents: &[AgentSummary], a2a_listener_enabled: bool) -> Vec<AgentInfo> {
+pub(crate) fn agent_infos(
+    agents: &[AgentSummary],
+    a2a_listener_enabled: bool,
+    stopping: &HashSet<String>,
+) -> Vec<AgentInfo> {
     agents
         .iter()
         .map(|agent| AgentInfo {
             name: agent.name.clone(),
             display_name: agent.name.clone(),
-            a2a_enabled: a2a_listener_enabled && agent.state == AgentState::Running,
+            a2a_enabled: a2a_listener_enabled
+                && agent.state == AgentState::Running
+                && !stopping.contains(&agent.name),
             a2a_private: agent.a2a_visibility == A2aVisibility::Private,
         })
         .collect()
+}
+
+/// `directory`'s currently-stopping agent names, as a set [`agent_infos`]
+/// can check against.
+fn stopping_set(directory: &dyn AgentDirectory) -> HashSet<String> {
+    directory.stopping().into_iter().collect()
 }
 
 /// Whether `event` can change what [`agent_infos`] returns.
@@ -50,6 +68,7 @@ fn changes_agent_list(event: &HubEvent) -> bool {
     matches!(
         event,
         HubEvent::AgentState { .. }
+            | HubEvent::AgentStopping { .. }
             | HubEvent::AgentCreated { .. }
             | HubEvent::AgentRestored { .. }
             | HubEvent::AgentDeleted { .. }
@@ -72,7 +91,12 @@ impl RelayAgents {
         // is seen as an event rather than lost.
         let events = directory.subscribe();
         let (a2a_enabled, a2a_enabled_rx) = watch::channel(a2a_listener_enabled);
-        let list = Arc::new(watch::channel(agent_infos(&directory.list(), a2a_listener_enabled)).0);
+        let initial = agent_infos(
+            &directory.list(),
+            a2a_listener_enabled,
+            &stopping_set(&*directory),
+        );
+        let list = Arc::new(watch::channel(initial).0);
         let task = crate::util::spawn_monitored(
             "relay-agents",
             keep_current(directory, events, a2a_enabled_rx, Arc::clone(&list)),
@@ -131,7 +155,11 @@ async fn keep_current(
         if !settle(&mut events).await {
             return;
         }
-        let infos = agent_infos(&directory.list(), *a2a_enabled.borrow_and_update());
+        let infos = agent_infos(
+            &directory.list(),
+            *a2a_enabled.borrow_and_update(),
+            &stopping_set(&*directory),
+        );
         list.send_if_modified(|current| {
             let changed = *current != infos;
             if changed {
@@ -207,7 +235,8 @@ mod tests {
             summary("nova", AgentState::Failed, A2aVisibility::Public),
             summary("atlas", AgentState::Starting, A2aVisibility::Public),
         ];
-        let on = agent_infos(&agents, true);
+        let none_stopping = HashSet::new();
+        let on = agent_infos(&agents, true, &none_stopping);
         assert_eq!(
             on.iter().map(|a| a.a2a_enabled).collect::<Vec<_>>(),
             [true, false, false, false]
@@ -216,7 +245,19 @@ mod tests {
             on.iter().map(|a| a.a2a_private).collect::<Vec<_>>(),
             [false, true, false, false]
         );
-        assert!(agent_infos(&agents, false).iter().all(|a| !a.a2a_enabled));
+        assert!(
+            agent_infos(&agents, false, &none_stopping)
+                .iter()
+                .all(|a| !a.a2a_enabled)
+        );
+    }
+
+    #[test]
+    fn a_running_agent_that_has_begun_stopping_is_not_a2a_enabled() {
+        let agents = [summary("scout", AgentState::Running, A2aVisibility::Public)];
+        let stopping = HashSet::from(["scout".to_string()]);
+        let infos = agent_infos(&agents, true, &stopping);
+        assert_eq!(infos.first().map(|a| a.a2a_enabled), Some(false));
     }
 
     #[test]
@@ -224,6 +265,7 @@ mod tests {
         let infos = agent_infos(
             &[summary("scout", AgentState::Running, A2aVisibility::Public)],
             true,
+            &HashSet::new(),
         );
         assert_eq!(
             infos.first().map(|a| a.display_name.as_str()),
@@ -293,6 +335,25 @@ mod tests {
         let stopped = next_list(&mut rx).await;
         assert_eq!(stopped.first().map(|a| a.a2a_enabled), Some(false));
 
+        directory.set_state("scout", AgentState::Running);
+        let running = next_list(&mut rx).await;
+        assert_eq!(running.first().map(|a| a.a2a_enabled), Some(true));
+        relay_agents.stop();
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_begins_stopping_is_disabled_before_it_finishes() {
+        let directory = directory(&[("scout", A2aVisibility::Public)]);
+        let relay_agents = RelayAgents::spawn(Arc::clone(&directory) as _, true);
+        let mut rx = relay_agents.subscribe();
+
+        // The stop begins, but the agent still reports `Running` until its
+        // event loop actually exits.
+        directory.begin_stopping("scout");
+        let stopping = next_list(&mut rx).await;
+        assert_eq!(stopping.first().map(|a| a.a2a_enabled), Some(false));
+
+        // Restarted without ever finishing the stop: re-enabled again.
         directory.set_state("scout", AgentState::Running);
         let running = next_list(&mut rx).await;
         assert_eq!(running.first().map(|a| a.a2a_enabled), Some(true));

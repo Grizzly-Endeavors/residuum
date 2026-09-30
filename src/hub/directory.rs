@@ -54,6 +54,15 @@ pub trait AgentDirectory: Send + Sync {
     /// Main-conversation activity for every agent.
     fn activity(&self) -> Vec<(String, AgentActivity)>;
 
+    /// Names of agents whose stop has begun but not finished: `list()` and
+    /// `summary()` still report them `Running`, but the team router already
+    /// refuses teammate messages for them from this point (see
+    /// [`HubEvent::AgentStopping`]). Defaults to none, for directories with
+    /// no such window.
+    fn stopping(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Create an agent (see the design's creation order) and start it.
     ///
     /// # Errors
