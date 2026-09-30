@@ -776,7 +776,6 @@ W19, then W20 and W21 together.
 - **Preconditions:** W02b; W11b, W12b and W12c merged.
 - **Shape when done:**
   - Design §9.10 in full: every SDK member's behavior, `agent(name)`, no implicit agent, live reload, removed host messages, and the rewritten docs.
-  - Existing pages that name their agent keep working opened standalone.
 - **Verification:**
   - End-to-end, opening artifact URLs directly on the mock artifacts origin:
     - `fetch` to hub, team and named-agent paths

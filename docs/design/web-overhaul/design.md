@@ -56,7 +56,7 @@ This design covers the new visual system and components, the shell and navigatio
 - **Turn hook** — a new method on the hub-owned activity tracker that the agent runtime calls exactly once at the end of every main turn (§9).
 - **Artifact** — a page an agent builds in the team's `workbench/` folder: a single HTML file or a folder with an `index.html`. Artifacts are team-level: no agent owns one, and any agent can edit any of them.
 - **Artifacts origin** — the separate origin that serves artifacts and forwards the API to them: a listener on its own port locally, or the relay's workbench host remotely. Artifacts open there in their own tab; the app never embeds them.
-- **SDK** — the `window.residuum` script injected into every served artifact page. It is how an artifact reaches Residuum, and it is a compatibility contract with pages agents have already written (§9.10).
+- **SDK** — the `window.residuum` script injected into every served artifact page. It is how an artifact reaches Residuum (§9.10).
 - **Artifact session** — a session an artifact starts on a named agent. Its source label is `artifact:<name>`.
 - **Watch registry** — the app's service that merges workspace watches from several owners onto one socket (§12).
 - **Legacy view** — an existing component hosted inside the new shell until the unit that replaces it lands.
@@ -844,7 +844,7 @@ Defaults for a new device: `inbox_item` and `agent_failed` on, the other two off
 - One hub-owned workbench watcher reads the team change feed.
 - It publishes `artifact_updated {name}` and `artifact_removed {name}` on the hub socket, using the same rescan-and-compare rule as today's per-agent watchers.
 - Artifact events therefore reach clients with no agent running.
-- The existing per-agent `artifact_*` frames remain, for older clients.
+- The per-agent `artifact_*` frames stay while the current UI on `main` uses them, and are removed at cutover (W49).
 
 **Session relay on the hub socket.** New client frames:
 
@@ -887,7 +887,7 @@ Everything else the UI can call, an artifact can call.
 
 #### 9.10 The SDK
 
-The SDK stays a compatibility contract with pages agents have already written. Its members and features list keep their names and signatures. Because pages now run on their own, it talks to Residuum directly.
+Artifacts have never shipped in a release, so the SDK is shaped for standalone pages with no compatibility constraints. It talks to Residuum directly.
 
 **No implicit agent.** Artifacts are team-level and belong to no agent. Every agent-specific call names its agent, as `ask` and `sessions.start` already do. Nothing defaults to an agent.
 
@@ -895,7 +895,6 @@ The SDK stays a compatibility contract with pages agents have already written. I
 
 | Member | Behavior |
 |---|---|
-| `embedded` | `true`, meaning the page can reach Residuum. |
 | `fetch` | Calls `/api` on the page's own origin with `X-Residuum-Artifact`. Unscoped hub prefixes map to `/api/hub` and `/api/workbench/` to `/api/team/workbench/`, as today. An agent path that names no agent is not sent: it resolves to a 400 response whose error says to use `/api/agents/<name>/…`. |
 | `ask` | Unchanged: requires `agent`, and calls `/api/agents/<agent>/model/complete`. |
 | `on(type, handler)` | Receives only frames that belong to no agent: `artifact_updated`, `artifact_removed` and `connection`. |
@@ -905,21 +904,13 @@ The SDK stays a compatibility contract with pages agents have already written. I
 | `state` | Unchanged. |
 | Connection events | Top-level `connection` follows the hub socket. A reconnect triggers `workspace_resync {reason: "reconnected"}` for active watches on that socket. |
 
-**Compatibility.** Pages that relied on the implicit agent get the errors above until their agent updates them:
-- agent-socket frames through the top-level `on`
-- agent paths that name no agent
-- agent-workspace watches without `agent(name)`
-
-Every other existing call keeps working.
-
 **Live reload.** On `artifact_updated` for its own name, the SDK reloads the page. A page that registers its own `artifact_updated` handler takes over and the SDK doesn't reload. `artifact_removed` for its own name is delivered to handlers only.
 
-**Removed:** the host messages `ready` and `escape`, and the "not open inside Residuum" rejections. No host page exists.
+**Removed:** `embedded`, the host messages `ready` and `escape`, and the "not open inside Residuum" rejections. No host page exists.
 
 **Docs.** The bundled workbench skill (`SKILL.md` and its API reference) and `workbench.md` are rewritten to match:
 - opening artifacts
 - naming the agent for every agent-specific call, with `agent(name)`
-- how to update a page that relied on the implicit agent
 - the block list
 - the relay limits
 
@@ -1122,7 +1113,7 @@ They chose a combination:
   - Plain-HTTP LAN access has no secure context, so install and push are hidden (§11).
 - **Workbench artifacts origin and SDK.**
   - The artifacts listener gains API forwarding with the block list (§9.9).
-  - The SDK keeps its members and features, and moves to direct access (§9.10). It drops the implicit agent it used to inherit from the UI, so agent-specific calls must name their agent. This is a deliberate break for pages that relied on it.
+  - The SDK moves to direct access with no implicit agent (§9.10). Artifacts have never shipped in a release, so nothing needs migrating.
   - **Relay.** The workbench host must allow every method and sockets, and the tunnel's socket-open frame gains a surface. Both are relay-project changes, deployed by the owner.
 - **Web Push services.**
   - Outbound HTTPS from the host to each subscription's endpoint, with VAPID authentication and Web Push encryption.
