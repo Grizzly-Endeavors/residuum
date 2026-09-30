@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio::sync::broadcast;
 
-use super::types::{AgentActivity, HubEvent};
+use super::types::{AgentActivity, HubEvent, NoticeLevel};
 
 #[derive(Default)]
 struct ActivityState {
@@ -108,6 +108,17 @@ impl ActivityTracker {
             tracker: Arc::clone(self),
             run,
         }
+    }
+
+    /// Tell the user something about this agent as a hub notice.
+    pub fn hub_notice(&self, level: NoticeLevel, message: String) {
+        self.events
+            .send(HubEvent::Notice {
+                level,
+                message,
+                agent: Some(self.name.clone()),
+            })
+            .ok();
     }
 
     /// The agent stopped: nothing is running and no client is connected any

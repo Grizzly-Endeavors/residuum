@@ -937,7 +937,9 @@ async fn reload_teams_adapter(rt: &mut AgentRuntime, new_cfg: &Config) {
                 let bind = new_cfg.gateway.bind.clone();
                 let workspace_dir = new_cfg.workspace_dir.clone();
                 let tz = rt.tz;
+                let activity = Arc::clone(&rt.activity);
                 move |rx: tokio::sync::watch::Receiver<bool>| async move {
+                    let port = cfg.port;
                     let iface = crate::interfaces::teams::TeamsInterface::new(
                         cfg,
                         senders,
@@ -946,9 +948,7 @@ async fn reload_teams_adapter(rt: &mut AgentRuntime, new_cfg: &Config) {
                         tz,
                         rx,
                     );
-                    if let Err(e) = iface.start().await {
-                        tracing::error!(error = %e, "teams interface failed after reload");
-                    }
+                    crate::gateway::event_loop::run_teams_adapter(iface, port, &activity).await;
                 }
             }),
         )

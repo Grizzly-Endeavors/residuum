@@ -501,7 +501,7 @@ async fn spawn_agent_tasks(
         },
     );
     let (a2a_deps, sessions_ready_tx) = a2a_serving_deps(core, parts);
-    let adapters = spawn_adapters(cfg, &adapter_senders, parts.tz);
+    let adapters = spawn_adapters(cfg, &adapter_senders, parts.tz, activity);
     let a2a = if cfg.a2a.enabled {
         build_agent_a2a(cfg, a2a_deps).await
     } else {

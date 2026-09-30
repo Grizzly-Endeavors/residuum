@@ -25,6 +25,7 @@ use super::directory::AgentDirectory;
 use super::host::AgentHost;
 use super::http::{HubHttpState, hub_router};
 use super::services::{HubControl, HubServices};
+use super::team_embedding::EmbeddingSource;
 use super::types::NoticeLevel;
 
 /// How often the hub checks for a newer version.
@@ -67,9 +68,9 @@ struct AgentScan {
     /// Teams adapter ports the agents are configured for, which the
     /// workbench listener must stay off.
     teams_ports: Vec<u16>,
-    /// The provider that embeds the team wiki: the first agent (by name)
-    /// with an embedding model configured.
-    team_embedding: Option<Arc<dyn EmbeddingProvider>>,
+    /// The embedding model the team wiki uses: the first agent (by name) with
+    /// one configured.
+    team_embedding: Option<EmbeddingSource>,
 }
 
 /// Load every agent's config, best effort, for the settings that are shared
@@ -99,29 +100,23 @@ fn scan_agents(root: &Path, hub: &HubConfig) -> AgentScan {
         if let Some(teams) = &cfg.teams {
             scan.teams_ports.push(teams.port);
         }
-        if scan.team_embedding.is_some() {
-            continue;
-        }
-        let Some(spec) = &cfg.embedding else {
-            continue;
-        };
-        let http = match crate::inference::SharedHttpClient::new(
-            &crate::inference::HttpClientConfig::with_timeout(cfg.timeout_secs),
-        ) {
-            Ok(http) => http,
-            Err(e) => {
-                tracing::warn!(agent = %name, error = %e, "couldn't build an HTTP client for the team wiki's embeddings");
-                continue;
-            }
-        };
-        match crate::inference::build_embedding_provider(spec, http, cfg.retry.clone()) {
-            Ok(provider) => scan.team_embedding = Some(Arc::from(provider)),
-            Err(e) => {
-                tracing::warn!(agent = %name, error = %e, "the team wiki's embedding provider is unavailable; wiki search is text only");
-            }
+        if scan.team_embedding.is_none() {
+            scan.team_embedding = EmbeddingSource::from_config(&name, &cfg);
         }
     }
     scan
+}
+
+/// Build the provider for the team wiki's embedding model. A provider that
+/// can't be built leaves wiki search text only.
+fn build_team_embedding(source: &EmbeddingSource) -> Option<Arc<dyn EmbeddingProvider>> {
+    match source.build() {
+        Ok(provider) => Some(provider),
+        Err(e) => {
+            tracing::warn!(agent = %source.agent(), error = %e, "the team wiki's embedding provider is unavailable; wiki search is text only");
+            None
+        }
+    }
 }
 
 /// Bind the HTTP server and serve `app` on it.
@@ -274,11 +269,12 @@ impl HubRuntime {
                 shutdown_tx,
             },
             workbench_serving,
-            scan.team_embedding,
+            scan.team_embedding.as_ref().and_then(build_team_embedding),
         )
         .await?;
 
         let host = AgentHost::new(services.clone(), hub_cfg.clone());
+        host.note_team_embedding(scan.team_embedding).await;
         let agents = host.discover()?;
         tracing::info!(agents = agents.len(), names = %agents.join(", "), "found agents");
         publish_startup_notices(&host, &hub_cfg, fallback_problem.as_deref());
@@ -390,6 +386,9 @@ impl HubRuntime {
     /// Stop every agent, then the servers.
     async fn shut_down(mut self) {
         tracing::info!("beginning hub shutdown");
+        // Refuse starts before stopping agents, so nothing can start after
+        // the sweep and be left running when the servers go down.
+        self.host.begin_shutdown();
         self.host.stop_all().await;
         self.watcher.abort();
         if let Some(tunnel) = self.tunnel.take() {

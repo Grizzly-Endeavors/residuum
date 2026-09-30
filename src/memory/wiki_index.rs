@@ -63,6 +63,12 @@ impl WikiIndexer {
         }
     }
 
+    /// Forget which pages are synced, so the next sync reindexes every page.
+    /// Used when the vector store is replaced and must be refilled.
+    pub(crate) async fn forget_synced_state(&self) {
+        *self.synced.lock().await = None;
+    }
+
     /// Reindex pages that changed since the last sync and drop deleted ones.
     ///
     /// The recorded state only advances when the BM25 index and (if configured)

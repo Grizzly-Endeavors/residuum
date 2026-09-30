@@ -18,7 +18,7 @@ Each agent loads its own config against the hub config, and keeps its own last-k
 
 With no agent on disk the hub still starts and serves the web app, which runs onboarding. When `POST /api/hub/config/complete-setup` has written the first agent, the hub applies the hub config it wrote, rescans, and starts the agent, with no process restart. `residuum serve --setup` runs the same hub on an empty temporary root. `residuum setup` writes the same files from the command line, before or without a running hub.
 
-Stopping the hub (SIGTERM, `POST /api/hub/shutdown`, or a restart for an update) stops every agent gracefully before the servers.
+Stopping the hub (SIGTERM, `POST /api/hub/shutdown`, or a restart for an update) first stops accepting starts, then stops every agent gracefully, then stops the servers. From the moment shutdown begins, `start`, `restart`, and `create` are refused with the error `Residuum is shutting down` (HTTP `500`, like other lifecycle failures), so a request arriving during the shutdown can't start an agent that nothing would stop. Stopping an agent still works.
 
 ## Agent states
 
@@ -39,12 +39,16 @@ An agent's event loop runs as its own task. A panic or fatal error in it moves t
 - **patch**: writes `autostart` and/or `[a2a] visibility` to the agent's `config/config.toml` with the same in-place edit the Settings page uses, checkpointing the agent's config repository first. The patched file is validated before anything is written. A running agent is then reloaded, and the call returns once the reload has finished (or after 30 seconds).
 - **create** and **delete**: see [Agent creation and deletion](agent-lifecycle.md). Creation starts the agent and, when a description was given, hands it to the new agent's main conversation as its first message (from the owner for the user, from the creating agent's address otherwise). If the agent can't start, it is still created and returned `failed`. Deletion stops the agent first. An agent that creates or deletes another finds an item about it in its user inbox; the user acting through the web UI or CLI sees the hub event only.
 
-Two agents can't run with the same Teams adapter port: the second one to start is `failed` with a message naming the agent that holds the port.
+Two agents can't run with the same Teams adapter port: the second one to start is `failed` with a message naming the agent that holds the port. An agent reserves its port when it begins to start, so agents starting at the same moment can't both take it; the reservation is released when the agent stops, fails, crashes, or is deleted, and moves to the new port when a reload changes `[teams] port`. If the Teams adapter can't bind its port (another program or agent holds it), the hub publishes a `notice` naming the agent and the port, both at start and after a reload.
+
+Operations on one agent are serialized. Once an agent is deleted, any `start`, `stop`, `restart`, or `patch` that was already waiting on it answers `404`; a deleted agent's directory is never recreated.
+
+The `autostart` and `a2a_visibility` an agent's summary reports come from the last `config/config.toml` that loaded. For a running agent that is the config it last loaded or reloaded; for a stopped one, the file as read on each request. A file that can't be read or parsed, or that was emptied after a config had loaded, leaves the last loaded values in place and logs a warning once. An agent whose config has never loaded is reported `private`, so the A2A listener never serves the card of an agent whose visibility can't be established without a key.
 
 ## Shared services
 
 - **Team write coordinator**: one per hub; each agent takes its own view with its name.
-- **Team wiki index**: opened once, with the embedding model of the first agent (by name) that configures one, or text-only when none does. Every agent's memory search holds a clone of the same handle.
+- **Team wiki index**: one instance for the hub, opened with the embedding model of the first agent (by name) that configures one, or text-only when none does. Every agent's memory search holds a clone of the same handle. The embedder is re-evaluated when an agent starts, finishes a config reload, or is deleted: when the choice changes (the first agent with an embedding model appears, the providing agent's embedding config changes, or it stops providing one), the same instance swaps its embedder in place, clears its vector store if the model differs, and refills it from the wiki pages on the next search. Every agent's searcher sees the new embedder at once. If the new embedder can't be built or its vector store can't be opened, wiki search stays text-only and the hub publishes a `notice`.
 - **Session budget**: one semaphore sized by the hub's `[background] max_concurrent`, taken by every agent's session turns. Main turns don't take a permit. A session waiting for a permit shows as `queued` in its agent's session list. Changing `max_concurrent` takes effect on the next restart.
 - **Checkpoints**: the team and hub-config repositories are shared; each agent has its own workspace and config repositories. See [Checkpoints](checkpoints.md).
 - **Tunnel status, secrets, key stores, tracing**: one of each, passed to every agent.
