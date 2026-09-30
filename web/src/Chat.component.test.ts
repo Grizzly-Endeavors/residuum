@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, render, screen, settle, stubWebSocket } from "./test/component";
 import Chat from "./Chat.svelte";
 import { ws } from "./lib/ws.svelte";
-import { setCurrentAgent } from "./lib/paths";
+import { setViewedAgent } from "./lib/viewed-agent";
 
 beforeEach(() => {
   class NoObserver {
@@ -17,12 +17,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  setCurrentAgent(null);
+  setViewedAgent(null);
 });
 
 describe("chat counters across an agent switch", () => {
   it("shows the counters of the agent that is open, not the one that was", async () => {
-    setCurrentAgent("scout");
+    setViewedAgent("scout");
     ws.store.isProcessing = true;
     ws.store.turnStartedAt = Date.now();
     ws.store.turnHasUsage = true;
@@ -38,7 +38,7 @@ describe("chat counters across an agent switch", () => {
     expect(screen.getByText(/4 tool calls/)).toBeTruthy();
     expect(screen.getByText(/7 tool calls/)).toBeTruthy();
 
-    setCurrentAgent("atlas");
+    setViewedAgent("atlas");
     await settle();
     expect(screen.queryByText(/4 tool calls/)).toBeNull();
     expect(screen.queryByText(/7 tool calls/)).toBeNull();
@@ -52,7 +52,7 @@ describe("chat counters across an agent switch", () => {
     expect(screen.getByText(/2 tool calls/)).toBeTruthy();
     expect(screen.queryByText(/4 tool calls/)).toBeNull();
 
-    setCurrentAgent("scout");
+    setViewedAgent("scout");
     await settle();
     expect(screen.queryByText(/2 tool calls/)).toBeNull();
   });

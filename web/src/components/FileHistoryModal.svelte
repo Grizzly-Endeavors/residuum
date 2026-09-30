@@ -17,9 +17,12 @@
     path,
     onClose,
     onRestored,
+    agent,
     scope = "agent",
   }: {
     path: string;
+    /** The agent whose tree `path` is in; the team scope needs none. */
+    agent: string | null;
     scope?: WorkspaceScope;
     onClose: () => void;
     onRestored: () => void;
@@ -46,7 +49,11 @@
     loading = true;
     loadError = "";
     try {
-      const page = await fetchCheckpoints({ repo: target.repo, path: target.path, limit: 100 });
+      const page = await fetchCheckpoints(agent, {
+        repo: target.repo,
+        path: target.path,
+        limit: 100,
+      });
       checkpoints = page.items;
       if (checkpoints.length > 0 && checkpoints[0]) void selectCheckpoint(checkpoints[0].id);
     } catch (err: unknown) {
@@ -62,7 +69,7 @@
     diffError = "";
     diffLoading = true;
     try {
-      diff = await fetchCheckpointDiff(id, target.repo, target.path);
+      diff = await fetchCheckpointDiff(agent, id, target.repo, target.path);
     } catch (err: unknown) {
       diffError = userErrorMessage(err, { action: "Couldn't load this version's diff." });
     } finally {
@@ -72,7 +79,7 @@
 
   async function viewFullContent(id: string): Promise<void> {
     try {
-      const content = await fetchCheckpointFile(id, target.repo, target.path);
+      const content = await fetchCheckpointFile(agent, id, target.repo, target.path);
       diff = content;
       diffError = "";
     } catch (err: unknown) {
@@ -83,7 +90,7 @@
   async function handleRestore(id: string): Promise<void> {
     restoring = true;
     try {
-      const outcome = await restoreCheckpoint(id, target.repo, target.path);
+      const outcome = await restoreCheckpoint(agent, id, target.repo, target.path);
       toast.success(`Restored ${path} (${outcome.restored_paths.length} path(s)).`);
       onRestored();
       await load();

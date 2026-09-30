@@ -8,7 +8,7 @@ import {
   settle,
   stubWebSocket,
 } from "../test/component";
-import { setCurrentAgent } from "../lib/paths";
+import { setViewedAgent } from "../lib/viewed-agent";
 import { ws } from "../lib/ws.svelte";
 import type { OutboundA2aTaskSummary } from "../lib/types";
 import OutboundTaskRow from "./OutboundTaskRow.svelte";
@@ -26,11 +26,11 @@ const TASK: OutboundA2aTaskSummary = {
 
 beforeEach(() => {
   stubWebSocket();
-  setCurrentAgent("scout");
+  setViewedAgent("scout");
 });
 
 afterEach(() => {
-  setCurrentAgent(null);
+  setViewedAgent(null);
   vi.unstubAllGlobals();
   ws.sessions.outbound = [];
   ws.sessions.outboundUnreachable.clear();

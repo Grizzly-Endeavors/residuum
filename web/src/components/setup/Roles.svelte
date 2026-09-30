@@ -183,7 +183,8 @@
     const url = provCfg?.url ?? undefined;
 
     modelLoading[role] = true;
-    const result = await fetchModels(prov, apiKey, url);
+    // No agent exists yet, so the hub looks the models up.
+    const result = await fetchModels(null, prov, apiKey, url);
     modelLists[role] = result.models;
     modelLoading[role] = false;
     modelErrors[role] = result.error;

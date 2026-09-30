@@ -49,8 +49,8 @@ describe("turnChangedWorkspace", () => {
       ]),
     );
 
-    await expect(turnChangedWorkspace("turn-1")).resolves.toBe(true);
-    expect(fetchCheckpoints).toHaveBeenCalledWith({
+    await expect(turnChangedWorkspace("scout", "turn-1")).resolves.toBe(true);
+    expect(fetchCheckpoints).toHaveBeenCalledWith("scout", {
       repo: "workspace",
       turnId: "turn-1",
       limit: 10,
@@ -73,12 +73,12 @@ describe("turnChangedWorkspace", () => {
       ]),
     );
 
-    await expect(turnChangedWorkspace("turn-1")).resolves.toBe(false);
+    await expect(turnChangedWorkspace("scout", "turn-1")).resolves.toBe(false);
   });
 
   it("is false when the turn has no recorded checkpoints", async () => {
     fetchCheckpoints.mockResolvedValue(page([]));
-    await expect(turnChangedWorkspace("turn-1")).resolves.toBe(false);
+    await expect(turnChangedWorkspace("scout", "turn-1")).resolves.toBe(false);
   });
 });
 
@@ -109,15 +109,15 @@ describe("undoTurn", () => {
       skipped_paths: [],
     });
 
-    const outcome = await undoTurn("turn-1");
+    const outcome = await undoTurn("scout", "turn-1");
 
-    expect(undoCheckpoint).toHaveBeenCalledWith("end1", "workspace");
+    expect(undoCheckpoint).toHaveBeenCalledWith("scout", "end1", "workspace");
     expect(outcome?.reverted_paths).toEqual(["notes.md"]);
   });
 
   it("returns null when there is no turn-end checkpoint to undo", async () => {
     fetchCheckpoints.mockResolvedValue(page([]));
-    await expect(undoTurn("turn-1")).resolves.toBeNull();
+    await expect(undoTurn("scout", "turn-1")).resolves.toBeNull();
     expect(undoCheckpoint).not.toHaveBeenCalled();
   });
 });

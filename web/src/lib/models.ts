@@ -78,21 +78,25 @@ export const EMBEDDING_PROVIDERS = ["openai", "gemini", "fireworks", "ollama"];
 
 const cache = new Map<string, FetchResult>();
 
-function cacheKey(provider: string, apiKey?: string, url?: string): string {
-  return `${provider}:${apiKey ?? ""}:${url ?? ""}`;
+// Keyed by agent too: the lookup runs through that agent's own provider setup.
+// `null` is onboarding, before any agent exists, which asks the hub. The
+// provider leads so `invalidateProvider` can match it by prefix.
+function cacheKey(agent: string | null, provider: string, apiKey?: string, url?: string): string {
+  return `${provider}:${agent ?? ""}:${apiKey ?? ""}:${url ?? ""}`;
 }
 
 export async function fetchModels(
+  agent: string | null,
   provider: string,
   apiKey?: string,
   url?: string,
 ): Promise<FetchResult> {
-  const key = cacheKey(provider, apiKey, url);
+  const key = cacheKey(agent, provider, apiKey, url);
   const cached = cache.get(key);
   if (cached) return cached;
 
   try {
-    const data = await fetchProviderModels(provider, apiKey, url);
+    const data = await fetchProviderModels(agent, provider, apiKey, url);
     if (data.models.length > 0) {
       const result: FetchResult = { models: data.models, error: null };
       cache.set(key, result);

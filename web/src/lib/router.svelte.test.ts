@@ -60,12 +60,24 @@ function installBrowser(startUrl: string, lastAgent: string | null): FakeBrowser
   };
 }
 
-/** A fresh router and path module, so no test inherits another's location. */
-async function load(): Promise<{ router: typeof routerInstance; paths: typeof PathsModule }> {
+/**
+ * A fresh router and path module, so no test inherits another's location, and
+ * what the router has published as the viewed agent.
+ */
+async function load(): Promise<{
+  router: typeof routerInstance;
+  paths: typeof PathsModule;
+  viewedAgent: () => string | null;
+}> {
   vi.resetModules();
   const { router } = await import("./router.svelte");
   const paths = await import("./paths");
-  return { router, paths };
+  const { onViewedAgentChange } = await import("./viewed-agent");
+  let viewed: string | null = null;
+  onViewedAgentChange((agent) => {
+    viewed = agent;
+  });
+  return { router, paths, viewedAgent: () => viewed };
 }
 
 afterEach(() => {
@@ -75,25 +87,25 @@ afterEach(() => {
 describe("router: opening the app", () => {
   it("sends / to the last-used agent", async () => {
     const browser = installBrowser("/", "atlas");
-    const { router, paths } = await load();
+    const { router, viewedAgent } = await load();
     router.start();
     expect(browser.url()).toBe("/agent/atlas");
     expect(router.agent).toBe("atlas");
-    expect(paths.getCurrentAgent()).toBe("atlas");
+    expect(viewedAgent()).toBe("atlas");
   });
 
   it("leaves / alone with no last-used agent, until the agents are known", async () => {
     const browser = installBrowser("/", null);
-    const { router, paths } = await load();
+    const { router, viewedAgent } = await load();
     router.start();
     expect(browser.url()).toBe("/");
     expect(router.agent).toBeNull();
-    expect(paths.getCurrentAgent()).toBeNull();
+    expect(viewedAgent()).toBeNull();
 
     router.resolveAgent(["atlas", "scout"]);
     expect(browser.url()).toBe("/agent/atlas");
     expect(router.agent).toBe("atlas");
-    expect(paths.getCurrentAgent()).toBe("atlas");
+    expect(viewedAgent()).toBe("atlas");
   });
 
   it("does nothing on / when there are no agents at all", async () => {
@@ -155,10 +167,10 @@ describe("router: opening the app", () => {
 
   it("uses the last-used agent on a team page straight away", async () => {
     installBrowser("/team", "scout");
-    const { router, paths } = await load();
+    const { router, viewedAgent } = await load();
     router.start();
     expect(router.agent).toBe("scout");
-    expect(paths.getCurrentAgent()).toBe("scout");
+    expect(viewedAgent()).toBe("scout");
   });
 
   it("rewrites an older unprefixed path under the agent", async () => {
@@ -194,13 +206,13 @@ describe("router: switching agents", () => {
     browser = installBrowser("/agent/scout", null);
   });
 
-  it("changes the URL and the current agent", async () => {
-    const { router, paths } = await load();
+  it("changes the URL and the viewed agent", async () => {
+    const { router, viewedAgent } = await load();
     router.start();
     router.openAgent("atlas");
     expect(browser.pushes).toEqual(["/agent/atlas"]);
     expect(router.agent).toBe("atlas");
-    expect(paths.getCurrentAgent()).toBe("atlas");
+    expect(viewedAgent()).toBe("atlas");
   });
 
   it("does nothing when the agent is already open", async () => {
@@ -241,16 +253,16 @@ describe("router: switching agents", () => {
   });
 
   it("follows the back button to the previous agent", async () => {
-    const { router, paths } = await load();
+    const { router, viewedAgent } = await load();
     router.start();
     router.openAgent("atlas");
     browser.pop("/agent/scout");
     expect(router.agent).toBe("scout");
-    expect(paths.getCurrentAgent()).toBe("scout");
+    expect(viewedAgent()).toBe("scout");
   });
 
   it("keeps the agent while moving around the team pages", async () => {
-    const { router, paths } = await load();
+    const { router, viewedAgent } = await load();
     router.start();
     router.openTeam("files");
     router.openWorkbench("chart");
@@ -258,7 +270,7 @@ describe("router: switching agents", () => {
     expect(router.agent).toBe("scout");
     router.openSettings("a2a", "hub");
     expect(browser.url()).toBe("/team/settings/a2a");
-    expect(paths.getCurrentAgent()).toBe("scout");
+    expect(viewedAgent()).toBe("scout");
     router.closeSettings();
     expect(browser.url()).toBe("/agent/scout");
   });

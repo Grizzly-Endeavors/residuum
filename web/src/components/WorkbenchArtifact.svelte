@@ -103,6 +103,7 @@
       {
         origin: window.location.origin,
         fetch: (input, init) => window.fetch(input, init),
+        boundAgent: () => ws.agent,
         onFrame: (listener) => ws.onFrame(listener),
         onConnectionChange: (listener) => ws.onConnectionChange(listener),
         watchWorkspace: (prefixes) => {

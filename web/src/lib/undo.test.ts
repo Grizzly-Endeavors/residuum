@@ -17,7 +17,7 @@ describe("notifyWithUndo", () => {
   });
 
   it("shows a success toast with an Undo action", () => {
-    notifyWithUndo("Removed github_token.", "hub", "agent-keys.toml.enc", "action-cp");
+    notifyWithUndo(null, "Removed github_token.", "hub", "agent-keys.toml.enc", "action-cp");
     const shown = [...toast.toasts.values()].at(-1);
     expect(shown).toMatchObject({ kind: "success", message: "Removed github_token." });
     expect(shown?.action?.label).toBe("Undo");
@@ -29,7 +29,14 @@ describe("notifyWithUndo", () => {
       restored_paths: ["agent-keys.toml.enc"],
     });
     const onRestored = vi.fn();
-    notifyWithUndo("Removed github_token.", "hub", "agent-keys.toml.enc", "action-cp", onRestored);
+    notifyWithUndo(
+      null,
+      "Removed github_token.",
+      "hub",
+      "agent-keys.toml.enc",
+      "action-cp",
+      onRestored,
+    );
     const shown = [...toast.toasts.values()].at(-1);
 
     shown?.action?.onClick();
@@ -37,14 +44,14 @@ describe("notifyWithUndo", () => {
       expect(onRestored).toHaveBeenCalledTimes(1);
     });
 
-    expect(undoLastAction).toHaveBeenCalledWith("action-cp", "hub", "agent-keys.toml.enc");
+    expect(undoLastAction).toHaveBeenCalledWith(null, "action-cp", "hub", "agent-keys.toml.enc");
     const followUp = [...toast.toasts.values()].at(-1);
     expect(followUp?.message).toBe("Restored.");
   });
 
   it("surfaces a plain-language error if the restore call itself fails", async () => {
     undoLastAction.mockRejectedValue(new Error("network down"));
-    notifyWithUndo("Removed github_token.", "hub", "agent-keys.toml.enc", "action-cp");
+    notifyWithUndo(null, "Removed github_token.", "hub", "agent-keys.toml.enc", "action-cp");
     const shown = [...toast.toasts.values()].at(-1);
 
     shown?.action?.onClick();
@@ -57,6 +64,7 @@ describe("notifyWithUndo", () => {
   it("restores every listed path from the same checkpoint", async () => {
     undoLastAction.mockResolvedValue({ checkpoint_id: "abc123", restored_paths: [] });
     notifyWithUndo(
+      null,
       'Deleted "Chart".',
       "team",
       ["workbench/chart.html", "workbench/chart.state.json"],
@@ -68,9 +76,16 @@ describe("notifyWithUndo", () => {
       expect(undoLastAction).toHaveBeenCalledTimes(2);
     });
 
-    expect(undoLastAction).toHaveBeenNthCalledWith(1, "action-cp", "team", "workbench/chart.html");
+    expect(undoLastAction).toHaveBeenNthCalledWith(
+      1,
+      null,
+      "action-cp",
+      "team",
+      "workbench/chart.html",
+    );
     expect(undoLastAction).toHaveBeenNthCalledWith(
       2,
+      null,
       "action-cp",
       "team",
       "workbench/chart.state.json",
@@ -153,16 +168,18 @@ describe("notifyWithWorkspaceUndo", () => {
 
   it("restores a team path from the team repo, relative to team/", async () => {
     undoLastAction.mockResolvedValue({ checkpoint_id: "x", restored_paths: [] });
-    notifyWithWorkspaceUndo("Deleted a.md.", "team/wiki/a.md", [{ id: "team-cp", repo: "team" }]);
+    notifyWithWorkspaceUndo(null, "Deleted a.md.", "team/wiki/a.md", [
+      { id: "team-cp", repo: "team" },
+    ]);
     [...toast.toasts.values()].at(-1)?.action?.onClick();
     await vi.waitFor(() => {
       expect(undoLastAction).toHaveBeenCalledTimes(1);
     });
-    expect(undoLastAction).toHaveBeenCalledWith("team-cp", "team", "wiki/a.md");
+    expect(undoLastAction).toHaveBeenCalledWith(null, "team-cp", "team", "wiki/a.md");
   });
 
   it("offers no Undo when no checkpoint applies to the path", () => {
-    notifyWithWorkspaceUndo("Deleted a.md.", "team/a.md", []);
+    notifyWithWorkspaceUndo(null, "Deleted a.md.", "team/a.md", []);
     expect([...toast.toasts.values()].at(-1)?.action).toBeUndefined();
   });
 });

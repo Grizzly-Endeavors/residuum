@@ -21,7 +21,16 @@
   import FileHistoryModal from "./FileHistoryModal.svelte";
   import Modal from "./Modal.svelte";
 
-  let { onClose, scope = "agent" }: { onClose: () => void; scope?: WorkspaceScope } = $props();
+  let {
+    onClose,
+    agent,
+    scope = "agent",
+  }: {
+    onClose: () => void;
+    /** The agent whose tree this shows. The team scope is no agent's, and takes `null`. */
+    agent: string | null;
+    scope?: WorkspaceScope;
+  } = $props();
 
   /** How long to wait after the last keystroke before validating — long
    * enough to not fire on every character, short enough to feel live. */
@@ -88,7 +97,7 @@
       return;
     }
     const timer = setTimeout(() => {
-      void validateWorkspaceFile(path, content, scope).then((result) => {
+      void validateWorkspaceFile(agent, path, content, scope).then((result) => {
         diagnostics = result;
       });
     }, VALIDATE_DEBOUNCE_MS);
@@ -98,7 +107,7 @@
   async function loadDir(path: string) {
     if (treeCache[path]) return;
     try {
-      const entries = await fetchWorkspaceFiles(path || undefined, scope);
+      const entries = await fetchWorkspaceFiles(agent, path || undefined, scope);
       treeCache = { ...treeCache, [path]: entries };
     } catch (e) {
       error = userErrorMessage(e, {
@@ -130,10 +139,11 @@
 
   async function handleDeleteFile(path: string): Promise<void> {
     try {
-      const checkpoints = await deleteWorkspaceFile(path, scope);
+      const checkpoints = await deleteWorkspaceFile(agent, path, scope);
       clearEditorIfOpen(path);
       await refreshDir(parentDir(path));
       notifyWithWorkspaceUndo(
+        agent,
         `Deleted ${fileName(path)}.`,
         scope === "team" ? `team/${path}` : path,
         checkpoints,
@@ -148,7 +158,7 @@
     const dir = parentDir(path);
     const to = dir ? `${dir}/${newName}` : newName;
     try {
-      await moveWorkspaceFile(path, to, false, scope);
+      await moveWorkspaceFile(agent, path, to, false, scope);
       if (selectedFile === path) selectedFile = to;
       await refreshDir(dir);
       toast.success(`Renamed to ${newName}.`);
@@ -197,7 +207,7 @@
     error = "";
     diagnostics = [];
     try {
-      const file = await fetchWorkspaceFile(path, scope);
+      const file = await fetchWorkspaceFile(agent, path, scope);
       fileContent = file.content;
       editContent = file.content;
       fileVersion = file.version;
@@ -220,7 +230,7 @@
     saving = true;
     error = "";
     try {
-      const response = await putWorkspaceFile(selectedFile, editContent, fileVersion, scope);
+      const response = await putWorkspaceFile(agent, selectedFile, editContent, fileVersion, scope);
       fileContent = editContent;
       fileVersion = response.version;
       diagnostics = response.diagnostics ?? [];
@@ -255,7 +265,7 @@
     conflictOpen = false;
     saving = true;
     try {
-      const response = await putWorkspaceFile(selectedFile, editContent, fileVersion, scope);
+      const response = await putWorkspaceFile(agent, selectedFile, editContent, fileVersion, scope);
       fileContent = editContent;
       fileVersion = response.version;
       diagnostics = response.diagnostics ?? [];
@@ -373,6 +383,7 @@
 {#if historyPath}
   <FileHistoryModal
     path={historyPath}
+    {agent}
     {scope}
     onClose={() => {
       historyPath = null;

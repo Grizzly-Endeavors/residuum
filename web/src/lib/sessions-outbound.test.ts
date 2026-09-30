@@ -1,5 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { setCurrentAgent } from "./paths";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionsStore } from "./sessions.svelte";
 import type { OutboundA2aTaskSummary } from "./types";
 
@@ -18,7 +17,7 @@ function task(overrides: Partial<OutboundA2aTaskSummary> = {}): OutboundA2aTaskS
 }
 
 function store(): SessionsStore {
-  return new SessionsStore({ send: () => {}, pushToMain: () => {} });
+  return new SessionsStore({ agent: "scout", send: () => {}, pushToMain: () => {} });
 }
 
 function respond(status: number, body: unknown): void {
@@ -35,12 +34,7 @@ function respond(status: number, body: unknown): void {
   );
 }
 
-beforeEach(() => {
-  setCurrentAgent("scout");
-});
-
 afterEach(() => {
-  setCurrentAgent(null);
   vi.unstubAllGlobals();
 });
 

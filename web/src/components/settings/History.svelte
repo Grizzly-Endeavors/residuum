@@ -20,7 +20,7 @@
   import type { CheckpointDetail, CheckpointSummary, RepoKind, RepoStats } from "../../lib/types";
 
   // Hub settings show the team's and the hub's own history; an agent's show its workspace and config.
-  let { scope }: { scope: "hub" | "agent" } = $props();
+  let { scope, agent }: { scope: "hub" | "agent"; agent: string | null } = $props();
 
   // svelte-ignore state_referenced_locally
   let repo = $state<RepoKind>(scope === "hub" ? "team" : "workspace");
@@ -53,7 +53,7 @@
     try {
       // Only the repositories this scope shows: agent-level ones need an agent chosen.
       const repos: RepoKind[] = scope === "hub" ? ["team", "hub"] : ["workspace", "agent_config"];
-      const fetched = await Promise.all(repos.map((r) => fetchCheckpointStats(r)));
+      const fetched = await Promise.all(repos.map((r) => fetchCheckpointStats(agent, r)));
       const next = { ...stats };
       repos.forEach((r, i) => {
         next[r] = fetched[i] ?? null;
@@ -68,7 +68,7 @@
     listLoading = true;
     listError = "";
     try {
-      const page = await fetchCheckpoints({
+      const page = await fetchCheckpoints(agent, {
         repo,
         path: pathFilter.trim() || undefined,
         before: reset ? undefined : (nextCursor ?? undefined),
@@ -104,7 +104,7 @@
     openPath = null;
     detailLoading = true;
     try {
-      detail = await fetchCheckpointDetail(id, repo);
+      detail = await fetchCheckpointDetail(agent, id, repo);
     } catch (err: unknown) {
       detailError = userErrorMessage(err, { action: "Couldn't load this checkpoint." });
     } finally {
@@ -120,7 +120,7 @@
     openPath = path;
     if (path in diffs) return;
     try {
-      diffs[path] = await fetchCheckpointDiff(selectedId as string, repo, path);
+      diffs[path] = await fetchCheckpointDiff(agent, selectedId as string, repo, path);
     } catch (err: unknown) {
       diffs[path] = `Couldn't load this diff: ${userErrorMessage(err, { action: "" })}`;
     }
@@ -129,7 +129,7 @@
   async function viewFullFile(path: string): Promise<void> {
     if (!selectedId) return;
     try {
-      const content = await fetchCheckpointFile(selectedId, repo, path);
+      const content = await fetchCheckpointFile(agent, selectedId, repo, path);
       diffs[path] = content;
       openPath = path;
     } catch (err: unknown) {
@@ -141,7 +141,7 @@
     if (!selectedId) return;
     restoringPath = path;
     try {
-      const outcome = await restoreCheckpoint(selectedId, repo, path);
+      const outcome = await restoreCheckpoint(agent, selectedId, repo, path);
       toast.success(`Restored ${path}.`);
       void loadStats();
       if (repo === "workspace" || repo === "team" || outcome.restored_paths.length > 0)
@@ -157,7 +157,7 @@
     if (!selectedId) return;
     undoing = true;
     try {
-      const outcome = await undoCheckpoint(selectedId, repo);
+      const outcome = await undoCheckpoint(agent, selectedId, repo);
       const parts = [`Reverted ${outcome.reverted_paths.length} path(s).`];
       if (outcome.skipped_paths.length > 0) {
         parts.push(`Skipped (changed again since): ${outcome.skipped_paths.join(", ")}.`);

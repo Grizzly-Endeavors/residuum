@@ -66,6 +66,7 @@
   import { Icon } from "./lib/icons";
   import { toast } from "./lib/toast.svelte";
   import { userErrorMessage } from "./lib/errors";
+  import { requireAgent } from "./lib/paths";
 
   // One page edits one scope: an agent's files, or the hub's. The page is
   // remounted when the scope or the agent changes, so `scope` is fixed for
@@ -84,6 +85,15 @@
     onSelectSection: (section: SettingsSection) => void;
     onClose: () => void;
   } = $props();
+
+  /**
+   * The agent an agent page reads and writes; throws `NoAgentSelectedError`
+   * when it has none. The page is remounted when the agent changes, so one
+   * call's agent holds for the whole of a save or reload.
+   */
+  function scopeAgent(): string {
+    return requireAgent(agent);
+  }
 
   // ── State ──────────────────────────────────────────────────────────
 
@@ -187,11 +197,12 @@
       rawHubConfig = await fetchHubConfigRaw();
       return;
     }
+    const name = scopeAgent();
     const [cfgRaw, hubRaw, provRaw, mcpRaw] = await Promise.all([
-      fetchConfigRaw(),
+      fetchConfigRaw(name),
       fetchHubConfigRaw(),
-      fetchProvidersRaw(),
-      fetchMcpRaw(),
+      fetchProvidersRaw(name),
+      fetchMcpRaw(name),
     ]);
     rawConfig = cfgRaw;
     rawHubConfig = hubRaw;
@@ -244,8 +255,9 @@
    */
   async function reloadProvidersFile(): Promise<void> {
     try {
-      invalidate(cacheKeyProvidersRaw());
-      rawProviders = await fetchProvidersRaw();
+      const name = scopeAgent();
+      invalidate(cacheKeyProvidersRaw(name));
+      rawProviders = await fetchProvidersRaw(name);
       const prov = parseProvidersToml(rawProviders);
       providerEntries = prov.providers;
       modelAssignments = prov.models;
@@ -258,9 +270,10 @@
 
   async function reloadConfigFile(): Promise<void> {
     try {
-      invalidate(cacheKeyConfigRaw());
+      const name = scopeAgent();
+      invalidate(cacheKeyConfigRaw(name));
       invalidate(CACHE_KEY_HUB_CONFIG_RAW);
-      [rawConfig, rawHubConfig] = await Promise.all([fetchConfigRaw(), fetchHubConfigRaw()]);
+      [rawConfig, rawHubConfig] = await Promise.all([fetchConfigRaw(name), fetchHubConfigRaw()]);
       configFields = parseConfigToml(rawConfig, rawHubConfig);
       baselineConfigFields = $state.snapshot(configFields);
     } catch (err: unknown) {
@@ -270,8 +283,9 @@
 
   async function reloadMcpFile(): Promise<void> {
     try {
-      invalidate(cacheKeyMcpRaw());
-      rawMcp = await fetchMcpRaw();
+      const name = scopeAgent();
+      invalidate(cacheKeyMcpRaw(name));
+      rawMcp = await fetchMcpRaw(name);
       mcpServers = parseMcpJson(rawMcp);
       baselineMcpServers = $state.snapshot(mcpServers);
     } catch (err: unknown) {
@@ -409,13 +423,15 @@
         });
         return;
       }
-      void validateConfig(cfg).then((r) => {
+      // An agent page with no agent has nothing to validate against.
+      if (agent === null) return;
+      void validateConfig(agent, cfg).then((r) => {
         rawDiagnostics = { ...rawDiagnostics, config: r.diagnostics ?? [] };
       });
-      void validateProviders(prov).then((r) => {
+      void validateProviders(agent, prov).then((r) => {
         rawDiagnostics = { ...rawDiagnostics, providers: r.diagnostics ?? [] };
       });
-      void validateWorkspaceFile("config/mcp.json", mcp).then((diagnostics) => {
+      void validateWorkspaceFile(agent, "config/mcp.json", mcp).then((diagnostics) => {
         rawDiagnostics = { ...rawDiagnostics, mcp: diagnostics };
       });
     }, 500);
@@ -475,13 +491,14 @@
     }
 
     // The agent's page never rewrites the hub's config.
-    const provResult = await putProvidersRaw(provToml);
+    const name = scopeAgent();
+    const provResult = await putProvidersRaw(name, provToml);
     rawProviders = provToml;
 
-    const cfgResult = await putConfigRaw(cfgToml);
+    const cfgResult = await putConfigRaw(name, cfgToml);
     rawConfig = cfgToml;
 
-    const mcpResult = await putMcpRaw(mcpJson);
+    const mcpResult = await putMcpRaw(name, mcpJson);
     rawMcp = mcpJson;
 
     rawDiagnostics = {
@@ -558,7 +575,8 @@
     const saved: string[] = [];
     const failed: { file: string; error: string }[] = [];
 
-    const provResult = await patchProviders(providersDiff);
+    const name = scopeAgent();
+    const provResult = await patchProviders(name, providersDiff);
     if (provResult.valid) {
       baselineProviderEntries = currentProviders;
       baselineModelAssignments = currentModels;
@@ -573,7 +591,7 @@
     // config.toml validation reads providers.toml from disk, so only
     // attempt it once providers.toml is in the state config expects.
     if (provResult.valid) {
-      const cfgResult = await patchConfig(configDiff);
+      const cfgResult = await patchConfig(name, configDiff);
       if (cfgResult.valid) {
         baselineConfigFields = currentConfig;
         if (Object.keys(configDiff).length > 0) {
@@ -585,7 +603,7 @@
       }
     }
 
-    const mcpResult = await patchMcp(mcpDiff);
+    const mcpResult = await patchMcp(name, mcpDiff);
     if (mcpResult.valid) {
       baselineMcpServers = currentMcp;
       if (Object.keys(mcpDiff).length > 0) {
@@ -846,11 +864,12 @@
             bind:fields={configFields}
             {simple}
             part="cloud"
+            {agent}
             {pendingSave}
             onReload={reloadConfigFile}
           />
         {:else if activeSection === "a2a"}
-          <A2a bind:fields={configFields} {simple} scope="hub" />
+          <A2a bind:fields={configFields} {simple} scope="hub" {agent} />
         {:else if activeSection === "sessions"}
           <SessionBudget bind:fields={configFields} />
         {:else if activeSection === "tracing"}
@@ -862,7 +881,7 @@
         {:else if activeSection === "agent-keys"}
           <AgentKeys />
         {:else if activeSection === "history"}
-          <History scope="hub" />
+          <History scope="hub" {agent} />
         {/if}
       {:else if activeSection === "runtime"}
         <Runtime bind:fields={configFields} {simple} />
@@ -870,6 +889,7 @@
         <Providers
           bind:providers={providerEntries}
           bind:models={modelAssignments}
+          {agent}
           {pendingSave}
           onReload={reloadProvidersFile}
         />
@@ -878,6 +898,7 @@
           bind:fields={configFields}
           {simple}
           part={INTEGRATIONS_PARTS[activeSection]}
+          {agent}
           {pendingSave}
           onReload={reloadConfigFile}
         />
@@ -886,11 +907,11 @@
       {:else if activeSection === "memory"}
         <Memory bind:fields={configFields} {simple} />
       {:else if activeSection === "mcp"}
-        <MCP bind:servers={mcpServers} {pendingSave} onReload={reloadMcpFile} />
+        <MCP bind:servers={mcpServers} {agent} {pendingSave} onReload={reloadMcpFile} />
       {:else if activeSection === "a2a"}
-        <A2a bind:fields={configFields} {simple} scope="agent" />
+        <A2a bind:fields={configFields} {simple} scope="agent" {agent} />
       {:else if activeSection === "history"}
-        <History scope="agent" />
+        <History scope="agent" {agent} />
       {/if}
     </div>
   </div>

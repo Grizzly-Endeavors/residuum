@@ -146,7 +146,7 @@
 
   // No agents yet means first-run setup. The hub socket stays up for the life
   // of the page and feeds the switcher; the agent connection follows the
-  // router's current agent (see `ws.svelte.ts`), so navigating between pages
+  // router's viewed agent (see `ws.svelte.ts`), so navigating between pages
   // or to the team never drops it.
   onMount(() => {
     hub.connect();
@@ -297,7 +297,7 @@
     {:else if activeView === "team-files"}
       <div class="app-body">
         <div class="app-main">
-          <Workspace scope="team" onClose={() => router.closeTeam()} />
+          <Workspace agent={null} scope="team" onClose={() => router.closeTeam()} />
         </div>
       </div>
     {:else if activeView === "workbench"}
@@ -335,7 +335,7 @@
         >
           <div class="workspace-slot" aria-hidden={activeView !== "workspace"}>
             {#if workspaceMounted}
-              <Workspace onClose={() => router.setWorkspace(false)} />
+              <Workspace agent={router.agent} onClose={() => router.setWorkspace(false)} />
             {/if}
           </div>
           <div class="main-pane">

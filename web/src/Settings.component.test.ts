@@ -10,7 +10,6 @@ import {
   stubWebSocket,
 } from "./test/component";
 import Settings from "./Settings.svelte";
-import { setCurrentAgent } from "./lib/paths";
 import { invalidate } from "./lib/cache";
 import type { SettingsScope, SettingsSection } from "./lib/settings-sections";
 
@@ -63,7 +62,6 @@ const navButton = (name: string): HTMLElement | undefined =>
 
 beforeEach(() => {
   stubWebSocket();
-  setCurrentAgent("scout");
   invalidate("");
   serve();
 });

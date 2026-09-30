@@ -67,7 +67,7 @@ describe("toast undo targets the action's own checkpoint", () => {
   });
 
   it("restores the action's checkpoint when a newer one lands before Undo is clicked", async () => {
-    notifyWithUndo("Removed github_token.", "hub", "agent-keys.toml.enc", ACTION_CHECKPOINT);
+    notifyWithUndo(null, "Removed github_token.", "hub", "agent-keys.toml.enc", ACTION_CHECKPOINT);
     const shown = [...toast.toasts.values()].at(-1);
     expect(shown?.action?.label).toBe("Undo");
 
@@ -80,7 +80,7 @@ describe("toast undo targets the action's own checkpoint", () => {
   });
 
   it("does not offer Undo when no checkpoint id came back", () => {
-    notifyWithUndo("Removed github_token.", "hub", "agent-keys.toml.enc", null);
+    notifyWithUndo(null, "Removed github_token.", "hub", "agent-keys.toml.enc", null);
     const shown = [...toast.toasts.values()].at(-1);
     expect(shown).toMatchObject({ kind: "success", message: "Removed github_token." });
     expect(shown?.action).toBeUndefined();

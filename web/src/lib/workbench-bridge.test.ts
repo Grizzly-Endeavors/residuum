@@ -1,5 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { setCurrentAgent } from "./paths";
+import { describe, expect, it, vi } from "vitest";
 import {
   BRIDGE_TAG,
   checkArtifactRequest,
@@ -13,14 +12,6 @@ import type { ServerMessage } from "./types";
 
 const ORIGIN = "https://bear.agent-residuum.com";
 const ARTIFACTS = "https://bear.workbench.agent-residuum.com";
-
-beforeEach(() => {
-  setCurrentAgent("scout");
-});
-
-afterEach(() => {
-  setCurrentAgent(null);
-});
 
 describe("checkArtifactRequest", () => {
   it.each([
@@ -245,6 +236,7 @@ function harness(overrides: Partial<BridgeDeps> = {}): Harness {
     },
     watchWorkspace: (prefixes) => watchSets.push(prefixes),
     origin: ORIGIN,
+    boundAgent: () => "scout",
     fetch: vi.fn(() => Promise.resolve(new Response('{"ok":true}', { status: 200 }))),
     onEscape: () => {
       escapes += 1;
@@ -669,9 +661,8 @@ describe("WorkbenchBridge", () => {
     ]);
   });
 
-  it("answers an unscoped path with a 409 when no agent is open", async () => {
-    setCurrentAgent(null);
-    const h = harness();
+  it("answers an unscoped path with a 409 when no agent is bound", async () => {
+    const h = harness({ boundAgent: () => null });
     await h.bridge.handleMessage(h.frame, ARTIFACTS, fetchMsg("/api/status"));
     expect(h.deps.fetch).not.toHaveBeenCalled();
     const result = h.frame.posted[0]?.result as RelayedResponse;
@@ -693,6 +684,16 @@ describe("WorkbenchBridge", () => {
       "/api/team/workbench/artifacts",
       "/api/agents/atlas/status",
     ]);
+  });
+
+  it("addresses unscoped paths to the agent bound when each request is made", async () => {
+    let bound: string | null = "scout";
+    const h = harness({ boundAgent: () => bound });
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, fetchMsg("/api/status"));
+    bound = "atlas";
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, fetchMsg("/api/status"));
+    const urls = vi.mocked(h.deps.fetch).mock.calls.map(([input]) => requestUrl(input));
+    expect(urls).toEqual(["/api/agents/scout/status", "/api/agents/atlas/status"]);
   });
 
   it("passes an unhandled Esc from the artifact to the page", async () => {

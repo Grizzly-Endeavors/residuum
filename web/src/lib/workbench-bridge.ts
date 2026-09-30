@@ -376,6 +376,12 @@ export interface BridgeDeps {
   origin: string;
   fetch: typeof fetch;
   /**
+   * The agent unscoped paths (`/api/status`) address: the WebSocket
+   * coordinator's bound agent, or `null` when none is bound. Read per request,
+   * since the bound agent changes while the artifact's page stays open.
+   */
+  boundAgent: () => string | null;
+  /**
    * Observe server frames, each with the agent whose connection sent it
    * (`null` when none is bound); returns a function that stops observing.
    */
@@ -583,11 +589,11 @@ export class WorkbenchBridge {
       return;
     }
 
-    // Unscoped paths (`/api/status`) address the agent the web UI has open;
-    // scoped ones pass through. With no agent open, only scoped paths resolve.
+    // Unscoped paths (`/api/status`) address the bound agent; scoped ones
+    // pass through. With no agent bound, only scoped paths resolve.
     let url: string;
     try {
-      url = scopeApiPath(check.url);
+      url = scopeApiPath(check.url, this.deps.boundAgent());
     } catch (err) {
       if (!(err instanceof NoAgentSelectedError)) throw err;
       this.replyBlocked(
