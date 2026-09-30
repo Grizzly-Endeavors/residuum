@@ -9,12 +9,15 @@
 // routes that change secrets, credentials, raw config, or Residuum's own
 // lifecycle are refused.
 //
-// The bridge also carries the workspace change feed: it hands the artifact's
-// watched prefixes to the WebSocket coordinator, delivers only the changes
-// under them, and tells the artifact when the connection drops and returns.
+// The bridge also carries the workspace change feed: it is the watch owner
+// for its artifact's document, registers the artifact's watched prefixes with
+// the WebSocket coordinator's watch registry, passes on the changes the
+// registry delivers for them, and tells the artifact when the connection
+// drops and returns.
 
-import type { ServerMessage, WorkspaceChange } from "./types";
-import { changesUnder, normalizeWatchPrefix } from "./workspace-watch";
+import type { ServerMessage } from "./types";
+import type { WatchHandler, WatchOwner } from "./watch-registry";
+import { normalizeWatchPrefix } from "./workspace-watch";
 import { NoAgentSelectedError, scopeApiPath } from "./paths";
 
 /** Tag on every message between the SDK and the bridge. Matches sdk.js. */
@@ -388,8 +391,12 @@ export interface BridgeDeps {
   onFrame: (listener: (msg: ServerMessage, agent: string | null) => void) => () => void;
   /** Observe the socket connecting and disconnecting; returns a function that stops observing. */
   onConnectionChange: (listener: (connected: boolean) => void) => () => void;
-  /** Set the workspace prefixes the connection watches for this artifact. `[]` stops watching. */
-  watchWorkspace: (prefixes: readonly string[]) => void;
+  /**
+   * Become a watch owner on the bound agent's socket. The bridge owns its
+   * document's prefixes and no one else's: it registers while the document
+   * watches anything and releases when it watches nothing.
+   */
+  registerWatch: (handler: WatchHandler) => WatchOwner;
   /** The user pressed Esc inside the artifact and the artifact left it unhandled. */
   onEscape: () => void;
   /**
@@ -404,8 +411,8 @@ export interface BridgeDeps {
 
 export class WorkbenchBridge {
   private subscribed = false;
-  /** The artifact's watched workspace prefixes, normalized. */
-  private watched: string[] = [];
+  /** The bridge's claim on the watch registry, held while the document watches anything. */
+  private watch: WatchOwner | null = null;
   /** Whether the current document's SDK announced itself since the last frame load. */
   private readySinceLoad = false;
   /** Whether the socket dropped since the artifact last had a live connection. */
@@ -485,10 +492,26 @@ export class WorkbenchBridge {
     this.setWatched([]);
   }
 
+  /**
+   * Watch exactly `prefixes` for the document, which replaces only the
+   * document's own watch. The bridge registers on the first watch and
+   * releases when the document watches nothing.
+   */
   private setWatched(prefixes: string[]): void {
-    if (prefixes.length === 0 && this.watched.length === 0) return;
-    this.watched = prefixes;
-    this.deps.watchWorkspace(prefixes);
+    if (prefixes.length === 0) {
+      this.watch?.release();
+      this.watch = null;
+      return;
+    }
+    this.watch ??= this.deps.registerWatch({
+      changed: (changes) => {
+        this.post({ kind: "event", frame: { type: "workspace_changed", changes } });
+      },
+      resync: (reason) => {
+        this.post({ kind: "event", frame: { type: "workspace_resync", reason } });
+      },
+    });
+    this.watch.set(prefixes);
   }
 
   /**
@@ -500,25 +523,21 @@ export class WorkbenchBridge {
    * another's.
    */
   private forwardFrame(frame: ServerMessage, agent: string | null): void {
-    if (frame.type === "workspace_changed") {
-      this.deliverChanges(frame.changes);
-    } else if (frame.type === "workspace_resync") {
-      if (this.watched.length > 0) this.post({ kind: "event", frame });
-    } else if (frame.type !== "workspace_watch_unavailable" && frame.type !== "pong") {
-      // The web UI shows its own notice when live updates are off, and
-      // keepalive pongs are transport noise, not events an artifact can act on.
-      if (this.subscribed) {
-        this.post({ kind: "event", frame: agent === null ? frame : { ...frame, agent } });
-      }
+    // The change feed reaches the artifact through its watch, for the prefixes
+    // it watches. The web UI shows its own notice when live updates are off,
+    // and keepalive pongs are transport noise, not events an artifact can act
+    // on.
+    if (
+      frame.type === "workspace_changed" ||
+      frame.type === "workspace_resync" ||
+      frame.type === "workspace_watch_unavailable" ||
+      frame.type === "pong"
+    ) {
+      return;
     }
-  }
-
-  /** Deliver the changes under the artifact's watched prefixes, if any. */
-  private deliverChanges(changes: WorkspaceChange[]): void {
-    if (this.watched.length === 0) return;
-    const matching = changesUnder(changes, this.watched);
-    if (matching.length === 0) return;
-    this.post({ kind: "event", frame: { type: "workspace_changed", changes: matching } });
+    if (this.subscribed) {
+      this.post({ kind: "event", frame: agent === null ? frame : { ...frame, agent } });
+    }
   }
 
   /**
@@ -527,10 +546,10 @@ export class WorkbenchBridge {
    */
   private connectionChanged(connected: boolean): void {
     if (!connected) this.missedChanges = true;
-    if (!this.subscribed && this.watched.length === 0) return;
+    if (!this.subscribed && this.watch === null) return;
     const state = connected ? "connected" : "disconnected";
     this.post({ kind: "event", frame: { type: "connection", state } });
-    if (connected && this.missedChanges && this.watched.length > 0) {
+    if (connected && this.missedChanges && this.watch !== null) {
       this.post({ kind: "event", frame: { type: "workspace_resync", reason: "reconnected" } });
     }
     if (connected) this.missedChanges = false;
