@@ -481,7 +481,7 @@ mod tests {
         category: &str,
         conversation_target: Option<crate::bus::ConversationTarget>,
     ) -> crate::tools::ToolRegistry {
-        crate::tools::ToolRegistry::build_subagent_registry(crate::tools::SubagentToolDeps {
+        crate::tools::ToolRegistry::build_subagent_registry(&crate::tools::SubagentToolDeps {
             tracker: FileTracker::new_shared(),
             path_policy: Arc::clone(&h.path_policy),
             tools_path: Arc::clone(&h.tools_path),

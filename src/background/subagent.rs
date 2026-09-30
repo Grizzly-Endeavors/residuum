@@ -269,7 +269,7 @@ pub async fn build_subagent_resources(
     let (skill_state, skills_index) =
         prepare_session_skill_state(main_skill_state, skill.as_deref()).await?;
 
-    let tools = ToolRegistry::build_subagent_registry(SubagentToolDeps {
+    let tools = ToolRegistry::build_subagent_registry(&SubagentToolDeps {
         // Fresh file tracker (tracks reads within this sub-agent turn only)
         tracker: FileTracker::new_shared(),
         path_policy,
