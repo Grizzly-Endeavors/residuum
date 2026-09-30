@@ -21,20 +21,13 @@ import { WebSocketServer, WebSocket } from "ws";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { agentNameProblem } from "./mock/agent-name";
 import { MOCK_CLOUD_STATUS, MOCK_FEATURES, MOCK_RESIDUUM_VERSION } from "./mock/constants";
-import type { MockSessions } from "./mock/data/sessions";
-import { artifactIdentity, json, readBody, text } from "./mock/http";
+import { json, readBody, text } from "./mock/http";
+import { dispatchRoute } from "./mock/routes";
+import { sendSessionMessage, sessionRoutes, spawnSession, stopSession } from "./mock/sessions";
 import { createState, type MockAgent, type MockHub, type MockState } from "./mock/state";
 import { byName } from "./mock/util";
-import type { SessionSummary as MockSession } from "./src/lib/generated/protocol";
 
-// ─── In-memory state ───────────────────────────────────────────────────────────
-
-/**
- * Transcript fetches are slowed down so the "Loading transcript…" state (and
- * anything racing it, like messaging a session straight after opening it)
- * can be exercised by hand.
- */
-const TRANSCRIPT_DELAY_MS = 700;
+// ─── Delays ────────────────────────────────────────────────────────────────────
 
 /**
  * Model calls are slowed down so they're visibly "in flight" in an
@@ -42,135 +35,6 @@ const TRANSCRIPT_DELAY_MS = 700;
  * calls and Stop page by hand.
  */
 const MODEL_CALL_DELAY_MS = 3000;
-
-// ─── Agent sessions ────────────────────────────────────────────────────────────
-
-// Session lifecycle helpers shared by the WebSocket command handlers and the
-// REST endpoints that start, stop, and message sessions on an artifact's
-// behalf (`POST /api/sessions` and friends) — both need to mutate the same
-// in-memory sessions and announce it over the same broadcast channel.
-
-function recordMessage(
-  sessions: MockSessions,
-  session: MockSession,
-  message: Record<string, unknown>,
-) {
-  const list = sessions.transcripts.get(session.run_id) ?? [];
-  list.push({ timestamp: session.started_at, visibility: "user", ...message });
-  sessions.transcripts.set(session.run_id, list);
-}
-
-function setSessionState(
-  broadcast: (frame: Record<string, unknown>) => void,
-  session: MockSession,
-  next: MockSession["state"],
-) {
-  session.state = next;
-  broadcast({
-    type: "session_state_changed",
-    address: session.address,
-    run_id: session.run_id,
-    state: next,
-  });
-}
-
-function completeSession(
-  sessions: MockSessions,
-  broadcast: (frame: Record<string, unknown>) => void,
-  session: MockSession,
-  status: "completed" | "cancelled" | "failed",
-  error: string | null,
-  errorDetails: string | null = null,
-) {
-  setSessionState(broadcast, session, "completing");
-  setTimeout(() => {
-    sessions.live = sessions.live.filter((s) => s.run_id !== session.run_id);
-    session.state = "completed";
-    session.completed_at = new Date().toISOString();
-    session.episode_id = status === "completed" ? "ep-301" : null;
-    sessions.completed.unshift(session);
-    broadcast({
-      type: "session_completed",
-      address: session.address,
-      run_id: session.run_id,
-      status,
-      error,
-      error_details: errorDetails,
-      episode_id: session.episode_id,
-    });
-  }, 800);
-}
-
-// One turn: running → tool → reply → idle, relaying to main when spawned by it.
-function runSessionTurn(
-  sessions: MockSessions,
-  broadcast: (frame: Record<string, unknown>) => void,
-  session: MockSession,
-  reply: string,
-) {
-  const turnId = `${session.run_id}-t${Date.now()}`;
-  const toolId = `tc_s_${Date.now()}`;
-  setSessionState(broadcast, session, "running");
-  broadcast({
-    type: "session_turn_started",
-    address: session.address,
-    run_id: session.run_id,
-    turn_id: turnId,
-  });
-  setTimeout(() => {
-    broadcast({
-      type: "session_broadcast_response",
-      address: session.address,
-      run_id: session.run_id,
-      content: "Checking the notes first.",
-    });
-    broadcast({
-      type: "session_tool_call",
-      address: session.address,
-      run_id: session.run_id,
-      id: toolId,
-      name: "memory_search",
-      arguments: { query: "fallback" },
-    });
-  }, 500);
-  setTimeout(() => {
-    broadcast({
-      type: "session_tool_result",
-      address: session.address,
-      run_id: session.run_id,
-      tool_call_id: toolId,
-      name: "memory_search",
-      output: "1 result: notification-routing.md",
-      is_error: false,
-    });
-  }, 1200);
-  setTimeout(() => {
-    if (!sessions.live.includes(session) || session.state !== "running") return;
-    recordMessage(sessions, session, { role: "assistant", content: reply });
-    broadcast({
-      type: "session_response",
-      address: session.address,
-      run_id: session.run_id,
-      turn_id: turnId,
-      content: reply,
-    });
-    broadcast({
-      type: "session_turn_ended",
-      address: session.address,
-      run_id: session.run_id,
-      turn_id: turnId,
-    });
-    setSessionState(broadcast, session, "idle");
-    if (session.spawner === "main") {
-      broadcast({
-        type: "session_message_to_main",
-        address: session.address,
-        run_id: session.run_id,
-        content: reply,
-      });
-    }
-  }, 2400);
-}
 
 /**
  * Serve an artifact page the way the artifacts listener does: SDK injected,
@@ -659,6 +523,9 @@ function setupRestMiddleware(server: ViteDevServer, hub: MockHub) {
       if (routed === "handled") return;
       const { state, path } = routed;
 
+      // Areas whose routes live in `mock/` modules.
+      if (await dispatchRoute(sessionRoutes, { req, res, hub, state, method, path, query })) return;
+
       // ── Status & system ────────────────────────────────────────────────
       if (path === "/api/status" && method === "GET") {
         json(res, 200, {
@@ -737,174 +604,6 @@ function setupRestMiddleware(server: ViteDevServer, hub: MockHub) {
         agent.state.broadcast({ type: "response", reply_to: "teammate", content: reply });
         if (agent.connectedClients() === 0) hub.addUnread(agent);
         json(res, 200, { ok: true });
-        return;
-      }
-
-      // ── Sessions ───────────────────────────────────────────────────────
-      if (path === "/api/sessions" && method === "GET") {
-        const address = query.get("address");
-        const category = query.get("category");
-        const artifact = query.get("artifact");
-        const limit = Number(query.get("limit") ?? "50");
-        const before = query.get("before");
-        const match = (s: MockSession) =>
-          (!address || s.address === address) &&
-          (!category || s.category === category) &&
-          (!artifact || (s.category === "artifact" && s.source_label === `artifact:${artifact}`));
-        const done = state.sessions.completed.filter(match);
-        const startIdx = before ? done.findIndex((s) => s.run_id === before) + 1 : 0;
-        const page = done.slice(startIdx, startIdx + limit);
-        const hasMore = startIdx + limit < done.length;
-        json(res, 200, {
-          live: state.sessions.live.filter(match),
-          completed: page,
-          next_cursor: hasMore ? (page[page.length - 1]?.run_id ?? null) : null,
-        });
-        return;
-      }
-
-      const transcriptMatch = /^\/api\/sessions\/runs\/([^/]+)\/transcript$/.exec(path);
-      if (transcriptMatch && method === "GET") {
-        const runId = decodeURIComponent(transcriptMatch[1]);
-        const session =
-          state.sessions.live.find((s) => s.run_id === runId) ??
-          state.sessions.completed.find((s) => s.run_id === runId);
-        if (!session) {
-          text(res, 404, "no such run");
-          return;
-        }
-        await new Promise((done) => setTimeout(done, TRANSCRIPT_DELAY_MS));
-        json(res, 200, { session, messages: state.sessions.transcripts.get(runId) ?? [] });
-        return;
-      }
-
-      // POST /api/sessions — start an artifact session, the endpoint
-      // `residuum.sessions.start` calls through the bridge.
-      if (path === "/api/sessions" && method === "POST") {
-        const artifactName = artifactIdentity(req);
-        if (!artifactName) {
-          json(res, 400, {
-            error:
-              "starting a session needs the X-Residuum-Artifact header: sessions are started by workbench artifacts, through residuum.sessions.start",
-          });
-          return;
-        }
-        const body = JSON.parse((await readBody(req)) || "{}");
-        const prompt: string = typeof body.prompt === "string" ? body.prompt : "";
-        if (!prompt.trim()) {
-          json(res, 400, { error: "prompt must not be empty" });
-          return;
-        }
-        const sessions = state.sessions;
-        sessions.runCounter++;
-        const session: MockSession = {
-          address: `artifact-${artifactName}-${(0x1000 + sessions.runCounter).toString(16)}`,
-          run_id: `run-artifact-${sessions.runCounter}`,
-          category: "artifact",
-          source_label: `artifact:${artifactName}`,
-          state: "forking",
-          spawner: null,
-          depth: 1,
-          purpose: prompt.slice(0, 140),
-          started_at: new Date().toISOString(),
-          completed_at: null,
-          episode_id: null,
-          interrupted: false,
-        };
-        sessions.live.unshift(session);
-        recordMessage(sessions, session, {
-          role: "user",
-          content: `[This session was started by the workbench artifact "${artifactName}". Your responses are shown to that artifact, not to the main conversation.]\n\n${prompt}`,
-        });
-        state.broadcast({ type: "session_started", session });
-        setTimeout(
-          () =>
-            runSessionTurn(
-              sessions,
-              state.broadcast,
-              session,
-              `Working on it: ${prompt.slice(0, 80)}.`,
-            ),
-          400,
-        );
-        json(res, 202, { address: session.address });
-        return;
-      }
-
-      // POST /api/sessions/:address/stop — stop any live session.
-      const sessionStopMatch = /^\/api\/sessions\/([^/]+)\/stop$/.exec(path);
-      if (sessionStopMatch && method === "POST") {
-        const address = decodeURIComponent(sessionStopMatch[1]);
-        const sessions = state.sessions;
-        if (address === "main") {
-          json(res, 400, { error: "main can't be stopped this way", code: "invalid_request" });
-          return;
-        }
-        const live = sessions.live.find((s) => s.address === address);
-        if (!live || live.state === "completing") {
-          json(res, 404, {
-            error: `${address} isn't running, so there's nothing to stop.`,
-            code: "not_live",
-          });
-          return;
-        }
-        completeSession(sessions, state.broadcast, live, "cancelled", null);
-        json(res, 202, { address });
-        return;
-      }
-
-      // POST /api/sessions/:address/messages — message any session, attributed
-      // to the artifact naming itself with the identity header, or the owner.
-      const sessionMessageMatch = /^\/api\/sessions\/([^/]+)\/messages$/.exec(path);
-      if (sessionMessageMatch && method === "POST") {
-        const address = decodeURIComponent(sessionMessageMatch[1]);
-        const body = JSON.parse((await readBody(req)) || "{}");
-        const content: string = typeof body.content === "string" ? body.content : "";
-        if (!content.trim() || address === "main") {
-          json(res, 400, {
-            error: content.trim() ? "main can't be messaged this way" : "content must not be empty",
-            code: "invalid_request",
-          });
-          return;
-        }
-        const artifactName = artifactIdentity(req);
-        const label = artifactName
-          ? `[Message from the workbench artifact "${artifactName}" — your response in this turn is shown to it directly]`
-          : "[Message from the owner via the web UI — your response in this turn is shown to them directly]";
-        const sessions = state.sessions;
-        const live = sessions.live.find((s) => s.address === address);
-        if (live) {
-          recordMessage(sessions, live, { role: "user", content: `${label}\n${content}` });
-          runSessionTurn(sessions, state.broadcast, live, `Understood: "${content.slice(0, 60)}".`);
-          json(res, 200, { outcome: "live" });
-          return;
-        }
-        const prev = sessions.completed.find((s) => s.address === address);
-        if (!prev) {
-          json(res, 404, {
-            error: `There's no session called ${address}. It may have been from before a restart.`,
-            code: "unknown_address",
-          });
-          return;
-        }
-        sessions.runCounter++;
-        const resumed: MockSession = {
-          ...prev,
-          run_id: `run-resumed-http-${sessions.runCounter}`,
-          state: "forking",
-          started_at: new Date().toISOString(),
-          completed_at: null,
-          episode_id: null,
-          interrupted: false,
-        };
-        sessions.live.unshift(resumed);
-        recordMessage(sessions, resumed, { role: "user", content: `${label}\n${content}` });
-        state.broadcast({ type: "session_started", session: resumed });
-        setTimeout(
-          () => runSessionTurn(sessions, state.broadcast, resumed, "Picking this back up."),
-          400,
-        );
-        json(res, 200, { outcome: "resumed" });
         return;
       }
 
@@ -1466,74 +1165,10 @@ function setupWebSocket(server: ViteDevServer, hub: MockHub, agent: MockAgent) {
       if (client.readyState === WebSocket.OPEN) client.send(data);
     }
   };
-  const sessions = state.sessions;
   state.dropSockets = () => {
     for (const client of wss.clients) client.terminate();
   };
   state.broadcast = broadcast;
-
-  const setState = (session: MockSession, next: MockSession["state"]) =>
-    setSessionState(broadcast, session, next);
-  const record = (session: MockSession, message: Record<string, unknown>) =>
-    recordMessage(sessions, session, message);
-  const complete = (
-    session: MockSession,
-    status: "completed" | "cancelled" | "failed",
-    error: string | null,
-  ) => completeSession(sessions, broadcast, session, status, error);
-  const runTurn = (session: MockSession, reply: string) =>
-    runSessionTurn(sessions, broadcast, session, reply);
-
-  function spawnSession(purpose: string): MockSession {
-    sessions.runCounter++;
-    const session: MockSession = {
-      address: `spawned-subagent-${(0xa000 + sessions.runCounter).toString(16)}`,
-      run_id: `run-new-${sessions.runCounter}`,
-      category: "spawned",
-      source_label: "agent:subagent",
-      state: "forking",
-      spawner: "main",
-      depth: 1,
-      purpose,
-      started_at: new Date().toISOString(),
-      completed_at: null,
-      episode_id: null,
-      interrupted: false,
-    };
-    sessions.live.unshift(session);
-    record(session, { role: "user", content: purpose });
-    broadcast({ type: "session_started", session });
-    setTimeout(
-      () =>
-        runTurn(
-          session,
-          `Finished: ${purpose}. Two items need a look; details are in the transcript.`,
-        ),
-      400,
-    );
-    return session;
-  }
-
-  function resumeSession(prev: MockSession, content: string): MockSession {
-    sessions.runCounter++;
-    const session: MockSession = {
-      ...prev,
-      run_id: `run-resumed-${sessions.runCounter}`,
-      state: "forking",
-      started_at: new Date().toISOString(),
-      completed_at: null,
-      episode_id: null,
-      interrupted: false,
-    };
-    sessions.live.unshift(session);
-    record(session, {
-      role: "user",
-      content: `[Message from the owner via the web UI — your response in this turn is shown to them directly]\n${content}`,
-    });
-    broadcast({ type: "session_started", session });
-    setTimeout(() => runTurn(session, "Picking this back up. Here's where it stands now."), 400);
-    return session;
-  }
 
   agent.connectedClients = () => wss.clients.size;
 
@@ -1545,7 +1180,9 @@ function setupWebSocket(server: ViteDevServer, hub: MockHub, agent: MockAgent) {
       try {
         msg = JSON.parse(raw.toString());
       } catch {
-        ws.send(JSON.stringify({ type: "error", reply_to: null, message: "invalid JSON" }));
+        ws.send(
+          JSON.stringify({ type: "error", reply_to: null, message: "invalid JSON", details: null }),
+        );
         return;
       }
 
@@ -1556,7 +1193,7 @@ function setupWebSocket(server: ViteDevServer, hub: MockHub, agent: MockAgent) {
 
         case "send_message":
           if (String(msg.content).toLowerCase().startsWith("spawn")) {
-            spawnSession(String(msg.content).replace(/^spawn\s*/i, "") || "Look into something");
+            spawnSession(state, String(msg.content).replace(/^spawn\s*/i, "") || "Look into something");
           }
           simulateConversation(msg);
           break;
@@ -1569,74 +1206,24 @@ function setupWebSocket(server: ViteDevServer, hub: MockHub, agent: MockAgent) {
           // The mock has no workspace to watch, so no change frames follow.
           break;
 
-        case "session_send_message": {
-          const id = String(msg.id);
-          const address = String(msg.address);
-          const content = String(msg.content);
-          const live = sessions.live.find((s) => s.address === address);
-          if (content.includes("busy")) {
-            ws.send(
-              JSON.stringify({
-                type: "session_command_failed",
-                id,
-                address,
-                code: "busy",
-                message: `${address} is busy and can't take another message yet. Try again shortly.`,
-              }),
-            );
-            break;
-          }
-          if (live) {
-            record(live, {
-              role: "user",
-              content: `[Message from the owner via the web UI — your response in this turn is shown to them directly]\n${content}`,
-            });
-            ws.send(
-              JSON.stringify({ type: "session_message_delivered", id, address, outcome: "live" }),
-            );
-            runTurn(live, `Understood: "${content.slice(0, 60)}". Adjusting course.`);
-            break;
-          }
-          const prev = sessions.completed.find((s) => s.address === address);
-          if (!prev) {
-            ws.send(
-              JSON.stringify({
-                type: "session_command_failed",
-                id,
-                address,
-                code: "unknown_address",
-                message: `There's no session called ${address}. It may have been from before a restart.`,
-              }),
-            );
-            break;
-          }
-          ws.send(
-            JSON.stringify({ type: "session_message_delivered", id, address, outcome: "resumed" }),
+        case "session_send_message":
+          sendSessionMessage(
+            state,
+            (frame) => ws.send(JSON.stringify(frame)),
+            String(msg.id),
+            String(msg.address),
+            String(msg.content),
           );
-          setTimeout(() => resumeSession(prev, content), 300);
           break;
-        }
 
-        case "session_stop": {
-          const id = String(msg.id);
-          const address = String(msg.address);
-          const live = sessions.live.find((s) => s.address === address);
-          if (!live || live.state === "completing") {
-            ws.send(
-              JSON.stringify({
-                type: "session_command_failed",
-                id,
-                address,
-                code: "not_live",
-                message: `${address} isn't running, so there's nothing to stop.`,
-              }),
-            );
-            break;
-          }
-          ws.send(JSON.stringify({ type: "session_stop_requested", id, address }));
-          complete(live, "cancelled", null);
+        case "session_stop":
+          stopSession(
+            state,
+            (frame) => ws.send(JSON.stringify(frame)),
+            String(msg.id),
+            String(msg.address),
+          );
           break;
-        }
 
         case "reload":
           ws.send(JSON.stringify({ type: "reloading" }));
@@ -1674,6 +1261,7 @@ function setupWebSocket(server: ViteDevServer, hub: MockHub, agent: MockAgent) {
               type: "error",
               reply_to: null,
               message: `unknown message type: ${msg.type}`,
+              details: null,
             }),
           );
       }
