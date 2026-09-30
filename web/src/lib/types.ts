@@ -270,8 +270,6 @@ export interface ValidateResponse {
 
 // ── Settings types ───────────────────────────────────────────────────
 
-export type { SettingsSection } from "./settings-sections";
-
 export type SettingsMode = "simple" | "advanced" | "raw";
 
 export interface RollbackNoticeResponse {
