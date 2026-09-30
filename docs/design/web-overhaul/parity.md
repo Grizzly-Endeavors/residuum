@@ -86,25 +86,22 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [ ] File history: checkpoints (≤ 100), relative time, trigger, summary, auto-select newest, diff, view full content, restore
 - [ ] Team files have live updates — **Fix:** today the team view never subscribes to team change frames
 
-## Workbench → Workbench place (design §5, §9.8, §9.9; W04b, W32a, W32b)
+## Workbench → Workbench launcher and standalone artifacts (design §5, §9.8–§9.10; W12b–W12d, W32a, W32b)
 
-- [ ] List with loading, error with Try again, empty explanation; title, path, edited time (refreshes every 30 s); agent-edit glow "updating now" — **Fix:** one path format (`/team/workbench/<name>`) in the list and the bar; **Changed:** refreshes on hub artifact events, so it works with no agent running
-- [ ] Open; modifier-click or middle-click opens a new tab of the app
+- [ ] List with loading, error with Try again, empty explanation; title, path, edited time (refreshes every 30 s); agent-edit glow "updating now" — **Fix:** one path format (`/team/workbench/<name>`); **Changed:** refreshes on hub artifact events, so it works with no agent running
+- [ ] Open an artifact — **Changed:** opens on the artifacts origin in its own tab, never inside the app; Copy link added
 - [ ] Delete with Undo (page and data files)
-- [ ] Live list updates; reload on reconnect; artifacts-unavailable warning — **Fix:** the warning shows even when the list is empty
-- [ ] Artifact bar: back, title (focused on open), path, activity toggle ("N sessions · M calls"), Stop page, Full view, Reload — **Changed:** on phones everything past back and title moves to an overflow menu
-- [ ] Activity panel: live sessions this artifact started (open, stop), in-flight calls with Cancel calls; Esc and click-outside close — **Fix:** lists sessions on any agent, not only the bound agent's (#292); opening one shows it in the context panel instead of navigating away and unloading the artifact; Cancel calls says it stopped waiting (#310)
-- [ ] Stop page with Restart notice; sessions keep running
-- [ ] Full view by button or F; Esc or the exit control to exit; the page can forward Esc — **Changed:** hides the whole shell, including the phone bottom bar, and the exit control honors safe areas
-- [ ] Reload; live reload on agent edits without flashing, keeping full view
-- [ ] Deleted and unavailable notices — **Fix:** an unknown artifact redirects to the list with a toast instead of showing the listener's 404 in the frame
-- [ ] Sandboxed iframe on the artifacts origin with today's sandbox and permissions; one frame node, never moved (no reload when the panel opens or full view toggles)
-- [ ] Artifacts origin selection — **Fix:** no unreachable origin when the UI is on HTTPS without a relay artifacts origin (#308)
-- [ ] SDK: `fetch`, `ask`, `on`, `watch`, `state.get`/`set`, `sessions.start` with handle `on`/`send`/`stop`, connection events, Esc forwarding, `ready`, `features` — unchanged — **Fix:** session frames arrive for sessions on any agent (#292); replies never cross documents after a live reload (#307)
-- [ ] Unscoped `residuum.fetch` agent paths resolve to the bound agent; hub-prefixed paths map to the hub; `/api/workbench/` maps to team
-- [ ] `watch` of agent-workspace and `team/` prefixes, resync on reconnect — **Changed:** through the watch registry; `team/` via the hub socket's team watch
-- [ ] Bridge lanes: 8 ordinary, 4 model calls; retry on the relay's "agent overloaded" 503
-- [ ] Request policy — **Fix:** also refuses config patches, MCP config writes, checkpoint restore and undo, artifact deletion, and other artifacts' sessions; the backend enforces it too; the listener sends `frame-ancestors` and stops serving dot-files
+- [ ] Artifacts-unavailable warning — **Fix:** shows even when the list is empty, and covers the HTTPS-without-relay case (#308)
+- [ ] Artifact bar (back, title, path), Stop page, Restart, Full view (button and F), Reload, deleted notice — **Dropped:** the page owns its own window; closing the tab unloads it, and the browser's reload and full screen apply
+- [ ] Activity panel: the artifact's live sessions (open, stop) — **Changed:** in the Workbench row and detail, for sessions on any agent (#292); opening one shows it in the context panel
+- [ ] In-flight model call count and Cancel calls — **Dropped:** a page manages its own calls
+- [ ] Live reload on agent edits — **Changed:** the SDK reloads the page itself, unless the page handles `artifact_updated`
+- [ ] Unknown artifact — **Fix:** the route redirects to the list with a toast
+- [ ] SDK: `fetch`, `ask`, `on`, `watch`, `state.get`/`set`, `sessions.start` with handle `on`/`send`/`stop`, connection events, `features`, `embedded`, `artifact`, `version` — kept — **Changed:** direct access from the page's own origin; defaults follow the page's agent; `agent(name)` added; `ready` and Esc forwarding removed; **Fix:** session frames arrive for sessions on any agent (#292); no reply crosses documents, because the bridge is gone (#307)
+- [ ] Unscoped fetch paths: hub prefixes to the hub, `/api/workbench/` to team, agent paths to the page's agent (409 with a clear error when it has none)
+- [ ] `watch` of agent-workspace and `team/` prefixes, resync on reconnect
+- [ ] Request limits — **Changed:** artifacts can call everything the UI can, except shutdown, stop-all, updates and setup, enforced where the artifacts origin forwards the API
+- [ ] Artifacts origin and relay workbench host — **Changed:** they also forward the API and sockets (relay-project change)
 
 ## Scheduled → Schedule place (design §5; W30)
 
@@ -191,7 +188,7 @@ Agent scope:
 
 ## Global (W15 toasts, W17 routing, W19 connection and errors, W21 keyboard)
 
-- [ ] Keyboard: `?` help, Enter/Shift+Enter, slash-menu keys, Esc (stop reply, close overlays), F (artifact full view), rail keyboard navigation, focus trapping in overlays, Enter/Space on disclosures
+- [ ] Keyboard: `?` help, Enter/Shift+Enter, slash-menu keys, Esc (stop reply, close overlays), rail keyboard navigation, focus trapping in overlays, Enter/Space on disclosures — **Dropped:** F for artifact full view (artifacts open in their own tab)
 - [ ] Agent socket reconnect with backoff, ping, queued sends; resync of sessions, history, usage, workspace watch and workbench on reconnect
 - [ ] Hub socket offline handling
 - [ ] Gateway reloading toast and cache invalidation

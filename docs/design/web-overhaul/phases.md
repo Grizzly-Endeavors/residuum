@@ -40,6 +40,7 @@ It does not merge, and does not contact the owner.
 **Targets.**
 - **main**: branch from `main`, PR into `main`.
 - **integration**: branch from `feat/web-overhaul`, PR into it.
+- **relay**: a branch and PR in the relay project, which the owner deploys.
 
 `feat/web-overhaul` is created from `main` after Phase 1 merges, and merges `main` after every backend unit lands. A precondition written as "W05 merged" means that merge has happened.
 
@@ -67,7 +68,7 @@ It does not merge, and does not contact the owner.
 
 ## Phase 1 — Harness and guardrails (target: main)
 
-W01, then W01b. Then W02 and W04 together. Then W03 and W02b after W02, and W04b after W02b.
+W01, then W01b. Then W02 and W04 together. Then W03 and W02b after W02.
 
 ### W01 — Mock server as typed modules, part 1 (L)
 
@@ -116,19 +117,21 @@ W01, then W01b. Then W02 and W04 together. Then W03 and W02b after W02, and W04b
 
 - **Modules:** the mock server's workbench area and artifacts listener.
 - **Preconditions:** W02.
-- **Shape when done:** the mock matches design §10's workbench fidelity rules:
+- **Shape when done:** the mock matches today's real listener closely enough to test against:
   - a fixed artifacts port in deterministic mode, and the listener included in preview mode
+  - folder artifacts, the `/name` → `/name/` redirect, and `nosniff`
   - the sample artifact names its agent in `ask` and `sessions.start`
   - deletes return a checkpoint id
-  - folder artifacts, the `/name` → `/name/` redirect and `nosniff`, as the real listener has
-  - `artifact_updated` and `artifact_removed` and `workspace_changed` sent when mock files change (through a test-control endpoint)
+  - `artifact_updated`, `artifact_removed` and `workspace_changed` sent when mock files change, through a test-control endpoint
+
+  API forwarding, the session relay and the new SDK behavior are added to the mock by the units that build them (W11b, W12b, W32b).
 - **Verification:**
   - Route parity passes.
-  - A manual run of the sample artifact:
+  - A manual run of the sample artifact in today's embedded view:
     - starting a session delivers its frames
     - Fire 3 calls shows three calls in flight, and Cancel calls clears them
     - delete then Undo restores it
-    - a test-control edit live-reloads the open artifact
+    - a test-control edit live-reloads it
 
 ### W03 — End-to-end, accessibility and visual harness (M)
 
@@ -171,28 +174,6 @@ W01, then W01b. Then W02 and W04 together. Then W03 and W02b after W02, and W04b
   - An unregenerated Rust type change fails CI.
   - Coverage appears in the summary.
 
-### W04b — Artifact request policy and workbench fixes (M)
-
-- **Modules:**
-  - the artifact bridge: the policy table, per-document request tracking, origin resolution
-  - backend enforcement for requests carrying the artifact header
-  - the artifacts listener: `frame-ancestors`, no dot-files
-  - `workbench.md`, and the bundled workbench skill and its API reference
-- **Preconditions:** W02b.
-- **Shape when done:** on today's UI:
-  - Design §9.9 holds in the bridge and the backend.
-  - The bridge tracks requests per document (#307).
-  - The artifacts origin follows the design §5 rule (#308).
-  - The workbench docs match the code (#309).
-- **Verification:**
-  - Unit tests: every refused and allowed route in the policy table; a reply for a previous document dropped; the origin rule's three cases.
-  - Rust tests:
-    - header-carrying requests refused on the policy routes
-    - a session stop refused for another artifact's session and allowed for its own
-    - `frame-ancestors` present
-    - a dot-file answering 404
-  - End-to-end on the current UI: the sample artifact's session and calls still work.
-
 ---
 
 ## Phase 2 — Backend contracts (target: main)
@@ -202,6 +183,7 @@ Each unit implements its part of design §9, and updates the mock, the generated
 **Order, after W02:**
 - W05, W06, W07 and W12 together.
 - W08 after W05, then W09, then W10 (which also needs W07), then W11, then W11b.
+- W12b after W12, then W12c. W12d, in the relay project, can run any time.
 - These share hub runtime, WebSocket and host modules, so they run in sequence.
 
 ### W05 — Hub snapshot, error kind and hub frames (L)
@@ -323,17 +305,19 @@ Each unit implements its part of design §9, and updates the mock, the generated
 
 ### W11b — Hub artifact events and session relay (M)
 
-- **Modules:** hub workbench watcher (new, on the team change feed); hub socket subscriptions and `session_frame` forwarding from the per-agent watcher; mock server; hub HTTP and `workbench.md` docs, and the bundled workbench API reference.
+- **Modules:** hub workbench watcher (new, on the team change feed); hub socket subscriptions, acknowledgements, lag notice and `session_frame` forwarding from the per-agent watcher, with its address-to-source-label map; mock server; hub HTTP and `workbench.md` docs.
 - **Preconditions:** W11.
 - **Shape when done:**
-  - Design §9.8 in full: hub-socket artifact events, and the four subscription frames with `session_frame` delivery.
+  - Design §9.8 in full.
   - Existing per-agent artifact frames remain.
 - **Verification:** Rust tests:
   - artifact events with no agent running
-  - a subscribed session's full event stream arriving on the hub socket
+  - a subscribed session's full event stream, tool frames included, arriving on the hub socket
+  - an acknowledgement before any frame
   - artifact subscriptions matching sessions started later on two different agents
   - unsubscribe stopping delivery
-  - a notice for an unknown agent
+  - `session_relay_lagged` on a lagged connection
+  - a notice and no acknowledgement for an unknown agent
   - subscriptions ending with the connection
 
 ### W12 — Asset caching and compression (S)
@@ -348,6 +332,42 @@ Each unit implements its part of design §9, and updates the mock, the generated
   - 304 on a matching `If-None-Match`
   - compression negotiation
   - SPA fallback
+
+### W12b — API forwarding on the artifacts origin (M)
+
+- **Modules:** artifacts listener (API and WebSocket dispatch to the hub router, the internal marker, the block list); hub router sharing; mock artifacts listener; `workbench.md`.
+- **Preconditions:** W12.
+- **Shape when done:**
+  - Design §9.9's local half: the artifacts listener serves `/api/*` and socket upgrades through the hub router, marked as arriving through the artifacts origin.
+  - Marked requests are refused on the block list.
+  - The cross-site guard still refuses other sites.
+  - The embedded UI keeps working unchanged. Forwarding is additive.
+- **Verification:**
+  - Rust tests:
+    - an API call and a hub socket through the artifacts port
+    - each block-list route refused with the marker and allowed without it
+    - a forged marker header from a client having no effect
+    - a cross-site request refused
+  - A mock-backed end-to-end check opens the sample artifact's URL directly and calls an agent route.
+
+### W12c — Tunnel socket surface (S)
+
+- **Modules:** tunnel protocol types (the socket-open frame's optional `surface`); tunnel client socket forwarding.
+- **Preconditions:** W12b.
+- **Shape when done:**
+  - A socket open with the workbench surface connects to the artifacts listener.
+  - One without a surface behaves as today.
+  - An old relay that sends no surface still works.
+- **Verification:** Rust tests for both surfaces, a missing artifacts listener answering a failed open, and backward compatibility.
+
+### W12d — Relay workbench host (M, target: the relay project)
+
+- **Modules:** in the relay project: the workbench host dispatch (all methods and socket upgrades allowed, owner-session check kept); socket forwarding with the workbench surface; its tests and docs.
+- **Preconditions:** W12c's protocol shape agreed (its types are the contract).
+- **Shape when done:** design §9.9's relay half.
+- **Verification:**
+  - Relay tests: writes and socket upgrades on the workbench host forwarded with the surface; unauthenticated requests still redirected or refused; the relay's own routes still unreachable there.
+  - Owner check: deploy, then open an artifact through Residuum Cloud, start a session and see its frames.
 
 ---
 
@@ -437,7 +457,7 @@ W13 and W16 together. W14 after W13. W17 and W17b after W16. W15 after W13 and W
 
 ### W17b — Watch registry (S)
 
-- **Modules:** watch registry (new) for the agent socket and the hub socket's team watch; the existing workspace-watch sync, the Files view, and the artifact bridge, switched to it.
+- **Modules:** watch registry (new) for the agent socket and the hub socket's team watch; the existing workspace-watch sync, the Files view and the legacy artifact bridge, switched to it (the bridge until W32a deletes it).
 - **Preconditions:** W16.
 - **Shape when done:**
   - Design §12's registry: owners register and unregister prefixes.
@@ -545,7 +565,9 @@ W19, then W20 and W21 together.
 ## Phase 5 — Surfaces (target: integration)
 
 **Groups:**
-- Once W20 and W21 are in: W22, W30, W31 and W32a together. W32b after W32a, once W11b is merged.
+- Once W20 and W21 are in: W22, W30 and W31 together.
+- W32a once W27 is in and W11b is merged.
+- W32b once W11b, W12b and W12c are merged; it can run before or after W32a.
 - W23 after W22, then W24, then W25. W26 after W22.
 - Once W09–W11 are merged: W27, then W28.
 - W29 once W06, W07 and W10 are merged.
@@ -723,46 +745,52 @@ W19, then W20 and W21 together.
   - axe scans and baselines.
   - Parity: Workspace.
 
-### W32a — Workbench place and artifact view (M)
+### W32a — Workbench launcher (M)
 
-- **Modules:** Workbench list and artifact view (new); the list's refresh on hub artifact events once available (agent-socket events until then). The legacy Workbench components are deleted.
-- **Preconditions:** W20, W21.
-- **Shape when done:** design §5's Workbench list and artifact view:
-  - the bar and its phone overflow
-  - notices, including the always-shown unavailable banner
-  - one frame that never moves, with full view hiding the whole shell (bottom bar included)
-  - live reload
-  - the unknown-artifact redirect
-  - consistent paths
-  - Stop page and Restart
+- **Modules:** Workbench place (new): list, artifact detail row, Open and Copy link, sessions per artifact from the overview, and the session panel on Workbench routes. It refreshes on hub artifact events. The legacy in-app artifact view, its bar and activity panel, the bridge, and their styles are deleted.
+- **Preconditions:** W20, W21, W27; W11b merged.
+- **Shape when done:**
+  - Design §5's Workbench: the launcher list, detail, origin rule (#308), and banner.
+  - The redirects for `/team/workbench/:artifact` and `?full`.
+  - Nothing embeds an artifact anywhere in the app.
 - **Verification:**
   - End-to-end on both projects:
-    - open the sample artifact
-    - full view in and out (F, Esc, the exit control), with the frame not reloading
-    - a mock edit live-reloading it
+    - the list and detail
+    - Open producing the artifacts-origin URL in a new tab
+    - Copy link
+    - a mock edit making the row glow with no agent running
+    - an artifact's running sessions listed and opening in the panel
     - delete then Undo
     - an unknown name redirecting
-    - the unavailable banner with an empty list
+    - the banner for the HTTPS-without-relay case
   - axe scans and baselines.
   - Parity: Workbench.
 
-### W32b — Artifact bridge on the hub (M)
+### W32b — SDK direct access (M)
 
-- **Modules:** artifact bridge (hub session relay, hub artifact events, watch registry, bound-agent source for unscoped paths); activity panel across agents from the overview; session panel on the Workbench route.
-- **Preconditions:** W32a, W17b; W11b merged.
+- **Modules:**
+  - the SDK
+  - page's-agent injection in the artifacts listener, plus the durable last-writer record in the team write coordinator if one doesn't exist
+  - the mock artifacts listener
+  - the bundled workbench skill and its API reference
+  - `workbench.md`
+- **Preconditions:** W02b; W11b, W12b and W12c merged.
 - **Shape when done:**
-  - Design §5's bridge behavior and activity panel.
-  - An artifact's sessions deliver frames on any agent, with no duplicates.
-  - Opening one shows it in the context panel without unloading the artifact.
-  - The bundled workbench API reference notes that session frames arrive for any agent (closes #292).
+  - Design §9.10 in full: every SDK member's behavior, `agent(name)`, the page's agent, live reload, removed host messages, and the rewritten docs.
+  - Existing pages that name their agent keep working opened standalone.
 - **Verification:**
-  - End-to-end:
-    - with atlas bound, the sample artifact starts a session on scout and receives its frames
-    - the activity panel lists it
-    - opening it shows the panel while the artifact stays loaded (no frame reload)
-    - Stop works
-    - on phones the sheet covers the artifact, and closing it returns without a reload
-  - Unit tests for the frame dedupe and the unscoped-path agent.
+  - End-to-end, opening artifact URLs directly on the mock artifacts origin:
+    - `fetch` to hub, team and agent paths
+    - an unscoped agent path using the page's agent
+    - a 409 when there is none
+    - `on` receiving the page's agent's turn frames
+    - `watch` on team and agent prefixes
+    - `sessions.start` on a non-page agent receiving its frames from the first one (#292)
+    - `resync` after a simulated lag
+    - live reload
+    - a page-registered `artifact_updated` handler suppressing the reload
+    - a block-list route answering 403
+  - Unit tests for the page's-agent selection order.
 
 ### W33 — Settings model (M)
 

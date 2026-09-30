@@ -55,11 +55,11 @@ This design covers the new visual system and components, the shell and navigatio
 - **Identity files** — SOUL.md, HEARTBEAT.yml, team/AGENTS.md and team/USER.md. The file tree tints them. The current UI also lists a CHANNELS.yml that no longer exists; it is dropped.
 - **Turn hook** — a new method on the hub-owned activity tracker that the agent runtime calls exactly once at the end of every main turn (§9).
 - **Artifact** — a page an agent builds in the team's `workbench/` folder: a single HTML file or a folder with an `index.html`. Artifacts are team-level: no agent owns one, and any agent can edit any of them.
-- **Artifacts origin** — the separate origin that serves artifacts: a listener on its own port locally, or the relay's workbench host remotely. The UI frames artifacts from it in a sandboxed iframe.
-- **SDK** — the `window.residuum` script injected into every served artifact page. It is the only way an artifact reaches Residuum, and it is a compatibility contract with pages agents have already written.
-- **Bridge** — the UI-side counterpart of the SDK. It relays an artifact's requests and events, and enforces the artifact request policy (§9.9).
+- **Artifacts origin** — the separate origin that serves artifacts and forwards the API to them: a listener on its own port locally, or the relay's workbench host remotely. Artifacts open there in their own tab; the app never embeds them.
+- **SDK** — the `window.residuum` script injected into every served artifact page. It is how an artifact reaches Residuum, and it is a compatibility contract with pages agents have already written (§9.10).
+- **Page's agent** — the agent an artifact page acts as by default (§9.10).
 - **Artifact session** — a session an artifact starts on a named agent. Its source label is `artifact:<name>`.
-- **Watch registry** — the client-side service that merges workspace watches from several owners onto one socket (§12).
+- **Watch registry** — the app's service that merges workspace watches from several owners onto one socket (§12).
 - **Legacy view** — an existing component hosted inside the new shell until the unit that replaces it lands.
 - **Integration branch** — `feat/web-overhaul`, where frontend work collects before cutover to `main`.
 - **Work unit** — one subagent-sized piece of implementation, defined in `phases.md`.
@@ -195,14 +195,14 @@ Client routes contain no dots and never start with `/api` or `/ws`, because the 
 | `/agent/:name/schedule` | Schedule |
 | `/agent/:name/files` | Files |
 | `/team/workbench` | Workbench list |
-| `/team/workbench/:artifact` | An artifact; `?full` fills the window |
+| `/team/workbench/:artifact` | The Workbench list with that artifact's row selected and expanded. The old `?full` parameter is removed by a replace. |
 | `/team/files` | Shared files |
 
 **Context panel parameter** — `panel=<kind>:<value>`, URL-encoded:
 
 | Kind | Valid on | Value |
 |---|---|---|
-| `session:<agent>:<runId>` | agent places, and `/team/workbench/:artifact` | A run of that agent. On an agent place the agent must match the viewed agent, otherwise the parameter is removed. |
+| `session:<agent>:<runId>` | agent places and Workbench routes | A run of that agent. On an agent place the agent must match the viewed agent, otherwise the parameter is removed. |
 | `file:<path>` | agent places and `/team/files` | On agent places, a path in the agent's workspace namespace (`team/…` paths reach team files). On `/team/files`, a path relative to the team folder. |
 | `size` | agent places | The conversation-size view |
 
@@ -219,7 +219,7 @@ On any other place, the parameter is removed by a replace.
 
 **Corrections** (by replace, with a toast where noted):
 - An unknown agent on an agent place goes to `/home`, with a toast.
-- An unknown artifact goes to `/team/workbench`, with a toast, once the artifact list has loaded. It never shows the artifacts listener's own 404 page in the frame.
+- An unknown artifact goes to `/team/workbench`, with a toast, once the artifact list has loaded.
 - A `panel` with an unknown kind or a malformed value is removed.
 
 **History rules.**
@@ -364,50 +364,26 @@ In addition:
 - On phones, the editor is full-screen with Back.
 - The same editor serves `panel=file:` links.
 
-**Workbench** (team place). Artifacts are team-level, and the Workbench is where the user opens them.
+**Workbench** (team place). Artifacts are team-level. The Workbench is a launcher: artifacts open in their own browser tab or window on the artifacts origin, never inside the app.
 
 - **The list** shows each artifact's title, its path as `/team/workbench/<name>`, and when it was edited.
-  - An artifact an agent is editing glows with "updating now" for a moment.
-  - Delete removes it at once, and the toast offers Undo (the team checkpoint).
-  - Modifier-click or middle-click opens it in a new tab of the app.
+  - An artifact an agent is editing glows with "updating now" for a moment. The list refreshes on the hub's artifact events (§9.8), so it works when no agent is running.
+  - **Open** opens the artifact's URL on the artifacts origin in a new tab (`target="_blank"`, `rel="noopener"`). In the installed app, the platform opens it in the browser.
+  - **Copy link** copies that URL.
+  - Delete removes the artifact at once, and the toast offers Undo (the team checkpoint).
+  - Each row shows how many sessions the artifact has running, on any agent, from the overview's live sessions matched by source label `artifact:<name>`.
   - States: loading, error with Try again, and empty ("Nothing on the bench yet", with a line on what artifacts are).
-  - When artifacts can't be served, a banner with the reason shows whether or not the list is empty.
-  - The list refreshes on the hub's artifact events (§9.8), so it works when no agent is running.
-- **The artifact view** puts a bar above the page.
-  - The bar holds: back to the list, the title (focused on open), the path, the activity toggle, Stop page or Restart, Full view, and Reload.
-  - On phones the bar shows back and the title, and puts the rest in an overflow menu.
-  - Notices replace the frame when the artifact was deleted, when the page is stopped (with Restart), and when artifacts can't open right now (with the reason).
-- **Frame.** The iframe keeps today's sandbox and permissions:
-  - `allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-downloads`, with no top navigation and no popups escaping the sandbox
-  - clipboard write and fullscreen
-  - no referrer
-- **One frame, never moved.** The artifact renders only in the Workbench place's main region, as one iframe node that is never moved in the DOM. Moving an iframe reloads it, losing the page's state and restarting its bridge. So:
-  - Full view hides the shell around the frame (rail, bottom bar, bar) instead of moving it. A small exit control honors the safe-area insets. F toggles full view, and Esc exits it, including Esc forwarded from the page.
-  - The context panel opens beside the frame at wide widths, over it at medium widths, and as a sheet over it on phones. The frame stays mounted underneath.
-  - Artifacts are never shown in the context panel.
-- **Live reload.** When the agent edits the open artifact, the same frame navigates to the new version without a fade. Full view and the panel stay as they are. The page's own query and hash are not kept, as today.
-- **Activity panel.** The toggle shows "N sessions" and, when any are in flight, "· M calls".
-  - The panel lists every live session this artifact started, **on any agent**, from the overview's live sessions matched by source label. Each shows purpose and state, with Stop.
-  - Opening a session shows it in the context panel (`panel=session:<agent>:<runId>`) on the same route, so the artifact stays loaded.
-  - In-flight model calls show with **Cancel calls**. It aborts them in the browser. The toast says "Stopped waiting for N calls". A call already sent through Residuum Cloud may still finish on the host (#310).
-- **Stop page** unloads the frame and cancels its model calls. Its sessions keep running. **Restart** loads it again with a fresh bridge.
-- **Leaving the Workbench place** unloads the artifact, as today. Its sessions keep running and stay visible in their agent's Activity.
-- **Choosing the artifacts origin:**
+  - When artifacts can't be opened, a banner with the reason shows whether or not the list is empty.
+- **Artifact detail.** `/team/workbench/<name>` selects that artifact's row and expands it, showing:
+  - Open and Copy link
+  - its running sessions: purpose, agent, state, and Stop; opening one shows it in the context panel (`panel=session:<agent>:<runId>`)
+  - its recently finished sessions
+- **Choosing the artifacts origin** for Open and Copy link:
   - If the UI is on the relay's UI origin and the relay reports an artifacts origin, use it.
   - Otherwise, if the UI page is plain HTTP and the listener's port is known, use the UI's host on that port.
-  - Otherwise artifacts can't open, and the notice says why: the listener isn't available, or Residuum Cloud hasn't reported a workbench address yet (#308).
-- **Bridge behavior:**
-  - **SDK contract.** Every SDK capability works as today: `fetch`, `ask`, `on`, `watch`, `state`, `sessions`, connection events, Esc forwarding and `ready`. The SDK's features list is unchanged.
-  - **Session frames for any agent.** An artifact's sessions deliver frames whichever agent they run on, because the bridge subscribes to them through the hub socket (§9.8). This fixes #292.
-    - Frames for this artifact's sessions come only from that relay. The bridge drops copies of them arriving on the bound agent's socket, so none are delivered twice.
-    - Other frames from the bound agent's socket still reach `on` listeners, as today.
-    - `artifact_updated` and `artifact_removed` come from the hub socket.
-  - **Unscoped paths.** Agent paths from `residuum.fetch` that name no agent resolve to the bound agent, as they do today with the current agent. With no bound agent they answer 409. The bundled skill keeps telling agents to name their agent.
-  - **Watches.** `team/…` prefixes go to the hub socket's team watch. Other prefixes go to the bound agent's socket. Both go through the watch registry, so an artifact's watches never replace another owner's.
-  - **Documents.** Each document's requests are tracked separately. When a new document sends `ready`, replies for the previous document are dropped and its model calls aborted (#307).
-  - **Request policy.** The bridge enforces the artifact request policy (§9.9).
-  - **Relay limits.** Through Residuum Cloud, artifact responses over 10 MB and model calls over 25 seconds fail at the tunnel. `workbench.md` documents both.
-- **Service worker.** The artifacts origin is separate, so the UI's service worker never controls artifact pages. Bridge requests are `/api` requests, which the worker never intercepts.
+  - Otherwise artifacts can't be opened, and the banner says why: the listener isn't available, or Residuum Cloud hasn't reported a workbench address yet (#308). A UI served over HTTPS by the user's own reverse proxy is in this case, and the banner says so.
+- **The page runs on its own.** An artifact talks to Residuum directly, through the API its own origin forwards (§9.9), using the SDK (§9.10). The app shows no bar, full view, Stop page or activity panel for it: the page owns its window, and closing the tab unloads it. Its sessions keep running and stay visible in the Workbench row and in their agent's Activity.
+- **Service worker.** The artifacts origin is separate, so the UI's service worker never controls artifact pages.
 
 ### 6. Home
 
@@ -581,7 +557,7 @@ A section named under the wrong scope moves to the scope that has it.
 
 Existing endpoints and frames keep their shapes, because the macOS client and older web builds use them. Every change is additive except two:
 - **Removing the hub's own user-inbox notes (§9.5).** This lands on the integration branch just before cutover, so the current UI on `main` keeps those notes until the new UI replaces it.
-- **The tightened artifact request policy (§9.9).** This lands on `main` first, because it closes gaps in the current UI.
+- **The SDK's move to direct access (§9.10).** Embedding ends, and the bridge's host messages go away. This lands on the integration branch, because the current UI still embeds artifacts. The API forwarding (§9.9) is additive and lands on `main`.
 
 - **Timestamps.** New fields are RFC 3339 with an offset. Data stored as naive local minute times is converted using the hub's configured timezone at read time:
   - an ambiguous time during a DST fall-back takes the earlier offset
@@ -868,46 +844,78 @@ Defaults for a new device: `inbox_item` and `agent_failed` on, the other two off
 **Artifact events on the hub.**
 - One hub-owned workbench watcher reads the team change feed.
 - It publishes `artifact_updated {name}` and `artifact_removed {name}` on the hub socket, using the same rescan-and-compare rule as today's per-agent watchers.
-- Artifact events therefore reach the UI with no agent running.
-- The existing per-agent `artifact_*` frames on agent sockets remain, for older clients.
+- Artifact events therefore reach clients with no agent running.
+- The existing per-agent `artifact_*` frames remain, for older clients.
 
 **Session relay on the hub socket.** New client frames:
 
 | Frame | Effect |
 |---|---|
-| `subscribe_session {agent, address}` / `unsubscribe_session {agent, address}` | Every session event for that session address on that agent |
+| `subscribe_session {agent, address}` / `unsubscribe_session {agent, address}` | Every session event for that session on that agent |
 | `subscribe_artifact_sessions {artifact}` / `unsubscribe_artifact_sessions {artifact}` | Every session event for every session with source label `artifact:<artifact>`, on any agent, including ones started after the subscription |
 
-- **Delivery.** The hub forwards matching events from the per-agent watcher (§9), which subscribes to the full Sessions topic, as `session_frame {agent, frame}`. `frame` is exactly the `session_*` frame the agent socket would send, so the bridge and the session panel pass it on unchanged.
-- **Scope.** Subscriptions belong to one hub socket connection, and end when it closes. A client re-sends its subscriptions after reconnecting.
-- **Errors.**
-  - A subscription naming an unknown agent gets a `notice` on that connection.
-  - A stopped agent produces no events until it runs again.
-  - No events are buffered for late subscribers. The SDK already buffers early frames between a session start and its handle.
+- **Acknowledgement.** Each subscribe is acknowledged with `subscribed {kind, agent?, address?, artifact?}` once it is active. A client that needs a session's first frames (the SDK starting a session) waits for the acknowledgement before starting it.
+- **Delivery.** The per-agent watcher (§9) subscribes to the full Sessions topic. It keeps an address-to-source-label map from each session's start event, and forwards matching events as `session_frame {agent, frame}`. `frame` is exactly the `session_*` frame the agent socket would send. Tool frames are included whatever the connection's verbose flag, because the hub socket has no verbose flag.
+- **Lag.** When the hub socket lags and drops relayed frames, the hub sends `session_relay_lagged` on that connection. Clients then re-read the state of the sessions they follow over HTTP. The SDK passes this on to each session handle as a `resync` event.
+- **Scope.** Subscriptions belong to one hub socket connection and end when it closes. A client re-sends them after reconnecting.
+- **Errors.** A subscription naming an unknown agent gets a `notice` and no acknowledgement. A stopped agent produces no events until it runs again. Nothing is buffered for late subscribers.
 
-#### 9.9 Artifact request policy
+#### 9.9 The artifacts origin forwards the API
 
-An artifact reaches Residuum only through the bridge, because the cross-site guards refuse direct writes and WebSocket upgrades from the artifacts origin. The bridge sets `X-Residuum-Artifact` on every relayed request, overwriting any value the page sent.
+**Local.** The artifacts listener serves artifact pages as today, and also serves `/api/*`, WebSocket upgrades included.
+- It dispatches these in-process to the same hub router the gateway uses.
+- It marks each request as arriving through the artifacts origin, with an internal request marker a client can't set.
+- Requests from the artifacts origin to itself are same-origin, so the cross-site guard passes them. It still refuses other sites.
 
-**Refused by the bridge** (403 "Blocked by the workbench"):
-- Every config write:
-  - raw PUT and PATCH of an agent's `config.toml`, `providers.toml` and `mcp.json`
-  - the hub's `config.toml`
+**Through Residuum Cloud.**
+- **The relay's workbench host** allows every method and WebSocket upgrades. It keeps its owner-session check and its refusal of the relay's own routes. It forwards everything with the workbench surface: HTTP requests as today, and socket opens.
+- **The tunnel protocol.** The tunnel's socket-open frame gains an optional `surface`. The tunnel client opens a workbench-surface socket against the artifacts listener, as it already does for workbench HTTP.
+- This is a change in the relay project and in the tunnel client. Until the relay change is deployed, remote artifacts can load pages and call HTTP routes but not open sockets. The SDK reports its connection as `disconnected`.
 
-  Validate endpoints stay allowed.
-- Writes to secrets, agent keys and agent-to-agent caller keys.
-- Checkpoint restore and undo, for every repo.
-- Agent lifecycle writes, stop-all, shutdown, setup completion, updates, cloud disconnect, and tracing writes.
-- Web Push endpoints.
-- Deleting any artifact.
+**Block list.** Requests carrying the artifacts-origin marker are refused with 403 `{error}` on:
+- shutdown
+- stop-all
+- update check, apply and restart
+- setup completion
 
-**Refused by the backend** for requests carrying the header:
-- stopping or messaging a session whose source label isn't `artifact:<that name>`
-- every route in the bridge's list above, checked by the same rules, as a second line of defense
+Everything else the UI can call, an artifact can call.
 
-**The artifacts listener:**
-- Sends `Content-Security-Policy: frame-ancestors` naming the UI origins: the gateway's local origins, and the relay UI origin while connected. Artifacts can then be framed only by the Residuum UI.
-- Does not serve dot-prefixed files, matching the documentation (#309).
+**Identity.**
+- The SDK sends `X-Residuum-Artifact` with its artifact name, as the bridge does today. Session starts and inbox attribution use it.
+- The header is informative, not a security boundary.
+
+**Limits.** Through Residuum Cloud, responses over 10 MB and HTTP calls over 25 seconds fail at the tunnel (#310). `workbench.md` documents both.
+
+#### 9.10 The SDK
+
+The SDK stays a compatibility contract with pages agents have already written. Its members and features list keep their names and signatures. Because pages now run on their own, it talks to Residuum directly.
+
+**Page's agent.** At serve time the listener injects the page's agent, chosen in this order:
+1. The `residuum-agent` meta tag in the entry page, if present.
+2. Otherwise, the agent recorded as the entry page's last writer by the team write coordinator.
+3. Otherwise none.
+
+If the team write coordinator doesn't keep a durable last-writer record, W32b adds one. The page's agent stands in for today's bound agent, and it is the "you" the skill's API reference describes.
+
+**Members:**
+
+| Member | Behavior |
+|---|---|
+| `embedded` | `true`, meaning the page can reach Residuum. |
+| `fetch` | Calls `/api` on the page's own origin with `X-Residuum-Artifact`. Unscoped paths map as today: hub prefixes to `/api/hub`, `/api/workbench/` to `/api/team/workbench/`, and other agent paths to the page's agent. With no page's agent, those answer 409 with an error saying to name the agent. |
+| `ask` | As today: `/api/agents/<agent>/model/complete`. |
+| `on(type, handler)` | Receives the page's agent's frames over that agent's socket, opened on first use and reopened on reconnect. It also receives artifact events and the connection state. |
+| `watch(prefix)` | `team/` prefixes use the hub socket's team watch. Other prefixes use the page's agent's socket. `""` uses both. |
+| `agent(name)` (new) | Returns a handle with the same `on` and `watch` for any named agent. |
+| `sessions.start` | Subscribes to the artifact's sessions on the hub socket (§9.8), waits for the acknowledgement, then starts the session over HTTP. Handles receive frames whichever agent the session runs on (fixes #292), plus `resync` after relay lag. |
+| `state` | Unchanged. |
+| Connection events | `{type: "connection", state}` follows the hub socket. Each agent socket reports its own on its `agent(name)` handle, and on `on` for the page's agent. A reconnect triggers `workspace_resync {reason: "reconnected"}` for active watches. |
+
+**Live reload.** On `artifact_updated` for its own name, the SDK reloads the page. A page that registers its own `artifact_updated` handler takes over and the SDK doesn't reload. `artifact_removed` for its own name is delivered to handlers only.
+
+**Removed:** the host messages `ready` and `escape`, and the "not open inside Residuum" rejections. No host page exists.
+
+**Docs.** The bundled workbench skill (`SKILL.md` and its API reference) and `workbench.md` are rewritten to match: opening artifacts, the page's agent, `agent(name)`, the block list, and the relay limits.
 
 ### 10. Frontend test and quality setup
 
@@ -931,7 +939,12 @@ An artifact reaches Residuum only through the bridge, because the cross-site gua
   - with the Vite dev server
   - a preview mode that serves a production build alongside the mock, for service worker and installability tests
 - It implements every endpoint the app calls, including §9. A test records every request the API client can make and checks each against the mock's route table.
-- **Workbench fidelity.** In deterministic mode the mock's artifacts listener runs on a fixed port, and preview mode includes it. Its sample artifact names its agent in `ask` and `sessions.start`. Artifact deletes return a checkpoint id. It sends artifact events and workspace changes when files change, and implements the session relay.
+- **Workbench fidelity.**
+  - In deterministic mode the mock's artifacts listener runs on a fixed port, and preview mode includes it.
+  - The listener forwards `/api` and sockets to the mock, with the block list.
+  - Its sample artifact names its agent through the meta tag and in `ask` and `sessions.start`.
+  - Artifact deletes return a checkpoint id.
+  - It sends artifact events and workspace changes when files change, and implements the session relay with acknowledgements.
 
 **Guardrails.**
 - A style linter checks global and component styles for token use. Legacy styles are on an ignore list that must be empty at cutover.
@@ -969,7 +982,7 @@ An artifact reaches Residuum only through the bridge, because the cross-site gua
   - A click focuses an open app window and navigates it to `target`, or opens a window there.
 - **Registration** happens only in production builds, including the mock's preview mode, never in the dev server.
 
-**Code splitting.** Settings, the file editor, the workbench artifact host, the command palette and the setup wizard load on demand. The shell, Home and Chat are in the initial bundle.
+**Code splitting.** Settings, the file editor, the command palette and the setup wizard load on demand. The shell, Home and Chat are in the initial bundle.
 
 **Notifications section (All agents).**
 - This device:
@@ -1001,15 +1014,9 @@ The data layer stays. Changes:
 - **Settings model.** Split per scope and file. It holds baselines, staged changes, the field-to-key-path map, and save-bar state per scope. The config write coordinator (§8) replaces the current lock.
 - **Action registry (new).**
 - **Watch registry (new).** One per socket: the bound agent's socket and the hub socket's team watch.
-  - Owners register and unregister prefixes: the Files and Shared files places, the config write coordinator's `config/` watch, and the artifact bridge.
+  - Owners register and unregister prefixes: the Files and Shared files places, and the config write coordinator's `config/` watch.
   - The registry sends the union of the prefixes, re-sends it on reconnect, and delivers each change to the owners whose prefixes match.
   - No owner can replace another's watches. On a bound-agent switch it re-sends the registered agent-socket prefixes that still apply.
-- **Artifact bridge.**
-  - Gets its agent for unscoped paths from the socket coordinator's bound agent.
-  - Subscribes to its artifact's sessions and to artifact events through the hub socket (§9.8).
-  - Registers its watches through the watch registry.
-  - Tracks requests per document (§5).
-  - Its request policy (§9.9) is a table with unit tests for every refused and allowed route.
 - **Two consolidations:**
   - turn counters, today duplicated between the main feed and session views, become one shared helper
   - the near-duplicate restore helpers in undo become one
@@ -1107,11 +1114,10 @@ They chose a combination:
 
     This is verified against the relay's code. Any needed relay change is made in that project.
   - Plain-HTTP LAN access has no secure context, so install and push are hidden (§11).
-- **Workbench artifacts origin, SDK and bridge.**
-  - The SDK is a compatibility contract with artifact pages agents have already written. Its API and features list are unchanged. Behavior changes only where it was broken: session frames from any agent, and per-document replies.
-  - The artifacts listener gains a `frame-ancestors` policy, and stops serving dot-files (§9.9).
-  - The relay's workbench host already checks the owner's session, refuses WebSockets, and allows only GET and HEAD. It needs no change.
-  - The bundled workbench skill's API reference and `workbench.md` are updated to match (§5, §9.8, §9.9).
+- **Workbench artifacts origin and SDK.**
+  - The artifacts listener gains API forwarding with the block list (§9.9).
+  - The SDK keeps its members and features, and moves to direct access (§9.10). The one behavior change: agent-scoped defaults follow the page's agent, not whichever agent the UI had open.
+  - **Relay.** The workbench host must allow every method and sockets, and the tunnel's socket-open frame gains a surface. Both are relay-project changes, deployed by the owner.
 - **Web Push services.**
   - Outbound HTTPS from the host to each subscription's endpoint, with VAPID authentication and Web Push encryption.
   - Failure handling is in §9.7.
@@ -1137,7 +1143,6 @@ They chose a combination:
 **Unchanged:**
 - the socket transport
 - the feed and session stores' frame handling, apart from the activity-line aggregation (§4)
-- the workbench bridge's relay protocol and lanes (its agent source, policy, watches, session relay and per-document tracking change, §5 and §12)
 - the undo, checkpoint and pending-save helpers
 - the setup wizard's flow, which is restyled only
 
@@ -1150,6 +1155,7 @@ They chose a combination:
 - the inbox drawer
 - the notification corner: its toasts move to the toast region, and its history to the Recent notifications dialog
 - the Settings page and its mode toggle
+- the in-app artifact view and the workbench bridge: artifacts open in their own tab (§5), and the bridge is deleted
 - the help overlay (now the Keyboard shortcuts dialog)
 - the feedback modal, rebuilt on Dialog
 - the global stylesheets
@@ -1190,6 +1196,6 @@ Choices the owner has approved, recorded here with where each applies:
 11. **Modal overlays push history entries** so that Back closes them (§3).
 12. **Input borders** use `#6a6a6f`, the old dim text tone, to meet the 3:1 control-boundary contrast. They will read slightly more visible than the mockup's. Selected rows label in `vein-bright` instead of `vein` for contrast on the tint (§1).
 13. **A failed agent's Fix settings** finds the failing field through the validate endpoints and falls back to Raw config, instead of the backend reporting which file failed (§4, §9.1).
-14. **Artifact sessions and artifact events move to the hub socket,** fixing #292 without opening more agent sockets (§9.8).
-15. **The artifact request policy is tightened** to cover config patches, checkpoint restores, artifact deletion and other artifacts' sessions, with the backend enforcing it too (§9.9). This change lands on `main` early, since it closes gaps in the current UI.
-16. **Artifacts open only in the Workbench place, never in the context panel.** The panel opens beside or over them without moving the frame (§5).
+14. **Artifact sessions and artifact events move to the hub socket,** fixing #292 (§9.8).
+15. **Artifacts reach Residuum through API forwarding on the artifacts origin** (§9.9). Everything is allowed except shutdown, stop-all, updates and setup, so users can build their own interfaces to the whole program.
+16. **Artifacts are never embedded.** They open in their own tab, and the Workbench place is a launcher (§5). The SDK talks to Residuum directly, defaulting to the page's agent (§9.10).
