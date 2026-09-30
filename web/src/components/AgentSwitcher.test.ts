@@ -81,6 +81,24 @@ describe("AgentSwitcher", () => {
     );
   });
 
+  it("marks Team, not an agent, as current on team pages and hub settings", () => {
+    router.team = "overview";
+    const { unmount } = render(AgentSwitcher);
+    expect(screen.getByRole("button", { name: "Team" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: "scout, running" })).not.toHaveAttribute(
+      "aria-current",
+    );
+    unmount();
+    router.team = null;
+    router.settings = { scope: "hub", section: "a2a" };
+    render(AgentSwitcher);
+    expect(screen.getByRole("button", { name: "Team" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: "scout, running" })).not.toHaveAttribute(
+      "aria-current",
+    );
+    router.settings = null;
+  });
+
   it("navigates to the agent that is clicked", async () => {
     const open = vi.spyOn(router, "openAgent").mockImplementation(() => {});
     render(AgentSwitcher);

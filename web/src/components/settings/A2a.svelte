@@ -351,11 +351,11 @@
             <input type="checkbox" bind:checked={fields.a2a_enabled} />
             <span class="toggle-slider"></span>
           </span>
-          Let other agents reach this one
+          Let other agents reach this install
         </label>
         <span class="field-hint">
-          Off: nothing outside this agent can reach it over A2A. On: other agents can find it, and
-          anyone with a caller key can hand it work.
+          Off: nothing outside this install can reach its agents over A2A. On: other agents can find
+          them, and anyone with a caller key can hand them work.
         </span>
       </div>
     {/if}

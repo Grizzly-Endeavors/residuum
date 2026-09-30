@@ -159,6 +159,11 @@
     return agent ? `${agent} settings` : "Settings";
   });
 
+  let scopeNote = $derived.by(() => {
+    if (isHub) return "Applies to every agent";
+    return agent ? `Applies to ${agent} only` : "Applies to this agent only";
+  });
+
   /** The Integrations file's groups that back each of the agent's sections. */
   const INTEGRATIONS_PARTS = {
     channels: "channels",
@@ -690,7 +695,10 @@
 
 <div class="settings-view emerges">
   <div class="settings-header">
-    <span class="settings-title">{title}</span>
+    <div class="settings-heading">
+      <h2 class="settings-title">{title}</h2>
+      <span class="settings-scope">{scopeNote}</span>
+    </div>
     <div class="settings-header-actions">
       {#if statusMsg}
         <span class="settings-status {statusKind}">{statusMsg}</span>
@@ -704,10 +712,11 @@
       >
         <Icon name="reload" size={16} />
       </button>
-      <div class="settings-mode-selector">
+      <div class="settings-mode-selector" role="group" aria-label="Settings view">
         <button
           class="settings-mode-btn"
           class:active={settingsMode === "simple"}
+          aria-pressed={settingsMode === "simple"}
           onclick={() => setMode("simple")}
         >
           Simple
@@ -715,6 +724,7 @@
         <button
           class="settings-mode-btn"
           class:active={settingsMode === "advanced"}
+          aria-pressed={settingsMode === "advanced"}
           onclick={() => setMode("advanced")}
         >
           Advanced
@@ -722,6 +732,7 @@
         <button
           class="settings-mode-btn"
           class:active={settingsMode === "raw"}
+          aria-pressed={settingsMode === "raw"}
           onclick={() => setMode("raw")}
         >
           Raw
@@ -735,9 +746,15 @@
 
   <div class="settings-body">
     {#if settingsMode !== "raw"}
-      <div class="settings-sidebar" class:collapsed={!mobileNavOpen}>
+      <nav
+        class="settings-sidebar"
+        class:collapsed={!mobileNavOpen}
+        aria-label={isHub ? "Hub settings sections" : "Settings sections"}
+      >
         <button
           class="settings-nav-toggle"
+          aria-expanded={mobileNavOpen}
+          aria-controls="settings-nav-items"
           onclick={() => {
             mobileNavOpen = !mobileNavOpen;
           }}
@@ -745,11 +762,12 @@
           <span>{activeLabel()}</span>
           <span class="nav-chevron" class:open={mobileNavOpen}>&#9660;</span>
         </button>
-        <div class="settings-nav-items">
+        <div class="settings-nav-items" id="settings-nav-items">
           {#each sections as sec (sec.id)}
             <button
               class="settings-sidebar-btn"
               class:active={activeSection === sec.id}
+              aria-current={activeSection === sec.id ? "page" : undefined}
               onclick={() => {
                 onSelectSection(sec.id);
                 mobileNavOpen = false;
@@ -759,7 +777,7 @@
             </button>
           {/each}
         </div>
-      </div>
+      </nav>
     {/if}
 
     <div class="settings-content">

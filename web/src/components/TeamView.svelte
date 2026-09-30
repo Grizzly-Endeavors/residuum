@@ -21,6 +21,19 @@
     restart: "Restarting",
   };
 
+  const LIFECYCLE = ["start", "stop", "restart"] as const;
+  const LABELS: Record<(typeof LIFECYCLE)[number], string> = {
+    start: "Start",
+    stop: "Stop",
+    restart: "Restart",
+  };
+
+  function lifecycle(action: (typeof LIFECYCLE)[number], name: string): Promise<unknown> {
+    if (action === "start") return hub.startAgent(name);
+    if (action === "stop") return hub.stopAgent(name);
+    return hub.restartAgent(name);
+  }
+
   async function run(name: string, action: Action, call: () => Promise<unknown>): Promise<void> {
     if (pending[name] !== undefined) return;
     pending[name] = action;
@@ -39,6 +52,25 @@
   }
   function canRestart(agent: AgentSummary): boolean {
     return agent.state === "running" || agent.state === "failed";
+  }
+
+  /** Why a lifecycle button is unavailable, or undefined when it is available. */
+  function unavailableReason(
+    agent: AgentSummary,
+    action: "start" | "stop" | "restart",
+  ): string | undefined {
+    if (action === "start" && !canStart(agent)) {
+      return agent.state === "starting"
+        ? `${agent.name} is starting`
+        : `${agent.name} is already running`;
+    }
+    if (action === "stop" && !canStop(agent)) return `${agent.name} is not running`;
+    if (action === "restart" && !canRestart(agent)) {
+      return agent.state === "starting"
+        ? `${agent.name} is still starting`
+        : `${agent.name} is not running`;
+    }
+    return undefined;
   }
 
   async function toggleAutostart(agent: AgentSummary, input: HTMLInputElement): Promise<void> {
@@ -147,6 +179,11 @@
     <button type="button" class="btn btn-secondary btn-sm" onclick={onClose}>Close</button>
   </header>
 
+  <p id="team-visibility-hint" class="team-visibility-hint">
+    <strong>A2A card.</strong> Public shows only an agent's card to other agents. Everything else, including
+    handing it work, still needs a caller key.
+  </p>
+
   {#if deleted.length > 0}
     <ul class="team-deleted" role="status">
       {#each deleted as note (note.name)}
@@ -160,6 +197,7 @@
           <button
             type="button"
             class="btn btn-secondary btn-sm"
+            aria-label="Dismiss note about {note.name}"
             onclick={() => {
               deleted = deleted.filter((d) => d.name !== note.name);
             }}>Dismiss</button
@@ -205,55 +243,56 @@
           </div>
 
           <div class="team-row-controls">
-            <label class="team-visibility-select">
-              A2A card
-              <select
-                value={agent.a2a_visibility}
-                disabled={busyAction !== undefined}
-                aria-describedby="team-visibility-hint"
-                onchange={(e) => void changeVisibility(agent, e.currentTarget)}
-              >
-                <option value="private">Private</option>
-                <option value="public">Public</option>
-              </select>
-            </label>
-            <label class="team-autostart">
-              <input
-                type="checkbox"
-                checked={agent.autostart}
-                disabled={busyAction !== undefined}
-                onchange={(e) => void toggleAutostart(agent, e.currentTarget)}
-              />
-              Start automatically
-            </label>
-            <div class="team-buttons">
-              <button
-                type="button"
-                class="btn btn-secondary btn-sm"
-                disabled={!canStart(agent) || busyAction !== undefined}
-                onclick={() => void run(agent.name, "start", () => hub.startAgent(agent.name))}
-              >
-                {busyAction === "start" ? PENDING_LABELS.start : "Start"}
-              </button>
-              <button
-                type="button"
-                class="btn btn-secondary btn-sm"
-                disabled={!canStop(agent) || busyAction !== undefined}
-                onclick={() => void run(agent.name, "stop", () => hub.stopAgent(agent.name))}
-              >
-                {busyAction === "stop" ? PENDING_LABELS.stop : "Stop"}
-              </button>
-              <button
-                type="button"
-                class="btn btn-secondary btn-sm"
-                disabled={!canRestart(agent) || busyAction !== undefined}
-                onclick={() => void run(agent.name, "restart", () => hub.restartAgent(agent.name))}
-              >
-                {busyAction === "restart" ? PENDING_LABELS.restart : "Restart"}
-              </button>
+            <div class="team-row-settings">
+              <label class="team-visibility-select">
+                <span>A2A card</span>
+                <select
+                  class="select"
+                  value={agent.a2a_visibility}
+                  disabled={busyAction !== undefined}
+                  aria-label="A2A card for {agent.name}"
+                  aria-describedby="team-visibility-hint"
+                  onchange={(e) => void changeVisibility(agent, e.currentTarget)}
+                >
+                  <option value="private">Private</option>
+                  <option value="public">Public</option>
+                </select>
+              </label>
+              <label class="team-autostart">
+                <span class="toggle-switch">
+                  <input
+                    type="checkbox"
+                    checked={agent.autostart}
+                    disabled={busyAction !== undefined}
+                    aria-label="Start automatically for {agent.name}"
+                    onchange={(e) => void toggleAutostart(agent, e.currentTarget)}
+                  />
+                  <span class="toggle-slider"></span>
+                </span>
+                <span>Start automatically</span>
+              </label>
+            </div>
+            <div class="team-buttons" role="group" aria-label="{agent.name} lifecycle">
+              {#each LIFECYCLE as action (action)}
+                {@const reason = unavailableReason(agent, action)}
+                <button
+                  type="button"
+                  class="btn btn-secondary btn-sm"
+                  class:is-pending={busyAction === action}
+                  disabled={reason !== undefined || busyAction !== undefined}
+                  title={busyAction === undefined ? reason : undefined}
+                  aria-label="{busyAction === action
+                    ? PENDING_LABELS[action]
+                    : LABELS[action]} {agent.name}"
+                  onclick={() => void run(agent.name, action, () => lifecycle(action, agent.name))}
+                >
+                  {busyAction === action ? PENDING_LABELS[action] : LABELS[action]}
+                </button>
+              {/each}
               <button
                 type="button"
                 class="btn btn-danger btn-sm"
+                class:is-pending={busyAction === "delete"}
                 disabled={busyAction !== undefined}
                 aria-label="Delete {agent.name}"
                 onclick={() => {
@@ -268,11 +307,6 @@
       {/each}
     </ul>
   {/if}
-
-  <p id="team-visibility-hint" class="team-visibility-hint">
-    Public shows only an agent's card to other agents. Everything else, including handing it work,
-    still needs a caller key.
-  </p>
 
   <form class="team-create" onsubmit={create} novalidate aria-labelledby="create-title">
     <h3 id="create-title" class="team-create-title">Create an agent</h3>
@@ -340,21 +374,21 @@
       <label>
         <input type="radio" name="create-visibility" value="private" bind:group={visibility} />
         Private
-        <span class="field-hint">Other agents need a caller key to even see it.</span>
+        <span class="option-hint">Other agents need a caller key to even see it.</span>
       </label>
       <label>
         <input type="radio" name="create-visibility" value="public" bind:group={visibility} />
         Public
-        <span class="field-hint">Anyone who finds the address can see what it can do.</span>
+        <span class="option-hint">Anyone who finds the address can see what it can do.</span>
       </label>
     </fieldset>
 
     <div class="team-create-actions">
-      <button type="submit" class="btn btn-primary" disabled={!canCreate}>
+      <button type="submit" class="btn btn-primary" disabled={!canCreate} aria-busy={creating}>
         {creating ? "Creating" : "Create agent"}
       </button>
-      {#if created}
-        <span class="team-created" role="status">
+      <span class="team-created" role="status">
+        {#if created}
           Created {created}.
           <button
             type="button"
@@ -363,8 +397,8 @@
               if (created) router.openAgent(created);
             }}>Open it</button
           >
-        </span>
-      {/if}
+        {/if}
+      </span>
     </div>
   </form>
 </section>
@@ -398,7 +432,8 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: var(--s-5) var(--s-4);
+    /* Bottom room so the fixed notification corner never sits on the last controls. */
+    padding: var(--s-5) var(--s-4) var(--s-8);
     width: 100%;
     max-width: 960px;
     margin: 0 auto;
@@ -559,11 +594,21 @@
     display: flex;
     flex-direction: column;
     align-items: flex-end;
+    justify-content: space-between;
     gap: var(--s-3);
     flex: none;
   }
 
-  .team-autostart {
+  .team-row-settings {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--s-2) var(--s-4);
+  }
+
+  .team-autostart,
+  .team-visibility-select {
     display: inline-flex;
     align-items: center;
     gap: var(--s-2);
@@ -573,17 +618,20 @@
   }
 
   .team-visibility-select {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--s-2);
-    font-size: var(--fs-sm);
-    color: var(--text-muted);
+    cursor: default;
   }
 
   .team-visibility-hint {
-    margin: calc(var(--s-4) * -1) 0 var(--s-6);
+    margin: calc(var(--s-3) * -1) 0 var(--s-4);
+    max-width: 62ch;
     font-size: var(--fs-sm);
+    line-height: 1.5;
     color: var(--text-muted);
+  }
+
+  .team-visibility-hint strong {
+    font-weight: 500;
+    color: var(--text);
   }
 
   .team-buttons {
@@ -591,6 +639,30 @@
     flex-wrap: wrap;
     justify-content: flex-end;
     gap: var(--s-2);
+  }
+
+  /* An action that doesn't apply reads as absent, not as a paler enabled button. */
+  .team-buttons .btn:disabled {
+    background: transparent;
+    border-style: dashed;
+    border-color: var(--border-subtle);
+    color: var(--text-dim);
+    opacity: 0.7;
+  }
+
+  /* The action in flight keeps its place and breathes while it waits. */
+  .team-buttons .btn.is-pending:disabled {
+    border-style: solid;
+    border-color: var(--vein-dim);
+    color: var(--vein-bright);
+    opacity: 1;
+    animation: team-pending 1.6s var(--ease-out-stone) infinite;
+  }
+
+  @keyframes team-pending {
+    50% {
+      opacity: 0.55;
+    }
   }
 
   .team-create {
@@ -623,17 +695,40 @@
 
   .team-visibility legend {
     font-size: var(--fs-sm);
+    font-weight: 500;
     color: var(--text-muted);
     margin-bottom: var(--s-2);
     padding: 0;
   }
 
   .team-visibility label {
-    display: flex;
-    align-items: baseline;
-    flex-wrap: wrap;
-    gap: var(--s-2);
+    display: grid;
+    grid-template-columns: auto 1fr;
+    column-gap: var(--s-2);
+    align-items: start;
+    padding: var(--s-2) var(--s-3);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    font-size: var(--fs-md);
+    line-height: 1.4;
     cursor: pointer;
+    transition: border-color var(--dur-default) var(--ease-out-stone);
+  }
+
+  .team-visibility label:hover,
+  .team-visibility label:has(input:checked) {
+    border-color: var(--vein-dim);
+  }
+
+  .team-visibility input {
+    accent-color: var(--vein);
+    margin-top: 3px;
+  }
+
+  .team-visibility .option-hint {
+    grid-column: 2;
+    font-size: var(--fs-sm);
+    color: var(--text-muted);
   }
 
   .team-create-actions {
@@ -661,8 +756,23 @@
       align-items: stretch;
     }
 
+    .team-row-settings {
+      justify-content: space-between;
+    }
+
     .team-buttons {
-      justify-content: flex-start;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+    }
+
+    .team-buttons .btn {
+      min-height: 40px;
+      padding-inline: var(--s-2);
+    }
+
+    .team-create-actions .btn {
+      width: 100%;
+      min-height: 44px;
     }
 
     .team-deleted li {

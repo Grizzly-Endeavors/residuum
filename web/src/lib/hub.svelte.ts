@@ -328,7 +328,7 @@ export class HubStore {
     this.notices = [notice, ...this.notices].slice(0, MAX_NOTICES);
     notifications.surface(
       level === "error" ? "error" : "notice",
-      agent ? `${agent}: ${message}` : message,
+      agent && !message.startsWith(agent) ? `${agent}: ${message}` : message,
     );
   }
 }

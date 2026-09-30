@@ -64,6 +64,14 @@
             {t.action.label}
           </button>
         {/if}
+        <button
+          type="button"
+          class="notif-toast-close"
+          aria-label="Dismiss notification"
+          onclick={() => toast.dismiss(t.id)}
+        >
+          <Icon name="close" size={12} />
+        </button>
       </div>
     {/each}
   </div>

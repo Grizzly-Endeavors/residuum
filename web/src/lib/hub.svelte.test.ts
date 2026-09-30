@@ -130,6 +130,17 @@ describe("HubStore frames", () => {
     expect([...toast.toasts.values()].map((t) => t.kind)).toEqual(["info", "error"]);
   });
 
+  it("does not repeat the agent's name when the notice already starts with it", () => {
+    const hub = new HubStore();
+    hub.handleFrame({
+      type: "notice",
+      level: "error",
+      message: "scout failed: no key",
+      agent: "scout",
+    });
+    expect(notifications.history.map((n) => n.message)).toEqual(["scout failed: no key"]);
+  });
+
   it("toasts a created agent naming who created it", () => {
     const hub = new HubStore();
     hub.handleFrame({ type: "agent_created", agent: agent("atlas"), by: "user" });
