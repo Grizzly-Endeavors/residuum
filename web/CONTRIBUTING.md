@@ -90,7 +90,9 @@ web/
 │   │   ├── settings/               # Settings sub-panels
 │   │   └── setup/                  # Setup wizard steps
 │   └── lib/
-│       ├── api.ts                # REST API client (typed fetch wrappers)
+│       ├── api.ts                # REST API client (typed fetch wrappers); every agent-scoped call takes the agent name first
+│       ├── paths.ts              # API and WebSocket URL builders for the agent, hub and team scopes
+│       ├── viewed-agent.ts       # The agent the URL names: the router publishes it, the WebSocket coordinator binds to it
 │       ├── ws.svelte.ts          # WebSocket coordinator: routes frames to the feed and sessions stores
 │       ├── feed.svelte.ts        # Main chat feed state
 │       ├── feed-items.ts         # History-to-feed conversion shared by chat and session views
@@ -156,6 +158,12 @@ The agent switcher under the header is on every page. Older unprefixed links (`/
 `App.svelte` derives its layout state from `router` instead of mounting a component per route, so the chat, session view, and workspace stay mounted and every transition is the same CSS transition whether it came from a click or the back button. Navigate through `router` (or `sessions.openRun`), never by setting layout state directly.
 
 History records places, not panel states. Opening a session, returning to the main chat, and opening or switching settings push an entry. Toggling the workspace replaces the current one, and so does a session view following its session into a new run. Back therefore moves between places the user visited. A settings URL says nothing about the chat side, so leaving settings returns to the session and workspace state that was showing before. Overlays (help, feedback, inbox) and the narrow-screen sessions drawer are not in the URL.
+
+### Agents in API calls
+
+No request reads the viewed agent. Every agent-scoped function in `lib/api.ts` takes the agent name as its first argument, and its cache key includes that agent. Components take the agent from their props (`Settings`, `Workspace`), stores hold the agent they were bound to (`ws.sessions`, `scheduled`, `userInbox`), and the chat's controls use `ws.agent`, the agent the WebSocket is bound to. The workbench bridge maps an artifact's unscoped paths onto `ws.agent` per request.
+
+Calls that serve more than one scope take `agent: string | null`: the workspace and checkpoint functions accept `null` for the team's files and the hub and team repositories, and `fetchProviderModels(null, …)` asks the hub before any agent exists. Asking for an agent's own resource with `null` throws `NoAgentSelectedError` before any request is made.
 
 ## Code Quality
 
