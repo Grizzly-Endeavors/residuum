@@ -9,8 +9,6 @@ export interface ApiHandlerOptions {
   hub: MockHub;
   /** The route tables, tried in order. */
   routes: readonly Route[];
-  /** Answers a request no route matched, and reports whether it did. */
-  fallback?: (request: RouteRequest) => Promise<boolean>;
 }
 
 /**
@@ -22,7 +20,7 @@ export interface ApiHandlerOptions {
 export function createApiHandler(
   options: ApiHandlerOptions,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {
-  const { hub, routes, fallback } = options;
+  const { hub, routes } = options;
   return async (req, res) => {
     const url = req.url ?? "";
     const method = req.method ?? "GET";
@@ -40,7 +38,6 @@ export function createApiHandler(
       }
       const request: RouteRequest = { req, res, hub, method, query, ...scoped };
       if (await dispatchRoute(routes, request)) return true;
-      if (fallback && (await fallback(request))) return true;
       json(res, 404, { error: `mock: unknown endpoint ${method} ${scoped.path}` });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

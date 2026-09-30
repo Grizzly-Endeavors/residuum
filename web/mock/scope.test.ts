@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { json } from "./http";
 import { isRefusal, isFileDataRoute, scopeRequest } from "./scope";
 import {
   fetchJson,
@@ -135,16 +134,7 @@ describe("stopped and failed agents over HTTP", () => {
   let harness: MockServerHarness;
 
   beforeEach(async () => {
-    // The inbox handlers aren't a route table yet: this stand-in lists the agent's inbox.
-    harness = await startMockServer({
-      fallback: ({ res, state, method, path }) => {
-        if (method === "GET" && path === "/api/inbox") {
-          json(res, 200, state.inboxItems);
-          return Promise.resolve(true);
-        }
-        return Promise.resolve(false);
-      },
-    });
+    harness = await startMockServer();
   });
 
   afterEach(async () => {
