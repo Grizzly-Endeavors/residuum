@@ -232,6 +232,7 @@ describe("hub", () => {
         "hub_boot",
         "agent_stopping",
         "agent_state",
+        "team_event",
       ]);
     });
 

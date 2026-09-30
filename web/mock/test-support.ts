@@ -12,6 +12,7 @@ import { dispatchRoute, type Route } from "./routes";
 import { seedAgents } from "./scenario";
 import { frameText } from "./sockets";
 import { createState, type MockAgent, type MockHub, type MockState } from "./state";
+import { createTeamEvents } from "./team-events";
 import { sleep } from "./util";
 
 /** A hub with no sockets: agents are plain records, and hub frames go nowhere. */
@@ -50,6 +51,7 @@ export function createStubHub(env: MockEnv = createMockEnv()): MockHub {
     }),
     listing: () => mockListing(agents.values()),
     broadcast: () => {},
+    teamEvents: createTeamEvents(env, "stub-boot", () => {}),
     setBusy: () => {},
     markStopping: () => {},
     reloadHubConfig: () => {},
