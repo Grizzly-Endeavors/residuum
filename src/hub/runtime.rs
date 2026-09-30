@@ -20,6 +20,7 @@ use crate::gateway::types::{GatewayExit, ReloadReceiver, ReloadSignal, TermSigna
 use crate::inference::EmbeddingProvider;
 use crate::tunnel::TunnelStatus;
 use crate::util::FatalError;
+use crate::workbench::forward::HubApi;
 
 use super::directory::AgentDirectory;
 use super::host::AgentHost;
@@ -270,8 +271,13 @@ impl HubRuntime {
         let tunnel_status_tx = Arc::new(tunnel_status_tx);
 
         let scan = scan_agents(root, &hub_cfg);
+        // The artifacts listener forwards `/api` to the hub router, which
+        // needs the listener's port and so is built after it; the handle is
+        // bound once the router exists.
+        let workbench_api = HubApi::new();
         let (workbench_serving, workbench_shutdown_tx) =
-            start_workbench_listener(root, &hub_cfg, &scan.teams_ports).await;
+            start_workbench_listener(root, &hub_cfg, &scan.teams_ports, workbench_api.clone())
+                .await;
         let services = HubServices::open(
             root,
             &hub_cfg,
@@ -298,6 +304,7 @@ impl HubRuntime {
         let setup_done = agents.is_empty().then(|| Arc::new(watch::channel(false).0));
         let setup_done_rx = setup_done.as_ref().map(|tx| tx.subscribe());
         let app = build_app(&host, &services, reload_tx.clone(), setup_done)?;
+        workbench_api.bind(app.clone());
         let server = spawn_http_server(&hub_cfg.gateway, app.clone()).await?;
         let a2a = hub_cfg
             .a2a
@@ -746,6 +753,7 @@ async fn start_workbench_listener(
     root: &Path,
     hub: &HubConfig,
     teams_ports: &[u16],
+    api: HubApi,
 ) -> (
     crate::workbench::server::WorkbenchServing,
     Option<watch::Sender<bool>>,
@@ -763,6 +771,7 @@ async fn start_workbench_listener(
         hub.gateway.port,
         &reserved,
         workbench_dir,
+        api,
     )
     .await
 }
