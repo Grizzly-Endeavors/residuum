@@ -245,7 +245,8 @@ fn state_changes(events: &[HubEvent]) -> Vec<(String, AgentState)> {
         .iter()
         .filter_map(|event| match event {
             HubEvent::AgentState { agent } => Some((agent.name.clone(), agent.state)),
-            HubEvent::AgentCreated { .. }
+            HubEvent::AgentStopping { .. }
+            | HubEvent::AgentCreated { .. }
             | HubEvent::AgentRestored { .. }
             | HubEvent::AgentDeleted { .. }
             | HubEvent::AgentActivity { .. }
@@ -353,6 +354,39 @@ async fn stopping_one_agent_leaves_the_other_serving() {
 
     hub.host.start("scout").await.unwrap();
     assert_eq!(hub.chat("scout", "back?").await, "scout here");
+}
+
+#[tokio::test]
+async fn stopping_an_agent_publishes_agent_stopping_before_its_state_changes() {
+    let hub = Fixture::new(&["scout"], "").await;
+    hub.host.start_autostart().await;
+    let mut events = hub.host.subscribe();
+
+    hub.host.stop("scout").await.unwrap();
+
+    let kinds: Vec<&str> = drain_events(&mut events)
+        .iter()
+        .filter_map(|event| match event {
+            HubEvent::AgentStopping { name } if name == "scout" => Some("stopping"),
+            HubEvent::AgentState { agent } if agent.name == "scout" => Some("state"),
+            HubEvent::AgentStopping { .. }
+            | HubEvent::AgentState { .. }
+            | HubEvent::AgentCreated { .. }
+            | HubEvent::AgentRestored { .. }
+            | HubEvent::AgentDeleted { .. }
+            | HubEvent::AgentActivity { .. }
+            | HubEvent::Notice { .. } => None,
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        ["stopping", "state"],
+        "the relay list and the team router must see the stop begin before the agent's state changes"
+    );
+    assert!(
+        hub.host.stopping().is_empty(),
+        "the stop finished, so nothing is still marked stopping"
+    );
 }
 
 #[tokio::test]
@@ -635,6 +669,7 @@ async fn unread_counts_messages_while_no_client_is_connected_and_resets_on_conne
             HubEvent::AgentActivity { name, activity } if name == "scout" => Some(activity),
             HubEvent::AgentActivity { .. }
             | HubEvent::AgentState { .. }
+            | HubEvent::AgentStopping { .. }
             | HubEvent::AgentCreated { .. }
             | HubEvent::AgentRestored { .. }
             | HubEvent::AgentDeleted { .. }
@@ -1616,6 +1651,7 @@ async fn a_teams_bind_failure_is_a_hub_notice_naming_the_agent_and_port() {
                 } if agent == "atlas" && message.contains("Teams") => Some(message),
                 HubEvent::Notice { .. }
                 | HubEvent::AgentState { .. }
+                | HubEvent::AgentStopping { .. }
                 | HubEvent::AgentCreated { .. }
                 | HubEvent::AgentRestored { .. }
                 | HubEvent::AgentDeleted { .. }

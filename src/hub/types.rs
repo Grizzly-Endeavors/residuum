@@ -199,6 +199,11 @@ pub struct AgentActivity {
 pub enum HubEvent {
     /// An agent's state, autostart, or visibility changed.
     AgentState { agent: AgentSummary },
+    /// A running agent's stop began. `summary()`/`list()` still report it
+    /// `Running` until the stop finishes (up to the stop timeout), but from
+    /// this moment the team router already refuses teammate messages for it;
+    /// the relay-facing agent list stops advertising it at the same time.
+    AgentStopping { name: String },
     /// An agent was created.
     AgentCreated { agent: AgentSummary, by: Actor },
     /// A deleted agent was restored.
