@@ -994,7 +994,14 @@ async fn graceful_shutdown(rt: &mut AgentRuntime) {
     // Messages still waiting for their turn get none now; keep them in
     // history so they are not lost.
     let undelivered: Vec<_> = rt.deferred_inbound.drain(..).collect();
-    super::turns::inject_undelivered_messages(&mut rt.agent, &rt.agent_messenger, undelivered);
+    super::turns::inject_undelivered_messages(
+        &mut rt.agent,
+        &rt.agent_messenger,
+        &rt.layout,
+        rt.tz,
+        undelivered,
+    )
+    .await;
     // Before sessions: a post-turn cycle may itself be about to publish a
     // notice or spawn a learner, which still needs the bus infrastructure
     // (aborted further down) alive to land.

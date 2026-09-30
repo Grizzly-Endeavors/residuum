@@ -82,15 +82,15 @@ pub fn process_leftover_interrupts(
     for intr in leftovers {
         match intr {
             Interrupt::UserMessage(leftover_msg) => {
-                // Its hop, if any — this may be an agent message relayed to
-                // main (see `AgentMessenger::deliver_to_main`), which carries
-                // no hop count of its own in `MessageEvent` — was already
-                // folded into the shared hop counter when it arrived
-                // mid-turn (see `handle_mid_turn_message`). The counter also
-                // holds the hops of every other input this turn took, so
-                // this can overstate the message's own hop, never understate
-                // it.
-                messenger.restore_main_hop(&leftover_msg.id, agent.hop_counter().get());
+                // Its own hop, if any — this may be an agent message relayed
+                // to main (see `AgentMessenger::deliver_to_main`), which
+                // carries no hop count of its own in `MessageEvent` — noted
+                // when the turn took it in (see `handle_mid_turn_message`).
+                // The shared counter holds every input's hops combined, so
+                // reading it here would hand a plain user message the
+                // teammate traffic's hop count.
+                let own_hop = messenger.mid_turn_hop(&leftover_msg.id);
+                messenger.restore_main_hop(&leftover_msg.id, own_hop);
                 late_messages.push(leftover_msg);
             }
             Interrupt::AgentMessage(msg) => {
@@ -110,6 +110,7 @@ pub fn process_leftover_interrupts(
             }
         }
     }
+    messenger.clear_mid_turn_hops();
     agent.hop_counter().set(0);
     if !late_messages.is_empty() {
         tracing::debug!(
@@ -121,18 +122,61 @@ pub fn process_leftover_interrupts(
 }
 
 /// Fold messages that will not get a turn of their own into `agent`'s
-/// history as context, so they stay visible to whatever runs next. Used when
-/// the agent is stopping and there is no next turn to run them as.
-pub(super) fn inject_undelivered_messages(
+/// history as context, so they stay visible to whatever runs next, and
+/// persist them to the recent-messages log so they survive a restart. Used
+/// when the agent is stopping and there is no next turn to run them as; the
+/// senders were already told these were delivered.
+pub(super) async fn inject_undelivered_messages(
     agent: &mut Agent,
     messenger: &crate::background::messaging::AgentMessenger,
+    layout: &crate::workspace::layout::WorkspaceLayout,
+    tz: chrono_tz::Tz,
     messages: impl IntoIterator<Item = MessageEvent>,
 ) {
+    let mut senders = Vec::new();
     for message in messages {
         // Discard the hop entry `process_leftover_interrupts` recorded;
         // nothing will look it up now.
         messenger.forget_main_hop(&message.id);
+        let visibility = if message.origin.endpoint == "background" {
+            Visibility::Background
+        } else {
+            Visibility::User
+        };
+        let id = message.id.clone();
+        senders.push(
+            message
+                .origin
+                .agent_sender
+                .as_ref()
+                .map(|a| a.address.clone())
+                .or_else(|| message.origin.sender.as_ref().map(|s| s.name.clone()))
+                .unwrap_or_else(|| message.origin.endpoint.clone()),
+        );
+        let before = agent.message_count();
         agent.inject_inbound_message(message);
+        if let Err(e) = crate::memory::recent_messages::append_recent_messages(
+            &layout.recent_messages_json(),
+            agent.messages_since(before),
+            visibility,
+            tz,
+            Some(&id),
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %e,
+                message_id = %id,
+                "failed to persist a message delivered as the agent stopped, it will be missing from history after a restart"
+            );
+        }
+    }
+    if !senders.is_empty() {
+        tracing::info!(
+            count = senders.len(),
+            senders = ?senders,
+            "recorded messages that arrived as the agent stopped into history"
+        );
     }
 }
 
@@ -271,8 +315,10 @@ fn handle_mid_turn_message(
                 // is actually queued into the turn — bumping on a failed
                 // send would claim a hop the turn never actually received.
                 let hop = agent_messenger.take_main_hop(&inbound.id);
+                let id = inbound.id.clone();
                 if interrupt_tx.send(Interrupt::UserMessage(inbound)).is_ok() {
                     hop_counter.bump(hop);
+                    agent_messenger.note_mid_turn_hop(&id, hop);
                 } else {
                     tracing::warn!("interrupt channel closed, dropping user message mid-turn");
                 }
@@ -656,10 +702,17 @@ fn background_output_endpoint(
 /// Sort out the interrupts still queued when a main turn ended: messages
 /// among them are queued to run as turns of their own, or, when the agent is
 /// stopping and no turn will follow, added to history as context.
-fn defer_late_messages(rt: &mut AgentRuntime, leftovers: Vec<Interrupt>, stopping: bool) {
+async fn defer_late_messages(rt: &mut AgentRuntime, leftovers: Vec<Interrupt>, stopping: bool) {
     let late_messages = process_leftover_interrupts(leftovers, &mut rt.agent, &rt.agent_messenger);
     if stopping {
-        inject_undelivered_messages(&mut rt.agent, &rt.agent_messenger, late_messages);
+        inject_undelivered_messages(
+            &mut rt.agent,
+            &rt.agent_messenger,
+            &rt.layout,
+            rt.tz,
+            late_messages,
+        )
+        .await;
     } else {
         rt.deferred_inbound.extend(late_messages);
     }
@@ -802,7 +855,7 @@ pub async fn handle_inbound_message(
         maybe_nudge_learner(rt).await;
     }
 
-    defer_late_messages(rt, leftover_interrupts, stop_requested);
+    defer_late_messages(rt, leftover_interrupts, stop_requested).await;
 
     // Only update idle timer for user messages, not background turns.
     if !is_background && !rt.cfg.idle.timeout.is_zero() {
@@ -1654,6 +1707,7 @@ mod tests {
         let mut agent = hop_test_agent();
         let messenger = test_messenger();
         agent.hop_counter().bump(9);
+        messenger.note_mid_turn_hop("leftover-1", 9);
 
         let late = process_leftover_interrupts(
             vec![Interrupt::UserMessage(sample_inbound("still looping"))],
@@ -1766,16 +1820,80 @@ mod tests {
     async fn undelivered_messages_are_folded_into_history_once_and_drop_their_hop_entry() {
         let mut agent = hop_test_agent();
         let messenger = test_messenger();
+        let dir = tempfile::tempdir().unwrap();
+        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
         messenger.restore_main_hop("leftover-1", 4);
 
         inject_undelivered_messages(
             &mut agent,
             &messenger,
+            &layout,
+            TEST_TZ,
             vec![sample_inbound("stopping soon")],
-        );
+        )
+        .await;
 
         assert_eq!(history_mentions(&agent, "stopping soon"), 1);
         assert_eq!(messenger.take_main_hop("leftover-1"), 0);
+    }
+
+    #[tokio::test]
+    async fn undelivered_messages_are_persisted_so_they_survive_a_restart() {
+        let mut agent = hop_test_agent();
+        let messenger = test_messenger();
+        let dir = tempfile::tempdir().unwrap();
+        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        tokio::fs::create_dir_all(layout.memory_dir())
+            .await
+            .unwrap();
+        let mut second = sample_inbound("second note");
+        second.id = "leftover-2".to_string();
+
+        inject_undelivered_messages(
+            &mut agent,
+            &messenger,
+            &layout,
+            TEST_TZ,
+            vec![sample_inbound("first note"), second],
+        )
+        .await;
+
+        // A restart rebuilds history from this file.
+        let persisted =
+            crate::memory::recent_messages::load_recent_messages(&layout.recent_messages_json())
+                .await
+                .unwrap();
+        let contents: Vec<_> = persisted
+            .iter()
+            .map(|m| m.message.content.as_str())
+            .collect();
+        assert!(
+            contents.iter().any(|c| c.contains("first note"))
+                && contents.iter().any(|c| c.contains("second note")),
+            "both stop-time messages must be on disk, got {contents:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_late_user_message_after_teammate_traffic_restores_hop_zero() {
+        let mut agent = hop_test_agent();
+        let messenger = test_messenger();
+        // A teammate message the turn consumed mid-turn pushed the shared
+        // counter to 9; the user message that arrived afterwards carried none.
+        agent.hop_counter().bump(9);
+
+        let late = process_leftover_interrupts(
+            vec![Interrupt::UserMessage(sample_inbound("hello again"))],
+            &mut agent,
+            &messenger,
+        );
+
+        assert_eq!(late.len(), 1);
+        assert_eq!(
+            messenger.take_main_hop("leftover-1"),
+            0,
+            "a user message must not inherit the turn's teammate hops"
+        );
     }
 
     /// Everything one main turn needs besides the agent's model, held

@@ -121,6 +121,12 @@ pub struct AgentMessenger {
     /// consumed as a turn's kickoff or mid-turn interrupt) is harmless
     /// clutter, not a leak that grows unbounded in practice.
     pending_main_hops: Mutex<HashMap<String, u32>>,
+    /// Hop count each message carried when main's running turn took it in
+    /// mid-turn, keyed by `MessageEvent.id`. The turn's shared counter holds
+    /// the sum of every input, so a message that turns out to have arrived
+    /// after the turn's last checkpoint reads its own hop from here instead.
+    /// Cleared after every turn (see [`Self::clear_mid_turn_hops`]).
+    mid_turn_hops: Mutex<HashMap<String, u32>>,
 }
 
 impl AgentMessenger {
@@ -141,6 +147,7 @@ impl AgentMessenger {
             hop_limits,
             team: TeamLink::alone("agent"),
             pending_main_hops: Mutex::new(HashMap::new()),
+            mid_turn_hops: Mutex::new(HashMap::new()),
         }
     }
 
@@ -195,6 +202,39 @@ impl AgentMessenger {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(message_id.to_string(), hop_count);
+    }
+
+    /// Remember the hop count `message_id` carried when main's running turn
+    /// took it in mid-turn. A zero hop count records nothing.
+    pub(crate) fn note_mid_turn_hop(&self, message_id: &str, hop_count: u32) {
+        if hop_count == 0 {
+            return;
+        }
+        self.mid_turn_hops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(message_id.to_string(), hop_count);
+    }
+
+    /// The hop count `message_id` carried when it was taken in mid-turn, or
+    /// `0` if it carried none.
+    #[must_use]
+    pub(crate) fn mid_turn_hop(&self, message_id: &str) -> u32 {
+        self.mid_turn_hops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(message_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Forget every hop count noted by [`Self::note_mid_turn_hop`]; called
+    /// once a turn's leftovers have been sorted out.
+    pub(crate) fn clear_mid_turn_hops(&self) {
+        self.mid_turn_hops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 
     /// Discard the hop count recorded for `message_id`, for a message that
