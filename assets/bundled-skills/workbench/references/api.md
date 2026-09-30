@@ -12,7 +12,7 @@ Three values are embedded into the page when it loads, not fetched: `residuum.ar
 
 ## Endpoints Worth Calling
 
-The team's files (the shared wiki, workbench, skills) are under `/api/team/workspace/...`, with every path relative to the team folder (`wiki/people/sam.md`, not `team/wiki/people/sam.md`). The rows for everything an agent owns (sessions, inbox, memory, status, model calls) are under `/api/agents/<agent>/...`, where `<agent>` is the name of the agent that answers them. It must be running: an unknown agent answers `404` and one that isn't running answers `409` with its `state`.
+The team's files (the shared wiki, workbench, skills) are under `/api/team/workspace/...`, with every path relative to the team folder (`wiki/people/sam.md`, not `team/wiki/people/sam.md`). The rows for everything an agent owns (sessions, inbox, memory, status, model calls) are under `/api/agents/<agent>/...`, where `<agent>` is the name of the agent that answers them. An unknown agent answers `404`, and an agent that isn't running answers `409` with its `state` on every route except the ones that only read or write its files: `chat/history`, `usage`, the user-inbox routes (`inbox...`, not `agent-inbox`), and the workspace routes, which also answer for a stopped agent.
 
 | Method and path | Returns / does |
 |-----------------|----------------|
