@@ -55,6 +55,7 @@ It does not merge, and does not contact the owner.
   - cover user-facing flows with end-to-end specs on both projects
   - scan every place or overlay they touch with axe
   - add visual baselines for new surfaces
+  - run `just web-e2e` and report the result, since pull requests don't run CI
 - The mock server implements every endpoint and frame the unit adds or changes, and its route-parity test passes.
 - Legacy components and styles the unit replaces are deleted, and removed from the style-lint ignore list.
 - The unit's `parity.md` items are checked, in the same PR.
@@ -107,7 +108,7 @@ W01, then W01b. Then W02 and W04 together. Then W03 and W02b after W02.
   - **Preview mode:** serves a production build together with the mock. Both modes start headlessly on a given port.
   - **Coverage:** every endpoint the API client calls is implemented, including those that answer 404 today (the Scheduled view's).
   - **Route parity:** a unit test calls every API client function with sample arguments against a recording fetch, and checks each recorded method and path against the mock's exported route table.
-  - **Pre-commit:** the web gate triggers on any change under the web app directory.
+  - **Pre-commit:** the web gate triggers on any change under the web app directory. Commits that touch Rust also run the generated-types check (`scripts/check-generated-types.sh`). `CLAUDE.md` and `AGENTS.md` describe the hook's web step accurately, including the style lint.
 - **Verification:**
   - The parity test passes, and fails when a mock route is removed.
   - Two identical sequences separated by a reset give identical responses.
@@ -145,17 +146,15 @@ W01, then W01b. Then W02 and W04 together. Then W03 and W02b after W02.
     - screenshots with frozen time and animation and masked dynamic regions
     - traces on failure
   - **Visual comparisons** run in the official Playwright container, pinned to the installed Playwright version.
-  - **Runner check:** the unit determines whether the CI runner can run that container.
-    - If it can, CI runs visual comparisons.
-    - If it can't, CI skips them, the orchestrator runs them locally before integration merges, and the unit's report says so, so the orchestrator can file the follow-up issue.
+  - **Release CI:** the unit determines whether the release runner can run that container. If it can't, the release run skips visual comparisons, and the report says so.
   - **Smoke specs** cover the current UI: open a chat, send a message and see the reply, open settings, open the team page. They make no accessibility assertions.
   - **Recipes:** `just web-e2e` and `just web-e2e-update`, the latter refreshing baselines in the container.
-  - **CI:** runs the suite in the web job, and uploads the report and traces on failure.
+  - **Release CI:** the quality-checks web job runs the suite, and uploads the report and traces on failure.
   - **Docs:** the contributing guide documents the layers.
 - **Verification:**
-  - The suite passes locally and in CI.
+  - The suite passes locally.
   - A deliberately broken selector fails with a trace.
-  - A sample baseline made in the container matches when compared, in CI or locally per the runner result.
+  - A sample baseline made in the container matches when compared again in the container.
 
 ### W04 — Lint and CI guardrails (M)
 
