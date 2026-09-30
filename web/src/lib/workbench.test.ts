@@ -55,6 +55,38 @@ describe("resolveArtifactsOrigin", () => {
     const result = resolveArtifactsOrigin(info({ port: null, relay: null }), relayed);
     expect(result.ok).toBe(false);
   });
+
+  it("does not invent a :port HTTPS origin on Residuum Cloud while the relay hasn't announced one", () => {
+    const cloud = {
+      origin: "https://bear.agent-residuum.com",
+      protocol: "https:",
+      hostname: "bear.agent-residuum.com",
+    };
+    const result = resolveArtifactsOrigin(info({ relay: null }), cloud);
+    expect(result).toEqual({
+      ok: false,
+      reason:
+        "This page is loaded over HTTPS, but no secure artifacts origin is available yet. If you're using Residuum Cloud, wait for the tunnel to finish connecting. If you're behind your own HTTPS proxy, make sure it also serves the workbench artifacts origin.",
+    });
+  });
+
+  it("does not point an HTTPS reverse proxy at the plain-HTTP artifacts port", () => {
+    const proxied = {
+      origin: "https://workbench.example.com",
+      protocol: "https:",
+      hostname: "workbench.example.com",
+    };
+    const result = resolveArtifactsOrigin(info({ relay: null }), proxied);
+    expect(result.ok).toBe(false);
+  });
+
+  it("still surfaces the listener's own unavailable reason over HTTPS", () => {
+    const result = resolveArtifactsOrigin(
+      info({ port: null, relay: null, unavailable_reason: "port 7702 is in use" }),
+      relayed,
+    );
+    expect(result).toEqual({ ok: false, reason: "port 7702 is in use" });
+  });
 });
 
 describe("artifactUrl", () => {
