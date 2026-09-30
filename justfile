@@ -122,7 +122,7 @@ web-fmt: _web-deps
 web-fmt-check: _web-deps
     cd web && npm run format:check
 
-# ESLint plus the CSS motion-token lint
+# ESLint plus the style lint (design tokens in stylesheets and component styles)
 [group('web')]
 web-lint: _web-deps
     cd web && npm run lint
