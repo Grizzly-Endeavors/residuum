@@ -215,10 +215,12 @@ fn log_dropped_fallbacks(tier: BackgroundModelTier, dropped: &[crate::inference:
 /// background work at all.
 async fn load_fork_identity_and_memory(
     layout: &WorkspaceLayout,
+    team: &crate::hub::team::TeamLink,
 ) -> Result<(IdentityFiles, Option<String>, Option<String>), anyhow::Error> {
     let identity = IdentityFiles::load(layout)
         .await
-        .context("failed to load identity files for session fork")?;
+        .context("failed to load identity files for session fork")?
+        .with_team_roster(team);
 
     let observations = match load_observations(&layout.observations_json()).await {
         Ok(obs) => obs,
@@ -287,7 +289,7 @@ pub(crate) async fn build_spawn_resources(
     };
 
     let (identity, observations, recent_context) =
-        load_fork_identity_and_memory(&ctx.layout).await?;
+        load_fork_identity_and_memory(&ctx.layout, ctx.messenger.team()).await?;
 
     let build_config = SubAgentBuildConfig {
         workspace_layout: ctx.layout.clone(),
@@ -379,7 +381,10 @@ mod tests {
             .await
             .unwrap();
 
-        let (identity, _, _) = load_fork_identity_and_memory(&layout).await.unwrap();
+        let (identity, _, _) =
+            load_fork_identity_and_memory(&layout, &crate::hub::team::TeamLink::alone("agent"))
+                .await
+                .unwrap();
         assert_eq!(identity.soul.as_deref(), Some("soul"));
         assert_eq!(identity.agents.as_deref(), Some("team rules"));
         assert_eq!(identity.user.as_deref(), Some("team user"));

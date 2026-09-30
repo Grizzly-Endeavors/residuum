@@ -23,6 +23,7 @@ pub(in crate::agent) fn compute_context_breakdown(
         identity.bootstrap.as_deref(),
         identity.user.as_deref(),
         identity.wiki_index.as_deref(),
+        identity.team.as_deref(),
     ]
     .into_iter()
     .flatten()

@@ -263,6 +263,10 @@ pub(crate) struct AgentRuntime {
     /// (see `run_loop`'s own select branch) — the `Agent`-touching tail
     /// neither worker can run for itself.
     pub post_turn_result_rx: mpsc::UnboundedReceiver<crate::gateway::post_turn::PostTurnResult>,
+    /// Messages that reached the main conversation after a turn's last
+    /// checkpoint drain (see `process_leftover_interrupts`). The event loop
+    /// runs them as turns before it waits on anything else.
+    pub deferred_inbound: std::collections::VecDeque<crate::bus::MessageEvent>,
     pub hybrid_searcher: Arc<HybridSearcher>,
     pub session_runtime: Arc<SessionRuntime>,
     pub session_registry: Arc<SessionRegistry>,

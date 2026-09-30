@@ -13,6 +13,7 @@ pub mod http;
 pub mod provision;
 pub mod runtime;
 pub mod services;
+pub mod team;
 pub(crate) mod team_embedding;
 #[cfg(test)]
 mod test_support;
@@ -25,6 +26,9 @@ pub use provision::{
     restore_agent,
 };
 pub use runtime::run_hub;
+pub use team::{
+    TeamAddressError, TeamLink, TeamRouter, TeamSendError, TeamTarget, parse_team_address,
+};
 pub use types::{
     A2aVisibility, Actor, AgentActivity, AgentLastError, AgentPatch, AgentState, AgentSummary,
     CreateAgentRequest, DeleteOutcome, HubEvent, LifecycleError,

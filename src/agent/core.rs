@@ -56,6 +56,9 @@ pub struct Agent {
     /// Workspace layout for per-turn identity reloads. `None` pins identity to
     /// the construction-time snapshot (test constructors).
     layout: Option<crate::workspace::layout::WorkspaceLayout>,
+    /// The agent's handle on the hub's team router, read for the `TEAM`
+    /// roster at each turn entry. `None` leaves the prompt without a roster.
+    team: Option<crate::hub::team::TeamLink>,
     last_user_message_at: Option<chrono::NaiveDateTime>,
     /// Main's current-turn hop count: the highest hop count among the
     /// inputs (kickoff message, agent-message interrupts drained mid-turn)
@@ -104,6 +107,7 @@ impl Agent {
             recent_context: None,
             tz: config.tz,
             layout: config.layout,
+            team: None,
             last_user_message_at: None,
             hop_counter,
             usage_totals: std::sync::Arc::new(tokio::sync::Mutex::new(
@@ -133,12 +137,21 @@ impl Agent {
             return self.identity.clone();
         };
         match IdentityFiles::load(layout).await {
-            Ok(identity) => identity,
+            Ok(identity) => match &self.team {
+                Some(team) => identity.with_team_roster(team),
+                None => identity,
+            },
             Err(e) => {
                 tracing::error!(error = %e, "identity reload failed; using last-known-good snapshot from previous turn");
                 self.identity.clone()
             }
         }
+    }
+
+    /// Show this agent's teammates in its prompt: the `TEAM` block is rebuilt
+    /// from `team` at every turn entry.
+    pub fn set_team(&mut self, team: crate::hub::team::TeamLink) {
+        self.team = Some(team);
     }
 
     /// Get a reference to the MCP registry.
@@ -364,13 +377,18 @@ impl Agent {
         self.last_user_message_at = Some(now);
 
         let sender = origin.and_then(|o| o.sender.clone());
-        if images.is_empty() {
-            self.recent_messages
-                .push(Message::user(user_input).with_sender(sender));
+        // A teammate's or session's message can start a turn (it may arrive
+        // when no turn is running, or after the last checkpoint of one), so
+        // the kickoff carries the structured sender the way a message
+        // injected mid-turn does.
+        let agent_sender = origin.and_then(|o| o.agent_sender.as_deref().cloned());
+        let kickoff = if images.is_empty() {
+            Message::user(user_input)
         } else {
-            self.recent_messages
-                .push(Message::user_with_images(user_input, images.to_vec()).with_sender(sender));
-        }
+            Message::user_with_images(user_input, images.to_vec())
+        };
+        self.recent_messages
+            .push(kickoff.with_sender(sender).with_agent_sender(agent_sender));
 
         let memory_ctx =
             Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());

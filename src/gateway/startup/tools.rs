@@ -108,8 +108,8 @@ pub(super) fn init_tool_registry(
         Some(config_watch),
     );
     tools.register_agent_key_tools(Arc::clone(deps.agent_keys), Arc::clone(deps.checkpoints));
-    tools.register_search_tool(Arc::clone(&mem.hybrid_searcher));
-    tools.register_memory_get_tool(layout.episodes_dir(), layout.sessions_dir());
+    let (episodes_dir, sessions_dir) = (layout.episodes_dir(), layout.sessions_dir());
+    tools.register_memory_tools(Arc::clone(&mem.hybrid_searcher), episodes_dir, sessions_dir);
     tools.register_action_tools(
         Arc::clone(deps.action_store),
         Arc::clone(deps.action_notify),
@@ -128,6 +128,7 @@ pub(super) fn init_tool_registry(
         SessionAddress::from(MAIN_ADDRESS),
         Arc::clone(deps.a2a_hub),
         Arc::clone(deps.a2a_tracker),
+        deps.agent_messenger.team().clone(),
     );
     tools.register_spawn_tool(
         deps.publisher.clone(),

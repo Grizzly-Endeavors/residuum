@@ -90,9 +90,9 @@ export interface RecentMessage {
 
 /** The agent behind a message one agent sent another. */
 export interface AgentSender {
-  /** Sender's address (`main` or a session address). */
+  /** Sender's address (`main` or a session address, or `agent:<name>[/<session>]` for a teammate). */
   address: string;
-  /** Sender's category label (`main`, `scheduled`, `external`, `spawned`, `artifact`). */
+  /** Sender's category label (`main`, `scheduled`, `external`, `spawned`, `artifact`, `teammate`). */
   category: string;
 }
 

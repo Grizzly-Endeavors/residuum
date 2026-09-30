@@ -11,9 +11,9 @@ import type { RecentMessage } from "./types";
 
 /** A message from another agent, as recognized from its header. */
 export interface ParsedAgentMessage {
-  /** Sender's address (`main` or a session address). */
+  /** Sender's address (`main` or a session address, or `agent:<name>[/<session>]` for a teammate). */
   from: string;
-  /** Sender's category label (`main`, `scheduled`, `external`, `spawned`, `artifact`). */
+  /** Sender's category label (`main`, `scheduled`, `external`, `spawned`, `artifact`, `teammate`). */
   category: string;
   /** The message body without the header. */
   body: string;
@@ -21,6 +21,9 @@ export interface ParsedAgentMessage {
 
 const AGENT_MESSAGE_HEADER =
   /^\[Agent Message from ([^\s()[\]]+) \((main|scheduled|external|spawned|artifact)\)\]\n/;
+
+const TEAMMATE_MESSAGE_HEADER =
+  /^\[Message from teammate (agent:[a-z0-9-]+(?:\/[^\s,[\]]+)?), not the user\.[^\]\n]*\]\n/;
 
 const OWNER_MESSAGE_HEADER = /^\[Message from the owner via the web UI[^\]\n]*\]\n/;
 
@@ -59,6 +62,12 @@ export function historyAgentMessage(
  * be shown as session results.
  */
 export function parseAgentMessage(content: string): ParsedAgentMessage | null {
+  const teammate = TEAMMATE_MESSAGE_HEADER.exec(content);
+  if (teammate) {
+    const [header, from] = teammate;
+    if (from === undefined) return null;
+    return { from, category: "teammate", body: content.slice(header.length) };
+  }
   const match = AGENT_MESSAGE_HEADER.exec(content);
   if (!match) return null;
   const [header, from, category] = match;

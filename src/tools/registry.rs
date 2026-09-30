@@ -12,6 +12,7 @@ use crate::agent_keys::{Redactor, SharedAgentKeys};
 use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
 use crate::bus::{ConversationTarget, EndpointRegistry, EventTrigger, Publisher, SessionAddress};
+use crate::hub::team::TeamLink;
 use crate::inference::ToolDefinition;
 use crate::memory::search::HybridSearcher;
 use crate::skills::SharedSkillState;
@@ -377,14 +378,16 @@ impl ToolRegistry {
         self.register(Box::new(delete_tool));
     }
 
-    /// Register the `memory_search` tool with a shared hybrid searcher.
-    pub fn register_search_tool(&mut self, searcher: Arc<HybridSearcher>) {
-        self.register(Box::new(memory_search::MemorySearchTool::new(searcher)));
-    }
-
-    /// Register the `memory_get` tool for episode and session-run transcript
+    /// Register the memory tools: `memory_search` over a shared hybrid
+    /// searcher, and `memory_get` for episode and session-run transcript
     /// retrieval.
-    pub fn register_memory_get_tool(&mut self, episodes_dir: PathBuf, sessions_dir: PathBuf) {
+    pub fn register_memory_tools(
+        &mut self,
+        searcher: Arc<HybridSearcher>,
+        episodes_dir: PathBuf,
+        sessions_dir: PathBuf,
+    ) {
+        self.register(Box::new(memory_search::MemorySearchTool::new(searcher)));
         self.register(Box::new(memory_get::MemoryGetTool::new(
             episodes_dir,
             sessions_dir,
@@ -472,13 +475,15 @@ impl ToolRegistry {
 
     /// Register session management tools (`stop_agent`, `list_agents`),
     /// identifying this registry's owner as `self_address` for the remote
-    /// A2A task lookups both tools do (a caller's own open tasks).
+    /// A2A task lookups both tools do (a caller's own open tasks). `team`
+    /// is the roster `list_agents` shows.
     pub fn register_background_tools(
         &mut self,
         registry: Arc<SessionRegistry>,
         self_address: SessionAddress,
         a2a_hub: Arc<A2aClientHub>,
         a2a_tracker: Arc<RemoteTaskTracker>,
+        team: TeamLink,
     ) {
         self.register(Box::new(background::StopAgentTool::new(
             Arc::clone(&registry),
@@ -491,6 +496,7 @@ impl ToolRegistry {
             self_address,
             a2a_hub,
             a2a_tracker,
+            team,
         )));
     }
 
@@ -613,8 +619,7 @@ impl ToolRegistry {
         registry.register_skill_tools(Arc::clone(&skill_state));
 
         // Memory tools
-        registry.register_search_tool(hybrid_searcher);
-        registry.register_memory_get_tool(episodes_dir, sessions_dir);
+        registry.register_memory_tools(hybrid_searcher, episodes_dir, sessions_dir);
 
         // Inbox tools
         registry.register_inbox_tools(
@@ -638,6 +643,7 @@ impl ToolRegistry {
             own_address.clone(),
             Arc::clone(&a2a_hub),
             Arc::clone(&a2a_tracker),
+            messenger.team().clone(),
         );
         registry.register_spawn_tool(
             publisher.clone(),
@@ -668,7 +674,6 @@ impl ToolRegistry {
             a2a_tracker,
         );
 
-        // Web fetch
         registry.register_web_fetch_tool();
 
         // Workspace checkpoint history (workspace repository only)

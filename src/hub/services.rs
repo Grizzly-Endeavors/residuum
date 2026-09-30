@@ -136,6 +136,9 @@ pub(crate) struct HubServices {
     /// Feeds relay-discovered sibling instances to every registered agent's
     /// A2A client hub. Each agent registers at start and unregisters at stop.
     pub sibling_fanout: Arc<crate::a2a::SiblingFanout>,
+    /// Carries `agent:` messages between the running agents. Each agent
+    /// registers its messenger at start and unregisters at stop.
+    pub team_router: Arc<super::team::TeamRouter>,
 }
 
 impl HubServices {
@@ -193,6 +196,7 @@ impl HubServices {
             workbench_serving,
             team_feed,
             sibling_fanout,
+            team_router: super::team::TeamRouter::new_shared(),
         })
     }
 

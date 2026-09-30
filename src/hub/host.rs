@@ -283,16 +283,21 @@ impl AgentHost {
     /// every agent resolves its own config against.
     pub(crate) fn new(services: HubServices, hub_cfg: HubConfig) -> Arc<Self> {
         let (events, _first_subscriber) = broadcast::channel(HUB_EVENT_CAPACITY);
-        Arc::new_cyclic(|me| Self {
-            me: Weak::clone(me),
-            services,
-            hub_cfg: RwLock::new(hub_cfg),
-            slots: RwLock::new(BTreeMap::new()),
-            events,
-            creation_lock: tokio::sync::Mutex::new(()),
-            stopping: AtomicBool::new(false),
-            teams_ports: Mutex::new(BTreeMap::new()),
-            team_embedding: tokio::sync::Mutex::new(None),
+        Arc::new_cyclic(|me| {
+            // The team router checks names and states against this host.
+            let directory: Weak<dyn AgentDirectory> = Weak::<Self>::clone(me);
+            services.team_router.bind_directory(directory);
+            Self {
+                me: Weak::clone(me),
+                services,
+                hub_cfg: RwLock::new(hub_cfg),
+                slots: RwLock::new(BTreeMap::new()),
+                events,
+                creation_lock: tokio::sync::Mutex::new(()),
+                stopping: AtomicBool::new(false),
+                teams_ports: Mutex::new(BTreeMap::new()),
+                team_embedding: tokio::sync::Mutex::new(None),
+            }
         })
     }
 
@@ -891,6 +896,8 @@ impl AgentHost {
             .sibling_fanout
             .unregister(&run.slot.name)
             .await;
+        // Nor does it take teammate messages: nothing queues for a dead agent.
+        self.services.team_router.unregister(&run.slot.name);
 
         let current = run.slot.lock().generation == run.generation;
         if current {
