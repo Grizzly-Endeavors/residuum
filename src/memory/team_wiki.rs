@@ -10,10 +10,11 @@
 //!
 //! Pages are embedded with the embedding model the index was opened with. With
 //! no embedding provider (or a store that cannot be opened) the index is text
-//! only.
+//! only. [`TeamWikiIndex::set_embedding`] swaps the embedder inside the one
+//! shared instance, so every agent's searcher sees the change.
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
 
 use crate::config::SearchConfig;
 use crate::config::paths::TeamPaths;
@@ -31,9 +32,16 @@ struct TeamVectors {
 
 /// Shared search index over the team wiki (`team/wiki/`).
 pub struct TeamWikiIndex {
+    team: TeamPaths,
     bm25: Arc<MemoryIndex>,
-    vector: Option<TeamVectors>,
+    /// The current vector store and embedder. Replaced as a whole by
+    /// [`Self::set_embedding`]; readers clone the `Arc` and never hold the
+    /// lock across an await.
+    vector: RwLock<Option<Arc<TeamVectors>>>,
     indexer: WikiIndexer,
+    /// Held for the whole of a sync and of an embedding swap, so a swap never
+    /// interleaves with a sync that is writing into the store being replaced.
+    sync_gate: tokio::sync::Mutex<()>,
 }
 
 impl TeamWikiIndex {
@@ -61,27 +69,60 @@ impl TeamWikiIndex {
             None => None,
         };
         Ok(Arc::new(Self {
+            team: team.clone(),
             bm25: Arc::new(bm25),
-            vector,
+            vector: RwLock::new(vector.map(Arc::new)),
             indexer: WikiIndexer::new(team),
+            sync_gate: tokio::sync::Mutex::new(()),
         }))
+    }
+
+    fn vectors(&self) -> Option<Arc<TeamVectors>> {
+        self.vector
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Whether wiki search uses vector similarity as well as full-text.
     #[must_use]
     pub fn has_vector(&self) -> bool {
-        self.vector.is_some()
+        self.vectors().is_some()
+    }
+
+    /// Switch the embedder this index uses, or drop to text only with `None`.
+    ///
+    /// The vector store is reopened for the new model (a store recorded under
+    /// another model is cleared, the same as when the index is opened), and
+    /// the next search re-syncs every page so the new store is filled. Returns
+    /// whether the index is now hybrid; `false` for a `Some` embedder means
+    /// its store could not be opened and search is text only.
+    pub async fn set_embedding(&self, embedding: Option<Arc<dyn EmbeddingProvider>>) -> bool {
+        let _gate = self.sync_gate.lock().await;
+        let vector = match embedding {
+            Some(embedder) => open_vectors(&self.team, embedder).await,
+            None => None,
+        };
+        let hybrid = vector.is_some();
+        *self.vector.write().unwrap_or_else(PoisonError::into_inner) = vector.map(Arc::new);
+        self.indexer.forget_synced_state().await;
+        hybrid
     }
 
     /// Bring the index up to date with the files on disk.
     ///
     /// A failed sync leaves the previous documents searchable, so it is
     /// logged rather than failing the search; the next search retries it.
-    async fn sync(&self) {
-        let vector = self.vector.as_ref().map(|v| (&v.store, &v.embedder));
+    /// Returns the vectors the sync used, so the search that follows queries
+    /// the store that was just filled.
+    async fn sync(&self) -> Option<Arc<TeamVectors>> {
+        let _gate = self.sync_gate.lock().await;
+        let vectors = self.vectors();
+        let vector = vectors.as_ref().map(|v| (&v.store, &v.embedder));
         if let Err(e) = self.indexer.sync(&self.bm25, vector).await {
             tracing::warn!(error = %format!("{e:#}"), "failed to sync team wiki pages into the search index; wiki results may be stale");
         }
+        vectors
     }
 
     /// Run the hybrid pipeline against the team wiki with the caller's
@@ -97,12 +138,12 @@ impl TeamWikiIndex {
         cfg: &SearchConfig,
         min_score: f32,
     ) -> anyhow::Result<SideOutcome> {
-        self.sync().await;
+        let vectors = self.sync().await;
         let wiki_filters = SearchFilters {
             source: Some(DocSource::Wiki),
             ..filters.clone()
         };
-        let vector = self.vector.as_ref().map(|v| (&v.store, &v.embedder));
+        let vector = vectors.as_ref().map(|v| (&v.store, &v.embedder));
         search_side(
             &self.bm25,
             vector,
@@ -423,6 +464,49 @@ mod tests {
         );
         let from_first = search_wiki(&first, "edited").await;
         assert_eq!(from_first.results.len(), settled.results.len());
+    }
+
+    #[tokio::test]
+    async fn swapping_the_embedder_upgrades_the_one_shared_index_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let team = TeamPaths::new(dir.path().join("team"));
+        write_page(&team, "grizzly.md", PAGE);
+        write_page(&team, "fish.md", "---\ntitle: Fish\n---\nlogin shell\n");
+        let index = TeamWikiIndex::open(&team, None).await.unwrap();
+        let other_handle = Arc::clone(&index);
+        assert!(!search_wiki(&index, "Flux").await.semantic);
+
+        let first = AxisEmbedder::new("axis-a");
+        let provider: Arc<dyn EmbeddingProvider> = Arc::<AxisEmbedder>::clone(&first);
+        assert!(index.set_embedding(Some(provider)).await);
+
+        // The handle every other agent holds sees the new embedder, and the
+        // pages that were already synced text-only were embedded.
+        assert!(other_handle.has_vector());
+        let outcome = search_wiki(&other_handle, "Flux").await;
+        assert!(outcome.semantic);
+        assert_eq!(
+            outcome.results.first().map(|r| r.id.as_str()),
+            Some("team/wiki/grizzly.md")
+        );
+        assert!(
+            first.embedded.load(Ordering::SeqCst) >= 3,
+            "probe plus both pages"
+        );
+
+        // A different model clears the store and re-embeds under the new one.
+        let second = AxisEmbedder::new("axis-b");
+        let second_provider: Arc<dyn EmbeddingProvider> = Arc::<AxisEmbedder>::clone(&second);
+        assert!(index.set_embedding(Some(second_provider)).await);
+        let _ = search_wiki(&other_handle, "Flux").await;
+        // Probe, both pages, and the query.
+        assert_eq!(second.embedded.load(Ordering::SeqCst), 4);
+
+        assert!(!index.set_embedding(None).await);
+        assert!(!other_handle.has_vector());
+        let text_only = search_wiki(&other_handle, "Flux").await;
+        assert!(!text_only.semantic);
+        assert_eq!(text_only.results.len(), 1);
     }
 
     #[tokio::test]

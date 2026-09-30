@@ -13,6 +13,7 @@ pub mod http;
 pub mod provision;
 pub mod runtime;
 pub mod services;
+pub(crate) mod team_embedding;
 #[cfg(test)]
 mod test_support;
 pub mod types;

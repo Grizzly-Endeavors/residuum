@@ -1220,3 +1220,355 @@ async fn one_team_change_feed_serves_every_agent_and_the_artifact_reload_watcher
         assert_eq!(str_at(&artifact, "name"), "chart");
     }
 }
+
+// ─── Lifecycle races and fail-closed settings ─────────────────────────
+
+/// Answers an embeddings request with one fixed vector per input text.
+struct EmbedReply;
+
+impl wiremock::Respond for EmbedReply {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        let count = body
+            .get("input")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        let data: Vec<Value> = (0..count)
+            .map(|index| json!({ "embedding": [0.1, 0.2, 0.3], "index": index }))
+            .collect();
+        ResponseTemplate::new(200).set_body_json(json!({ "data": data }))
+    }
+}
+
+fn teams_config(port: u16) -> String {
+    format!(
+        "[teams]\napp_id = \"app\"\napp_password = \"pw\"\ntenant_id = \"tenant\"\nport = {port}\n"
+    )
+}
+
+fn config_path(hub: &Fixture, name: &str) -> std::path::PathBuf {
+    hub.root
+        .path()
+        .join(name)
+        .join("config")
+        .join("config.toml")
+}
+
+fn providers_path(hub: &Fixture, name: &str) -> std::path::PathBuf {
+    hub.root
+        .path()
+        .join(name)
+        .join("config")
+        .join("providers.toml")
+}
+
+fn spawn_restart(host: &Arc<AgentHost>) -> tokio::task::JoinHandle<Result<(), LifecycleError>> {
+    let host = Arc::clone(host);
+    tokio::spawn(async move { host.restart("bob").await.map(|_| ()) })
+}
+
+#[tokio::test]
+async fn racing_starts_restarts_and_a_delete_never_resurrect_the_agent() {
+    let hub = Fixture::new(&["bob"], "").await;
+    let model_url = hub.mock("bob").uri();
+    for round in 0..12 {
+        if round > 0 {
+            crate::hub::test_support::write_agent(hub.root.path(), "bob", &model_url);
+            hub.host.adopt("bob");
+        }
+        // Odd rounds start with a broken model config, so the racing starts
+        // fail and go through the failure-to-inbox path.
+        if round % 2 == 1 {
+            std::fs::write(providers_path(&hub, "bob"), "not valid toml [[[").unwrap();
+        }
+        let slot = hub.host.slot("bob").unwrap();
+
+        // The delete queues on the agent's lock behind the first restart,
+        // and every later operation queues behind the delete already holding
+        // the agent's slot.
+        let mut ops = Vec::new();
+        ops.push(spawn_restart(&hub.host));
+        let deleter = Arc::clone(&hub.host);
+        ops.push(tokio::spawn(async move {
+            deleter.delete("bob", Actor::User).await.map(|_| ())
+        }));
+        for _ in 0..4 {
+            ops.push(spawn_restart(&hub.host));
+        }
+        for _ in 0..4 {
+            let starter = Arc::clone(&hub.host);
+            ops.push(tokio::spawn(async move {
+                starter.start("bob").await.map(|_| ())
+            }));
+        }
+        for op in ops {
+            match op.await.unwrap() {
+                Ok(()) | Err(LifecycleError::NotFound(_) | LifecycleError::Failed(_)) => {}
+                Err(other) => panic!("unexpected error in round {round}: {other:?}"),
+            }
+        }
+
+        assert!(
+            !hub.root.path().join("bob").exists(),
+            "round {round}: the deleted agent's directory was recreated"
+        );
+        assert!(
+            matches!(hub.host.summary("bob"), Err(LifecycleError::NotFound(_))),
+            "round {round}: the deleted agent still has a slot"
+        );
+        assert!(
+            slot.lock().running.is_none(),
+            "round {round}: a runtime outlived the deleted agent"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_corrupt_or_truncated_config_keeps_the_last_loaded_visibility() {
+    let hub = Fixture::new(&["atlas"], "").await;
+    let path = config_path(&hub, "atlas");
+    std::fs::write(&path, "[a2a]\nvisibility = \"private\"\n").unwrap();
+    assert_eq!(
+        hub.host.summary("atlas").unwrap().a2a_visibility,
+        A2aVisibility::Private
+    );
+
+    std::fs::write(&path, "[a2a\nvisibility = \"priv").unwrap();
+    assert_eq!(
+        hub.host.summary("atlas").unwrap().a2a_visibility,
+        A2aVisibility::Private,
+        "a corrupt config file"
+    );
+
+    std::fs::write(&path, "[a2a]\nvisibility = \"priv").unwrap();
+    assert_eq!(
+        hub.host.summary("atlas").unwrap().a2a_visibility,
+        A2aVisibility::Private,
+        "a config truncated in the middle of a value"
+    );
+
+    std::fs::write(&path, "").unwrap();
+    assert_eq!(
+        hub.host.summary("atlas").unwrap().a2a_visibility,
+        A2aVisibility::Private,
+        "a config truncated to nothing"
+    );
+
+    std::fs::write(&path, "[a2a]\nvisibility = \"public\"\n").unwrap();
+    assert_eq!(
+        hub.host.summary("atlas").unwrap().a2a_visibility,
+        A2aVisibility::Public,
+        "a good config takes effect again"
+    );
+}
+
+#[tokio::test]
+async fn an_agent_whose_config_never_loaded_is_private() {
+    let hub = Fixture::new(&["atlas"], "").await;
+    crate::hub::test_support::write_agent(hub.root.path(), "ghost", "http://127.0.0.1:1");
+    std::fs::write(config_path(&hub, "ghost"), "[a2a\nvisibility = ").unwrap();
+    hub.host.adopt("ghost");
+
+    let summary = hub.host.summary("ghost").unwrap();
+
+    assert_eq!(summary.a2a_visibility, A2aVisibility::Private);
+    assert_eq!(
+        hub.host.summary("atlas").unwrap().a2a_visibility,
+        A2aVisibility::Public,
+        "an empty config is the defaults"
+    );
+}
+
+#[tokio::test]
+async fn a_running_agent_keeps_the_visibility_it_loaded_when_its_file_breaks() {
+    let hub = Fixture::new(&["atlas"], "").await;
+    std::fs::write(
+        config_path(&hub, "atlas"),
+        "[a2a]\nvisibility = \"private\"\n",
+    )
+    .unwrap();
+    hub.host.start("atlas").await.unwrap();
+
+    std::fs::write(
+        config_path(&hub, "atlas"),
+        "[a2a]\nvisibility = \"public\"\n[[[",
+    )
+    .unwrap();
+
+    assert_eq!(
+        hub.host.summary("atlas").unwrap().a2a_visibility,
+        A2aVisibility::Private
+    );
+}
+
+#[tokio::test]
+async fn once_the_hub_is_shutting_down_nothing_starts_and_running_agents_still_stop() {
+    let hub = Fixture::new(&["atlas", "scout"], "").await;
+    hub.host.start("atlas").await.unwrap();
+
+    hub.host.begin_shutdown();
+
+    for result in [
+        hub.host.start("scout").await,
+        hub.host.restart("atlas").await,
+        hub.host
+            .create(create_request("nova", None), Actor::User)
+            .await,
+    ] {
+        assert_eq!(
+            result.unwrap_err(),
+            LifecycleError::Failed("Residuum is shutting down".to_string())
+        );
+    }
+    assert_eq!(hub.state_of("scout"), AgentState::Stopped);
+    assert!(!hub.root.path().join("nova").exists());
+    assert_eq!(
+        hub.state_of("atlas"),
+        AgentState::Running,
+        "a refused restart leaves the running agent alone"
+    );
+
+    hub.host.stop_all().await;
+    assert_eq!(hub.state_of("atlas"), AgentState::Stopped);
+}
+
+#[tokio::test]
+async fn agents_starting_at_once_cannot_both_take_a_teams_port() {
+    let names = ["a", "b", "c", "d"];
+    let hub = Fixture::new(&names, "").await;
+    let port = free_port().await;
+    for name in names {
+        std::fs::write(config_path(&hub, name), teams_config(port)).unwrap();
+    }
+
+    let starts = names.map(|name| {
+        let host = Arc::clone(&hub.host);
+        tokio::spawn(async move { host.start(name).await })
+    });
+    let mut started = 0;
+    for start in starts {
+        if start.await.unwrap().is_ok() {
+            started += 1;
+        }
+    }
+
+    assert_eq!(started, 1, "exactly one agent gets the port");
+    let holder = names
+        .into_iter()
+        .find(|name| hub.state_of(name) == AgentState::Running)
+        .unwrap();
+
+    // Stopping releases the port for the next agent.
+    hub.host.stop(holder).await.unwrap();
+    let next = names
+        .into_iter()
+        .find(|name| hub.state_of(name) == AgentState::Failed)
+        .unwrap();
+    hub.host.start(next).await.unwrap();
+    assert_eq!(hub.state_of(next), AgentState::Running);
+}
+
+#[tokio::test]
+async fn deleting_an_agent_frees_its_teams_port() {
+    let hub = Fixture::new(&["atlas", "scout"], "").await;
+    let port = free_port().await;
+    for name in ["atlas", "scout"] {
+        std::fs::write(config_path(&hub, name), teams_config(port)).unwrap();
+    }
+    hub.host.start("atlas").await.unwrap();
+
+    hub.host.delete("atlas", Actor::User).await.unwrap();
+
+    hub.host.start("scout").await.unwrap();
+    assert_eq!(hub.state_of("scout"), AgentState::Running);
+}
+
+#[tokio::test]
+async fn a_reload_that_changes_the_teams_port_moves_the_reservation() {
+    let hub = Fixture::new(&["atlas", "scout"], "").await;
+    let (first, second) = (free_port().await, free_port().await);
+    std::fs::write(config_path(&hub, "atlas"), teams_config(first)).unwrap();
+    std::fs::write(config_path(&hub, "scout"), teams_config(first)).unwrap();
+    hub.host.start("atlas").await.unwrap();
+
+    std::fs::write(config_path(&hub, "atlas"), teams_config(second)).unwrap();
+    let slot = hub.host.slot("atlas").unwrap();
+    hub.host.refresh_teams_port(&slot);
+
+    {
+        let ports = hub.host.teams_ports.lock().unwrap();
+        assert_eq!(ports.get(&second).map(String::as_str), Some("atlas"));
+        assert!(!ports.contains_key(&first));
+    }
+    hub.host.start("scout").await.unwrap();
+    assert_eq!(hub.state_of("scout"), AgentState::Running);
+}
+
+#[tokio::test]
+async fn a_teams_bind_failure_is_a_hub_notice_naming_the_agent_and_port() {
+    let hub = Fixture::new(&["atlas"], "").await;
+    let taken = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = taken.local_addr().unwrap().port();
+    std::fs::write(config_path(&hub, "atlas"), teams_config(port)).unwrap();
+    let mut events = hub.host.subscribe();
+
+    hub.host.start("atlas").await.unwrap();
+
+    let message = eventually("the Teams bind failure notice", || {
+        let found = drain_events(&mut events)
+            .into_iter()
+            .find_map(|event| match event {
+                HubEvent::Notice {
+                    message,
+                    agent: Some(agent),
+                    ..
+                } if agent == "atlas" && message.contains("Teams") => Some(message),
+                HubEvent::Notice { .. }
+                | HubEvent::AgentState { .. }
+                | HubEvent::AgentCreated { .. }
+                | HubEvent::AgentDeleted { .. }
+                | HubEvent::AgentActivity { .. } => None,
+            });
+        std::future::ready(found)
+    })
+    .await;
+    assert!(message.contains(&port.to_string()), "{message}");
+    drop(taken);
+}
+
+#[tokio::test]
+async fn the_team_wiki_follows_the_agents_embedding_model() {
+    let hub = Fixture::new(&["atlas"], "").await;
+    assert!(!hub.services.team_wiki.has_vector());
+    let embeddings = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(EmbedReply)
+        .mount(&embeddings)
+        .await;
+    let chat_url = hub.mock("atlas").uri();
+    let providers = |embedding_line: &str| {
+        format!(
+            "[providers]\nmock = {{ type = \"openai\", api_key = \"test-key\", url = \"{chat_url}\" }}\nembed = {{ type = \"openai\", api_key = \"test-key\", url = \"{}\" }}\n\n[models]\nmain = \"mock/test-model\"\n{embedding_line}\n",
+            embeddings.uri()
+        )
+    };
+    std::fs::write(
+        providers_path(&hub, "atlas"),
+        providers("embedding = \"embed/test-embed\""),
+    )
+    .unwrap();
+
+    // The hub opened text-only; the first agent that configures an embedding
+    // model starts and the shared index gains vectors.
+    hub.host.start("atlas").await.unwrap();
+    eventually("the team wiki to gain vectors", || {
+        std::future::ready(hub.services.team_wiki.has_vector().then_some(()))
+    })
+    .await;
+
+    // Removing the model drops the index back to text only.
+    std::fs::write(providers_path(&hub, "atlas"), providers("")).unwrap();
+    hub.host.refresh_team_embedding().await;
+    assert!(!hub.services.team_wiki.has_vector());
+}

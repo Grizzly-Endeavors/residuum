@@ -37,6 +37,7 @@ use crate::workspace::layout::WorkspaceLayout;
 use super::activity::ActivityTracker;
 use super::directory::AgentDirectory;
 use super::services::HubServices;
+use super::team_embedding::EmbeddingSource;
 use super::types::{
     A2aVisibility, Actor, AgentActivity, AgentLastError, AgentPatch, AgentState, AgentSummary,
     CreateAgentRequest, DeleteOutcome, HubEvent, LifecycleError, NoticeLevel,
@@ -58,6 +59,9 @@ const ABORT_SETTLE: Duration = Duration::from_secs(10);
 /// just wrote before answering anyway.
 const PATCH_RELOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// What start, restart, and create answer once the hub is shutting down.
+const SHUTTING_DOWN: &str = "Residuum is shutting down";
+
 /// The two settings `patch` changes, as the agent's config file holds them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AgentMeta {
@@ -66,38 +70,61 @@ struct AgentMeta {
 }
 
 impl AgentMeta {
+    /// What a summary reports for an agent whose config has never loaded:
+    /// the default autostart, and private, so a card that can't be checked
+    /// is never served without a key.
+    const UNVERIFIED: Self = Self {
+        autostart: true,
+        a2a_visibility: A2aVisibility::Private,
+    };
+
     /// Read `autostart` and `[a2a] visibility` from the agent's
-    /// `config/config.toml`, with the defaults an absent key resolves to. A
-    /// file that can't be read or parsed reads as all defaults: the agent
-    /// reports its own config problem when it starts.
-    fn read(agent_dir: &Path) -> Self {
+    /// `config/config.toml`, with the defaults an absent key resolves to.
+    /// `had_meta` says whether a config has loaded before.
+    ///
+    /// # Errors
+    /// Returns why the file could not be used: it can't be read, isn't valid
+    /// TOML, or is empty when a config has loaded before (as a half-written
+    /// file is). The caller keeps the last meta that did load rather than
+    /// guessing. An empty file for an agent that never loaded one reads as
+    /// all defaults.
+    fn read(agent_dir: &Path, had_meta: bool) -> Result<Self, String> {
         let path = agent_dir.join("config").join("config.toml");
-        let doc = match std::fs::read_to_string(&path) {
-            Ok(text) => text.parse::<toml_edit::DocumentMut>().ok(),
-            Err(e) => {
-                tracing::debug!(error = %e, path = %path.display(), "couldn't read an agent's config for its summary");
-                None
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| format!("couldn't read {}: {e}", path.display()))?;
+        if text.trim().is_empty() {
+            if had_meta {
+                return Err(format!("{} is empty", path.display()));
             }
-        };
+            return Ok(Self {
+                autostart: true,
+                a2a_visibility: A2aVisibility::Public,
+            });
+        }
+        let doc = text
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|e| format!("couldn't parse {}: {e}", path.display()))?;
         let autostart = doc
-            .as_ref()
-            .and_then(|doc| doc.get("autostart"))
+            .get("autostart")
             .and_then(toml_edit::Item::as_bool)
             .unwrap_or(true);
         let a2a_visibility = match doc
-            .as_ref()
-            .and_then(|doc| doc.get("a2a"))
+            .get("a2a")
             .and_then(|a2a| a2a.get("visibility"))
             .and_then(toml_edit::Item::as_str)
             .map(str::trim)
         {
+            None | Some("" | "public") => A2aVisibility::Public,
             Some("private") => A2aVisibility::Private,
-            _ => A2aVisibility::Public,
+            Some(other) => {
+                tracing::warn!(value = other, path = %path.display(), "an agent's [a2a] visibility is not \"public\" or \"private\"; treating it as private");
+                A2aVisibility::Private
+            }
         };
-        Self {
+        Ok(Self {
             autostart,
             a2a_visibility,
-        }
+        })
     }
 }
 
@@ -137,8 +164,6 @@ struct RunningAgent {
     /// Turns `true` once the supervisor has recorded the agent's exit.
     done: watch::Receiver<bool>,
     abort: AbortHandle,
-    /// The Teams adapter port this run holds, if it has one.
-    teams_port: Option<u16>,
 }
 
 struct SlotState {
@@ -146,9 +171,14 @@ struct SlotState {
     last_error: Option<AgentLastError>,
     running: Option<RunningAgent>,
     generation: u64,
-    /// Autostart and visibility as last published, to notice a change made
-    /// behind the host's back once the agent reloads.
-    published_meta: AgentMeta,
+    /// Autostart and visibility from the last config that loaded, as last
+    /// published. `None` until one has loaded. Summaries and the A2A
+    /// listener's auth read this, so a config that is broken or half written
+    /// never changes what they report.
+    published_meta: Option<AgentMeta>,
+    /// Whether the config file could not be used the last time it was read,
+    /// so the problem is logged once per streak instead of on every request.
+    meta_unreadable: bool,
 }
 
 /// One agent the host knows about.
@@ -157,6 +187,10 @@ struct AgentSlot {
     dir: PathBuf,
     /// Serializes start, stop, restart, and patch on this agent.
     op_lock: tokio::sync::Mutex<()>,
+    /// Set under `op_lock` once the agent has been deleted. Anything that
+    /// took this slot before the delete and gets `op_lock` afterwards sees it
+    /// and stops, so a deleted agent's directory is never written again.
+    removed: AtomicBool,
     state: Mutex<SlotState>,
     activity: Arc<ActivityTracker>,
 }
@@ -164,6 +198,62 @@ struct AgentSlot {
 impl AgentSlot {
     fn lock(&self) -> std::sync::MutexGuard<'_, SlotState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn is_removed(&self) -> bool {
+        self.removed.load(Ordering::SeqCst)
+    }
+
+    /// The error for an operation that reached a deleted agent's slot.
+    fn ensure_present(&self) -> Result<(), LifecycleError> {
+        if self.is_removed() {
+            return Err(LifecycleError::NotFound(self.name.clone()));
+        }
+        Ok(())
+    }
+
+    /// Re-read the config file. A file that can't be used leaves the last
+    /// meta that loaded in place (private if none ever has). Returns the meta
+    /// to report and whether it differs from the one published before.
+    fn reload_meta(&self) -> (AgentMeta, bool) {
+        let had_meta = self.lock().published_meta.is_some();
+        let read = AgentMeta::read(&self.dir, had_meta);
+        let mut guard = self.lock();
+        match read {
+            Ok(meta) => {
+                let changed = guard.published_meta != Some(meta);
+                guard.published_meta = Some(meta);
+                guard.meta_unreadable = false;
+                (meta, changed)
+            }
+            Err(reason) => {
+                if !guard.meta_unreadable {
+                    guard.meta_unreadable = true;
+                    let holding = if guard.published_meta.is_some() {
+                        "keeping the settings from the last config that loaded"
+                    } else {
+                        "no config has loaded yet, so it is treated as private"
+                    };
+                    tracing::warn!(agent = %self.name, %reason, "an agent's config file can't be used for its summary; {holding}");
+                }
+                (guard.published_meta.unwrap_or(AgentMeta::UNVERIFIED), false)
+            }
+        }
+    }
+
+    /// The settings to report: while the agent runs, those of the config it
+    /// last loaded; otherwise the config file, falling back to the last that
+    /// loaded.
+    fn current_meta(&self) -> AgentMeta {
+        {
+            let guard = self.lock();
+            if guard.running.is_some()
+                && let Some(meta) = guard.published_meta
+            {
+                return meta;
+            }
+        }
+        self.reload_meta().0
     }
 }
 
@@ -177,6 +267,14 @@ pub struct AgentHost {
     /// Serializes creating agents, so two requests for one name can't both
     /// write its directory.
     creation_lock: tokio::sync::Mutex<()>,
+    /// Set when the hub begins shutting down; from then on nothing starts.
+    stopping: AtomicBool,
+    /// Teams adapter ports held by agents that are starting or running,
+    /// keyed by port, so two agents starting at once can't both take one.
+    teams_ports: Mutex<BTreeMap<u16, String>>,
+    /// The embedding model the team wiki currently uses. Holding the lock
+    /// covers choosing and swapping, so refreshes never interleave.
+    team_embedding: tokio::sync::Mutex<Option<EmbeddingSource>>,
 }
 
 impl AgentHost {
@@ -192,6 +290,9 @@ impl AgentHost {
             slots: RwLock::new(BTreeMap::new()),
             events,
             creation_lock: tokio::sync::Mutex::new(()),
+            stopping: AtomicBool::new(false),
+            teams_ports: Mutex::new(BTreeMap::new()),
+            team_embedding: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -262,23 +363,23 @@ impl AgentHost {
         if slots.contains_key(name) {
             return;
         }
-        let meta = AgentMeta::read(&dir);
-        slots.insert(
-            name.to_string(),
-            Arc::new(AgentSlot {
-                name: name.to_string(),
-                dir,
-                op_lock: tokio::sync::Mutex::new(()),
-                state: Mutex::new(SlotState {
-                    state: AgentState::Stopped,
-                    last_error: None,
-                    running: None,
-                    generation: 0,
-                    published_meta: meta,
-                }),
-                activity: ActivityTracker::new(name, self.events.clone()),
+        let slot = Arc::new(AgentSlot {
+            name: name.to_string(),
+            dir,
+            op_lock: tokio::sync::Mutex::new(()),
+            removed: AtomicBool::new(false),
+            state: Mutex::new(SlotState {
+                state: AgentState::Stopped,
+                last_error: None,
+                running: None,
+                generation: 0,
+                published_meta: None,
+                meta_unreadable: false,
             }),
-        );
+            activity: ActivityTracker::new(name, self.events.clone()),
+        });
+        slot.reload_meta();
+        slots.insert(name.to_string(), slot);
     }
 
     /// Forget the agent `name`, whose directory has been removed. The agent
@@ -288,6 +389,22 @@ impl AgentHost {
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(name);
+        self.release_teams_port(name);
+    }
+
+    /// From now on nothing starts: `start`, `restart`, and `create` refuse
+    /// with a plain-language error. The hub calls this before it stops the
+    /// agents and the servers, so a request arriving in between can't start
+    /// an agent that nothing would stop.
+    pub fn begin_shutdown(&self) {
+        self.stopping.store(true, Ordering::SeqCst);
+    }
+
+    fn ensure_not_stopping(&self) -> Result<(), LifecycleError> {
+        if self.stopping.load(Ordering::SeqCst) {
+            return Err(LifecycleError::Failed(SHUTTING_DOWN.to_string()));
+        }
+        Ok(())
     }
 
     /// Start every agent whose `autostart` is on, concurrently. A failure to
@@ -296,7 +413,7 @@ impl AgentHost {
         let starts = self
             .slots()
             .into_iter()
-            .filter(|slot| AgentMeta::read(&slot.dir).autostart)
+            .filter(|slot| slot.reload_meta().0.autostart)
             .map(|slot| async move {
                 let _op = slot.op_lock.lock().await;
                 // The failure is recorded on the agent and logged there.
@@ -309,7 +426,8 @@ impl AgentHost {
     pub async fn stop_all(&self) {
         let stops = self.slots().into_iter().map(|slot| async move {
             let _op = slot.op_lock.lock().await;
-            self.stop_locked(&slot).await;
+            // A slot deleted meanwhile has nothing left to stop.
+            self.stop_locked(&slot).await.ok();
         });
         futures_util::future::join_all(stops).await;
     }
@@ -376,7 +494,7 @@ impl AgentHost {
             let guard = slot.lock();
             (guard.state, guard.last_error.clone())
         };
-        let meta = AgentMeta::read(&slot.dir);
+        let meta = slot.current_meta();
         AgentSummary {
             name: slot.name.clone(),
             state,
@@ -403,21 +521,18 @@ impl AgentHost {
             if state != AgentState::Running {
                 guard.running = None;
             }
-            guard.published_meta = AgentMeta::read(&slot.dir);
         }
+        if matches!(state, AgentState::Stopped | AgentState::Failed) {
+            self.release_teams_port(&slot.name);
+        }
+        slot.reload_meta();
         self.publish_state(slot);
     }
 
     /// Announce autostart or visibility changes made to the agent's config,
     /// whoever made them.
     fn refresh_meta(&self, slot: &AgentSlot) {
-        let current = AgentMeta::read(&slot.dir);
-        let changed = {
-            let mut guard = slot.lock();
-            let changed = guard.published_meta != current;
-            guard.published_meta = current;
-            changed
-        };
+        let (_meta, changed) = slot.reload_meta();
         if changed {
             self.publish_state(slot);
         }
@@ -427,6 +542,8 @@ impl AgentHost {
 
     /// Start the agent. The caller holds its `op_lock`.
     async fn start_locked(&self, slot: &Arc<AgentSlot>) -> Result<(), LifecycleError> {
+        slot.ensure_present()?;
+        self.ensure_not_stopping()?;
         if matches!(
             slot.lock().state,
             AgentState::Running | AgentState::Starting
@@ -444,7 +561,7 @@ impl AgentHost {
             .and_then(|cfg| cfg.teams.as_ref())
             .map(|teams| teams.port);
         if let Some(port) = teams_port
-            && let Some(other) = self.teams_port_holder(&slot.name, port)
+            && let Err(other) = self.reserve_teams_port(&slot.name, port)
         {
             let message = format!(
                 "{} can't start: its Teams adapter uses port {port}, which the agent '{other}' is already using. Give one of them a different Teams port, then start it again.",
@@ -470,7 +587,7 @@ impl AgentHost {
         .await;
         match started {
             Ok(Ok(started)) => {
-                self.attach(slot, started.runtime, started.control, teams_port);
+                self.attach(slot, started.runtime, started.control);
                 Ok(())
             }
             Ok(Err(err)) => {
@@ -495,18 +612,55 @@ impl AgentHost {
         }
     }
 
-    /// The name of the running agent already holding Teams port `port`.
-    fn teams_port_holder(&self, starting: &str, port: u16) -> Option<String> {
-        self.slots()
-            .into_iter()
-            .filter(|slot| slot.name != starting)
-            .find(|slot| {
-                slot.lock()
-                    .running
-                    .as_ref()
-                    .is_some_and(|running| running.teams_port == Some(port))
-            })
-            .map(|slot| slot.name.clone())
+    /// Reserve Teams port `port` for `agent`, releasing any other port it
+    /// held. Fails with the name of the agent that already holds the port.
+    /// Checking and taking happen under one lock, so two agents starting at
+    /// once can't both get it.
+    fn reserve_teams_port(&self, agent: &str, port: u16) -> Result<(), String> {
+        let mut ports = self
+            .teams_ports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(holder) = ports.get(&port)
+            && holder != agent
+        {
+            return Err(holder.clone());
+        }
+        ports.retain(|_, holder| holder != agent);
+        ports.insert(port, agent.to_string());
+        Ok(())
+    }
+
+    /// Release the Teams port `agent` holds, if any.
+    fn release_teams_port(&self, agent: &str) {
+        self.teams_ports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|_, holder| holder != agent);
+    }
+
+    /// After a reload, move the agent's Teams port reservation to the port
+    /// its new config uses. A port another agent holds is left to the
+    /// adapter, whose failed bind is told to the user.
+    fn refresh_teams_port(&self, slot: &AgentSlot) {
+        let hub_cfg = self.hub_config();
+        let cfg = match agent_span(&slot.name)
+            .in_scope(|| Config::load_agent_at(&slot.dir, &hub_cfg))
+        {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                tracing::warn!(agent = %slot.name, error = %e, "couldn't read the reloaded config to update the agent's Teams port");
+                return;
+            }
+        };
+        match cfg.teams.as_ref().map(|teams| teams.port) {
+            Some(port) => {
+                if let Err(other) = self.reserve_teams_port(&slot.name, port) {
+                    tracing::warn!(agent = %slot.name, port, holder = %other, "the agent's Teams port is held by another agent");
+                }
+            }
+            None => self.release_teams_port(&slot.name),
+        }
     }
 
     /// Put the agent in `failed` with `message`, log and auto-report
@@ -542,6 +696,11 @@ impl AgentHost {
     /// Leave the failed agent's user inbox an item saying what happened, so
     /// the failure is there for the user even without the web UI open.
     async fn leave_failure_in_inbox(&self, slot: &AgentSlot, message: &str) {
+        // Writing the item would recreate a directory that was deleted.
+        if slot.is_removed() || !slot.dir.is_dir() {
+            tracing::debug!(agent = %slot.name, "not leaving a failure in the inbox of an agent whose directory is gone");
+            return;
+        }
         let layout = WorkspaceLayout::new(&slot.dir);
         let tz = self.hub_config().timezone;
         if let Err(e) = crate::inbox::quick_add(
@@ -564,7 +723,6 @@ impl AgentHost {
         slot: &Arc<AgentSlot>,
         runtime: crate::gateway::types::AgentRuntime,
         control: AgentControl,
-        teams_port: Option<u16>,
     ) {
         let join = spawn_agent_loop(runtime);
         let abort = join.abort_handle();
@@ -580,7 +738,6 @@ impl AgentHost {
                 forced: Arc::clone(&forced),
                 done: done_rx,
                 abort,
-                teams_port,
             });
             guard.generation
         };
@@ -607,9 +764,96 @@ impl AgentHost {
             crate::util::spawn_in_span(async move {
                 while reload_done.changed().await.is_ok() {
                     host.refresh_meta(&slot);
+                    host.refresh_teams_port(&slot);
+                    host.spawn_team_embedding_refresh();
                 }
             });
+            self.spawn_team_embedding_refresh();
         }
+    }
+
+    // ─── Team wiki embedding ──────────────────────────────────────────
+
+    /// Record the embedding model the team wiki index was opened with, so
+    /// the first refresh doesn't reopen it for nothing.
+    pub(crate) async fn note_team_embedding(&self, source: Option<EmbeddingSource>) {
+        *self.team_embedding.lock().await = source;
+    }
+
+    fn spawn_team_embedding_refresh(&self) {
+        if let Some(host) = self.me.upgrade() {
+            crate::util::spawn_in_span(async move { host.refresh_team_embedding().await });
+        }
+    }
+
+    /// Point the team wiki at the embedding model the agents now configure:
+    /// the first agent (by name) with one. The one shared index swaps its
+    /// embedder in place, so every agent's searcher sees the change. A choice
+    /// that is unchanged, or that can't be made because an agent's config
+    /// doesn't load right now, leaves the index alone.
+    pub(crate) async fn refresh_team_embedding(&self) {
+        let mut current = self.team_embedding.lock().await;
+        let hub_cfg = self.hub_config();
+        let mut wanted = None;
+        let mut unreadable_before_choice = false;
+        for slot in self.slots() {
+            match agent_span(&slot.name).in_scope(|| Config::load_agent_at(&slot.dir, &hub_cfg)) {
+                Ok(cfg) => {
+                    wanted = EmbeddingSource::from_config(&slot.name, &cfg);
+                    if wanted.is_some() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(agent = %slot.name, error = %e, "an agent's config doesn't load while choosing the team wiki's embedding model");
+                    unreadable_before_choice = true;
+                }
+            }
+        }
+        if unreadable_before_choice {
+            return;
+        }
+        let unchanged = match (&wanted, &*current) {
+            (Some(new), Some(old)) => new.same_as(old),
+            (None, None) => true,
+            _ => false,
+        };
+        if unchanged {
+            return;
+        }
+        let provider = match &wanted {
+            Some(source) => match source.build() {
+                Ok(provider) => Some(provider),
+                Err(reason) => {
+                    tracing::warn!(agent = %source.agent(), error = %reason, "the team wiki's embedding provider is unavailable; wiki search is text only");
+                    self.notice(
+                        NoticeLevel::Warn,
+                        format!(
+                            "Team wiki search is text-only: the embedding model {} configures can't be used ({reason}).",
+                            source.agent()
+                        ),
+                        Some(source.agent().to_string()),
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+        let expects_vectors = provider.is_some();
+        let hybrid = self.services.team_wiki.set_embedding(provider).await;
+        if expects_vectors && !hybrid {
+            self.notice(
+                NoticeLevel::Warn,
+                "Team wiki search is text-only: its embedding store couldn't be opened. Check the log for the reason.".to_string(),
+                None,
+            );
+        }
+        tracing::info!(
+            agent = wanted.as_ref().map_or("none", EmbeddingSource::agent),
+            hybrid,
+            "team wiki embedding model changed"
+        );
+        *current = wanted;
     }
 
     /// Wait for the agent's event loop to end, then record how it ended.
@@ -667,7 +911,11 @@ impl AgentHost {
 
     /// Stop the agent and wait until it has wound down. The caller holds its
     /// `op_lock`. Does nothing for an agent that isn't running.
-    async fn stop_locked(&self, slot: &Arc<AgentSlot>) {
+    ///
+    /// # Errors
+    /// Returns `NotFound` for an agent that has been deleted.
+    async fn stop_locked(&self, slot: &Arc<AgentSlot>) -> Result<(), LifecycleError> {
+        slot.ensure_present()?;
         let Some((stop_tx, stop_requested, forced, mut done, abort)) =
             slot.lock().running.as_ref().map(|running| {
                 (
@@ -679,7 +927,7 @@ impl AgentHost {
                 )
             })
         else {
-            return;
+            return Ok(());
         };
         stop_requested.store(true, Ordering::SeqCst);
         // A closed channel means the event loop is already gone.
@@ -688,7 +936,7 @@ impl AgentHost {
             .await
             .is_ok()
         {
-            return;
+            return Ok(());
         }
         tracing::error!(agent = %slot.name, timeout_secs = STOP_TIMEOUT.as_secs(), "agent didn't stop in time, aborting its task");
         forced.store(true, Ordering::SeqCst);
@@ -700,6 +948,7 @@ impl AgentHost {
             tracing::error!(agent = %slot.name, "agent task still not finished after being aborted");
             self.set_state(slot, AgentState::Stopped, None);
         }
+        Ok(())
     }
 
     // ─── Create and delete ────────────────────────────────────────────
@@ -715,6 +964,7 @@ impl AgentHost {
         request: CreateAgentRequest,
         by: Actor,
     ) -> Result<AgentSummary, LifecycleError> {
+        self.ensure_not_stopping()?;
         let providers_toml = match (&request.models_from, &request.providers_toml) {
             (Some(from), _) => super::provision::copy_providers_from(&self.services.root, from)?,
             (None, Some(raw)) => raw.clone(),
@@ -830,14 +1080,14 @@ impl AgentHost {
         let slot = self.slot(name)?;
         let checkpoint_id = {
             let _op = slot.op_lock.lock().await;
-            self.stop_locked(&slot).await;
+            self.stop_locked(&slot).await?;
             let engine = self.checkpoint_engine(&slot).map_err(|e| {
                 tracing::error!(agent = %name, error = %e, "couldn't open the agent's checkpoint repositories to delete it");
                 LifecycleError::Failed(format!(
                     "couldn't open {name}'s checkpoint history, so it was not deleted: {e}"
                 ))
             })?;
-            super::provision::deprovision_agent(
+            let id = super::provision::deprovision_agent(
                 &self.services.root,
                 &self.team_paths(),
                 &self.services.team,
@@ -845,9 +1095,15 @@ impl AgentHost {
                 name,
                 &engine,
             )
-            .await?
+            .await?;
+            // Marked under the lock and before the slot is forgotten, so a
+            // start or restart already holding this slot finds it gone
+            // instead of starting the agent in a deleted directory.
+            slot.removed.store(true, Ordering::SeqCst);
+            self.forget(name);
+            id
         };
-        self.forget(name);
+        self.spawn_team_embedding_refresh();
         self.tell_acting_agent(
             &by,
             &format!("Deleted the agent {name}"),
@@ -873,6 +1129,7 @@ impl AgentHost {
         slot: &Arc<AgentSlot>,
         patch: &AgentPatch,
     ) -> Result<(), LifecycleError> {
+        slot.ensure_present()?;
         let config_path = slot.dir.join("config").join("config.toml");
         let existing = tokio::fs::read_to_string(&config_path).await.map_err(|e| {
             tracing::error!(agent = %slot.name, error = %e, path = %config_path.display(), "couldn't read the agent's config to patch it");
@@ -1125,14 +1382,15 @@ impl AgentDirectory for AgentHost {
     async fn stop(&self, name: &str) -> Result<AgentSummary, LifecycleError> {
         let slot = self.slot(name)?;
         let _op = slot.op_lock.lock().await;
-        self.stop_locked(&slot).await;
+        self.stop_locked(&slot).await?;
         Ok(self.summary_of(&slot))
     }
 
     async fn restart(&self, name: &str) -> Result<AgentSummary, LifecycleError> {
+        self.ensure_not_stopping()?;
         let slot = self.slot(name)?;
         let _op = slot.op_lock.lock().await;
-        self.stop_locked(&slot).await;
+        self.stop_locked(&slot).await?;
         self.start_locked(&slot).await?;
         Ok(self.summary_of(&slot))
     }

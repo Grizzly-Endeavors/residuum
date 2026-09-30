@@ -143,6 +143,7 @@ pub fn spawn_adapters(
     cfg: &Config,
     senders: &AdapterSenders,
     tz: chrono_tz::Tz,
+    activity: &Arc<crate::hub::activity::ActivityTracker>,
 ) -> crate::gateway::chat_adapters::ChatAdapters {
     let mut chat = crate::gateway::chat_adapters::ChatAdapters::new();
     if let Some(ref discord_cfg) = cfg.discord {
@@ -197,18 +198,37 @@ pub fn spawn_adapters(
             tz,
             rx,
         );
+        let port = teams_cfg.port;
+        let activity = Arc::clone(activity);
         chat.insert(
             "teams",
             crate::util::spawn_monitored("teams", async move {
-                if let Err(e) = iface.start().await {
-                    tracing::error!(error = %e, "teams interface failed");
-                }
+                run_teams_adapter(iface, port, &activity).await;
             }),
             tx,
         );
     }
 
     chat
+}
+
+/// Run the Teams adapter until it stops. A failure to start (most often a
+/// port another program or agent already holds) is logged and told to the
+/// user as a hub notice naming the agent and the port.
+pub(crate) async fn run_teams_adapter(
+    iface: crate::interfaces::teams::TeamsInterface,
+    port: u16,
+    activity: &crate::hub::activity::ActivityTracker,
+) {
+    if let Err(e) = iface.start().await {
+        tracing::error!(error = %format!("{e:#}"), port, "teams interface failed");
+        activity.hub_notice(
+            crate::hub::types::NoticeLevel::Warn,
+            format!(
+                "The Teams adapter couldn't start on port {port} ({e:#}). Check that no other program or agent uses that port, or give this agent a different Teams port, then restart it."
+            ),
+        );
+    }
 }
 
 /// What [`build_agent_a2a`] needs beyond `Config`: the agent's live runtime
