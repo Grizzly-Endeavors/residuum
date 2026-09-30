@@ -81,80 +81,6 @@ function startMockArtifactsListener(state: MockState, log: (message: string) => 
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
-/** A stand-in for the file version token (`ETag`) the workspace API reports. */
-function mockFileVersion(content: string): string {
-  let hash = 0;
-  for (let i = 0; i < content.length; i++) hash = (hash * 31 + content.charCodeAt(i)) >>> 0;
-  return `"${hash.toString(16)}-${content.length}"`;
-}
-
-/** A workspace file read: the content, with its version as the `ETag` header. */
-function fileRead(res: ServerResponse, content: string) {
-  res.writeHead(200, { "Content-Type": "text/plain", ETag: mockFileVersion(content) });
-  res.end(content);
-}
-
-/** The state holding the file at `path`: `team/` lives in the shared state. */
-function filesFor(hub: MockHub, agentState: MockState, path: string): MockState {
-  return path === "team" || path.startsWith("team/") ? hub.hubState : agentState;
-}
-
-/** Team files: the shared `team/` tree, addressed relative to `team/`. */
-async function handleTeamWorkspace(
-  hub: MockHub,
-  req: RouteRequest["req"],
-  res: ServerResponse,
-  path: string,
-  method: string,
-): Promise<void> {
-  const state = hub.hubState;
-  const rest = path.slice("/api/team/workspace".length);
-  const query = new URL(req.url ?? "", "http://localhost").searchParams;
-  const inTeam = (p: string) => (p === "" ? "team" : `team/${p}`);
-
-  if (rest === "/files" && method === "GET") {
-    json(res, 200, state.workspaceFiles[inTeam(query.get("path") ?? "")] ?? []);
-    return;
-  }
-  if (rest === "/file" && method === "GET") {
-    const content = state.workspaceFileContents[inTeam(query.get("path") ?? "")];
-    if (content === undefined) text(res, 404, "file not found");
-    else fileRead(res, content);
-    return;
-  }
-  if (rest === "/file" && method === "PUT") {
-    const body = JSON.parse(await readBody(req));
-    state.workspaceFileContents[inTeam(String(body.path))] = String(body.content);
-    json(res, 200, { saved: true, version: mockFileVersion(String(body.content)) });
-    return;
-  }
-  if (rest === "/file" && method === "DELETE") {
-    delete state.workspaceFileContents[inTeam(query.get("path") ?? "")];
-    json(res, 200, { deleted: true, checkpoint_id: null });
-    return;
-  }
-  if (rest === "/validate" && method === "POST") {
-    await readBody(req);
-    json(res, 200, { diagnostics: [] });
-    return;
-  }
-  if (rest === "/move" && method === "POST") {
-    const body = JSON.parse(await readBody(req));
-    const from = inTeam(String(body.from));
-    const content = state.workspaceFileContents[from];
-    if (content !== undefined) {
-      state.workspaceFileContents[inTeam(String(body.to))] = content;
-      delete state.workspaceFileContents[from];
-    }
-    json(res, 200, {
-      moved: true,
-      version: content === undefined ? null : mockFileVersion(content),
-    });
-    return;
-  }
-  json(res, 404, { error: `mock: unknown endpoint ${method} ${path}` });
-}
-
 // ─── Requests no route table takes ─────────────────────────────────────────────
 
 /** Serve a request no route table matched, and report whether it was one of these. */
@@ -167,11 +93,6 @@ async function handleRemaining({
   path,
   query,
 }: RouteRequest): Promise<boolean> {
-  if (path.startsWith("/api/team/workspace/")) {
-    await handleTeamWorkspace(hub, req, res, path, method);
-    return true;
-  }
-
   // Simulate a session's result reaching main while the page is
   // disconnected: record it (and main's reply) in history, then drop
   // the sockets. The page should show it once it reconnects.
@@ -307,36 +228,6 @@ async function handleRemaining({
     const id = decodeURIComponent(archiveMatch[1]);
     state.inboxItems = state.inboxItems.filter((i) => i.id !== id);
     json(res, 200, {});
-    return true;
-  }
-
-  // ── Workspace ─────────────────────────────────────────────────────
-  if (path === "/api/workspace/files" && method === "GET") {
-    const wsPath = query.get("path") ?? "";
-    const entries = filesFor(hub, state, wsPath).workspaceFiles[wsPath];
-    if (entries) {
-      json(res, 200, entries);
-    } else {
-      json(res, 200, []);
-    }
-    return true;
-  }
-
-  if (path === "/api/workspace/file" && method === "GET") {
-    const filePath = query.get("path") ?? "";
-    const content = filesFor(hub, state, filePath).workspaceFileContents[filePath];
-    if (content !== undefined) {
-      fileRead(res, content);
-    } else {
-      text(res, 404, "file not found");
-    }
-    return true;
-  }
-
-  if (path === "/api/workspace/file" && method === "PUT") {
-    const body = JSON.parse(await readBody(req));
-    filesFor(hub, state, body.path).workspaceFileContents[body.path] = body.content;
-    json(res, 200, { saved: true, version: mockFileVersion(String(body.content)) });
     return true;
   }
 
