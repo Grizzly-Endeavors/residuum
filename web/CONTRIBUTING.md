@@ -324,7 +324,9 @@ The run keeps a trace and a screenshot of each failed test under `web/test-resul
 
 ### Release CI
 
-The quality-checks workflow's web job installs Chromium and runs `npm run e2e:fast`: every spec but the visual ones. Its `visual` input adds the visual comparisons, run through the container wrapper; releases leave it off, and the job summary says when the comparisons were skipped. The workflow can also be started by hand from the Actions tab, with `visual` on if you want the comparisons on the runners.
+The CI runners have no Chromium and can't download one, so the quality-checks workflow's web job runs every project in the Playwright container: it sets `E2E_ALL_IN_CONTAINER=1` and runs `npm run e2e:fast` through `scripts/with-playwright-container.sh`, which starts the container beside the runner and stops it afterwards. The `visual` input swaps that for `npm run e2e`, which adds the visual comparisons; the job summary says when they were skipped. The workflow can also be started by hand from the Actions tab, to try a change on the runners without cutting a release.
+
+`E2E_ALL_IN_CONTAINER=1` is the same switch locally. Under the wrapper it sends `desktop`, `phone` and the `preview-*` projects to the container's browser as well, so the run needs no Chromium on your machine: `E2E_ALL_IN_CONTAINER=1 scripts/with-playwright-container.sh npm --prefix web run e2e:fast`. Without a container browser the variable is an error, never a quiet fall-back to this machine's Chromium. The recipes leave it off, so `just web-e2e` and `just web-e2e-fast` keep using this machine's Chromium for those projects.
 
 ## Running Against the Real Backend
 
