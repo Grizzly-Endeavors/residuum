@@ -203,6 +203,7 @@ async fn the_unread_count_follows_the_inbox_tool_a_hand_placed_file_and_the_hubs
     })
     .await;
     hub.host.start("scout").await.unwrap();
+    hub.wait_for_file_watcher("scout").await;
     assert_eq!(overview_of(&hub, "scout").await["inbox_unread"], 0);
     let mut frames = hub.overview.subscribe();
 

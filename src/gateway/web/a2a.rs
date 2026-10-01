@@ -518,10 +518,10 @@ fn relay_access_note(has_own_address: bool, relay_connected: bool) -> &'static s
             "Reachable through the Residuum relay. Your other Residuum installs find it automatically; anyone else needs a caller key."
         }
         (false, true) => {
-            "Reachable locally and at your own address. Connect to the Residuum relay in Cloud settings to make it reachable through the relay too."
+            "Reachable locally and at your own address. Connect to the Residuum relay in Settings → All agents → Residuum Cloud to make it reachable through the relay too."
         }
         (false, false) => {
-            "Reachable locally. Connect to the Residuum relay in Cloud settings to make it reachable from other places, or set an address of your own below if you run your own tunnel."
+            "Reachable locally. Connect to the Residuum relay in Settings → All agents → Residuum Cloud to make it reachable from other places, or enter your own address in Settings → All agents → Agent-to-agent if you run your own tunnel."
         }
     }
 }

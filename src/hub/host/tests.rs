@@ -19,8 +19,9 @@ use crate::hub::push::{PushTriggers, TriggerInputs};
 use crate::hub::runtime::build_app;
 use crate::hub::team_events::{TeamEventLog, TeamEventRecorder};
 use crate::hub::test_support::{free_port, mount_reply, write_agent};
+use crate::workspace::watch::WatchHealth;
 
-const POLL_TIMEOUT: Duration = Duration::from_secs(20);
+const POLL_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A hub over a temp residuum root with running-capable agents, each talking
 /// to its own mock model server that answers "<name> here".
@@ -246,36 +247,84 @@ impl Fixture {
         self.host.summary(name).unwrap().state
     }
 
-    /// Wait until both of a chat turn's workspace checkpoints are in the
-    /// agent's history: the one before the turn and the one after. A turn
-    /// records them in the background, and on a first turn each changes the
-    /// workspace, so each is recorded. After they are, nothing writes into the
-    /// agent's workspace checkpoint repository until the next turn.
-    async fn wait_for_turn_checkpoints(&self, name: &str) {
-        eventually("the turn's checkpoints to be recorded", || async {
+    /// Wait until the running agent's file watcher is placed. The agent's
+    /// runtime places it on its own task, after the agent is already
+    /// reported running, and a file that changes before then is never
+    /// reported to anyone.
+    async fn wait_for_file_watcher(&self, name: &str) {
+        let mut health = self
+            .host
+            .slot(name)
+            .unwrap()
+            .lock()
+            .running
+            .as_ref()
+            .expect("the agent is running")
+            .control
+            .workspace_watch_health
+            .clone();
+        tokio::time::timeout(
+            POLL_TIMEOUT,
+            health.wait_for(|health| *health != WatchHealth::Starting),
+        )
+        .await
+        .expect("the agent's file watcher never started")
+        .unwrap();
+        assert_ne!(
+            *health.borrow(),
+            WatchHealth::Off,
+            "the agent's files couldn't be watched"
+        );
+    }
+
+    /// Wait until a chat turn has a workspace checkpoint in the agent's
+    /// history. The turn's start and end checkpoints are recorded in the
+    /// background, and each records only when the workspace differs from the
+    /// last checkpoint. When both run late, the first records everything the
+    /// turn changed and the second finds nothing to record, so which of them
+    /// reaches the history, and whether both do, depends on scheduling.
+    async fn wait_for_a_turn_checkpoint(&self, name: &str) {
+        eventually("a checkpoint of the turn to be recorded", || async {
             let (_, history) = self
                 .get(&format!("/api/agents/{name}/checkpoints?repo=workspace"))
                 .await;
-            (history.contains("\"trigger\":\"turn_start\"")
-                && history.contains("\"trigger\":\"turn_end\""))
-            .then_some(())
+            let history: Value = serde_json::from_str(&history).ok()?;
+            history
+                .get("items")
+                .and_then(Value::as_array)
+                .is_some_and(|items| !items.is_empty())
+                .then_some(())
         })
         .await;
     }
 
     /// Replace the agent's workspace checkpoint repository with a plain
-    /// file, so that opening it fails. Call [`Self::wait_for_turn_checkpoints`]
-    /// first, so no background checkpoint is still writing into the directory.
+    /// file, so that opening it fails.
+    ///
+    /// A checkpoint the agent records in the background may still be writing
+    /// into the repository, and which ones are is up to scheduling. Such a
+    /// writer can make deleting the directory fail, or recreate it before the
+    /// file is written, so this repeats until the file stands where the
+    /// repository was. The writers are finite, and once the file is there they
+    /// fail against it, so the path settles.
     fn make_checkpoints_unopenable(&self, name: &str) {
         let repo = crate::checkpoints::agent_repos_dir(
             &crate::config::HubPaths::new(&self.services.hub_dir).checkpoints_dir(),
             name,
         )
         .join("workspace.git");
-        if repo.exists() {
-            std::fs::remove_dir_all(&repo).unwrap();
+        let deadline = std::time::Instant::now() + POLL_TIMEOUT;
+        loop {
+            std::fs::remove_dir_all(&repo).ok();
+            if std::fs::write(&repo, "not a repository").is_ok() {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a background checkpoint kept the workspace repository directory in place"
+            );
+            std::thread::sleep(Duration::from_millis(5));
         }
-        std::fs::write(&repo, "not a repository").unwrap();
     }
 
     /// Write a user-inbox item named `id` into the agent's workspace.
@@ -555,7 +604,7 @@ async fn a_stopped_agents_history_and_inbox_answer_when_its_checkpoint_repositor
         history.contains("remember the pelican").then_some(())
     })
     .await;
-    hub.wait_for_turn_checkpoints("scout").await;
+    hub.wait_for_a_turn_checkpoint("scout").await;
     hub.host.stop("scout").await.unwrap();
     hub.add_inbox_item("scout", "20260930_pelican");
     hub.make_checkpoints_unopenable("scout");
@@ -597,7 +646,7 @@ async fn a_running_agents_history_and_inbox_do_not_open_its_checkpoint_repositor
         history.contains("remember the pelican").then_some(())
     })
     .await;
-    hub.wait_for_turn_checkpoints("scout").await;
+    hub.wait_for_a_turn_checkpoint("scout").await;
     hub.add_inbox_item("scout", "20260930_pelican");
     hub.make_checkpoints_unopenable("scout");
 

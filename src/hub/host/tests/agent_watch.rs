@@ -27,7 +27,7 @@ async fn settled(changes: &mut AgentChangeReceiver) -> Vec<AgentChange> {
 async fn until(
     what: &str,
     changes: &mut AgentChangeReceiver,
-    found: impl Fn(&AgentChange) -> bool,
+    mut found: impl FnMut(&AgentChange) -> bool,
 ) -> Vec<AgentChange> {
     let mut seen = Vec::new();
     let deadline = tokio::time::Instant::now() + POLL_TIMEOUT;
@@ -149,15 +149,30 @@ async fn the_user_inbox_tool_reaches_the_feed_as_user_inbox_added() {
     .await;
     let mut changes = hub.host.agent_changes().subscribe();
     hub.host.start("scout").await.unwrap();
+    hub.wait_for_file_watcher("scout").await;
 
     hub.chat("scout", "please file a note").await;
-    let seen = until("the inbox item", &mut changes, |change| {
-        matches!(change.kind, AgentChangeKind::UserInboxAdded { .. })
-    })
+    // The announcement and the change to the inbox's files come from
+    // different sources, so either can arrive first. The file itself is
+    // reported as a change to the inbox's files too.
+    let mut announced_item = None;
+    let mut file_change_seen = false;
+    until(
+        "the inbox item and its file change",
+        &mut changes,
+        |change| {
+            if let AgentChangeKind::UserInboxAdded { item_id } = &change.kind {
+                announced_item = Some(item_id.clone());
+            }
+            file_change_seen |= matches!(
+                change.kind,
+                AgentChangeKind::WatchedPathChanged(WatchedPath::UserInbox)
+            );
+            announced_item.is_some() && file_change_seen
+        },
+    )
     .await;
-    let AgentChangeKind::UserInboxAdded { item_id } = &seen.last().unwrap().kind else {
-        unreachable!("the last change is the one waited for");
-    };
+    let item_id = announced_item.expect("the item was announced");
     assert!(
         agent_dir(&hub, "scout")
             .join("inbox/user")
@@ -165,14 +180,6 @@ async fn the_user_inbox_tool_reaches_the_feed_as_user_inbox_added() {
             .is_file(),
         "the announced item {item_id} is on disk"
     );
-    // The file itself is reported as a change to the inbox's files too.
-    until("the inbox file change", &mut changes, |change| {
-        matches!(
-            change.kind,
-            AgentChangeKind::WatchedPathChanged(WatchedPath::UserInbox)
-        )
-    })
-    .await;
 }
 
 #[tokio::test]
@@ -180,6 +187,7 @@ async fn changes_to_the_files_the_hub_follows_reach_the_feed() {
     let hub = Fixture::new(&["scout"], "").await;
     let mut changes = hub.host.agent_changes().subscribe();
     hub.host.start("scout").await.unwrap();
+    hub.wait_for_file_watcher("scout").await;
     settled(&mut changes).await;
 
     let dir = agent_dir(&hub, "scout");
@@ -188,6 +196,16 @@ async fn changes_to_the_files_the_hub_follows_reach_the_feed() {
     std::fs::write(dir.join("inbox/user/20260930_hand-placed.json"), "{}").unwrap();
     std::fs::write(dir.join("scheduled_actions.json"), "[]").unwrap();
     std::fs::write(dir.join("HEARTBEAT.yml"), "pulses: {}").unwrap();
+    // The agent wrote HEARTBEAT.yml when it started, probably in this same
+    // second, and the polling watcher the feed falls back to when the OS
+    // watch limit is reached compares whole-second modification times. A
+    // later time makes the rewrite visible however the files are watched.
+    std::fs::File::options()
+        .write(true)
+        .open(dir.join("HEARTBEAT.yml"))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + Duration::from_secs(5))
+        .unwrap();
     std::fs::write(dir.join("pulse_state.json"), "{}").unwrap();
     std::fs::write(dir.join("config/mcp.json"), "{}").unwrap();
 
@@ -348,6 +366,7 @@ async fn a_restarted_agent_is_watched_once_and_resynced_again() {
 
     hub.host.restart("scout").await.unwrap();
     until("the second start", &mut changes, is_resync).await;
+    hub.wait_for_file_watcher("scout").await;
     settled(&mut changes).await;
 
     std::fs::write(
