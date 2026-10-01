@@ -4,7 +4,8 @@ import { expectScreenshot } from "../support/screenshot";
 
 /**
  * The shell's baselines. A hosted legacy view is painted over: its own unit
- * gives it baselines when it is rebuilt.
+ * gives it baselines when it is rebuilt. Home's baselines, with every agent
+ * closed in the rail, are in `home.spec.ts`.
  */
 
 async function shellScreenshot(page: Page, name: string): Promise<void> {
@@ -18,12 +19,6 @@ test.describe("shell", { tag: "@visual" }, () => {
       page.getByText("Hi, this is atlas. You are in my conversation, not scout's."),
     ).toBeVisible();
     await shellScreenshot(page, "shell-chat");
-  });
-
-  test("on Home, with every agent closed", async ({ page }) => {
-    await page.goto("/home");
-    await expect(page.getByRole("heading", { name: "Home", level: 1 })).toBeVisible();
-    await shellScreenshot(page, "shell-home");
   });
 
   test("with the hub out of reach", async ({ page, mock }) => {
