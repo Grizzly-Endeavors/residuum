@@ -123,4 +123,4 @@ The gallery at `/dev/gallery` shows every primitive in every state, live. It is 
 
 ## Base styles
 
-`src/styles/ui-base.css` holds the reset and base styles for components: box sizing, zeroed margins and padding, controls that inherit type, headings that take their size from the component, code in JetBrains Mono, vein-bright links, the `vein-bright` focus outline, the placeholder color, and bare dialogs and popovers. It applies inside the element marked `data-ui`: the shell root, the setup wizard and the loading screens. Every base rule has zero specificity, so a component's own rule always wins.
+`src/styles/ui-base.css` holds the reset and base styles for the whole document: the app root filling the viewport, box sizing, zeroed margins and padding, controls that inherit type, headings that take their size from the component, code in JetBrains Mono, vein-bright links, the `vein-bright` focus outline, the placeholder color, bare dialogs and popovers, and the reduced-motion rule. Every base rule sits in `:where()` and has zero specificity, so a component's own rule always wins.
