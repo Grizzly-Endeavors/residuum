@@ -212,6 +212,7 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
       live({ type: "response", reply_to: replyTo, content: response });
       live({ type: "turn_ended", reply_to: replyTo });
       hub.setBusy(agent, false);
+      hub.teamEvents.agentReplied(agent);
       if (agent.connectedClients() === 0) hub.addUnread(agent);
       const now = env.clock.iso();
       state.extraRecent.push(

@@ -23,6 +23,7 @@ const STEPS: readonly Step[] = [
   { method: "GET", path: "/api/agents/scout/sessions/runs/run-live-research/transcript" },
   { method: "GET", path: "/api/agents/scout/inbox" },
   { method: "GET", path: "/api/hub/inbox" },
+  { method: "GET", path: "/api/hub/events" },
   { method: "GET", path: "/api/agents/scout/scheduled/pulses" },
   { method: "GET", path: "/api/agents/scout/scheduled/actions" },
   { method: "GET", path: "/api/agents/scout/checkpoints?repo=workspace" },
@@ -46,6 +47,7 @@ const STEPS: readonly Step[] = [
   { method: "POST", path: "/api/agents/scout/agent-inbox", body: { body: "Look at this" } },
   { method: "POST", path: "/api/hub/update/check" },
   { method: "GET", path: "/api/hub/status" },
+  { method: "GET", path: "/api/hub/events" },
 ];
 
 /** Run the steps, and record each response exactly as the server sent it. */

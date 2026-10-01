@@ -9,6 +9,7 @@ use tokio::sync::{mpsc, watch};
 use crate::bus::BusHandle;
 use crate::checkpoints::CheckpointEngine;
 use crate::gateway::types::ReloadSender;
+use crate::hub::team_events::TeamEventLog;
 use crate::tracing_service::{ClientContext, Subagent, TracingService};
 use crate::tunnel::TunnelStatus;
 use crate::update::SharedUpdateStatus;
@@ -75,8 +76,11 @@ pub struct HubHttpState {
     pub team_watch_health: watch::Receiver<WatchHealth>,
     /// When the hub started, for `uptime_secs` in `GET /api/hub/status`.
     pub started_at: Instant,
-    /// A random id this hub process generated at startup. The hub WebSocket
-    /// sends it first on every connection, so a client can tell a restarted
-    /// hub from a dropped connection to the same one.
-    pub boot_id: String,
+    /// What has happened across the team since this hub process started. It
+    /// carries the process's boot id, a random id generated at startup that
+    /// the hub WebSocket sends first on every connection, so a client can
+    /// tell a restarted hub from a dropped connection to the same one. The
+    /// events route serves the log, and the hub WebSocket sends each new
+    /// entry as it is recorded.
+    pub team_events: Arc<TeamEventLog>,
 }

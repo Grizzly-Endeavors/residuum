@@ -504,6 +504,7 @@ export function defaultModels(): SettingsModelAssignments {
       bgMedium: defaultOverrides(),
       bgLarge: defaultOverrides(),
     },
+    fallbacks: {},
   };
 }
 
@@ -544,6 +545,7 @@ export function parseProvidersToml(raw: string): ProvidersFormState {
       const val = models[tomlKey];
       result.models[formKey as ModelRoleKey] = modelStr(val);
       extractOverrides(val, formKey, result.models.overrides);
+      keepFallbacks(val, formKey, result.models.fallbacks);
     }
     result.models.embedding = str(models.embedding);
   }
@@ -560,6 +562,7 @@ export function parseProvidersToml(raw: string): ProvidersFormState {
         const val = bgModels[tomlKey];
         result.models[formKey as ModelRoleKey] = modelStr(val);
         extractOverrides(val, formKey, result.models.overrides);
+        keepFallbacks(val, formKey, result.models.fallbacks);
       }
     }
   }
@@ -580,6 +583,12 @@ function modelStr(v: unknown): string {
     return JSON.stringify(v);
   }
   return String(v as string | number | boolean);
+}
+
+/** Keep the failover models after the first one, which the form doesn't show, from a list or an inline table's `model` list. */
+function keepFallbacks(v: unknown, key: string, fallbacks: Record<string, string[]>): void {
+  const list = isTable(v) ? v.model : v;
+  if (Array.isArray(list) && list.length > 1) fallbacks[key] = list.slice(1).map(String);
 }
 
 /** Extract temperature/thinking overrides from an inline table model assignment. */
@@ -655,7 +664,7 @@ function numberLiteral(raw: string): number {
   return raw.includes(".") ? parseFloat(raw) : parseInt(raw, 10);
 }
 
-function jsonEqual(a: unknown, b: unknown): boolean {
+export function jsonEqual(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
@@ -675,7 +684,7 @@ function setPath(root: Record<string, unknown>, path: readonly string[], value: 
   if (last !== undefined) node[last] = value;
 }
 
-type FieldSpec =
+export type FieldSpec =
   | { key: keyof ConfigFields; path: readonly string[]; kind: "string" }
   | { key: keyof ConfigFields; path: readonly string[]; kind: "stringDefault"; default: string }
   | { key: keyof ConfigFields; path: readonly string[]; kind: "number" }
@@ -720,7 +729,8 @@ function canonField(spec: FieldSpec, raw: unknown): unknown {
   }
 }
 
-const CONFIG_FIELD_MAP: readonly FieldSpec[] = [
+/** Every scalar and list field of `ConfigFields`, with the key it saves to. The one map diffing and error placement share. */
+export const CONFIG_FIELD_MAP: readonly FieldSpec[] = [
   { key: "timezone", path: ["timezone"], kind: "string" },
   { key: "timeout_secs", path: ["timeout_secs"], kind: "number" },
   { key: "max_tokens", path: ["max_tokens"], kind: "number" },
@@ -1076,6 +1086,15 @@ const HUB_SECTION_KEYS: Readonly<Record<string, ReadonlySet<string>>> = {
   background: new Set(["max_concurrent", "hop_soft_limit", "hop_hard_limit"]),
 };
 
+/** Which `config.toml` a key path saves to: the hub's or the agent's. */
+export function configFieldOwner(path: readonly string[]): "hub" | "agent" {
+  const [section, key] = path;
+  if (section === undefined) return "agent";
+  if (HUB_SECTIONS.has(section)) return "hub";
+  const hubKeys = HUB_SECTION_KEYS[section];
+  return hubKeys !== undefined && key !== undefined && hubKeys.has(key) ? "hub" : "agent";
+}
+
 /**
  * Split a config patch (from `diffConfigFields`) into the part for the
  * hub's `config.toml` and the part for the agent's.
@@ -1111,20 +1130,34 @@ export function splitConfigPatch(patch: Record<string, unknown>): {
  * Build the JSON patch value for a model-role assignment: a plain string
  * when there's no override, or `{"$inline": {...}}` when `temperature` or
  * `thinking` overrides the role's default. `null` clears the role.
+ *
+ * `fallbacks` are the failover models after `modelValue`; the role is written
+ * as the whole list so a change to the first model keeps them. `$inline` holds
+ * scalars only, so a list with overrides is written as the table's own keys:
+ * the server turns what was there into that table and removes an override
+ * left `null`.
  */
-export function modelRoleJson(modelValue: string, overrides?: RoleOverrides): unknown {
+export function modelRoleJson(
+  modelValue: string,
+  overrides?: RoleOverrides,
+  fallbacks: readonly string[] = [],
+): unknown {
   if (!modelValue) return null;
+  const chain = fallbacks.length > 0 ? [modelValue, ...fallbacks] : modelValue;
   const hasTemp = Boolean(overrides?.temperature);
   const hasThinking = Boolean(overrides?.thinking);
-  if (!hasTemp && !hasThinking) return modelValue;
+  if (!hasTemp && !hasThinking) return chain;
 
-  const inline: Record<string, unknown> = { model: modelValue };
-  if (hasTemp) inline.temperature = numberLiteral(overrides?.temperature ?? "");
-  if (hasThinking) inline.thinking = overrides?.thinking;
+  const temperature = hasTemp ? numberLiteral(overrides?.temperature ?? "") : null;
+  const thinking = hasThinking ? (overrides?.thinking ?? null) : null;
+  if (typeof chain !== "string") return { model: chain, temperature, thinking };
+  const inline: Record<string, unknown> = { model: chain };
+  if (temperature !== null) inline.temperature = temperature;
+  if (thinking !== null) inline.thinking = thinking;
   return { $inline: inline };
 }
 
-const MODEL_ROLE_MAP: readonly { formKey: ModelRoleKey; path: readonly string[] }[] = [
+export const MODEL_ROLE_MAP: readonly { formKey: ModelRoleKey; path: readonly string[] }[] = [
   { formKey: "main", path: ["models", "main"] },
   { formKey: "default", path: ["models", "default"] },
   { formKey: "observer", path: ["models", "observer"] },
@@ -1142,8 +1175,16 @@ function diffModels(
   current: SettingsModelAssignments,
 ): void {
   for (const { formKey, path } of MODEL_ROLE_MAP) {
-    const before = modelRoleJson(baseline[formKey], baseline.overrides[formKey]);
-    const after = modelRoleJson(current[formKey], current.overrides[formKey]);
+    const before = modelRoleJson(
+      baseline[formKey],
+      baseline.overrides[formKey],
+      baseline.fallbacks[formKey],
+    );
+    const after = modelRoleJson(
+      current[formKey],
+      current.overrides[formKey],
+      current.fallbacks[formKey],
+    );
     if (!jsonEqual(before, after)) setPath(patch, path, after);
   }
 
@@ -1225,6 +1266,26 @@ function mcpServerToJson(srv: McpServerEntry): Record<string, unknown> {
   return out;
 }
 
+/**
+ * Diff a server's `env` or `headers` key by key. A patch merges an object into
+ * the table that is there, so a variable the form no longer has has to be
+ * named as `null`; sending the rest alone would leave it in the file.
+ */
+function diffStringMap(
+  base: Record<string, string>,
+  current: Record<string, string>,
+): Record<string, unknown> | null {
+  if (Object.keys(current).length === 0) return null;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(current)) {
+    if (base[key] !== value) out[key] = value;
+  }
+  for (const key of Object.keys(base)) {
+    if (!(key in current)) out[key] = null;
+  }
+  return out;
+}
+
 function diffMcpServerFields(
   base: McpServerEntry,
   current: McpServerEntry,
@@ -1243,9 +1304,7 @@ function diffMcpServerFields(
     out.args = current.args.length > 0 ? current.args : null;
   }
 
-  if (!jsonEqual(base.env, current.env)) {
-    out.env = Object.keys(current.env).length > 0 ? current.env : null;
-  }
+  if (!jsonEqual(base.env, current.env)) out.env = diffStringMap(base.env, current.env);
 
   const urlBefore = base.url || null;
   const urlAfter = current.url || null;
@@ -1253,9 +1312,8 @@ function diffMcpServerFields(
 
   const baseHeaders = base.headers ?? {};
   const currentHeaders = current.headers ?? {};
-  if (!jsonEqual(baseHeaders, currentHeaders)) {
-    out.headers = Object.keys(currentHeaders).length > 0 ? currentHeaders : null;
-  }
+  if (!jsonEqual(baseHeaders, currentHeaders))
+    out.headers = diffStringMap(baseHeaders, currentHeaders);
 
   return out;
 }

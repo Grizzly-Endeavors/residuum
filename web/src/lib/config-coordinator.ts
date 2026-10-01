@@ -259,6 +259,18 @@ function agentFile(agent: string | null, name: AgentConfigFileName): ConfigFile 
   return agent === null ? null : agentConfigFile(agent, name);
 }
 
+/** The checkpoint repository that holds `file`, which an Undo of a save to it names. */
+export function checkpointRepoOf(file: ConfigFile): RepoKind {
+  const agent = file.kind === "agent" ? file.agent : null;
+  const key = configFileKey(file);
+  const location = CHECKPOINT_LOCATIONS.find((candidate) => {
+    const candidateFile = candidate.file(agent);
+    return candidateFile !== null && configFileKey(candidateFile) === key;
+  });
+  // Every file `ConfigFile` can name has a location above.
+  return location?.repo ?? "agent_config";
+}
+
 /** Whether restoring `requested` (a file, a folder, or `""` for the whole repo) reaches `location`. */
 function reaches(requested: string, location: string): boolean {
   const base = requested.replace(/^\/+|\/+$/g, "");
@@ -387,6 +399,14 @@ export class ConfigCoordinator {
       set.delete(listener);
       if (set.size === 0 && this.listeners.get(key) === set) this.listeners.delete(key);
     };
+  }
+
+  /**
+   * The file's text on disk now, read in its turn behind any write to it. Tells
+   * no one: for a view that follows a change it was told about.
+   */
+  read(file: ConfigFile): Promise<string> {
+    return this.locked(file, () => this.io.read(file));
   }
 
   /**

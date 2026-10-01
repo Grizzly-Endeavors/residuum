@@ -22,6 +22,11 @@ import type {
   DeleteOutcome,
   HubClientMessage,
   HubServerMessage,
+  TeamEvent,
+  TeamEventKind,
+  TeamEventLevel,
+  TeamEventPage,
+  TeamEventTarget,
 } from "./hub-types";
 
 // The agent shapes are the backend's ts-rs exports, not copies of them: these
@@ -60,6 +65,7 @@ describe("hub types", () => {
       | "agent_activity"
       | "notice"
       | "hub_config_reloaded"
+      | "team_event"
       | "workspace_changed"
       | "workspace_resync"
       | "workspace_watch_unavailable"
@@ -76,6 +82,36 @@ describe("hub types", () => {
   it("describes a failure by kind and underlying reason", () => {
     expectTypeOf<AgentErrorKind>().toEqualTypeOf<"config" | "port_conflict" | "crash" | "other">();
     expectTypeOf<AgentLastError["reason"]>().toEqualTypeOf<string>();
+  });
+
+  it("describes team events by kind, level and the place they point to", () => {
+    expectTypeOf<TeamEventKind>().toEqualTypeOf<
+      | "hub_started"
+      | "agent_started"
+      | "agent_stopped"
+      | "agent_failed"
+      | "agent_created"
+      | "agent_deleted"
+      | "agent_restored"
+      | "agent_replied"
+      | "session_started"
+      | "session_finished"
+      | "inbox_item_added"
+      | "scheduled_run_finished"
+      | "hub_notice"
+    >();
+    expectTypeOf<TeamEventLevel>().toEqualTypeOf<"info" | "warn" | "error">();
+    expectTypeOf<TeamEventTarget["kind"]>().toEqualTypeOf<
+      "agent_place" | "session" | "inbox_item"
+    >();
+    expectTypeOf<TeamEvent["id"]>().toEqualTypeOf<number>();
+    expectTypeOf<TeamEventPage["next_before"]>().toEqualTypeOf<number | null>();
+  });
+
+  it("carries the boot id and the event in the team event frame", () => {
+    type Frame = Extract<HubServerMessage, { type: "team_event" }>;
+    expectTypeOf<Frame["boot_id"]>().toEqualTypeOf<string>();
+    expectTypeOf<Frame["event"]>().toEqualTypeOf<TeamEvent>();
   });
 
   it("includes every state the backend can report, starting among them", () => {

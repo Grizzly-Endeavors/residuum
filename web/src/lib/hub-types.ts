@@ -29,6 +29,12 @@ export type { HubEvent } from "./generated/HubEvent";
 export type { HubSocketFrame } from "./generated/HubSocketFrame";
 export type { NoticeLevel } from "./generated/NoticeLevel";
 export type { RestoreAgentRequest } from "./generated/RestoreAgentRequest";
+export type { TeamEvent } from "./generated/TeamEvent";
+export type { TeamEventKind } from "./generated/TeamEventKind";
+export type { TeamEventLevel } from "./generated/TeamEventLevel";
+export type { TeamEventPage } from "./generated/TeamEventPage";
+export type { TeamEventPlace } from "./generated/TeamEventPlace";
+export type { TeamEventTarget } from "./generated/TeamEventTarget";
 
 /** `GET /api/hub/status`. */
 export interface HubStatusResponse {
