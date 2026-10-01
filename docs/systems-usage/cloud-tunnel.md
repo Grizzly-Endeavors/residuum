@@ -30,7 +30,16 @@ The relay forwards `/a2a/{instance}/{agent}/<rest>` as an HTTP request on the A2
 
 ## Sockets through the tunnel
 
-The relay opens a WebSocket channel to a local listener with a `ws_open` frame, `{ "channel_id", "path", "headers", "surface" }`, where `surface` is optional and `path` carries any query string. The tunnel connects to that listener on loopback and answers with `ws_open_result`, `{ "channel_id", "success", "reason" }`. A successful open then carries `ws_message` frames (text only) in both directions until either side sends `ws_close`; when the local socket closes, the tunnel sends `ws_close` to the relay.
+The relay opens a WebSocket channel to a local listener with a `ws_open` frame, `{ "channel_id", "path", "headers", "surface" }`, where `surface` is optional and `path` carries any query string. The tunnel connects to that listener on loopback and answers with `ws_open_result`, `{ "channel_id", "success", "reason" }`. A successful open then carries `ws_message` frames (text only) in both directions until the channel closes, from either side.
+
+### Closing a socket channel
+
+One channel is one loopback connection to the local listener, and closing the channel closes that connection, so the listener never keeps a socket nobody is on the other end of. A channel to the main listener counts as a connected client of the gateway for exactly as long as its loopback connection is open.
+
+- **The relay closes it** by sending `ws_close`, which it does when the browser's socket closes, or the tunnel connection to the relay is lost or shut down (every open channel closes with it). The tunnel sends the local socket a WebSocket Close frame, waits for the listener's reply for up to five seconds, and drops the connection, so the listener sees an ordinary close. The relay is sent nothing back: it ended the channel, or lost it along with the tunnel.
+- **The local socket closes** (or breaks): the tunnel sends the relay one `ws_close`, finishes its half of the closing handshake, and drops the connection. The relay answers that `ws_close` with its own, which the tunnel ignores because the channel is already gone. A `ws_message` the relay sent before it saw the close is dropped.
+
+Each closed channel logs one `debug` line, `local WebSocket channel closed`, whose `closed_by` field is `tunnel` or `local`. A normal close logs nothing at `warn`; `warn` is for a real failure: a read or write error on the local socket, a message that couldn't be forwarded through the tunnel, a `ws_close` that couldn't be sent to the relay, or a listener that doesn't take or answer the Close frame within five seconds (the connection is dropped anyway). The `open_ws_channels` field of the `disconnected from relay, reconnecting` warning counts the channels that were open when the tunnel connection was lost; all of them close with it.
 
 `surface` picks the listener:
 
@@ -58,3 +67,12 @@ Two things need to reliably tell a request that arrived through the tunnel apart
 A local request — whether it's the web UI open on the same machine, `residuum stop`'s own HTTP call, or a plain `curl` against the local port — never carries a matching nonce and is unaffected.
 
 `GET /api/hub/cloud/status` includes `viewed_via_tunnel: true` whenever the request that fetched it arrived through the tunnel. The Settings → Residuum Cloud page uses this to hide the Disconnect/Cancel control and show the same explanation, rather than letting someone click a button that the gateway will refuse anyway.
+
+## Running Against a Local Dev Relay
+
+The tunnel connects to the production relay (`wss://agent-residuum.com/tunnel/register`) unless `[cloud] relay_url` says otherwise, so running against a relay on the same machine takes four things.
+
+- **The relay URL**, in `hub/config.toml`: `[cloud]` with `relay_url = "ws://127.0.0.1:<relay port>/tunnel/register"`.
+- **The token**, from the relay's `/connect?port=<gateway port>` flow. Open `http://localhost:<relay port>/connect?port=<gateway port>` in a browser (the port must be 1024 or higher). The relay signs you in if needed, then redirects to `http://localhost:<gateway port>/cloud/callback?token=...` on this gateway, which stores the token as the `cloud_token` secret, sets `enabled = true` and `token = "secret:cloud_token"` in `[cloud]`, and reloads the hub. The callback keeps a `relay_url` that is already set. Settings → Residuum Cloud always opens the production relay's `/connect`, so use the local URL directly. `RESIDUUM_CLOUD_TOKEN` is the other way to supply a token, and it covers only the token: it overrides `token` in the config but not `relay_url`, and the `[cloud]` section still has to exist, so without a `relay_url` there the tunnel dials production with it.
+- **The relay's origin**: run the relay with `BASE_URL=http://localhost:<relay port>`. The relay builds the web UI and workbench origins it announces to the tunnel from `BASE_URL`, so this makes them `http://<username>.localhost:<relay port>` and `http://<username>.workbench.localhost:<relay port>` instead of `https://<username>.agent-residuum.com` and `https://<username>.workbench.agent-residuum.com`. The relay's default is the production URL, which makes a local relay announce origins that don't reach it.
+- **Resolving `*.localhost`**: browsers and `curl` resolve `*.localhost` to loopback themselves. glibc doesn't on some Linux systems, so a program that uses the system resolver (Node's `fetch`, `getent hosts`) can fail to find `<username>.localhost`; use the browser or `curl`, or add the hostname to `/etc/hosts`.
