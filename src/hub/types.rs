@@ -11,6 +11,7 @@ use ts_rs::TS;
 use super::directory::AgentDirectory;
 use super::overview::AgentOverview;
 use super::team_events::TeamEvent;
+use crate::gateway::protocol::ServerMessage;
 
 /// Lifecycle state of a hosted agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -321,7 +322,7 @@ pub struct DeletedAgentListResponse {
 
 /// Frames the hub WebSocket sends on its own account, rather than forwarding
 /// a [`HubEvent`] from the hub bus.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[derive(Debug, Clone, Serialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export)]
 pub enum HubSocketFrame {
@@ -339,9 +340,54 @@ pub enum HubSocketFrame {
     /// Something in an agent's overview changed. It replaces the client's
     /// copy of that agent's overview.
     AgentOverview { overview: AgentOverview },
+    /// An artifact was added, or one of its files changed, whether or not
+    /// any agent is running.
+    ArtifactUpdated { name: String },
+    /// An artifact's page or folder is gone.
+    ArtifactRemoved { name: String },
+    /// A session subscription is active. Sent in answer to a subscribe
+    /// message, before any frame the subscription delivers.
+    Subscribed {
+        /// Which subscribe message this answers.
+        kind: SessionSubscriptionKind,
+        /// The agent of a `session` subscription.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        agent: Option<String>,
+        /// The address of a `session` subscription.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        address: Option<String>,
+        /// The artifact of an `artifact_sessions` subscription.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        artifact: Option<String>,
+    },
+    /// An event of a session the connection follows.
+    SessionFrame {
+        /// The agent the session runs on.
+        agent: String,
+        /// The `session_*` frame exactly as the agent's own socket sends it.
+        frame: ServerMessage,
+    },
+    /// The connection fell behind and lost session frames, so it can't know
+    /// what it missed. A client reads the sessions it follows again over
+    /// HTTP.
+    SessionRelayLagged,
 }
 
-/// The one message a client sends on the hub WebSocket.
+/// The kind of subscription a `subscribed` frame confirms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum SessionSubscriptionKind {
+    /// One session of one agent.
+    Session,
+    /// Every session an artifact started, on any agent.
+    ArtifactSessions,
+}
+
+/// What a client sends on the hub WebSocket.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export)]
@@ -349,6 +395,15 @@ pub enum HubClientMessage {
     /// Replace the set of team paths this connection watches. A prefix is
     /// `team` or a path under `team/`, the spelling the change feed uses.
     WatchTeam { prefixes: Vec<String> },
+    /// Follow every event of one session on one agent.
+    SubscribeSession { agent: String, address: String },
+    /// Stop following a session.
+    UnsubscribeSession { agent: String, address: String },
+    /// Follow every event of every session labelled `artifact:<artifact>`,
+    /// on any agent, including sessions that start after the subscription.
+    SubscribeArtifactSessions { artifact: String },
+    /// Stop following an artifact's sessions.
+    UnsubscribeArtifactSessions { artifact: String },
 }
 
 /// Why a lifecycle or lookup call failed. The HTTP layer maps these to
@@ -555,14 +610,105 @@ mod tests {
     }
 
     #[test]
-    fn the_client_message_is_watch_team() {
-        let message: HubClientMessage =
-            serde_json::from_value(json!({ "type": "watch_team", "prefixes": ["team/wiki"] }))
-                .unwrap();
+    fn the_artifact_and_session_relay_frames_are_tagged() {
+        let updated = HubSocketFrame::ArtifactUpdated {
+            name: "chart".to_string(),
+        };
         assert_eq!(
-            message,
+            serde_json::to_value(updated).unwrap(),
+            json!({ "type": "artifact_updated", "name": "chart" })
+        );
+        let removed = HubSocketFrame::ArtifactRemoved {
+            name: "chart".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(removed).unwrap(),
+            json!({ "type": "artifact_removed", "name": "chart" })
+        );
+        let session = HubSocketFrame::Subscribed {
+            kind: SessionSubscriptionKind::Session,
+            agent: Some("scout".to_string()),
+            address: Some("spawned-x".to_string()),
+            artifact: None,
+        };
+        assert_eq!(
+            serde_json::to_value(session).unwrap(),
+            json!({ "type": "subscribed", "kind": "session", "agent": "scout", "address": "spawned-x" })
+        );
+        let artifact = HubSocketFrame::Subscribed {
+            kind: SessionSubscriptionKind::ArtifactSessions,
+            agent: None,
+            address: None,
+            artifact: Some("chart".to_string()),
+        };
+        assert_eq!(
+            serde_json::to_value(artifact).unwrap(),
+            json!({ "type": "subscribed", "kind": "artifact_sessions", "artifact": "chart" })
+        );
+        assert_eq!(
+            serde_json::to_value(HubSocketFrame::SessionRelayLagged).unwrap(),
+            json!({ "type": "session_relay_lagged" })
+        );
+        let relayed = HubSocketFrame::SessionFrame {
+            agent: "scout".to_string(),
+            frame: ServerMessage::SessionTurnStarted {
+                address: "spawned-x".to_string(),
+                run_id: "run-1".to_string(),
+                turn_id: "t-1".to_string(),
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(relayed).unwrap(),
+            json!({
+                "type": "session_frame",
+                "agent": "scout",
+                "frame": {
+                    "type": "session_turn_started",
+                    "address": "spawned-x",
+                    "run_id": "run-1",
+                    "turn_id": "t-1",
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn the_client_messages_are_tagged() {
+        let read = |value: serde_json::Value| -> HubClientMessage {
+            serde_json::from_value(value).unwrap()
+        };
+        assert_eq!(
+            read(json!({ "type": "watch_team", "prefixes": ["team/wiki"] })),
             HubClientMessage::WatchTeam {
                 prefixes: vec!["team/wiki".to_string()]
+            }
+        );
+        assert_eq!(
+            read(json!({ "type": "subscribe_session", "agent": "scout", "address": "spawned-x" })),
+            HubClientMessage::SubscribeSession {
+                agent: "scout".to_string(),
+                address: "spawned-x".to_string()
+            }
+        );
+        assert_eq!(
+            read(
+                json!({ "type": "unsubscribe_session", "agent": "scout", "address": "spawned-x" })
+            ),
+            HubClientMessage::UnsubscribeSession {
+                agent: "scout".to_string(),
+                address: "spawned-x".to_string()
+            }
+        );
+        assert_eq!(
+            read(json!({ "type": "subscribe_artifact_sessions", "artifact": "chart" })),
+            HubClientMessage::SubscribeArtifactSessions {
+                artifact: "chart".to_string()
+            }
+        );
+        assert_eq!(
+            read(json!({ "type": "unsubscribe_artifact_sessions", "artifact": "chart" })),
+            HubClientMessage::UnsubscribeArtifactSessions {
+                artifact: "chart".to_string()
             }
         );
     }

@@ -211,6 +211,12 @@ impl AgentChangeFeed {
         // No receivers is the normal state until a client asks for sessions.
         self.sessions.send(event).ok();
     }
+
+    /// How many receivers of the session relay are open.
+    #[cfg(test)]
+    pub(crate) fn session_relay_receivers(&self) -> usize {
+        self.sessions.receiver_count()
+    }
 }
 
 /// One subscriber's end of the feed.

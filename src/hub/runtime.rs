@@ -790,6 +790,7 @@ pub(super) fn build_app(
         push: Arc::clone(&services.push),
         team_events: Arc::clone(team_events),
         overview: Arc::clone(overview),
+        agent_changes: Arc::clone(host.agent_changes()),
     };
     Ok(hub_router(
         Arc::clone(host) as Arc<dyn AgentDirectory>,

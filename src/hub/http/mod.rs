@@ -5,7 +5,9 @@
 //! `docs/systems-usage/hub-http.md` places it:
 //!
 //! - `/api/hub/...`: agent lifecycle and status ([`lifecycle`]), the hub
-//!   WebSocket ([`ws`]), every agent's user inbox ([`inbox`]), the team event
+//!   WebSocket ([`ws`], with its artifact events in [`artifact_events`] and
+//!   its session relay in [`session_relay`]), every agent's user inbox
+//!   ([`inbox`]), the team event
 //!   log ([`events`]), the team overview ([`overview`]), Web Push devices
 //!   ([`push`]), and the routes that
 //!   exist once per process: hub config, secrets, keys, cloud, update,
@@ -21,6 +23,7 @@
 //! hub shutdown and cloud disconnect. Requests the artifacts listener forwards
 //! here are refused on the routes in [`artifacts_origin`].
 
+mod artifact_events;
 mod artifacts_origin;
 mod dispatch;
 mod error;
@@ -30,6 +33,7 @@ mod lifecycle;
 mod overview;
 mod process;
 mod push;
+mod session_relay;
 mod state;
 #[cfg(test)]
 #[expect(
@@ -69,6 +73,7 @@ pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Rout
         team_watch_health: hub.team_watch_health.clone(),
         team_events: Arc::clone(&hub.team_events),
         overview: Arc::clone(&hub.overview),
+        agent_changes: Arc::clone(&hub.agent_changes),
     };
 
     let app = Router::new()

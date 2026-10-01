@@ -5,13 +5,17 @@
 //! `agent_restored`, `agent_deleted`, `agent_activity`, `notice`,
 //! `hub_config_reloaded`), a `team_event` for every entry the team event log
 //! records, an `agent_overview` whenever something in an agent's overview
-//! changes, and `workspace_changed` frames for the team paths the client
-//! watches. Client to server: `watch_team`, the only message.
+//! changes, `artifact_updated` and `artifact_removed` for the workbench (see
+//! [`super::artifact_events`]), and `workspace_changed` frames for the team
+//! paths the client watches. Client to server: `watch_team`, and the session
+//! subscriptions of [`super::session_relay`], which answer `subscribed` and
+//! deliver `session_frame`s.
 //!
 //! A connection that falls behind the hub's event stream, the team event
 //! log or the overview frames can't know what it missed, so it gets a fresh
 //! `agents_snapshot` in place of the lost events, and the client reads the
-//! log and the overview again.
+//! log and the overview again. One that falls behind the session relay gets
+//! `session_relay_lagged`, and the client reads its sessions again.
 
 use std::sync::Arc;
 
@@ -26,8 +30,11 @@ use serde::Serialize;
 use serde_json::json;
 use tokio::sync::{broadcast, watch};
 
+use super::artifact_events::ArtifactEvents;
+use super::session_relay::SessionRelay;
 use crate::bus::{BusHandle, Subscriber, WorkspaceEvent, topics};
 use crate::gateway::protocol::ServerMessage;
+use crate::hub::agent_watch::AgentChangeFeed;
 use crate::hub::overview::{AgentOverview, TeamOverview};
 use crate::hub::team_events::{TeamEvent, TeamEventLog};
 use crate::hub::types::{AgentListResponse, HubClientMessage, HubSocketFrame};
@@ -46,6 +53,7 @@ pub(super) struct HubWsState {
     pub team_watch_health: watch::Receiver<WatchHealth>,
     pub team_events: Arc<TeamEventLog>,
     pub overview: Arc<TeamOverview>,
+    pub agent_changes: Arc<AgentChangeFeed>,
 }
 
 /// The route that upgrades to the hub WebSocket.
@@ -59,7 +67,7 @@ async fn upgrade(ws: WebSocketUpgrade, State(state): State<HubWsState>) -> Respo
     ws.on_upgrade(move |socket| serve(socket, state))
 }
 
-type Outbound = SplitSink<WebSocket, Message>;
+pub(super) type Outbound = SplitSink<WebSocket, Message>;
 
 /// Serve one connection until the client leaves or the hub's event stream
 /// closes.
@@ -72,6 +80,8 @@ async fn serve(socket: WebSocket, state: HubWsState) {
     let mut log_entries = state.team_events.subscribe();
     let mut overviews = state.overview.subscribe();
     let mut team_feed = subscribe_team_feed(&state.team_bus).await;
+    let mut artifacts = ArtifactEvents::subscribe(&state.team_bus).await;
+    let mut sessions = SessionRelay::new(&state.agent_changes);
     let mut watch_set = WatchSet::default();
 
     let boot = HubSocketFrame::HubBoot {
@@ -101,8 +111,15 @@ async fn serve(socket: WebSocket, state: HubWsState) {
             event = next_team_event(&mut team_feed) => {
                 forward_team_event(&mut outbound, &watch_set, &mut team_feed, event).await
             }
+            event = artifacts.next() => {
+                artifacts.forward(&mut outbound, event).await
+            }
+            relayed = sessions.next() => {
+                sessions.forward(&mut outbound, relayed).await
+            }
             frame = inbound.next() => {
-                handle_client_frame(&mut outbound, &state, &mut watch_set, frame).await
+                handle_client_frame(&mut outbound, &state, &mut watch_set, &mut sessions, frame)
+                    .await
             }
         };
         if !alive {
@@ -132,7 +149,7 @@ async fn next_team_event(
 }
 
 /// Send `frame` as a JSON text message. `false` when the client is gone.
-async fn send_frame(outbound: &mut Outbound, frame: &impl Serialize) -> bool {
+pub(super) async fn send_frame(outbound: &mut Outbound, frame: &impl Serialize) -> bool {
     let text = match serde_json::to_string(frame) {
         Ok(text) => text,
         Err(e) => {
@@ -148,7 +165,7 @@ async fn send_snapshot(outbound: &mut Outbound, directory: &dyn AgentDirectory) 
     send_frame(outbound, &snapshot).await
 }
 
-fn notice_frame(level: &str, message: &str) -> serde_json::Value {
+pub(super) fn notice_frame(level: &str, message: &str) -> serde_json::Value {
     json!({ "type": "notice", "level": level, "message": message })
 }
 
@@ -247,6 +264,7 @@ async fn handle_client_frame(
     outbound: &mut Outbound,
     state: &HubWsState,
     watch_set: &mut WatchSet,
+    sessions: &mut SessionRelay,
     frame: Option<Result<Message, axum::Error>>,
 ) -> bool {
     let text = match frame {
@@ -262,13 +280,46 @@ async fn handle_client_frame(
                 outbound,
                 &notice_frame(
                     "warn",
-                    "Residuum couldn't read a message from this page. Reload the page if team files stop updating.",
+                    "Residuum couldn't read a message from this page. Reload the page if team files or sessions stop updating.",
                 ),
             )
             .await;
         }
     };
-    let HubClientMessage::WatchTeam { prefixes } = request;
+    let directory = state.directory.as_ref();
+    match request {
+        HubClientMessage::WatchTeam { prefixes } => {
+            watch_team(outbound, state, watch_set, prefixes).await
+        }
+        HubClientMessage::SubscribeSession { agent, address } => {
+            sessions
+                .subscribe_session(outbound, directory, agent, address)
+                .await
+        }
+        HubClientMessage::UnsubscribeSession { agent, address } => {
+            sessions.unsubscribe_session(&agent, &address);
+            true
+        }
+        HubClientMessage::SubscribeArtifactSessions { artifact } => {
+            sessions
+                .subscribe_artifact_sessions(outbound, artifact)
+                .await
+        }
+        HubClientMessage::UnsubscribeArtifactSessions { artifact } => {
+            sessions.unsubscribe_artifact_sessions(&artifact);
+            true
+        }
+    }
+}
+
+/// Replace the team paths the connection watches. `false` when the
+/// connection should end.
+async fn watch_team(
+    outbound: &mut Outbound,
+    state: &HubWsState,
+    watch_set: &mut WatchSet,
+    prefixes: Vec<String>,
+) -> bool {
     match parse_team_prefixes(prefixes) {
         Ok(set) => {
             let watching = !set.is_empty();
