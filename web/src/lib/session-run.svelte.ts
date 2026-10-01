@@ -70,6 +70,8 @@ export class SessionRun {
   private pendingTools = new SvelteMap<string, ToolCallState>();
   /** Frames for this run that arrived while its transcript was loading. */
   private buffered: RunFrame[] = [];
+  /** Status lines this page wrote while the transcript was loading; no transcript holds them. */
+  private notes: FeedItem[] = [];
   private loading = false;
   /** Identifies the latest load; an older one finishing late is ignored. */
   private loadToken = 0;
@@ -125,6 +127,7 @@ export class SessionRun {
       });
       this.buffered = [];
       this.loading = false;
+      this.items.push(...this.notes.splice(0));
       return;
     }
     if (token !== this.loadToken) return;
@@ -132,6 +135,7 @@ export class SessionRun {
     this.pendingTools.clear();
     this.turnStart = null;
     this.items = convertHistoryMessages(transcript.messages, { mode: "session" });
+    this.items.push(...this.notes.splice(0));
     this.loading = false;
     this.loaded = true;
     const raced = this.buffered;
@@ -263,7 +267,8 @@ export class SessionRun {
       case "session_broadcast_response":
       case "session_response":
         if (!frame.content) return;
-        if (dedupe && this.lastAssistantContent() === frame.content) return;
+        if (dedupe && this.items.some((i) => i.kind === "assistant" && i.content === frame.content))
+          return;
         this.items.push({ id: nextFeedId(), kind: "assistant", content: frame.content });
         break;
       case "session_error":
@@ -301,7 +306,9 @@ export class SessionRun {
   }
 
   private pushStatus(tone: "info" | "error", content: string, details?: string): void {
-    this.items.push({ id: nextFeedId(), kind: "status", tone, content, details });
+    const note: FeedItem = { id: nextFeedId(), kind: "status", tone, content, details };
+    if (this.loading) this.notes.push(note);
+    else this.items.push(note);
   }
 
   /** Tag the message that started the turn now ending, so it can offer Undo this turn. */
@@ -336,13 +343,5 @@ export class SessionRun {
       if (call) return call;
     }
     return undefined;
-  }
-
-  private lastAssistantContent(): string | null {
-    for (let i = this.items.length - 1; i >= 0; i--) {
-      const item = this.items[i];
-      if (item?.kind === "assistant") return item.content;
-    }
-    return null;
   }
 }

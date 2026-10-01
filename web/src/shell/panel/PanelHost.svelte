@@ -52,7 +52,8 @@
   $effect(() => {
     const run = sessionRun;
     if (run === null) return;
-    return run.open();
+    // Opening reads the run's state; the run following a new one mustn't reopen it.
+    return untrack(() => run.open());
   });
 
   $effect(() => {

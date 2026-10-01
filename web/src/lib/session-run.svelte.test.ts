@@ -52,6 +52,8 @@ class FakeRelay implements SessionRelayLink {
 let transcripts: Record<string, { session: SessionSummary; messages: RecentMessage[] }>;
 let messageAnswer: () => Response;
 let requests: string[];
+/** While set, transcripts answer only once it resolves. */
+let holdTranscripts: Promise<void> | null;
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -76,17 +78,19 @@ beforeEach(() => {
     },
   };
   messageAnswer = () => json({ outcome: "live" });
+  holdTranscripts = null;
   vi.stubGlobal(
     "fetch",
-    vi.fn((url: string, init?: RequestInit) => {
+    vi.fn(async (url: string, init?: RequestInit) => {
       requests.push(`${init?.method ?? "GET"} ${url}`);
       const run = /\/runs\/([^/]+)\/transcript$/.exec(url)?.[1];
       if (run !== undefined) {
+        if (holdTranscripts !== null) await holdTranscripts;
         const found = transcripts[run];
-        return Promise.resolve(found ? json(found) : json({ error: "no such run" }, 404));
+        return found ? json(found) : json({ error: "no such run" }, 404);
       }
-      if (url.endsWith("/messages")) return Promise.resolve(messageAnswer());
-      return Promise.resolve(json({ address: ADDRESS }, 202));
+      if (url.endsWith("/messages")) return messageAnswer();
+      return json({ address: ADDRESS }, 202);
     }),
   );
 });
@@ -272,6 +276,52 @@ describe("the run's commands", () => {
     expect(run.items.at(-1)).toMatchObject({
       content: "This session had finished, so your message started a new run.",
     });
+  });
+
+  it("keeps its notes, and shows a reply once, when the new run races its transcript", async () => {
+    const finished = summary("run-1", { state: "completed" });
+    transcripts["run-1"] = { session: finished, messages: [] };
+    transcripts["run-2"] = {
+      session: summary("run-2", { state: "idle" }),
+      messages: [
+        { role: "user", content: "Again", timestamp: "2026-09-23T12:00:00Z", visibility: "user" },
+        {
+          role: "assistant",
+          content: "Picking this back up.",
+          timestamp: "2026-09-23T12:00:00Z",
+          visibility: "user",
+        },
+      ],
+    };
+    messageAnswer = () => json({ outcome: "resumed" });
+    let release = (): void => {};
+    holdTranscripts = new Promise((resolve) => {
+      release = resolve;
+    });
+    const relay = new FakeRelay();
+    const run = new SessionRun("atlas", "run-1", { summary: finished }, relay);
+    run.open();
+    run.draft = "Again";
+    const sending = run.send();
+    relay.relay("atlas", { type: "session_started", session: summary("run-2") });
+    relay.relay("atlas", {
+      type: "session_response",
+      address: ADDRESS,
+      run_id: "run-2",
+      turn_id: "t1",
+      content: "Picking this back up.",
+    });
+    await sending;
+    release();
+    await vi.waitFor(() => {
+      expect(run.loaded).toBe(true);
+    });
+    expect(run.runId).toBe("run-2");
+    expect(run.items.map((item) => ("content" in item ? item.content : item.kind))).toEqual([
+      "Again",
+      "Picking this back up.",
+      "This session had finished, so your message started a new run.",
+    ]);
   });
 
   it("doesn't follow a new run it didn't start", async () => {
