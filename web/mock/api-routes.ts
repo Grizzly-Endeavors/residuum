@@ -7,6 +7,7 @@ import { hubInboxRoutes } from "./hub-inbox";
 import { inboxRoutes } from "./inbox";
 import { lifecycleRoutes } from "./lifecycle";
 import { modelRoutes } from "./model";
+import { overviewRoutes } from "./overview";
 import type { Route } from "./routes";
 import { scheduledRoutes } from "./scheduled";
 import { sessionRoutes } from "./sessions";
@@ -24,6 +25,7 @@ export const apiRoutes: readonly Route[] = [
   ...inboxRoutes,
   ...hubInboxRoutes,
   ...teamEventRoutes,
+  ...overviewRoutes,
   ...agentInboxRoutes,
   ...scheduledRoutes,
   ...updateRoutes,
