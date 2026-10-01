@@ -112,6 +112,11 @@
     background: var(--color-stone-3);
   }
 
+  /* On a stone-3 card (a dialog, a sheet), the track takes the hover fill so it still shows. */
+  :global(.ui-modal-layer:not([data-frame="left"]) .ui-modal) .ui-segmented {
+    background: var(--color-stone-4);
+  }
+
   .ui-segment {
     height: 28px;
     padding: 0 var(--space-12);

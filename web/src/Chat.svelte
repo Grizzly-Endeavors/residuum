@@ -1,33 +1,30 @@
 <script lang="ts">
   import { ws } from "./lib/ws.svelte";
-  import { parseCommand } from "./lib/commands";
+  import { actionRegistry, commandActions, readCommandLine } from "./lib/action-registry.svelte";
   import { notifications } from "./lib/notifications.svelte";
   import ChatFeed from "./components/ChatFeed.svelte";
   import ChatInput from "./components/ChatInput.svelte";
   import ChatFooter from "./components/ChatFooter.svelte";
   import type { ImageAttachment } from "./lib/types";
 
-  let { onOpenFeedback }: { onOpenFeedback: () => void } = $props();
-
+  // A line that starts with `/` runs the chat action it names, with the rest
+  // of the line as its text; anything else is a message.
   function handleSend(text: string, images?: ImageAttachment[]) {
-    const result = parseCommand(text, {
-      connectionStatus: ws.transport.status,
-      verbose: ws.verbose,
-      setVerbose: (enabled) => ws.setVerbose(enabled),
-      pushInline: (content) => ws.store.pushLocalSystem(content),
-      activeTurnId: ws.store.activeTurnId,
-    });
-
-    if (result) {
-      if (result.notification) {
-        notifications.surface(result.notification.kind, result.notification.message);
-      }
-      if (result.wsMessage) ws.send(result.wsMessage);
-      result.action?.();
+    const line = readCommandLine(commandActions(actionRegistry.all), text);
+    if (line === null) {
+      ws.sendChat(text, images);
       return;
     }
-
-    ws.sendChat(text, images);
+    if (line.action === null) {
+      notifications.surface(
+        "error",
+        `There's no /${line.name}. Type / at the start of a message to see the chat actions.`,
+      );
+    } else if (line.action.disabled !== undefined) {
+      notifications.surface("error", `Couldn't run /${line.name}: ${line.action.disabled}.`);
+    } else {
+      void actionRegistry.run(line.action, line.text);
+    }
   }
 </script>
 
@@ -44,7 +41,6 @@
   <ChatInput
     onSend={handleSend}
     onStop={() => ws.stop()}
-    {onOpenFeedback}
     isProcessing={ws.store.isProcessing}
     reconnecting={ws.transport.status !== "connected"}
     pendingCount={ws.transport.pendingCount}
