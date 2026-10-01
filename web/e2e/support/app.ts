@@ -2,8 +2,8 @@
  * When the app is usable, and how long the specs wait for it.
  *
  * A page that has loaded is not a page that is ready. The app's code runs
- * after the load event, then it fetches the agent list and opens the hub
- * socket; Settings, the palette and the file view fetch their own code the
+ * after the load event, then it fetches the agent list, opens the hub socket
+ * and fetches the overview the socket announces; Settings, the palette and the file view fetch their own code the
  * first time they open; and the fonts arrive last. On a quiet machine all of
  * that is over before a spec's first assertion. On a loaded one it isn't, and a
  * spec that acts at once clicks into a half-built page, or shoots the
@@ -47,7 +47,7 @@ const APP_ROOT = ".shell, .setup-wizard, .gallery";
  */
 const LAZY_LOADING = /^(Opening|Loading the file)$/;
 
-/** The part of a page that is being built while the app starts: the app's roots, the hub socket, the lazy components the URL asked for. */
+/** The part of a page that is being built while the app starts: the app's roots, the hub socket and what it brings, the lazy components the URL asked for. */
 async function appRendered(page: Page, hub: HubState): Promise<void> {
   await expect(
     page.locator(APP_ROOT).first(),
@@ -60,6 +60,14 @@ async function appRendered(page: Page, hub: HubState): Promise<void> {
   await expect(shell, `the hub socket should be ${hub}`).toHaveAttribute("data-hub", hub, {
     timeout: LOAD_TIMEOUT,
   });
+  // What the socket brings (the rail's counts, which agents are working) is fetched once it says hello. With the hub out of reach there is nothing to wait for.
+  if (hub === "connected") {
+    await expect(shell, "the hub's overview should have loaded").toHaveAttribute(
+      "data-overview",
+      "loaded",
+      { timeout: LOAD_TIMEOUT },
+    );
+  }
   await expect(
     page.getByRole("status").filter({ hasText: LAZY_LOADING }),
     "the code a feature opens with should have loaded",
@@ -97,8 +105,9 @@ export async function settleAnimations(page: Page): Promise<void> {
 }
 
 /**
- * Wait for the app to be usable: its root rendered, the hub socket connected,
- * the code behind anything the URL opens mounted, and the fonts loaded.
+ * Wait for the app to be usable: its root rendered, the hub socket connected
+ * and its overview loaded, the code behind anything the URL opens mounted, and
+ * the fonts loaded.
  * Waiting on these is a condition, never a delay: it returns at once on a page
  * that is already there.
  */

@@ -180,8 +180,13 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<!-- data-hub is the hub socket's state, for the end-to-end suite, which waits for "connected" before it acts. -->
-<div class="shell" data-ui data-hub={hub.transport.lost ? "lost" : hub.transport.status}>
+<!-- data-hub and data-overview say how far the hub's state has arrived (the socket, then the counts it brings), for the end-to-end suite, which waits for "connected" and "loaded" before it acts. -->
+<div
+  class="shell"
+  data-ui
+  data-hub={hub.transport.lost ? "lost" : hub.transport.status}
+  data-overview={overview.loaded ? "loaded" : "loading"}
+>
   <div class="shell-side" bind:this={sideRail}>
     <Rail {accordion} {actions} />
   </div>

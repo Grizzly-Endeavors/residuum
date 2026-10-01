@@ -6,10 +6,13 @@
 import { waitForApp } from "../support/app";
 import { expect, test } from "../support/fixtures";
 
-test("goto returns with the shell drawn and the hub socket connected", async ({ page }) => {
+test("goto returns with the shell drawn, the hub socket connected and its overview in", async ({
+  page,
+}) => {
   await page.goto("/home");
   const shell = page.locator(".shell");
   expect(await shell.getAttribute("data-hub")).toBe("connected");
+  expect(await shell.getAttribute("data-overview")).toBe("loaded");
   expect(await page.evaluate(() => document.fonts.status)).toBe("loaded");
 });
 

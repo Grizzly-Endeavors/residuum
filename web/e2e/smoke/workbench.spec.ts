@@ -40,13 +40,6 @@ async function addWikiGraph(mock: MockControls): Promise<void> {
   });
 }
 
-/** Open `url` and wait for the hub socket: the overview is fetched once it says hello. */
-async function openConnected(page: Page, url: string): Promise<void> {
-  const hello = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/hub/overview");
-  await page.goto(url);
-  await hello;
-}
-
 test("the list shows each page, and a row selected opens in place until Back", async ({ page }) => {
   await page.goto("/team/workbench");
   await expect(page.getByRole("heading", { name: "Workbench", level: 1 })).toBeVisible();
@@ -102,7 +95,7 @@ test("an agent's edit marks the page as updating now, with no agent running", as
   for (const agent of ["atlas", "scout"]) {
     expect((await page.request.post(`/api/hub/agents/${agent}/stop`)).ok()).toBe(true);
   }
-  await openConnected(page, "/team/workbench");
+  await page.goto("/team/workbench");
   const tip = row(page, "Tip Splitter");
   await expect(tip.getByText(/^edited /)).toBeVisible();
 
