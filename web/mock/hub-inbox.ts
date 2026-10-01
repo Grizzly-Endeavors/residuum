@@ -204,6 +204,7 @@ function readItem(ctx: RouteContext): void {
     return;
   }
   item.read = true;
+  ctx.hub.overview.changed(agent);
   respondWithItem(ctx, agent, item);
 }
 
@@ -230,6 +231,7 @@ function moveItem(ctx: RouteContext, from: InboxStatus): void {
   const source = itemsOf(agent.state, from);
   source.splice(source.indexOf(item), 1);
   itemsOf(agent.state, to).push(item);
+  ctx.hub.overview.changed(agent);
   respondWithItem(ctx, agent, item);
 }
 

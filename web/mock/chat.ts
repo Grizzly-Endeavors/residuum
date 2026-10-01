@@ -233,6 +233,7 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
         },
         { role: "assistant", content: response, timestamp: now, visibility: "user" },
       );
+      hub.overview.changed(agent);
     });
   }
 
@@ -244,6 +245,7 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     state.broadcast({ type: "turn_ended", reply_to: replyTo });
     hub.setBusy(agent, false);
     recordUserMessage(turn.content);
+    hub.overview.changed(agent);
   }
 
   return { send, cancel };

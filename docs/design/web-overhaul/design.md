@@ -586,7 +586,7 @@ Existing endpoints and frames keep their shapes, because the macOS client and ol
   - Lossless topics use unbounded channels, so the watcher drains every subscription continuously, and stops when the agent stops.
   - A Workspace `Resync` makes it recompute everything for that agent.
   - A Workspace `Unavailable` makes it recompute every 60 seconds until the next `Changed` or `Resync`, logging one warning.
-- **Outbound threshold event.** The outbound task tracker already sends a notice once per unreachable streak when a task has been unreachable for its notice threshold (10 minutes). It also publishes a task-change event at that moment, so the watcher learns about the crossing without a timer.
+- **Outbound threshold event.** The outbound task tracker already sends a notice once per unreachable streak when a task has been unreachable for its notice threshold (10 minutes). It also publishes a task-change event at that moment. The tracker checks the threshold on each failed poll, so that event can come up to a minute late; the overview waits for the threshold itself (§9.3).
 - **Turn hook.** The activity tracker gains a method the runtime calls exactly once when a main turn ends. It carries:
   - the turn's user message text, if any
   - its last reply text, if any
@@ -667,7 +667,7 @@ AgentOverview {
   - Disabled pulses, or all pulses when `pulse_enabled` is off, are excluded.
   - The same calculation replaces the existing `next_fire_at` on the per-agent scheduled pulses endpoint.
   - Computed for non-running agents too, so Home can say "won't run while stopped". It is empty when the agent's config can't be loaded.
-- **`outbound_problems`.** Open tracked tasks whose current unreachable streak has passed the tracker's notice threshold. It updates on the task-change events at streak start, at the threshold and at clearing. It is empty for non-running agents: their tasks aren't being watched, and the stop controls need a running agent.
+- **`outbound_problems`.** Open tracked tasks whose current unreachable streak has passed the tracker's notice threshold. It updates on the task-change events at streak start, at the threshold and at clearing, and at the threshold itself, which the hub waits for rather than relying on the event. It is empty for non-running agents: their tasks aren't being watched, and the stop controls need a running agent.
 
 **Frames.**
 - `agent_overview {overview: AgentOverview}` replaces the client's copy for that agent whenever any field changes.
@@ -815,13 +815,14 @@ Defaults for a new device: `inbox_item` and `agent_failed` on, the other two off
 **Payload.** Encrypted JSON:
 
 ```
-{ v: 1, event: "inbox_item" | "agent_failed" | "outbound_unreachable" | "reply_while_away",
+{ v: 1, event: "inbox_item" | "agent_failed" | "outbound_unreachable" | "reply_while_away" | "test",
   agent, title, body, target, tag, badge }
 ```
 
 - `target` is a URL path from the triggers table.
 - `badge` is the total inbox unread.
 - `body` is plain text, at most 120 characters.
+- `test` is the event of the notification that Send test in the Notifications section asks the hub to send to one device. It has no preference and no agent (`agent` is empty), carries the real inbox unread count in `badge`, and is shown like every other push.
 
 | Event | Title | Body | Tag |
 |---|---|---|---|

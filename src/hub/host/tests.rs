@@ -14,6 +14,7 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
+use crate::hub::overview::{OverviewTracker, TeamOverview};
 use crate::hub::runtime::build_app;
 use crate::hub::team_events::{TeamEventLog, TeamEventRecorder};
 use crate::hub::test_support::{free_port, mount_reply, write_agent};
@@ -32,7 +33,14 @@ struct Fixture {
     /// What the hub's recorder has written since the fixture was built.
     team_events: Arc<TeamEventLog>,
     _recorder: TeamEventRecorder,
+    /// What Home shows about each agent, with frames gathered for
+    /// `OVERVIEW_WINDOW` so a test needn't wait a second for one.
+    overview: Arc<TeamOverview>,
+    _overview_tracker: OverviewTracker,
 }
+
+/// How long the fixture's overview gathers an agent's changes into a frame.
+const OVERVIEW_WINDOW: Duration = Duration::from_millis(150);
 
 /// The string at `key` of a JSON object.
 fn str_at<'a>(value: &'a Value, key: &str) -> &'a str {
@@ -72,12 +80,22 @@ impl Fixture {
             host.subscribe(),
             host.agent_changes().subscribe(),
         );
+        let overview = TeamOverview::with_window(
+            "boot-under-test",
+            Arc::clone(&host) as Arc<dyn AgentDirectory>,
+            OVERVIEW_WINDOW,
+        );
+        let overview_tracker = OverviewTracker::spawn(
+            Arc::clone(&overview),
+            host.subscribe(),
+            host.agent_changes().subscribe(),
+        );
         host.discover().unwrap();
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         let (reload_tx, _reload_rx) = tokio::sync::mpsc::unbounded_channel();
-        let app = build_app(&host, &services, &team_events, reload_tx, None).unwrap();
+        let app = build_app(&host, &services, &team_events, &overview, reload_tx, None).unwrap();
         crate::util::spawn_in_span(async move {
             axum::serve(listener, app).await.unwrap();
         });
@@ -90,6 +108,8 @@ impl Fixture {
             http: reqwest::Client::new(),
             team_events,
             _recorder: recorder,
+            overview,
+            _overview_tracker: overview_tracker,
         }
     }
 
@@ -208,8 +228,26 @@ impl Fixture {
         self.host.summary(name).unwrap().state
     }
 
+    /// Wait until both of a chat turn's workspace checkpoints are in the
+    /// agent's history: the one before the turn and the one after. A turn
+    /// records them in the background, and on a first turn each changes the
+    /// workspace, so each is recorded. After they are, nothing writes into the
+    /// agent's workspace checkpoint repository until the next turn.
+    async fn wait_for_turn_checkpoints(&self, name: &str) {
+        eventually("the turn's checkpoints to be recorded", || async {
+            let (_, history) = self
+                .get(&format!("/api/agents/{name}/checkpoints?repo=workspace"))
+                .await;
+            (history.contains("\"trigger\":\"turn_start\"")
+                && history.contains("\"trigger\":\"turn_end\""))
+            .then_some(())
+        })
+        .await;
+    }
+
     /// Replace the agent's workspace checkpoint repository with a plain
-    /// file, so that opening it fails.
+    /// file, so that opening it fails. Call [`Self::wait_for_turn_checkpoints`]
+    /// first, so no background checkpoint is still writing into the directory.
     fn make_checkpoints_unopenable(&self, name: &str) {
         let repo = crate::checkpoints::agent_repos_dir(
             &crate::config::HubPaths::new(&self.services.hub_dir).checkpoints_dir(),
@@ -487,6 +525,7 @@ async fn a_stopped_agents_history_and_inbox_answer_when_its_checkpoint_repositor
         history.contains("remember the pelican").then_some(())
     })
     .await;
+    hub.wait_for_turn_checkpoints("scout").await;
     hub.host.stop("scout").await.unwrap();
     hub.add_inbox_item("scout", "20260930_pelican");
     hub.make_checkpoints_unopenable("scout");
@@ -528,6 +567,7 @@ async fn a_running_agents_history_and_inbox_do_not_open_its_checkpoint_repositor
         history.contains("remember the pelican").then_some(())
     })
     .await;
+    hub.wait_for_turn_checkpoints("scout").await;
     hub.add_inbox_item("scout", "20260930_pelican");
     hub.make_checkpoints_unopenable("scout");
 
@@ -2457,8 +2497,14 @@ async fn the_team_block_lists_teammates_and_follows_their_state() {
 }
 
 mod agent_watch;
+mod artifacts_origin;
 mod hub_inbox;
 mod lifecycle_tools;
+#[expect(
+    clippy::indexing_slicing,
+    reason = "test code indexes parsed JSON for clarity"
+)]
+mod overview;
 mod restore;
 mod review_fixes;
 mod team_events;

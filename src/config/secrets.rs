@@ -184,7 +184,7 @@ pub(crate) fn load_or_create_key(key_path: &Path) -> Result<[u8; 32], FatalError
 
 /// Set file permissions to 0600 (Unix only).
 #[cfg(unix)]
-fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
+pub(crate) fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
     use std::os::unix::fs::PermissionsExt;
     let perms = std::fs::Permissions::from_mode(0o600);
     std::fs::set_permissions(path, perms).map_err(|e| {
@@ -204,7 +204,7 @@ fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
         reason = "signature matches the unix variant, which can fail"
     )
 )]
-fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
+pub(crate) fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
     let username = std::env::var("USERNAME").unwrap_or_else(|_| "CURRENT_USER".to_string());
     let grant_arg = format!("{username}:(F)");
     let status = std::process::Command::new("icacls")
@@ -235,7 +235,7 @@ fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn set_file_mode_600(_path: &Path) -> Result<(), FatalError> {
+pub(crate) fn set_file_mode_600(_path: &Path) -> Result<(), FatalError> {
     // No-op on unsupported platforms
     Ok(())
 }

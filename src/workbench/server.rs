@@ -9,12 +9,14 @@
 //! here by the tunnel client. Being a real origin, artifacts can be folders with
 //! relative scripts, modules, and workers, and can use browser storage.
 //!
-//! The listener is read-only: `GET`/`HEAD` of artifact files, nothing else. Artifacts
-//! reach Residuum's API only through the web UI's bridge.
+//! Artifact files are read-only: `GET`/`HEAD` of pages and the files they load.
+//! Everything under `/api` is forwarded in-process to the hub router (see
+//! [`super::forward`]), so a page on this origin reaches Residuum's API and
+//! sockets directly.
 //!
 //! URL layout: `/{artifact}/` is the artifact's page, `/{artifact}/{path}` a file in a
-//! folder artifact, and `/{artifact}` redirects to `/{artifact}/` so relative URLs resolve
-//! inside the artifact.
+//! folder artifact, `/{artifact}` redirects to `/{artifact}/` so relative URLs resolve
+//! inside the artifact, and `/api/...` is the API.
 
 use std::path::PathBuf;
 
@@ -26,6 +28,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
 use tokio_util::io::ReaderStream;
 
+use super::forward::{self, HubApi};
 use super::{
     ArtifactBody, ArtifactFileError, discover_artifacts, is_valid_artifact_name, read_artifact_file,
 };
@@ -54,7 +57,8 @@ impl WorkbenchServing {
 }
 
 /// Start the artifacts listener for `dir` beside the gateway on `bind`. Returns
-/// whether it is serving and, when it is, the switch that stops it.
+/// whether it is serving and, when it is, the switch that stops it. `api` is
+/// where `/api` requests go once the hub router is bound to it.
 ///
 /// Failing to bind is not fatal: Residuum runs without the workbench and the
 /// web UI shows why (the reason is also logged at `error`). The listener runs
@@ -64,6 +68,7 @@ pub(crate) async fn start(
     gateway_port: u16,
     reserved: &[u16],
     dir: PathBuf,
+    api: HubApi,
 ) -> (WorkbenchServing, Option<tokio::sync::watch::Sender<bool>>) {
     let (listener, port) = match bind_listener(bind, gateway_port, reserved).await {
         Ok(bound) => bound,
@@ -82,7 +87,7 @@ pub(crate) async fn start(
     tracing::info!(addr = %format!("{bind}:{port}"), "workbench artifacts listening");
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
-    let app = router(dir);
+    let app = router(dir, api);
     crate::util::spawn_monitored("workbench-listener", async move {
         if let Err(e) = axum::serve(listener, app)
             .with_graceful_shutdown(async move {
@@ -131,18 +136,20 @@ pub(crate) async fn bind_listener(
     ))
 }
 
-/// Router for the artifacts listener, serving artifacts from `dir`.
-pub(crate) fn router(dir: PathBuf) -> Router {
+/// Router for the artifacts listener, serving artifacts from `dir` and
+/// forwarding `/api` to the hub router bound to `api`.
+pub(crate) fn router(dir: PathBuf, api: HubApi) -> Router {
     Router::new()
         .route("/", get(home))
         .route("/{name}", get(artifact_root))
         .route("/{name}/", get(artifact_index))
         .route("/{name}/{*rest}", get(artifact_file))
+        .with_state(dir)
+        .merge(forward::routes(api))
         .fallback(|| async { not_found("Nothing here.") })
         .layer(axum::middleware::from_fn(
             crate::gateway::cross_site::reject_cross_site_requests,
         ))
-        .with_state(dir)
 }
 
 async fn home() -> Response {
@@ -254,10 +261,41 @@ mod tests {
     }
 
     async fn get_path(dir: &std::path::Path, path: &str) -> Response {
-        router(dir.to_path_buf())
+        router(dir.to_path_buf(), HubApi::new())
             .oneshot(Request::get(path).body(Body::empty()).unwrap())
             .await
             .unwrap()
+    }
+
+    /// A hub stand-in: `/api/probe` says whether the request arrived marked,
+    /// and any other path gets the page the real router's embedded web app
+    /// would serve.
+    fn stand_in_hub() -> Router {
+        Router::new()
+            .route(
+                "/api/probe",
+                axum::routing::any(|req: Request<Body>| async move {
+                    if req.extensions().get::<forward::ArtifactsOrigin>().is_some() {
+                        "marked"
+                    } else {
+                        "unmarked"
+                    }
+                }),
+            )
+            .fallback(|| async { "spa" })
+    }
+
+    /// The listener's router with the stand-in hub bound.
+    fn listener(dir: &std::path::Path) -> Router {
+        let api = HubApi::new();
+        api.bind(stand_in_hub());
+        router(dir.to_path_buf(), api)
+    }
+
+    async fn send(app: Router, request: Request<Body>) -> (StatusCode, String) {
+        let resp = app.oneshot(request).await.unwrap();
+        let status = resp.status();
+        (status, body_text(resp).await)
     }
 
     async fn body_text(resp: Response) -> String {
@@ -316,11 +354,123 @@ mod tests {
             assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{path}");
         }
 
-        let post = router(dir.path().to_path_buf())
+        let post = router(dir.path().to_path_buf(), HubApi::new())
             .oneshot(Request::post("/graph/").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
+    async fn api_requests_of_every_method_reach_the_hub_router_marked() {
+        let dir = tempfile::tempdir().unwrap();
+        for method in [
+            axum::http::Method::GET,
+            axum::http::Method::HEAD,
+            axum::http::Method::POST,
+            axum::http::Method::PUT,
+            axum::http::Method::PATCH,
+            axum::http::Method::DELETE,
+        ] {
+            let request = Request::builder()
+                .method(method.clone())
+                .uri("/api/probe")
+                .body(Body::empty())
+                .unwrap();
+            let (status, body) = send(listener(dir.path()), request).await;
+            assert_eq!(status, StatusCode::OK, "{method}");
+            if method != axum::http::Method::HEAD {
+                assert_eq!(body, "marked", "{method}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_cross_site_guard_covers_the_api_and_lets_the_origin_call_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        // The UI's own origin is the same site as the artifacts origin, so it
+        // counts as another site here, like any other.
+        for (site, allowed) in [
+            ("cross-site", false),
+            ("same-site", false),
+            ("same-origin", true),
+            ("none", true),
+        ] {
+            let write = Request::post("/api/probe")
+                .header("sec-fetch-site", site)
+                .body(Body::empty())
+                .unwrap();
+            let (write_status, _) = send(listener(dir.path()), write).await;
+            assert_eq!(write_status == StatusCode::OK, allowed, "POST from {site}");
+
+            let upgrade = Request::get("/api/probe")
+                .header("sec-fetch-site", site)
+                .header("upgrade", "websocket")
+                .body(Body::empty())
+                .unwrap();
+            let (upgrade_status, _) = send(listener(dir.path()), upgrade).await;
+            assert_eq!(
+                upgrade_status == StatusCode::OK,
+                allowed,
+                "upgrade from {site}"
+            );
+        }
+        let sandboxed = Request::post("/api/probe")
+            .header("origin", "null")
+            .body(Body::empty())
+            .unwrap();
+        let (sandboxed_status, _) = send(listener(dir.path()), sandboxed).await;
+        assert_eq!(sandboxed_status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn nothing_but_the_api_reaches_the_hub_router() {
+        let dir = tempfile::tempdir().unwrap();
+        for path in [
+            "/",
+            "/index.html",
+            "/some/client/route",
+            "/webhook/scout/deploy",
+            "/cloud/callback",
+            "/assets/app.js",
+            "/apix/probe",
+        ] {
+            let (_, body) = send(
+                listener(dir.path()),
+                Request::get(path).body(Body::empty()).unwrap(),
+            )
+            .await;
+            assert!(
+                !matches!(body.as_str(), "spa" | "marked" | "unmarked"),
+                "{path} reached the hub router"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_artifact_called_api_is_never_served_and_similar_names_are() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("api/index.html"), "<head></head>artifact");
+        write(&dir.path().join("api-tools.html"), "<head></head>tools");
+        write(&dir.path().join("my-api/index.html"), "<head></head>mine");
+
+        for path in ["/api", "/api/", "/api/index.html"] {
+            let (_, body) = send(
+                listener(dir.path()),
+                Request::get(path).body(Body::empty()).unwrap(),
+            )
+            .await;
+            assert_eq!(body, "spa", "{path} is the hub's, not the artifact's");
+        }
+        for (path, content) in [("/api-tools/", "tools"), ("/my-api/", "mine")] {
+            let (status, body) = send(
+                listener(dir.path()),
+                Request::get(path).body(Body::empty()).unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{path}");
+            assert!(body.contains(content), "{path}");
+        }
     }
 
     #[tokio::test]

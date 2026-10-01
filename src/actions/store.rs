@@ -91,6 +91,30 @@ impl ActionStore {
         }
     }
 
+    /// The actions waiting in the file at `path`, read without changing
+    /// anything: no corrupt file is moved aside and nothing is logged, so a
+    /// reader that isn't the agent that owns the file (the hub's overview)
+    /// can look at it. An action [`Self::load`] would drop is left out. A
+    /// missing file has no actions.
+    ///
+    /// # Errors
+    /// Returns an error if the file exists but cannot be read or parsed.
+    pub async fn read_pending(path: &Path) -> anyhow::Result<Vec<ScheduledAction>> {
+        let contents = match tokio::fs::read_to_string(path).await {
+            Ok(contents) => contents,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!("failed to read scheduled actions at {}", path.display())
+                });
+            }
+        };
+        let mut actions: Vec<ScheduledAction> = serde_json::from_str(&contents)
+            .with_context(|| format!("failed to parse scheduled actions at {}", path.display()))?;
+        actions.retain(|action| !uses_removed_main_routing(action));
+        Ok(actions)
+    }
+
     /// Save the store to disk atomically (write temp file, then rename).
     ///
     /// # Errors
@@ -202,6 +226,15 @@ pub struct RejectedAction {
     pub name: String,
 }
 
+/// Whether `action` uses the removed `agent: "main"` routing, which loading
+/// drops.
+fn uses_removed_main_routing(action: &ScheduledAction) -> bool {
+    action
+        .agent
+        .as_deref()
+        .is_some_and(|agent| agent.eq_ignore_ascii_case("main"))
+}
+
 /// Drop stored actions that still use the removed `agent: "main"` routing,
 /// logging an actionable error naming each offender and returning what was
 /// dropped so the caller can raise an owner-facing notice. Never silently
@@ -210,10 +243,7 @@ pub struct RejectedAction {
 fn reject_agent_main(actions: &mut Vec<ScheduledAction>) -> Vec<RejectedAction> {
     let mut rejected = Vec::new();
     actions.retain(|action| {
-        let uses_main = action
-            .agent
-            .as_deref()
-            .is_some_and(|a| a.eq_ignore_ascii_case("main"));
+        let uses_main = uses_removed_main_routing(action);
         if uses_main {
             tracing::error!(
                 action = %action.name,
@@ -324,6 +354,46 @@ mod tests {
             "missing file should report no rejections"
         );
         assert!(moved_aside.is_none(), "missing file was never corrupt");
+    }
+
+    #[tokio::test]
+    async fn read_pending_returns_what_load_would_keep_and_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scheduled_actions.json");
+        assert!(
+            ActionStore::read_pending(&path).await.unwrap().is_empty(),
+            "a missing file has no actions"
+        );
+
+        let mut legacy = make_action("action-00000002", 120);
+        legacy.agent = Some("MAIN".to_string());
+        let (mut store, _, _) = ActionStore::load(&path).await.unwrap();
+        store.add(make_action("action-00000001", 60));
+        store.add(legacy);
+        store.save().await.unwrap();
+
+        let pending = ActionStore::read_pending(&path).await.unwrap();
+        assert_eq!(
+            pending.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
+            ["action-00000001"],
+            "the action loading would drop is left out"
+        );
+
+        std::fs::write(&path, "{ not json").unwrap();
+        let err = ActionStore::read_pending(&path).await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("scheduled_actions.json"),
+            "{err:#}"
+        );
+        assert!(
+            std::fs::read_to_string(&path).unwrap() == "{ not json",
+            "a corrupt file stays where it is"
+        );
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "nothing was moved aside"
+        );
     }
 
     #[tokio::test]

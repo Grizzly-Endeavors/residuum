@@ -462,7 +462,9 @@ async fn scan(
         .collect())
 }
 
-async fn count_unread(agent: &str, agent_dir: &Path) -> u32 {
+/// How many active items in the agent's inbox the user hasn't opened. An
+/// inbox that can't be read counts as none and is logged.
+pub(crate) async fn count_unread(agent: &str, agent_dir: &Path) -> u32 {
     let (dir, _) = InboxStatus::Active.dirs(&WorkspaceLayout::new(agent_dir));
     match crate::inbox::list_items_or_empty(&dir).await {
         Ok(items) => {

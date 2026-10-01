@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::util::FatalError;
 
+use super::constants::DEFAULT_PULSE_ENABLED;
 use super::tolerant::parse_tolerating_unknown_keys;
 use super::{Config, HubConfig};
 use super::{bootstrap, deserialize, resolve};
@@ -125,6 +126,52 @@ impl Config {
         )
         .map_err(FatalError::Config)?;
         Ok(())
+    }
+
+    /// Whether the pulse system is on in the `config.toml` of the agent at
+    /// `agent_dir`, read without resolving the rest of the configuration.
+    ///
+    /// A missing file, or one with no `[pulse]` setting, takes the default.
+    /// What `from_file_and_env` makes of every other key does not matter
+    /// here, so an unknown key is not a failure.
+    ///
+    /// # Errors
+    /// Returns `FatalError::Config` when the file exists but cannot be read,
+    /// is not valid TOML, or gives `[pulse] enabled` a value that is not true
+    /// or false.
+    pub fn pulse_enabled_at(agent_dir: &Path) -> Result<bool, FatalError> {
+        #[derive(serde::Deserialize)]
+        struct PulseSwitch {
+            pulse: Option<PulseSection>,
+        }
+        #[derive(serde::Deserialize)]
+        struct PulseSection {
+            enabled: Option<bool>,
+        }
+
+        let config_path = agent_dir.join("config").join("config.toml");
+        let contents = match std::fs::read_to_string(&config_path) {
+            Ok(contents) => contents,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(DEFAULT_PULSE_ENABLED);
+            }
+            Err(e) => {
+                return Err(FatalError::Config(format!(
+                    "failed to read config at {}: {e}",
+                    config_path.display()
+                )));
+            }
+        };
+        let switch: PulseSwitch = toml::from_str(&contents).map_err(|e| {
+            FatalError::Config(format!(
+                "failed to parse config at {}: {e}",
+                config_path.display()
+            ))
+        })?;
+        Ok(switch
+            .pulse
+            .and_then(|pulse| pulse.enabled)
+            .unwrap_or(DEFAULT_PULSE_ENABLED))
     }
 
     /// Validate a TOML string as an agent's `config.toml` without saving it.
@@ -377,6 +424,7 @@ mod tests {
             a2a: super::super::HubA2aConfig::default(),
             tracing: super::super::TracingConfig::default(),
             background: super::super::HubBackgroundConfig::default(),
+            push: super::super::HubPushConfig::default(),
             config_dir: std::env::temp_dir().join("residuum-test-load-hub"),
             load_notices: Vec::new(),
         }
@@ -627,5 +675,47 @@ main = "my-provider/claude-sonnet-4-6"
         let cfg = Config::load_agent_at(&agent_dir, &test_hub()).unwrap();
         assert_eq!(cfg.idle.timeout, std::time::Duration::from_mins(15));
         assert_eq!(cfg.idle.idle_channel.as_deref(), Some("telegram"));
+    }
+
+    #[test]
+    fn pulse_enabled_at_reads_the_switch_and_defaults_to_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases = [
+            ("", true),
+            ("[pulse]\n", true),
+            ("[pulse]\nenabled = false\n", false),
+            ("[pulse]\nenabled = true\n", true),
+            ("future_setting = 1\n[pulse]\nenabled = false\n", false),
+        ];
+        for (n, (config, expected)) in cases.into_iter().enumerate() {
+            let agent_dir = write_agent(dir.path(), &format!("agent{n}"), config, VALID_PROVIDERS);
+            assert_eq!(
+                Config::pulse_enabled_at(&agent_dir).unwrap(),
+                expected,
+                "{config:?}"
+            );
+        }
+
+        let bare = dir.path().join("bare");
+        std::fs::create_dir_all(&bare).unwrap();
+        assert!(
+            Config::pulse_enabled_at(&bare).unwrap(),
+            "an agent with no config file takes the default"
+        );
+    }
+
+    #[test]
+    fn pulse_enabled_at_fails_for_a_config_that_cannot_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        for (n, config) in ["[pulse\nenabled = ", "[pulse]\nenabled = \"yes\"\n"]
+            .into_iter()
+            .enumerate()
+        {
+            let agent_dir = write_agent(dir.path(), &format!("agent{n}"), config, VALID_PROVIDERS);
+            let err = Config::pulse_enabled_at(&agent_dir)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("config.toml"), "{err}");
+        }
     }
 }

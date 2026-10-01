@@ -68,7 +68,7 @@ The `autostart` and `a2a_visibility` an agent's summary reports come from the la
 
 ## Hub config reloads
 
-`hub/config.toml` is watched. A change is applied where the hub owns it: a new `[gateway]` address rebinds the HTTP server (a failed bind keeps the current server), `[cloud]` restarts the tunnel (a changed `[a2a] enabled` is passed to the relay's agent list too), `[tracing]` updates the tracing service and the log level, and `[a2a]` restarts the A2A listener. Every running agent then reloads against the new hub config for what it reads from it (the timezone, its A2A card, and the hop limits).
+`hub/config.toml` is watched. A change is applied where the hub owns it: a new `[gateway]` address rebinds the HTTP server (a failed bind keeps the current server), `[cloud]` restarts the tunnel (a changed `[a2a] enabled` is passed to the relay's agent list too), `[tracing]` updates the tracing service and the log level, `[a2a]` restarts the A2A listener, and `[push]` changes the contact the next push is signed with. Every running agent then reloads against the new hub config for what it reads from it (the timezone, its A2A card, and the hop limits).
 
 Every reload attempt ends with a `hub_config_reloaded` event, published beside the `notice` that tells the user how it went. `ok` is false when the file couldn't be loaded, in which case the hub keeps its previous config and the notice gives the reason. `changed` is true when the loaded config differs from the one the hub was running; a reload that found nothing to apply sends `ok: true, changed: false` and no notice. `message` is the text of the notice, or `null` when there is none.
 
@@ -76,7 +76,7 @@ The hub's reload queue carries two signals. `Hub` (from the config watcher, hub 
 
 ## Activity
 
-The host tracks two things per agent for the switcher: `busy`, true while a main turn runs, with `busy_since`, when that turn began, and `unread`, the number of main-conversation replies published while no web client was connected to that agent's `/ws`. Connecting a client resets `unread` to zero. Changes are published on the hub bus as `agent_activity` events, which the hub WebSocket (`/api/hub/ws`) forwards. A change in activity is never an `agent_state` event. The snapshot a hub WebSocket connection starts with, and `GET /api/hub/agents`, carry every agent's current activity, so a client that connects mid-turn knows which agents are busy and since when.
+The host tracks two things per agent for the switcher: `busy`, true while a main turn runs, with `busy_since`, when that turn began, and `unread`, the number of main-conversation replies published while no web client was connected to that agent's `/ws`. Connecting a client resets `unread` to zero. A socket opened through the artifacts origin by a workbench page is not a client, so it neither resets `unread` nor counts as connected (see [workbench.md](workbench.md#api-forwarding)). Changes are published on the hub bus as `agent_activity` events, which the hub WebSocket (`/api/hub/ws`) forwards. A change in activity is never an `agent_state` event. The snapshot a hub WebSocket connection starts with, and `GET /api/hub/agents`, carry every agent's current activity, so a client that connects mid-turn knows which agents are busy and since when.
 
 ## Watching running agents
 
@@ -98,7 +98,7 @@ Every session event, lifecycle or turn (tool calls and responses included), is a
 
 **Turn hook.** The agent runtime calls its activity tracker exactly once when a main turn ends, whatever the outcome, after the turn's replies are published and counted as unread. The hook puts the turn on the same feed: the user's message text, if a user started the turn; the last reply text, if there was one; the time; whether the turn had `user` or `background` visibility; and whether any client had the agent's WebSocket open. Empty text counts as no text. Unread counting is unchanged.
 
-The changes themselves are not exposed over HTTP or the hub WebSocket. The [team event log](#team-event-log) reads them and is.
+The changes themselves are not exposed over HTTP or the hub WebSocket. The [team event log](#team-event-log) and the [team overview](#team-overview) read them and are.
 
 ## Team event log
 
@@ -124,6 +124,35 @@ When the log is full, recording a new entry evicts the oldest entry that is not 
 A recorder reads the hub bus and the feed of agent changes (see [Watching running agents](#watching-running-agents)) and writes the entries. The hub starts it before the startup notices and before any agent starts, because neither source replays. The two sources are separate streams, so entries from one can interleave with entries from the other in an order that differs from the order things happened. A slow reader of the hub bus can lose events once it falls 256 behind, and the recorder logs a warning when it does. A session's end is worded from what the recorder saw when that run started, so a run it never saw start records nothing and is logged at `debug`.
 
 The log is read with `GET /api/hub/events`, and each new entry is sent on the hub WebSocket as `team_event`, both described in [Hub HTTP Surface](hub-http.md#team-events).
+
+## Team overview
+
+The hub keeps what Home shows about each agent beyond its state, activity and summary, and tells clients as it changes. An agent's **overview** is `{ name, last_message, live_sessions, upcoming, inbox_unread, outbound_problems }`. Nothing about it is stored: each part is read from where it is kept, and the hub holds only what it last told clients.
+
+**`last_message`** is the newest message of the agent's main conversation that has `user` visibility and text, from the user or the agent. An assistant message that only calls tools has no text and is passed over, and a background turn is not part of it. It is `{ role, preview, at, at_precision }`, or `null` when there is none.
+- `preview` is the text as plain text on one line: Markdown syntax removed (links and images keep their text, code keeps its characters, raw HTML goes), every run of whitespace one space, and cut to at most 200 characters, the `…` that marks a cut included. A message with nothing to show once stripped is passed over too.
+- `at` is RFC 3339 with the offset of the hub's timezone. `at_precision` is `minute`, or `day` for a message read from an episode, which keeps the date and not the time; `at` is then the start of that day.
+- A running agent's comes from the turn hook, for each main turn with `user` visibility: its reply when that has text, otherwise what the user said. Until a turn ends it is read from disk as a stopped agent's is, so it starts from what the agent's history held when it started.
+- A stopped, starting or failed agent's is read from its recent history on disk. When that holds no such message, it is the newest message of the newest main-conversation episode that has one. A session's episode is not the main conversation, and an episode keeps neither who saw each message nor its time, so every user or assistant message in it counts. A history or episode file that can't be read is logged at `warn` and read past.
+
+**`live_sessions`** are the session runs in the agent's session registry, oldest first, each `{ address, run_id, category, source_label, purpose, state, started_at }`. It is empty for an agent that isn't running, whatever its registry still holds.
+
+**`inbox_unread`** is how many items in the agent's active user inbox the user hasn't opened, counted from its files whatever state the agent is in. An inbox that can't be read counts as none and is logged at `warn`.
+
+**`upcoming`** are the next runs of the agent's pulses and one-off scheduled actions, soonest first and at most three, each `{ kind, name, at }` with `kind` `pulse` or `action` and `at` an RFC 3339 time with the offset of the hub's timezone. They are read from the agent's files whatever state it is in, so Home can say that a run won't happen while the agent is stopped.
+- A pulse's time is the first moment at or after the later of now and the end of its `schedule` since its last run (from `pulse_state.json`) that falls inside its `active_hours`. A pulse that has never run counts from now. A pulse that is due already is told at the start of the current minute, because the scheduler decides once a minute. A pulse that is disabled, whose schedule or active hours can't be read, or whose active hours never open is left out, and so is every pulse when the agent's `[pulse] enabled` is `false`. The Scheduled view's `next_fire_at` for a pulse is the same calculation (see [heartbeats.md](heartbeats.md#scheduled-view)).
+- An action's time is the time it was set for. An action that is overdue (its agent was stopped when it came due) keeps that time. Runs at the same moment list pulses before actions.
+- An agent whose `config.toml` can't be read lists no runs, because the file is what says whether its pulses run. A `scheduled_actions.json` that can't be read costs only the actions. Each is logged at `warn` once for as long as it stays unreadable, and noted when it reads again. A `HEARTBEAT.yml` with a problem lists the pulses that loaded; the agent's own scheduler reports the problem.
+
+**`outbound_problems`** are the open tasks the agent sent to remote agents (see [a2a.md](a2a.md)) whose current unreachable streak has passed the tracker's notice threshold of 10 minutes, the longest unreachable first, each `{ task_id, remote_agent, status_text, unreachable_since }`. `status_text` is the last status the remote agent reported, or `null`. A task that answers again, finishes, or is stopped is no longer one. They are read from the agent's `a2a/outbound.json` and are empty for an agent that isn't running, because nothing watches the tasks of one that isn't. A file that can't be read is logged at `warn` once and counts as no problems.
+
+A **tracker** reads the hub bus and the feed of agent changes (see [Watching running agents](#watching-running-agents)) and marks the part of an agent's overview that a change may have affected: session changes mark `live_sessions`; `user_inbox_added` or a change to the user inbox's files marks `inbox_unread`; a main turn with `user` visibility sets `last_message`; a change to `scheduled_actions.json`, `HEARTBEAT.yml`, `pulse_state.json` or a file in the agent's `config/` directory marks `upcoming`; an outbound task change marks `outbound_problems`; and a resync, or any change to the agent's state, marks every part. The hub's own inbox actions (`PUT`, `POST .../archive` and `POST .../restore` under `/api/hub/inbox/`) mark that agent's `inbox_unread`, whatever its state, since nothing watches a stopped agent's files. Answering a request for the overview counts every agent's inbox again and reads a stopped agent's parts from its files, so a file placed by hand in a stopped agent's inbox, or an edit to its schedule, shows up then. The hub starts the tracker before the startup notices and before any agent starts, because neither source replays.
+
+An agent's overview is sent to clients as an `agent_overview` frame carrying the whole overview, whenever any of it differs from what clients were last told. Changes are gathered: the first change after a frame starts a one-second wait, and the frame that ends it shows the agent as it is then. An agent therefore gets at most one frame per second, and its last state is always sent. A request that finds an agent differing from what clients were told starts the same wait. A created or restored agent is sent at once, and a deleted agent gets no frame after its deletion. A tracker that falls 256 events behind the hub bus logs a warning and reads every agent again.
+
+A task's streak passing the notice threshold is announced by the outbound task tracker on its next failed poll, which can be a minute after the threshold. The overview does not wait for that: when it reads an agent's outbound tasks it also notes when the next streak will pass the threshold, and reads them again then, so the problem appears at the threshold and goes out in the next frame.
+
+The overview is read with `GET /api/hub/overview` and sent on the hub WebSocket as `agent_overview`, both described in [Hub HTTP Surface](hub-http.md#team-overview).
 
 ## Hub bus events
 

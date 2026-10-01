@@ -14,7 +14,7 @@ The workbench is the team's, shared by every agent, and lives in `team/workbench
 
 ## Procedure
 
-1. **Pick a name.** Lowercase letters, digits, and single hyphens, at most 64 characters: `pricing-explorer`, `sleep-chart`. Any other name is ignored by the workbench. To change an existing artifact, `read_file` the files you'll change (for a folder artifact, start with `index.html`) and edit them in place.
+1. **Pick a name.** Lowercase letters, digits, and single hyphens, at most 64 characters: `pricing-explorer`, `sleep-chart`. `api` is reserved. Any other name is ignored by the workbench. To change an existing artifact, `read_file` the files you'll change (for a folder artifact, start with `index.html`) and edit them in place.
 
 2. **Pick a shape.**
    - **Page:** `team/workbench/<name>.html`, everything inline. Use it for anything that fits comfortably in one file.
