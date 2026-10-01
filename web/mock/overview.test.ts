@@ -1,8 +1,17 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { OutboundA2aTaskSummary, PulseInfo } from "../src/lib/generated/protocol";
 import type { AgentOverview, OverviewResponse } from "../src/lib/hub-types";
 import { MOCK_DETERMINISTIC_BOOT_ID } from "./constants";
-import { createMockEnv } from "./env";
-import { COALESCE_WINDOW_MS, PREVIEW_CHARS, createOverview, plainPreview } from "./overview";
+import { createMockEnv, type MockEnv } from "./env";
+import {
+  COALESCE_WINDOW_MS,
+  OUTBOUND_NOTICE_MS,
+  PREVIEW_CHARS,
+  createOverview,
+  plainPreview,
+} from "./overview";
+import type { MockPulse } from "./scheduled";
+import type { MockAgent, MockHub } from "./state";
 import {
   createStubHub,
   fetchJson,
@@ -52,7 +61,7 @@ describe("a preview", () => {
 });
 
 describe("the overview of a stub hub", () => {
-  it("is the agents by name, each with nothing scheduled and no outbound problems", () => {
+  it("is the agents by name, a stopped one that never ran with nothing scheduled and no outbound problems", () => {
     const hub = createStubHub(createMockEnv({ deterministic: true }));
     hub.createAgent("scout");
     hub.createAgent("atlas", { runState: "stopped" });
@@ -61,10 +70,9 @@ describe("the overview of a stub hub", () => {
 
     expect(bootId).toBe("stub-boot");
     expect(agents.map((agent) => agent.name)).toEqual(["atlas", "scout"]);
-    for (const agent of agents) {
-      expect(agent.upcoming, agent.name).toEqual([]);
-      expect(agent.outbound_problems, agent.name).toEqual([]);
-    }
+    const atlas = agents.find((agent) => agent.name === "atlas");
+    expect(atlas?.upcoming).toEqual([]);
+    expect(atlas?.outbound_problems).toEqual([]);
   });
 
   it("gathers a burst of changes into one frame that shows the last state", async () => {
@@ -95,6 +103,256 @@ describe("the overview of a stub hub", () => {
 
     expect(frames.map((frame) => frame.inbox_unread)).toEqual([before + 5]);
     expect(COALESCE_WINDOW_MS).toBe(1000);
+  });
+});
+
+/**
+ * A stub hub on a fixed clock at noon UTC on 2026-03-14, which is 08:00 in the
+ * hub's New York zone, with the running agent `scout` and its sample schedule
+ * (`createScheduled`) and the stopped `atlas`, which has none.
+ */
+function stubHub(): { env: MockEnv; hub: MockHub; scout: MockAgent; atlas: MockAgent } {
+  const env = createMockEnv({ deterministic: true });
+  const hub = createStubHub(env);
+  const scout = hub.createAgent("scout");
+  const atlas = hub.createAgent("atlas", { runState: "stopped" });
+  return { env, hub, scout, atlas };
+}
+
+function overviewIn(hub: MockHub, name: string): AgentOverview {
+  const found = hub.overview.response().agents.find((agent) => agent.name === name);
+  if (found === undefined) throw new Error(`the overview has no ${name}`);
+  return found;
+}
+
+/** What `upcoming` of the agent says, as `kind:name@at` for each run. */
+function upcomingIn(hub: MockHub, name: string): string[] {
+  return overviewIn(hub, name).upcoming.map((run) => `${run.kind}:${run.name}@${run.at}`);
+}
+
+function pulseOf(agent: MockAgent, name: string): MockPulse {
+  const pulse = agent.state.scheduled.pulses.find((candidate) => candidate.name === name);
+  if (pulse === undefined) throw new Error(`${agent.name} has no pulse ${name}`);
+  return pulse;
+}
+
+describe("the upcoming runs of an overview", () => {
+  it("lists the next three runs, pulses and actions together, soonest first, in the hub's timezone", () => {
+    const { env, hub, scout } = stubHub();
+
+    expect(upcomingIn(hub, "scout")).toEqual([
+      "pulse:inbox_check@2026-03-14T09:00:00-04:00",
+      "action:weekly_digest@2026-03-14T11:00:00-04:00",
+      "action:review_open_prs@2026-03-15T10:00:00-04:00",
+    ]);
+
+    scout.state.scheduled.actions.push({
+      id: "act-new",
+      name: "stand_up",
+      run_at: env.clock.isoIn(30 * 60_000),
+      agent: null,
+      model_tier: null,
+    });
+    expect(upcomingIn(hub, "scout")).toEqual([
+      "action:stand_up@2026-03-14T08:30:00-04:00",
+      "pulse:inbox_check@2026-03-14T09:00:00-04:00",
+      "action:weekly_digest@2026-03-14T11:00:00-04:00",
+    ]);
+  });
+
+  it("lists pulses before actions that run at the same moment", () => {
+    const { env, hub, scout } = stubHub();
+    scout.state.scheduled.actions = [
+      {
+        id: "act-same",
+        name: "same_time",
+        run_at: "2026-03-14T13:00:00.000Z",
+        agent: null,
+        model_tier: null,
+      },
+    ];
+    expect(env.clock.iso()).toBe("2026-03-14T12:00:00.000Z");
+
+    expect(upcomingIn(hub, "scout")).toEqual([
+      "pulse:inbox_check@2026-03-14T09:00:00-04:00",
+      "action:same_time@2026-03-14T09:00:00-04:00",
+    ]);
+  });
+
+  it("pushes a run that falls after the active hours close to when they open again", () => {
+    const { hub, scout } = stubHub();
+    // The last run was at 07:00 and the schedule is two hours: 09:00 is when the window closes.
+    pulseOf(scout, "inbox_check").activeHours = "08:00-09:00";
+
+    expect(upcomingIn(hub, "scout")).toEqual([
+      "action:weekly_digest@2026-03-14T11:00:00-04:00",
+      "pulse:inbox_check@2026-03-15T08:00:00-04:00",
+      "action:review_open_prs@2026-03-15T10:00:00-04:00",
+    ]);
+  });
+
+  it("reads a pulse that has never run as due at the start of the current minute", () => {
+    const { env, hub, scout } = stubHub();
+    pulseOf(scout, "inbox_check").lastRunAt = null;
+    expect(upcomingIn(hub, "scout")[0]).toBe("pulse:inbox_check@2026-03-14T08:00:00-04:00");
+
+    env.clock.advance(37_000);
+
+    expect(upcomingIn(hub, "scout")[0]).toBe("pulse:inbox_check@2026-03-14T08:00:00-04:00");
+  });
+
+  it("leaves out a pulse that is disabled, whose schedule or active hours can't be read, or whose active hours never open", () => {
+    for (const change of [
+      { enabled: false },
+      { schedule: "soon" },
+      { schedule: null },
+      { activeHours: "eight to nine" },
+      { activeHours: "25:00-26:00" },
+      { activeHours: "09:00-09:00" },
+    ] satisfies Array<Partial<MockPulse>>) {
+      const { hub, scout } = stubHub();
+      Object.assign(pulseOf(scout, "inbox_check"), change);
+
+      expect(
+        overviewIn(hub, "scout").upcoming.filter((run) => run.kind === "pulse"),
+        JSON.stringify(change),
+      ).toEqual([]);
+    }
+  });
+
+  it("opens an overnight window in the evening of the same day", () => {
+    const { hub, scout } = stubHub();
+    // 08:00 in New York, and the window runs from 22:00 to 06:00.
+    Object.assign(pulseOf(scout, "inbox_check"), { activeHours: "22:00-06:00", lastRunAt: null });
+
+    expect(upcomingIn(hub, "scout")[1]).toBe("pulse:inbox_check@2026-03-14T22:00:00-04:00");
+  });
+
+  it("lists a stopped agent's runs too, an overdue action at the time it was set for", () => {
+    const { env, hub, atlas } = stubHub();
+    atlas.state.scheduled.actions.push({
+      id: "act-overdue",
+      name: "missed_while_stopped",
+      run_at: env.clock.isoAgo(2 * 3_600_000),
+      agent: null,
+      model_tier: null,
+    });
+
+    expect(upcomingIn(hub, "atlas")).toEqual([
+      "action:missed_while_stopped@2026-03-14T06:00:00-04:00",
+    ]);
+  });
+});
+
+describe("the outbound problems of an overview", () => {
+  const task = (
+    id: string,
+    remote: string,
+    unreachableForMs: number | null,
+    env: MockEnv,
+  ): OutboundA2aTaskSummary => ({
+    task_id: id,
+    agent: remote,
+    sender_address: "main",
+    state: "working",
+    status_text: null,
+    open: true,
+    started_at: env.clock.isoAgo(3 * 3_600_000),
+    unreachable_since: unreachableForMs === null ? null : env.clock.isoAgo(unreachableForMs),
+  });
+
+  it("lists the sample task that has been unreachable past the threshold, and not the one that answers", () => {
+    const { env, hub } = stubHub();
+
+    expect(overviewIn(hub, "scout").outbound_problems).toEqual([
+      {
+        task_id: "task-19c2",
+        remote_agent: "laptop",
+        status_text: null,
+        unreachable_since: env.clock.isoAgo(17 * 60_000),
+      },
+    ]);
+  });
+
+  it("lists the longest unreachable task first, and leaves out a task still short of the threshold or closed", () => {
+    const { env, hub, scout } = stubHub();
+    const closed = {
+      ...task("closed", "desktop", 5 * 3_600_000, env),
+      open: false,
+      state: "canceled",
+    };
+    scout.state.outboundTasks = [
+      task("recent", "phone", 12 * 60_000, env),
+      task("long", "laptop", 3 * 3_600_000, env),
+      task("reachable", "lab", null, env),
+      task("short", "nas", 2 * 60_000, env),
+      closed,
+    ];
+
+    expect(overviewIn(hub, "scout").outbound_problems.map((problem) => problem.task_id)).toEqual([
+      "long",
+      "recent",
+    ]);
+  });
+
+  it("is empty for an agent that is not running", () => {
+    const { env, hub, atlas } = stubHub();
+    atlas.state.outboundTasks = [task("stuck", "laptop", 3_600_000, env)];
+
+    expect(overviewIn(hub, "atlas").outbound_problems).toEqual([]);
+  });
+
+  describe("when a streak passes the threshold with nothing to announce it", () => {
+    const unreachableUntilNotice = (env: MockEnv, aheadMs: number): OutboundA2aTaskSummary => ({
+      ...task("task-1", "laptop", null, env),
+      unreachable_since: new Date(env.clock.now() - OUTBOUND_NOTICE_MS + aheadMs).toISOString(),
+    });
+
+    /** An overview over a hub whose `scout` has just that task, and the frames it sends. */
+    function watching(
+      env: MockEnv,
+      aheadMs: number,
+    ): { problems: () => number[]; frames: AgentOverview[] } {
+      const hub = createStubHub(env);
+      const scout = hub.createAgent("scout");
+      scout.state.outboundTasks = [unreachableUntilNotice(env, aheadMs)];
+      const frames: AgentOverview[] = [];
+      const overview = createOverview(env, "boot", hub.agents, (frame) => {
+        if (frame.type === "agent_overview") frames.push(frame.overview);
+      });
+      return {
+        problems: () => overview.response().agents.map((agent) => agent.outbound_problems.length),
+        frames,
+      };
+    }
+
+    it("sends the agent's overview once the clock reaches the threshold", async () => {
+      const env = createMockEnv({ delayScale: 1 });
+      const { problems, frames } = watching(env, 150);
+      expect(problems()).toEqual([0]);
+
+      await vi.waitFor(
+        () => {
+          expect(frames).toHaveLength(1);
+        },
+        { timeout: 4000 },
+      );
+
+      expect(frames[0]?.outbound_problems.map((problem) => problem.task_id)).toEqual(["task-1"]);
+      env.reset();
+    });
+
+    it("waits for a clock that has not got there, and keeps no timer spinning", async () => {
+      const env = createMockEnv({ deterministic: true });
+      const { problems, frames } = watching(env, 150);
+      expect(problems()).toEqual([0]);
+
+      await new Promise((done) => setTimeout(done, 50));
+      expect(frames).toEqual([]);
+
+      env.clock.advance(200);
+      expect(problems()).toEqual([1]);
+    });
   });
 });
 
@@ -286,5 +544,60 @@ describe("the overview routes", () => {
 
     expect((await overviewOf("drifter")).inbox_unread).toBe(1);
     expect((await nextFrame("drifter")).inbox_unread).toBe(1);
+  });
+
+  it("gives a pulse the same next time as the Scheduled view does", async () => {
+    const pulses = (await fetchJson(`${mock.baseUrl}/api/agents/scout/scheduled/pulses`))
+      .body as PulseInfo[];
+    const listed = (await overviewOf("scout")).upcoming.filter((run) => run.kind === "pulse");
+
+    expect(listed.length).toBeGreaterThan(0);
+    for (const run of listed) {
+      const pulse = pulses.find((candidate) => candidate.name === run.name);
+      expect(Date.parse(run.at), run.name).toBe(Date.parse(pulse?.next_fire_at ?? ""));
+    }
+    expect(
+      pulses.filter((pulse) => pulse.next_fire_at !== null).map((pulse) => pulse.name),
+    ).toEqual(listed.map((run) => run.name));
+  });
+
+  it("sends an agent's runs again when a pulse is switched on or an action is cancelled", async () => {
+    const names = (overview: AgentOverview): string[] => overview.upcoming.map((run) => run.name);
+    expect(names(await overviewOf("scout"))).toEqual([
+      "inbox_check",
+      "weekly_digest",
+      "review_open_prs",
+    ]);
+
+    await fetchJson(`${mock.baseUrl}/api/agents/scout/scheduled/pulses/nightly_review/enabled`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: true }),
+    });
+    const switchedOn = await nextFrame("scout", (overview) =>
+      names(overview).includes("nightly_review"),
+    );
+    expect(names(switchedOn)).toEqual(["inbox_check", "weekly_digest", "nightly_review"]);
+
+    await fetchJson(`${mock.baseUrl}/api/agents/scout/scheduled/actions/act-7f3a2c`, {
+      method: "DELETE",
+    });
+    const cancelled = await nextFrame(
+      "scout",
+      (overview) => !names(overview).includes("weekly_digest"),
+    );
+    expect(names(cancelled)).toEqual(["inbox_check", "nightly_review", "review_open_prs"]);
+  });
+
+  it("clears an outbound problem when the user stops watching the task", async () => {
+    expect((await overviewOf("scout")).outbound_problems.map((problem) => problem.task_id)).toEqual(
+      ["task-19c2"],
+    );
+
+    const stopped = await post("/api/agents/scout/a2a/outbound/task-19c2/stop-watching");
+    expect(stopped.status).toBe(200);
+
+    const frame = await nextFrame("scout", (overview) => overview.outbound_problems.length === 0);
+    expect(frame.outbound_problems).toEqual([]);
   });
 });

@@ -2,14 +2,19 @@ import type {
   AgentOverview,
   HubServerMessage,
   LastMessage,
+  OutboundProblem,
   OverviewResponse,
+  UpcomingKind,
+  UpcomingRun,
 } from "../src/lib/hub-types";
 import { chatHistorySegment } from "./chat";
 import type { MockEnv } from "./env";
 import { json } from "./http";
 import type { Route } from "./routes";
+import { nextPulseRun } from "./scheduled";
 import type { MockAgent } from "./state";
 import { byName } from "./util";
+import { rfc3339InZone } from "./zone";
 
 /**
  * The team overview of the hub, `src/hub/overview/`: what Home shows about
@@ -24,6 +29,15 @@ export const COALESCE_WINDOW_MS = 1000;
 
 /** The most characters a preview holds, the ellipsis that marks a cut included. */
 export const PREVIEW_CHARS = 200;
+
+/** The most runs an overview lists as upcoming: `MOST_UPCOMING` in `src/hub/overview/upcoming.rs`. */
+export const MOST_UPCOMING = 3;
+
+/** How long an agent must stay unreachable before its task is a problem, in milliseconds: `UNREACHABLE_NOTICE_AFTER` in `src/a2a/client/tracker.rs`. */
+export const OUTBOUND_NOTICE_MS = 600_000;
+
+/** Added to the wait for a task to pass the notice threshold, so the clock has passed it when the wait ends. */
+const NOTICE_SLACK_MS = 5;
 
 export interface MockOverview {
   /** Every agent's overview by name, like `GET /api/hub/overview`. */
@@ -118,8 +132,75 @@ function lastMessage(agent: MockAgent): LastMessage | null {
   }
 }
 
-/** The agent's overview now, read from the data its routes serve. */
-function overviewOf(agent: MockAgent): AgentOverview {
+/** Runs at the same moment list pulses before actions. */
+const KIND_ORDER: Record<UpcomingKind, number> = { pulse: 0, action: 1 };
+
+/**
+ * The agent's next runs at `nowMs`, soonest first: its pulses (see
+ * `nextPulseRun`) and its pending actions, whatever state it is in. An
+ * overdue action keeps the time it was set for.
+ */
+function upcomingOf(agent: MockAgent, nowMs: number): UpcomingRun[] {
+  const { pulses, actions } = agent.state.scheduled;
+  const runs: Array<{ at: number; kind: UpcomingKind; name: string }> = [
+    ...pulses.flatMap((pulse) => {
+      const at = nextPulseRun(pulse, nowMs);
+      return at === null ? [] : [{ at, kind: "pulse" as const, name: pulse.name }];
+    }),
+    ...actions.map((action) => ({
+      at: Date.parse(action.run_at),
+      kind: "action" as const,
+      name: action.name,
+    })),
+  ];
+  runs.sort(
+    (a, b) => a.at - b.at || KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || byName(a.name, b.name),
+  );
+  return runs
+    .slice(0, MOST_UPCOMING)
+    .map(({ at, kind, name }) => ({ kind, name, at: rfc3339InZone(at) }));
+}
+
+/** When the open task's unreachable streak passes the notice threshold, or `null` when it is not in one. */
+function noticeAt(task: MockAgent["state"]["outboundTasks"][number]): number | null {
+  if (!task.open || task.unreachable_since === null) return null;
+  return Date.parse(task.unreachable_since) + OUTBOUND_NOTICE_MS;
+}
+
+/**
+ * The open tasks of a running agent whose unreachable streak has passed the
+ * notice threshold at `nowMs`, the longest unreachable first. A task that is
+ * not in a streak, or is closed, is not one, and nothing watches the tasks of
+ * an agent that is not running.
+ */
+function outboundProblemsOf(agent: MockAgent, nowMs: number): OutboundProblem[] {
+  if (agent.runState !== "running") return [];
+  return agent.state.outboundTasks
+    .filter((task) => (noticeAt(task) ?? Infinity) <= nowMs)
+    .sort(
+      (a, b) =>
+        byName(a.unreachable_since ?? "", b.unreachable_since ?? "") ||
+        byName(a.task_id, b.task_id),
+    )
+    .map((task) => ({
+      task_id: task.task_id,
+      remote_agent: task.agent,
+      status_text: task.status_text,
+      unreachable_since: task.unreachable_since ?? "",
+    }));
+}
+
+/** When the next unreachable streak of a running agent's tasks passes the notice threshold after `nowMs`, if one is. */
+function nextNoticeAt(agent: MockAgent, nowMs: number): number | null {
+  if (agent.runState !== "running") return null;
+  const coming = agent.state.outboundTasks
+    .map(noticeAt)
+    .filter((at): at is number => at !== null && at > nowMs);
+  return coming.length === 0 ? null : Math.min(...coming);
+}
+
+/** The agent's overview at `nowMs`, read from the data its routes serve. */
+function overviewOf(agent: MockAgent, nowMs: number): AgentOverview {
   const live =
     agent.runState === "running"
       ? [...agent.state.sessions.live].sort((a, b) => byName(a.started_at, b.started_at))
@@ -136,9 +217,9 @@ function overviewOf(agent: MockAgent): AgentOverview {
       state: session.state,
       started_at: session.started_at,
     })),
-    upcoming: [],
+    upcoming: upcomingOf(agent, nowMs),
     inbox_unread: agent.state.inboxItems.filter((item) => !item.read).length,
-    outbound_problems: [],
+    outbound_problems: outboundProblemsOf(agent, nowMs),
   };
 }
 
@@ -158,12 +239,37 @@ export function createOverview(
   const told = new Map<string, string>();
   /** The cancel of the wait that ends with each agent's next frame. */
   const waiting = new Map<string, () => void>();
+  /** The cancel of the wait for each agent's next unreachable streak to pass the notice threshold. */
+  const noticeWaits = new Map<string, () => void>();
+
+  /**
+   * The agent's overview now. A streak passing the notice threshold is a
+   * change nothing announces, so the wait for the next one is set here, and
+   * ends with the agent's frame. A fixed clock never gets there, and the wait
+   * ends without a change.
+   */
+  function read(agent: MockAgent): AgentOverview {
+    const now = env.clock.now();
+    noticeWaits.get(agent.name)?.();
+    noticeWaits.delete(agent.name);
+    const at = nextNoticeAt(agent, now);
+    if (at !== null) {
+      noticeWaits.set(
+        agent.name,
+        env.after(at - now + NOTICE_SLACK_MS, () => {
+          noticeWaits.delete(agent.name);
+          if (env.clock.now() >= at) changed(agent);
+        }),
+      );
+    }
+    return overviewOf(agent, now);
+  }
 
   /** Send the agent's overview if clients don't have it. */
   function flush(name: string): void {
     const agent = agents.get(name);
     if (agent === undefined) return;
-    const overview = overviewOf(agent);
+    const overview = read(agent);
     const text = JSON.stringify(overview);
     if (told.get(name) === text) return;
     told.set(name, text);
@@ -181,17 +287,19 @@ export function createOverview(
     );
   }
 
-  /** Stop waiting to send the agent's frame. */
+  /** Stop waiting to send the agent's frame, and for its tasks to pass the notice threshold. */
   function stopWaiting(name: string): void {
     waiting.get(name)?.();
     waiting.delete(name);
+    noticeWaits.get(name)?.();
+    noticeWaits.delete(name);
   }
 
   return {
     response: () => {
       const sorted = [...agents.values()].sort((a, b) => byName(a.name, b.name));
       const overviews = sorted.map((agent) => {
-        const overview = overviewOf(agent);
+        const overview = read(agent);
         const known = told.get(agent.name);
         if (known === undefined) told.set(agent.name, JSON.stringify(overview));
         else if (known !== JSON.stringify(overview)) changed(agent);
@@ -220,14 +328,15 @@ export function createOverview(
         if (
           frame.type === "session_started" ||
           frame.type === "session_state_changed" ||
-          frame.type === "session_completed"
+          frame.type === "session_completed" ||
+          frame.type === "session_outbound_a2a_task"
         ) {
           changed(agent);
         }
       };
     },
     begin: () => {
-      for (const name of [...waiting.keys()]) stopWaiting(name);
+      for (const name of [...waiting.keys(), ...noticeWaits.keys()]) stopWaiting(name);
       told.clear();
     },
   };
