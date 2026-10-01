@@ -1,0 +1,110 @@
+<script lang="ts">
+  import { numberOfText, textOfNumber } from "../../lib/settings-bind";
+  import { Button, Disclosure, NumberField, TextField } from "../../lib/ui";
+  import { fieldError, type AllSectionProps } from "./sections";
+  import SettingsGroup from "./SettingsGroup.svelte";
+  import SettingsSection from "./SettingsSection.svelte";
+
+  // General: the timezone every agent shares, and under More options the
+  // address Residuum serves this app on. Both are staged and saved with the
+  // rest of the install-wide settings.
+
+  let { scope, section }: AllSectionProps = $props();
+
+  const uid = $props.id();
+  const zoneListId = `${uid}-zones`;
+  const zoneNames = Intl.supportedValuesOf("timeZone");
+  const deviceZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  function isZoneName(name: string): boolean {
+    try {
+      Intl.DateTimeFormat(undefined, { timeZone: name });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  const zone = $derived(scope.config.timezone.trim());
+  // A flag, not a block: the save is still the server's to refuse.
+  const zoneError = $derived(
+    fieldError(scope, { kind: "config", field: "timezone" }) ??
+      (zone !== "" && !isZoneName(zone)
+        ? "That doesn't look like a timezone name, so Residuum may refuse it. Names look like Europe/Berlin."
+        : undefined),
+  );
+  const bindError = $derived(fieldError(scope, { kind: "config", field: "gateway_bind" }));
+  const portError = $derived(fieldError(scope, { kind: "config", field: "gateway_port" }));
+
+  let moreOpen = $state(false);
+  $effect(() => {
+    if (bindError !== undefined || portError !== undefined) moreOpen = true;
+  });
+</script>
+
+<SettingsSection
+  {scope}
+  {section}
+  title="General"
+  lede="Your timezone, and where Residuum listens. Applies to every agent."
+>
+  <SettingsGroup>
+    <TextField
+      label="Timezone"
+      bind:value={scope.config.timezone}
+      list={zoneListId}
+      placeholder="e.g. America/New_York"
+      autocomplete="off"
+      spellcheck={false}
+      hint="Used for every agent's schedules, quiet hours and timestamps. Changing it later doesn't convert timestamps already stored."
+      error={zoneError}
+    />
+    <datalist id={zoneListId}>
+      {#each zoneNames as name (name)}
+        <option value={name}></option>
+      {/each}
+    </datalist>
+    {#if deviceZone !== "" && zone !== deviceZone}
+      <div>
+        <Button
+          variant="quiet"
+          size="sm"
+          onclick={() => {
+            scope.config.timezone = deviceZone;
+          }}
+        >
+          Use this device's timezone ({deviceZone})
+        </Button>
+      </div>
+    {/if}
+  </SettingsGroup>
+
+  <Disclosure summary="More options" bind:open={moreOpen}>
+    <SettingsGroup
+      title="Where Residuum listens"
+      lede="Saving moves Residuum to the new address straight away, so after changing the port you need to reopen Residuum there."
+    >
+      <TextField
+        label="Bind address"
+        bind:value={scope.config.gateway_bind}
+        placeholder="127.0.0.1"
+        autocomplete="off"
+        spellcheck={false}
+        code
+        hint="127.0.0.1 keeps Residuum on this machine. 0.0.0.0 lets other devices on your network reach it."
+        error={bindError}
+      />
+      <NumberField
+        label="Port"
+        bind:value={
+          () => numberOfText(scope.config.gateway_port),
+          (value) => (scope.config.gateway_port = textOfNumber(value))
+        }
+        placeholder="7700"
+        min={1}
+        max={65535}
+        error={portError}
+      />
+    </SettingsGroup>
+  </Disclosure>
+</SettingsSection>

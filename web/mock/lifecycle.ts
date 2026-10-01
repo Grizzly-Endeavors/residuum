@@ -5,7 +5,8 @@ import type {
   StopAllResponse,
 } from "../src/lib/hub-types";
 import { agentNameProblem } from "./agent-name";
-import { MOCK_CLOUD_STATUS, MOCK_RESIDUUM_VERSION } from "./constants";
+import { cloudStatusOf } from "./cloud";
+import { MOCK_RESIDUUM_VERSION } from "./constants";
 import { json, readJsonObject, stringField, type JsonObject } from "./http";
 import { decodedParam, type Route, type RouteContext } from "./routes";
 import type { MockAgent, MockHub } from "./state";
@@ -140,7 +141,7 @@ function hubStatus(ctx: RouteContext): void {
   json(ctx.res, 200, {
     version: MOCK_RESIDUUM_VERSION,
     uptime_secs: Math.floor(ctx.hub.env.clock.elapsedMs() / 1000),
-    tunnel: MOCK_CLOUD_STATUS,
+    tunnel: cloudStatusOf(ctx.hub.hubState),
     agents: counts,
   } satisfies HubStatusResponse);
 }
