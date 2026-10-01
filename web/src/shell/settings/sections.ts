@@ -11,7 +11,9 @@ import type { Component } from "svelte";
 import type { FieldRef } from "../../lib/settings-fields";
 import type { AgentScopeModel, AllScopeModel } from "../../lib/settings-model.svelte";
 import type { AgentSectionId, AllSectionId } from "../../lib/settings-sections";
+import AgentToAgent from "./AgentToAgent.svelte";
 import CloudSection from "./CloudSection.svelte";
+import ConnectionsSection from "./ConnectionsSection.svelte";
 import DiagnosticsSection from "./DiagnosticsSection.svelte";
 import GeneralSection from "./GeneralSection.svelte";
 import HistorySection from "./HistorySection.svelte";
@@ -20,6 +22,8 @@ import Memory from "./Memory.svelte";
 import RawConfig from "./RawConfig.svelte";
 import Runtime from "./Runtime.svelte";
 import Schedule from "./Schedule.svelte";
+import ToolServers from "./ToolServers.svelte";
+import ToolsSection from "./ToolsSection.svelte";
 import UpdatesSection from "./UpdatesSection.svelte";
 
 export type SettingsScope = AgentScopeModel | AllScopeModel;
@@ -37,6 +41,10 @@ export interface AllSectionProps {
 }
 
 export const AGENT_SECTION_VIEWS: Partial<Record<AgentSectionId, Component<AgentSectionProps>>> = {
+  connections: ConnectionsSection,
+  tools: ToolsSection,
+  servers: ToolServers,
+  a2a: AgentToAgent,
   memory: Memory,
   schedule: Schedule,
   runtime: Runtime,
@@ -57,6 +65,14 @@ export const ALL_SECTION_VIEWS: Partial<Record<AllSectionId, Component<AllSectio
 export function fieldError(scope: SettingsScope, ref: FieldRef): string | undefined {
   const found = scope.fieldDiagnostics(ref);
   return found.length === 0 ? undefined : found.map((problem) => problem.message).join(" ");
+}
+
+/** A `config.toml` field's problems from the last save as one line, for a control's `error`; undefined when it has none. */
+export function configFieldError(
+  scope: SettingsScope,
+  field: Extract<FieldRef, { kind: "config" }>["field"],
+): string | undefined {
+  return fieldError(scope, { kind: "config", field });
 }
 
 /** The scope's name in a sentence: "atlas's settings", or the install-wide ones. */

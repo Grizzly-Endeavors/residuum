@@ -35,7 +35,9 @@ import {
   type JsonObject,
 } from "./http";
 import { decodedParam, type Route, type RouteContext } from "./routes";
+import { MCP_JSON, type MockState } from "./state";
 import { byName } from "./util";
+import { writeFile } from "./workspace-tree";
 import { MOCK_TIMEZONE } from "./zone";
 
 const modelsByProvider: Record<string, Array<{ id: string; name: string }>> = {
@@ -247,32 +249,50 @@ function tomlDocumentRoutes(
   ];
 }
 
+/** The agent's `mcp.json`, or the empty document the backend serves when there is none. */
+function mcpJsonOf(state: MockState): string {
+  return state.workspaceFileContents[MCP_JSON] ?? '{"mcpServers":{}}';
+}
+
+/** Write `mcp.json`, checkpointing the workspace first as the backend does, and answer with the checkpoint for Undo. */
+function writeMcpJson(
+  ctx: RouteContext,
+  content: string,
+  summary: string,
+  result: ValidateResponse = VALID,
+): void {
+  const checkpoint = checkpointBeforeAction(ctx.state, "workspace", summary);
+  writeFile(ctx.state, MCP_JSON, content);
+  json(ctx.res, 200, { ...result, checkpoint_id: checkpoint } satisfies ValidateResponse);
+}
+
 const mcpRoutes: readonly Route[] = [
   {
     method: "GET",
     pattern: "/api/mcp/raw",
     handler: ({ res, state }) => {
-      text(res, 200, state.mcpJson);
+      text(res, 200, mcpJsonOf(state));
     },
   },
   {
     method: "PUT",
     pattern: "/api/mcp/raw",
-    handler: async ({ req, res, state }) => {
-      state.mcpJson = await readBody(req);
-      json(res, 200, validation("json", state.mcpJson));
+    handler: async (ctx) => {
+      // A raw save is always written, with its problems reported.
+      const body = await readBody(ctx.req);
+      writeMcpJson(ctx, body, "raw write mcp.json", validation("json", body));
     },
   },
   {
     method: "PATCH",
     pattern: "/api/mcp/patch",
-    handler: async ({ req, res, state }) => {
-      const diff = await readJsonObject(req);
-      const doc = state.mcpJson.trim() ? parseJsonObject(state.mcpJson) : { mcpServers: {} };
+    handler: async (ctx) => {
+      const diff = await readJsonObject(ctx.req);
+      const raw = mcpJsonOf(ctx.state);
+      const doc = raw.trim() ? parseJsonObject(raw) : { mcpServers: {} };
       applyJsonPatch(doc, diff);
       doc.mcpServers ??= {};
-      state.mcpJson = JSON.stringify(doc, null, 2);
-      json(res, 200, VALID);
+      writeMcpJson(ctx, JSON.stringify(doc, null, 2), "patch mcp.json");
     },
   },
   {
@@ -349,9 +369,7 @@ async function completeSetup({ req, res, hub, state }: RouteContext): Promise<vo
   agent.state.configToml = stringField(body, "config") ?? agent.state.configToml;
   agent.state.providersToml = stringField(body, "providers") ?? agent.state.providersToml;
   const mcpJson = stringField(body, "mcp_json");
-  if (mcpJson) {
-    agent.state.mcpJson = mcpJson;
-  }
+  if (mcpJson) writeFile(agent.state, MCP_JSON, mcpJson);
   state.mode = "running";
   json(res, 200, { valid: true, diagnostics: [] } satisfies ValidateResponse);
 }
@@ -446,16 +464,51 @@ function closeOutboundTask(ctx: RouteContext): void {
 /** The port of the mock's A2A listener. */
 const A2A_PORT = 7702;
 
+/** The cards the mock's remote agents answer with. An agent not here is still being checked. */
+const REMOTE_CARDS: Readonly<Record<string, A2aAgentCard>> = {
+  "research-buddy": {
+    name: "Research Buddy",
+    description: "Digs through papers and reports back with sources.",
+    skills: [{ id: "lit-review", name: "Literature review" }],
+  },
+};
+
+/** The agents `config/a2a.json` lists, as the running agent reports them; none when it doesn't parse, as the loader skips it. */
+function listedRemoteAgents(raw: string): A2aRemoteAgent[] {
+  let agents: JsonObject = {};
+  try {
+    const listed = parseJsonObject(raw).agents;
+    if (typeof listed === "object" && listed !== null) agents = listed as JsonObject;
+  } catch {
+    return [];
+  }
+  return Object.entries(agents).map(([name, entry]) => {
+    const card = REMOTE_CARDS[name] ?? null;
+    const url =
+      typeof entry === "object" && entry !== null
+        ? stringField(entry as JsonObject, "url")
+        : undefined;
+    return {
+      name,
+      url: url ?? "",
+      source: "config",
+      status: card ? "ok" : "pending",
+      error: null,
+      card,
+    };
+  });
+}
+
 const a2aRoutes: readonly Route[] = [
   {
     method: "GET",
     pattern: "/api/a2a/status",
-    handler: ({ res, state }) => {
+    handler: ({ res, state, hub }) => {
       // The mock has no relay and no address of the user's own: the agent is reachable locally.
       json(res, 200, {
         enabled: true,
         port: A2A_PORT,
-        visibility: "public",
+        visibility: hub.agents.get(state.agentName)?.visibility ?? "private",
         public_url: null,
         local_url: `http://127.0.0.1:${A2A_PORT}/agents/${state.agentName}`,
         relay_access: false,
@@ -527,20 +580,9 @@ const a2aRoutes: readonly Route[] = [
   {
     method: "GET",
     pattern: "/api/a2a/agents",
-    handler: ({ res }) => {
+    handler: ({ res, state }) => {
       json(res, 200, [
-        {
-          name: "research-buddy",
-          url: "https://example.com/a2a/research-buddy",
-          source: "config",
-          status: "ok",
-          error: null,
-          card: {
-            name: "Research Buddy",
-            description: "Digs through papers and reports back with sources.",
-            skills: [{ id: "lit-review", name: "Literature review" }],
-          },
-        },
+        ...listedRemoteAgents(state.a2aAgentsJson),
         {
           name: "laptop",
           url: "https://example.com/a2a/laptop",

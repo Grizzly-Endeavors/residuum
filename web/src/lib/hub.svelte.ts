@@ -182,6 +182,11 @@ export class HubStore {
     return this.stopping.includes(name);
   }
 
+  /** Whether the agent is up and not on its way down, the state its live status and checks can be read in. */
+  isRunning(name: string): boolean {
+    return this.displayStateOf(name) === "running";
+  }
+
   /** How to show the agent's state, or null while the list doesn't name it. */
   displayStateOf(name: string): AgentDisplayState | null {
     const agent = this.agent(name);
