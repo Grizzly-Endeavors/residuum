@@ -152,12 +152,6 @@
   font-size: 13px;
 }
 
-.mcp-server-cmd {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-dim);
-}
-
 .mcp-add-form {
   padding: 14px;
   background: var(--bg-deep);

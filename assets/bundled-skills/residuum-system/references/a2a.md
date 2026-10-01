@@ -14,7 +14,7 @@ If Residuum restarts while an A2A task is unfinished, the task's session receive
 
 ## What you don't control
 
-- **Caller keys** (the credentials other agents present) are managed by the user with `residuum a2a keys create|list|revoke` or Settings → A2A. You have no tool for minting, listing, or revoking them.
+- **Caller keys** (the credentials other agents present) are managed by the user with `residuum a2a keys create|list|revoke` or the install-wide Agent-to-agent section of Settings. You have no tool for minting, listing, or revoking them.
 - **Visibility** (`public` vs `private` in your `config/config.toml`'s `[a2a]`) is config, set by the user. The listener's port and public URL live in the hub's config (`~/.residuum/hub/config.toml`). Your card advertises `{public_url}/agents/<your name>` when a public URL is set, otherwise your relay address while the tunnel is connected, otherwise the local address. The relay lists you only while you are running.
 - **Who a task belongs to.** Every task is scoped to the caller that created it — you never see or act on another caller's task, even if you can see its address.
 
