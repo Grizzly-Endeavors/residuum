@@ -19,6 +19,7 @@ use crate::hub::push::{PushTriggers, TriggerInputs};
 use crate::hub::runtime::build_app;
 use crate::hub::team_events::{TeamEventLog, TeamEventRecorder};
 use crate::hub::test_support::{free_port, mount_reply, write_agent};
+use crate::workspace::watch::WatchHealth;
 
 const POLL_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -244,6 +245,36 @@ impl Fixture {
 
     fn state_of(&self, name: &str) -> AgentState {
         self.host.summary(name).unwrap().state
+    }
+
+    /// Wait until the running agent's file watcher is placed. The agent's
+    /// runtime places it on its own task, after the agent is already
+    /// reported running, and a file that changes before then is never
+    /// reported to anyone.
+    async fn wait_for_file_watcher(&self, name: &str) {
+        let mut health = self
+            .host
+            .slot(name)
+            .unwrap()
+            .lock()
+            .running
+            .as_ref()
+            .expect("the agent is running")
+            .control
+            .workspace_watch_health
+            .clone();
+        tokio::time::timeout(
+            POLL_TIMEOUT,
+            health.wait_for(|health| *health != WatchHealth::Starting),
+        )
+        .await
+        .expect("the agent's file watcher never started")
+        .unwrap();
+        assert_ne!(
+            *health.borrow(),
+            WatchHealth::Off,
+            "the agent's files couldn't be watched"
+        );
     }
 
     /// Wait until both of a chat turn's workspace checkpoints are in the
