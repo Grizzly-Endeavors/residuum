@@ -74,7 +74,7 @@ async fn last_message_in_episodes(
     layout: &WorkspaceLayout,
 ) -> Option<LastMessage> {
     let dir = layout.episodes_dir();
-    let listed = tokio::task::spawn_blocking({
+    let listed = crate::util::spawn_blocking_in_span({
         let dir = dir.clone();
         move || transcripts_newest_first(&dir)
     })
