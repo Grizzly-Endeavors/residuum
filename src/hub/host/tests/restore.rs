@@ -467,14 +467,11 @@ async fn recreating_a_deleted_name_keeps_the_old_history_intact_and_restores_the
 }
 
 #[tokio::test]
-async fn an_agent_that_restores_another_gets_an_inbox_item_and_the_event_names_it() {
+async fn an_agent_that_restores_another_leaves_its_inbox_alone_and_the_event_names_it() {
     let hub = Fixture::new(&["scout"], "").await;
     hub.host.start("scout").await.unwrap();
     create_over_http(&hub, "nova", "keeps the wiki tidy").await;
     delete_over_http(&hub, "nova").await;
-    let inbox = WorkspaceLayout::new(hub.root.path().join("scout")).user_inbox_dir();
-    let items = || std::fs::read_dir(&inbox).map_or(0, Iterator::count);
-    let before = items();
     let mut events = hub.host.subscribe();
 
     hub.host
@@ -485,7 +482,10 @@ async fn an_agent_that_restores_another_gets_an_inbox_item_and_the_event_names_i
         .await
         .unwrap();
 
-    assert_eq!(items(), before + 1);
+    assert!(
+        user_inbox_files(&hub, "scout").is_empty(),
+        "the restore files nothing in the restorer's user inbox"
+    );
     assert!(
         drain_events(&mut events).iter().any(|event| matches!(
             event,
