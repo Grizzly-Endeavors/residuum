@@ -734,7 +734,7 @@ mod tests {
         assert_eq!(
             summary.error_details.as_deref(),
             Some("connect timeout after 30s: api.example.com:443"),
-            "the full cause chain must survive into the summary behind the details toggle"
+            "the full cause chain must survive into the summary behind the Details disclosure"
         );
     }
 

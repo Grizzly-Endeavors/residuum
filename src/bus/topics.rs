@@ -82,12 +82,12 @@ impl Carries<ToolActivityEvent> for Endpoint {
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
 impl Carries<TurnLifecycleEvent> for Endpoint {
-    // Turn start/end drives visible turn state (e.g. the running indicator);
+    // Turn start/end drives visible turn state (e.g. the activity line of a running turn);
     // a dropped `Ended` would leave the UI showing a turn that never stops.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
 impl Carries<TurnUsageEvent> for Endpoint {
-    // Cumulative token-count ticks for a running-turn indicator — each one
+    // Cumulative token-count ticks for a running turn's progress — each one
     // supersedes the last, so missing intermediate ticks is invisible.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossy;
 }

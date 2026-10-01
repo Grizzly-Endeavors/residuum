@@ -277,7 +277,7 @@ pub(crate) struct TurnResources<'a> {
     /// Durable session-level usage totals to accumulate this turn's model
     /// calls into, for the web UI's conversation size. `None` for a turn that
     /// doesn't track them (tests, and any turn kind that never surfaces to
-    /// a web client). The per-turn running-turn indicator publishes
+    /// a web client). The per-turn progress the activity line shows publishes
     /// regardless of whether this is set.
     pub usage_sink: Option<&'a dyn UsageSink>,
     /// This turn's current hop count: set by the caller to the kickoff
@@ -527,7 +527,7 @@ pub(crate) async fn execute_turn(
 /// batch — including one that ends the turn via the repeat-call guard's
 /// notice, which [`handle_tool_call_response`] surfaces through the return
 /// value here too — so neither the tool-call count nor this response's own
-/// token usage is ever silently dropped from the running-turn indicator or
+/// token usage is ever silently dropped from the turn's progress or
 /// the durable session totals. Split out of [`execute_turn`] purely to keep
 /// that function's line count down.
 async fn process_tool_call_batch(

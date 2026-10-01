@@ -1,7 +1,7 @@
 //! Main-conversation activity for one agent: whether a main turn is running,
 //! and how many messages the web UI has not shown yet.
 //!
-//! The switcher shows both. `busy` follows the main turn, and `busy_since`
+//! The rail and Home show both. `busy` follows the main turn, and `busy_since`
 //! says when that turn began. `unread` counts
 //! main-conversation messages published while no web client is connected to
 //! the agent's WebSocket, and resets when a client connects. Every change is

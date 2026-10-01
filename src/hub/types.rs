@@ -211,7 +211,7 @@ pub struct DeletedAgent {
     pub checkpoint_id: String,
 }
 
-/// Main-conversation activity for one agent, for the switcher.
+/// Main-conversation activity for one agent, for the rail and Home.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, TS)]
 #[ts(export)]
 pub struct AgentActivity {

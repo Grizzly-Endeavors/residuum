@@ -20,7 +20,7 @@ use crate::inference::Usage;
 
 /// Token usage accumulated across the model calls made so far in a turn
 /// that's still running. Reset at the start of every turn; never persisted
-/// — the running-turn indicator only cares about progress within the
+/// — the activity line only cares about progress within the
 /// current turn.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TurnUsage {
