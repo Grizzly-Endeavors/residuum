@@ -40,7 +40,7 @@ pub(crate) fn write_agent(root: &Path, name: &str, model_url: &str) {
     .unwrap();
 }
 
-pub(crate) use crate::util::test_ports::free_port;
+pub(crate) use crate::util::test_ports::reserve_port;
 
 /// One log event: its level and every field rendered as `name=value`.
 #[derive(Debug, Clone)]
