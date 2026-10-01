@@ -39,6 +39,7 @@ use crate::workspace::team_files::TeamWriteCoordinator;
 use crate::workspace::watch::{WatchHealth, WorkspaceChange, WorkspaceChangeKind};
 
 mod inbox;
+mod push;
 
 /// The boot id every harness hub reports.
 const TEST_BOOT_ID: &str = "boot-under-test";
@@ -402,6 +403,7 @@ impl AgentDirectory for FakeDirectory {
 struct Harness {
     app: Router,
     directory: Arc<FakeDirectory>,
+    push: Arc<crate::hub::push::PushService>,
     root: tempfile::TempDir,
     reload_rx: mpsc::UnboundedReceiver<ReloadSignal>,
     shutdown_rx: mpsc::Receiver<()>,
@@ -435,6 +437,7 @@ impl Harness {
         let (_layer, span_buffer) = crate::util::telemetry::SpanBufferLayer::new(
             &crate::util::telemetry::SpanBufferConfig::default(),
         );
+        let push = crate::hub::push::PushService::new(&hub_dir, None);
         let hub = HubHttpState {
             hub_dir: hub_dir.clone(),
             reload_tx,
@@ -468,6 +471,7 @@ impl Harness {
             team_bus: team_bus.clone(),
             team_watch_health: health_rx,
             started_at: std::time::Instant::now(),
+            push: Arc::clone(&push),
             boot_id: TEST_BOOT_ID.to_string(),
         };
         let shared: Arc<dyn AgentDirectory> = Arc::<FakeDirectory>::clone(&directory);
@@ -475,6 +479,7 @@ impl Harness {
         Self {
             app,
             directory,
+            push,
             root,
             reload_rx,
             shutdown_rx,

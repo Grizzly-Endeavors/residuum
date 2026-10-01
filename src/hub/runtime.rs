@@ -569,6 +569,12 @@ impl HubRuntime {
         if old.timezone != new_hub.timezone {
             changed.push("timezone");
         }
+        if old.push != new_hub.push {
+            changed.push("push");
+            self.services
+                .push
+                .set_contact(new_hub.push.contact.as_deref());
+        }
         if old.background.max_concurrent != new_hub.background.max_concurrent {
             changed.push("background limits");
             self.host.notice(
@@ -718,6 +724,7 @@ pub(super) fn build_app(
         team_bus: services.team_feed.bus.clone(),
         team_watch_health: services.team_feed.health.clone(),
         started_at: std::time::Instant::now(),
+        push: Arc::clone(&services.push),
         boot_id: uuid::Uuid::new_v4().to_string(),
     };
     Ok(hub_router(

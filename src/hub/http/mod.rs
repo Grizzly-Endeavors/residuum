@@ -5,7 +5,8 @@
 //! `docs/systems-usage/hub-http.md` places it:
 //!
 //! - `/api/hub/...`: agent lifecycle and status ([`lifecycle`]), the hub
-//!   WebSocket ([`ws`]), every agent's user inbox ([`inbox`]), and the routes
+//!   WebSocket ([`ws`]), every agent's user inbox ([`inbox`]), Web Push
+//!   devices ([`push`]), and the routes
 //!   that exist once per process: hub config, secrets, keys, cloud, update,
 //!   shutdown, tracing, and the hub and team checkpoint repositories
 //!   ([`process`]).
@@ -23,6 +24,7 @@ mod error;
 mod inbox;
 mod lifecycle;
 mod process;
+mod push;
 mod state;
 #[cfg(test)]
 #[expect(
@@ -67,6 +69,10 @@ pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Rout
         .merge(lifecycle::routes(lifecycle_state))
         .merge(ws::routes(ws_state))
         .merge(inbox::routes(Arc::clone(&directory)))
+        .merge(push::routes(push::PushApiState {
+            push: Arc::clone(&hub.push),
+            directory: Arc::clone(&directory),
+        }))
         .merge(process::hub_config_routes(&hub))
         .merge(process::cloud_routes(&hub))
         .merge(process::update_routes(&hub))

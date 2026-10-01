@@ -9,6 +9,7 @@ use tokio::sync::{mpsc, watch};
 use crate::bus::BusHandle;
 use crate::checkpoints::CheckpointEngine;
 use crate::gateway::types::ReloadSender;
+use crate::hub::push::PushService;
 use crate::tracing_service::{ClientContext, Subagent, TracingService};
 use crate::tunnel::TunnelStatus;
 use crate::update::SharedUpdateStatus;
@@ -75,6 +76,8 @@ pub struct HubHttpState {
     pub team_watch_health: watch::Receiver<WatchHealth>,
     /// When the hub started, for `uptime_secs` in `GET /api/hub/status`.
     pub started_at: Instant,
+    /// Web Push: the signing key, the registered devices, and delivery.
+    pub push: Arc<PushService>,
     /// A random id this hub process generated at startup. The hub WebSocket
     /// sends it first on every connection, so a client can tell a restarted
     /// hub from a dropped connection to the same one.
