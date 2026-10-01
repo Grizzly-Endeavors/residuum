@@ -6,7 +6,6 @@ function context(overrides: Partial<ChatActionContext> = {}): ChatActionContext 
   return {
     agent: "atlas",
     state: "running",
-    stopping: false,
     replying: false,
     verbose: false,
     hubConnection: "connected",
@@ -100,7 +99,7 @@ describe("disabled reasons", () => {
 
   it("say when the agent is on its way up or down", () => {
     expect(reasons(context({ state: "starting" }))["chat:observe"]).toBe("atlas is still starting");
-    expect(reasons(context({ stopping: true }))["chat:observe"]).toBe("atlas is stopping");
+    expect(reasons(context({ state: "stopping" }))["chat:observe"]).toBe("atlas is stopping");
     expect(reasons(context({ agent: null, state: null }))["chat:observe"]).toBe(
       "Open an agent first",
     );

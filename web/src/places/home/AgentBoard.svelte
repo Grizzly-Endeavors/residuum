@@ -1,17 +1,10 @@
 <script lang="ts">
+  import { displayState } from "../../lib/agent-display-state";
   import { hub } from "../../lib/hub.svelte";
   import { overview } from "../../lib/overview.svelte";
   import { formatLocation, locationAt, type Place } from "../../lib/routes";
   import { Badge, Banner, Button, Skeleton, StatusDot, VisuallyHidden } from "../../lib/ui";
-  import {
-    lastLine,
-    nowLine,
-    rowState,
-    runTitle,
-    runWhen,
-    STATE_WORDS,
-    type RowInput,
-  } from "./home-model";
+  import { lastLine, nowLine, runTitle, runWhen, STATE_WORDS, type RowInput } from "./home-model";
   import AgentMenu from "./AgentMenu.svelte";
   import { followLink } from "./follow-link";
 
@@ -55,7 +48,7 @@
         overview: overview.overviewOf(agent.name),
         now,
       } satisfies RowInput}
-      {@const state = rowState(input)}
+      {@const state = displayState(agent.state, input.stopping)}
       {@const doing = nowLine(input)}
       {@const last = lastLine(input.overview, now)}
       {@const next = input.overview?.upcoming[0]}

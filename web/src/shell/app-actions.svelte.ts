@@ -5,6 +5,7 @@
 // typed, so the unsearched palette stays about the agent at hand.
 
 import { actionRegistry, HELP_GROUP, type AppAction } from "../lib/action-registry.svelte";
+import { displayState } from "../lib/agent-display-state";
 import { lifecycleApplies, type LifecycleAction } from "../lib/agent-lifecycle";
 import { CHAT_GROUP, chatActions } from "../lib/chat-actions";
 import { hub } from "../lib/hub.svelte";
@@ -66,7 +67,7 @@ function places(): AppAction[] {
 
 function agents(): AppAction[] {
   return hub.agents.map((agent) => {
-    const dot = hub.isStopping(agent.name) ? "stopping" : agent.state;
+    const dot = displayState(agent.state, hub.isStopping(agent.name));
     return {
       id: `agent:${agent.name}`,
       group: "Agents",
@@ -169,9 +170,9 @@ function runLifecycle(verb: LifecycleAction, name: string): Promise<boolean> {
 /** Start, Stop and Restart for each agent, where they apply. A failure surfaces from the hub store. */
 function lifecycle(): AppAction[] {
   return agentNames().flatMap((name) => {
-    const agent = hub.agent(name);
-    if (agent === undefined || hub.isStopping(name)) return [];
-    return LIFECYCLE.filter(({ verb }) => lifecycleApplies(verb, agent.state)).map(
+    const state = hub.displayStateOf(name);
+    if (state === null) return [];
+    return LIFECYCLE.filter(({ verb }) => lifecycleApplies(verb, state)).map(
       ({ verb, label, doing, icon }) => ({
         id: `lifecycle:${name}:${verb}`,
         group: CHAT_GROUP,
@@ -191,8 +192,7 @@ function chat(shell: ShellActions): AppAction[] {
   const agent = ws.agent;
   return chatActions({
     agent,
-    state: agent === null ? null : (hub.agent(agent)?.state ?? null),
-    stopping: agent !== null && hub.isStopping(agent),
+    state: agent === null ? null : hub.displayStateOf(agent),
     replying: ws.store.activeTurnId !== null,
     verbose: ws.verbose,
     hubConnection: hub.transport.status,

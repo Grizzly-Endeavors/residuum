@@ -12,7 +12,7 @@
   import PlaceHeader from "../../shell/PlaceHeader.svelte";
   import { agentPlaceLabel } from "../../shell/rail-model";
   import { followLink } from "../home/follow-link";
-  import { rowState, runTitle } from "../home/home-model";
+  import { runTitle } from "../home/home-model";
   import {
     actionWhen,
     lastRun,
@@ -34,9 +34,7 @@
   const uid = $props.id();
   const summary = $derived(hub.agent(agent));
   /** `null` until the hub's agent list names this agent. */
-  const agentState = $derived(
-    summary ? rowState({ agent: summary, stopping: hub.isStopping(agent) }) : null,
-  );
+  const agentState = $derived(hub.displayStateOf(agent));
   const live = $derived(agentState === "running" || agentState === "stopping");
   const chat = $derived<Place>({ kind: "chat", agent });
 

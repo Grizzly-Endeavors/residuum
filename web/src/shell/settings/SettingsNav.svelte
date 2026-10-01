@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { displayState } from "../../lib/agent-display-state";
   import { hub } from "../../lib/hub.svelte";
   import { Icon } from "../../lib/icons";
   import { settingsModel } from "../../lib/settings-model.svelte";
@@ -80,7 +81,7 @@
   <div class="scope">
     <span class="scope-mark">
       {#if agent}
-        <StatusDot state={hub.isStopping(agent.name) ? "stopping" : agent.state} />
+        <StatusDot state={displayState(agent.state, hub.isStopping(agent.name))} />
       {:else}
         <Icon name="users" size={15} />
       {/if}
