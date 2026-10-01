@@ -36,6 +36,9 @@ export interface MockCheckpoint {
 
 const AGENT_REPOS: readonly RepoKind[] = ["workspace", "agent_config"];
 const HUB_REPOS: readonly RepoKind[] = ["hub", "team"];
+/** The hub repository's key stores: what a removed agent key or a revoked caller key is restored from. */
+const AGENT_KEYS_FILE = "agent-keys.toml.enc";
+const A2A_KEYS_FILE = "a2a-keys.toml";
 const TEAM_PREFIX = "team/";
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 200;
@@ -47,6 +50,27 @@ function reposServed(ctx: RouteContext): readonly RepoKind[] {
 }
 
 // ─── The live trees ────────────────────────────────────────────────────────────
+
+/**
+ * A key store as the repository holds it: one document, ordered by name. The
+ * agent keys' store is encrypted on disk, so it is held as opaque text, never
+ * as the values it keeps.
+ */
+function storeText(store: ReadonlyMap<string, unknown>, encrypted: boolean): string {
+  const sorted = [...store].sort(([a], [b]) => a.localeCompare(b));
+  const serialized = `${JSON.stringify(Object.fromEntries(sorted), null, 2)}\n`;
+  return encrypted ? Buffer.from(serialized).toString("base64") : serialized;
+}
+
+/** Put a key store back as a checkpoint held it, or empty it when the checkpoint has none. */
+function loadStore<T>(store: Map<string, T>, content: string | null, encrypted: boolean): void {
+  store.clear();
+  if (content === null) return;
+  const serialized = encrypted ? Buffer.from(content, "base64").toString() : content;
+  for (const [name, entry] of Object.entries(JSON.parse(serialized) as Record<string, T>)) {
+    store.set(name, entry);
+  }
+}
 
 /** The files a repository tracks as they are now. */
 function liveFiles(state: MockState, repo: RepoKind): Files {
@@ -63,7 +87,11 @@ function liveFiles(state: MockState, repo: RepoKind): Files {
     case "agent_config":
       return { "config.toml": state.configToml, "providers.toml": state.providersToml };
     case "hub":
-      return { "config.toml": state.hubConfigToml };
+      return {
+        "config.toml": state.hubConfigToml,
+        [AGENT_KEYS_FILE]: storeText(state.agentKeys, true),
+        [A2A_KEYS_FILE]: storeText(state.a2aKeys, false),
+      };
   }
 }
 
@@ -81,7 +109,9 @@ function writeLive(state: MockState, repo: RepoKind, path: string, content: stri
       else state.providersToml = content ?? "";
       return;
     case "hub":
-      state.hubConfigToml = content ?? "";
+      if (path === AGENT_KEYS_FILE) loadStore(state.agentKeys, content, true);
+      else if (path === A2A_KEYS_FILE) loadStore(state.a2aKeys, content, false);
+      else state.hubConfigToml = content ?? "";
   }
 }
 
@@ -203,7 +233,10 @@ export function seedCheckpoints(state: MockState): void {
         },
       );
     } else {
-      const older = Object.fromEntries(Object.entries(live).map(([p, c]) => [p, earlier(c)]));
+      const stores = [AGENT_KEYS_FILE, A2A_KEYS_FILE];
+      const older = Object.fromEntries(
+        Object.entries(live).map(([p, c]) => [p, stores.includes(p) ? c : earlier(c)]),
+      );
       const meta = {
         address: "web",
         trigger: "pre_config_write",

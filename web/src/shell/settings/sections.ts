@@ -4,8 +4,8 @@
 // binds its fields to the scope's forms (`scope.config`, `scope.providers`,
 // `scope.models`, `scope.mcpServers`) and starts with `SettingsSection`.
 //
-// A section listed here is drawn by its own component; any other shows its
-// legacy panels (`LegacySection.svelte`).
+// Every All agents section is drawn by its own component. An agent section
+// not listed here shows its legacy panels (`LegacySection.svelte`).
 
 import type { Component } from "svelte";
 import type { FieldRef } from "../../lib/settings-fields";
@@ -17,8 +17,11 @@ import ConnectionsSection from "./ConnectionsSection.svelte";
 import DiagnosticsSection from "./DiagnosticsSection.svelte";
 import GeneralSection from "./GeneralSection.svelte";
 import HistorySection from "./HistorySection.svelte";
+import KeysSection from "./KeysSection.svelte";
 import LimitsSection from "./LimitsSection.svelte";
+import ListenerSection from "./ListenerSection.svelte";
 import Memory from "./Memory.svelte";
+import NotificationsSection from "./NotificationsSection.svelte";
 import RawConfig from "./RawConfig.svelte";
 import Runtime from "./Runtime.svelte";
 import Schedule from "./Schedule.svelte";
@@ -52,13 +55,17 @@ export const AGENT_SECTION_VIEWS: Partial<Record<AgentSectionId, Component<Agent
   history: HistorySection,
 };
 
-export const ALL_SECTION_VIEWS: Partial<Record<AllSectionId, Component<AllSectionProps>>> = {
+export const ALL_SECTION_VIEWS: Record<AllSectionId, Component<AllSectionProps>> = {
   general: GeneralSection,
+  notifications: NotificationsSection,
   cloud: CloudSection,
+  keys: KeysSection,
   updates: UpdatesSection,
   limits: LimitsSection,
+  listener: ListenerSection,
   diagnostics: DiagnosticsSection,
   raw: RawConfig,
+  history: HistorySection,
 };
 
 /** A field's problems from the last save as one line, for a control's `error`; undefined when it has none. */

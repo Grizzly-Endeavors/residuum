@@ -278,6 +278,44 @@ describe("the checkpoint routes", () => {
       );
     });
 
+    it("brings back an agent key and a caller key that were removed, from the checkpoint the removal returned", async () => {
+      const removedKey = await fetchJson(`${mock.baseUrl}/api/hub/agent-keys/github_token`, {
+        method: "DELETE",
+      });
+      const revoked = await fetchJson(`${mock.baseUrl}/api/hub/a2a/keys/laptop`, {
+        method: "DELETE",
+      });
+      const keyCheckpoint = (removedKey.body as { checkpoint_id: string }).checkpoint_id;
+      const callerCheckpoint = (revoked.body as { checkpoint_id: string }).checkpoint_id;
+      expect(mock.hub.hubState.agentKeys.has("github_token")).toBe(false);
+      expect(mock.hub.hubState.a2aKeys.has("laptop")).toBe(false);
+
+      const restoredKey = await post(hub(`/${keyCheckpoint}/restore`), {
+        repo: "hub",
+        path: "agent-keys.toml.enc",
+      });
+      const restoredCaller = await post(hub(`/${callerCheckpoint}/restore`), {
+        repo: "hub",
+        path: "a2a-keys.toml",
+      });
+
+      expect((restoredKey.body as RestoreOutcome).restored_paths).toEqual(["agent-keys.toml.enc"]);
+      expect((restoredCaller.body as RestoreOutcome).restored_paths).toEqual(["a2a-keys.toml"]);
+      expect(mock.hub.hubState.agentKeys.get("github_token")?.description).toBe(
+        "Fine-grained token, read/write on my repos",
+      );
+      expect(mock.hub.hubState.a2aKeys.has("laptop")).toBe(true);
+    });
+
+    it("never serves an agent key's value from the hub repository's copy of the store", async () => {
+      const first = (await list(hub("?repo=hub"))).at(-1);
+      const file = await fetchText(
+        hub(`/${first?.id ?? ""}/file?repo=hub&path=${encodeURIComponent("agent-keys.toml.enc")}`),
+      );
+      expect(file.status).toBe(200);
+      expect(file.body).not.toContain("ghp_mock_xxxxxxxx");
+    });
+
     it("answers 404 for a path the checkpoint doesn't hold, and 422 for a body without one", async () => {
       const id = (await list(agent("?repo=workspace")))[0]?.id ?? "";
       expect(
