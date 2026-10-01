@@ -21,7 +21,7 @@ use crate::util::FatalError;
 
 use super::Config;
 use super::HubConfig;
-use super::constants::{DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT_SECS};
+use super::constants::{DEFAULT_MAX_TOKENS, DEFAULT_PULSE_ENABLED, DEFAULT_TIMEOUT_SECS};
 use super::deserialize::{AgentConfigFile, ProvidersFile};
 use super::secrets::SecretStore;
 
@@ -96,7 +96,7 @@ pub(crate) fn from_file_and_env(
     let pulse_enabled = file
         .and_then(|f| f.pulse.as_ref())
         .and_then(|p| p.enabled)
-        .unwrap_or(true);
+        .unwrap_or(DEFAULT_PULSE_ENABLED);
     let subconscious_settings =
         subconscious::resolve_subconscious_settings(file.and_then(|f| f.subconscious.as_ref()));
     let learning = subconscious::resolve_learning_config(file.and_then(|f| f.learning.as_ref()));

@@ -96,7 +96,7 @@ Editing `HEARTBEAT.yml` via `write_file`/`edit_file`, the workspace editor, or `
 
 ## Scheduled View
 
-The web UI's Scheduled view (hamburger menu, `/scheduled`) lists every pulse — schedule, active hours, agent/skill, enabled flag, next fire estimate, last outcome (with error if failed), current run (with any overlap flag), and per-pulse loading problems — and every pending scheduled action with a cancel button. Toggling a pulse's enabled switch edits just that value in HEARTBEAT.yml, leaving the rest of the file untouched. Backed by `GET/PUT /api/agents/<agent>/scheduled/pulses...` and `GET/DELETE /api/agents/<agent>/scheduled/actions...`.
+The web UI's Scheduled view (hamburger menu, `/scheduled`) lists every pulse — schedule, active hours, agent/skill, enabled flag, next fire time, last outcome (with error if failed), current run (with any overlap flag), and per-pulse loading problems — and every pending scheduled action with a cancel button. A pulse's next fire time is the first moment at or after the later of now and the end of its `schedule` since its last run that falls inside its `active_hours`; it is `null` for a disabled pulse and for every pulse when `[pulse] enabled` is `false` in the agent's `config.toml`. Toggling a pulse's enabled switch edits just that value in HEARTBEAT.yml, leaving the rest of the file untouched. Backed by `GET/PUT /api/agents/<agent>/scheduled/pulses...` and `GET/DELETE /api/agents/<agent>/scheduled/actions...`.
 
 ## Gotchas
 

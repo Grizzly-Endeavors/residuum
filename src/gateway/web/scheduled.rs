@@ -2,8 +2,10 @@
 //! the web UI's Scheduled sidebar view.
 //!
 //! - `GET /api/agents/{name}/scheduled/pulses` — every pulse in HEARTBEAT.yml, its next
-//!   fire time, last outcome, current run (with any overlap flag), and any
-//!   per-pulse loading problems (see `crate::pulse::types::load_heartbeat`).
+//!   fire time (the calculation the hub's team overview uses, see
+//!   `crate::pulse::next_run`), last outcome, current run (with any overlap
+//!   flag), and any per-pulse loading problems (see
+//!   `crate::pulse::types::load_heartbeat`).
 //! - `PUT /api/agents/{name}/scheduled/pulses/{pulse}/enabled` — flip a pulse's `enabled`
 //!   field in HEARTBEAT.yml in place, preserving everything else in the
 //!   file (see `crate::pulse::edit::set_pulse_enabled`).
@@ -24,7 +26,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::actions::store::ActionStore;
@@ -33,7 +35,8 @@ use crate::background::store::{RunFilter, SessionStore};
 use crate::gateway::protocol::{
     ActionInfo, PulseInfo, ScheduledCurrentRun, ScheduledRunOutcome, SessionRunStatus,
 };
-use crate::pulse::types::{HeartbeatProblem, PulseDef, load_heartbeat, parse_schedule_duration};
+use crate::pulse::next_run::{load_last_runs, next_run_at};
+use crate::pulse::types::{HeartbeatProblem, PulseDef, load_heartbeat};
 use crate::workspace::layout::WorkspaceLayout;
 
 /// Shared state for the Scheduled view API.
@@ -85,49 +88,34 @@ async fn api_scheduled_pulses(State(state): State<ScheduledApiState>) -> Respons
     let mut problems = Vec::new();
     let cfg = load_heartbeat(&heartbeat_path, &mut last_parse_error, &mut problems, &[]);
     let pulses = cfg.map(|c| c.pulses).unwrap_or_default();
-    let last_run = load_pulse_last_run(&state.layout.pulse_state_json());
+    // Read from the files rather than through a live `PulseScheduler` (this
+    // API has none), the same as the gateway's own hot-reload does for
+    // HEARTBEAT.yml.
+    let last_run = load_last_runs(&state.layout.pulse_state_json());
+    let pulse_enabled = pulse_system_enabled(&state.layout);
 
-    let infos = build_pulse_infos(&pulses, &problems, &last_run, state.tz, &state).await;
+    let infos = build_pulse_infos(
+        &pulses,
+        &problems,
+        &last_run,
+        (Utc::now(), pulse_enabled),
+        &state,
+    )
+    .await;
     Json(infos).into_response()
 }
 
-/// Load `pulse_state.json`'s `last_run` map directly, rather than through a
-/// live `PulseScheduler` (this API has none — it reads workspace files
-/// fresh on each request, the same as the gateway's own hot-reload does for
-/// HEARTBEAT.yml). Missing or corrupt state is treated as empty, matching
-/// `PulseScheduler::with_state_path`'s own degradation.
-fn load_pulse_last_run(path: &std::path::Path) -> HashMap<String, NaiveDateTime> {
-    #[derive(Deserialize, Default)]
-    struct StateFile {
-        #[serde(default)]
-        last_run: HashMap<String, NaiveDateTime>,
+/// Whether the agent's pulse system is on. A `config.toml` that can't be
+/// read is logged and counts as off, so no pulse promises a run: the same
+/// answer the hub's team overview gives for it.
+fn pulse_system_enabled(layout: &WorkspaceLayout) -> bool {
+    match crate::config::Config::pulse_enabled_at(layout.root()) {
+        Ok(enabled) => enabled,
+        Err(e) => {
+            tracing::warn!(error = %e, "couldn't read whether the pulse system is on; listing no next run times");
+            false
+        }
     }
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<StateFile>(&s).ok())
-        .map(|s| s.last_run)
-        .unwrap_or_default()
-}
-
-/// Estimate a pulse's next fire time from its schedule and last run time.
-/// `None` for a disabled pulse, or one whose schedule doesn't parse (already
-/// reported in `problems`).
-fn next_fire_at(
-    pulse: &PulseDef,
-    last_run: Option<NaiveDateTime>,
-    tz: chrono_tz::Tz,
-) -> Option<DateTime<Utc>> {
-    if !pulse.enabled {
-        return None;
-    }
-    let duration = parse_schedule_duration(&pulse.schedule).ok()?;
-    let due_local = match last_run {
-        None => return Some(Utc::now()),
-        Some(last) => last + duration,
-    };
-    tz.from_local_datetime(&due_local)
-        .earliest()
-        .map(|dt| dt.with_timezone(&Utc))
 }
 
 /// Build one `PulseInfo` per pulse that loaded, plus a synthetic entry for
@@ -139,7 +127,7 @@ async fn build_pulse_infos(
     pulses: &[PulseDef],
     problems: &[HeartbeatProblem],
     last_run: &HashMap<String, NaiveDateTime>,
-    tz: chrono_tz::Tz,
+    (now, pulse_enabled): (DateTime<Utc>, bool),
     state: &ScheduledApiState,
 ) -> Vec<PulseInfo> {
     let mut infos = Vec::with_capacity(pulses.len());
@@ -159,7 +147,9 @@ async fn build_pulse_infos(
             schedule: Some(pulse.schedule.clone()),
             active_hours: pulse.active_hours.clone(),
             agent: pulse.agent.clone(),
-            next_fire_at: next_fire_at(pulse, last_run.get(&pulse.name).copied(), tz),
+            next_fire_at: pulse_enabled
+                .then(|| next_run_at(pulse, last_run.get(&pulse.name).copied(), now, state.tz))
+                .flatten(),
             last_outcome: last_outcome(&state.store, &source_label).await,
             current_run: current_run(&state.registry, &source_label),
             problems: pulse_problems,
@@ -390,36 +380,100 @@ mod tests {
         }
     }
 
-    #[test]
-    fn next_fire_at_never_run_is_due_now() {
-        let pulse = sample_pulse("p");
-        let at = next_fire_at(&pulse, None, chrono_tz::UTC).unwrap();
-        assert!((Utc::now() - at).num_seconds().abs() < 5);
-    }
-
-    #[test]
-    fn next_fire_at_disabled_pulse_is_none() {
-        let mut pulse = sample_pulse("p");
-        pulse.enabled = false;
-        assert!(next_fire_at(&pulse, None, chrono_tz::UTC).is_none());
-    }
-
-    #[test]
-    fn next_fire_at_adds_schedule_to_last_run() {
-        let pulse = sample_pulse("p");
-        let last = chrono::NaiveDate::from_ymd_opt(2026, 3, 1)
+    /// The pulses `sample_pulse` makes, as listed at the start of 2099.
+    async fn infos_at(
+        dir: &std::path::Path,
+        pulses: &[PulseDef],
+        last_run: &HashMap<String, NaiveDateTime>,
+        pulse_enabled: bool,
+    ) -> Vec<PulseInfo> {
+        let state = test_state(dir);
+        let now = chrono::NaiveDate::from_ymd_opt(2099, 1, 1)
             .unwrap()
-            .and_hms_opt(12, 0, 0)
-            .unwrap();
-        let at = next_fire_at(&pulse, Some(last), chrono_tz::UTC).unwrap();
+            .and_hms_opt(12, 20, 40)
+            .unwrap()
+            .and_utc();
+        build_pulse_infos(pulses, &[], last_run, (now, pulse_enabled), &state).await
+    }
+
+    fn day_2099(hour: u32, minute: u32) -> NaiveDateTime {
+        chrono::NaiveDate::from_ymd_opt(2099, 1, 1)
+            .unwrap()
+            .and_hms_opt(hour, minute, 0)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_next_fire_time_follows_the_schedule_the_active_hours_and_the_last_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut disabled = sample_pulse("disabled");
+        disabled.enabled = false;
+        let mut quiet = sample_pulse("quiet");
+        quiet.active_hours = Some("09:00-12:00".to_string());
+        let pulses = [
+            sample_pulse("recent"),
+            sample_pulse("never_run"),
+            quiet,
+            disabled,
+        ];
+        let last_run = HashMap::from([
+            ("recent".to_string(), day_2099(12, 0)),
+            ("quiet".to_string(), day_2099(11, 30)),
+        ]);
+
+        let infos = infos_at(dir.path(), &pulses, &last_run, true).await;
+
+        let next: Vec<(&str, Option<String>)> = infos
+            .iter()
+            .map(|info| {
+                (
+                    info.name.as_str(),
+                    info.next_fire_at.map(|at| at.to_rfc3339()),
+                )
+            })
+            .collect();
         assert_eq!(
-            at,
-            chrono::NaiveDate::from_ymd_opt(2026, 3, 1)
-                .unwrap()
-                .and_hms_opt(13, 0, 0)
-                .unwrap()
-                .and_utc()
+            next,
+            [
+                ("recent", Some("2099-01-01T13:00:00+00:00".to_string())),
+                ("never_run", Some("2099-01-01T12:20:00+00:00".to_string())),
+                ("quiet", Some("2099-01-02T09:00:00+00:00".to_string())),
+                ("disabled", None),
+            ],
+            "a pulse due already is reported at the start of the minute, and 12:30 is after 12:00"
         );
+    }
+
+    #[tokio::test]
+    async fn no_pulse_has_a_next_fire_time_when_the_pulse_system_is_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let infos = infos_at(dir.path(), &[sample_pulse("p")], &HashMap::new(), false).await;
+        assert!(infos.iter().all(|info| info.next_fire_at.is_none()));
+        assert!(
+            infos.iter().all(|info| info.enabled),
+            "its own switch is unchanged"
+        );
+    }
+
+    #[test]
+    fn the_pulse_system_is_off_when_its_config_cannot_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        assert!(
+            pulse_system_enabled(&layout),
+            "no config: the default is on"
+        );
+
+        std::fs::create_dir_all(dir.path().join("config")).unwrap();
+        std::fs::write(
+            dir.path().join("config/config.toml"),
+            "[pulse]\nenabled = false\n",
+        )
+        .unwrap();
+        assert!(!pulse_system_enabled(&layout), "switched off");
+
+        std::fs::write(dir.path().join("config/config.toml"), "[pulse\n").unwrap();
+        assert!(!pulse_system_enabled(&layout), "unreadable");
     }
 
     #[tokio::test]
@@ -439,7 +493,8 @@ mod tests {
             .unwrap();
 
         let pulses = vec![sample_pulse("email_check")];
-        let infos = build_pulse_infos(&pulses, &[], &HashMap::new(), chrono_tz::UTC, &state).await;
+        let infos =
+            build_pulse_infos(&pulses, &[], &HashMap::new(), (Utc::now(), true), &state).await;
         assert_eq!(infos.len(), 1);
         let pulse_info = infos.first().expect("one pulse info");
         let current = pulse_info
@@ -471,7 +526,8 @@ mod tests {
             .await;
 
         let pulses = vec![sample_pulse("email_check")];
-        let infos = build_pulse_infos(&pulses, &[], &HashMap::new(), chrono_tz::UTC, &state).await;
+        let infos =
+            build_pulse_infos(&pulses, &[], &HashMap::new(), (Utc::now(), true), &state).await;
         let pulse_info = infos.first().expect("one pulse info");
         let outcome = pulse_info
             .last_outcome
@@ -492,7 +548,7 @@ mod tests {
             kind: ProblemKind::RemovedOption,
         }];
         let infos =
-            build_pulse_infos(&[], &problems, &HashMap::new(), chrono_tz::UTC, &state).await;
+            build_pulse_infos(&[], &problems, &HashMap::new(), (Utc::now(), true), &state).await;
         assert_eq!(infos.len(), 1);
         let info = infos.first().expect("one pulse info");
         assert_eq!(info.name, "wake_main");
