@@ -1,10 +1,12 @@
+import { within } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it } from "vitest";
-import { jsonResponse, mockFetch, render, settle } from "../../test/component";
+import { jsonResponse, mockFetch, render, screen, settle } from "../../test/component";
 import Roles from "./Roles.svelte";
 import type { ProviderKey, SetupWizardState } from "../../lib/types";
 
+// Reactive, as the wizard's own state is, so the step redraws after a change.
 function wizard(overrides: Partial<SetupWizardState> = {}): SetupWizardState {
-  return {
+  const state = $state<SetupWizardState>({
     userName: "",
     agentName: "assistant",
     timezone: "",
@@ -38,14 +40,19 @@ function wizard(overrides: Partial<SetupWizardState> = {}): SetupWizardState {
     },
     secretRefs: {},
     ...overrides,
-  };
+  });
+  return state;
 }
 
-function optionValues(select: HTMLElement): string[] {
-  return Array.from(select.querySelectorAll("option")).map((o) => o.value);
+function roleField(role: string, field: "Provider" | "Model"): HTMLSelectElement {
+  return within(screen.getByRole("group", { name: role })).getByLabelText(field);
 }
 
-describe("Assign Models step", () => {
+function optionValues(select: HTMLSelectElement): string[] {
+  return Array.from(select.options).map((o) => o.value);
+}
+
+describe("Assign models step", () => {
   beforeEach(() => {
     mockFetch((url) => {
       if (url.includes("/providers/models")) {
@@ -59,9 +66,8 @@ describe("Assign Models step", () => {
     render(Roles, { wizardState: wizard(), onNext: () => {}, onBack: () => {} });
     await settle();
 
-    for (const role of ["observer", "reflector", "pulse"]) {
-      const select = document.querySelector(`#role-${role}-provider`) as HTMLSelectElement;
-      expect(optionValues(select)).toEqual(["anthropic", "openai"]);
+    for (const role of ["Observer", "Reflector", "Pulse"]) {
+      expect(optionValues(roleField(role, "Provider"))).toEqual(["anthropic", "openai"]);
     }
   });
 
@@ -69,9 +75,8 @@ describe("Assign Models step", () => {
     render(Roles, { wizardState: wizard(), onNext: () => {}, onBack: () => {} });
     await settle();
 
-    for (const tier of ["small", "medium", "large"]) {
-      const select = document.querySelector(`#role-bg-${tier}-provider`) as HTMLSelectElement;
-      expect(optionValues(select)).toEqual(["anthropic", "openai"]);
+    for (const tier of ["Small", "Medium", "Large"]) {
+      expect(optionValues(roleField(tier, "Provider"))).toEqual(["anthropic", "openai"]);
     }
   });
 
@@ -87,7 +92,32 @@ describe("Assign Models step", () => {
     render(Roles, { wizardState: state, onNext: () => {}, onBack: () => {} });
     await settle();
 
-    const select = document.querySelector("#role-observer-provider") as HTMLSelectElement;
-    expect(select.value).toBe("anthropic");
+    expect(roleField("Observer", "Provider")).toHaveValue("anthropic");
+  });
+
+  it("picks the provider's default model for a role left unset", async () => {
+    const state = wizard();
+    render(Roles, { wizardState: state, onNext: () => {}, onBack: () => {} });
+    await settle();
+
+    expect(roleField("Pulse", "Model")).toHaveValue("claude-sonnet-4-6");
+    expect(state.roles.pulse?.model).toBe("claude-sonnet-4-6");
+  });
+
+  it("shows a model typed under Other again when the step opens", async () => {
+    const state = wizard({
+      roles: {
+        observer: { provider: "", url: "", model: "my-local-model" },
+        reflector: { provider: "", url: "", model: "" },
+        pulse: { provider: "", url: "", model: "" },
+      },
+    });
+    render(Roles, { wizardState: state, onNext: () => {}, onBack: () => {} });
+    await settle();
+
+    const observer = within(screen.getByRole("group", { name: "Observer" }));
+    expect(observer.getByLabelText("Model")).toHaveValue("__other__");
+    expect(observer.getByLabelText("Model ID")).toHaveValue("my-local-model");
+    expect(state.roles.observer?.model).toBe("my-local-model");
   });
 });
