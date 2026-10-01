@@ -129,7 +129,7 @@ web/
 │   │   └── setup/                  # Setup wizard steps
 │   ├── test/                 # Component-test helpers and harnesses
 │   └── lib/
-│       ├── ui/                   # Primitive controls (buttons, fields, badges, tabs, banners…); gallery at /dev/gallery (see AESTHETIC.md)
+│       ├── ui/                   # Primitive controls and overlays (buttons, fields, badges, dialogs, sheets…); the overlay stack in ui/overlay/; gallery at /dev/gallery (see AESTHETIC.md)
 │       ├── icons/                # The Icon component and icon set
 │       ├── api.ts                # REST API client (typed fetch wrappers); every agent-scoped call takes the agent name first
 │       ├── paths.ts              # API and WebSocket URL builders for the agent, hub and team scopes
@@ -229,9 +229,9 @@ Old URLs redirect by replace: `/team`, `/agent/:name/sessions/:runId`, `/agent/:
 
 **Closing.** `closePanel` and `closeSettings` go back in the history when this page pushed the entry that opened what is closing, and replace the URL with one that omits the parameter otherwise (a deep link, a reload into the modal). Back therefore closes the panel or modal before it leaves a place.
 
-**Overlays.** A modal overlay calls `router.openOverlay(onDismiss)` when it opens. That pushes an entry with the same URL, so Back closes the overlay. The overlay closes itself through the returned handle (`handle.close()`), which pops that entry. `onDismiss` runs when the entry is left any other way: Back, or a navigation that takes the overlay's entry.
+**Overlays.** A modal overlay calls `router.openOverlay(onDismiss)` when it opens. That pushes an entry with the same URL, so Back closes the overlay. The overlay closes itself through the returned handle (`handle.close()`), which pops that entry. `onDismiss` runs when the entry is left any other way: Back, or a navigation that takes the overlay's entry. `ModalLayer`, under Dialog, Sheet and Drawer, does all of this; `historyEntry={false}` is for a layer whose URL parameter is already its entry, like the Settings modal. The gallery, outside the app's routes, calls `router.startForOverlays()`, which follows overlay entries and leaves the address alone.
 
-**Unsaved work.** A view that holds work the user would lose registers a check with `router.guard.register(check)`. The check returns a line saying what navigating to the given location would lose, or null. In-app navigation asks first, through the function the app gives `router.guard.setConfirm`, and does not navigate until the user confirms; with no such function it refuses. On Back or Forward the router puts the location back on top of the history, asks, and goes where the user was headed only if they confirm. On reload or tab close the browser's own prompt appears.
+**Unsaved work.** A view that holds work the user would lose registers a check with `router.guard.register(check)`. The check returns a line saying what navigating to the given location would lose, or null. In-app navigation asks first, through the function the app gives `router.guard.setConfirm`, and does not navigate until the user confirms; with no such function it refuses. `confirmLeave` from `lib/ui` is that function: it asks in a confirm dialog, shown by `ConfirmHost`. A confirm dialog has its own overlay entry, so the router goes on only once that entry has left the history. On Back or Forward the router puts the location back on top of the history, asks, and goes where the user was headed only if they confirm. On reload or tab close the browser's own prompt appears.
 
 **The bound agent** is the viewed agent on an agent place, and on the other places the agent most recently viewed. The last-used agent is remembered in local storage, and `router.setKnownAgents` settles on agents that exist once the agent list is known.
 
