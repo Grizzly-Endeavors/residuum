@@ -214,7 +214,8 @@ class WsCoordinator {
       return;
     }
     if (store !== this.store) return;
-    store.loadHistory(recent);
+    // A message sent before the history arrived keeps its turn on screen.
+    store.reloadHistory(recent);
     await this.loadOlderHistory();
   }
 

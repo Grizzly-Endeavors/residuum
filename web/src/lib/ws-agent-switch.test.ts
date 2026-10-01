@@ -114,6 +114,18 @@ describe("agent connection follows the viewed agent", () => {
     expect(ws.agent).toBe("scout");
   });
 
+  it("keeps a message sent before the history arrived, after the history", async () => {
+    const server = installServer();
+    const held = server.hold("scout");
+    setViewedAgent("scout");
+    FakeWebSocket.last.simulateOpen();
+    ws.sendChat("sent early");
+    held.release();
+    await flush();
+
+    expect(feedText()).toEqual(["hello from scout", "sent early"]);
+  });
+
   it("closes the old socket and opens the new agent's on a switch", () => {
     installServer();
     setViewedAgent("scout");

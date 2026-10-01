@@ -3,7 +3,7 @@
   import { hub } from "../../lib/hub.svelte";
   import type { IconName } from "../../lib/icons";
   import { router } from "../../lib/router.svelte";
-  import { IconButton, Menu, MenuItem, VisuallyHidden } from "../../lib/ui";
+  import { IconButton, Menu, MenuItem } from "../../lib/ui";
   import { ws } from "../../lib/ws.svelte";
   import PlaceHeader from "../../shell/PlaceHeader.svelte";
 
@@ -47,10 +47,11 @@
       <button
         type="button"
         class="running-pill"
+        aria-label="{running} running, open Activity"
         onclick={() => void router.openPlace({ kind: "activity", agent })}
       >
         <span class="running-dot" aria-hidden="true"></span>
-        {running} running<VisuallyHidden>, open Activity</VisuallyHidden>
+        {running} running
       </button>
     {/if}
     <span class="chat-header-gear">

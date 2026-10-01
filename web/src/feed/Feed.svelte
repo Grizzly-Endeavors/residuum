@@ -49,7 +49,13 @@
   let innerEl = $state<HTMLDivElement>();
   let topSentinel = $state<HTMLDivElement>();
 
-  const scroller = new FeedScroller();
+  const uid = $props.id();
+  /**
+   * Near enough the bottom to keep following. The composer sits under the
+   * feed rather than over it, so only a reader who has scrolled away stops.
+   */
+  const FOLLOW_WITHIN_PX = 120;
+  const scroller = new FeedScroller(FOLLOW_WITHIN_PX);
   let anchorLabel = $state("");
 
   $effect(() => {
@@ -101,19 +107,34 @@
     return sentinel.bottom >= view.top - LOAD_OLDER_MARGIN_PX && sentinel.top <= view.bottom;
   }
 
+  /**
+   * A load is between measuring where the reader is and putting them back.
+   * Loads run one at a time: one that measured while another's part was in
+   * but not yet compensated for would undo that compensation.
+   */
+  let prepending = false;
+
   async function loadOlder(): Promise<void> {
     const el = scrollEl;
-    if (!history || !el || !history.hasMore || history.loadingOlder) return;
-    // Keep what the reader sees in place across the prepend: remember where
-    // the first item sits and put it back there. Browser scroll anchoring is
-    // off, and it doesn't act at scrollTop 0 anyway.
-    const anchor = el.querySelector<HTMLElement>("[data-feed-item]");
-    const before = anchor ? offsetIn(el, anchor) : 0;
-    const added = await history.loadOlder();
-    if (!added) return;
-    await tick();
-    if (anchor && !scroller.isFollowing) {
-      el.scrollTo({ top: el.scrollTop + offsetIn(el, anchor) - before, behavior: "instant" });
+    if (!history || !el || !history.hasMore || history.loadingOlder || prepending) return;
+    // While a reload is putting the reader back, that owns the scroll position;
+    // loading resumes once they're back in place.
+    if (reloadAnchor !== null) return;
+    prepending = true;
+    try {
+      // Keep what the reader sees in place across the prepend: remember where
+      // the first item sits and put it back there. Browser scroll anchoring
+      // is off, and it doesn't act at scrollTop 0 anyway.
+      const anchor = el.querySelector<HTMLElement>("[data-feed-item]");
+      const before = anchor ? offsetIn(el, anchor) : 0;
+      const added = await history.loadOlder();
+      if (!added) return;
+      await tick();
+      if (anchor && !scroller.isFollowing) {
+        el.scrollTo({ top: el.scrollTop + offsetIn(el, anchor) - before, behavior: "instant" });
+      }
+    } finally {
+      prepending = false;
     }
     // A feed shorter than the view leaves the sentinel in it, so the observer
     // never fires again: keep loading until it's pushed out or history runs
@@ -241,6 +262,7 @@
       if (!scroller.isHeld || restoreAnchor(anchor)) {
         reloadAnchor = null;
         scroller.release();
+        if (sentinelNearView()) void loadOlder();
       }
     });
   });
@@ -250,9 +272,14 @@
   {#if scroller.scrolledUp}
     <div class="feed-pill">
       {#if anchorLabel}
-        <span class="feed-pill-label">{anchorLabel}</span>
+        <span class="feed-pill-label" id="{uid}-where">{anchorLabel}</span>
       {/if}
-      <button type="button" class="feed-pill-jump" onclick={() => scroller.jumpToLatest()}>
+      <button
+        type="button"
+        class="feed-pill-jump"
+        aria-describedby={anchorLabel ? `${uid}-where` : undefined}
+        onclick={() => scroller.jumpToLatest()}
+      >
         Jump to latest
       </button>
     </div>
