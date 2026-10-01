@@ -57,10 +57,9 @@ export interface MockState {
   configToml: string;
   hubConfigToml: string;
   providersToml: string;
-  mcpJson: string;
   /** Directory path to its listing. Changed only through `workspace-tree.ts`, which keeps it agreeing with the contents. */
   workspaceFiles: Record<string, WorkspaceEntry[]>;
-  /** File path to its content. */
+  /** File path to its content. `config/mcp.json` (`MCP_JSON`) is the agent's MCP servers. */
   workspaceFileContents: Record<string, string>;
   inboxItems: UserInboxItem[];
   /** The items the user archived, which `restore` brings back to `inboxItems`. */
@@ -217,6 +216,9 @@ const SAMPLE_A2A_AGENTS_JSON =
 /** The A2A client settings of an agent with no remote agents listed. */
 const EMPTY_A2A_AGENTS_JSON = '{"agents":{}}';
 
+/** Where an agent's MCP servers live in its workspace, which the MCP routes read and write. */
+export const MCP_JSON = "config/mcp.json";
+
 /**
  * Give an agent the data it has once it has run: a conversation, the sample
  * inbox and archive, and its A2A client settings. An agent that has never run
@@ -241,7 +243,10 @@ export function createState(
   env: MockEnv = createMockEnv(),
 ): MockState {
   const { clock } = env;
-  const workspaceFileContents = createWorkspaceFileContents();
+  const workspaceFileContents = {
+    ...createWorkspaceFileContents(),
+    [MCP_JSON]: loadAsset("mcp.example.json"),
+  };
   const state: MockState = {
     agentName,
     env,
@@ -282,7 +287,6 @@ export function createState(
     configToml: loadAsset("config.example.toml"),
     hubConfigToml: loadAsset("hub-config.example.toml"),
     providersToml: loadAsset("providers.example.toml"),
-    mcpJson: loadAsset("mcp.example.json"),
     workspaceFiles: createWorkspaceFiles(workspaceFileContents, clock),
     workspaceFileContents,
     sessions: createSessions(clock),

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import type { SetupWizardState, McpCatalogEntry, ProviderKey } from "./lib/types";
-  import { fetchTimezone, fetchMcpCatalogOrThrow } from "./lib/api";
+  import { fetchTimezone, fetchMcpCatalog } from "./lib/api";
   import { DEFAULT_AGENT_NAME } from "./lib/agent-name";
   import { userErrorMessage } from "./lib/errors";
   import { Icon } from "./lib/icons";
@@ -165,7 +165,7 @@
     catalogLoading = true;
     catalogError = null;
     try {
-      catalog = await fetchMcpCatalogOrThrow();
+      catalog = await fetchMcpCatalog();
     } catch (err: unknown) {
       catalogError = userErrorMessage(err, { action: "Couldn't load the MCP server catalog." });
     } finally {

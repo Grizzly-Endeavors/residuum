@@ -4,7 +4,9 @@ import type {
   HubStatusResponse,
   StopAllResponse,
 } from "../src/lib/hub-types";
+import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { agentNameProblem } from "./agent-name";
+import { checkpointBeforeAction } from "./checkpoints";
 import { MOCK_CLOUD_STATUS, MOCK_RESIDUUM_VERSION } from "./constants";
 import { json, readJsonObject, stringField, type JsonObject } from "./http";
 import { decodedParam, type Route, type RouteContext } from "./routes";
@@ -222,6 +224,17 @@ async function patchAgent(ctx: RouteContext): Promise<void> {
   }
   if (typeof autostart === "boolean") agent.autostart = autostart;
   if (newVisibility !== null) agent.visibility = newVisibility;
+  // The hub writes both to the agent's config.toml, checkpointing it first.
+  const { state } = agent;
+  checkpointBeforeAction(state, "agent_config", "patch config.toml");
+  const doc = state.configToml.trim() ? parseToml(state.configToml) : {};
+  if (typeof autostart === "boolean") doc.autostart = autostart;
+  if (newVisibility !== null) {
+    const a2a = doc.a2a;
+    const table = typeof a2a === "object" && !Array.isArray(a2a) && !(a2a instanceof Date);
+    doc.a2a = { ...(table ? a2a : {}), visibility: newVisibility };
+  }
+  state.configToml = stringifyToml(doc);
   ctx.hub.broadcast({ type: "agent_state", agent: ctx.hub.summary(agent) });
   json(ctx.res, 200, ctx.hub.summary(agent));
 }

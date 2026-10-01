@@ -4,7 +4,6 @@
   import History from "../../components/settings/History.svelte";
   import HubGeneral from "../../components/settings/HubGeneral.svelte";
   import Integrations from "../../components/settings/Integrations.svelte";
-  import MCP from "../../components/settings/MCP.svelte";
   import Memory from "../../components/settings/Memory.svelte";
   import Providers from "../../components/settings/Providers.svelte";
   import Pulses from "../../components/settings/Pulses.svelte";
@@ -14,7 +13,6 @@
   import Tracing from "../../components/settings/Tracing.svelte";
   import Update from "../../components/settings/Update.svelte";
   import { sectionsOf, type SectionId } from "../../lib/settings-sections";
-  import RunningOnly from "./RunningOnly.svelte";
   import type { SettingsScope } from "./sections";
   import SettingsSection from "./SettingsSection.svelte";
 
@@ -42,11 +40,6 @@
   lede={`${entry?.description ?? ""}.`}
   {problems}
 >
-  {#if agentScope !== null && section === "a2a"}
-    <div class="legacy-notice">
-      <RunningOnly agent={agentScope.agent} subject="its status and card" />
-    </div>
-  {/if}
   <div data-legacy-view>
     {#if allScope !== null}
       {#if section === "general"}
@@ -58,7 +51,7 @@
           Push notifications aren't available in this version of Residuum.
         </p>
       {:else if section === "listener"}
-        <A2a bind:fields={allScope.configFile.form} scope="hub" agent={null} />
+        <A2a bind:fields={allScope.configFile.form} />
       {:else if section === "limits"}
         <SessionBudget bind:fields={allScope.configFile.form} />
       {:else if section === "diagnostics"}
@@ -90,20 +83,9 @@
         <Pulses bind:fields={agentScope.configFile.form} />
       {:else if section === "runtime"}
         <Runtime bind:fields={agentScope.configFile.form} />
-      {:else if section === "servers"}
-        <MCP bind:servers={agentScope.mcpFile.form} />
-      {:else if section === "a2a"}
-        <A2a bind:fields={agentScope.configFile.form} scope="agent" {agent} />
       {:else if section === "history"}
         <History scope="agent" {agent} />
       {/if}
     {/if}
   </div>
 </SettingsSection>
-
-<style>
-  .legacy-notice {
-    max-width: 640px;
-    margin-bottom: var(--space-16);
-  }
-</style>
