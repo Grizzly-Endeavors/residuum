@@ -1,19 +1,18 @@
 <script lang="ts">
   import { hub } from "../../lib/hub.svelte";
-  import { Badge, Button, Disclosure, StatusDot } from "../../lib/ui";
-  import TeamView from "../../components/TeamView.svelte";
+  import { Badge, Button, StatusDot } from "../../lib/ui";
   import PlaceHeader from "../../shell/PlaceHeader.svelte";
   import type { ShellActions } from "../../shell/shell-actions";
   import AcrossTheTeam from "./AcrossTheTeam.svelte";
   import AgentBoard from "./AgentBoard.svelte";
-  import { agentManagement, focusAgentCreation } from "./agent-management.svelte";
   import ComingUp from "./ComingUp.svelte";
   import { teamTally } from "./home-model";
   import NeedsYou from "./NeedsYou.svelte";
+  import RecentlyDeleted from "./RecentlyDeleted.svelte";
 
-  // Home: what needs the user, every agent at a glance, and on the right what
-  // happened across the team and what runs next. Below 1180px the right
-  // column follows the board.
+  // Home: what needs the user, every agent at a glance with its menu, the
+  // agents that can be restored, and on the right what happened across the
+  // team and what runs next. Below 1180px the right column follows the board.
 
   let { actions }: { actions: ShellActions } = $props();
 
@@ -71,18 +70,12 @@
           <h2 class="home-heading" id="{uid}-agents">
             Agents <Badge count={hub.agents.length} label="agents" />
           </h2>
-          <Button variant="quiet" size="sm" icon="plus" onclick={() => void focusAgentCreation()}
+          <Button variant="quiet" size="sm" icon="plus" onclick={actions.createAgent}
             >New agent</Button
           >
         </div>
         <AgentBoard {now} />
-        <div class="manage">
-          <Disclosure summary="Start, stop, delete and add agents" bind:open={agentManagement.open}>
-            <div class="manage-legacy" data-legacy-view>
-              <TeamView />
-            </div>
-          </Disclosure>
-        </div>
+        <RecentlyDeleted {now} />
       </section>
     </div>
 
@@ -144,14 +137,6 @@
     & .home-heading {
       margin-bottom: 0;
     }
-  }
-
-  .manage {
-    margin-top: var(--space-12);
-  }
-
-  .manage-legacy {
-    width: 100%;
   }
 
   .tally {

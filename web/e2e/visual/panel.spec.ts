@@ -38,6 +38,7 @@ test.describe("context panel", { tag: "@visual" }, () => {
     test.skip(isMobile, "Medium width is a desktop window narrowed.");
     await page.setViewportSize({ width: 1000, height: 760 });
     await page.goto("/agent/scout/schedule?panel=file:SOUL.md");
+    await expect(page.getByRole("heading", { name: "Pulses" })).toBeVisible();
     await expect(page.getByRole("textbox", { name: "Contents of SOUL.md" })).toHaveValue(/# Soul/);
     await panelScreenshot(page, "panel-medium");
   });

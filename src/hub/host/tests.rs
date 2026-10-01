@@ -2437,7 +2437,7 @@ async fn messaging_a_stopped_or_unknown_teammate_is_a_tool_error_and_queues_noth
     let alpha = hub.mock("alpha");
     assert!(
         model_was_told(alpha, "teammate 'beta' is stopped; nothing was queued").await
-            && model_was_told(alpha, "they can start it from the team view").await,
+            && model_was_told(alpha, "they can start it from Home in the web UI").await,
         "a stopped teammate is a tool error that says so"
     );
     assert!(
