@@ -29,14 +29,15 @@
   $effect(() => untrack(() => list.start()));
 
   const blocked = $derived(list.origin !== null && !list.origin.ok ? list.origin.reason : null);
-  const selectedRuns = $derived(
-    artifact === null ? [] : artifactRuns(overview.overviews, artifact),
+  /** The selected row lists running sessions, whose times move each second. */
+  const showsRuns = $derived(
+    artifact !== null && artifactRuns(overview.overviews, artifact).length > 0,
   );
 
   // Relative times move each half minute, and a running session's time each second.
   let now = $state(Date.now());
   $effect(() => {
-    const step = selectedRuns.length > 0 ? 1000 : 30_000;
+    const step = showsRuns ? 1000 : 30_000;
     now = Date.now();
     const timer = window.setInterval(() => {
       now = Date.now();
@@ -87,7 +88,8 @@
       await navigator.clipboard.writeText(url);
       toast.success(`Copied the link to “${item.title}”.`);
     } catch {
-      // Browsers only allow copying on secure pages, which a LAN address over HTTP isn't.
+      // Copying needs a secure page (a LAN address over HTTP isn't) and the
+      // browser's permission; without them, the link is handed over to copy.
       notifications.surface("error", `Couldn't copy the link. Here it is to copy by hand: ${url}`);
     }
   }
