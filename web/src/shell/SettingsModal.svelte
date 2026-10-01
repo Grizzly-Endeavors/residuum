@@ -147,15 +147,11 @@
     {#if View}
       <View scope={open} section={id as AgentSectionId} />
     {:else}
-      <LegacySection scope={open} section={id} />
+      <LegacySection scope={open} section={id as AgentSectionId} />
     {/if}
   {:else}
     {@const View = ALL_SECTION_VIEWS[id as AllSectionId]}
-    {#if View}
-      <View scope={open} section={id as AllSectionId} />
-    {:else}
-      <LegacySection scope={open} section={id} />
-    {/if}
+    <View scope={open} section={id as AllSectionId} />
   {/if}
 {/snippet}
 

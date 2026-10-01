@@ -9,6 +9,7 @@ import { displayState } from "../lib/agent-display-state";
 import { lifecycleApplies, type LifecycleAction } from "../lib/agent-lifecycle";
 import { CHAT_GROUP, chatActions } from "../lib/chat-actions";
 import { hub } from "../lib/hub.svelte";
+import type { InstallOffer } from "../lib/install";
 import type { IconName } from "../lib/icons";
 import { notifications } from "../lib/notifications.svelte";
 import { router } from "../lib/router.svelte";
@@ -24,8 +25,11 @@ import { ws } from "../lib/ws.svelte";
 import { AGENT_PLACES, stateWord } from "./rail-model";
 import type { ShellActions } from "./shell-actions";
 
-/** Set while the browser offers to install the app; Install app is listed only then. */
-export const installOffer = $state<{ install: (() => void) | null }>({ install: null });
+/** Set while the app can be installed from here; Install app is listed only then. */
+export const installOffer = $state<InstallOffer>({ install: null });
+
+/** Whether the Add to Home Screen explanation is open, for browsers that install from the share sheet. */
+export const installHelp = $state({ open: false });
 
 const INBOX: Place = { kind: "inbox", agent: null, tab: "active", item: null };
 

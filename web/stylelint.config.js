@@ -28,10 +28,6 @@ const LEGACY_FILES = [
   "src/styles/settings.css",
   "src/styles/setup.css",
   "src/components/ChatFooter.svelte",
-  "src/components/Modal.svelte",
-  "src/components/settings/A2a.svelte",
-  "src/components/settings/AgentKeys.svelte",
-  "src/components/settings/History.svelte",
 ];
 
 /** A single token reference such as `var(--font-size-ui)`, with no literal fallback. */

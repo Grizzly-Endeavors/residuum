@@ -127,6 +127,11 @@ web-dev *args: _web-deps
 web-build: _web-deps
     cd web && npm run build
 
+# Gzipped size of the initial route (the scripts and styles loaded before the first screen), from a fresh build; CI reports the same table
+[group('web')]
+web-size: web-build
+    scripts/web-initial-route-size.sh web/dist
+
 # Format web sources
 [group('web')]
 web-fmt: _web-deps

@@ -179,7 +179,8 @@
   /* ── Centered: dialogs ─────────────────────────────────────────────── */
 
   .ui-modal-layer:is([data-frame="center"], [data-frame="top"]) {
-    padding: 14vh var(--space-16) var(--space-16);
+    padding: 14vh max(var(--space-16), var(--safe-right)) max(var(--space-16), var(--safe-bottom))
+      max(var(--space-16), var(--safe-left));
 
     & .ui-modal {
       width: var(--modal-width);
@@ -206,7 +207,7 @@
     & .ui-modal {
       width: min(100%, 640px);
       max-height: 84dvh;
-      padding-bottom: env(safe-area-inset-bottom, 0px);
+      padding: 0 var(--safe-right) var(--safe-bottom) var(--safe-left);
       border-radius: var(--corner-lg) var(--corner-lg) 0 0;
       animation: ui-sheet-in var(--duration-base) var(--ease-out);
     }
@@ -222,7 +223,7 @@
 
       width: min(320px, 86vw);
       height: 100%;
-      padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px);
+      padding: var(--safe-top) 0 var(--safe-bottom) var(--safe-left);
       overflow-y: auto;
       background: var(--color-stone-1);
       touch-action: pan-y;
@@ -238,7 +239,7 @@
         width: 100%;
         height: 100%;
         max-height: 100%;
-        padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px);
+        padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
         border-radius: 0;
         animation-name: ui-sheet-in;
       }

@@ -219,7 +219,7 @@ impl ExecTool {
                         self.publisher.as_ref(),
                         format!(
                             "The agent replaced agent key '{}', which you created. Restore it \
-                             from Settings → History if this wasn't intended.",
+                             from Settings → All agents → History if this wasn't intended.",
                             target.name
                         ),
                     )
