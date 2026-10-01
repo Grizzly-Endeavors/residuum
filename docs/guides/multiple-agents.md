@@ -8,19 +8,19 @@ The agent you create during setup is your first agent. There is no lead agent: a
 
 Pick a short name of 1 to 24 lowercase letters, digits and hyphens, such as `research-buddy`. The name is permanent: it is the agent's directory, its address for teammates, and its A2A address. `hub`, `team` and `agents` are taken.
 
-- **From the web UI**: choose **Team** in the agent switcher, then fill in **Create an agent**. Give it a name, optionally a description of what it is for, choose which agent to **copy model settings from**, and choose its A2A visibility.
+- **From the web UI**: choose **New agent** on Home, the **+** beside **Agents** in the sidebar, or **Create an agent** in the search palette (⌘K or Ctrl+K). Give it a name and, optionally, say what it should help with. Under **More options**, choose which agent to **copy model settings from** and **who can find it** (its A2A visibility). The name is checked as you type.
 - **From a terminal**: `residuum agent create research-buddy --description "Keeps my reading list and summarizes new papers each morning."`. Add `--models-from <agent>` to say whose model settings to copy (it is required when more than one agent is running), and `--public` to make the agent's card visible to other agents. Residuum must be running.
 - **By asking an agent**: tell any agent something like "create an agent called research-buddy that keeps my reading list." It uses its `agent_create` tool. The new agent copies that agent's model settings and A2A visibility. You get a notice when it happens.
 
 The description is optional but useful. The new agent receives it as its first message and turns it into notes in its own `SOUL.md` and a role page in the shared wiki, so it starts knowing what it is for. A new agent skips the first-run interview.
 
-If the new agent can't start (a bad model setting, say), it is still created. It shows as failed in the team view with the reason, and you can fix its settings and start it.
+If the new agent can't start (a bad model setting, say), it is still created. Home lists it under **Needs you** with the reason, and you can fix its settings and start it.
 
 ## Switch between agents
 
-The agent switcher lists every agent with a dot for its state and a marker when it is working or has replies you haven't seen. Select one to open its chat, sessions, workspace and settings. Each agent's URL carries its name, so you can bookmark one. **Team** opens the team view and the team-wide pages: the workbench, team files and hub settings.
+The sidebar lists every agent with a dot for its state and a marker when it is working or has replies you haven't seen. Select one to show its places: chat, activity, schedule and files. Each agent's URL carries its name, so you can bookmark one. Under **Team** are the team-wide pages: the workbench and the shared files.
 
-The team view is also where you start, stop and restart an agent, turn **Start automatically** on or off, and see what went wrong with a failed one. From a terminal, `residuum agent list` shows the same states, and `residuum agent start|stop|restart <name>` controls them. A stopped agent does nothing and receives nothing until you start it.
+Home shows every agent on one board. Each agent's **…** menu is where you start, stop and restart it, turn **Start automatically** on or off, open its settings, and delete it; an agent that failed to start is listed under **Needs you** with what went wrong. From a terminal, `residuum agent list` shows the same states, and `residuum agent start|stop|restart <name>` controls them. A stopped agent does nothing and receives nothing until you start it.
 
 ## Hand work between agents
 
@@ -44,19 +44,19 @@ Agents see the shared folder under the `team/` prefix, for example `team/wiki/pe
 
 ## Delete and restore an agent
 
-Delete from the **Team** view (with a confirmation), with `residuum agent delete <name>`, or by asking any agent to delete one. Deleting stops the agent, saves a checkpoint of its directory, removes it, and removes its role page from the wiki. The checkpoint id is shown, and checkpoints are never pruned, so nothing is lost. An agent asked to delete itself does its last work first, because the delete takes effect as soon as it stops.
+Delete with **Delete** in the agent's **…** menu on Home (with a confirmation), with `residuum agent delete <name>`, or by asking any agent to delete one. Deleting stops the agent, saves a checkpoint of its directory, removes it, and removes its role page from the wiki. The CLI shows the checkpoint id. Checkpoints are never pruned, so nothing is lost; if a checkpoint couldn't be taken, the web UI and the CLI say so. An agent asked to delete itself does its last work first, because the delete takes effect as soon as it stops.
 
 To undo a deletion, restore the agent:
 
-- Click **Undo** on the "deleted" toast, or on the note the Team view shows right after you delete.
-- Open the **Team** view and use **Restore** on an agent under **Recently deleted**.
+- Click **Undo** on the "deleted" toast.
+- On Home, open **Recently deleted** under the agents and use **Restore**.
 - Run `residuum agent deleted` to see what can be restored, then `residuum agent restore <name>`.
 
 A restored agent comes back with its notes, memory, sessions, settings, role page and roster entry, and starts if it was set to start automatically. Only you can restore an agent; agents have no restore tool. `residuum agent restore <name> --checkpoint <id>` restores its files from an earlier checkpoint instead. If you create a new agent with a deleted agent's name, it continues the same checkpoint history: the old agent's checkpoints stay in its Checkpoints view, and it stops appearing under Recently deleted.
 
 ## Choose who else can reach an agent
 
-Agents in your team never need A2A to talk to each other. A2A is for agents outside your install, including your own other installs. Each agent has its own visibility, set in the team view under **A2A card**, in the agent's **Settings → A2A**, or with `visibility` under `[a2a]` in its `config/config.toml`:
+Agents in your team never need A2A to talk to each other. A2A is for agents outside your install, including your own other installs. Each agent has its own visibility, chosen under **Who can find it** when you create it, then set in the agent's **Settings → A2A**, or with `visibility` under `[a2a]` in its `config/config.toml`:
 
 - **Private** (the default for agents you create): callers with no key, and no relationship to your other installs, get nothing, not even the agent's card.
 - **Public**: anyone can read the card. Sending tasks still needs a caller key.
