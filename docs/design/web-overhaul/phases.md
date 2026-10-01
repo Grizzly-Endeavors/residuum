@@ -1079,6 +1079,7 @@ W43 and W45 together. W44 after W43. W46 after W45. W47 after W44 and W46.
 
 - **Modules:** anything left of the legacy UI (components, stylesheets, variables, helpers); the style-lint ignore list; the accessibility suppression; the bundle budget; the web contributing guide and instructions; systems-usage pages describing the web UI, with their bundled references where they exist.
 - **Preconditions:** W22–W48.
+- **Runs as two units in parallel:** W49a (code, guardrails and the parity checklist) and W49b (documentation).
 - **Shape when done:**
   - No legacy code remains, and the ignore list is empty.
   - The accessibility suppression is removed, and its warnings are fixed.
