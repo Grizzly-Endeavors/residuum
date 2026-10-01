@@ -1,7 +1,8 @@
 //! Write-scoping policy for file tools.
 //!
 //! Blocks writes to the credential stores in `hub/` (secrets, agent keys,
-//! A2A caller keys) and to the `.example.toml` reference templates, which
+//! A2A caller keys, the Web Push signing key and device list) and to the
+//! `.example.toml` reference templates, which
 //! Residuum regenerates from its compiled-in defaults on every startup
 //! (`config::bootstrap`), so any edit to them is silently lost at the next
 //! restart. The hub's and the agent's `config.toml`, and `providers.toml`,
@@ -62,6 +63,8 @@ fn always_blocked_paths(config_dir: &Path, hub_dir: &Path) -> HashSet<PathBuf> {
         hub.agent_keys_lock(),
         hub.a2a_keys_toml(),
         hub.a2a_keys_lock(),
+        hub.push_vapid_key(),
+        hub.push_devices_json(),
     ];
     let templates = ["config.example.toml", "providers.example.toml"]
         .into_iter()
@@ -400,6 +403,8 @@ mod tests {
             "agent-keys.lock",
             "a2a-keys.toml",
             "a2a-keys.lock",
+            "push-vapid.key",
+            "push-devices.json",
         ] {
             assert!(
                 blocked.contains(&hub_dir.join(name)),
