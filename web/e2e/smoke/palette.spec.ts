@@ -1,6 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
+import { expectPaletteOpen } from "../support/lazy";
 
 /**
  * The action registry's surfaces: the command palette (⌘K or Ctrl+K, the
@@ -30,9 +31,9 @@ async function openPalette(page: Page, isMobile: boolean): Promise<Locator> {
   } else {
     await page.keyboard.press("ControlOrMeta+k");
   }
-  await expect(palette(page)).toBeVisible();
-  await expect(palette(page).getByRole("combobox")).toBeFocused();
-  return palette(page);
+  const dialog = await expectPaletteOpen(page);
+  await expect(dialog.getByRole("combobox")).toBeFocused();
+  return dialog;
 }
 
 async function openDrawer(page: Page): Promise<Locator> {
@@ -65,7 +66,7 @@ test("the rail's search row opens the palette, and Back closes it", async ({ pag
   test.skip(isMobile, "The phone's rail opens in the drawer; its search row is covered below.");
   await page.goto("/agent/atlas");
   await page.getByRole("button", { name: /^Search or jump to/ }).click();
-  await expect(palette(page)).toBeVisible();
+  await expectPaletteOpen(page);
   await page.goBack();
   await expect(palette(page)).toBeHidden();
   expect(address(page)).toBe("/agent/atlas");
@@ -175,7 +176,7 @@ test.describe("on a phone", () => {
 
     rail = await openDrawer(page);
     await rail.getByRole("button", { name: /^Search or jump to/ }).click();
-    await expect(palette(page)).toBeVisible();
+    await expectPaletteOpen(page);
     await expect(page.getByRole("dialog", { name: "Agents and places" })).toBeHidden();
   });
 });

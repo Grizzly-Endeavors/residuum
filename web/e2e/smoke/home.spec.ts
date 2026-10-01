@@ -1,6 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
+import { expectSettingsOpen } from "../support/lazy";
 
 /**
  * Home: what needs the user, with the fixes that clear it live, the agents
@@ -93,7 +94,7 @@ test("Fix settings opens brittle's settings where the problem can be fixed", asy
   await page.goto("/home");
   await need(page, "brittle couldn't start").getByRole("button", { name: "Fix settings" }).click();
   await expect.poll(() => address(page)).toMatch(/^\/home\?settings=brittle\//);
-  await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
+  await expectSettingsOpen(page);
 });
 
 test("an inbox item's Open goes to that item in the Inbox", async ({ page }) => {

@@ -20,14 +20,8 @@ function conversation(page: Page, agent = "atlas"): Locator {
   return page.getByRole("region", { name: `Conversation with ${agent}` });
 }
 
-/** The hub socket is up: the inbox count comes from the overview it brings. */
-async function hubConnected(page: Page): Promise<void> {
-  await expect(page.getByRole("link", { name: /^Inbox.*\d+ unread/ }).first()).toBeAttached();
-}
-
-/** The hub is up, and a running agent's composer has read its model. */
+/** A running agent's composer has read its model. */
 async function chatScreenshot(page: Page, name: string, running = true): Promise<void> {
-  await hubConnected(page);
   if (running) {
     await expect(page.getByRole("button", { name: /^Model: Claude Sonnet 4\.6/ })).toBeAttached();
   }
@@ -89,7 +83,6 @@ test.describe("chat feed", { tag: "@visual" }, () => {
     await page.goto("/agent/atlas");
     const feed = conversation(page);
     await expect(feed.getByText(GREETING)).toBeInViewport();
-    await hubConnected(page);
     await feed.getByRole("button", { name: "Ran 1 command" }).click();
     const step = feed.getByRole("button", { name: "Ran residuum memory stats" });
     await step.click();
@@ -110,7 +103,6 @@ test.describe("chat feed", { tag: "@visual" }, () => {
     await page.goto("/agent/atlas");
     const feed = conversation(page);
     await expect(feed.getByText(GREETING)).toBeInViewport();
-    await hubConnected(page);
     await page.getByRole("textbox", { name: "Message atlas" }).fill("Check the wiki index");
     await page.getByRole("textbox", { name: "Message atlas" }).press("Enter");
     await expect(feed.getByRole("button", { name: "Read team/wiki/index.md" })).toBeVisible({
@@ -151,7 +143,6 @@ test.describe("composer", { tag: "@visual" }, () => {
   test("the model and thinking control, a popover or a sheet on a phone", async ({ page }) => {
     await page.goto("/agent/atlas");
     await expect(conversation(page).getByText(GREETING)).toBeInViewport();
-    await hubConnected(page);
     await page.getByRole("button", { name: /^Model: Claude Sonnet 4\.6/ }).click();
     const chooser = page.getByRole("dialog", { name: "Model for atlas" });
     await expect(chooser.getByRole("button", { name: "Claude Haiku 4.5" })).toBeVisible();

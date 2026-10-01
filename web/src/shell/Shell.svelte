@@ -2,6 +2,7 @@
   import { onMount, tick } from "svelte";
   import { actionRegistry } from "../lib/action-registry.svelte";
   import { showAppBadge } from "../lib/app-badge";
+  import { hub } from "../lib/hub.svelte";
   import { LazyComponent } from "../lib/lazy-component.svelte";
   import { notifications } from "../lib/notifications.svelte";
   import { overview } from "../lib/overview.svelte";
@@ -180,7 +181,13 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="shell" data-ui>
+<!-- data-hub and data-overview say how far the hub's state has arrived (the socket, then the counts it brings), for the end-to-end suite, which waits for "connected" and "loaded" before it acts. -->
+<div
+  class="shell"
+  data-ui
+  data-hub={hub.transport.lost ? "lost" : hub.transport.status}
+  data-overview={overview.loaded ? "loaded" : "loading"}
+>
   <div class="shell-side" bind:this={sideRail}>
     <Rail {accordion} {actions} />
   </div>

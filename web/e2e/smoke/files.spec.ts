@@ -1,6 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
+import { expectFileOpen } from "../support/lazy";
 
 /**
  * Files and Shared files: the tree, the editor in the context panel, rename,
@@ -38,9 +39,8 @@ async function onDisk(page: Page, path: string): Promise<string> {
 
 async function openFile(page: Page, isMobile: boolean, name: string): Promise<Locator> {
   await row(page, name).click();
-  const panel = filePanel(page, isMobile, name);
-  await expect(editor(panel, name)).toBeVisible();
-  return panel;
+  await expectFileOpen(page, name);
+  return filePanel(page, isMobile, name);
 }
 
 async function rowMenu(page: Page, name: string): Promise<void> {
@@ -169,13 +169,27 @@ test("a save after the file changed on disk asks, and overwrites only when told"
 }) => {
   await page.goto("/agent/atlas/files?panel=file:SOUL.md");
   const panel = filePanel(page, isMobile, "SOUL.md");
+  // The file has to be in the editor before the edit starts, or loading it replaces the edit.
+  await expect(await expectFileOpen(page, "SOUL.md")).toHaveValue(/Craft/);
   await editor(panel, "SOUL.md").press("End");
   await editor(panel, "SOUL.md").pressSequentially("Mine.");
-  await mock.post("/api/mock/agent-file", {
-    params: { agent: "atlas" },
-    data: { path: "SOUL.md", content: "# Soul\n\nTheirs.\n" },
-  });
-  await expect(panel.getByText("SOUL.md changed on disk while you were editing.")).toBeVisible();
+
+  // The page's watch on the file reaches the mock once the agent's socket has opened,
+  // which on a loaded machine can be after the edit above, and a change made before
+  // then is never reported. So write the file, the same each time, until the page notices.
+  const changed = panel.getByText("SOUL.md changed on disk while you were editing.");
+  await expect
+    .poll(
+      async () => {
+        await mock.post("/api/mock/agent-file", {
+          params: { agent: "atlas" },
+          data: { path: "SOUL.md", content: "# Soul\n\nTheirs.\n" },
+        });
+        return changed.isVisible();
+      },
+      { message: "the page should be told that SOUL.md changed on disk" },
+    )
+    .toBe(true);
 
   await panel.getByRole("button", { name: "Save", exact: true }).click();
   const conflict = page.getByRole("alertdialog", { name: "SOUL.md changed on disk" });

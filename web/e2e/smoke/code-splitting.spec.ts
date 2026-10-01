@@ -1,5 +1,11 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "../support/fixtures";
+import {
+  expectFileOpen,
+  expectPaletteOpen,
+  expectSettingsOpen,
+  expectSetupOpen,
+} from "../support/lazy";
 
 /**
  * The code that loads only when a feature opens (design §11): Settings, the
@@ -34,7 +40,7 @@ test.describe("the production build", { tag: "@preview" }, () => {
       ? page.getByRole("navigation", { name: "Main" })
       : page.getByRole("navigation", { name: "Places and agents" });
     await control.getByRole("button", { name: "Settings" }).click();
-    await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
+    await expectSettingsOpen(page);
     expect(loaded(requested, "SettingsModal")).toBe(true);
   });
 
@@ -77,7 +83,7 @@ test.describe("the production build", { tag: "@preview" }, () => {
     } else {
       await page.keyboard.press("ControlOrMeta+k");
     }
-    await expect(page.getByRole("dialog", { name: "Search and commands" })).toBeVisible();
+    await expectPaletteOpen(page);
     expect(loaded(requested, "CommandPalette")).toBe(true);
   });
 
@@ -88,7 +94,7 @@ test.describe("the production build", { tag: "@preview" }, () => {
     expect(loaded(requested, "FilePanel")).toBe(false);
 
     await page.goto("/agent/atlas/files?panel=file:SOUL.md");
-    await expect(page.getByRole("textbox", { name: "Contents of SOUL.md" })).toBeVisible();
+    await expectFileOpen(page, "SOUL.md");
     expect(loaded(requested, "FilePanel")).toBe(true);
   });
 
@@ -100,9 +106,7 @@ test.describe("the production build", { tag: "@preview" }, () => {
 
     await mock.post("/api/mock/reset", { data: { setup: true } });
     await page.goto("/");
-    await expect(
-      page.getByRole("heading", { name: "Welcome to Residuum", level: 1 }),
-    ).toBeVisible();
+    await expectSetupOpen(page);
     expect(loaded(requested, "Setup")).toBe(true);
   });
 });

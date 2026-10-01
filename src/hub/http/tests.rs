@@ -17,6 +17,8 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio_tungstenite::tungstenite::Message as ClientMessage;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tower::ServiceExt;
 
 use super::{HubHttpState, agent_repair_router, hub_router};
@@ -2175,6 +2177,45 @@ async fn the_hub_socket_sends_hub_boot_first_on_every_connection() {
             json!({ "type": "hub_boot", "boot_id": TEST_BOOT_ID })
         );
         assert_eq!(next_frame(&mut socket).await["type"], "agents_snapshot");
+    }
+}
+
+#[tokio::test]
+async fn a_clean_client_close_completes_with_the_clients_code() {
+    let h = Harness::new();
+    let addr = h.serve().await;
+    let mut socket = connect_hub(addr).await;
+    next_frame(&mut socket).await; // agents_snapshot
+
+    socket
+        .send(ClientMessage::Close(Some(CloseFrame {
+            code: CloseCode::Normal,
+            reason: "bye".into(),
+        })))
+        .await
+        .unwrap();
+
+    let reply = tokio::time::timeout(Duration::from_secs(5), socket.next())
+        .await
+        .expect("timed out waiting for the hub to answer the close")
+        .expect("the socket closed without answering the close")
+        .expect("socket error while waiting for the close reply");
+    match reply {
+        ClientMessage::Close(Some(frame)) => {
+            assert_eq!(
+                frame.code,
+                CloseCode::Normal,
+                "the hub must echo the client's close code, not drop to 1006"
+            );
+        }
+        ClientMessage::Close(None) => panic!("the hub answered with a Close frame but no code"),
+        other @ (ClientMessage::Text(_)
+        | ClientMessage::Binary(_)
+        | ClientMessage::Ping(_)
+        | ClientMessage::Pong(_)
+        | ClientMessage::Frame(_)) => {
+            panic!("expected the hub to answer with a Close frame, got {other:?}")
+        }
     }
 }
 

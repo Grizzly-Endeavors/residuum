@@ -1,6 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
+import { expectSettingsOpen } from "../support/lazy";
 
 /**
  * The All agents scope's Saved keys, Agent-to-agent listener (with its caller
@@ -18,7 +19,7 @@ const undo = (page: Page): Locator => page.getByRole("button", { name: "Undo" })
 
 async function openSection(page: Page, section: string): Promise<void> {
   await page.goto(`/home?settings=_all/${section}`);
-  await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
+  await expectSettingsOpen(page);
 }
 
 async function names(page: Page, path: string, key: string): Promise<string[]> {
