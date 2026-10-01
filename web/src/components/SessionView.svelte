@@ -18,7 +18,7 @@
   import SessionFeed from "./SessionFeed.svelte";
   import ChatFooter from "./ChatFooter.svelte";
 
-  let { view }: { view: SessionView } = $props();
+  let { agent, view }: { agent: string; view: SessionView } = $props();
 
   let headingEl: HTMLHeadingElement | undefined = $state();
   let textarea: HTMLTextAreaElement | undefined = $state();
@@ -80,7 +80,7 @@
   }
 
   function openSpawner() {
-    if (summary?.spawner) void openSessionByAddress(ws.sessions, summary.spawner, null);
+    if (summary?.spawner) void openSessionByAddress(agent, summary.spawner, null);
   }
 </script>
 
@@ -197,6 +197,7 @@
   </div>
 
   <SessionFeed
+    {agent}
     items={view.items}
     verbose={ws.verbose}
     {working}

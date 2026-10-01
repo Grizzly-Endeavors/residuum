@@ -5,9 +5,9 @@
 // leave them where they are and a "Jump to latest" pill offers the way back.
 
 /**
- * Within this distance of the bottom, the feed keeps following new content
- * and the pill stays hidden. Generous, because the feeds' bottom padding
- * (room for the floating composer) already counts toward it.
+ * Within this distance of the bottom, a feed keeps following new content and
+ * the pill stays hidden, unless it sets its own. Generous, for a feed whose
+ * bottom padding (room for a floating composer) counts toward it.
  */
 const FOLLOW_THRESHOLD_PX = 400;
 
@@ -33,6 +33,9 @@ export class FeedScroller {
    * position it passes through meanwhile isn't theirs, so it doesn't count.
    */
   private held = false;
+
+  /** `followWithinPx`: how near the bottom still counts as following. */
+  constructor(private readonly followWithinPx = FOLLOW_THRESHOLD_PX) {}
 
   private readonly onScroll = (): void => {
     this.measure();
@@ -131,7 +134,7 @@ export class FeedScroller {
     // reader's state for when it's shown again.
     if (!el || isHidden(el) || this.held) return;
     const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const nearBottom = distFromBottom <= FOLLOW_THRESHOLD_PX;
+    const nearBottom = distFromBottom <= this.followWithinPx;
     if (this.jumping) {
       if (!nearBottom) return;
       this.jumping = false;

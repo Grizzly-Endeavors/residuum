@@ -1,6 +1,5 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import MarkdownContent from "../../components/MarkdownContent.svelte";
   import type { HubInboxItem } from "../../lib/hub-types";
   import { Icon } from "../../lib/icons";
   import { inbox, inboxItemKey } from "../../lib/inbox.svelte";
@@ -9,8 +8,10 @@
   import { relativeTime } from "../../lib/time";
   import { toast } from "../../lib/toast.svelte";
   import { Button, VisuallyHidden } from "../../lib/ui";
+  import Prose from "../../feed/Prose.svelte";
   import { followLink } from "../home/follow-link";
-  import { fileSize, sourceLabel } from "./inbox-model";
+  import { fileSize } from "../../lib/file-size";
+  import { sourceLabel } from "./inbox-model";
 
   // One item in the Inbox: a row with its title, agent, source, time and
   // unread mark, which opens in place to the body, the attachments and what
@@ -110,7 +111,9 @@
   <div class="item-body" id="{uid}-body" hidden={!open}>
     {#if open}
       {#if item.body.trim() !== ""}
-        <div class="item-prose"><MarkdownContent content={item.body} /></div>
+        <div class="item-prose">
+          <Prose content={item.body} agent={item.agent} size="compact" />
+        </div>
       {/if}
       {#if item.attachments.length > 0}
         <ul class="item-files" aria-label="Attachments">
@@ -242,40 +245,9 @@
   .item-prose {
     max-width: var(--layout-reading-width);
     color: var(--color-text-2);
-    font-size: var(--font-size-ui);
-    line-height: var(--line-height-message);
-    overflow-wrap: anywhere;
 
-    & :global(:is(p, ul, ol, pre, blockquote, h1, h2, h3, h4, table) + *) {
-      margin-top: var(--space-8);
-    }
-
-    & :global(:is(ul, ol)) {
-      padding-left: var(--space-20);
-    }
-
-    & :global(:is(h1, h2, h3, h4)) {
+    & :global(:is(h1, h2, h3, h4, h5, h6, strong, b)) {
       color: var(--color-text);
-      font-size: var(--font-size-ui);
-      font-weight: var(--font-weight-semibold);
-    }
-
-    & :global(:is(strong, b)) {
-      color: var(--color-text);
-      font-weight: var(--font-weight-semibold);
-    }
-
-    & :global(pre) {
-      padding: var(--space-8) var(--space-10);
-      border-radius: var(--corner-sm);
-      background: var(--color-stone-2);
-      font-size: var(--font-size-xs);
-      overflow-x: auto;
-    }
-
-    & :global(blockquote) {
-      padding-left: var(--space-12);
-      border-left: 2px solid var(--color-line);
     }
   }
 

@@ -171,7 +171,7 @@ export class FeedStore {
   /** Bumped whenever the whole feed is replaced from history. */
   generation = $state(0);
   /** Recent history has been loaded at least once. */
-  historyLoaded = false;
+  historyLoaded = $state(false);
 
   private pendingToolCalls = new SvelteMap<string, ToolCallState>();
   private lastLiveDayKey: string | null = null;
