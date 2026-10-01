@@ -61,6 +61,15 @@ impl Default for HubBackgroundConfig {
     }
 }
 
+/// The Web Push settings that are hub-level.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HubPushConfig {
+    /// Contact URI (`mailto:` or `https:`) that push services can reach the
+    /// operator at, sent as the VAPID `sub` claim. `None` when unset or
+    /// invalid, in which case the sender uses the project's default.
+    pub contact: Option<String>,
+}
+
 /// Validated hub-level runtime configuration, loaded from `hub/config.toml`.
 ///
 /// Shared by every agent the hub hosts. It hot-reloads independently of the
@@ -80,6 +89,8 @@ pub struct HubConfig {
     pub tracing: TracingConfig,
     /// Shared background-task limits.
     pub background: HubBackgroundConfig,
+    /// Web Push settings.
+    pub push: HubPushConfig,
     /// Directory this config was loaded from (`~/.residuum/hub`).
     pub config_dir: PathBuf,
     /// User-facing notices describing what was skipped or degraded while

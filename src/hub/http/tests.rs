@@ -47,6 +47,7 @@ mod events;
 mod inbox;
 mod overview;
 mod overview_schedule;
+mod push;
 
 /// The boot id every harness hub reports.
 const TEST_BOOT_ID: &str = "boot-under-test";
@@ -426,6 +427,7 @@ impl AgentDirectory for FakeDirectory {
 struct Harness {
     app: Router,
     directory: Arc<FakeDirectory>,
+    push: Arc<crate::hub::push::PushService>,
     root: tempfile::TempDir,
     reload_rx: mpsc::UnboundedReceiver<ReloadSignal>,
     shutdown_rx: mpsc::Receiver<()>,
@@ -470,6 +472,7 @@ impl Harness {
         let shared: Arc<dyn AgentDirectory> = Arc::<FakeDirectory>::clone(&directory);
         let overview =
             TeamOverview::with_window(TEST_BOOT_ID, Arc::clone(&shared), OVERVIEW_WINDOW);
+        let push = crate::hub::push::PushService::new(&hub_dir, None);
         let hub = HubHttpState {
             hub_dir: hub_dir.clone(),
             reload_tx,
@@ -503,6 +506,7 @@ impl Harness {
             team_bus: team_bus.clone(),
             team_watch_health: health_rx,
             started_at: std::time::Instant::now(),
+            push: Arc::clone(&push),
             team_events: Arc::clone(&team_events),
             overview: Arc::clone(&overview),
         };
@@ -510,6 +514,7 @@ impl Harness {
         Self {
             app,
             directory,
+            push,
             root,
             reload_rx,
             shutdown_rx,

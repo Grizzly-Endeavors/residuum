@@ -228,8 +228,26 @@ impl Fixture {
         self.host.summary(name).unwrap().state
     }
 
+    /// Wait until both of a chat turn's workspace checkpoints are in the
+    /// agent's history: the one before the turn and the one after. A turn
+    /// records them in the background, and on a first turn each changes the
+    /// workspace, so each is recorded. After they are, nothing writes into the
+    /// agent's workspace checkpoint repository until the next turn.
+    async fn wait_for_turn_checkpoints(&self, name: &str) {
+        eventually("the turn's checkpoints to be recorded", || async {
+            let (_, history) = self
+                .get(&format!("/api/agents/{name}/checkpoints?repo=workspace"))
+                .await;
+            (history.contains("\"trigger\":\"turn_start\"")
+                && history.contains("\"trigger\":\"turn_end\""))
+            .then_some(())
+        })
+        .await;
+    }
+
     /// Replace the agent's workspace checkpoint repository with a plain
-    /// file, so that opening it fails.
+    /// file, so that opening it fails. Call [`Self::wait_for_turn_checkpoints`]
+    /// first, so no background checkpoint is still writing into the directory.
     fn make_checkpoints_unopenable(&self, name: &str) {
         let repo = crate::checkpoints::agent_repos_dir(
             &crate::config::HubPaths::new(&self.services.hub_dir).checkpoints_dir(),
@@ -507,6 +525,7 @@ async fn a_stopped_agents_history_and_inbox_answer_when_its_checkpoint_repositor
         history.contains("remember the pelican").then_some(())
     })
     .await;
+    hub.wait_for_turn_checkpoints("scout").await;
     hub.host.stop("scout").await.unwrap();
     hub.add_inbox_item("scout", "20260930_pelican");
     hub.make_checkpoints_unopenable("scout");
@@ -548,6 +567,7 @@ async fn a_running_agents_history_and_inbox_do_not_open_its_checkpoint_repositor
         history.contains("remember the pelican").then_some(())
     })
     .await;
+    hub.wait_for_turn_checkpoints("scout").await;
     hub.add_inbox_item("scout", "20260930_pelican");
     hub.make_checkpoints_unopenable("scout");
 

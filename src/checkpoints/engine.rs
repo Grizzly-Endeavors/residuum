@@ -1692,6 +1692,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn config_snapshot_never_includes_the_push_signing_key_or_devices() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub_dir = dir.path().join("hub");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        std::fs::write(hub_dir.join("config.toml"), "timezone = \"UTC\"").unwrap();
+        std::fs::write(hub_dir.join("push-vapid.key"), [0_u8; 138]).unwrap();
+        std::fs::write(hub_dir.join("push-devices.json"), "{\"devices\":[]}").unwrap();
+        let engine = new_engine(dir.path());
+
+        let id = engine
+            .checkpoint_config_now(&ctx(CheckpointTrigger::PreConfigWrite, "test"))
+            .unwrap()
+            .unwrap();
+        let detail = engine.show_checkpoint(RepoKind::Hub, id).await.unwrap();
+        let paths: Vec<&str> = detail
+            .changed_paths
+            .iter()
+            .map(|c| c.path.as_str())
+            .collect();
+        assert_eq!(
+            paths,
+            ["config.toml"],
+            "a restore must never roll back the push key or the registered devices"
+        );
+    }
+
+    #[tokio::test]
     async fn agent_config_repo_tracks_exactly_config_and_providers_toml() {
         let dir = tempfile::tempdir().unwrap();
         let agent_config_dir = dir.path().join("agent-config");

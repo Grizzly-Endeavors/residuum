@@ -48,7 +48,7 @@ pub(super) fn routes(state: LifecycleState) -> Router {
 }
 
 /// Parse a JSON request body, or say in plain words why it can't be used.
-fn parse_body<T: DeserializeOwned>(body: &Bytes) -> Result<T, String> {
+pub(super) fn parse_body<T: DeserializeOwned>(body: &Bytes) -> Result<T, String> {
     serde_json::from_slice(body)
         .map_err(|e| format!("the request body isn't valid for this route: {e}"))
 }

@@ -815,13 +815,14 @@ Defaults for a new device: `inbox_item` and `agent_failed` on, the other two off
 **Payload.** Encrypted JSON:
 
 ```
-{ v: 1, event: "inbox_item" | "agent_failed" | "outbound_unreachable" | "reply_while_away",
+{ v: 1, event: "inbox_item" | "agent_failed" | "outbound_unreachable" | "reply_while_away" | "test",
   agent, title, body, target, tag, badge }
 ```
 
 - `target` is a URL path from the triggers table.
 - `badge` is the total inbox unread.
 - `body` is plain text, at most 120 characters.
+- `test` is the event of the notification that Send test in the Notifications section asks the hub to send to one device. It has no preference and no agent (`agent` is empty), carries the real inbox unread count in `badge`, and is shown like every other push.
 
 | Event | Title | Body | Tag |
 |---|---|---|---|

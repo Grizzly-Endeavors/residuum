@@ -198,6 +198,7 @@ mod tests {
             a2a: crate::config::HubA2aConfig::default(),
             tracing: crate::config::TracingConfig::default(),
             background: crate::config::HubBackgroundConfig::default(),
+            push: crate::config::HubPushConfig::default(),
             config_dir: base.join("hub"),
             load_notices: Vec::new(),
         }
