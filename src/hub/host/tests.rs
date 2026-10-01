@@ -204,8 +204,20 @@ impl Fixture {
             name,
         )
         .join("workspace.git");
-        if repo.exists() {
-            std::fs::remove_dir_all(&repo).unwrap();
+        // A running agent may still be writing a checkpoint into the
+        // repository, which makes the removal fail with "Directory not empty"
+        // until that write lands.
+        for attempt in 1..=40 {
+            if !repo.exists() {
+                break;
+            }
+            match std::fs::remove_dir_all(&repo) {
+                Ok(()) => break,
+                Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty && attempt < 40 => {
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                Err(e) => panic!("failed to remove {}: {e}", repo.display()),
+            }
         }
         std::fs::write(&repo, "not a repository").unwrap();
     }
