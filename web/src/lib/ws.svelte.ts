@@ -132,9 +132,8 @@ class WsCoordinator {
       if (this.hasConnected || this.catchUpOnConnect) void this.reconcileMainHistory();
       this.hasConnected = true;
       this.catchUpOnConnect = false;
-      // Seed the chat footer so it renders correctly before the next model
-      // call, rather than starting blank on every connect.
-      void this.loadUsageTotals();
+      // The conversation's size as the agent has it now, before its next model call.
+      void this.loadUsage();
       // A new connection watches nothing until told, so the watch set goes
       // out again before any owner hears of the reconnect.
       this.liveUpdatesOffShown = false;
@@ -237,6 +236,8 @@ class WsCoordinator {
     if (name === null) return;
     if (this.connectionWanted()) this.transport.connect();
     void this.loadMainHistory();
+    // Read whatever the agent's state, so a stopped agent shows its last figures.
+    void this.loadUsage();
   }
 
   // ── Main chat history ─────────────────────────────────────────────
@@ -320,20 +321,27 @@ class WsCoordinator {
   }
 
   /**
-   * Seed the chat footer's cumulative totals on connect/reconnect. Fails
-   * quietly — this is a quiet, non-critical status line, not something
-   * worth a toast over; the footer just stays blank until the next
-   * `turn_usage` frame arrives.
+   * Read the conversation's size: the cumulative token totals the agent
+   * keeps, which `turn_usage` frames update from here on. A failure is kept
+   * on the store, where the conversation-size view shows it with a retry.
    */
-  private async loadUsageTotals(): Promise<void> {
+  async loadUsage(): Promise<void> {
     const agent = this.agent;
     if (agent === null) return;
     const store = this.store;
     try {
-      store.setInitialUsage(await fetchUsageTotals(agent));
-    } catch {
-      // quiet degradation, by design — see doc comment above
+      store.setSessionUsage(await fetchUsageTotals(agent));
+    } catch (err) {
+      if (store !== this.store) return;
+      store.usageProblem = userErrorMessage(err, {
+        action: `Couldn't read the size of the conversation with ${agent}.`,
+      });
     }
+  }
+
+  /** The user's messages waiting for the connection to come back. */
+  get queuedMessages(): number {
+    return this.transport.pendingOf("send_message");
   }
 
   /**

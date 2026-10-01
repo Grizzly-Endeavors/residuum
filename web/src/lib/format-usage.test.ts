@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatElapsed, formatTokenCount } from "./format-usage";
+import { formatApproxWords, formatElapsed, formatTokenCount } from "./format-usage";
 
 describe("formatElapsed", () => {
   it("shows plain seconds under a minute", () => {
@@ -40,5 +40,24 @@ describe("formatTokenCount", () => {
   it("shows one decimal in the millions, trimming a bare .0", () => {
     expect(formatTokenCount(2_500_000)).toBe("2.5M");
     expect(formatTokenCount(1_000_000)).toBe("1M");
+  });
+});
+
+describe("formatApproxWords", () => {
+  it("counts about three words to every four tokens, to the nearest ten under a thousand", () => {
+    expect(formatApproxWords(1000)).toBe("750 words");
+    expect(formatApproxWords(5)).toBe("10 words");
+    expect(formatApproxWords(0)).toBe("no words");
+  });
+
+  it("keeps two significant figures in the thousands", () => {
+    expect(formatApproxWords(18_402)).toBe("14,000 words");
+    expect(formatApproxWords(2_000)).toBe("1,500 words");
+    expect(formatApproxWords(412_880)).toBe("310,000 words");
+  });
+
+  it("says millions in words", () => {
+    expect(formatApproxWords(1_600_000)).toBe("1.2 million words");
+    expect(formatApproxWords(4_000_000)).toBe("3 million words");
   });
 });

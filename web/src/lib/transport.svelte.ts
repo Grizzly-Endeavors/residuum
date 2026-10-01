@@ -38,10 +38,17 @@ export class WsTransport<S = ServerMessage, C extends { type: string } = ClientM
   onDisconnected: (() => void) | null = null;
 
   /** Messages queued while disconnected, flushed in order once reconnected. */
-  private pending: C[] = [];
+  private pending = $state.raw<C[]>([]);
 
   /** How many messages are queued waiting for reconnect (reactive). */
-  pendingCount = $state(0);
+  get pendingCount(): number {
+    return this.pending.length;
+  }
+
+  /** How many queued messages are of `type` (reactive). */
+  pendingOf(type: C["type"]): number {
+    return this.pending.filter((msg) => msg.type === type).length;
+  }
 
   private ws: WebSocket | null = null;
   private reconnectDelay = 1000;
@@ -132,7 +139,6 @@ export class WsTransport<S = ServerMessage, C extends { type: string } = ClientM
   reset(): void {
     this.disconnect();
     this.pending = [];
-    this.pendingCount = 0;
     this.reconnectDelay = 1000;
   }
 
@@ -146,10 +152,7 @@ export class WsTransport<S = ServerMessage, C extends { type: string } = ClientM
       this.ws.send(JSON.stringify(msg));
       return;
     }
-    if (msg.type !== "ping") {
-      this.pending.push(msg);
-      this.pendingCount = this.pending.length;
-    }
+    if (msg.type !== "ping") this.pending = [...this.pending, msg];
   }
 
   // ── Private ──────────────────────────────────────────────────────────
@@ -157,7 +160,6 @@ export class WsTransport<S = ServerMessage, C extends { type: string } = ClientM
   private flushPending(): void {
     const queued = this.pending;
     this.pending = [];
-    this.pendingCount = 0;
     for (const msg of queued) {
       this.send(msg);
     }

@@ -1,7 +1,10 @@
 // The chat actions: what the composer once ran as slash commands. Each has a
 // plain label and keeps its old name as its command, so `/observe` still runs
 // "Summarize older messages now". They act on the bound agent, and the ones
-// that go over its connection need it running.
+// that go over its connection need it running. Each says one thing of its
+// own at most: Summarize and Condense say they've started, and the agent's
+// notice says when they're done; Reload and Add a note leave it all to the
+// agent's notice, which comes at once.
 
 import type { AppAction } from "./action-registry.svelte";
 import type { AgentDisplayState } from "./agent-display-state";
@@ -57,9 +60,9 @@ export function chatActions(ctx: ChatActionContext): AppAction[] {
   const offline = needsRunningAgent(ctx);
   const base = { group: CHAT_GROUP, hint: ctx.agent ?? undefined } as const;
 
-  const serverCommand = (name: string, notice: string) => (): void => {
+  const serverCommand = (name: string, started: string) => (): void => {
     ctx.send({ type: "server_command", name, args: null });
-    ctx.surface("system", notice);
+    ctx.surface("system", started);
   };
 
   return [
@@ -70,7 +73,7 @@ export function chatActions(ctx: ChatActionContext): AppAction[] {
       icon: "layers",
       command: "observe",
       disabled: offline,
-      run: serverCommand("observe", `Asked ${agent} to summarize older messages.`),
+      run: serverCommand("observe", `${agent} is summarizing older messages…`),
     },
     {
       ...base,
@@ -79,7 +82,7 @@ export function chatActions(ctx: ChatActionContext): AppAction[] {
       icon: "memory",
       command: "reflect",
       disabled: offline,
-      run: serverCommand("reflect", `Asked ${agent} to condense its memories.`),
+      run: serverCommand("reflect", `${agent} is condensing its memories…`),
     },
     {
       ...base,
@@ -103,7 +106,6 @@ export function chatActions(ctx: ChatActionContext): AppAction[] {
       disabled: offline,
       run: () => {
         ctx.send({ type: "reload" });
-        ctx.surface("system", `Asked ${agent} to reload its settings.`);
       },
     },
     {
@@ -134,7 +136,6 @@ export function chatActions(ctx: ChatActionContext): AppAction[] {
           return;
         }
         ctx.send({ type: "inbox_add", body });
-        ctx.surface("notice", `Added a note to ${agent}'s inbox.`);
       },
     },
     {

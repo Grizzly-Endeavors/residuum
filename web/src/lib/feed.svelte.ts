@@ -141,11 +141,13 @@ export class FeedStore {
   /** Tool calls executed so far this turn. */
   turnToolCalls = $state(0);
   /**
-   * Cumulative session token totals for the chat footer, or `null` before
-   * the first value arrives (a `turn_usage` frame, or the initial
-   * `GET /api/usage` fetch on connect).
+   * Cumulative session token totals for the conversation-size view, or
+   * `null` before the first value arrives (a `turn_usage` frame, or the
+   * `GET /api/usage` read on binding and on connect).
    */
   sessionUsage = $state<SessionUsageTotals | null>(null);
+  /** Why the totals couldn't be read, until they are. */
+  usageProblem = $state<string | null>(null);
   /**
    * Whether the background post-turn observer/reflector cycle is
    * currently running (see `crate::gateway::post_turn` on the server) —
@@ -233,7 +235,7 @@ export class FeedStore {
         this.turnOutputTokens = msg.output_tokens;
         this.turnHasUsage = msg.has_usage;
         this.turnToolCalls = msg.tool_calls;
-        if (msg.session_totals) this.sessionUsage = msg.session_totals;
+        if (msg.session_totals) this.setSessionUsage(msg.session_totals);
         break;
 
       case "post_turn_activity":
@@ -512,13 +514,10 @@ export class FeedStore {
     });
   }
 
-  /**
-   * Seed the chat footer's cumulative totals from `GET /api/usage`, called
-   * once on connect/reconnect so the footer renders correctly before the
-   * next model call rather than starting blank.
-   */
-  setInitialUsage(totals: SessionUsageTotals): void {
+  /** The cumulative totals as `GET /api/usage` read them, on binding and on connect. */
+  setSessionUsage(totals: SessionUsageTotals): void {
     this.sessionUsage = totals;
+    this.usageProblem = null;
   }
 
   /** Add a user message to the feed. */

@@ -43,7 +43,14 @@ function installServer(): FakeServer {
         return json(history(`hello from ${agent}`));
       }
       if (input.includes("/usage")) {
-        return json({ input_tokens: 1, output_tokens: 1, cost: null });
+        await held.get(`${agent}:usage`);
+        const tokens = agent === "scout" ? 111 : 222;
+        return json({
+          input_tokens: tokens,
+          output_tokens: tokens,
+          context_tokens: null,
+          tool_calls: 0,
+        });
       }
       if (input.includes("/sessions")) {
         return json({ live: [], completed: [], next_cursor: null });
@@ -243,12 +250,17 @@ describe("switching agents leaves nothing of the old agent behind", () => {
   });
 
   it("does not let the old agent's late usage totals land on the new agent", async () => {
-    installServer();
+    const server = installServer();
+    const slow = server.hold("scout:usage");
     setViewedAgent("scout");
     FakeWebSocket.last.simulateOpen();
     setViewedAgent("atlas");
     await flush();
-    expect(ws.store.sessionUsage).toBeNull();
+    expect(ws.store.sessionUsage?.input_tokens).toBe(222);
+
+    slow.release();
+    await flush();
+    expect(ws.store.sessionUsage?.input_tokens).toBe(222);
   });
 
   it("starts the new agent's connection state fresh", async () => {

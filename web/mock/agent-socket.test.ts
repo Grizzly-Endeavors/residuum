@@ -248,6 +248,8 @@ describe("agent socket", () => {
       expect(types(socket.frames)).toEqual([
         "turn_started",
         "broadcast_response",
+        "turn_usage",
+        "turn_usage",
         "response",
         "turn_ended",
       ]);
@@ -257,10 +259,12 @@ describe("agent socket", () => {
         "broadcast_response",
         "tool_call",
         "tool_result",
+        "turn_usage",
         "tool_call",
         "tool_call",
         "tool_result",
         "tool_result",
+        "turn_usage",
         "response",
         "turn_ended",
       ]);

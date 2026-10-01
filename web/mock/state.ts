@@ -6,6 +6,7 @@ import type {
   AgentSummary,
   OutboundA2aTaskSummary,
   ServerMessage,
+  SessionUsageTotals,
 } from "../src/lib/generated/protocol";
 import type { HubServerMessage } from "../src/lib/hub-types";
 import type { RecentMessage, UserInboxItem, WorkspaceEntry } from "../src/lib/types";
@@ -87,6 +88,8 @@ export interface MockState {
   workbenchPort: number | null;
   /** Main-agent messages recorded after the sample history (see `/api/mock/missed-relay`). */
   extraRecent: RecentMessage[];
+  /** The main conversation's token totals, which `GET /api/usage` reports and each turn adds to. */
+  usage: SessionUsageTotals;
   /** Close every WebSocket, as if the connection dropped. Set by the agent socket. */
   dropSockets: () => void;
   /**
@@ -226,6 +229,12 @@ export const MCP_JSON = "config/mcp.json";
 export function seedAgentData(state: MockState): void {
   const { clock } = state.env;
   state.hasConversation = true;
+  state.usage = {
+    input_tokens: 412_880,
+    output_tokens: 9_214,
+    context_tokens: 18_402,
+    tool_calls: 37,
+  };
   state.inboxItems = createInboxItems(clock);
   state.inboxArchive = createArchivedInboxItems(clock);
   state.a2aAgentsJson = SAMPLE_A2A_AGENTS_JSON;
@@ -312,6 +321,7 @@ export function createState(
       },
     ],
     extraRecent: [],
+    usage: { input_tokens: 0, output_tokens: 0, context_tokens: null, tool_calls: 0 },
     dropSockets: () => {},
     broadcast: () => {},
     compressedAt: null,
