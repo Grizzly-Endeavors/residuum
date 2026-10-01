@@ -5,7 +5,6 @@
   import { notifications } from "./lib/notifications.svelte";
   import { userErrorMessage } from "./lib/errors";
   import { router } from "./lib/router.svelte";
-  import { isAgentPlace } from "./lib/routes";
   import { Icon } from "./lib/icons";
   import {
     provideTooltips,
@@ -27,11 +26,11 @@
 
   router.start();
 
-  /** On phones, toasts clear the bottom bar, and the composer too on a place that has one. */
+  /** On phones, toasts clear the bottom bar, and the composer too on a place or panel that has one. */
   const toastClearance = $derived.by(() => {
     if (mode !== "running") return "edge";
     const { place, panel } = router;
-    const composer = place.kind === "chat" || (isAgentPlace(place) && panel?.kind === "session");
+    const composer = panel === null ? place.kind === "chat" : panel.kind === "session";
     return composer ? "composer" : "bar";
   });
 
