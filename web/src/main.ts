@@ -7,6 +7,7 @@ import App from "./App.svelte";
 import { startServiceWorker } from "./lib/app-update.svelte";
 import { startConfigSync } from "./lib/config-sync";
 import { startInstallOffer } from "./shell/install-offer";
+import { startPushClient } from "./shell/push-client.svelte";
 
 /** Every primitive control in every state, for development. */
 const UI_GALLERY_PATH = "/dev/gallery";
@@ -26,5 +27,7 @@ if (__UI_GALLERY__ && window.location.pathname === UI_GALLERY_PATH) {
   startInstallOffer();
   // Builds only: the app opens with no network, and a rebuilt app shows Update ready.
   startServiceWorker();
+  // This device's notifications, its presence on the hub socket, and notification clicks.
+  startPushClient();
   mount(App, { target });
 }

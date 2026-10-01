@@ -58,9 +58,16 @@ import type {
   HubStatusResponse,
   InboxStatus,
   OverviewResponse,
+  PushDevice,
+  PushPreferencesPatch,
+  PushTestResult,
   TeamEventPage,
+  WebPushSubscription,
   WorkspaceScope,
 } from "./hub-types";
+import type { PushDeviceList } from "./generated/PushDeviceList";
+import type { PushDeviceResponse } from "./generated/PushDeviceResponse";
+import type { PushKeyResponse } from "./generated/PushKeyResponse";
 import { cachedFetch, invalidate } from "./cache";
 import { agentBase, agentPath, hubPath, requireAgent, teamPath } from "./paths";
 
@@ -1111,6 +1118,63 @@ export async function triggerUpdateCheck(): Promise<UpdateStatusResponse> {
 
 export async function applyUpdate(): Promise<UpdateStatusResponse> {
   return apiFetch<UpdateStatusResponse>(hubPath("/update/apply"), { method: "POST" });
+}
+
+// ── Web Push API wrappers ────────────────────────────────────────────
+//
+// Every one throws `ApiError` on failure; the caller surfaces it.
+
+/** The hub's VAPID public key, base64url: what a browser subscribes with. */
+export async function fetchPushKey(): Promise<string> {
+  const data = await apiFetch<PushKeyResponse>(hubPath("/push/key"));
+  return data.public_key;
+}
+
+/** Every device that receives notifications, oldest first. */
+export async function fetchPushDevices(): Promise<PushDevice[]> {
+  const data = await apiFetch<PushDeviceList>(hubPath("/push/devices"));
+  return data.devices;
+}
+
+/** Register a browser's subscription, or update the device already registered for it. */
+export async function registerPushDevice(
+  subscription: WebPushSubscription,
+  label: string,
+): Promise<PushDevice> {
+  const data = await apiFetch<PushDeviceResponse>(hubPath("/push/devices"), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ subscription, label }),
+  });
+  return data.device;
+}
+
+/** Rename a device or change some of its preferences. */
+export async function updatePushDevice(
+  id: string,
+  change: { label?: string; preferences?: PushPreferencesPatch },
+): Promise<PushDevice> {
+  const data = await apiFetch<PushDeviceResponse>(
+    hubPath(`/push/devices/${encodeURIComponent(id)}`),
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(change),
+    },
+  );
+  return data.device;
+}
+
+/** Stop sending to a device. */
+export async function removePushDevice(id: string): Promise<void> {
+  await apiFetchText(hubPath(`/push/devices/${encodeURIComponent(id)}`), { method: "DELETE" });
+}
+
+/** Send the test notification to a device and say whether its push service took it. */
+export async function sendPushTest(id: string): Promise<PushTestResult> {
+  return apiFetch<PushTestResult>(hubPath(`/push/devices/${encodeURIComponent(id)}/test`), {
+    method: "POST",
+  });
 }
 
 // ── Hub lifecycle API wrappers ───────────────────────────────────────

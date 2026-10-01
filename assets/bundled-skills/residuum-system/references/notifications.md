@@ -79,7 +79,7 @@ Input-only. The agent cannot write to inbox. Items arrive from:
 
 ## Web Push
 
-Web Push delivers notifications to the user's browsers and installed apps through their push services, whether or not a Residuum window is open. It belongs to the hub: one signing key and one list of devices serve every agent. The user manages devices in the web UI; agents have no tool for it and can't write its files.
+Web Push delivers notifications to the user's browsers and installed apps through their push services, whether or not a Residuum window is open. It belongs to the hub: one signing key and one list of devices serve every agent. The user manages devices in the web UI, under Settings → All agents → Notifications, where each browser turns push on for itself; agents have no tool for it and can't write its files.
 
 A **device** is one browser or installed app registered for notifications, with a label and four preferences, one per event: `inbox_item` and `agent_failed` (on for a new device), `outbound_unreachable` and `reply_while_away` (off). A message goes only to devices whose preference for its event is on; the test notification goes to the device that asked, whatever its preferences. The device list is `hub/push-devices.json` and the signing key is `hub/push-vapid.key`, both readable only by their owner, outside the hub checkpoint allowlist (a restore never rolls them back), and blocked from agent writes. The key is created on first use and never regenerated automatically, because each subscription is bound to it.
 

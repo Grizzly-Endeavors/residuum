@@ -1,5 +1,7 @@
 import type { Page } from "@playwright/test";
+import { MOCK_VAPID_PUBLIC_KEY } from "../../mock/push";
 import { expect, test } from "../support/fixtures";
+import { fakePushService } from "../support/push";
 import { expectScreenshot } from "../support/screenshot";
 
 /**
@@ -60,10 +62,32 @@ test.describe(
       await expectScreenshot(page, "settings-listener-off");
     });
 
-    test("Notifications", async ({ page }) => {
+    test("Notifications, turned on here, with another device", async ({ page, context }) => {
+      await fakePushService(context, { registration: true });
+      await page.request.put("/api/hub/push/devices", {
+        data: {
+          subscription: {
+            endpoint: "https://push.example.test/send/tablet",
+            keys: { p256dh: MOCK_VAPID_PUBLIC_KEY, auth: "AAAAAAAAAAAAAAAAAAAAAA" },
+          },
+          label: "Old tablet",
+        },
+      });
       await openConnected(page, "/home?settings=_all/notifications");
-      await expect(page.getByText(/aren't available in this version/)).toBeVisible();
+      const thisDevice = page.getByRole("region", { name: "This device" });
+      await thisDevice.getByLabel("Name for this device").fill("Pixel 7");
+      await thisDevice.getByRole("button", { name: "Turn on notifications" }).click();
+      await expect(thisDevice.getByLabel("Device name")).toHaveValue("Pixel 7");
+      await expect(page.getByRole("list", { name: "Other devices" })).toContainText("Old tablet");
       await expectScreenshot(page, "settings-notifications");
+    });
+
+    test("Notifications, before they are turned on", async ({ page, context }) => {
+      await fakePushService(context, { registration: true });
+      await openConnected(page, "/home?settings=_all/notifications");
+      await expect(page.getByRole("button", { name: "Turn on notifications" })).toBeVisible();
+      await expect(page.getByText("No other devices get notifications.")).toBeVisible();
+      await expectScreenshot(page, "settings-notifications-off");
     });
 
     test("History of the install-wide config, with a checkpoint open", async ({ page }) => {
