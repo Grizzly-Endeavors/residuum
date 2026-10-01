@@ -7,16 +7,19 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-/// Which local listener a proxied request is for. Requests with no surface go
-/// to the main gateway listener.
+/// Which local listener a proxied request or socket open is for. Frames with
+/// no surface go to the main gateway listener.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Surface {
     /// The workbench artifacts listener, for `{user}.workbench.<relay>` hosts.
+    /// Both `HttpRequest` and `WsOpen` frames carry it; a socket open on this
+    /// surface reaches the hub's API sockets through that listener.
     Workbench,
     /// The A2A listener, for `{relay}/a2a/{instance}/{agent}/*` routes. Always answered in
     /// streamed form (`HttpResponseStart`/`Chunk`/`End`), never a buffered
-    /// `HttpResponse`.
+    /// `HttpResponse`. It serves no sockets, so a `WsOpen` on this surface is
+    /// refused.
     #[serde(rename = "a2a")]
     A2a,
 }
@@ -116,9 +119,20 @@ pub(crate) enum TunnelFrame {
         channel_id: String,
         path: String,
         headers: HashMap<String, String>,
+        /// The listener the socket connects to. Absent means the main gateway
+        /// listener, which is also what a relay that predates the field gets.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        surface: Option<Surface>,
     },
     /// Result of a WebSocket open attempt (client → relay).
-    WsOpenResult { channel_id: String, success: bool },
+    WsOpenResult {
+        channel_id: String,
+        success: bool,
+        /// Why a failed open failed, in plain language the relay can pass on
+        /// to the browser. Absent on success.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
     /// A WebSocket message forwarded through the tunnel.
     WsMessage { channel_id: String, data: String },
     /// Close a WebSocket channel.
@@ -483,11 +497,70 @@ mod tests {
             channel_id: "ch-1".to_string(),
             path: "/ws".to_string(),
             headers: HashMap::new(),
+            surface: None,
         })
         .unwrap();
         assert!(
-            matches!(serde_json::from_str::<TunnelFrame>(&json).unwrap(), TunnelFrame::WsOpen { channel_id, path, .. } if channel_id == "ch-1" && path == "/ws"),
+            matches!(serde_json::from_str::<TunnelFrame>(&json).unwrap(), TunnelFrame::WsOpen { channel_id, path, surface: None, .. } if channel_id == "ch-1" && path == "/ws"),
             "WsOpen should round-trip with correct fields"
+        );
+    }
+
+    #[test]
+    fn ws_open_without_a_surface_deserializes_to_none_and_does_not_serialize_one() {
+        // Compatibility: a relay that predates the field sends no `surface`,
+        // and its socket opens must keep going to the main listener.
+        let old = r#"{"type":"ws_open","channel_id":"ch-1","path":"/api/hub/ws","headers":{}}"#;
+        assert!(matches!(
+            serde_json::from_str::<TunnelFrame>(old).unwrap(),
+            TunnelFrame::WsOpen { surface: None, .. }
+        ));
+        let frame = TunnelFrame::WsOpen {
+            channel_id: "ch-1".to_string(),
+            path: "/api/hub/ws".to_string(),
+            headers: HashMap::new(),
+            surface: None,
+        };
+        assert!(
+            !serde_json::to_string(&frame).unwrap().contains("surface"),
+            "an absent surface must not serialize"
+        );
+    }
+
+    #[test]
+    fn ws_open_carries_the_workbench_and_a2a_surfaces() {
+        let workbench = r#"{"type":"ws_open","channel_id":"ch-1","path":"/api/hub/ws","headers":{},"surface":"workbench"}"#;
+        assert!(matches!(
+            serde_json::from_str::<TunnelFrame>(workbench).unwrap(),
+            TunnelFrame::WsOpen {
+                surface: Some(Surface::Workbench),
+                ..
+            }
+        ));
+        let a2a =
+            r#"{"type":"ws_open","channel_id":"ch-1","path":"/","headers":{},"surface":"a2a"}"#;
+        assert!(matches!(
+            serde_json::from_str::<TunnelFrame>(a2a).unwrap(),
+            TunnelFrame::WsOpen {
+                surface: Some(Surface::A2a),
+                ..
+            }
+        ));
+        let frame = TunnelFrame::WsOpen {
+            channel_id: "ch-1".to_string(),
+            path: "/api/hub/ws".to_string(),
+            headers: HashMap::new(),
+            surface: Some(Surface::Workbench),
+        };
+        assert_eq!(
+            serde_json::to_value(&frame).unwrap(),
+            serde_json::json!({
+                "type": "ws_open",
+                "channel_id": "ch-1",
+                "path": "/api/hub/ws",
+                "headers": {},
+                "surface": "workbench",
+            })
         );
     }
 
@@ -496,10 +569,15 @@ mod tests {
         let json = serde_json::to_string(&TunnelFrame::WsOpenResult {
             channel_id: "ch-1".to_string(),
             success: true,
+            reason: None,
         })
         .unwrap();
+        assert_eq!(
+            json, r#"{"type":"ws_open_result","channel_id":"ch-1","success":true}"#,
+            "a successful open serializes with no reason field"
+        );
         assert!(
-            matches!(serde_json::from_str::<TunnelFrame>(&json).unwrap(), TunnelFrame::WsOpenResult { channel_id, success } if channel_id == "ch-1" && success),
+            matches!(serde_json::from_str::<TunnelFrame>(&json).unwrap(), TunnelFrame::WsOpenResult { channel_id, success, reason: None } if channel_id == "ch-1" && success),
             "WsOpenResult success=true should round-trip"
         );
     }
@@ -509,12 +587,18 @@ mod tests {
         let json = serde_json::to_string(&TunnelFrame::WsOpenResult {
             channel_id: "ch-1".to_string(),
             success: false,
+            reason: Some("the listener isn't running".to_string()),
         })
         .unwrap();
         assert!(
-            matches!(serde_json::from_str::<TunnelFrame>(&json).unwrap(), TunnelFrame::WsOpenResult { channel_id, success } if channel_id == "ch-1" && !success),
-            "WsOpenResult success=false should round-trip"
+            matches!(serde_json::from_str::<TunnelFrame>(&json).unwrap(), TunnelFrame::WsOpenResult { channel_id, success, reason: Some(reason) } if channel_id == "ch-1" && !success && reason == "the listener isn't running"),
+            "WsOpenResult success=false should round-trip with its reason"
         );
+        let without_reason = r#"{"type":"ws_open_result","channel_id":"ch-1","success":false}"#;
+        assert!(matches!(
+            serde_json::from_str::<TunnelFrame>(without_reason).unwrap(),
+            TunnelFrame::WsOpenResult { reason: None, .. }
+        ));
     }
 
     #[test]
