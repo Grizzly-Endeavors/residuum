@@ -76,6 +76,9 @@ const modelsByProvider: Record<string, Array<{ id: string; name: string }>> = {
 /** The shape agent key names and A2A caller key names both take. */
 const KEY_NAME = /^[a-z][a-z0-9_]{0,63}$/;
 
+/** Below this many characters an agent key's value is stored with a warning. */
+const SHORT_KEY_VALUE = 8;
+
 const VALID: ValidateResponse = { valid: true };
 
 /**
@@ -399,16 +402,24 @@ const agentKeyRoutes: readonly Route[] = [
       const body = await readJsonObject(req);
       const name = stringField(body, "name") ?? "";
       const value = stringField(body, "value") ?? "";
-      if (!KEY_NAME.test(name) || value.length < 8) {
+      if (!KEY_NAME.test(name) || value === "") {
         text(res, 400, "key name or value is invalid");
         return;
       }
+      checkpointBeforeAction(state, "hub", `set agent key '${name}'`);
       state.agentKeys.set(name, {
         value,
         description: stringField(body, "description") ?? "",
         created_by: "user",
       });
-      json(res, 200, { name, env_var: name.toUpperCase() } satisfies SetAgentKeyResponse);
+      json(res, 200, {
+        name,
+        env_var: name.toUpperCase(),
+        // A short value is stored, with a note that hiding it from output is unreliable.
+        ...(value.length < SHORT_KEY_VALUE
+          ? { warning: "This value is short, so redacting it from output is unreliable." }
+          : {}),
+      } satisfies SetAgentKeyResponse);
     },
   },
   {
@@ -416,14 +427,13 @@ const agentKeyRoutes: readonly Route[] = [
     pattern: /^\/api\/agent-keys\/(.+)$/,
     handler: (ctx) => {
       const name = decodedParam(ctx, 0);
-      if (!ctx.state.agentKeys.delete(name)) {
+      if (!ctx.state.agentKeys.has(name)) {
         text(ctx.res, 404, `no agent key named '${name}'`);
         return;
       }
-      // The mock doesn't keep a checkpoint repository, so there is no id
-      // for Undo to restore. A null id hides the button instead of offering
-      // a restore that would 404.
-      json(ctx.res, 200, { deleted: true, checkpoint_id: null });
+      const checkpointId = checkpointBeforeAction(ctx.state, "hub", `delete agent key '${name}'`);
+      ctx.state.agentKeys.delete(name);
+      json(ctx.res, 200, { deleted: true, checkpoint_id: checkpointId });
     },
   },
 ];
@@ -555,6 +565,7 @@ const a2aRoutes: readonly Route[] = [
         json(res, 409, { error: `an A2A caller key named '${name}' already exists` });
         return;
       }
+      checkpointBeforeAction(state, "hub", `create caller key '${name}'`);
       state.a2aKeys.set(name, {
         description: stringField(body, "description") ?? "",
         created_at: state.env.clock.iso(),
@@ -570,11 +581,13 @@ const a2aRoutes: readonly Route[] = [
     pattern: /^\/api\/a2a\/keys\/(.+)$/,
     handler: (ctx) => {
       const name = decodedParam(ctx, 0);
-      if (!ctx.state.a2aKeys.delete(name)) {
+      if (!ctx.state.a2aKeys.has(name)) {
         json(ctx.res, 404, { error: `no A2A caller key named '${name}'` });
         return;
       }
-      json(ctx.res, 200, { revoked: true, checkpoint_id: null });
+      const checkpointId = checkpointBeforeAction(ctx.state, "hub", `revoke caller key '${name}'`);
+      ctx.state.a2aKeys.delete(name);
+      json(ctx.res, 200, { revoked: true, checkpoint_id: checkpointId });
     },
   },
   {
