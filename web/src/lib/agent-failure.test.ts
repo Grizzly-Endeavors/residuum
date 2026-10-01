@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { failureLine, fixSettingsSection } from "./agent-failure";
+import { failureLine, findSettingsFix } from "./agent-failure";
 import type { Diagnostic, ValidateResponse } from "./types";
 
 function json(body: unknown, status = 200): Response {
@@ -44,13 +44,21 @@ describe("failureLine", () => {
   });
 });
 
-describe("fixSettingsSection", () => {
-  it("opens the section of the first problem a form holds, checking providers first", async () => {
+describe("findSettingsFix", () => {
+  it("finds the section and field of the first problem a form holds, checking providers first", async () => {
+    const unplaced: Diagnostic = { severity: "warning", message: "no path" };
     const requests = serveRepair({
-      providers: { valid: false, diagnostics: [atPath("models.main")] },
+      providers: { valid: false, diagnostics: [unplaced, atPath("models.main")] },
       config: { valid: false, diagnostics: [atPath("memory.observer_threshold_tokens")] },
     });
-    expect(await fixSettingsSection("brittle")).toBe("model");
+    expect(await findSettingsFix("brittle")).toEqual({
+      section: "model",
+      field: {
+        ref: { kind: "role", role: "main", field: undefined },
+        file: "providers",
+        problems: [unplaced, atPath("models.main")],
+      },
+    });
     expect(requests).toEqual([
       "GET /api/agents/brittle/providers/raw",
       "POST /api/agents/brittle/providers/validate",
@@ -62,14 +70,18 @@ describe("fixSettingsSection", () => {
       providers: { valid: false, diagnostics: [{ severity: "error", message: "no path" }] },
       config: { valid: false, diagnostics: [atPath("discord.token")] },
     });
-    expect(await fixSettingsSection("brittle")).toBe("connections");
+    expect(await findSettingsFix("brittle")).toMatchObject({
+      section: "connections",
+      field: { ref: { kind: "config", field: "discord_token" }, file: "config" },
+    });
   });
 
   it("falls back to Raw config when no problem names a setting, or the files can't be read", async () => {
+    const raw = { section: "raw", field: null };
     serveRepair({ providers: { valid: true }, config: { valid: true } });
-    expect(await fixSettingsSection("brittle")).toBe("raw");
+    expect(await findSettingsFix("brittle")).toEqual(raw);
 
     serveRepair({ providers: "fail", config: "fail" });
-    expect(await fixSettingsSection("brittle")).toBe("raw");
+    expect(await findSettingsFix("brittle")).toEqual(raw);
   });
 });

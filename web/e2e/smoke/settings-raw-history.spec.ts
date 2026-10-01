@@ -2,8 +2,6 @@ import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 
-/** Legacy panels hosted in sections not rebuilt yet; their own units scan them. */
-const LEGACY = "[data-legacy-view]";
 const HOST = "[data-overlay-host]";
 
 const sections = (page: Page): Locator =>
@@ -65,7 +63,7 @@ test.describe("Raw config", () => {
     await goToSection(page, isMobile, "Runtime");
     await expect(page.getByText(/unsaved edits to config\.toml in Raw config/)).toBeVisible();
     await expect(timeout(page)).toBeDisabled();
-    await expectNoAxeViolations(page, { within: HOST, exclude: LEGACY });
+    await expectNoAxeViolations(page, { within: HOST });
 
     await page.getByRole("button", { name: "Open Raw config" }).click();
     await page.getByRole("button", { name: "Discard edits" }).click();

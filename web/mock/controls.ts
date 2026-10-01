@@ -1,4 +1,5 @@
 import { json, parseJsonObject, readBody, readJsonObject } from "./http";
+import { offeredModelsOnly } from "./provider-models";
 import type { Route, RouteContext } from "./routes";
 import { changeAgentFile, changeTeamFile } from "./workspace-changes";
 
@@ -73,7 +74,8 @@ function teammateMessage({ res, hub, query }: RouteContext): void {
 
 /**
  * Fix the settings that stop an agent (`?agent=brittle`) starting, the way a
- * user would in Settings: its next start succeeds. Its state doesn't change
+ * user would in Settings: every model its provider doesn't offer becomes the
+ * provider's first one, so its next start succeeds. Its state doesn't change
  * until something starts it.
  */
 function fixAgent({ res, hub, query }: RouteContext): void {
@@ -82,7 +84,7 @@ function fixAgent({ res, hub, query }: RouteContext): void {
     json(res, 404, { error: "mock: name an agent with ?agent=" });
     return;
   }
-  agent.startFailure = null;
+  agent.state.providersToml = offeredModelsOnly(agent.state.providersToml);
   json(res, 200, { ok: true });
 }
 

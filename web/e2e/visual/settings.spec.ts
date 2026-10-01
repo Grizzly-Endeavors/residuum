@@ -1,21 +1,12 @@
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../support/fixtures";
 import { expectScreenshot } from "../support/screenshot";
 
 /**
  * The Settings modal's frame: a section with staged changes and its save bar,
  * the Raw config section, and on a phone the section list; and the Memory,
- * Schedule and Runtime sections. Legacy panels hosted in sections not rebuilt
- * yet are hidden, since their own units give them baselines; hiding rather
- * than masking keeps the save bar over them.
+ * Schedule and Runtime sections.
  */
-
-async function frameScreenshot(page: Page, name: string): Promise<void> {
-  await page.addStyleTag({
-    content: "[data-overlay-host] [data-legacy-view] { visibility: hidden; }",
-  });
-  await expectScreenshot(page, name);
-}
 
 test.describe("settings modal", { tag: "@visual" }, () => {
   test("a section with staged changes and the save bar", async ({ page }) => {
@@ -23,14 +14,14 @@ test.describe("settings modal", { tag: "@visual" }, () => {
     await page.getByLabel("Reply time limit").fill("60");
     await expect(page.getByRole("region", { name: "Unsaved changes" })).toBeVisible();
     await page.getByLabel("Reply time limit").blur();
-    await frameScreenshot(page, "settings-section");
+    await expectScreenshot(page, "settings-section");
   });
 
   test("the install-wide Raw config", async ({ page }) => {
     await page.goto("/home?settings=_all/raw");
     await expect(page.getByRole("textbox", { name: "Contents of config.toml" })).toHaveValue(/\S/);
     await expect(page.getByText("No problems found.")).toBeVisible();
-    await frameScreenshot(page, "settings-raw");
+    await expectScreenshot(page, "settings-raw");
   });
 
   test("Memory with the reviewing switch on", async ({ page }) => {
@@ -68,7 +59,7 @@ test.describe("settings modal", { tag: "@visual" }, () => {
     await page.getByRole("button", { name: /^line \d+/ }).click();
     await text.blur();
     await page.mouse.move(0, 0);
-    await frameScreenshot(page, "settings-raw-problem");
+    await expectScreenshot(page, "settings-raw-problem");
   });
 
   test("History with a checkpoint open", async ({ page }) => {
@@ -78,18 +69,76 @@ test.describe("settings modal", { tag: "@visual" }, () => {
     await expect(page.getByRole("region", { name: "Changes to SOUL.md" })).toBeVisible();
     await page.getByRole("button", { name: "Changes to SOUL.md" }).blur();
     await page.mouse.move(0, 0);
-    await frameScreenshot(page, "settings-history");
+    await expectScreenshot(page, "settings-history");
   });
 
   test("the phone's section list", async ({ page, isMobile }) => {
     test.skip(!isMobile, "Wider screens show the list beside a section.");
     await page.goto("/agent/atlas?settings=atlas");
     await expect(page.getByRole("navigation", { name: "Settings sections" })).toBeVisible();
-    await frameScreenshot(page, "settings-list");
+    await expectScreenshot(page, "settings-list");
   });
 });
 
-/** The rebuilt All agents sections hold nothing legacy, so the whole modal is compared. */
+/** The agent's Model section. */
+test.describe("settings modal: Model", { tag: "@visual" }, () => {
+  test("Model as Fix settings opens it, with brittle's model flagged", async ({ page }) => {
+    await page.goto("/agent/brittle");
+    await page.getByRole("button", { name: "Fix settings" }).click();
+    const model = page
+      .getByRole("region", { name: "Main model" })
+      .getByRole("combobox", { name: "Model" });
+    await expect(model).toBeFocused();
+    await expect(model.locator("option", { hasText: "gpt-9 (not in the list)" })).toHaveCount(1);
+    await expectScreenshot(page, "settings-model-fix");
+  });
+
+  /** Open atlas's Model section and add an OpenAI provider called work. */
+  async function withWorkProvider(page: Page): Promise<void> {
+    await page.goto("/agent/atlas?settings=atlas/model");
+    // The scope picker names each agent's state once the hub socket has said it.
+    await expect(
+      page.locator("[data-scope-picker] option", { hasText: "brittle (couldn't start)" }),
+    ).toHaveCount(1);
+    await page.getByRole("button", { name: "Add a provider" }).click();
+    const form = page.getByRole("form", { name: "Add a provider" });
+    await form.getByLabel("Name").fill("work");
+    await form.getByLabel("Type").selectOption("openai");
+    await form.getByLabel("API key", { exact: true }).fill("sk-test");
+    await form.getByRole("button", { name: "Add provider" }).click();
+  }
+
+  /** Bring `element` to the middle of the section, clear of the save bar. */
+  async function centered(element: Locator): Promise<void> {
+    await element.evaluate((node) => {
+      node.scrollIntoView({ block: "center" });
+    });
+  }
+
+  test("Model's jobs, one with its own model from an added provider", async ({ page }) => {
+    await withWorkProvider(page);
+    await page.getByRole("button", { name: "Use different models for specific jobs" }).click();
+    const summarizing = page.getByRole("group", { name: "Summarizing older messages" });
+    await summarizing.getByRole("combobox", { name: "Provider" }).selectOption("work");
+    await expect(
+      summarizing.getByRole("combobox", { name: "Model" }).locator("option", { hasText: "o3" }),
+    ).toHaveCount(1);
+    await summarizing.getByRole("combobox", { name: "Provider" }).blur();
+    await centered(summarizing);
+    await expectScreenshot(page, "settings-model-jobs");
+  });
+
+  test("Model's providers, with an added one open", async ({ page }) => {
+    await withWorkProvider(page);
+    await page.getByRole("button", { name: "Edit work" }).click();
+    await expect(page.getByLabel("Address")).toBeVisible();
+    await page.getByRole("button", { name: "Edit work" }).blur();
+    await centered(page.getByRole("list", { name: "Providers" }));
+    await expectScreenshot(page, "settings-model-providers");
+  });
+});
+
+/** The All agents sections. */
 test.describe("settings modal: All agents sections", { tag: "@visual" }, () => {
   test("General, with the timezone and the gateway options open", async ({ page }) => {
     await page.goto("/home?settings=_all/general");

@@ -16,16 +16,31 @@ export const MOCK_FEATURES: readonly string[] = [
   "artifact-state",
 ];
 
+/**
+ * Why an agent couldn't start because of a problem in its `providers.toml`:
+ * the problem as the reason, wrapped in the message the way the hub wraps a
+ * start failure.
+ */
+export function providersStartFailure(agent: string, problem: string): Omit<AgentLastError, "at"> {
+  const reason = `config error: providers.toml: ${problem}`;
+  return {
+    message: `${agent} couldn't start: ${reason}. Fix its settings or model configuration, then start it again.`,
+    kind: "config",
+    reason,
+  };
+}
+
+/** `brittle`'s `providers.toml`: a main model its provider doesn't offer, so every start fails until that changes. */
+export const MOCK_BRITTLE_PROVIDERS = '[models]\nmain = "openai/gpt-9"\n';
+
+/** Why `brittle` is failed, and fails every start. */
+export const MOCK_BRITTLE_FAILURE = providersStartFailure(
+  "brittle",
+  "model 'gpt-9' is not offered by provider 'openai'",
+);
+
 /** The underlying error behind `brittle`'s failure, which `AgentLastError.reason` carries. */
-export const MOCK_BRITTLE_REASON =
-  "config error: providers.toml: model 'gpt-9' is not offered by provider 'openai'";
+export const MOCK_BRITTLE_REASON = MOCK_BRITTLE_FAILURE.reason;
 
-/** What `AgentLastError.message` says about it: the reason wrapped the way the hub wraps a start failure. */
-export const MOCK_BRITTLE_ERROR = `brittle couldn't start: ${MOCK_BRITTLE_REASON}. Fix its settings or model configuration, then start it again.`;
-
-/** Why `brittle`, the mock's agent with a broken model config, is failed, and fails every start. */
-export const MOCK_BRITTLE_FAILURE: Omit<AgentLastError, "at"> = {
-  message: MOCK_BRITTLE_ERROR,
-  kind: "config",
-  reason: MOCK_BRITTLE_REASON,
-};
+/** What `AgentLastError.message` says about it. */
+export const MOCK_BRITTLE_ERROR = MOCK_BRITTLE_FAILURE.message;

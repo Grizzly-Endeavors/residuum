@@ -148,11 +148,11 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [x] Section navigation and old-URL redirects — **Changed:** new section ids and mapping
 - [x] Autosave — **Changed:** explicit Save changes / Discard per scope; items with their own endpoints stay immediate (design §8)
 - [x] Partial-failure message naming saved and failed files
-- [ ] Secret fields: store on save; Stored securely with Change; from environment variable with Replace
+- [x] Secret fields: store on save; Stored securely with Change; from environment variable with Replace — **Changed:** provider keys, channel tokens and web search keys share one field; a key typed for a new provider is stored as a secret on Save too, except an Ollama server's
 - [x] Undo after removing providers, webhooks, MCP servers, skills/tools folders, cloud account — **Changed:** removals are staged (Discard brings them back); after Save, Undo restores the returned checkpoint
 - [x] Scope isolation: an agent page never shows editable install-wide fields, and a save writes only its own scope's files (today the agent-page save computes and ignores an install-wide diff, which is empty only because no agent section renders install-wide fields)
 - [x] **Fix:** History restore and undo refresh the open form
-- [ ] **Fix:** field-level validation errors inline where the server gives a path
+- [x] **Fix:** field-level validation errors inline where the server gives a path — every section shows a problem whose key path names one of its fields on that field, and the rest at its top; Fix settings places its check's problems the same way and focuses the field. A patch the backend refuses carries no key path (#370), so its problem shows at the section's top
 
 All-agents scope:
 
@@ -170,9 +170,9 @@ Agent scope:
 
 - [x] Runtime: timeout, max tokens; retry (max, initial delay, max delay, backoff); abilities (allow MCP changes, allow channel changes, max tool calls, repeat-call guard, steer after, stop after); idle (timeout, channel) — **Changed:** Advanced → Runtime, in plain words with each number's unit and default; the repeat thresholds dim while the guard is off; the idle channel list keeps a channel the file names that the list doesn't know
 - [x] Subconscious (enabled, watch mid-turn, cadence, max transcript tokens, learn, cooldown) and learning fallback — **Changed:** Memory, as Reviewing replies and Learning from conversations; the settings that need Review replies dim while it is off, and Choose the model goes to Model
-- [ ] Default temperature and default thinking — **Changed:** Model (design §8), with W35
-- [ ] Providers: name, type, API key, base URL, keep-alive; remove with Undo; add
-- [ ] Model roles: main, observer, reflector, pulse, subconscious, embedding, background small/medium/large; provider, model (live list or custom id), fallback warning, temperature, thinking — **Fix:** subconscious role's model list loads on open; failover lists are preserved; `models.default` gets a control or is shown read-only
+- [x] Default temperature and default thinking — **Changed:** Model, as Every model
+- [x] Providers: name, type, API key, base URL, keep-alive; remove with Undo; add — **Changed:** removal is staged (Discard brings it back), a typed key is stored as a secret on Save, and a model that names a provider no longer set up says so on its field
+- [x] Model roles: main, observer, reflector, pulse, subconscious, embedding, background small/medium/large; provider, model (live list or custom id), fallback warning, temperature, thinking — **Fix:** subconscious role's model list loads on open; failover lists are preserved and listed under their role; `models.default` gets a control; **Changed:** roles are named by their job under "Use different models for specific jobs", a provider can also be a type named directly (its key from the environment), and Fix settings for a model lands here with the field flagged and focused
 - [x] Discord, Telegram, Teams fields and warnings — **Changed:** each channel is a group with its state (connected while the agent runs, which stays unknown for a stopped one), Disconnect clears its credentials as a staged change, and the half-filled Teams warning stays
 - [x] Pulses & sessions: pulse enabled, idle timeouts per kind, episode floor, depth cap — **Changed:** Schedule, as Pulses (with Open the agent's Schedule), Background sessions and Keeping and nesting; every number shows its unit and default
 - [x] Memory thresholds and search tuning — **Changed:** Memory, as Summarizing and condensing, with search tuning under More options (which opens when a save finds a problem inside it); every number shows its unit and default

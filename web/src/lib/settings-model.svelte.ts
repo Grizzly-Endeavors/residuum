@@ -514,6 +514,8 @@ export abstract class ScopeModel {
   lastResult = $state.raw<SaveResult | null>(null);
   /** Problems the last saves found, in the files they were found in, placed on fields where they name a key. */
   diagnostics = $state.raw<readonly PlacedDiagnostic[]>([]);
+  /** A field the section that holds it should focus when it next shows, such as the one Fix settings found. */
+  focusRequest = $state.raw<FieldRef | null>(null);
 
   /** Any file holds staged changes. */
   get dirty(): boolean {
@@ -647,6 +649,30 @@ export abstract class ScopeModel {
           placed.field === null && (placed.section === null || placed.section === section),
       )
       .map((placed) => placed.diagnostic);
+  }
+
+  /**
+   * Show problems found outside a save, such as by Fix settings' check of a
+   * file, as a save's would show: on the fields their key paths name. They
+   * replace the file's earlier problems, and its next save replaces them.
+   */
+  flagProblems(file: FieldFile, found: readonly Diagnostic[]): void {
+    const state = this.file(file);
+    if (state !== undefined) this.place(state, found);
+  }
+
+  // ── Focus on arrival ────────────────────────────────────────────────
+
+  /** Ask the section holding `ref` to bring it into view and focus it when it next shows. */
+  requestFocus(ref: FieldRef): void {
+    this.focusRequest = ref;
+  }
+
+  /** Take the field to focus, which is asked for once: the next call returns null. */
+  takeFocus(): FieldRef | null {
+    const ref = this.focusRequest;
+    this.focusRequest = null;
+    return ref;
   }
 
   private place(state: StagedFile, found: readonly Diagnostic[]): void {
