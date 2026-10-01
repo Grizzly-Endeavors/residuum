@@ -10,12 +10,12 @@ use tokio::net::TcpStream;
 use tokio::sync::{Mutex, mpsc, watch};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::http as ws_http;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use super::TunnelStatus;
 use super::forward_a2a;
 use super::forward_http;
-use super::forward_ws;
+use super::forward_ws::{self, WsChannelEvent};
 use super::protocol::{AgentInfo, Surface, TunnelFrame};
 use super::{ForwardRequest, ForwardTargets, TunnelSink, send_frame};
 use crate::config::CloudConfig;
@@ -310,9 +310,10 @@ where
     let mut local_ws_channels: HashMap<String, mpsc::Sender<String>> = HashMap::new();
     let mut last_frame = tokio::time::Instant::now();
 
-    // Channel for completed WsOpen results — spawned tasks send back the
-    // channel_id and sender so the frame loop isn't blocked.
-    let (ws_open_tx, mut ws_open_rx) = mpsc::channel::<(String, mpsc::Sender<String>)>(16);
+    // Channel for what local sockets report — spawned tasks send back each
+    // channel's sender when it opens and its id when it closes, so the frame
+    // loop isn't blocked and its entries match the sockets that are open.
+    let (ws_events_tx, mut ws_events_rx) = mpsc::channel::<WsChannelEvent>(16);
 
     // In-flight A2A streaming forwards, keyed by request_id, so a `HttpCancel`
     // can abort the matching local request. Streams report their own
@@ -339,7 +340,7 @@ where
                                     targets,
                                     write,
                                     &mut local_ws_channels,
-                                    &ws_open_tx,
+                                    &ws_events_tx,
                                     &mut a2a_tracker,
                                 )
                                 .await;
@@ -358,10 +359,23 @@ where
                     None => break "WebSocket stream ended".to_string(),
                 }
             }
-            Some((channel_id, sender)) = ws_open_rx.recv() => {
-                local_ws_channels.insert(channel_id.clone(), sender);
-                debug!(channel_id, total = local_ws_channels.len(), "registered local WS channel");
-            }
+            Some(event) = ws_events_rx.recv() => match event {
+                WsChannelEvent::Opened { channel_id, sender } => {
+                    local_ws_channels.insert(channel_id.clone(), sender);
+                    debug!(channel_id, total = local_ws_channels.len(), "registered local WS channel");
+                }
+                WsChannelEvent::Closed { channel_id } => {
+                    // A relay `WsClose` may have dropped the entry already, and
+                    // a later channel may have reused the id: only a dead entry
+                    // goes.
+                    if local_ws_channels
+                        .get(&channel_id)
+                        .is_some_and(mpsc::Sender::is_closed)
+                    {
+                        local_ws_channels.remove(&channel_id);
+                    }
+                }
+            },
             Some(request_id) = a2a_done_rx.recv() => {
                 a2a_streams.remove(&request_id);
             }
@@ -660,11 +674,11 @@ fn ws_open_port(targets: ForwardTargets, surface: Option<Surface>) -> Result<u16
 fn spawn_ws_open(
     targets: ForwardTargets,
     write: &Arc<Mutex<TunnelSink>>,
-    ws_open_tx: &mpsc::Sender<(String, mpsc::Sender<String>)>,
+    ws_events_tx: &mpsc::Sender<WsChannelEvent>,
     request: WsOpenRequest,
 ) {
     let write = Arc::clone(write);
-    let ws_open_tx = ws_open_tx.clone();
+    let ws_events_tx = ws_events_tx.clone();
     crate::util::spawn_in_span(async move {
         let WsOpenRequest {
             channel_id,
@@ -680,15 +694,7 @@ fn spawn_ws_open(
                 return;
             }
         };
-        let ch_id = channel_id.clone();
-        let sender = forward_ws::handle_ws_open(port, channel_id, path, headers, write).await;
-        if let Some(tx) = sender {
-            // Send back to the frame loop; if the loop has exited the channel
-            // will be dropped and this is harmless.
-            if let Err(e) = ws_open_tx.send((ch_id.clone(), tx)).await {
-                warn!(channel_id = ch_id, error = %e, "failed to register WS channel with frame loop");
-            }
-        }
+        forward_ws::handle_ws_open(port, channel_id, path, headers, write, ws_events_tx).await;
     });
 }
 
@@ -699,7 +705,7 @@ async fn handle_frame(
     targets: ForwardTargets,
     write: &Arc<Mutex<TunnelSink>>,
     local_ws_channels: &mut HashMap<String, mpsc::Sender<String>>,
-    ws_open_tx: &mpsc::Sender<(String, mpsc::Sender<String>)>,
+    ws_events_tx: &mpsc::Sender<WsChannelEvent>,
     a2a_tracker: &mut A2aStreamTracker<'_>,
 ) {
     // Computed unconditionally (cheap) so the catch-all arm below can log
@@ -764,12 +770,17 @@ async fn handle_frame(
                 headers,
                 surface,
             };
-            spawn_ws_open(targets, write, ws_open_tx, request);
+            spawn_ws_open(targets, write, ws_events_tx, request);
         }
         TunnelFrame::WsMessage { channel_id, data } => {
             if let Some(tx) = local_ws_channels.get(&channel_id) {
-                if let Err(e) = tx.send(data).await {
-                    warn!(channel_id, error = %e, "failed to forward WsMessage to local");
+                if tx.send(data).await.is_err() {
+                    // The local socket closed and its task ended; the relay
+                    // sent this before it saw the `WsClose` that told it so.
+                    debug!(
+                        channel_id,
+                        "dropping a WsMessage for a channel whose local socket already closed"
+                    );
                     local_ws_channels.remove(&channel_id);
                 }
             } else {
@@ -777,10 +788,15 @@ async fn handle_frame(
             }
         }
         TunnelFrame::WsClose { channel_id } => {
-            if local_ws_channels.remove(&channel_id).is_some() {
-                debug!(channel_id, "closed local WS channel");
-            } else {
-                debug!(channel_id, "WsClose for unknown channel, ignoring");
+            // Dropping the sender ends the channel's task, which closes the
+            // local socket and logs the close. The relay answers a `WsClose`
+            // from the local side with its own, which arrives here for a
+            // channel that's already gone.
+            if local_ws_channels.remove(&channel_id).is_none() {
+                trace!(
+                    channel_id,
+                    "WsClose for a channel with no open local socket"
+                );
             }
         }
         TunnelFrame::Connected { .. }
@@ -1123,7 +1139,7 @@ mod tests {
             a2a_client: &a2a_client,
         };
         let mut local_ws_channels = HashMap::new();
-        let (ws_open_tx, _ws_open_rx) = mpsc::channel(1);
+        let (ws_events_tx, _ws_events_rx) = mpsc::channel(1);
         let mut a2a_streams = HashMap::new();
         let (a2a_done_tx, mut a2a_done_rx) = mpsc::channel(1);
         let mut a2a_tracker = A2aStreamTracker {
@@ -1145,7 +1161,7 @@ mod tests {
             targets,
             &write,
             &mut local_ws_channels,
-            &ws_open_tx,
+            &ws_events_tx,
             &mut a2a_tracker,
         ))
         .await;
@@ -1206,7 +1222,7 @@ mod tests {
             a2a_client: &a2a_client,
         };
         let mut local_ws_channels = HashMap::new();
-        let (ws_open_tx, _ws_open_rx) = mpsc::channel(1);
+        let (ws_events_tx, _ws_events_rx) = mpsc::channel(1);
         let mut a2a_streams = HashMap::new();
         let (a2a_done_tx, mut a2a_done_rx) = mpsc::channel(1);
         let mut a2a_tracker = A2aStreamTracker {
@@ -1228,7 +1244,7 @@ mod tests {
             targets,
             &write,
             &mut local_ws_channels,
-            &ws_open_tx,
+            &ws_events_tx,
             &mut a2a_tracker,
         ))
         .await;
@@ -1245,7 +1261,7 @@ mod tests {
             targets,
             &write,
             &mut local_ws_channels,
-            &ws_open_tx,
+            &ws_events_tx,
             &mut a2a_tracker,
         ))
         .await;
@@ -1590,7 +1606,7 @@ mod tests {
                 a2a_client: &a2a_client,
             };
             let mut local_ws_channels = HashMap::new();
-            let (ws_open_tx, _ws_open_rx) = mpsc::channel(1);
+            let (ws_events_tx, _ws_events_rx) = mpsc::channel(1);
             let mut streams = HashMap::new();
             let (done_tx, _done_rx) = mpsc::channel(4);
             let mut tracker = A2aStreamTracker {
@@ -1603,7 +1619,7 @@ mod tests {
                 self.targets,
                 &self.write,
                 &mut local_ws_channels,
-                &ws_open_tx,
+                &ws_events_tx,
                 &mut tracker,
             ))
             .await;
@@ -1750,5 +1766,6 @@ mod tests {
         assert!(rest.contains("vault-two"), "{rest}");
     }
 
+    mod ws_close;
     mod ws_open;
 }
