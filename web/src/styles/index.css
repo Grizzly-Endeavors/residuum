@@ -1,12 +1,10 @@
 @import "./variables.css";
 @import "./base.css";
-@import "./header.css";
 @import "./chat.css";
 @import "./forms.css";
 @import "./setup.css";
 @import "./settings.css";
 @import "./layout.css";
-@import "./notifications.css";
 @import "./sessions.css";
 @import "./workbench.css";
 @import "./scheduled.css";

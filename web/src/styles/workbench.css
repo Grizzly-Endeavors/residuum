@@ -506,6 +506,14 @@
 /* The artifact fills the window. The one way back stays in the corner,    */
 /* faint until reached for, so it never covers much of the artifact.        */
 
+/* Full view covers the shell around it: the rail and the phone's bottom bar. */
+.workbench-artifact.full {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: var(--bg-deep);
+}
+
 .workbench-artifact.full .workbench-stage {
   background: var(--bg-deep);
 }

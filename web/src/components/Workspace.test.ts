@@ -68,7 +68,7 @@ describe("Workspace follows the disk", () => {
     rootListing = [folder("wiki"), file("AGENTS.md")];
     const hubSocket = openHubSocket();
 
-    render(Workspace, { onClose: () => {}, agent: null, scope: "team" });
+    render(Workspace, { agent: null, scope: "team" });
     await settle();
     expect(await screen.findByText("AGENTS.md")).toBeTruthy();
     expect(screen.queryByText("rules.md")).toBeNull();
@@ -89,7 +89,7 @@ describe("Workspace follows the disk", () => {
     rootListing = [file("AGENTS.md")];
     const hubSocket = openHubSocket();
 
-    render(Workspace, { onClose: () => {}, agent: null, scope: "team" });
+    render(Workspace, { agent: null, scope: "team" });
     await screen.findByText("AGENTS.md");
     hubSocket.simulateMessage({
       type: "workspace_changed",
@@ -104,7 +104,7 @@ describe("Workspace follows the disk", () => {
     rootListing = [file("AGENTS.md")];
     const hubSocket = openHubSocket();
 
-    render(Workspace, { onClose: () => {}, agent: null, scope: "team" });
+    render(Workspace, { agent: null, scope: "team" });
     await screen.findByText("AGENTS.md");
     rootListing = [file("AGENTS.md"), file("USER.md")];
     hubSocket.simulateMessage({ type: "workspace_resync", reason: "overflow" });
@@ -119,7 +119,7 @@ describe("Workspace follows the disk", () => {
     const socket = agentSocket("scout");
     socket.simulateOpen();
 
-    render(Workspace, { onClose: () => {}, agent: "scout" });
+    render(Workspace, { agent: "scout" });
     await settle();
     expect(await screen.findByText("SOUL.md")).toBeTruthy();
     expect(frames(socket, "watch_workspace")).toEqual([
@@ -141,7 +141,7 @@ describe("Workspace follows the disk", () => {
     const wiki = hub.teamWatches.register({ changed: () => {} });
     wiki.set(["team/wiki"]);
 
-    const { unmount } = render(Workspace, { onClose: () => {}, agent: null, scope: "team" });
+    const { unmount } = render(Workspace, { agent: null, scope: "team" });
     await settle();
     expect(frames(hubSocket, "watch_team").at(-1)).toEqual({
       type: "watch_team",
