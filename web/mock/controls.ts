@@ -66,6 +66,21 @@ function teammateMessage({ res, hub, query }: RouteContext): void {
 }
 
 /**
+ * Fix the settings that stop an agent (`?agent=brittle`) starting, the way a
+ * user would in Settings: its next start succeeds. Its state doesn't change
+ * until something starts it.
+ */
+function fixAgent({ res, hub, query }: RouteContext): void {
+  const agent = hub.agents.get(query.get("agent") ?? "");
+  if (!agent) {
+    json(res, 404, { error: "mock: name an agent with ?agent=" });
+    return;
+  }
+  agent.startFailure = null;
+  json(res, 200, { ok: true });
+}
+
+/**
  * Put the mock back as it started (see `MockHub.reset`). Whatever a test did
  * is gone, and every connected page is dropped and reconnects to the initial
  * scenario. With `{ "setup": true }` the hub starts over with no agents, so
@@ -143,6 +158,7 @@ export const controlRoutes: readonly Route[] = [
   { method: "POST", pattern: "/api/mock/team-file", handler: changeTeamFileControl },
   { method: "POST", pattern: "/api/mock/missed-relay", handler: missedRelay },
   { method: "POST", pattern: "/api/mock/teammate-message", handler: teammateMessage },
+  { method: "POST", pattern: "/api/mock/fix-agent", handler: fixAgent },
   { method: "POST", pattern: "/api/mock/reset", handler: reset },
   { method: "POST", pattern: "/api/mock/clock/advance", handler: advanceClock },
   { method: "POST", pattern: "/api/mock/delays", handler: setDelays },

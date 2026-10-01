@@ -5,7 +5,7 @@ import type {
   StopAllResponse,
 } from "../src/lib/hub-types";
 import { agentNameProblem } from "./agent-name";
-import { MOCK_BRITTLE_FAILURE, MOCK_CLOUD_STATUS, MOCK_RESIDUUM_VERSION } from "./constants";
+import { MOCK_CLOUD_STATUS, MOCK_RESIDUUM_VERSION } from "./constants";
 import { json, readJsonObject, stringField, type JsonObject } from "./http";
 import { decodedParam, type Route, type RouteContext } from "./routes";
 import type { MockAgent, MockHub } from "./state";
@@ -228,7 +228,7 @@ async function patchAgent(ctx: RouteContext): Promise<void> {
 
 /**
  * `POST /api/hub/agents/{name}/(start|stop|restart)`. A start takes a moment,
- * and `brittle` fails it.
+ * and an agent with a start failure (`brittle`) fails it.
  */
 async function runAgentAction(ctx: RouteContext): Promise<void> {
   const agent = namedAgent(ctx);
@@ -242,8 +242,8 @@ async function runAgentAction(ctx: RouteContext): Promise<void> {
     if (action === "restart" && agent.runState === "running") await stopAgent(hub, agent);
     hub.transition(agent, "starting");
     await hub.env.sleep(STARTUP_MS);
-    if (agent.name === "brittle") {
-      agent.lastError = { ...MOCK_BRITTLE_FAILURE, at: hub.env.clock.iso() };
+    if (agent.startFailure !== null) {
+      agent.lastError = { ...agent.startFailure, at: hub.env.clock.iso() };
       hub.transition(agent, "failed");
     } else {
       hub.transition(agent, "running");

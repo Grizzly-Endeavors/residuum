@@ -56,6 +56,28 @@ describe("test controls", () => {
     });
   });
 
+  describe("fix-agent", () => {
+    const start = async (agent: string): Promise<unknown> =>
+      (
+        await fetchJson(`${harness.baseUrl}/api/hub/agents/${agent}/start`, {
+          method: "POST",
+        })
+      ).body;
+
+    it("lets an agent that failed every start start, once its settings are fixed", async () => {
+      expect(await start("brittle")).toMatchObject({ state: "failed" });
+
+      expect(await control("fix-agent?agent=brittle")).toEqual({ status: 200, body: { ok: true } });
+
+      expect(await start("brittle")).toMatchObject({ state: "running", last_error: null });
+    });
+
+    it("answers 404 without an agent it knows", async () => {
+      expect((await control("fix-agent?agent=ghost")).status).toBe(404);
+      expect((await control("fix-agent")).status).toBe(404);
+    });
+  });
+
   describe("hub-socket", () => {
     const setOnline = (online: unknown): Promise<{ status: number; body: unknown }> =>
       fetchJson(`${harness.baseUrl}/api/mock/hub-socket`, {

@@ -113,6 +113,8 @@ export interface MockAgent {
   name: string;
   runState: AgentState;
   lastError: AgentLastError | null;
+  /** What every start of the agent fails with until its settings are fixed, or `null` when starts succeed. */
+  startFailure: Omit<AgentLastError, "at"> | null;
   autostart: boolean;
   role: string | null;
   visibility: A2aVisibility;
@@ -150,6 +152,8 @@ export interface MockHub {
       role?: string | null;
       runState?: AgentState;
       lastError?: Omit<AgentLastError, "at">;
+      /** Every start fails with this until `POST /api/mock/fix-agent` fixes the agent. */
+      startFailure?: Omit<AgentLastError, "at">;
     },
   ) => MockAgent;
   summary: (agent: MockAgent) => AgentSummary;
