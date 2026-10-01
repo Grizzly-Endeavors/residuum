@@ -59,7 +59,7 @@
   {scope}
   {section}
   title="Notifications"
-  lede="Notifications from your agents on your phone or computer, even while Residuum is closed. Each device chooses what it's told about."
+  lede="Hear from your agents on your phone or computer, even while Residuum is closed. Each device chooses what it's told about."
 >
   <ThisDeviceGroup />
 

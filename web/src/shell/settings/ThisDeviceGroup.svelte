@@ -143,15 +143,14 @@
       </Banner>
     {:else}
       <p class="push-note">
-        Get a notification here when an agent needs you, even while Residuum is closed. Your browser
-        asks for permission first.
+        Your browser asks for permission first. The name tells this device apart from your others in
+        the list of devices.
       </p>
       <TextField
         label="Name for this device"
         bind:value={newLabel}
         placeholder={push.defaultLabel}
         autocomplete="off"
-        hint="How it shows in the list of devices that get notifications."
       />
       <div class="push-actions">
         <Button variant="primary" loading={push.busy} onclick={() => void turnOn()}>
