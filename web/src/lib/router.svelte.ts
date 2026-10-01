@@ -80,7 +80,10 @@ function currentUrl(): string {
   return `${window.location.pathname}${window.location.search}`;
 }
 
-/** What closing removes from the URL: the panel, the Settings modal, or the item open in the Inbox. */
+/**
+ * What closing removes from the URL: the panel, the Settings modal, or the
+ * item open in the Inbox or the artifact selected on the Workbench.
+ */
 type ClosableParam = "panel" | "settings" | "item";
 
 /** `location` with `param` closed, or null when it isn't open. */
@@ -92,6 +95,11 @@ function withoutParam(location: AppLocation, param: ClosableParam): AppLocation 
     case "settings":
       return location.settings === null ? null : { ...location, settings: null };
     case "item":
+      if (place.kind === "workbench") {
+        return place.artifact === null
+          ? null
+          : { ...location, place: { ...place, artifact: null } };
+      }
       return place.kind === "inbox" && place.item !== null
         ? { ...location, place: { ...place, item: null } }
         : null;
@@ -263,8 +271,12 @@ class Router {
     return this.traverse(-steps).then(() => true);
   }
 
-  /** Close the item open in the Inbox: `history.back()` when this page pushed the entry that opened it, else a replace without it. */
-  closeInboxItem(): Promise<boolean> {
+  /**
+   * Close the item open in the Inbox, or collapse the artifact selected on the
+   * Workbench: `history.back()` when this page pushed the entry that opened it,
+   * else a replace without it.
+   */
+  closeItem(): Promise<boolean> {
     return this.close("item");
   }
 

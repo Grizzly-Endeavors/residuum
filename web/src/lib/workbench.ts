@@ -1,4 +1,4 @@
-// ── Where workbench artifacts are served ──────────────────────────────
+// ── Where workbench artifacts open ────────────────────────────────────
 //
 // Artifacts run on their own origin so they never share the web UI's.
 // Through the cloud relay that origin is the one the relay announced;
@@ -8,7 +8,15 @@ import type { WorkbenchInfo } from "./types";
 
 export type ArtifactsOrigin = { ok: true; origin: string } | { ok: false; reason: string };
 
-/** The origin artifacts are served from, as seen from `page` (the UI's location). */
+/** Why artifacts can't open over HTTPS when no relay origin matches this page. */
+export const NO_SECURE_ORIGIN_REASON =
+  "This page is served over HTTPS, and Residuum Cloud hasn't reported a workbench address yet. If you're using Residuum Cloud, this clears once it finishes connecting. If you reach Residuum through your own HTTPS proxy, artifacts can't open from it: open Residuum over plain HTTP on your network, or through Residuum Cloud.";
+
+/** Why artifacts can't open when the listener isn't running and the hub gave no reason. */
+const NO_LISTENER_REASON =
+  "Residuum isn't serving workbench artifacts right now. Restart Residuum, and check its logs if this keeps happening.";
+
+/** The origin artifacts open on, as seen from `page` (the UI's location). */
 export function resolveArtifactsOrigin(
   info: WorkbenchInfo,
   page: Pick<Location, "origin" | "protocol" | "hostname">,
@@ -27,9 +35,7 @@ export function resolveArtifactsOrigin(
     ok: false,
     reason:
       info.unavailable_reason ??
-      (page.protocol === "http:"
-        ? "Workbench artifacts aren't being served right now. Restart Residuum, and check its logs if this keeps happening."
-        : "This page is loaded over HTTPS, but no secure artifacts origin is available yet. If you're using Residuum Cloud, wait for the tunnel to finish connecting. If you're behind your own HTTPS proxy, make sure it also serves the workbench artifacts origin."),
+      (page.protocol === "http:" ? NO_LISTENER_REASON : NO_SECURE_ORIGIN_REASON),
   };
 }
 
