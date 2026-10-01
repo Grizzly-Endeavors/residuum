@@ -128,14 +128,14 @@ Every capability the current web UI offers, grouped by the surface that has it t
 
 - [x] Menu destinations (Chat, Workspace, Workbench, Scheduled, Agent settings, Team, Team files, Hub settings) — **Changed:** rail and bottom bar
 - [x] Connection status text — **Changed:** shown only when degraded
-- [ ] Inbox button with unread badge — **Changed:** rail and bottom bar, across agents
+- [x] Inbox button with unread badge — **Changed:** rail and bottom bar, across agents
 - [ ] Bug report entry — **Changed:** help menu and palette
 - [x] Agent chips: state, busy dots, unread (99+), failed-agent error tooltip, current highlight, arrow-key movement — **Changed:** rail agent rows (accordion) with a working indicator and a 99+ chat-unread badge; Up/Down move between rows; the error shows on Home and in the state card; an unknown agent in the URL redirects to Home with a toast
 - [x] Switching agents keeps the kind of page — **Changed:** agent places are explicit routes; the rail accordion links to them
 - [x] Hub offline note — **Changed:** hub banner
 - [x] Toasts: info/success auto-dismiss (4 s, 10 s with action), errors sticky, dismiss, action button
 - [ ] Recent notifications history with details, clear and Undo — **Changed:** a Recent notifications dialog from the help menu and palette
-- [ ] User inbox: unread count, tabs, read on open, body and attachment downloads, archive, restore, empty states — **Changed:** one cross-agent Inbox place with live counts from the overview (no polling); bodies render as Markdown; load errors are shown, not swallowed
+- [x] User inbox: unread count, tabs, read on open, body and attachment downloads, archive, restore, empty states — **Changed:** one cross-agent Inbox place with live counts from the overview (no polling); bodies render as Markdown; load errors are shown, not swallowed
 - [ ] Feedback dialog: bug and feedback tabs with drafts kept, required fields, severity, receipt with public id and Copy, friendly errors
 - [ ] Help overlay with shortcuts and commands — **Fix:** lists "Esc stops a running reply" and describes `/` accurately
 

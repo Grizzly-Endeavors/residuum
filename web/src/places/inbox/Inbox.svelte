@@ -13,8 +13,8 @@
 
   // The Inbox: every agent's user inbox in one list, newest first, filtered
   // to one agent or not, with the archive on its own tab. The filter, the tab
-  // and the open item live in the URL; opening an item pushes, everything
-  // else here replaces.
+  // and the open item live in the URL. Opening an item pushes, so Back closes
+  // it; switching items, the filter and the tab replace.
 
   type InboxPlace = Extract<Place, { kind: "inbox" }>;
 
@@ -177,12 +177,16 @@
               >
             {/snippet}
           </Banner>
-        {:else if !inbox.loaded}
-          <div class="inbox-loading">
-            <Skeleton shape="block" height="50px" label="Loading your inbox" />
-            <Skeleton shape="block" height="50px" />
-            <Skeleton shape="block" height="50px" />
-          </div>
+        {/if}
+
+        {#if !inbox.loaded}
+          {#if inbox.loadError === null}
+            <div class="inbox-loading">
+              <Skeleton shape="block" height="50px" label="Loading your inbox" />
+              <Skeleton shape="block" height="50px" />
+              <Skeleton shape="block" height="50px" />
+            </div>
+          {/if}
         {:else if inbox.items.length === 0}
           <EmptyState>
             {#if shown === "archived" && agent === null}
