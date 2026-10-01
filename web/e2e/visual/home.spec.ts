@@ -77,8 +77,11 @@ test.describe("home", { tag: "@visual" }, () => {
 
     await page.getByRole("button", { name: "Recently deleted" }).click();
     const restore = page.getByRole("button", { name: "Restore drifter" });
-    await restore.scrollIntoViewIfNeeded();
     await expect(restore).toBeVisible();
+    // The board above and the list both in view.
+    await restore.evaluate((button) => {
+      button.scrollIntoView({ block: "center" });
+    });
     await expectScreenshot(page, "home-recently-deleted");
   });
 });
