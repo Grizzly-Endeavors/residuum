@@ -1223,22 +1223,44 @@ mod tests {
         );
     }
 
-    /// Wait until the fake push service has seen `count` requests in all.
-    async fn until_requests(server: &MockServer, count: usize) {
-        for _ in 0..250 {
-            if requests_to(server).await >= count {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        panic!("the push service never saw {count} requests");
+    /// Wait for the next notice for the user. A notice follows a delivery over
+    /// real HTTP to the fake push service, so this waits on that delivery, not
+    /// on a clock; the bound turns a notice that never comes into a failure
+    /// instead of a hang.
+    async fn next_notice(notices: &mut broadcast::Receiver<String>) -> String {
+        tokio::time::timeout(Duration::from_secs(30), notices.recv())
+            .await
+            .expect("no notice reached the user")
+            .expect("the notice channel closed")
     }
 
-    async fn next_notice(notices: &mut broadcast::Receiver<String>) -> Option<String> {
-        tokio::time::timeout(Duration::from_millis(300), notices.recv())
-            .await
-            .ok()
-            .and_then(Result::ok)
+    /// Wait until every background delivery has finished. Each one holds a
+    /// clone of the service until it has recorded its result and told the
+    /// user, so once the test's own handle is the only one left, no notice is
+    /// still to come.
+    async fn until_deliveries_finish(service: &Arc<PushService>) {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while Arc::strong_count(service) > 1 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("a background delivery never finished");
+    }
+
+    /// Assert that the user has been told nothing since the last notice read,
+    /// once every delivery that could tell them has finished.
+    async fn assert_no_further_notice(
+        service: &Arc<PushService>,
+        notices: &mut broadcast::Receiver<String>,
+        why: &str,
+    ) {
+        until_deliveries_finish(service).await;
+        assert_eq!(
+            notices.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty),
+            "{why}"
+        );
     }
 
     #[tokio::test]
@@ -1254,15 +1276,17 @@ mod tests {
         service.notify(sample_message(PushEvent::InboxItem), HashSet::new());
         service.notify(sample_message(PushEvent::InboxItem), HashSet::new());
 
-        let notice = next_notice(&mut notices).await.expect("a notice");
+        let notice = next_notice(&mut notices).await;
         assert!(
             notice.contains("Laptop no longer receives notifications"),
             "{notice}"
         );
-        assert!(
-            next_notice(&mut notices).await.is_none(),
-            "the device was removed once, so the user is told once"
-        );
+        assert_no_further_notice(
+            &service,
+            &mut notices,
+            "the device was removed once, so the user is told once",
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1276,7 +1300,7 @@ mod tests {
 
         // The first failure starts a streak, and the user is told.
         service.notify(sample_message(PushEvent::InboxItem), HashSet::new());
-        let notice = next_notice(&mut notices).await.expect("a notice");
+        let notice = next_notice(&mut notices).await;
         assert!(notice.contains("A notification to Laptop couldn't be delivered"));
         assert!(
             notice.contains("status 400"),
@@ -1285,18 +1309,33 @@ mod tests {
 
         // More failures in the same streak are not told again.
         service.notify(sample_message(PushEvent::InboxItem), HashSet::new());
-        until_requests(&server, 2).await;
-        assert!(next_notice(&mut notices).await.is_none());
+        assert_no_further_notice(
+            &service,
+            &mut notices,
+            "a failure in the same streak is not told again",
+        )
+        .await;
+        assert_eq!(
+            requests_to(&server).await,
+            2,
+            "the second failure reached the push service"
+        );
 
         // A success ends the streak, so the next failure starts another.
         server.reset().await;
         accepts(&server, 201).await;
         service.notify(sample_message(PushEvent::InboxItem), HashSet::new());
-        settle(&service, &device.id, |d| d.is_some_and(|d| !d.is_failing())).await;
+        until_deliveries_finish(&service).await;
+        let recovered = find(&service, &device.id).await.unwrap();
+        assert!(!recovered.is_failing(), "a success ends the streak");
         server.reset().await;
         accepts(&server, 400).await;
         service.notify(sample_message(PushEvent::InboxItem), HashSet::new());
-        assert!(next_notice(&mut notices).await.is_some());
+        let second_streak = next_notice(&mut notices).await;
+        assert!(
+            second_streak.contains("A notification to Laptop couldn't be delivered"),
+            "the next failure starts another streak: {second_streak}"
+        );
     }
 
     #[tokio::test]
@@ -1311,7 +1350,12 @@ mod tests {
         let result = service.send_test(&device.id, 0).await.unwrap();
 
         assert!(!result.delivered && result.error.is_some());
-        assert!(next_notice(&mut notices).await.is_none());
+        assert_no_further_notice(
+            &service,
+            &mut notices,
+            "the person waiting for the test was told, not the hub",
+        )
+        .await;
     }
 
     #[test]
