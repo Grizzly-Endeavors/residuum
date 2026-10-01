@@ -160,6 +160,8 @@ web/
 │       ├── format-usage.ts       # Elapsed time / token count formatting for the indicator and footer
 │       ├── format-tool-result.ts # Tool result display: JSON, file dumps, lists, errors, long-output collapse
 │       ├── settings-toml.ts      # Config parsing (for display) and diffing (for the patch endpoints)
+│       ├── settings-fields.ts    # The field-to-key-path map: every form field's key, and which field a diagnostic's key path names
+│       ├── settings-model.svelte.ts # The settings model: per scope and file baselines, staged changes, Save, Undo, locks (no UI)
 │       ├── config-coordinator.ts # Config write coordinator: serialized writes, re-read before a save, change notifications, checkpoint restore and undo
 │       ├── config-sync.ts        # Passes config changes made elsewhere (the agent's config/ watch, hub_config_reloaded) to the coordinator
 │       └── secrets.ts            # secret:/${ENV_VAR} reference detection for settings fields
@@ -265,6 +267,27 @@ Every write to a config file goes through `configCoordinator` in `lib/config-coo
 Writes to one file are serialized. Before a save the coordinator reads the file again. When it differs from `baseline` and the keys that changed overlap the keys the edit sets (a raw `{ text }` save overlaps every change), it calls `choose` with `{ file, keys, disk }`. `choose` answers `"keep-mine"` ("Keep my changes"), which goes on with the write, or `"use-disk"` ("Use what's on disk"), which writes nothing and resolves `used-disk`. No lock is held while `choose` waits, so it can ask the user. When the changes don't overlap, a patch goes ahead and the other keys' changes survive.
 
 Changes made outside the coordinator reach its subscribers through `lib/config-sync.ts`, started in `main.ts`: `workspace_changed` frames under the bound agent's `config/` folder (a watch owner on the agent's socket, tied to that agent), and the hub's `hub_config_reloaded` frame. Another agent's files have no change feed, so the re-read before a save is the only protection for them.
+
+### The settings model
+
+`lib/settings-model.svelte.ts` holds what the Settings modal edits, with no UI. `settingsModel.agent(name)` and `settingsModel.all()` return a scope: an agent's `config.toml`, `providers.toml` and `mcp.json`, or the hub's `config.toml` for All agents. A scope never writes another scope's files, and an agent's form holds only agent keys. The hub's values an agent page shows are `scope.install`, read-only. Get a scope in a script, not in a template expression, since creating one changes the registry.
+
+Each file has a baseline (its text as the model last loaded or saved it) and a form (a copy parsed into the shapes the sections bind to). What the user changed is the difference between them, so every edit is staged, removals included, and the scope keeps it while the modal is closed or another scope is open. Read the form through the scope each time (`scope.config.timeout_secs`, `scope.providers`, `scope.models`, `scope.mcpServers`): a reload gives it new objects.
+
+| Call | Does |
+|------|------|
+| `load()` | Reads each file, keeping the staged changes of a file that has some, and follows changes made elsewhere. |
+| `reload()` | Discards the staged changes and reads every file again. |
+| `discard()` | Drops the staged changes. |
+| `save(choose)` | Stores typed secrets, then writes each changed file's diff through the coordinator, providers then config then MCP servers. A file that fails keeps its changes, and `config.toml` waits on `providers.toml`. Resolves to a `SaveResult`: what each file did, every checkpoint taken, and a plain-language message. |
+| `undo()` | Restores the last save's checkpoints in reverse order and reports each file's reverted and skipped paths, naming any file it couldn't restore. |
+| `fieldDiagnostics(ref)` and `sectionDiagnostics(section)` | The problems from a save. A diagnostic whose key path names a form field is on that field; the rest are for the top of a section. |
+
+`dirty`, `saving`, `lastResult` and `undoable` drive the save bar. `file(name)` gives a file's `lockedBy` (`"form"` keeps its raw editor read-only, `"raw"` keeps its form read-only while the raw editor holds a draft set with `setRawDraft`), `changedOnDisk`, `unreadable` and `loadError`. A change to a file that has staged changes leaves them alone, so the coordinator's re-read before Save finds the clash. A typed credential is stored under its name (`discord`, `webhook_<name>`, a provider's name) and the reference goes in the file. Immediate actions have no state here.
+
+`lib/settings-fields.ts` is the one map from a form field to its key (`keyPathOf`), which diffing and diagnostic placement (`locateField`) share, so a field that saves to a key is the field that shows that key's error. A form field the map doesn't cover fails `settings-fields.test.ts`. Failover lists ride along with a role (`models.fallbacks`) so a save never shortens one.
+
+The model's tests are `settings-model.component.test.ts`, so they run with live runes in jsdom.
 
 ## Code Quality
 
