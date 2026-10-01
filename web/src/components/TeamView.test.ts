@@ -2,10 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, jsonResponse, mockFetch, render, screen, settle } from "../test/component";
 import TeamView from "./TeamView.svelte";
 import { hub } from "../lib/hub.svelte";
-import { router } from "../lib/router.svelte";
 import { toast } from "../lib/toast.svelte";
 import { notifications } from "../lib/notifications.svelte";
-import { activityFrame, snapshot } from "../test/hub-frames";
+import { snapshot } from "../test/hub-frames";
 import type { AgentSummary, DeletedAgent } from "../lib/hub-types";
 
 function agent(name: string, overrides: Partial<AgentSummary> = {}): AgentSummary {
@@ -110,9 +109,16 @@ afterEach(() => {
   for (const id of [...toast.toasts.keys()]) toast.dismiss(id);
 });
 
+/** The agent's row in the list, or null when it isn't listed. */
+function findRow(name: string): HTMLElement | null {
+  const label = Array.from(document.querySelectorAll(".team-row-name")).find(
+    (el) => el.textContent.trim() === name,
+  );
+  return label?.closest("li") ?? null;
+}
+
 function row(name: string): HTMLElement {
-  const link = screen.getByRole("button", { name: new RegExp(`^${name}$`) });
-  const li = link.closest("li");
+  const li = findRow(name);
   if (!li) throw new Error(`no row for ${name}`);
   return li;
 }
@@ -136,22 +142,12 @@ function within(el: HTMLElement): { button: (name: string) => HTMLButtonElement 
 }
 
 describe("TeamView agent list", () => {
-  it("shows each agent's state, role line, visibility and last error", () => {
+  it("lists every agent with its visibility, leaving its state and role to Home's board", () => {
     render(TeamView);
-    expect(row("atlas")).toHaveTextContent("running");
-    expect(row("atlas")).toHaveTextContent("atlas keeps notes");
     expect(visibilityOf("atlas")).toHaveValue("private");
-    expect(row("drifter")).toHaveTextContent("stopped");
     expect(visibilityOf("drifter")).toHaveValue("public");
-    expect(row("brittle")).toHaveTextContent("failed");
-    expect(row("brittle")).toHaveTextContent("providers.toml is missing");
-  });
-
-  it("shows activity: working and unread", () => {
-    hub.handleFrame(activityFrame("atlas", true, 2));
-    render(TeamView);
-    expect(row("atlas")).toHaveTextContent("working");
-    expect(row("atlas")).toHaveTextContent("2 unread");
+    expect(row("atlas")).not.toHaveTextContent("atlas keeps notes");
+    expect(row("brittle")).not.toHaveTextContent("providers.toml is missing");
   });
 
   it("only offers the lifecycle actions that fit the agent's state", () => {
@@ -194,13 +190,6 @@ describe("TeamView agent list", () => {
     expect(row("atlas")).toHaveAttribute("aria-busy", "true");
     expect(within(row("atlas")).button("Delete")).toBeDisabled();
   });
-
-  it("opens an agent from its name", async () => {
-    const open = vi.spyOn(router, "openPlace").mockResolvedValue(true);
-    render(TeamView);
-    await fireEvent.click(screen.getByRole("button", { name: /^atlas$/ }));
-    expect(open).toHaveBeenCalledWith({ kind: "chat", agent: "atlas" });
-  });
 });
 
 describe("TeamView lifecycle", () => {
@@ -222,7 +211,6 @@ describe("TeamView lifecycle", () => {
       expect(within(row("atlas")).button("Start")).toBeEnabled();
     });
     expect(within(row("atlas")).button("Stop")).toBeDisabled();
-    expect(row("atlas")).toHaveTextContent("stopped");
   });
 
   it("starts and restarts through the hub API", async () => {
@@ -371,12 +359,12 @@ describe("TeamView delete", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Delete drifter" }));
     await fireEvent.click(screen.getByRole("button", { name: "Delete agent" }));
     await screen.findByText("ckpt-9");
-    expect(screen.queryByRole("button", { name: "drifter" })).toBeNull();
+    expect(findRow("drifter")).toBeNull();
 
     await fireEvent.click(screen.getByRole("button", { name: "Undo deleting drifter" }));
 
     await vi.waitFor(() => {
-      expect(screen.getByRole("button", { name: "drifter" })).toBeTruthy();
+      expect(findRow("drifter")).not.toBeNull();
     });
     expect(calls.at(-1)).toEqual({
       method: "POST",
@@ -455,7 +443,7 @@ describe("TeamView recently deleted", () => {
     expect(restoreButton("nova")).toHaveTextContent("Restoring");
     release(jsonResponse(agent("nova"), 201));
     await vi.waitFor(() => {
-      expect(screen.getByRole("button", { name: "nova" })).toBeTruthy();
+      expect(findRow("nova")).not.toBeNull();
     });
     expect(screen.queryByText("Recently deleted")).toBeNull();
     expect(hub.deleted).toEqual([]);

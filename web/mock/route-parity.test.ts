@@ -243,6 +243,12 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
   restartAgent: [(a) => a.restartAgent("scout")],
   setAgentVisibility: [(a) => a.setAgentVisibility("scout", "public")],
   setAgentAutostart: [(a) => a.setAgentAutostart("scout", false)],
+  fetchOverview: [(a) => a.fetchOverview()],
+  fetchTeamEvents: [(a) => a.fetchTeamEvents(), (a) => a.fetchTeamEvents({ after: 3, limit: 20 })],
+  fetchHubInbox: [
+    (a) => a.fetchHubInbox(),
+    (a) => a.fetchHubInbox({ status: "archived", agent: "scout", before: "1:scout:x", limit: 5 }),
+  ],
 };
 
 /**

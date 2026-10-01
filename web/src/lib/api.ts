@@ -53,7 +53,11 @@ import type {
   DeletedAgentListResponse,
   RestoreAgentRequest,
   AgentPatch,
+  HubInboxPage,
   HubStatusResponse,
+  InboxStatus,
+  OverviewResponse,
+  TeamEventPage,
   WorkspaceScope,
 } from "./hub-types";
 import { cachedFetch, invalidate } from "./cache";
@@ -1192,4 +1196,43 @@ async function patchAgent(name: string, patch: Partial<AgentPatch>): Promise<Age
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   });
+}
+
+// ── Team overview, team events and the cross-agent inbox ────────────
+
+/** `?a=1&b=2` from the parameters that are set, or `""` when none are. */
+function queryString(params: Record<string, string | number | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) search.set(key, String(value));
+  }
+  const text = search.toString();
+  return text === "" ? "" : `?${text}`;
+}
+
+/** Every agent's overview, sorted by name, with the boot id of the hub process that answered. Throws `ApiError`. */
+export async function fetchOverview(): Promise<OverviewResponse> {
+  return apiFetch<OverviewResponse>(hubPath("/overview"));
+}
+
+/**
+ * One page of the team event log, newest first: entries older than `before`
+ * and newer than `after`, at most `limit` (50 by default, 200 at most).
+ * Throws `ApiError`.
+ */
+export async function fetchTeamEvents(
+  query: { before?: number; after?: number; limit?: number } = {},
+): Promise<TeamEventPage> {
+  return apiFetch<TeamEventPage>(hubPath(`/events${queryString(query)}`));
+}
+
+/**
+ * One page of every agent's user inbox, newest first: the active items by
+ * default, one agent's with `agent`, the page after a `next_cursor` with
+ * `before`. Throws `ApiError`.
+ */
+export async function fetchHubInbox(
+  query: { status?: InboxStatus; agent?: string; before?: string; limit?: number } = {},
+): Promise<HubInboxPage> {
+  return apiFetch<HubInboxPage>(hubPath(`/inbox${queryString(query)}`));
 }

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import { hub } from "../lib/hub.svelte";
   import { StatusDot } from "../lib/ui";
 
@@ -11,9 +12,11 @@
     agent?: string;
     /** A quiet line beside the title: the agent's role, or the place within the agent. */
     sub?: string | null;
+    /** More beside the title, such as Home's tally of its agents. */
+    children?: Snippet;
   }
 
-  let { title, agent, sub }: Props = $props();
+  let { title, agent, sub, children }: Props = $props();
 
   const summary = $derived(agent === undefined ? undefined : hub.agent(agent));
 </script>
@@ -31,6 +34,7 @@
   {#if sub}
     <span class="place-sub">{sub}</span>
   {/if}
+  {@render children?.()}
 </header>
 
 <style>

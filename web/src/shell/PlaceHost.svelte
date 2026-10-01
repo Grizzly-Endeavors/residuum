@@ -8,18 +8,19 @@
   import Scheduled from "../Scheduled.svelte";
   import SessionView from "../components/SessionView.svelte";
   import SessionsSidebar from "../components/SessionsSidebar.svelte";
-  import TeamView from "../components/TeamView.svelte";
   import UserInbox from "../components/UserInbox.svelte";
   import Workbench from "../components/Workbench.svelte";
   import Workspace from "../components/Workspace.svelte";
+  import Home from "../places/home/Home.svelte";
   import PlaceHeader from "./PlaceHeader.svelte";
   import { agentPlaceLabel } from "./rail-model";
+  import type { ShellActions } from "./shell-actions";
 
-  // The main region's place. A place that hasn't been rebuilt hosts its
-  // legacy view inside a `data-legacy-view` element, where the legacy global
-  // styles still apply and the new base styles don't.
+  // The main region's place: Home, or a place that hasn't been rebuilt,
+  // which hosts its legacy view inside a `data-legacy-view` element, where
+  // the legacy global styles still apply and the new base styles don't.
 
-  let { onOpenFeedback }: { onOpenFeedback: () => void } = $props();
+  let { actions }: { actions: ShellActions } = $props();
 
   const place = $derived(router.place);
   const sessions = $derived(ws.sessions);
@@ -76,47 +77,49 @@
   }
 </script>
 
-{#if isAgentPlace(place)}
-  <PlaceHeader
-    title={place.agent}
-    agent={place.agent}
-    sub={place.kind === "chat" ? hub.agent(place.agent)?.role : agentPlaceLabel(place.kind)}
-  />
-{:else if place.kind === "inbox"}
-  <PlaceHeader title="Inbox" />
-{:else if place.kind === "shared-files"}
-  <PlaceHeader title="Shared files" />
-{/if}
-
-<div class="shell-legacy" data-legacy-view>
+{#if place.kind === "home"}
+  <Home {actions} />
+{:else}
   {#if isAgentPlace(place)}
-    {#key place.agent}
-      {#if sessions.view}
-        <SessionView view={sessions.view} onBack={closeRun} />
-      {/if}
-      <!-- The place stays mounted under a session, so the chat's history, scroll and draft survive it. -->
-      <div class="shell-legacy-place" class:is-covered={sessions.view !== null}>
-        {#if place.kind === "chat"}
-          <Chat {onOpenFeedback} />
-        {:else if place.kind === "activity"}
-          <SessionsSidebar onSelect={openRun} />
-        {:else if place.kind === "schedule"}
-          <Scheduled />
-        {:else}
-          <Workspace agent={place.agent} />
-        {/if}
-      </div>
-    {/key}
-  {:else if place.kind === "home"}
-    <TeamView />
+    <PlaceHeader
+      title={place.agent}
+      agent={place.agent}
+      sub={place.kind === "chat" ? hub.agent(place.agent)?.role : agentPlaceLabel(place.kind)}
+    />
   {:else if place.kind === "inbox"}
-    <UserInbox />
-  {:else if place.kind === "workbench"}
-    <Workbench artifact={place.artifact} />
-  {:else}
-    <Workspace agent={null} scope="team" />
+    <PlaceHeader title="Inbox" />
+  {:else if place.kind === "shared-files"}
+    <PlaceHeader title="Shared files" />
   {/if}
-</div>
+
+  <div class="shell-legacy" data-legacy-view>
+    {#if isAgentPlace(place)}
+      {#key place.agent}
+        {#if sessions.view}
+          <SessionView view={sessions.view} onBack={closeRun} />
+        {/if}
+        <!-- The place stays mounted under a session, so the chat's history, scroll and draft survive it. -->
+        <div class="shell-legacy-place" class:is-covered={sessions.view !== null}>
+          {#if place.kind === "chat"}
+            <Chat onOpenFeedback={() => actions.openFeedback("feedback")} />
+          {:else if place.kind === "activity"}
+            <SessionsSidebar onSelect={openRun} />
+          {:else if place.kind === "schedule"}
+            <Scheduled />
+          {:else}
+            <Workspace agent={place.agent} />
+          {/if}
+        </div>
+      {/key}
+    {:else if place.kind === "inbox"}
+      <UserInbox />
+    {:else if place.kind === "workbench"}
+      <Workbench artifact={place.artifact} />
+    {:else}
+      <Workspace agent={null} scope="team" />
+    {/if}
+  </div>
+{/if}
 
 <style>
   .shell-legacy,
@@ -131,12 +134,6 @@
 
   .shell-legacy-place.is-covered {
     display: none;
-  }
-
-  /* The team page scrolls across the whole region, its column centered in it. */
-  .shell-legacy > :global(.team-view) {
-    max-width: none;
-    padding-inline: max(var(--space-16), calc((100% - 960px) / 2));
   }
 
   /* The sessions list was a sidebar; as the Activity place it takes the region. */
