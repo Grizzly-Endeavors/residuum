@@ -2,17 +2,12 @@
   import A2a from "../../components/settings/A2a.svelte";
   import AgentKeys from "../../components/settings/AgentKeys.svelte";
   import History from "../../components/settings/History.svelte";
-  import HubGeneral from "../../components/settings/HubGeneral.svelte";
-  import Integrations from "../../components/settings/Integrations.svelte";
   import MCP from "../../components/settings/MCP.svelte";
   import Memory from "../../components/settings/Memory.svelte";
   import Providers from "../../components/settings/Providers.svelte";
   import Pulses from "../../components/settings/Pulses.svelte";
   import Runtime from "../../components/settings/Runtime.svelte";
   import Secrets from "../../components/settings/Secrets.svelte";
-  import SessionBudget from "../../components/settings/SessionBudget.svelte";
-  import Tracing from "../../components/settings/Tracing.svelte";
-  import Update from "../../components/settings/Update.svelte";
   import { sectionsOf, type SectionId } from "../../lib/settings-sections";
   import RunningOnly from "./RunningOnly.svelte";
   import type { SettingsScope } from "./sections";
@@ -49,22 +44,12 @@
   {/if}
   <div data-legacy-view>
     {#if allScope !== null}
-      {#if section === "general"}
-        <HubGeneral bind:fields={allScope.configFile.form} />
-      {:else if section === "cloud"}
-        <Integrations bind:fields={allScope.configFile.form} />
-      {:else if section === "notifications"}
+      {#if section === "notifications"}
         <p class="settings-placeholder">
           Push notifications aren't available in this version of Residuum.
         </p>
       {:else if section === "listener"}
         <A2a bind:fields={allScope.configFile.form} scope="hub" agent={null} />
-      {:else if section === "limits"}
-        <SessionBudget bind:fields={allScope.configFile.form} />
-      {:else if section === "diagnostics"}
-        <Tracing bind:fields={allScope.configFile.form} />
-      {:else if section === "updates"}
-        <Update />
       {:else if section === "keys"}
         <Secrets />
         <AgentKeys />

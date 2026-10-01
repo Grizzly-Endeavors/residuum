@@ -55,13 +55,9 @@ describe("config routes", () => {
       }
     });
 
-    it("answers the timezone, cloud status and feedback submissions", async () => {
+    it("answers the timezone and feedback submissions", async () => {
       expect((await request("GET", "/api/system/timezone")).body).toEqual({
         timezone: "America/New_York",
-      });
-      expect((await request("GET", "/api/cloud/status")).body).toMatchObject({
-        status: "disconnected",
-        has_token: false,
       });
       expect(
         (await request("POST", "/api/tracing/bug-report", { description: "x" })).body,

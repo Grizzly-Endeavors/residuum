@@ -32,12 +32,12 @@
     {#if state !== null}
       <Badge dot tone={state === "connected" ? "positive" : "neutral"}>{LABELS[state]}</Badge>
     {/if}
-  {/snippet}
-  {#snippet actions()}
     {#if ondisconnect}
-      <Button variant="danger" size="sm" aria-label="Disconnect {title}" onclick={ondisconnect}>
-        Disconnect
-      </Button>
+      <span class="channel-disconnect">
+        <Button variant="danger" size="sm" aria-label="Disconnect {title}" onclick={ondisconnect}>
+          Disconnect
+        </Button>
+      </span>
     {/if}
   {/snippet}
   {@render children()}
@@ -49,6 +49,10 @@
 </SettingsGroup>
 
 <style>
+  .channel-disconnect {
+    margin-left: auto;
+  }
+
   .channel-guide {
     display: inline-flex;
     align-items: center;

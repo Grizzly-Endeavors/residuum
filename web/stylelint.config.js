@@ -34,8 +34,6 @@ const LEGACY_FILES = [
   "src/components/settings/A2a.svelte",
   "src/components/settings/AgentKeys.svelte",
   "src/components/settings/History.svelte",
-  "src/components/settings/Integrations.svelte",
-  "src/components/settings/Update.svelte",
 ];
 
 /** A single token reference such as `var(--font-size-ui)`, with no literal fallback. */

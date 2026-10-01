@@ -1,8 +1,8 @@
 <script lang="ts">
   import { Icon } from "../../lib/icons";
+  import { numberOfText, textOfNumber } from "../../lib/settings-bind";
   import type { ConfigFields } from "../../lib/settings-toml";
-  import { Disclosure, SelectField, TextField, VisuallyHidden } from "../../lib/ui";
-  import ConfigNumberField from "./ConfigNumberField.svelte";
+  import { Disclosure, NumberField, SelectField, TextField, VisuallyHidden } from "../../lib/ui";
   import PathList from "./PathList.svelte";
   import SecretConfigField from "./SecretConfigField.svelte";
   import { fieldError, type AgentSectionProps } from "./sections";
@@ -131,9 +131,12 @@
       whichever search service is chosen above.
     </p>
     <SettingsGroup title="Anthropic">
-      <ConfigNumberField
+      <NumberField
         label="Searches per reply"
-        bind:text={scope.config.ws_anthropic_max_uses}
+        bind:value={
+          () => numberOfText(scope.config.ws_anthropic_max_uses),
+          (value) => (scope.config.ws_anthropic_max_uses = textOfNumber(value))
+        }
         placeholder="5"
         min={1}
         hint="The most web searches Anthropic can make while writing one reply."

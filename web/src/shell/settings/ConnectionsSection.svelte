@@ -1,10 +1,10 @@
 <script lang="ts">
   import { hub } from "../../lib/hub.svelte";
+  import { numberOfText, textOfNumber } from "../../lib/settings-bind";
   import type { ConfigFields } from "../../lib/settings-toml";
-  import { Banner, TextField, Toggle } from "../../lib/ui";
+  import { Banner, NumberField, TextField, Toggle } from "../../lib/ui";
   import ChannelGroup from "./ChannelGroup.svelte";
   import type { ChannelState } from "./channel-state";
-  import ConfigNumberField from "./ConfigNumberField.svelte";
   import RunningOnly from "./RunningOnly.svelte";
   import SecretConfigField from "./SecretConfigField.svelte";
   import { fieldError, type AgentSectionProps } from "./sections";
@@ -60,10 +60,13 @@
     bind:checked={scope.config[`${channel}_respond_to_others`]}
     error={problem(`${channel}_respond_to_others`)}
   />
-  <ConfigNumberField
+  <NumberField
     label="Earlier messages to read"
     hint={contextHint}
-    bind:text={scope.config[`${channel}_context_messages`]}
+    bind:value={
+      () => numberOfText(scope.config[`${channel}_context_messages`]),
+      (value) => (scope.config[`${channel}_context_messages`] = textOfNumber(value))
+    }
     placeholder="20"
     min={0}
     error={problem(`${channel}_context_messages`)}
@@ -181,10 +184,13 @@
       `Off: only you, the first person to message the bot. On: coworkers can mention or message ${agent} too.`,
       `When someone mentions ${agent} in a group chat, it reads this many earlier messages first.`,
     )}
-    <ConfigNumberField
+    <NumberField
       label="Listener port"
       hint="Expose only this port through your tunnel."
-      bind:text={scope.config.teams_port}
+      bind:value={
+        () => numberOfText(scope.config.teams_port),
+        (value) => (scope.config.teams_port = textOfNumber(value))
+      }
       placeholder="7701"
       error={problem("teams_port")}
     />
