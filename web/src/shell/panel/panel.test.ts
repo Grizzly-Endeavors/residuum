@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fileName, fileSourceFor } from "./panel-file";
+import { fileName, fileSourceFor } from "../../places/files/file-source";
 import { panelLayout } from "./panel-frame";
 import {
   clampPanelWidth,
