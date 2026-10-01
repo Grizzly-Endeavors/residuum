@@ -280,7 +280,12 @@ pub(super) async fn run_forced_observe(
         Ok(msgs) => msgs,
         Err(e) => {
             tracing::warn!(error = %e, "forced observe failed to load recent messages");
-            publish_error(publisher, format!("observe failed: {e}")).await;
+            publish_error(
+                publisher,
+                "Couldn't summarize older messages. Try again.".to_string(),
+                Some(format!("{e:#}")),
+            )
+            .await;
             return;
         }
     };
@@ -288,7 +293,7 @@ pub(super) async fn run_forced_observe(
     if recent.is_empty() {
         publish_notice(
             publisher,
-            "[memory] observe: no recent messages".to_string(),
+            "There are no recent messages to summarize.".to_string(),
         )
         .await;
         return;
@@ -306,7 +311,12 @@ pub(super) async fn run_forced_observe(
         Err(e) => {
             mem.observer.automatic_failure_tracker().record_failure();
             tracing::warn!(error = %e, "forced observe failed");
-            publish_error(publisher, format!("observe failed: {e}")).await;
+            publish_error(
+                publisher,
+                "Couldn't summarize older messages. Try again.".to_string(),
+                Some(format!("{e:#}")),
+            )
+            .await;
             return;
         }
     };
@@ -319,7 +329,12 @@ pub(super) async fn run_forced_observe(
         Ok(o) => o,
         Err(e) => {
             tracing::warn!(error = %e, "forced observe failed to merge");
-            publish_error(publisher, format!("observe failed: {e}")).await;
+            publish_error(
+                publisher,
+                "Couldn't summarize older messages. Try again.".to_string(),
+                Some(format!("{e:#}")),
+            )
+            .await;
             return;
         }
     };
@@ -328,14 +343,14 @@ pub(super) async fn run_forced_observe(
     apply_observation_reload(agent, &mem.layout).await;
 
     let suffix = if outcome.reflected {
-        "; reflection triggered"
+        " and condensed the memory log"
     } else {
         ""
     };
+    let count = recent.len();
     let notice = format!(
-        "[memory] observed: {} ({} observations){suffix}",
-        outcome.id,
-        outcome.observations.len()
+        "Summarized {count} older message{}{suffix}.",
+        if count == 1 { "" } else { "s" }
     );
     publish_notice(publisher, notice).await;
 }
@@ -361,7 +376,7 @@ pub(super) async fn run_forced_reflect(
             publish_notice(
                 publisher,
                 format!(
-                    "[memory] reflected: {} observations",
+                    "Condensed the memory log into {} observations.",
                     compressed.observations.len()
                 ),
             )
@@ -370,7 +385,12 @@ pub(super) async fn run_forced_reflect(
         Err(e) => {
             merge_writer.reflector_failure_tracker().record_failure();
             tracing::warn!(error = %e, "forced reflect failed");
-            publish_error(publisher, format!("reflect failed: {e}")).await;
+            publish_error(
+                publisher,
+                "Couldn't condense the memory log. Try again.".to_string(),
+                Some(format!("{e:#}")),
+            )
+            .await;
         }
     }
 }
@@ -379,7 +399,7 @@ pub(super) async fn run_forced_reflect(
 mod tests {
     use super::*;
     use crate::agent::{AgentConfig, HopCounter};
-    use crate::bus::{NoticeEvent, NotifyName, SYSTEM_CHANNEL, spawn_broker, topics};
+    use crate::bus::{ErrorEvent, NoticeEvent, NotifyName, SYSTEM_CHANNEL, spawn_broker, topics};
     use crate::inference::CompletionOptions;
     use crate::memory::recent_messages::append_recent_messages;
     use crate::memory::reflector::{Reflector, ReflectorConfig};
@@ -580,6 +600,237 @@ mod tests {
             recent.first().and_then(|m| m.turn_id.clone()),
             None,
             "a persist with no turn id should leave the field unset"
+        );
+    }
+
+    async fn subscribe_notices(
+        handle: &crate::bus::BusHandle,
+    ) -> crate::bus::Subscriber<NoticeEvent> {
+        handle
+            .subscribe::<_, NoticeEvent>(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap()
+    }
+
+    async fn subscribe_errors(
+        handle: &crate::bus::BusHandle,
+    ) -> crate::bus::Subscriber<ErrorEvent> {
+        handle
+            .subscribe::<_, ErrorEvent>(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn run_forced_observe_with_no_recent_messages_reads_as_plain_language() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        tokio::fs::create_dir_all(layout.memory_dir())
+            .await
+            .unwrap();
+
+        let handle = spawn_broker();
+        let mut notices = subscribe_notices(&handle).await;
+        let publisher = handle.publisher();
+        let mem = MemorySubsystems {
+            observer: Arc::new(always_failing_observer()),
+            merge_writer: merge_writer(&layout),
+            layout: layout.clone(),
+            tz: TEST_TZ,
+            publisher: publisher.clone(),
+        };
+        let mut agent = test_agent();
+
+        run_forced_observe(&mem, &mut agent, &publisher).await;
+
+        let notice = tokio::time::timeout(std::time::Duration::from_millis(200), notices.recv())
+            .await
+            .expect("a notice should have been published")
+            .expect("subscriber should still be open")
+            .expect("event should deserialize");
+        assert_eq!(notice.message, "There are no recent messages to summarize.");
+    }
+
+    #[tokio::test]
+    async fn run_forced_observe_failure_reports_plain_message_with_cause_in_details() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        tokio::fs::create_dir_all(layout.memory_dir())
+            .await
+            .unwrap();
+        append_recent_messages(
+            &layout.recent_messages_json(),
+            &[crate::inference::Message::user("hello")],
+            Visibility::User,
+            TEST_TZ,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let handle = spawn_broker();
+        let mut errors = subscribe_errors(&handle).await;
+        let publisher = handle.publisher();
+        let mem = MemorySubsystems {
+            observer: Arc::new(always_failing_observer()),
+            merge_writer: merge_writer(&layout),
+            layout: layout.clone(),
+            tz: TEST_TZ,
+            publisher: publisher.clone(),
+        };
+        let mut agent = test_agent();
+
+        run_forced_observe(&mem, &mut agent, &publisher).await;
+
+        let error = tokio::time::timeout(std::time::Duration::from_millis(200), errors.recv())
+            .await
+            .expect("an error should have been published")
+            .expect("subscriber should still be open")
+            .expect("event should deserialize");
+        assert_eq!(
+            error.message,
+            "Couldn't summarize older messages. Try again."
+        );
+        assert!(
+            error.details.is_some_and(|d| d.contains("null provider")),
+            "the technical cause should be in details, not the message"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_forced_observe_success_notice_reads_as_plain_language() {
+        const EXTRACT_RESPONSE: &str = r#"{
+            "observations": [
+                {"content": "an observation", "timestamp": "2026-02-21T14:30", "visibility": "user"}
+            ],
+            "narrative": ""
+        }"#;
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        tokio::fs::create_dir_all(layout.memory_dir())
+            .await
+            .unwrap();
+        append_recent_messages(
+            &layout.recent_messages_json(),
+            &[
+                crate::inference::Message::user("hello"),
+                crate::inference::Message::user("world"),
+            ],
+            Visibility::User,
+            TEST_TZ,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let observer = Arc::new(Observer::new(
+            Box::new(crate::memory::test_helpers::MockMemoryProvider::new(
+                EXTRACT_RESPONSE,
+            )),
+            crate::memory::observer::ObserverConfig::default(),
+        ));
+        let handle = spawn_broker();
+        let mut notices = subscribe_notices(&handle).await;
+        let publisher = handle.publisher();
+        let mem = MemorySubsystems {
+            observer,
+            merge_writer: merge_writer(&layout),
+            layout: layout.clone(),
+            tz: TEST_TZ,
+            publisher: publisher.clone(),
+        };
+        let mut agent = test_agent();
+
+        run_forced_observe(&mem, &mut agent, &publisher).await;
+
+        let notice = tokio::time::timeout(std::time::Duration::from_millis(200), notices.recv())
+            .await
+            .expect("a notice should have been published")
+            .expect("subscriber should still be open")
+            .expect("event should deserialize");
+        assert_eq!(notice.message, "Summarized 2 older messages.");
+    }
+
+    async fn seed_observation_log(layout: &WorkspaceLayout) {
+        let mut log = crate::memory::types::ObservationLog::new();
+        log.observations.push(crate::memory::types::Observation {
+            timestamp: chrono::Utc::now().naive_utc(),
+            source_episodes: Some("ep-001".to_string()),
+            visibility: Visibility::User,
+            content: "an observation".to_string(),
+            source: SourceTag::main(),
+        });
+        crate::memory::log_store::save_observation_log(&layout.observations_json(), &log)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_forced_reflect_failure_reports_plain_message_with_cause_in_details() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        tokio::fs::create_dir_all(layout.memory_dir())
+            .await
+            .unwrap();
+        seed_observation_log(&layout).await;
+
+        let mw = merge_writer(&layout);
+        let handle = spawn_broker();
+        let mut errors = subscribe_errors(&handle).await;
+        let publisher = handle.publisher();
+        let mut agent = test_agent();
+
+        run_forced_reflect(&mw, &layout, &mut agent, &publisher).await;
+
+        let error = tokio::time::timeout(std::time::Duration::from_millis(200), errors.recv())
+            .await
+            .expect("an error should have been published")
+            .expect("subscriber should still be open")
+            .expect("event should deserialize");
+        assert_eq!(
+            error.message,
+            "Couldn't condense the memory log. Try again."
+        );
+        assert!(
+            error.details.is_some_and(|d| d.contains("null provider")),
+            "the technical cause should be in details, not the message"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_forced_reflect_success_notice_reads_as_plain_language() {
+        const COMPRESSED_RESPONSE: &str = r#"{"observations": [{"content": "compressed", "timestamp": "2026-02-21T14:30", "visibility": "user"}]}"#;
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        tokio::fs::create_dir_all(layout.memory_dir())
+            .await
+            .unwrap();
+        seed_observation_log(&layout).await;
+
+        let search_index =
+            Arc::new(MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap());
+        let reflector = Reflector::new(
+            Box::new(crate::memory::test_helpers::MockMemoryProvider::new(
+                COMPRESSED_RESPONSE,
+            )),
+            ReflectorConfig::default(),
+        );
+        let mw = MemoryMergeWriter::new(reflector, layout.clone(), search_index, None, None);
+        let handle = spawn_broker();
+        let mut notices = subscribe_notices(&handle).await;
+        let publisher = handle.publisher();
+        let mut agent = test_agent();
+
+        run_forced_reflect(&mw, &layout, &mut agent, &publisher).await;
+
+        let notice = tokio::time::timeout(std::time::Duration::from_millis(200), notices.recv())
+            .await
+            .expect("a notice should have been published")
+            .expect("subscriber should still be open")
+            .expect("event should deserialize");
+        assert_eq!(
+            notice.message,
+            "Condensed the memory log into 1 observations."
         );
     }
 }

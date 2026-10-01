@@ -333,15 +333,16 @@ async fn handle_client_message(
                 match crate::inbox::quick_add(&dir, &title, &body, "cli", tz).await {
                     Ok(_filename) => {
                         tx.send(ServerMessage::Notice {
-                            message: "[inbox] item added".to_string(),
+                            message: "Added a note to the inbox.".to_string(),
                         })
                         .ok();
                     }
                     Err(e) => {
+                        tracing::warn!(error = %e, "inbox add failed");
                         tx.send(ServerMessage::Error {
                             reply_to: None,
-                            message: format!("inbox add failed: {e}"),
-                            details: None,
+                            message: "Couldn't add a note to the inbox. Try again.".to_string(),
+                            details: Some(format!("{e:#}")),
                         })
                         .ok();
                     }
@@ -731,5 +732,134 @@ mod tests {
         };
         assert!(!is_verbose_only(&response));
         assert!(!is_verbose_only(&error));
+    }
+
+    /// A minimal but real `GatewayState`, for exercising
+    /// `handle_client_message` directly rather than through the full
+    /// WebSocket stack. Mirrors the helper in `gateway/web/inbox.rs`'s own
+    /// test module.
+    fn make_test_gateway_state(workspace_dir: &std::path::Path) -> GatewayState {
+        let (core, _receivers) = crate::gateway::types::GatewayCore::new(
+            workspace_dir.to_path_buf(),
+            workspace_dir.to_path_buf(),
+        );
+        let session_registry =
+            std::sync::Arc::new(crate::background::registry::SessionRegistry::new());
+        let session_store = std::sync::Arc::new(crate::background::store::SessionStore::new(
+            workspace_dir.join("sessions"),
+        ));
+        let agent_messenger =
+            std::sync::Arc::new(crate::background::messaging::AgentMessenger::new(
+                std::sync::Arc::clone(&session_registry),
+                core.publisher.clone(),
+                std::sync::Arc::clone(&session_store),
+                crate::agent::hop::HopLimits { soft: 8, hard: 32 },
+            ));
+
+        GatewayState {
+            reload_tx: core.reload_tx,
+            command_tx: core.command_tx,
+            stop_tx: core.stop_tx,
+            agent_inbox_dir: workspace_dir.join("inbox/agent"),
+            tz: chrono_tz::UTC,
+            publisher: core.publisher,
+            bus_handle: core.bus_handle,
+            file_registry: crate::gateway::file_server::FileRegistry::new("scout"),
+            webhooks: crate::interfaces::webhook::WebhookTable::default(),
+            session_registry,
+            session_store,
+            agent_messenger,
+            skill_state: crate::skills::SkillState::new_shared(
+                crate::skills::SkillIndex::default(),
+                vec![],
+            ),
+            workspace_watch_health: tokio::sync::watch::channel(
+                crate::workspace::watch::WatchHealth::Native,
+            )
+            .1,
+            team_feed: std::sync::Arc::new(crate::hub::services::TeamChangeFeed::idle()),
+            action_store: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::actions::store::ActionStore::new_empty(
+                    workspace_dir.join("scheduled_actions.json"),
+                ),
+            )),
+            layout: crate::workspace::layout::WorkspaceLayout::new(workspace_dir),
+            activity: crate::hub::activity::ActivityTracker::new(
+                "test-agent",
+                tokio::sync::broadcast::channel(4).0,
+                crate::hub::agent_watch::AgentChangeFeed::new(),
+            ),
+        }
+    }
+
+    async fn recv_with_timeout(
+        local_rx: &mut mpsc::UnboundedReceiver<ServerMessage>,
+    ) -> ServerMessage {
+        tokio::time::timeout(std::time::Duration::from_millis(500), local_rx.recv())
+            .await
+            .expect("a message should have been sent")
+            .expect("channel should still be open")
+    }
+
+    #[tokio::test]
+    async fn inbox_add_success_notice_reads_as_plain_language() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_test_gateway_state(dir.path());
+        std::fs::create_dir_all(&state.agent_inbox_dir).unwrap();
+        let (local_tx, mut local_rx) = mpsc::unbounded_channel();
+        let verbose = AtomicBool::new(false);
+        let (watch_tx, _watch_rx) = tokio::sync::watch::channel(WatchSet::default());
+
+        let keep_going = handle_client_message(
+            ClientMessage::InboxAdd {
+                body: "remember this".to_string(),
+            },
+            &state,
+            &local_tx,
+            &verbose,
+            &watch_tx,
+        )
+        .await;
+        assert!(keep_going);
+
+        let msg = recv_with_timeout(&mut local_rx).await;
+        assert!(
+            matches!(&msg, ServerMessage::Notice { message } if message == "Added a note to the inbox."),
+            "expected a plain-language Notice, got {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn inbox_add_failure_keeps_the_cause_out_of_the_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_test_gateway_state(dir.path());
+        // `agent_inbox_dir` is never created, so the save underneath
+        // `quick_add` fails and the client should see a plain-language
+        // notice with the cause moved to `details`.
+        let (local_tx, mut local_rx) = mpsc::unbounded_channel();
+        let verbose = AtomicBool::new(false);
+        let (watch_tx, _watch_rx) = tokio::sync::watch::channel(WatchSet::default());
+
+        let keep_going = handle_client_message(
+            ClientMessage::InboxAdd {
+                body: "remember this".to_string(),
+            },
+            &state,
+            &local_tx,
+            &verbose,
+            &watch_tx,
+        )
+        .await;
+        assert!(keep_going);
+
+        let msg = recv_with_timeout(&mut local_rx).await;
+        assert!(
+            matches!(
+                &msg,
+                ServerMessage::Error { reply_to: None, message, details: Some(_) }
+                    if message == "Couldn't add a note to the inbox. Try again."
+            ),
+            "expected a plain-language Error with the cause in details, got {msg:?}"
+        );
     }
 }
