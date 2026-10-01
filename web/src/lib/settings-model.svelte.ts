@@ -194,6 +194,8 @@ export interface StagedFile {
   readonly loadError: string | null;
   /** What is in the raw editor when it differs from `raw`. */
   readonly rawDraft: string | null;
+  /** The file's text when the raw draft began: what a save of the draft checks the file against. */
+  readonly rawDraftBase: string | null;
   /** Which editor is read-only because of the other. */
   readonly lockedBy: FileLock | null;
   /** The raw editor holds `text`. Null, or the file's own text, clears the draft. */
@@ -222,6 +224,7 @@ export class FileState<T extends object> implements StagedFile {
   /** What the sections bind to. */
   form = $state() as T;
   rawDraft = $state<string | null>(null);
+  rawDraftBase = $state<string | null>(null);
   changedOnDisk = $state(false);
   unreadable = $state(false);
   loadError = $state<string | null>(null);
@@ -249,7 +252,12 @@ export class FileState<T extends object> implements StagedFile {
   }
 
   setRawDraft(text: string | null): void {
-    this.rawDraft = text === this.raw ? null : text;
+    const draft = text === this.raw ? null : text;
+    // A file can change on disk while a draft is open; the draft's base stays
+    // what the user started from, so the save's re-read finds that change.
+    if (draft === null) this.rawDraftBase = null;
+    else if (this.rawDraft === null) this.rawDraftBase = this.raw;
+    this.rawDraft = draft;
   }
 
   discard(): void {
@@ -288,7 +296,7 @@ export class FileState<T extends object> implements StagedFile {
     this.changedOnDisk = false;
     this.loadError = null;
     this.unreadable = !parses(this.file, raw);
-    if (this.rawDraft === raw) this.rawDraft = null;
+    if (this.rawDraft === raw) this.setRawDraft(null);
   }
 }
 
@@ -416,7 +424,8 @@ function summarizeUndo(files: readonly UndoFileResult[]): string {
   return parts.length > 0 ? parts.join(" ") : "Nothing needed undoing.";
 }
 
-function diagnosticsOf(result: ValidateResponse): Diagnostic[] {
+/** A save's or check's problems; a refusal that lists none is one problem, its error. */
+export function diagnosticsOf(result: ValidateResponse): Diagnostic[] {
   const found = result.diagnostics ?? [];
   if (found.length > 0 || result.valid || result.error === undefined) return found;
   return [{ severity: "error", message: result.error }];
@@ -511,6 +520,11 @@ export abstract class ScopeModel {
     return this.files.some((state) => state.dirty);
   }
 
+  /** Work a page reload would lose: staged changes, or a raw editor's unsaved edits. */
+  get unsaved(): boolean {
+    return this.dirty || this.files.some((state) => state.rawDraft !== null);
+  }
+
   /** The last save took checkpoints that haven't been undone. */
   get undoable(): boolean {
     return (this.lastResult?.checkpoints.length ?? 0) > 0;
@@ -566,9 +580,10 @@ export abstract class ScopeModel {
     }
   }
 
-  /** Drop the staged changes and read every file from disk again. */
+  /** Drop the staged changes and the raw editors' edits, and read every file from disk again. */
   async reload(): Promise<void> {
     this.discard();
+    for (const state of this.files) state.setRawDraft(null);
     await this.load();
   }
 
@@ -978,9 +993,9 @@ export class SettingsModel {
     return scopeKind(id) === "all" ? this.all() : this.agent(id);
   }
 
-  /** The scopes that hold staged changes. */
+  /** The scopes that hold unsaved work: staged changes or raw edits. */
   get stagedScopes(): (AgentScopeModel | AllScopeModel)[] {
-    return [...this.scopes.values()].filter((scope) => scope.dirty);
+    return [...this.scopes.values()].filter((scope) => scope.unsaved);
   }
 
   /** Forget a scope, such as an agent that was deleted, with whatever it had staged. */

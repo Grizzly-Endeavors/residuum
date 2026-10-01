@@ -230,6 +230,25 @@ const HUB_CONFIG_KEYS: Readonly<Record<string, AllSectionId>> = {
 export const RAW_SECTION: SectionId = "raw";
 
 /**
+ * The files a section's form edits, which a raw draft of any of them makes
+ * read-only. Sections not listed edit `config` alone.
+ */
+const SECTION_FILES: Partial<Record<`${ScopeKind}:${SectionId}`, readonly ConfigFileKind[]>> = {
+  "agent:model": ["providers", "config"],
+  "agent:servers": ["mcp"],
+  "agent:raw": [],
+  "agent:history": [],
+  "all:keys": [],
+  "all:updates": [],
+  "all:raw": [],
+  "all:history": [],
+};
+
+export function sectionFiles(kind: ScopeKind, section: SectionId): readonly ConfigFileKind[] {
+  return SECTION_FILES[`${kind}:${section}`] ?? ["config"];
+}
+
+/**
  * The section whose form edits a config key, by its top-level key, so a
  * diagnostic on `memory.observer_threshold_tokens` leads to Memory. Null when
  * no form edits the key, which sends a diagnostic to Raw config. This is a

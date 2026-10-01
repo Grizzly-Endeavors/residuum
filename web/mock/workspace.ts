@@ -1,4 +1,3 @@
-import { TomlError, parse as parseToml } from "smol-toml";
 import type {
   Diagnostic,
   WorkspaceEntry,
@@ -7,6 +6,7 @@ import type {
   WorkspaceWriteResponse,
 } from "../src/lib/types";
 import { checkpointBeforeAction } from "./checkpoints";
+import { configFormatOf, diagnoseConfigText } from "./diagnostics";
 import { json, readBody, readJsonObject, stringField, text, type JsonObject } from "./http";
 import type { Route, RouteContext } from "./routes";
 import type { MockState } from "./state";
@@ -89,26 +89,12 @@ function requireStrings(
 }
 
 /**
- * Diagnostics for `content` saved at `path`. Of the strictly-parsed files the
- * backend checks, the mock checks only an agent's `config/channels.toml`, as
- * TOML, so the editor's diagnostics can be tried by hand.
+ * Diagnostics for `content` saved at `path` in an agent's workspace: a syntax
+ * error in one of its config files (`mock/diagnostics.ts`).
  */
 function diagnose(scope: WorkspaceScope, path: string, content: string): Diagnostic[] {
-  if (scope !== "agent" || path !== "config/channels.toml") return [];
-  try {
-    parseToml(content);
-    return [];
-  } catch (err) {
-    if (!(err instanceof TomlError)) throw err;
-    const message = err.message.split("\n")[0] ?? "invalid TOML";
-    return [
-      {
-        severity: "error",
-        message,
-        location: { kind: "line_column", line: err.line, column: err.column },
-      },
-    ];
-  }
+  const format = scope === "agent" ? configFormatOf(path) : null;
+  return format === null ? [] : diagnoseConfigText(format, content);
 }
 
 function notFound(ctx: RouteContext, path: string): void {

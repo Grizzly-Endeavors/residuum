@@ -108,6 +108,7 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
   fetchMcpRaw: [(a) => a.fetchMcpRaw(AGENT)],
   putMcpRaw: [(a) => a.putMcpRaw(AGENT, "{}")],
   patchMcp: [(a) => a.patchMcp(AGENT, { a: 1 })],
+  validateMcp: [(a) => a.validateMcp(AGENT, "{}")],
   fetchSecretNames: [(a) => a.fetchSecretNames()],
   listSecrets: [(a) => a.listSecrets()],
   deleteSecret: [(a) => a.deleteSecret("name")],

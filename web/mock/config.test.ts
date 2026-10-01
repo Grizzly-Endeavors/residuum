@@ -86,10 +86,30 @@ describe("config routes", () => {
       await putRaw(`${prefix}/raw`, 'a = 1\n[t]\nb = "x"\n');
       expect((await fetchText(url(`${prefix}/raw`))).body).toBe('a = 1\n[t]\nb = "x"\n');
 
-      expect(await request("POST", `${prefix}/validate`, "anything")).toEqual({
-        status: 200,
-        body: { valid: true },
+      const check = async (text: string): Promise<Body> => {
+        const res = await fetchJson(url(`${prefix}/validate`), { method: "POST", body: text });
+        return res.body as Body;
+      };
+      expect(await check("a = 1\n")).toEqual({ valid: true });
+      expect(await check("a = 1\nb = \n")).toEqual({
+        valid: false,
+        error: "Invalid TOML document: invalid value",
+        diagnostics: [
+          {
+            severity: "error",
+            message: "Invalid TOML document: invalid value",
+            location: { kind: "line_column", line: 2, column: 5 },
+          },
+        ],
       });
+    });
+
+    it("writes a raw save with problems, reports them, and checkpoints the file first", async () => {
+      const before = harness.state.checkpoints.agent_config?.length ?? 0;
+      const res = await fetchJson(url("/api/config/raw"), { method: "PUT", body: "a = \n" });
+      expect(res.body).toMatchObject({ valid: false, diagnostics: [{ severity: "error" }] });
+      expect(harness.state.configToml).toBe("a = \n");
+      expect(harness.state.checkpoints.agent_config?.length).toBe(before + 1);
     });
 
     it("patches a TOML document: set, remove, inline tables, and pruning empty tables", async () => {

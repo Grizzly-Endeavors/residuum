@@ -151,7 +151,7 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [ ] Secret fields: store on save; Stored securely with Change; from environment variable with Replace
 - [x] Undo after removing providers, webhooks, MCP servers, skills/tools folders, cloud account — **Changed:** removals are staged (Discard brings them back); after Save, Undo restores the returned checkpoint
 - [x] Scope isolation: an agent page never shows editable install-wide fields, and a save writes only its own scope's files (today the agent-page save computes and ignores an install-wide diff, which is empty only because no agent section renders install-wide fields)
-- [ ] **Fix:** History restore and undo refresh the open form
+- [x] **Fix:** History restore and undo refresh the open form
 - [ ] **Fix:** field-level validation errors inline where the server gives a path
 
 All-agents scope:
@@ -178,8 +178,8 @@ Agent scope:
 - [ ] MCP: list, remove with Undo, add stdio/http, catalog with inputs — **Fix:** a failed catalog fetch shows an error, not "Reading catalog." forever
 - [ ] A2A visibility and client: status, URL with Copy, relay note, listener warning, card error, visibility, remote agents with raw editor, card preview, open workspace
 - [ ] Webhooks: route preview, name, secret, routing, format, content fields, remove with Undo, add
-- [ ] History: workspace and agent-config repos
-- [ ] History browser (both scopes): repo toggle, path filter, stats, paged list, detail, undo checkpoint with reverted/skipped report, changed paths with diff, view file, restore, encrypted-store hint
+- [x] History: workspace and agent-config repos
+- [x] History browser (both scopes): repo toggle, path filter, stats, paged list, detail, undo checkpoint with reverted/skipped report, changed paths with diff, view file, restore, encrypted-store hint
 
 ## Setup wizard → restyled, same flow (W42)
 

@@ -80,8 +80,6 @@
         <MCP bind:servers={agentScope.mcpFile.form} />
       {:else if section === "a2a"}
         <A2a bind:fields={agentScope.configFile.form} scope="agent" {agent} />
-      {:else if section === "history"}
-        <History scope="agent" {agent} />
       {/if}
     {/if}
   </div>
