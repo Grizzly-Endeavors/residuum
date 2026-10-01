@@ -162,7 +162,7 @@ Through Residuum Cloud the tunnel's loopback client passes the browser's `Accept
 
 ## Hub WebSocket
 
-`/api/hub/ws` sends JSON frames tagged by `type`, and accepts one message, `watch_team`.
+`/api/hub/ws` sends JSON frames tagged by `type`, and accepts two messages, `watch_team` and `presence`.
 
 | Frame | Sent when |
 |-------|-----------|
@@ -179,3 +179,5 @@ Through Residuum Cloud the tunnel's loopback client passes the browser's `Accept
 | `workspace_changed` `{ changes }`, `workspace_resync` `{ reason }`, `workspace_watch_unavailable` `{ message }` | Team change-feed frames, with the shapes of the agent WebSocket's, for the paths the connection watches. |
 
 `{ "type": "watch_team", "prefixes": [...] }` replaces the set of team paths the connection watches; `[]` stops watching. A prefix names `team` or a path under `team/`, the spelling the change feed uses (`team/wiki`), and matches whole path segments. A prefix outside `team/` or an unreadable message is refused with a warning `notice`, and the current watch stays in force. A connection that starts watching while the team watcher is off gets `workspace_watch_unavailable`.
+
+`{ "type": "presence", "device_id": "...", "active": true }` says whether the window for a push device is in front of the user: `true` while a window is visible and focused, repeated every 30 seconds while it stays so, and `false` when it hides or loses focus. The hub sends no push to a device with an `active: true` report from the last 60 seconds from a connection that is still open (see [Notifications](notifications.md#presence)), and a connection's reports end when it closes. The hub doesn't answer a `presence` message. One without a `device_id` string and an `active` boolean is refused with a warning `notice`.

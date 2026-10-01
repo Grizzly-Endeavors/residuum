@@ -115,8 +115,18 @@ async function changeTeamFileControl({ req, res, hub }: RouteContext): Promise<v
   else json(res, 200, outcome);
 }
 
+/**
+ * `{ devices }`: the push devices the hub would send no push right now,
+ * because a connected page reported them in front of the user (`presence`,
+ * kept on the mock clock) within the last minute.
+ */
+function presentPushDevices({ res, hub }: RouteContext): void {
+  json(res, 200, { devices: hub.presentPushDevices() });
+}
+
 /** The test control routes. */
 export const controlRoutes: readonly Route[] = [
+  { method: "GET", pattern: "/api/mock/push/presence", handler: presentPushDevices },
   { method: "POST", pattern: "/api/mock/team-file", handler: changeTeamFileControl },
   { method: "POST", pattern: "/api/mock/missed-relay", handler: missedRelay },
   { method: "POST", pattern: "/api/mock/teammate-message", handler: teammateMessage },

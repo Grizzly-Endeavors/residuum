@@ -341,7 +341,7 @@ pub enum HubSocketFrame {
     AgentOverview { overview: AgentOverview },
 }
 
-/// The one message a client sends on the hub WebSocket.
+/// What a client sends on the hub WebSocket.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export)]
@@ -349,6 +349,10 @@ pub enum HubClientMessage {
     /// Replace the set of team paths this connection watches. A prefix is
     /// `team` or a path under `team/`, the spelling the change feed uses.
     WatchTeam { prefixes: Vec<String> },
+    /// The window for the push device `device_id` is now in front of the
+    /// user (`active`) or not. The client repeats `active: true` every 30
+    /// seconds while it stays so; the hub sends no push to such a device.
+    Presence { device_id: String, active: bool },
 }
 
 /// Why a lifecycle or lookup call failed. The HTTP layer maps these to
@@ -555,7 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn the_client_message_is_watch_team() {
+    fn a_client_can_watch_team_paths() {
         let message: HubClientMessage =
             serde_json::from_value(json!({ "type": "watch_team", "prefixes": ["team/wiki"] }))
                 .unwrap();
@@ -565,6 +569,31 @@ mod tests {
                 prefixes: vec!["team/wiki".to_string()]
             }
         );
+    }
+
+    #[test]
+    fn a_client_reports_its_push_device_present_or_not() {
+        let message: HubClientMessage = serde_json::from_value(
+            json!({ "type": "presence", "device_id": "phone-1", "active": true }),
+        )
+        .unwrap();
+        assert_eq!(
+            message,
+            HubClientMessage::Presence {
+                device_id: "phone-1".to_string(),
+                active: true
+            }
+        );
+        for incomplete in [
+            json!({ "type": "presence", "device_id": "phone-1" }),
+            json!({ "type": "presence", "active": true }),
+            json!({ "type": "presence", "device_id": "phone-1", "active": "yes" }),
+        ] {
+            assert!(
+                serde_json::from_value::<HubClientMessage>(incomplete.clone()).is_err(),
+                "{incomplete} is not a presence report"
+            );
+        }
     }
 
     #[test]

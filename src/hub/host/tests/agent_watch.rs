@@ -81,7 +81,7 @@ fn agent_dir(hub: &Fixture, name: &str) -> std::path::PathBuf {
 }
 
 /// The bus of the running agent `name`.
-fn agent_bus(hub: &Fixture, name: &str) -> crate::bus::BusHandle {
+pub(super) fn agent_bus(hub: &Fixture, name: &str) -> crate::bus::BusHandle {
     hub.host
         .slot(name)
         .unwrap()

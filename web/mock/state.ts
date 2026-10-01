@@ -157,6 +157,11 @@ export interface MockHub {
   listing: () => AgentListResponse;
   /** Send a frame to every hub WebSocket client. */
   broadcast: (frame: HubServerMessage) => void;
+  /**
+   * The push devices whose page is connected to the hub socket and reported
+   * `presence` active within the last minute: the ones the hub sends no push.
+   */
+  presentPushDevices: () => string[];
   /** What has happened across the team since the hub started: `GET /api/hub/events` and the `team_event` frames. */
   teamEvents: MockTeamEvents;
   /** What Home shows about each agent: `GET /api/hub/overview` and the `agent_overview` frames. */

@@ -6,7 +6,7 @@
 //! `hub_config_reloaded`), a `team_event` for every entry the team event log
 //! records, an `agent_overview` whenever something in an agent's overview
 //! changes, and `workspace_changed` frames for the team paths the client
-//! watches. Client to server: `watch_team`, the only message.
+//! watches. Client to server: `watch_team`, and `presence` reports for Web Push.
 //!
 //! A connection that falls behind the hub's event stream, the team event
 //! log or the overview frames can't know what it missed, so it gets a fresh
@@ -29,6 +29,7 @@ use tokio::sync::{broadcast, watch};
 use crate::bus::{BusHandle, Subscriber, WorkspaceEvent, topics};
 use crate::gateway::protocol::ServerMessage;
 use crate::hub::overview::{AgentOverview, TeamOverview};
+use crate::hub::push::{Presence, PresenceConnection};
 use crate::hub::team_events::{TeamEvent, TeamEventLog};
 use crate::hub::types::{AgentListResponse, HubClientMessage, HubSocketFrame};
 use crate::hub::{AgentDirectory, HubEvent};
@@ -46,6 +47,8 @@ pub(super) struct HubWsState {
     pub team_watch_health: watch::Receiver<WatchHealth>,
     pub team_events: Arc<TeamEventLog>,
     pub overview: Arc<TeamOverview>,
+    /// Where clients report whether their push device is in front of the user.
+    pub presence: Arc<Presence>,
 }
 
 /// The route that upgrades to the hub WebSocket.
@@ -73,6 +76,8 @@ async fn serve(socket: WebSocket, state: HubWsState) {
     let mut overviews = state.overview.subscribe();
     let mut team_feed = subscribe_team_feed(&state.team_bus).await;
     let mut watch_set = WatchSet::default();
+    // What this connection reports about its push device ends when it closes.
+    let presence = state.presence.connect();
 
     let boot = HubSocketFrame::HubBoot {
         boot_id: state.team_events.boot_id().to_string(),
@@ -102,7 +107,7 @@ async fn serve(socket: WebSocket, state: HubWsState) {
                 forward_team_event(&mut outbound, &watch_set, &mut team_feed, event).await
             }
             frame = inbound.next() => {
-                handle_client_frame(&mut outbound, &state, &mut watch_set, frame).await
+                handle_client_frame(&mut outbound, &state, &mut watch_set, &presence, frame).await
             }
         };
         if !alive {
@@ -247,6 +252,7 @@ async fn handle_client_frame(
     outbound: &mut Outbound,
     state: &HubWsState,
     watch_set: &mut WatchSet,
+    presence: &PresenceConnection,
     frame: Option<Result<Message, axum::Error>>,
 ) -> bool {
     let text = match frame {
@@ -268,7 +274,13 @@ async fn handle_client_frame(
             .await;
         }
     };
-    let HubClientMessage::WatchTeam { prefixes } = request;
+    let prefixes = match request {
+        HubClientMessage::WatchTeam { prefixes } => prefixes,
+        HubClientMessage::Presence { device_id, active } => {
+            presence.report(&device_id, active);
+            return true;
+        }
+    };
     match parse_team_prefixes(prefixes) {
         Ok(set) => {
             let watching = !set.is_empty();
