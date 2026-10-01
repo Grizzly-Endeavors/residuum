@@ -1,5 +1,5 @@
 /**
- * The one stack every overlay layer joins (design §1): the topmost layer
+ * The one stack every overlay layer joins: the topmost layer
  * takes Esc, an outside pointer closes floating layers from the top down,
  * focus is trapped in the topmost modal and returns where it came from, and
  * behind a modal the page is inert and doesn't scroll.

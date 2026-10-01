@@ -19,7 +19,7 @@
   import ModelControl from "./ModelControl.svelte";
   import SlashMenu from "./SlashMenu.svelte";
 
-  // The composer (design §4): a message box that grows with what is typed,
+  // The composer: a message box that grows with what is typed,
   // images attached by button, paste or drop, the chat actions under `/`, the
   // model and thinking control, and Send, which becomes Stop while a reply
   // runs and nothing is typed. What is typed is kept per agent until it is

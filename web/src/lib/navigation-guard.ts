@@ -1,4 +1,4 @@
-// The unsaved-edit guard (design §3). A view that holds work the user would
+// The unsaved-edit guard. A view that holds work the user would
 // lose by leaving (unsaved file edits, staged settings changes) registers a
 // check. The router consults every check before it navigates, and the browser's
 // own prompt covers reload and tab close. What the user is asked is injected:

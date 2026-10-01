@@ -1,5 +1,5 @@
 // This browser's push notifications, and the hub's list of every device that
-// gets them (design §9.7, §11). Every action acts at once through the hub's
+// gets them. Every action acts at once through the hub's
 // push routes. The hub never shows a subscription's address, so which device
 // is this one is kept in local storage, with the address it registered.
 

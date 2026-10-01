@@ -10,7 +10,7 @@
   import FailedAgentActions from "../home/FailedAgentActions.svelte";
 
   // What an agent's Chat shows in place of the composer while the agent
-  // isn't running (design §4): why it couldn't start and the fix, that it is
+  // isn't running: why it couldn't start and the fix, that it is
   // stopped with Start, or that it is starting or stopping. The conversation
   // above stays readable.
 

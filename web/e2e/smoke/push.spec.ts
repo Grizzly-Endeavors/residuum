@@ -5,7 +5,7 @@ import { expect, test } from "../support/fixtures";
 import { deliverPush, fakePushService, shownNotifications } from "../support/push";
 
 /**
- * Web Push on this device (design §11): turning it on from Settings →
+ * Web Push on this device: turning it on from Settings →
  * Notifications, what the device is told about, a test send, presence on the
  * hub socket while the window is in front, and the worker's notifications and
  * clicks. The worker exists only in the production build, so these run there

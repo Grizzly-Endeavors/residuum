@@ -1,4 +1,4 @@
-// The activity line's words (design §4): each tool call as a step in plain
+// The activity line's words: each tool call as a step in plain
 // language, and a turn's steps as one summary with repeats merged and
 // counted. Labels come from one table keyed by tool name. Any other tool
 // reads "Used <tool>", and a tool server's tool "Used <server>: <tool>".

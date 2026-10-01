@@ -16,7 +16,7 @@
     savePanelWidth,
   } from "./panel-width";
 
-  // The context panel's frame (design §2): a resizable column beside the main
+  // The context panel's frame: a resizable column beside the main
   // region at wide widths, floating over its right edge at medium widths, and
   // a full-screen sheet on phones. The URL's `panel` parameter is its history
   // entry, so closing goes through the router, and Back closes it. What it

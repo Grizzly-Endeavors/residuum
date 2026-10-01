@@ -1,5 +1,5 @@
 // What the worker shows for a push and where a click on it leads, as pure
-// functions (design §11). The hub sends the payload in
+// functions. The hub sends the payload in
 // `docs/systems-usage/notifications.md`; the worker shows a notification for
 // every push, readable or not, because browsers punish a push that shows
 // nothing: Safari can revoke the subscription and Chrome shows a generic one.

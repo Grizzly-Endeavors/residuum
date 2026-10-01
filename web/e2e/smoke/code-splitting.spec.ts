@@ -8,7 +8,7 @@ import {
 } from "../support/lazy";
 
 /**
- * The code that loads only when a feature opens (design §11): Settings, the
+ * The code that loads only when a feature opens: Settings, the
  * command palette, the file view with its editor, and the setup wizard. The
  * production build names each chunk after the module it is imported from.
  */

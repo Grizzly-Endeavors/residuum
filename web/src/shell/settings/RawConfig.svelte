@@ -18,7 +18,7 @@
   import type { SettingsScope } from "./sections";
   import SettingsSection from "./SettingsSection.svelte";
 
-  // The Raw config section (design §8): each of the scope's files as text,
+  // The Raw config section: each of the scope's files as text,
   // checked for problems as it is typed, and written whole by its own Save
   // even when it has problems. A file whose form holds staged changes is
   // read-only here until they are saved or discarded; the reverse holds while

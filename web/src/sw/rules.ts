@@ -4,7 +4,7 @@
 // The worker caches the app shell and nothing else. No data is cached for
 // offline reading, and a request for the hub's API, its sockets, a webhook or
 // the cloud sign-in callback never reaches a cache or is answered by the
-// worker at all (design §11).
+// worker at all.
 
 /** The app's document, which every client route is served from. */
 export const SHELL_URL = "/index.html";

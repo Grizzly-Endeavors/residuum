@@ -1,4 +1,4 @@
-// The context panel's width at wide widths (design §1): it opens at the
+// The context panel's width at wide widths: it opens at the
 // default width, the viewer resizes it between the minimum and half the
 // viewport, and the width they chose is remembered in this browser.
 

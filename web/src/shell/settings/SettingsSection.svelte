@@ -10,7 +10,7 @@
   // The top of every settings section: its title, a line on what it holds,
   // and the problems the last save found that none of its fields shows. The
   // section's own content follows. While Raw config holds unsaved edits to a
-  // file this section edits, the content is read-only (design §8).
+  // file this section edits, the content is read-only.
 
   interface Props {
     scope: SettingsScope;

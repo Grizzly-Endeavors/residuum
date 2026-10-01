@@ -1,5 +1,5 @@
 // Telling the hub when this window is in front of the user, so it holds back
-// pushes the user is already looking at (design §9.7). The hub ends a report
+// pushes the user is already looking at. The hub ends a report
 // itself when the socket closes, so nothing is sent while the socket is down,
 // and a new connection hears the report again.
 

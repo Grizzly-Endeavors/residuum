@@ -7,7 +7,7 @@
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
 
-  // The Schedule section (design §8): whether the agent's pulses run, and how
+  // The Schedule section: whether the agent's pulses run, and how
   // its background sessions behave. The Schedule place shows what is
   // scheduled; this is the `config.toml` that governs it, so it stays
   // editable while the agent is stopped.

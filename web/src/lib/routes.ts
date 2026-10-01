@@ -1,4 +1,4 @@
-// URL <-> app location (design §3). A location is a place (a destination in
+// URL <-> app location. A location is a place (a destination in
 // the main region), an optional context panel, and an optional Settings modal:
 //
 //   /home                          Home

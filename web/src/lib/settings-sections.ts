@@ -1,4 +1,4 @@
-// The settings section registry (design §8). Every setting belongs to one
+// The settings section registry. Every setting belongs to one
 // scope: "All agents" (install-wide, the hub's config) or one agent (that
 // agent's config files). The URL names a scope and a section
 // (`?settings=scout/model`, `?settings=_all/general`); this module holds what

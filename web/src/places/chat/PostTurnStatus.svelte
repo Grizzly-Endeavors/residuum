@@ -13,7 +13,7 @@
   import { Icon } from "../../lib/icons";
 
   // The quiet line under the last reply while the agent's memory work after a
-  // turn runs (design §4). It never holds up the next message.
+  // turn runs. It never holds up the next message.
 
   let { memory, review }: { memory: boolean; review: boolean } = $props();
 

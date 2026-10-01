@@ -8,7 +8,7 @@
   import { PHONE_QUERY } from "../../styles/breakpoints";
   import { COMPOSER_THINKING, MainModel, modelControlLabel } from "./main-model.svelte";
 
-  // The composer's model and thinking control (design §4): the agent's main
+  // The composer's model and thinking control: the agent's main
   // model and how hard it thinks, opened beside the message box in a popover,
   // or in a sheet on phones. A change is written through the config write
   // coordinator, and the agent reloads to take it up from its next reply.

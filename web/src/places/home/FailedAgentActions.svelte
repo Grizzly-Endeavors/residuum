@@ -5,7 +5,7 @@
   import type { ShellActions } from "../../shell/shell-actions";
   import { agentActions } from "./agent-actions.svelte";
 
-  // The fixes for an agent that couldn't start (design §4), shared by Home's
+  // The fixes for an agent that couldn't start, shared by Home's
   // needs-you item and the agent's state card: Restart, and by the kind of
   // failure, Fix settings, Open Connections or Report a bug. The fix that
   // matches the failure leads.

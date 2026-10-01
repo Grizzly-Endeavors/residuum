@@ -7,7 +7,7 @@
   import { activitySteps, gapNote, summarizeActivity, type StepCall } from "./activity";
   import ActivityStep from "./ActivityStep.svelte";
 
-  // A turn's activity line (design §4), at the head of its block. While the
+  // A turn's activity line, at the head of its block. While the
   // turn runs it is open: working, for how long, Stop, and each step as it
   // arrives. Once the turn ends it collapses to one summary, which opens to
   // the steps, and a step opens to its details.

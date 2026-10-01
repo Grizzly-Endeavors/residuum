@@ -6,7 +6,7 @@
   import { ws } from "../../lib/ws.svelte";
   import PanelHeader from "../../shell/panel/PanelHeader.svelte";
 
-  // The conversation's size in the context panel (design §4): the bound
+  // The conversation's size in the context panel: the bound
   // agent's figures in plain words, with the token counts behind a
   // disclosure. A stopped agent shows the figures it last recorded. While a
   // reply runs, what it has written and done so far shows too.

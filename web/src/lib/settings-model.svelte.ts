@@ -1,6 +1,6 @@
 // ── The settings model (Svelte 5 runes) ──────────────────────────────
 //
-// What the settings modal edits (design §8), as logic with no UI. One scope
+// What the settings modal edits, as logic with no UI. One scope
 // holds the files one page of settings edits: an agent's `config.toml`,
 // `providers.toml` and `mcp.json`, or the hub's `config.toml` for All agents.
 // A scope never writes another scope's files.
