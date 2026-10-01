@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../support/fixtures";
 import { expectScreenshot } from "../support/screenshot";
 
@@ -102,7 +102,8 @@ test.describe("settings modal: Model", { tag: "@visual" }, () => {
     await expectScreenshot(page, "settings-model-fix");
   });
 
-  test("Model with a job's own model and a provider open", async ({ page }) => {
+  /** Open atlas's Model section and add an OpenAI provider called work. */
+  async function withWorkProvider(page: Page): Promise<void> {
     await page.goto("/agent/atlas?settings=atlas/model");
     // The scope picker names each agent's state once the hub socket has said it.
     await expect(
@@ -112,17 +113,37 @@ test.describe("settings modal: Model", { tag: "@visual" }, () => {
     const form = page.getByRole("form", { name: "Add a provider" });
     await form.getByLabel("Name").fill("work");
     await form.getByLabel("Type").selectOption("openai");
+    await form.getByLabel("API key", { exact: true }).fill("sk-test");
     await form.getByRole("button", { name: "Add provider" }).click();
-    await page.getByRole("button", { name: "Edit work" }).click();
+  }
+
+  /** Bring `element` to the middle of the section, clear of the save bar. */
+  async function centered(element: Locator): Promise<void> {
+    await element.evaluate((node) => {
+      node.scrollIntoView({ block: "center" });
+    });
+  }
+
+  test("Model's jobs, one with its own model from an added provider", async ({ page }) => {
+    await withWorkProvider(page);
     await page.getByRole("button", { name: "Use different models for specific jobs" }).click();
     const summarizing = page.getByRole("group", { name: "Summarizing older messages" });
     await summarizing.getByRole("combobox", { name: "Provider" }).selectOption("work");
     await expect(
       summarizing.getByRole("combobox", { name: "Model" }).locator("option", { hasText: "o3" }),
     ).toHaveCount(1);
-    await summarizing.getByRole("combobox", { name: "Provider" }).scrollIntoViewIfNeeded();
     await summarizing.getByRole("combobox", { name: "Provider" }).blur();
+    await centered(summarizing);
     await expectScreenshot(page, "settings-model-jobs");
+  });
+
+  test("Model's providers, with an added one open", async ({ page }) => {
+    await withWorkProvider(page);
+    await page.getByRole("button", { name: "Edit work" }).click();
+    await expect(page.getByLabel("Address")).toBeVisible();
+    await page.getByRole("button", { name: "Edit work" }).blur();
+    await centered(page.getByRole("list", { name: "Providers" }));
+    await expectScreenshot(page, "settings-model-providers");
   });
 });
 
