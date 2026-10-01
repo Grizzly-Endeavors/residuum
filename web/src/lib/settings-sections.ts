@@ -43,35 +43,46 @@ export type SectionGroup = "main" | "advanced";
 export interface SectionEntry<Id extends SectionId = SectionId> {
   id: Id;
   label: string;
+  /** What it holds, in a few words. The phone's section list shows it under the label. */
+  description: string;
   group: SectionGroup;
+}
+
+function listed<Id extends SectionId>(
+  id: Id,
+  label: string,
+  description: string,
+  group: SectionGroup = "main",
+): SectionEntry<Id> {
+  return { id, label, description, group };
 }
 
 /** An agent's sections, in the order the list shows them. */
 export const AGENT_SECTIONS: readonly SectionEntry<AgentSectionId>[] = [
-  { id: "model", label: "Model", group: "main" },
-  { id: "connections", label: "Connections", group: "main" },
-  { id: "tools", label: "Tools & skills", group: "main" },
-  { id: "memory", label: "Memory", group: "main" },
-  { id: "schedule", label: "Schedule", group: "main" },
-  { id: "runtime", label: "Runtime", group: "advanced" },
-  { id: "servers", label: "Tool servers", group: "advanced" },
-  { id: "a2a", label: "Agent-to-agent", group: "advanced" },
-  { id: "raw", label: "Raw config", group: "advanced" },
-  { id: "history", label: "History", group: "advanced" },
+  listed("model", "Model", "Which model it thinks with"),
+  listed("connections", "Connections", "Discord, Telegram and other places to talk"),
+  listed("tools", "Tools & skills", "What it can use and do"),
+  listed("memory", "Memory", "What it keeps and when it summarizes"),
+  listed("schedule", "Schedule", "Regular checks and background sessions"),
+  listed("runtime", "Runtime", "Time limits and reply length", "advanced"),
+  listed("servers", "Tool servers", "Outside tool servers it connects to", "advanced"),
+  listed("a2a", "Agent-to-agent", "Let other agents find it and hand it work", "advanced"),
+  listed("raw", "Raw config", "Edit its settings files directly", "advanced"),
+  listed("history", "History", "Earlier versions of its files", "advanced"),
 ];
 
 /** The install-wide sections, in the order the list shows them. */
 export const ALL_SECTIONS: readonly SectionEntry<AllSectionId>[] = [
-  { id: "general", label: "General", group: "main" },
-  { id: "notifications", label: "Notifications", group: "main" },
-  { id: "cloud", label: "Residuum Cloud", group: "main" },
-  { id: "keys", label: "Saved keys", group: "main" },
-  { id: "updates", label: "Updates", group: "main" },
-  { id: "limits", label: "Session limits", group: "main" },
-  { id: "listener", label: "Agent-to-agent", group: "advanced" },
-  { id: "diagnostics", label: "Diagnostics", group: "advanced" },
-  { id: "raw", label: "Raw config", group: "advanced" },
-  { id: "history", label: "History", group: "advanced" },
+  listed("general", "General", "Your timezone and where the app listens"),
+  listed("notifications", "Notifications", "Alerts on this device"),
+  listed("cloud", "Residuum Cloud", "Reach your agents from anywhere"),
+  listed("keys", "Saved keys", "Keys and passwords your agents use"),
+  listed("updates", "Updates", "Get the latest version"),
+  listed("limits", "Session limits", "How much background work can run at once"),
+  listed("listener", "Agent-to-agent", "Let agents elsewhere hand work to yours", "advanced"),
+  listed("diagnostics", "Diagnostics", "Logs and bug reports", "advanced"),
+  listed("raw", "Raw config", "Edit the install-wide settings file directly", "advanced"),
+  listed("history", "History", "Earlier versions of shared files", "advanced"),
 ];
 
 /** What a scope token in the URL means: `_all` is the install, anything else an agent's name. */

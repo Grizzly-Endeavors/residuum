@@ -270,8 +270,6 @@ export interface ValidateResponse {
 
 // ── Settings types ───────────────────────────────────────────────────
 
-export type SettingsMode = "simple" | "advanced" | "raw";
-
 export interface RollbackNoticeResponse {
   attempted_version: string;
   reason: string;

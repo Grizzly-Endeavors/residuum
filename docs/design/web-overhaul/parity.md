@@ -141,16 +141,16 @@ Every capability the current web UI offers, grouped by the surface that has it t
 
 ## Settings → Settings modal (design §8; W33–W41)
 
-- [ ] Title and scope note — **Changed:** scope picker with "Applies to…" line
-- [ ] Saving / saved / saved-with-problems / reloaded status — **Changed:** save bar and results
-- [ ] Reload from disk with discard confirmation when there are unsaved changes
+- [x] Title and scope note — **Changed:** scope picker with "Applies to…" line
+- [x] Saving / saved / saved-with-problems / reloaded status — **Changed:** save bar and results
+- [x] Reload from disk with discard confirmation when there are unsaved changes
 - [ ] Simple / Advanced / Raw — **Dropped:** Advanced sections, "More options" disclosures, and a Raw config section replace it
-- [ ] Section navigation and old-URL redirects — **Changed:** new section ids and mapping
-- [ ] Autosave — **Changed:** explicit Save changes / Discard per scope; items with their own endpoints stay immediate (design §8)
-- [ ] Partial-failure message naming saved and failed files
+- [x] Section navigation and old-URL redirects — **Changed:** new section ids and mapping
+- [x] Autosave — **Changed:** explicit Save changes / Discard per scope; items with their own endpoints stay immediate (design §8)
+- [x] Partial-failure message naming saved and failed files
 - [ ] Secret fields: store on save; Stored securely with Change; from environment variable with Replace
-- [ ] Undo after removing providers, webhooks, MCP servers, skills/tools folders, cloud account — **Changed:** removals are staged (Discard brings them back); after Save, Undo restores the returned checkpoint
-- [ ] Scope isolation: an agent page never shows editable install-wide fields, and a save writes only its own scope's files (today the agent-page save computes and ignores an install-wide diff, which is empty only because no agent section renders install-wide fields)
+- [x] Undo after removing providers, webhooks, MCP servers, skills/tools folders, cloud account — **Changed:** removals are staged (Discard brings them back); after Save, Undo restores the returned checkpoint
+- [x] Scope isolation: an agent page never shows editable install-wide fields, and a save writes only its own scope's files (today the agent-page save computes and ignores an install-wide diff, which is empty only because no agent section renders install-wide fields)
 - [ ] **Fix:** History restore and undo refresh the open form
 - [ ] **Fix:** field-level validation errors inline where the server gives a path
 

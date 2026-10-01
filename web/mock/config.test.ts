@@ -104,7 +104,10 @@ describe("config routes", () => {
         gone: { k: null },
         z: { $inline: { q: 1 } },
       });
-      expect(patch).toEqual({ status: 200, body: { valid: true } });
+      expect(patch).toEqual({
+        status: 200,
+        body: { valid: true, checkpoint_id: expect.any(String) as unknown },
+      });
       const raw = (await fetchText(url("/api/config/raw"))).body;
       expect(raw).toContain("a = 2");
       expect(raw).toMatch(/\[t\]\s+c = 1/);
@@ -112,6 +115,20 @@ describe("config routes", () => {
       expect(raw).toContain('e = "deep"');
       expect(raw).not.toContain("gone");
       expect(raw).toMatch(/\[z\]\s+q = 1/);
+    });
+
+    it("refuses a patch the backend's validation would, and writes nothing", async () => {
+      await putRaw("/api/config/raw", "timeout_secs = 30\n");
+      const refused = await request("PATCH", "/api/config/patch", {
+        agent: { max_tool_iterations: 0 },
+      });
+      expect(refused.status).toBe(400);
+      expect(refused.body).toEqual({
+        valid: false,
+        error: "agent.max_tool_iterations must be at least 1 (leave it unset for unlimited)",
+        diagnostics: [],
+      });
+      expect(harness.state.configToml).toBe("timeout_secs = 30\n");
     });
 
     it("patches an empty document", async () => {

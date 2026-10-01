@@ -494,6 +494,41 @@ describe("closing the panel and the modal", () => {
     expect(page.url()).toBe("/agent/scout");
   });
 
+  it("goes back from a section to the phone list it was opened from", async () => {
+    const page = await boot("/agent/scout");
+    await page.router.openSettings({ scope: "scout", section: null });
+    await page.router.openSettingsSection("raw");
+    await page.router.switchSettingsSection("history");
+    await expect(page.router.closeSettingsSection()).resolves.toBe(true);
+    expect(page.url()).toBe("/agent/scout?settings=scout");
+    expect(page.entry().idx).toBe(1);
+    expect(page.replaces).toEqual(["/agent/scout?settings=scout/history"]);
+  });
+
+  it("goes to the new scope's list, by replace, from a section whose scope was switched", async () => {
+    const page = await boot("/agent/scout");
+    await page.router.openSettings({ scope: "scout", section: null });
+    await page.router.openSettingsSection("raw");
+    await page.router.switchSettingsScope("_all");
+    await page.router.closeSettingsSection();
+    expect(page.url()).toBe("/agent/scout?settings=_all");
+    expect(page.entry().idx).toBe(2);
+    await page.router.closeSettings();
+    expect(page.url()).toBe("/agent/scout");
+    expect(page.entry().idx).toBe(0);
+  });
+
+  it("replaces the section away when the page didn't push it", async () => {
+    const page = await boot("/agent/scout");
+    await page.router.openSettings({ scope: "scout", section: "memory" });
+    await page.router.closeSettingsSection();
+    expect(page.url()).toBe("/agent/scout?settings=scout");
+    expect(page.replaces).toEqual(["/agent/scout?settings=scout"]);
+    await page.router.closeSettings();
+    expect(page.url()).toBe("/agent/scout");
+    expect(page.entry().idx).toBe(0);
+  });
+
   it("closes the panel the same way: back when pushed, replace when linked", async () => {
     const pushed = await boot("/agent/scout");
     await pushed.router.openPanel({ kind: "file", path: "a.md" });
