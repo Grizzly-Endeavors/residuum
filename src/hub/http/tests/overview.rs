@@ -223,6 +223,7 @@ async fn a_stopped_agents_last_message_is_the_newest_text_the_user_saw_in_its_re
         id: "call-1".to_string(),
         name: "read_file".to_string(),
         arguments: json!({}),
+        server: None,
     };
     write_recent(
         &h,

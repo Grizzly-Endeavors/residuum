@@ -159,6 +159,7 @@ export function convertHistory(
               name: tc.name,
               arguments: normalizeToolArgs(tc.arguments),
               status: "done",
+              server: tc.server,
             };
             toolCallItems.set(tc.id, call);
             return call;
@@ -212,7 +213,7 @@ export function feedItemSignature(item: FeedItem): string | null {
 export function appendToolCall(
   feed: FeedItem[],
   pending: Map<string, ToolCallState>,
-  call: { id: string; name: string; arguments: unknown },
+  call: { id: string; name: string; arguments: unknown; server?: string | null },
   turnId?: string,
 ): void {
   const state: ToolCallState = {
@@ -220,6 +221,7 @@ export function appendToolCall(
     name: call.name,
     arguments: normalizeToolArgs(call.arguments),
     status: "running",
+    server: call.server,
   };
   const last = feed[feed.length - 1];
   if (last?.kind === "tool-group" && last.turnId === turnId) {

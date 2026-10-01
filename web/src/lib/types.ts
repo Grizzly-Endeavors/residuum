@@ -64,6 +64,8 @@ export interface ToolCallRecord {
    * `normalizeToolArgs()` instead of assuming a shape.
    */
   arguments: unknown;
+  /** The MCP server (its name in `mcp.json`) that owns this tool; absent for a built-in. */
+  server?: string | null;
 }
 
 /** Person behind a user message that arrived on a chat interface. */
@@ -490,6 +492,8 @@ export interface ToolCallState {
    */
   status: "running" | "done" | "error" | "stopped";
   result?: string;
+  /** The MCP server (its name in `mcp.json`) that owns this tool; absent for a built-in. */
+  server?: string | null;
 }
 
 interface FeedItemBase {

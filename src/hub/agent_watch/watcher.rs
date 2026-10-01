@@ -661,6 +661,7 @@ mod tests {
                 tool_call_id: "call-1".to_string(),
                 name: "read".to_string(),
                 arguments: serde_json::json!({}),
+                server: None,
             }),
             SessionEventKind::Response {
                 turn_id: "turn-1".to_string(),

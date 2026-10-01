@@ -1171,6 +1171,7 @@ mod tests {
                         id: "call-1".to_string(),
                         name: "nonexistent_tool".to_string(),
                         arguments: serde_json::json!({}),
+                        server: None,
                     }],
                 ))
             } else {

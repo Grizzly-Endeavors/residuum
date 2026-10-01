@@ -18,7 +18,7 @@ use crate::hub::overview::{OverviewTracker, TeamOverview};
 use crate::hub::push::{PushTriggers, TriggerInputs};
 use crate::hub::runtime::build_app;
 use crate::hub::team_events::{TeamEventLog, TeamEventRecorder};
-use crate::hub::test_support::{free_port, mount_reply, write_agent};
+use crate::hub::test_support::{mount_reply, reserve_port, write_agent};
 use crate::workspace::watch::WatchHealth;
 
 const POLL_TIMEOUT: Duration = Duration::from_secs(60);
@@ -1634,7 +1634,8 @@ async fn deleting_an_agent_stops_it_and_keeps_its_history_for_a_restore() {
 #[tokio::test]
 async fn two_agents_cannot_hold_the_same_teams_port() {
     let hub = Fixture::new(&["atlas", "scout"], "").await;
-    let port = free_port();
+    let reservation = reserve_port();
+    let port = reservation.port();
     for name in ["atlas", "scout"] {
         std::fs::write(
             hub.root
@@ -1648,6 +1649,9 @@ async fn two_agents_cannot_hold_the_same_teams_port() {
         )
         .unwrap();
     }
+    // `hub.host.start` binds the teams listener on `port`; drop the
+    // reservation right before so no other test process can take it first.
+    drop(reservation);
 
     hub.host.start("atlas").await.unwrap();
     let second = hub.host.start("scout").await;
@@ -2012,10 +2016,15 @@ async fn once_the_hub_is_shutting_down_nothing_starts_and_running_agents_still_s
 async fn agents_starting_at_once_cannot_both_take_a_teams_port() {
     let names = ["a", "b", "c", "d"];
     let hub = Fixture::new(&names, "").await;
-    let port = free_port();
+    let reservation = reserve_port();
+    let port = reservation.port();
     for name in names {
         std::fs::write(config_path(&hub, name), teams_config(port)).unwrap();
     }
+    // The agents below race each other, not this reservation, to bind
+    // `port`; drop it first so none of them collides with another test
+    // process instead.
+    drop(reservation);
 
     let starts = names.map(|name| {
         let host = Arc::clone(&hub.host);
@@ -2047,10 +2056,12 @@ async fn agents_starting_at_once_cannot_both_take_a_teams_port() {
 #[tokio::test]
 async fn deleting_an_agent_frees_its_teams_port() {
     let hub = Fixture::new(&["atlas", "scout"], "").await;
-    let port = free_port();
+    let reservation = reserve_port();
+    let port = reservation.port();
     for name in ["atlas", "scout"] {
         std::fs::write(config_path(&hub, name), teams_config(port)).unwrap();
     }
+    drop(reservation);
     hub.host.start("atlas").await.unwrap();
 
     hub.host.delete("atlas", Actor::User).await.unwrap();
@@ -2062,12 +2073,15 @@ async fn deleting_an_agent_frees_its_teams_port() {
 #[tokio::test]
 async fn a_reload_that_changes_the_teams_port_moves_the_reservation() {
     let hub = Fixture::new(&["atlas", "scout"], "").await;
-    let (first, second) = (free_port(), free_port());
+    let (first_reservation, second_reservation) = (reserve_port(), reserve_port());
+    let (first, second) = (first_reservation.port(), second_reservation.port());
     std::fs::write(config_path(&hub, "atlas"), teams_config(first)).unwrap();
     std::fs::write(config_path(&hub, "scout"), teams_config(first)).unwrap();
+    drop(first_reservation);
     hub.host.start("atlas").await.unwrap();
 
     std::fs::write(config_path(&hub, "atlas"), teams_config(second)).unwrap();
+    drop(second_reservation);
     let slot = hub.host.slot("atlas").unwrap();
     hub.host.refresh_teams_port(&slot);
 

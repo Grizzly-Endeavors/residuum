@@ -6,8 +6,8 @@ import type { ServerMessage } from "./types";
 // The feed store's record of each turn it watched, for the activity line:
 // timing, failures, how the turn ended, and steps the page may have missed.
 
-function toolCall(id: string, name = "read_file"): ServerMessage {
-  return { type: "tool_call", id, name, arguments: { path: "team/wiki/index.md" } };
+function toolCall(id: string, name = "read_file", server: string | null = null): ServerMessage {
+  return { type: "tool_call", id, name, arguments: { path: "team/wiki/index.md" }, server };
 }
 
 function toolResult(id: string, isError = false): ServerMessage {
@@ -37,9 +37,9 @@ describe("a turn the page watched", () => {
     const store = new FeedStore();
     store.pushUserMessage("check the wiki");
     store.handleMessage({ type: "turn_started", reply_to: "t1" });
-    store.handleMessage(toolCall("c1"));
+    store.handleMessage(toolCall("c1", "read_file", "github"));
     store.handleMessage(toolResult("c1", true));
-    expect(liveBlock(store)?.calls.map((c) => c.status)).toEqual(["error"]);
+    expect(liveBlock(store)?.calls).toMatchObject([{ status: "error", server: "github" }]);
 
     store.handleMessage({ type: "turn_ended", reply_to: "t1" });
     const record = store.observed.get("t1");

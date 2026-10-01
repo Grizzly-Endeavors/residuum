@@ -186,6 +186,7 @@ async fn a_subscribed_session_streams_every_event_tool_frames_included() {
             tool_call_id: "tc-1".to_string(),
             name: "read_file".to_string(),
             arguments: json!({ "path": "notes.md" }),
+            server: None,
         }),
         SessionEventKind::ToolResult(ToolResultEvent {
             correlation_id: "c-1".to_string(),

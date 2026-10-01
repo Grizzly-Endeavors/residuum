@@ -27,10 +27,18 @@ function message(
   return { role, content, timestamp: "2026-03-14T12:00", visibility: "user", ...extra };
 }
 
-function toolCall(id: string, name: string, turnId?: string): RecentMessage[] {
+function toolCall(
+  id: string,
+  name: string,
+  turnId?: string,
+  server?: string | null,
+): RecentMessage[] {
   const ofTurn = turnId === undefined ? {} : { turn_id: turnId };
   return [
-    message("assistant", "", { tool_calls: [{ id, name, arguments: {} }], ...ofTurn }),
+    message("assistant", "", {
+      tool_calls: [{ id, name, arguments: {}, ...(server === undefined ? {} : { server }) }],
+      ...ofTurn,
+    }),
     message("tool", "done", { tool_call_id: id, ...ofTurn }),
   ];
 }
@@ -40,9 +48,9 @@ describe("turns in recent history", () => {
     const items = convertHistoryMessages(
       [
         message("user", "Tidy the wiki", { turn_id: "t1" }),
-        ...toolCall("a", "memory_search", "t1"),
+        ...toolCall("a", "memory_search", "t1", "notes"),
         message("assistant", "Looking at the index first.", { turn_id: "t1" }),
-        ...toolCall("b", "read_file", "t1"),
+        ...toolCall("b", "read_file", "t1", null),
         message("assistant", "Done: three pages merged.", { turn_id: "t1" }),
         message("user", "Thanks", { turn_id: "t2" }),
         message("assistant", "Any time.", { turn_id: "t2" }),
@@ -54,6 +62,12 @@ describe("turns in recent history", () => {
       "turn[memory_search,read_file](assistant:Looking at the index first. | assistant:Done: three pages merged.)",
       "user:Thanks",
       "turn[](assistant:Any time.)",
+    ]);
+    expect(
+      items.filter((item) => item.kind === "tool-group").flatMap((item) => item.calls),
+    ).toMatchObject([
+      { name: "memory_search", server: "notes" },
+      { name: "read_file", server: null },
     ]);
   });
 
@@ -161,6 +175,7 @@ describe("live turns", () => {
       id: "c1",
       name: "memory_search",
       arguments: "{}",
+      server: null,
     });
 
     let entries = groupTurns(store.feed, store.activeTurnId);
@@ -184,15 +199,44 @@ describe("live turns", () => {
     const store = new FeedStore();
     store.pushUserMessage("First");
     store.handleMessage({ type: "turn_started", reply_to: "m1" });
-    store.handleMessage({ type: "tool_call", id: "c1", name: "read_file", arguments: "{}" });
+    store.handleMessage({
+      type: "tool_call",
+      id: "c1",
+      name: "read_file",
+      arguments: "{}",
+      server: "files",
+    });
+    store.handleMessage({
+      type: "tool_call",
+      id: "c1b",
+      name: "list_dir",
+      arguments: "{}",
+      server: "files",
+    });
     store.handleMessage({ type: "turn_ended", reply_to: "m1" });
     store.handleMessage({ type: "turn_started", reply_to: "m2" });
-    store.handleMessage({ type: "tool_call", id: "c2", name: "write_file", arguments: "{}" });
+    store.handleMessage({
+      type: "tool_call",
+      id: "c2",
+      name: "write_file",
+      arguments: "{}",
+      server: "github",
+    });
 
     expect(describeEntries(groupTurns(store.feed, store.activeTurnId))).toEqual([
       "user:First",
-      "turn[read_file]()",
+      "turn[read_file,list_dir]()",
       "turn[write_file]()",
+    ]);
+    expect(store.feed.filter((item) => item.kind === "tool-group")).toMatchObject([
+      {
+        turnId: "m1",
+        calls: [
+          { id: "c1", server: "files" },
+          { id: "c1b", server: "files" },
+        ],
+      },
+      { turnId: "m2", calls: [{ id: "c2", server: "github" }] },
     ]);
   });
 
@@ -218,7 +262,13 @@ describe("live turns", () => {
     expect(describeEntries(entries)).toEqual(["user:Plan the week", "turn[]()"]);
     expect(entries[1]).toMatchObject({ key: "turn:m1", live: true });
 
-    store.handleMessage({ type: "tool_call", id: "c1", name: "read_file", arguments: "{}" });
+    store.handleMessage({
+      type: "tool_call",
+      id: "c1",
+      name: "read_file",
+      arguments: "{}",
+      server: null,
+    });
     entries = groupTurns(store.feed, store.activeTurnId);
     expect(entries[1]).toMatchObject({ key: "turn:m1", live: true });
   });

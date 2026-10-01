@@ -340,6 +340,7 @@ impl AnthropicClient {
                         id,
                         name,
                         arguments: input,
+                        server: None,
                     });
                 }
                 AnthropicContentBlock::Image { .. } | AnthropicContentBlock::ToolResult { .. } => {
@@ -984,6 +985,7 @@ mod tests {
                     id: "toolu_abc123".to_string(),
                     name: "web_search".to_string(),
                     arguments: json!({"query": "rust"}),
+                    server: None,
                 }]),
             ),
             Message::tool("Rust is a systems programming language.", "toolu_abc123"),
@@ -1512,11 +1514,13 @@ mod tests {
                         id: "tool_1".to_string(),
                         name: "search".to_string(),
                         arguments: json!({"q": "a"}),
+                        server: None,
                     },
                     ToolCall {
                         id: "tool_2".to_string(),
                         name: "search".to_string(),
                         arguments: json!({"q": "b"}),
+                        server: None,
                     },
                 ]),
             ),
@@ -1590,6 +1594,7 @@ mod tests {
                     id: "tool_1".to_string(),
                     name: "search".to_string(),
                     arguments: json!({}),
+                    server: None,
                 }]),
             ),
             Message::tool("Tool output", "tool_1"),

@@ -162,6 +162,7 @@ mod tests {
                     id: "call_1".to_string(),
                     name: "read_file".to_string(),
                     arguments: serde_json::json!({"path": "src/main.rs"}),
+                    server: None,
                 }]),
             ),
             timestamp: chrono::Utc::now().naive_utc(),

@@ -193,7 +193,13 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     hub.setBusy(agent, true);
     later(300, () => {
       live({ type: "broadcast_response", content: "Looking through recent notes first." });
-      live({ type: "tool_call", id: toolCallId, name: "memory_search", arguments: toolArgs });
+      live({
+        type: "tool_call",
+        id: toolCallId,
+        name: "memory_search",
+        arguments: toolArgs,
+        server: null,
+      });
     });
     later(600, () => {
       live({
@@ -212,7 +218,13 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
         session_totals: null,
       });
       for (const read of reads) {
-        live({ type: "tool_call", id: read.id, name: "read_file", arguments: { path: read.path } });
+        live({
+          type: "tool_call",
+          id: read.id,
+          name: "read_file",
+          arguments: { path: read.path },
+          server: null,
+        });
       }
     });
     reads.forEach((read, i) => {
@@ -277,7 +289,9 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
         {
           role: "assistant",
           content: "Looking through recent notes first.",
-          tool_calls: [{ id: toolCallId, name: "memory_search", arguments: toolArgs }],
+          tool_calls: [
+            { id: toolCallId, name: "memory_search", arguments: toolArgs, server: null },
+          ],
           ...ofTurn,
         },
         { role: "tool", content: toolOutput, tool_call_id: toolCallId, ...ofTurn },
@@ -288,6 +302,7 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
             id: r.id,
             name: "read_file",
             arguments: { path: r.path },
+            server: null,
           })),
           ...ofTurn,
         },

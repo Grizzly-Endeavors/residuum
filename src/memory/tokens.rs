@@ -118,6 +118,7 @@ mod tests {
                 id: "call_1".to_string(),
                 name: "read_file".to_string(),
                 arguments: serde_json::json!({"path": "/tmp/test.txt"}),
+                server: None,
             }]),
         )];
         let tokens = estimate_message_tokens(&messages);
@@ -137,6 +138,7 @@ mod tests {
                     id: "call_1".to_string(),
                     name: "exec".to_string(),
                     arguments: serde_json::json!({"command": "ls /tmp"}),
+                    server: None,
                 }]),
             ),
             Message::tool("file1.txt\nfile2.txt", "call_1"),

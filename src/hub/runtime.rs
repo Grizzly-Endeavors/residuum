@@ -914,7 +914,7 @@ pub async fn run_hub(root: &Path) -> Result<GatewayExit, FatalError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hub::test_support::{free_port, mount_reply, write_agent};
+    use crate::hub::test_support::{mount_reply, reserve_port, write_agent};
     use wiremock::MockServer;
 
     /// What the hub said about one config reload.
@@ -975,7 +975,8 @@ mod tests {
         /// had failed to load for `fallback_problem`.
         async fn start_after(names: &[&str], fallback_problem: Option<&str>) -> Self {
             let root = tempfile::tempdir().unwrap();
-            let (gateway_port, a2a_port) = (free_port(), free_port());
+            let (gateway_reservation, a2a_reservation) = (reserve_port(), reserve_port());
+            let (gateway_port, a2a_port) = (gateway_reservation.port(), a2a_reservation.port());
             let hub_dir = root.path().join("hub");
             std::fs::create_dir_all(&hub_dir).unwrap();
             std::fs::write(
@@ -990,9 +991,16 @@ mod tests {
             for name in names {
                 write_agent(root.path(), name, &model.uri());
             }
+            let hub_config = HubConfig::load_at(&hub_dir).unwrap();
+            // The gateway and A2A listeners bind these exact ports inside
+            // `HubRuntime::start`; drop the reservations right before so no
+            // other test process can take them in the gap, while leaving the
+            // ports free for `HubRuntime::start` itself to bind.
+            drop(gateway_reservation);
+            drop(a2a_reservation);
             let runtime = HubRuntime::start(
                 root.path(),
-                HubConfig::load_at(&hub_dir).unwrap(),
+                hub_config,
                 fallback_problem.map(str::to_string),
             )
             .await
@@ -1249,7 +1257,8 @@ mod tests {
         let hub = RunningHub::start().await;
         hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", Some(200))
             .await;
-        let new_port = free_port();
+        let new_port_reservation = reserve_port();
+        let new_port = new_port_reservation.port();
 
         std::fs::write(
             hub.hub_config_path(),
@@ -1259,6 +1268,10 @@ mod tests {
             ),
         )
         .unwrap();
+        // The config watcher picks this up and rebinds the gateway on
+        // `new_port` asynchronously; drop the reservation now, as close to
+        // that rebind as this test can get.
+        drop(new_port_reservation);
 
         hub.eventually_status(new_port, "/api/agents/scout/status", Some(200))
             .await;

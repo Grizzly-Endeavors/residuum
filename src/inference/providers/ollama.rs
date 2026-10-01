@@ -140,6 +140,7 @@ impl OllamaClient {
                     .unwrap_or_else(|| format!("call_{i}")),
                 name: tc.function.name,
                 arguments: tc.function.arguments,
+                server: None,
             })
             .collect();
 
@@ -590,6 +591,7 @@ mod tests {
                 id: "call_0".to_string(),
                 name: "bash".to_string(),
                 arguments: serde_json::json!({"command": "ls"}),
+                server: None,
             }]),
         );
         let ollama_msgs = to_ollama_messages(&[msg]);
@@ -652,6 +654,7 @@ mod tests {
                 id: "call_0".to_string(),
                 name: "bash".to_string(),
                 arguments: serde_json::json!({"command": "ls"}),
+                server: None,
             }]),
         );
         let tool_result = Message::tool("file1\nfile2", "call_0");
@@ -681,6 +684,7 @@ mod tests {
                     id: "call_0".to_string(),
                     name: name.to_string(),
                     arguments: serde_json::json!({}),
+                    server: None,
                 }]),
             )
         };
@@ -715,11 +719,13 @@ mod tests {
                     id: "call_0".to_string(),
                     name: "bash".to_string(),
                     arguments: serde_json::json!({"command": "ls"}),
+                    server: None,
                 },
                 ToolCall {
                     id: "call_1".to_string(),
                     name: "read_file".to_string(),
                     arguments: serde_json::json!({"path": "a.txt"}),
+                    server: None,
                 },
             ]),
         );

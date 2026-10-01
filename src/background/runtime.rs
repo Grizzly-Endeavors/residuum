@@ -3912,6 +3912,7 @@ mod tests {
                         id: "tc-1".to_string(),
                         name: "no_such_tool".to_string(),
                         arguments: serde_json::json!({"q": 1}),
+                        server: None,
                     }],
                 ))
             } else {

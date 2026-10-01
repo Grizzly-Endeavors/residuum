@@ -216,6 +216,7 @@ describe("the conversation", () => {
       id: "c1",
       name: "memory_search",
       arguments: { query: "release notes" },
+      server: null,
     });
     render(ChatPlace, { agent: "scout", actions: shell });
     await settle();

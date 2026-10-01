@@ -158,6 +158,53 @@ describe("following a run through the hub's session relay", () => {
     expect(relay.sent).toHaveLength(1);
   });
 
+  it("keeps a tool call's server and groups calls by the turn they ran in", async () => {
+    const { run, relay } = await opened({ address: ADDRESS });
+    const call = (id: string, name: string, server: string): void => {
+      relay.relay("atlas", {
+        type: "session_tool_call",
+        address: ADDRESS,
+        run_id: "run-1",
+        id,
+        name,
+        arguments: {},
+        server,
+      });
+    };
+    relay.relay("atlas", {
+      type: "session_turn_started",
+      address: ADDRESS,
+      run_id: "run-1",
+      turn_id: "t1",
+    });
+    call("c1", "read_file", "files");
+    call("c2", "list_dir", "files");
+    relay.relay("atlas", {
+      type: "session_turn_ended",
+      address: ADDRESS,
+      run_id: "run-1",
+      turn_id: "t1",
+    });
+    relay.relay("atlas", {
+      type: "session_turn_started",
+      address: ADDRESS,
+      run_id: "run-1",
+      turn_id: "t2",
+    });
+    call("c3", "create_issue", "github");
+
+    expect(run.items.filter((item) => item.kind === "tool-group")).toMatchObject([
+      {
+        turnId: "t1",
+        calls: [
+          { id: "c1", name: "read_file", server: "files" },
+          { id: "c2", name: "list_dir", server: "files" },
+        ],
+      },
+      { turnId: "t2", calls: [{ id: "c3", name: "create_issue", server: "github" }] },
+    ]);
+  });
+
   it("shows its own run's frames and nothing of other sessions or agents", async () => {
     const { run, relay } = await opened({ address: ADDRESS });
     relay.relay("atlas", {

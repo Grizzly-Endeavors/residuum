@@ -211,6 +211,7 @@ describe("chat turns", () => {
       type: "tool_call",
       name: "memory_search",
       arguments: { query: "hello there", limit: 5 },
+      server: null,
     });
     expect(result).toMatchObject({
       type: "tool_result",
@@ -263,8 +264,11 @@ describe("chat turns", () => {
       "assistant",
     ]);
     expect(recorded()[0]?.content).toBe("hello there");
-    expect(recorded()[1]?.tool_calls?.[0]).toMatchObject({ name: "memory_search" });
-    expect(recorded()[3]?.tool_calls?.map((c) => c.name)).toEqual(["read_file", "read_file"]);
+    expect(recorded()[1]?.tool_calls?.[0]).toMatchObject({ name: "memory_search", server: null });
+    expect(recorded()[3]?.tool_calls).toMatchObject([
+      { name: "read_file", server: null },
+      { name: "read_file", server: null },
+    ]);
     expect(recorded()[6]?.content).toBe(cannedResponses[0]);
     // Tagged with the turn's correlation id, so a page that saw it live can tell it's recorded.
     expect(new Set(recorded().map((m) => m.turn_id))).toEqual(new Set(["m1"]));
