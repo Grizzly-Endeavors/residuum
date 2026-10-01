@@ -371,21 +371,23 @@
     min-width: 0;
   }
 
+  /* Centered over the feed, as wide as its label needs and no wider than the feed. */
   .feed-pill {
     position: absolute;
     top: var(--space-12);
-    left: 50%;
+    right: var(--space-16);
+    left: var(--space-16);
     z-index: var(--z-sticky);
     display: flex;
     align-items: center;
     gap: var(--space-10);
-    max-width: calc(100% - 2 * var(--space-16));
+    width: fit-content;
+    margin-inline: auto;
     padding: var(--space-2) var(--space-2) var(--space-2) var(--space-12);
     border-radius: var(--corner-pill);
     background: var(--color-stone-3);
     box-shadow: var(--shadow-float);
     font-size: var(--font-size-xs);
-    transform: translateX(-50%);
   }
 
   .feed-pill-label {
