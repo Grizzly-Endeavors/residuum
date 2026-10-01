@@ -2,15 +2,14 @@
   import { onMount, tick } from "svelte";
   import { userInbox } from "../lib/inbox.svelte";
   import { router } from "../lib/router.svelte";
-  import { HOME } from "../lib/routes";
   import { ALL_SCOPE } from "../lib/settings-sections";
   import { ConfirmHost, confirmLeave, Drawer, RecentNotifications } from "../lib/ui";
   import { PHONE_QUERY } from "../styles/breakpoints";
   import FeedbackModal from "../components/FeedbackModal.svelte";
-  import { focusAgentCreation } from "../places/home/agent-management.svelte";
   import HelpOverlay from "../components/HelpOverlay.svelte";
   import { RailAccordion } from "./accordion.svelte";
   import BottomBar from "./BottomBar.svelte";
+  import CreateAgentDialog from "./CreateAgentDialog.svelte";
   import HubBanner from "./HubBanner.svelte";
   import PanelHost from "./panel/PanelHost.svelte";
   import PlaceHost from "./PlaceHost.svelte";
@@ -35,6 +34,8 @@
   let shortcutsOpen = $state(false);
   let feedbackOpen = $state(false);
   let feedbackTab = $state<FeedbackTab>("bug");
+  let createOpen = $state(false);
+  let sideRail = $state<HTMLElement>();
 
   // Arriving on an agent opens its places in the rail.
   $effect(() => {
@@ -56,15 +57,18 @@
       feedbackTab = tab;
       feedbackOpen = true;
     },
-    // Agents are created on Home, from the form in its agent management.
+    // The user stays where they are: the dialog opens over the current place.
     createAgent: () => {
       drawerOpen = false;
-      void router
-        .openPlace(HOME)
-        .then(() => tick())
-        .then(focusAgentCreation);
+      createOpen = true;
     },
   };
+
+  /** A new agent's rail row takes focus, where the rail shows beside the main region (not on phones). */
+  async function focusCreatedAgent(name: string): Promise<void> {
+    await tick();
+    sideRail?.querySelector<HTMLElement>(`[data-rail-agent="${CSS.escape(name)}"]`)?.focus();
+  }
 
   onMount(() => {
     userInbox.startPolling();
@@ -96,7 +100,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="shell" data-ui>
-  <div class="shell-side">
+  <div class="shell-side" bind:this={sideRail}>
     <Rail {accordion} {actions} />
   </div>
   <main class="shell-main">
@@ -111,6 +115,7 @@
   <Rail {accordion} {actions} onclose={() => (drawerOpen = false)} />
 </Drawer>
 <SettingsModal />
+<CreateAgentDialog bind:open={createOpen} oncreated={(name) => void focusCreatedAgent(name)} />
 <RecentNotifications bind:open={notificationsOpen} />
 <ConfirmHost />
 

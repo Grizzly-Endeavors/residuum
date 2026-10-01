@@ -12,12 +12,14 @@
     STATE_WORDS,
     type RowInput,
   } from "./home-model";
+  import AgentMenu from "./AgentMenu.svelte";
   import { followLink } from "./follow-link";
 
   // Every agent in one aligned table: what it is, its state, what it is doing
-  // and said last, how many sessions it runs, and what it runs next. A row
-  // opens the agent's chat. The board's own width picks its layout: Next up
-  // goes under 720px, and under 560px, on phones, each row is a card.
+  // and said last, how many sessions it runs, what it runs next, and its "…"
+  // menu. A row opens the agent's chat. The board's own width picks its
+  // layout: Next up goes under 720px, and under 560px, on phones, each row is
+  // a card.
 
   let { now }: { now: number } = $props();
 </script>
@@ -41,6 +43,7 @@
       <span class="col-now" role="columnheader">Now, and its last message</span>
       <span class="col-run" role="columnheader">Running</span>
       <span class="col-next" role="columnheader">Next up</span>
+      <span class="col-menu" role="columnheader"><VisuallyHidden>Manage</VisuallyHidden></span>
     </div>
   </div>
   <div role="rowgroup">
@@ -106,6 +109,9 @@
             <Skeleton width="80%" />
           {/if}
         </div>
+        <div class="col-menu" role="cell">
+          <AgentMenu {agent} {state} working={input.activity.busy} />
+        </div>
       </div>
     {/each}
   </div>
@@ -124,14 +130,14 @@
   }
 
   .board-row {
-    --board-columns: minmax(150px, 1.1fr) 118px minmax(0, 2fr) 60px minmax(120px, 1fr);
+    --board-columns: minmax(150px, 1.1fr) 118px minmax(0, 2fr) 60px minmax(120px, 1fr) 32px;
 
     position: relative;
     display: grid;
     grid-template-columns: var(--board-columns);
     align-items: center;
     gap: var(--space-16);
-    padding: var(--space-10) var(--space-12);
+    padding: var(--space-10) var(--space-4) var(--space-10) var(--space-12);
     border-radius: var(--corner-md);
     transition: background-color var(--duration-fast) var(--ease-out);
 
@@ -270,9 +276,15 @@
     line-height: var(--line-height-tight);
   }
 
+  /* Positioned after the name's link, so the menu sits over the row's link and takes its own presses. */
+  .col-menu {
+    position: relative;
+    align-items: center;
+  }
+
   @container home-board (max-width: 719px) {
     .board-row {
-      --board-columns: minmax(140px, 1fr) 112px minmax(0, 1.6fr) 56px;
+      --board-columns: minmax(140px, 1fr) 112px minmax(0, 1.6fr) 56px 32px;
     }
 
     .col-next {
@@ -287,9 +299,9 @@
     }
 
     .board-row {
-      --board-columns: minmax(0, 1fr);
+      --board-columns: minmax(0, 1fr) auto;
 
-      padding: var(--space-10);
+      padding: var(--space-10) var(--space-4) var(--space-10) var(--space-10);
     }
 
     .col-state,

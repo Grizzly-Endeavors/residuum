@@ -6,6 +6,7 @@ import {
   eventLocation,
   lastLine,
   lastMessageWhen,
+  lifecycleCommands,
   nowLine,
   pastWhen,
   runTitle,
@@ -238,5 +239,21 @@ describe("team events", () => {
       agent: null,
       rest: "Residuum started",
     });
+  });
+});
+
+describe("lifecycleCommands", () => {
+  it("offers Start to an agent that isn't running", () => {
+    expect(lifecycleCommands("stopped")).toEqual({ start: true, stop: false, restart: false });
+    expect(lifecycleCommands("failed")).toEqual({ start: true, stop: false, restart: true });
+  });
+
+  it("offers Stop and Restart to a running agent, and Stop to a starting one", () => {
+    expect(lifecycleCommands("running")).toEqual({ start: false, stop: true, restart: true });
+    expect(lifecycleCommands("starting")).toEqual({ start: false, stop: true, restart: false });
+  });
+
+  it("offers nothing while an agent stops", () => {
+    expect(lifecycleCommands("stopping")).toEqual({ start: false, stop: false, restart: false });
   });
 });

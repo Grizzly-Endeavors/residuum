@@ -143,6 +143,7 @@
             type="button"
             class="rail-agent"
             data-rail-row
+            data-rail-agent={agent.name}
             data-viewed={viewed || undefined}
             aria-expanded={expanded}
             aria-controls="{uid}-places-{agent.name}"

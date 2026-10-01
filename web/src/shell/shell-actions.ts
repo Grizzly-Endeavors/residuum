@@ -10,6 +10,9 @@ export interface ShellActions {
   openShortcuts: () => void;
   openNotifications: () => void;
   openFeedback: (tab: FeedbackTab) => void;
-  /** Start creating an agent. */
+  /**
+   * Open the Create agent dialog over the current place. Home's New agent, the
+   * rail's "+" and the palette all open it through this.
+   */
   createAgent: () => void;
 }

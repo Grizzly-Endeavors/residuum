@@ -149,6 +149,19 @@ export function rowState({
   return stopping ? "stopping" : agent.state;
 }
 
+export type LifecycleCommand = "start" | "stop" | "restart";
+
+/** Which of Start, Stop and Restart an agent in `state` takes. A stopping agent takes none. */
+export function lifecycleCommands(
+  state: StatusDotState,
+): Readonly<Record<LifecycleCommand, boolean>> {
+  return {
+    start: state === "stopped" || state === "failed",
+    stop: state === "running" || state === "starting",
+    restart: state === "running" || state === "failed",
+  };
+}
+
 /** What the agent is doing now. */
 export function nowLine(input: RowInput): NowLine {
   const { agent, activity, overview, now } = input;
