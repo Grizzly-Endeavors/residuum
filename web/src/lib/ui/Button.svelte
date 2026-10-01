@@ -119,8 +119,9 @@
       background: var(--color-stone-4);
     }
 
+    /* A floating layer sets --ui-quiet-hover: stone-3 wouldn't show on its stone-3 card. */
     &:hover[data-variant="quiet"] {
-      background: var(--color-stone-3);
+      background: var(--ui-quiet-hover, var(--color-stone-3));
       color: var(--color-text);
     }
 
