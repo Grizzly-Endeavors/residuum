@@ -160,7 +160,7 @@ export function createHub(
       }
       broadcast({ type: "agent_state", agent: mockAgentSummary(agent) });
     },
-    reset() {
+    reset({ setup = false } = {}) {
       env.reset();
       dropClients();
       const gone = [...hub.deleted.values()].map((deleted) => deleted.agent);
@@ -173,7 +173,8 @@ export function createHub(
       Object.assign(hubState, createState(HUB_STATE_NAME, true, env));
       hubState.workbenchPort = workbenchPort;
       hub.reloadHubConfig = createHubConfigReloader(hubState, broadcast);
-      seed?.(hub);
+      if (setup) hubState.mode = "setup";
+      else seed?.(hub);
       beginLog();
     },
   };
