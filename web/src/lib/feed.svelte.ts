@@ -12,6 +12,7 @@ import {
   type BackgroundTurnState,
 } from "./feed-items";
 import { ObservedTurns, type TurnEnding } from "./observed-turns.svelte";
+import { isoNow } from "./time";
 import type {
   ServerMessage,
   RecentMessage,
@@ -524,9 +525,7 @@ export class FeedStore {
   pushUserMessage(content: string, images?: ImageAttachment[]): void {
     // Live user messages carry an implicit "now" timestamp — inject a day
     // divider if the calendar day has rolled over since the last live entry.
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity
-    const nowIso = new Date().toISOString();
-    this.maybePushDayDivider(nowIso);
+    this.maybePushDayDivider(isoNow());
     this.turnStart ??= this.feed.length;
     this.feed.push({ id: nextFeedId(), kind: "user", content, images, ...this.ofLiveTurn() });
     this.isProcessing = true;

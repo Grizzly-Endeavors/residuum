@@ -135,9 +135,8 @@
     {@attach holdFocus}
   >
     {#if layout === "wide"}
-      <!-- A focusable separator is ARIA's window splitter, a widget; Svelte counts every separator as structure. -->
-      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <!-- A focusable separator is ARIA's window splitter: WAI-ARIA 1.2 makes it a widget, which takes focus and keys. Svelte reads roles from aria-query, which lists separator as structure only, so it flags the tabindex and the handlers. -->
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
       <div
         class="context-panel-grip"
         role="separator"

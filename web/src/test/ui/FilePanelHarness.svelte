@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { FileBuffer } from "../../places/files/file-buffer.svelte";
   import FilePanel from "../../places/files/FilePanel.svelte";
   import type { FileSource } from "../../places/files/file-source";
@@ -13,10 +14,11 @@
     onclose = () => {},
   }: { source: FileSource; path: string; layout?: PanelLayout; onclose?: () => void } = $props();
 
-  // svelte-ignore state_referenced_locally
-  providePanelFrame({ layout, titleId: "panel-title", close: onclose });
-  // svelte-ignore state_referenced_locally
-  const buffer = new FileBuffer(source);
+  // Made once, from the props the test renders with.
+  untrack(() => {
+    providePanelFrame({ layout, titleId: "panel-title", close: onclose });
+  });
+  const buffer = untrack(() => new FileBuffer(source));
 </script>
 
 <aside aria-labelledby="panel-title">

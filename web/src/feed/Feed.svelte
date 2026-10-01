@@ -3,7 +3,7 @@
   import { FeedScroller } from "../lib/feed-scroll.svelte";
   import type { ObservedTurnLookup } from "../lib/observed-turns.svelte";
   import type { FeedItem } from "../lib/types";
-  import { Spinner } from "../lib/ui";
+  import { keyboardScrollable, Spinner } from "../lib/ui";
   import type { FeedHistory } from "./feed-history";
   import FeedItemView from "./FeedItemView.svelte";
   import FeedTurn from "./FeedTurn.svelte";
@@ -300,9 +300,14 @@
       </button>
     </div>
   {/if}
-  <!-- A scrolling region with no control inside must take focus so the keyboard can scroll it (axe's scrollable-region-focusable); Svelte counts every region as structure. -->
-  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-  <div class="feed-scroll" role="region" aria-label={label} tabindex="0" bind:this={scrollEl}>
+  <!-- A tab stop while it scrolls, so the keyboard can scroll it. Not a live region: a reply's text streams in piece by piece, and the status lines in it announce themselves. -->
+  <div
+    class="feed-scroll"
+    role="region"
+    aria-label={label}
+    bind:this={scrollEl}
+    {@attach keyboardScrollable}
+  >
     <div class="feed-column" class:centered={items.length === 0} bind:this={innerEl}>
       {#if history}
         <div class="feed-sentinel" bind:this={topSentinel}></div>

@@ -1,9 +1,10 @@
 <script lang="ts">
   import { diffLineKind } from "../../lib/checkpoints";
+  import { keyboardScrollable } from "../../lib/ui";
 
   // A file at a checkpoint: what changed, its lines colored as added or
   // removed, or its whole text. A file's history and Settings → History show
-  // it. It scrolls, so it takes focus for the keyboard.
+  // it. While it scrolls, it takes focus for the keyboard.
 
   interface Props {
     text: string;
@@ -15,13 +16,14 @@
   let { text, as, label }: Props = $props();
 </script>
 
-<!-- A scroll box takes focus so the keyboard can scroll it. -->
 {#if as === "file"}
-  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-  <pre class="checkpoint-text" role="region" tabindex="0" aria-label={label}>{text}</pre>
+  <pre
+    class="checkpoint-text"
+    role="region"
+    aria-label={label}
+    {@attach keyboardScrollable}>{text}</pre>
 {:else}
-  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-  <div class="checkpoint-text" role="region" tabindex="0" aria-label={label}>
+  <div class="checkpoint-text" role="region" aria-label={label} {@attach keyboardScrollable}>
     {#each text.replace(/\n$/, "").split("\n") as line, index (index)}
       <span class="checkpoint-line" data-kind={diffLineKind(line)}>{line}</span>
     {/each}

@@ -65,6 +65,22 @@ describe("the model and thinking popover", () => {
     expect(screen.getByRole("button", { name: "Low" })).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("moves between the models with Up and Down, wrapping at the ends", async () => {
+    await opened();
+    const sonnet = screen.getByRole("button", { name: "Claude Sonnet 4.6" });
+    const haiku = screen.getByRole("button", { name: "Claude Haiku 4.5" });
+    await vi.waitFor(() => {
+      expect(sonnet).toHaveFocus();
+    });
+
+    await userEvent.keyboard("{ArrowDown}");
+    expect(haiku).toHaveFocus();
+    await userEvent.keyboard("{ArrowDown}");
+    expect(sonnet).toHaveFocus();
+    await userEvent.keyboard("{ArrowUp}");
+    expect(haiku).toHaveFocus();
+  });
+
   it("switches the model through the coordinator, keeping the failover list, and reloads the agent", async () => {
     const send = vi.spyOn(ws, "send").mockImplementation(() => {});
     await opened();
