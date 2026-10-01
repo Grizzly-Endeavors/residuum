@@ -83,3 +83,36 @@ async fn the_hub_inbox_reads_item_times_in_the_hubs_current_timezone() {
         "2026-09-30T08:15:00+09:00"
     );
 }
+
+#[tokio::test]
+async fn an_active_items_text_is_read_for_a_push_and_a_moved_item_has_none() {
+    use crate::hub::inbox::{HubInboxError, active_text, archive};
+
+    let hub = Fixture::new(&["quiet"], "").await;
+    hub.add_inbox_item("quiet", "20260930_heron");
+    let directory = hub.host.as_ref();
+
+    assert_eq!(
+        active_text(directory, "quiet", "20260930_heron")
+            .await
+            .unwrap(),
+        Some(("Pelican".to_string(), "seen at the pier".to_string()))
+    );
+
+    archive(directory, "quiet", "20260930_heron").await.unwrap();
+    assert_eq!(
+        active_text(directory, "quiet", "20260930_heron")
+            .await
+            .unwrap(),
+        None,
+        "the user moved it before the push was worded"
+    );
+    assert!(matches!(
+        active_text(directory, "nobody", "20260930_heron").await,
+        Err(HubInboxError::UnknownAgent(_))
+    ));
+    assert!(matches!(
+        active_text(directory, "quiet", "../escape").await,
+        Err(HubInboxError::BadRequest(_))
+    ));
+}
