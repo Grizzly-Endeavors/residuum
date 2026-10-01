@@ -344,7 +344,6 @@ describe("cache keys are per agent", () => {
     ["cacheKeyConfigRaw", api.cacheKeyConfigRaw],
     ["cacheKeyProvidersRaw", api.cacheKeyProvidersRaw],
     ["cacheKeyMcpRaw", api.cacheKeyMcpRaw],
-    ["cacheKeyA2aAgentsRaw", api.cacheKeyA2aAgentsRaw],
   ])("%s differs between agents and names the agent", (_name, key) => {
     expect(key("scout")).not.toBe(key("atlas"));
     expect(key("scout")).toContain("/api/agents/scout/");

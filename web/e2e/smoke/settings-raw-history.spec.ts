@@ -11,6 +11,8 @@ const sections = (page: Page): Locator =>
 const rawText = (page: Page): Locator =>
   page.getByRole("textbox", { name: "Contents of config.toml" });
 const timeout = (page: Page): Locator => page.getByLabel("Reply time limit");
+const discordToken = (page: Page): Locator =>
+  page.getByRole("region", { name: "Discord" }).getByLabel("Bot token", { exact: true });
 const saveBar = (page: Page): Locator => page.getByRole("region", { name: "Unsaved changes" });
 
 /** Move to another section in the page, so nothing staged is lost; on a phone through the list. */
@@ -70,6 +72,40 @@ test.describe("Raw config", () => {
     await goToSection(page, isMobile, "Runtime");
     await expect(timeout(page)).toBeEnabled();
     await expect(timeout(page)).toHaveValue("120");
+  });
+
+  test("holds each section read-only for the file it edits: Tool servers for mcp.json, the rest for config.toml", async ({
+    page,
+    isMobile,
+  }) => {
+    await page.goto("/agent/atlas?settings=atlas/raw");
+    await page.getByRole("tab", { name: "mcp.json" }).click();
+    await page.getByRole("textbox", { name: "Contents of mcp.json" }).fill('{ "mcpServers": {} }');
+
+    await goToSection(page, isMobile, "Tool servers");
+    await expect(page.getByText(/unsaved edits to mcp\.json in Raw config/)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Remove filesystem" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Add github" })).toBeDisabled();
+    await goToSection(page, isMobile, "Connections");
+    await expect(page.getByText(/unsaved edits to/)).toBeHidden();
+    await expect(discordToken(page)).toBeEnabled();
+
+    await goToSection(page, isMobile, "Raw config");
+    await page.getByRole("tab", { name: "mcp.json" }).click();
+    await page.getByRole("button", { name: "Discard edits" }).click();
+    await page.getByRole("tab", { name: "config.toml" }).click();
+    await rawText(page).fill("timeout_secs = 45\n");
+
+    await goToSection(page, isMobile, "Connections");
+    await expect(page.getByText(/unsaved edits to config\.toml in Raw config/)).toBeVisible();
+    await expect(discordToken(page)).toBeDisabled();
+    await goToSection(page, isMobile, "Tools & skills");
+    await expect(page.getByLabel("Skill folder to add")).toBeDisabled();
+    await goToSection(page, isMobile, "Agent-to-agent");
+    await expect(page.getByRole("radio", { name: "Public" })).toBeDisabled();
+    await goToSection(page, isMobile, "Tool servers");
+    await expect(page.getByText(/unsaved edits to/)).toBeHidden();
+    await expect(page.getByRole("button", { name: "Remove filesystem" })).toBeEnabled();
   });
 });
 

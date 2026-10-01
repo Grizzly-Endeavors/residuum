@@ -50,31 +50,20 @@ export function isStoppableState(state: SessionState): boolean {
   return state === "forking" || state === "queued" || state === "running" || state === "idle";
 }
 
-/** A run's state in a word or two, for the Workbench's activity panel. */
-export function stateLabel(state: SessionState): string {
-  switch (state) {
-    case "forking":
-      return "starting";
-    case "queued":
-      return "queued";
-    case "running":
-      return "working";
-    case "idle":
-      return "idle";
-    case "completing":
-      return "finishing";
-    case "completed":
-      return "finished";
-  }
-}
-
 /** How a run or task is doing, for its status mark: a tone and a few words. */
 export interface RunStatus {
   tone: "working" | "quiet" | "done" | "failed";
   text: string;
 }
 
-export function runStatus(run: SessionSummary, now: number): RunStatus {
+/**
+ * What a status reads from a run: a full summary, or a live run as the
+ * overview lists it, which has no outcome because it hasn't ended.
+ */
+export type RunStatusSource = Pick<SessionSummary, "state" | "started_at"> &
+  Partial<Pick<SessionSummary, "completed_at" | "outcome" | "interrupted">>;
+
+export function runStatus(run: RunStatusSource, now: number): RunStatus {
   switch (run.state) {
     case "forking":
       return { tone: "working", text: "Starting" };
@@ -118,18 +107,6 @@ export function sessionArtifact(session: SessionSummary): string | null {
   return session.source_label.slice(ARTIFACT_SOURCE_PREFIX.length) || null;
 }
 
-/**
- * The sessions an artifact started, in the order they appear in `sessions`,
- * for its activity panel. Kept current by whatever keeps `sessions` current
- * (session frames), so the panel needs no fetch of its own.
- */
-export function sessionsStartedByArtifact(
-  sessions: readonly SessionSummary[],
-  artifact: string,
-): SessionSummary[] {
-  return sessions.filter((s) => sessionArtifact(s) === artifact);
-}
-
 /** How a run ended, for a status line. */
 export function runOutcomeText(status: SessionRunStatus, error: string | null): string {
   switch (status) {
@@ -167,7 +144,10 @@ export function formatDuration(ms: number): string {
 }
 
 /** How long a run has been going (live) or took (finished). */
-export function runDuration(session: SessionSummary, now: number): string {
+export function runDuration(
+  session: Pick<RunStatusSource, "started_at" | "completed_at">,
+  now: number,
+): string {
   const start = Date.parse(session.started_at);
   if (Number.isNaN(start)) return "";
   const end = session.completed_at ? Date.parse(session.completed_at) : now;

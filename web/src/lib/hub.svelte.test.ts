@@ -143,6 +143,20 @@ describe("HubStore frames", () => {
     expect(hub.stopping).toEqual(["atlas"]);
   });
 
+  it("reads an agent as running only while it is up and not stopping", () => {
+    const hub = new HubStore();
+    hub.handleFrame(
+      snapshot([agent("scout"), agent("atlas"), agent("idle", { state: "stopped" })], {
+        stopping: ["atlas"],
+      }),
+    );
+
+    expect(hub.isRunning("scout")).toBe(true);
+    expect(hub.isRunning("atlas")).toBe(false);
+    expect(hub.isRunning("idle")).toBe(false);
+    expect(hub.isRunning("nobody")).toBe(false);
+  });
+
   it("passes a team event to listeners and never raises a notice or toast for it", () => {
     const hub = new HubStore();
     hub.handleFrame(snapshot([agent("scout")]));

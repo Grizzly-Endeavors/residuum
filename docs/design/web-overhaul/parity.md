@@ -88,14 +88,14 @@ Every capability the current web UI offers, grouped by the surface that has it t
 
 ## Workbench → Workbench launcher and standalone artifacts (design §5, §9.8–§9.10; W12b–W12d, W32a, W32b)
 
-- [ ] List with loading, error with Try again, empty explanation; title, path, edited time (refreshes every 30 s); agent-edit glow "updating now" — **Fix:** one path format (`/team/workbench/<name>`); **Changed:** refreshes on hub artifact events, so it works with no agent running
-- [ ] Open an artifact — **Changed:** opens on the artifacts origin in its own tab, never inside the app; Copy link added
-- [ ] Delete with Undo (page and data files)
-- [ ] Artifacts-unavailable warning — **Fix:** shows even when the list is empty, and covers the HTTPS-without-relay case (#308)
-- [ ] Artifact bar (back, title, path), Stop page, Restart, Full view (button and F), Reload, deleted notice — **Dropped:** the page owns its own window; closing the tab unloads it, and the browser's reload and full screen apply
-- [ ] Activity panel: the artifact's live sessions (open, stop) — **Changed:** in the Workbench row and detail, for sessions on any agent (#292); opening one shows it in the context panel
-- [ ] In-flight model call count and Cancel calls — **Dropped:** a page manages its own calls
-- [ ] Live reload on agent edits — **Changed:** the SDK reloads the page itself, unless the page handles `artifact_updated`
+- [x] List with loading, error with Try again, empty explanation; title, path, edited time (refreshes every 30 s); agent-edit glow "updating now" — **Fix:** one path format (`/team/workbench/<name>`); **Changed:** refreshes on hub artifact events, so it works with no agent running
+- [x] Open an artifact — **Changed:** opens on the artifacts origin in its own tab, never inside the app; Copy link added
+- [x] Delete with Undo (page and data files)
+- [x] Artifacts-unavailable warning — **Fix:** shows even when the list is empty, and covers the HTTPS-without-relay case (#308)
+- [x] Artifact bar (back, title, path), Stop page, Restart, Full view (button and F), Reload, deleted notice — **Dropped:** the page owns its own window; closing the tab unloads it, and the browser's reload and full screen apply
+- [x] Activity panel: the artifact's live sessions (open, stop) — **Changed:** in the Workbench row and detail, for sessions on any agent (#292); opening one shows it in the context panel
+- [x] In-flight model call count and Cancel calls — **Dropped:** a page manages its own calls
+- [x] Live reload on agent edits — **Changed:** the SDK reloads the page itself, unless the page handles `artifact_updated`
 - [x] Unknown artifact — **Fix:** the route redirects to the list with a toast
 - [ ] SDK: `fetch`, `ask`, `on`, `watch`, `state.get`/`set`, `sessions.start` with handle `on`/`send`/`stop`, connection events, `features`, `artifact`, `version` — **Changed:** direct access from the page's own origin; no implicit agent (agent-specific calls name their agent, with `agent(name)` added); `embedded`, `ready` and Esc forwarding removed; **Fix:** session frames arrive for sessions on any agent (#292); no reply crosses documents, because the bridge is gone (#307). Artifacts never shipped in a release, so no migration applies.
 - [ ] Unscoped fetch paths: hub prefixes to the hub, `/api/workbench/` to team — **Changed:** agent paths must name the agent; one that doesn't gets a 400 with a clear error
@@ -116,7 +116,7 @@ Every capability the current web UI offers, grouped by the surface that has it t
 ## Team page → Home + Settings (design §6, §8; W27, W28, W38)
 
 - [x] Agent state glyph, name link, state label, working chip, unread chip, role line or "No role page yet", last error with time — **Changed:** Home's agents board (a working agent's dot pulses and its Now line says how long it has been working); the last error is a needs-you item with its time, a plain-language line and the error behind Details
-- [ ] A2A card visibility per agent — **Changed:** set only in Settings → agent → Advanced → Agent-to-agent (today it is in two places with different defaults). Home no longer has it; the agent's Settings → A2A "Who can see it" holds it until W38 moves it.
+- [x] A2A card visibility per agent — **Changed:** set only in Settings → agent → Advanced → Agent-to-agent, "Who can find <agent>", which applies at once through the hub (no Save) and goes back to the hub's value on failure. Home no longer has it.
 - [x] Start automatically toggle, reverting on failure — **Changed:** Home row menu, a checkbox item that shows the value being saved and then the hub's, and a stopped agent's state card in its Chat, a switch that does the same
 - [x] Start / Stop / Restart with disabled reasons and pending labels — **Changed:** Home row menu, whose heading names the agent's state; an action the state doesn't take stays reachable but disabled, and the one in flight reads "Starting…", "Stopping…" or "Restarting…" while the row's state shows it too; a stopped agent's state card offers Start and a failed one's Restart, with a busy button while it runs, and the card follows the agent through Starting and Stopping
 - [x] Delete with confirmation, then checkpoint note with Undo and Dismiss — **Changed:** Delete in the row menu asks first (a running agent stops first, and the question says so), then the hub's "You deleted X." toast carries Undo and dismiss; a deletion that took no checkpoint says so in an error; Recently deleted keeps Restore after the toast is gone. The checkpoint id is no longer shown.
@@ -173,13 +173,13 @@ Agent scope:
 - [ ] Default temperature and default thinking — **Changed:** Model (design §8), with W35
 - [ ] Providers: name, type, API key, base URL, keep-alive; remove with Undo; add
 - [ ] Model roles: main, observer, reflector, pulse, subconscious, embedding, background small/medium/large; provider, model (live list or custom id), fallback warning, temperature, thinking — **Fix:** subconscious role's model list loads on open; failover lists are preserved; `models.default` gets a control or is shown read-only
-- [ ] Discord, Telegram, Teams fields and warnings
+- [x] Discord, Telegram, Teams fields and warnings — **Changed:** each channel is a group with its state (connected while the agent runs, which stays unknown for a stopped one), Disconnect clears its credentials as a staged change, and the half-filled Teams warning stays
 - [x] Pulses & sessions: pulse enabled, idle timeouts per kind, episode floor, depth cap — **Changed:** Schedule, as Pulses (with Open the agent's Schedule), Background sessions and Keeping and nesting; every number shows its unit and default
 - [x] Memory thresholds and search tuning — **Changed:** Memory, as Summarizing and condensing, with search tuning under More options (which opens when a save finds a problem inside it); every number shows its unit and default
-- [ ] Skills folders, tools PATH folders, web search backend and keys, native search overrides
-- [ ] MCP: list, remove with Undo, add stdio/http, catalog with inputs — **Fix:** a failed catalog fetch shows an error, not "Reading catalog." forever
-- [ ] A2A visibility and client: status, URL with Copy, relay note, listener warning, card error, visibility, remote agents with raw editor, card preview, open workspace
-- [ ] Webhooks: route preview, name, secret, routing, format, content fields, remove with Undo, add
+- [x] Skills folders, tools PATH folders, web search backend and keys, native search overrides — **Changed:** a duplicate folder is named instead of ignored, and the provider options sit under a disclosure
+- [x] MCP: list, remove with Undo, add stdio/http, catalog with inputs — **Fix:** a failed catalog fetch shows an error with Try again, not "Reading catalog." forever — **Changed:** Advanced → Tool servers; a server's command, arguments (one per line), variables, address and headers can be edited in place; adds, edits and removals are staged
+- [x] A2A visibility and client: status, URL with Copy, relay note, listener warning, card error, visibility, remote agents with raw editor, card preview, open workspace — **Changed:** Advanced → Agent-to-agent; visibility applies at once; the install's listener shows read-only with a way to All agents; open workspace opens `agent-card.json` in the agent's files; a stopped agent asks to start for status, card and reachability, and lists `a2a.json`'s agents with its editor
+- [x] Webhooks: route preview, name, secret, routing, format, content fields, remove with Undo, add — **Changed:** removal is staged, and a toast with Undo follows it as well as Discard
 - [x] History: workspace and agent-config repos
 - [x] History browser (both scopes): repo toggle, path filter, stats, paged list, detail, undo checkpoint with reverted/skipped report, changed paths with diff, view file, restore, encrypted-store hint
 

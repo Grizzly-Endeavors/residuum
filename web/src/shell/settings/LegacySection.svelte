@@ -2,12 +2,9 @@
   import A2a from "../../components/settings/A2a.svelte";
   import AgentKeys from "../../components/settings/AgentKeys.svelte";
   import History from "../../components/settings/History.svelte";
-  import Integrations from "../../components/settings/Integrations.svelte";
-  import MCP from "../../components/settings/MCP.svelte";
   import Providers from "../../components/settings/Providers.svelte";
   import Secrets from "../../components/settings/Secrets.svelte";
   import { sectionsOf, type SectionId } from "../../lib/settings-sections";
-  import RunningOnly from "./RunningOnly.svelte";
   import type { SettingsScope } from "./sections";
   import SettingsSection from "./SettingsSection.svelte";
 
@@ -35,11 +32,6 @@
   lede={`${entry?.description ?? ""}.`}
   {problems}
 >
-  {#if agentScope !== null && section === "a2a"}
-    <div class="legacy-notice">
-      <RunningOnly agent={agentScope.agent} subject="its status and card" />
-    </div>
-  {/if}
   <div data-legacy-view>
     {#if allScope !== null}
       {#if section === "notifications"}
@@ -47,7 +39,7 @@
           Push notifications aren't available in this version of Residuum.
         </p>
       {:else if section === "listener"}
-        <A2a bind:fields={allScope.configFile.form} scope="hub" agent={null} />
+        <A2a bind:fields={allScope.configFile.form} />
       {:else if section === "keys"}
         <Secrets />
         <AgentKeys />
@@ -62,23 +54,7 @@
           bind:models={agentScope.providersFile.form.models}
           {agent}
         />
-      {:else if section === "connections"}
-        <Integrations bind:fields={agentScope.configFile.form} part="channels" {agent} />
-        <Integrations bind:fields={agentScope.configFile.form} part="webhooks" {agent} />
-      {:else if section === "tools"}
-        <Integrations bind:fields={agentScope.configFile.form} part="tools" {agent} />
-      {:else if section === "servers"}
-        <MCP bind:servers={agentScope.mcpFile.form} />
-      {:else if section === "a2a"}
-        <A2a bind:fields={agentScope.configFile.form} scope="agent" {agent} />
       {/if}
     {/if}
   </div>
 </SettingsSection>
-
-<style>
-  .legacy-notice {
-    max-width: 640px;
-    margin-bottom: var(--space-16);
-  }
-</style>

@@ -333,13 +333,13 @@ export class FeedStore {
 
       case "artifact_updated":
       case "artifact_removed":
-        // Workbench live reload belongs to the workbench views.
+        // The Workbench follows artifacts on the hub socket.
         break;
 
       case "workspace_changed":
       case "workspace_resync":
       case "workspace_watch_unavailable":
-        // The change feed belongs to the open artifact and its bridge.
+        // The change feed belongs to the watch registry's owners.
         break;
     }
   }
