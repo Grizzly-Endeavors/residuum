@@ -335,8 +335,8 @@ export class OverviewStore {
     if (this.unreadCounts() !== this.unreadCountsFetched) void this.refreshUnreadItems();
   }
 
-  /** Each agent's unread count, as one comparable value. */
-  private unreadCounts(): string {
+  /** Each agent's unread count, as one comparable value: it changes whenever any count does. */
+  unreadCounts(): string {
     return Object.values(this.overviews)
       .map((o) => `${o.name}=${String(o.inbox_unread)}`)
       .sort()

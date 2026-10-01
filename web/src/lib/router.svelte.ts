@@ -80,6 +80,24 @@ function currentUrl(): string {
   return `${window.location.pathname}${window.location.search}`;
 }
 
+/** What closing removes from the URL: the panel, the Settings modal, or the item open in the Inbox. */
+type ClosableParam = "panel" | "settings" | "item";
+
+/** `location` with `param` closed, or null when it isn't open. */
+function withoutParam(location: AppLocation, param: ClosableParam): AppLocation | null {
+  const { place } = location;
+  switch (param) {
+    case "panel":
+      return location.panel === null ? null : { ...location, panel: null };
+    case "settings":
+      return location.settings === null ? null : { ...location, settings: null };
+    case "item":
+      return place.kind === "inbox" && place.item !== null
+        ? { ...location, place: { ...place, item: null } }
+        : null;
+  }
+}
+
 function byName(a: string, b: string): number {
   if (a === b) return 0;
   return a < b ? -1 : 1;
@@ -245,6 +263,11 @@ class Router {
     return this.traverse(-steps).then(() => true);
   }
 
+  /** Close the item open in the Inbox: `history.back()` when this page pushed the entry that opened it, else a replace without it. */
+  closeInboxItem(): Promise<boolean> {
+    return this.close("item");
+  }
+
   /**
    * Hold a history entry for an overlay that is open (design §3), so Back
    * closes the overlay before it leaves the place. `onDismiss` runs when the
@@ -393,13 +416,11 @@ class Router {
   }
 
   /** Close `param` by going back to before it opened, or by replacing it away when the page didn't open it. */
-  private close(param: "panel" | "settings"): Promise<boolean> {
-    const current = this.location;
-    if (current[param] === null) return Promise.resolve(true);
+  private close(param: ClosableParam): Promise<boolean> {
+    const target = withoutParam(this.location, param);
+    if (target === null) return Promise.resolve(true);
     // A traversal is already on its way; a second one would go back past it.
     if (this.queued > 0) return Promise.resolve(false);
-    const target: AppLocation =
-      param === "panel" ? { ...current, panel: null } : { ...current, settings: null };
     const leave = (): Promise<boolean> => {
       // Worked out when leaving, since asking pushes and pops the confirm dialog's entry.
       const steps = stepsToClose(this.entry, this.entry[param]);
@@ -519,6 +540,7 @@ class Router {
     if (shown.panel !== null && this.entry.panel !== undefined) {
       restored.panel = Math.min(this.entry.panel, restored.idx);
     }
+    if (this.entry.item !== undefined) restored.item = Math.min(this.entry.item, restored.idx);
     window.history.pushState(restored, "", formatLocation(shown));
     this.entry = restored;
     if (await this.guard.ask(losses)) await this.traverse(-1);

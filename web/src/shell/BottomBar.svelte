@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Icon, type IconName } from "../lib/icons";
-  import { userInbox } from "../lib/inbox.svelte";
+  import { overview } from "../lib/overview.svelte";
   import { router } from "../lib/router.svelte";
   import { formatLocation, HOME, locationAt, type Place } from "../lib/routes";
   import { Badge } from "../lib/ui";
@@ -55,7 +55,7 @@
     <span class="bar-icon"><Icon name="menu" size={21} /></span>
     Menu
   </button>
-  {@render placeTab(INBOX, "Inbox", "inbox", userInbox.unreadCount)}
+  {@render placeTab(INBOX, "Inbox", "inbox", overview.inboxUnread)}
   {@render placeTab(HOME, "Home", "home")}
   <button type="button" class="bar-tab" aria-haspopup="dialog" onclick={actions.openSearch}>
     <span class="bar-icon"><Icon name="search" size={21} /></span>

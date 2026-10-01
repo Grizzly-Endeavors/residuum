@@ -254,15 +254,13 @@ async fn each_device_hears_only_the_events_its_preferences_turn_on() {
 // ─── agent_failed ─────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn an_agent_that_cant_start_is_one_push_and_its_inbox_note_is_not_another() {
+async fn an_agent_that_cant_start_is_one_push_and_nothing_in_its_inbox() {
     let hub = Fixture::new(&["scout"], "").await;
     std::fs::write(
         hub.root.path().join("scout/config/config.toml"),
         "this is not = valid toml [",
     )
     .unwrap();
-    // The hub leaves its own note about the failure in an inbox that exists.
-    std::fs::create_dir_all(hub.root.path().join("scout/inbox/user")).unwrap();
     let mut phone = Phone::register(&hub, "Phone", PushPreferencesPatch::default()).await;
 
     hub.host.start("scout").await.unwrap_err();
@@ -278,17 +276,14 @@ async fn an_agent_that_cant_start_is_one_push_and_its_inbox_note_is_not_another(
     );
     assert_eq!(str_at(&payload, "tag"), "failed:scout");
     assert_eq!(str_at(&payload, "target"), "/agent/scout");
-    // The hub also leaves the failure in the agent's inbox, after the state
-    // change that sent the push.
-    eventually("the failure in the agent's inbox", || async {
-        let mut notes = hub.root.path().join("scout/inbox/user").read_dir().ok()?;
-        notes.next().and_then(Result::ok)
-    })
-    .await;
     assert_eq!(
         phone.pushes_after_quiet().await,
         1,
-        "that note is not announced as an item an agent filed"
+        "the failure is the only push, with no inbox item to announce beside it"
+    );
+    assert!(
+        !hub.root.path().join("scout/inbox").exists(),
+        "a first-start failure creates no inbox for the user to find a note in"
     );
 }
 
