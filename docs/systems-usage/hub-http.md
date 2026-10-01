@@ -136,7 +136,7 @@ Resolution answers before the agent's router sees the request:
 
 ### Sessions started by artifacts
 
-A session runs on one agent, so an artifact names it (`residuum.sessions.start({ agent, prompt })`, see [workbench.md](workbench.md)) and the start goes to `POST /api/agents/{name}/sessions`. An unknown agent answers `404` and one that isn't running answers `409`. `POST /api/sessions`, which names no agent, answers `400` with a message explaining that.
+A session runs on one agent, so an artifact names it (`residuum.sessions.start({ agent, prompt })`, see [workbench.md](workbench.md)) and the start goes to `POST /api/agents/{name}/sessions`. An unknown agent answers `404` and one that isn't running answers `409`. `POST /api/sessions`, which names no agent, answers `400` with a message explaining that. The session's live frames come from the hub WebSocket's [session relay](#session-relay), whichever agent it runs on: `subscribe_artifact_sessions` before the start request follows every session the artifact starts.
 
 ## Request guards
 
@@ -162,7 +162,7 @@ Through Residuum Cloud the tunnel's loopback client passes the browser's `Accept
 
 ## Hub WebSocket
 
-`/api/hub/ws` sends JSON frames tagged by `type`, and accepts one message, `watch_team`.
+`/api/hub/ws` sends JSON frames tagged by `type`, and accepts `watch_team` and the session subscriptions of the [session relay](#session-relay).
 
 | Frame | Sent when |
 |-------|-----------|
@@ -176,6 +176,32 @@ Through Residuum Cloud the tunnel's loopback client passes the browser's `Accept
 | `hub_config_reloaded` `{ ok, changed, message }` | The hub finished an attempt to reload `hub/config.toml`, beside the notice that tells the user about it. `ok` is false when the file couldn't be loaded and the hub keeps the config it was running. `changed` is true when the loaded config differs from the running one. `message` is the text of that notice, or `null` when nothing changed. |
 | `agent_overview` `{ overview }` | Something in an agent's overview changed. `overview` is the agent's whole overview, as `GET /api/hub/overview` serves it, and replaces the client's copy. Changes are gathered, so an agent gets at most one frame per second and its last state is always sent; a created or restored agent is sent at once. |
 | `team_event` `{ boot_id, event }` | The team event log recorded an entry. `event` is the entry, as `GET /api/hub/events` serves it, and `boot_id` the log's id. A connection hears the entries recorded after it connected; what came before is read from the route. |
+| `artifact_updated` `{ name }`, `artifact_removed` `{ name }` | An artifact was added or one of its files changed, or its page or folder is gone, whatever the connection watches and whether or not any agent is running. See [Artifact events](#artifact-events). |
+| `subscribed` `{ kind, agent?, address?, artifact? }` | A session subscription is active (see [Session relay](#session-relay)). |
+| `session_frame` `{ agent, frame }` | An event of a session the connection follows. `frame` is the `session_*` frame the agent's own WebSocket sends for it. |
+| `session_relay_lagged` | The connection fell behind the session relay and lost session frames. |
 | `workspace_changed` `{ changes }`, `workspace_resync` `{ reason }`, `workspace_watch_unavailable` `{ message }` | Team change-feed frames, with the shapes of the agent WebSocket's, for the paths the connection watches. |
 
 `{ "type": "watch_team", "prefixes": [...] }` replaces the set of team paths the connection watches; `[]` stops watching. A prefix names `team` or a path under `team/`, the spelling the change feed uses (`team/wiki`), and matches whole path segments. A prefix outside `team/` or an unreadable message is refused with a warning `notice`, and the current watch stays in force. A connection that starts watching while the team watcher is off gets `workspace_watch_unavailable`.
+
+### Artifact events
+
+The hub watches the team workbench itself, from the team change feed, and tells every connection about each artifact that was added, changed or removed, using the same rescan-and-compare rule as an agent's own watcher (see [Live reload](workbench.md#live-reload)). The events come from the hub, so they arrive with no agent running. The agent WebSocket sends the same `artifact_updated` and `artifact_removed` frames too.
+
+### Session relay
+
+A client follows sessions over the hub WebSocket without opening any agent's own socket. A session runs on one agent, and every session event of every running agent reaches the hub (see [Watching running agents](hub.md#watching-running-agents)); a connection receives the events of the sessions it subscribed to.
+
+| Message | Follows |
+|---------|---------|
+| `{ "type": "subscribe_session", "agent": "<name>", "address": "<address>" }` | Every event of that session on that agent. A session that runs again at the same address after it finished (a message to a finished session starts a new run) is still that session. |
+| `{ "type": "subscribe_artifact_sessions", "artifact": "<name>" }` | Every event of every session whose source label is `artifact:<name>`, on any agent, including sessions that start after the subscription. |
+| `{ "type": "unsubscribe_session", "agent": "<name>", "address": "<address>" }`, `{ "type": "unsubscribe_artifact_sessions", "artifact": "<name>" }` | Stops following. Stopping something that isn't followed does nothing, and there is no answer. |
+
+- **Acknowledgement.** The hub answers each subscribe with `{ "type": "subscribed", "kind": "session", "agent", "address" }` or `{ "type": "subscribed", "kind": "artifact_sessions", "artifact" }` once the subscription is active, before any frame it delivers. A client that needs a session's first frames, such as one about to start a session over HTTP, waits for the answer first. Messages are handled in the order they were sent, so the answer to a later message also shows that an earlier unsubscribe took effect. Subscribing again to what is already followed is answered again and changes nothing.
+- **Frames.** Each event arrives as `{ "type": "session_frame", "agent": "<name>", "frame": { ... } }`. `frame` is exactly the `session_*` frame the agent's WebSocket would send for the event: `session_started`, `session_state_changed`, `session_completed`, `session_turn_started`, `session_turn_ended`, `session_tool_call`, `session_tool_result`, `session_broadcast_response`, `session_turn_usage`, `session_response`, `session_error` and `session_message_to_main`. Tool frames are always included: the hub WebSocket has no verbose setting. A session's later events carry the source label it started with, so an artifact subscription follows a session through its whole life.
+- **Lag.** A connection that falls more than 1,024 session events behind drops the oldest and gets `{ "type": "session_relay_lagged" }`, logged at `warn` with the number lost. Frames then continue from the oldest event still held. A client reads the state of the sessions it follows over HTTP (`GET /api/agents/{name}/sessions`) and carries on. A connection that follows nothing is not told, since it lost nothing.
+- **Scope.** Subscriptions belong to one connection and end when it closes. A client sends them again after it reconnects. Nothing is buffered: a connection hears events from the moment its subscription is active, and a stopped agent produces none until it runs again.
+- **Unknown agent.** `subscribe_session` for an agent that doesn't exist is refused with a warning `notice` and no `subscribed`. A stopped or failed agent exists, so the subscription is accepted. A subscription message the hub can't read is refused with a warning `notice` like any other message.
+
+A page opened from the artifacts origin is a client of the hub WebSocket like any other (see [API forwarding](workbench.md#api-forwarding)), so an artifact subscribes to its own sessions the same way, on whichever agent they run.

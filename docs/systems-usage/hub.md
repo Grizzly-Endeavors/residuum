@@ -62,7 +62,7 @@ The `autostart` and `a2a_visibility` an agent's summary reports come from the la
 - **Session budget**: one semaphore sized by the hub's `[background] max_concurrent`, taken by every agent's session turns. Main turns don't take a permit. A session waiting for a permit shows as `queued` in its agent's session list. Changing `max_concurrent` takes effect on the next restart.
 - **Checkpoints**: the team and hub-config repositories are shared; each agent has its own workspace and config repositories. See [Checkpoints](checkpoints.md).
 - **Tunnel status, secrets, key stores, tracing**: one of each, passed to every agent.
-- **Team change feed**: one watcher over the team directory, publishing `team/...` paths on its own bus. The hub WebSocket, every agent's `/ws` (for clients that watch `team/...` prefixes), and every agent's artifact reload watcher read it, so a change to a team file is watched once however many agents run. Each agent also has a feed over its own directory.
+- **Team change feed**: one watcher over the team directory, publishing `team/...` paths on its own bus. The hub WebSocket, every agent's `/ws` (for clients that watch `team/...` prefixes), and every agent's artifact reload watcher read it, so a change to a team file is watched once however many agents run. The hub also watches the team workbench from this feed itself, with no agent involved, and publishes an event for every artifact added, changed or removed, which the hub WebSocket sends as `artifact_updated` and `artifact_removed` (see [Live reload](workbench.md#live-reload)). Each agent also has a feed over its own directory.
 - **Relay agent list**: the hub keeps the relay's copy of its agent list current from the hub bus (created, deleted, state and visibility changes), so each agent is reachable at `{origin}/a2a/{instance}/{agent}` while it runs. See [Cloud tunnel](cloud-tunnel.md#agents-on-the-relay).
 - **Sibling discovery**: one per hub, fanned out to every running agent's A2A client. See [A2A](a2a.md#siblings).
 
@@ -94,7 +94,7 @@ The watcher reads the agent's own bus and publishes **agent changes** on one hub
 
 A consumer answers a resync by recomputing everything it shows for that agent, from disk and the agent's session registry.
 
-Every session event, lifecycle or turn (tool calls and responses included), is also relayed on a broadcast of its own, tagged with the agent's name and the source label the session started with. A consumer that falls more than 1,024 events behind is told how many it missed.
+Every session event, lifecycle or turn (tool calls and responses included), is also relayed on a broadcast of its own, tagged with the agent's name and the source label the session started with. A consumer that falls more than 1,024 events behind is told how many it missed. The hub WebSocket reads this broadcast to carry sessions to the clients that subscribed to them (see [Session relay](hub-http.md#session-relay)).
 
 **Turn hook.** The agent runtime calls its activity tracker exactly once when a main turn ends, whatever the outcome, after the turn's replies are published and counted as unread. The hook puts the turn on the same feed: the user's message text, if a user started the turn; the last reply text, if there was one; the time; whether the turn had `user` or `background` visibility; and whether any client had the agent's WebSocket open. Empty text counts as no text. Unread counting is unchanged.
 
