@@ -4,8 +4,9 @@
   import { ws } from "../lib/ws.svelte";
   import SessionsSidebar from "../components/SessionsSidebar.svelte";
   import Workbench from "../components/Workbench.svelte";
-  import Workspace from "../components/Workspace.svelte";
   import ChatPlace from "../places/chat/ChatPlace.svelte";
+  import FilesPlace from "../places/files/FilesPlace.svelte";
+  import { fileSourceFor } from "../places/files/file-source";
   import Home from "../places/home/Home.svelte";
   import Inbox from "../places/inbox/Inbox.svelte";
   import Schedule from "../places/schedule/Schedule.svelte";
@@ -13,14 +14,15 @@
   import { agentPlaceLabel } from "./rail-model";
   import type { ShellActions } from "./shell-actions";
 
-  // The main region's place: Home, Inbox, an agent's Chat or Schedule, or a
-  // place that hasn't been rebuilt, which hosts its legacy view inside a
-  // `data-legacy-view` element, where the legacy global styles still apply
-  // and the new base styles don't.
+  // The main region's place: Home, Inbox, an agent's Chat, Schedule or Files,
+  // Shared files, or a place that hasn't been rebuilt, which hosts its legacy
+  // view inside a `data-legacy-view` element, where the legacy global styles
+  // still apply and the new base styles don't.
 
   let { actions }: { actions: ShellActions } = $props();
 
   const place = $derived(router.place);
+  const files = $derived(fileSourceFor(place));
   const sessions = $derived(ws.sessions);
 
   // Tick the clock behind elapsed times only while something is live.
@@ -58,21 +60,21 @@
     <PlaceHeader title="Shared files" />
   {/if}
 
-  <div class="shell-legacy" data-legacy-view>
-    {#if isAgentPlace(place)}
-      {#key place.agent}
-        {#if place.kind === "activity"}
+  {#if files !== null && (place.kind === "files" || place.kind === "shared-files")}
+    {#key `${files.scope}:${files.agent ?? ""}`}
+      <FilesPlace source={files} />
+    {/key}
+  {:else}
+    <div class="shell-legacy" data-legacy-view>
+      {#if isAgentPlace(place)}
+        {#key place.agent}
           <SessionsSidebar onSelect={openRun} />
-        {:else}
-          <Workspace agent={place.agent} />
-        {/if}
-      {/key}
-    {:else if place.kind === "workbench"}
-      <Workbench artifact={place.artifact} />
-    {:else}
-      <Workspace agent={null} scope="team" />
-    {/if}
-  </div>
+        {/key}
+      {:else if place.kind === "workbench"}
+        <Workbench artifact={place.artifact} />
+      {/if}
+    </div>
+  {/if}
 {/if}
 
 <style>

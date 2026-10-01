@@ -7,9 +7,9 @@ import { expect, test } from "../support/fixtures";
  * width, floating at medium width, a full-screen sheet on phones, and an
  * invalid `panel` corrected.
  *
- * What the panel shows is still a hosted legacy view (the session view, the
- * workspace editor), which the units that replace it scan, so the scans here
- * leave it out.
+ * A session and the conversation size still show hosted legacy views, which
+ * the units that replace them scan, so the scans here leave them out. The
+ * file editor is scanned here and in `files.spec.ts`.
  */
 
 const LEGACY = "[data-legacy-view]";

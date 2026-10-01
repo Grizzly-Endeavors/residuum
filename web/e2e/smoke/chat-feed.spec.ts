@@ -201,9 +201,8 @@ test.describe("path links", () => {
     await conversation(page).getByRole("link", { name: FALLBACKS }).click();
 
     await expect(page.getByRole("heading", { name: "notification-fallbacks.md" })).toBeVisible();
-    await expect(
-      page.getByRole("alert").filter({ hasText: "Couldn't open this file." }),
-    ).toHaveText("Couldn't open this file. It may have been moved or deleted.");
+    await expect(page.getByRole("heading", { name: "This file doesn't exist" })).toBeVisible();
+    await expect(page.getByText(`Nothing is saved at ${FALLBACKS}.`)).toBeVisible();
     await expect(
       page.getByRole("textbox", { name: "Contents of notification-fallbacks.md" }),
     ).toHaveCount(0);

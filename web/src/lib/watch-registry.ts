@@ -22,6 +22,12 @@ export interface WatchHandler {
   resync?: (reason: WorkspaceResyncReason) => void;
   /** No watcher is running, so nothing will change live. Every owner hears it. */
   unavailable?: (message: string) => void;
+  /**
+   * The socket connected again after a connection this owner watched through
+   * had dropped. Changes made while it was down were never reported, so the
+   * owner's view may be stale.
+   */
+  reconnected?: () => void;
 }
 
 /** One part of the app's claim on a registry. It can only change its own prefixes. */
@@ -64,6 +70,8 @@ interface OwnerState {
   readonly agent: string | undefined;
   prefixes: readonly string[];
   released: boolean;
+  /** It was live while a connection was open, so a later connection is a reconnect for it. */
+  watched: boolean;
 }
 
 function sameSet(a: readonly string[], b: readonly string[]): boolean {
@@ -88,8 +96,10 @@ export class WatchRegistry {
       agent: options.agent,
       prefixes: [],
       released: false,
+      watched: false,
     };
     this.owners.add(owner);
+    if (this.open) owner.watched = this.live().includes(owner);
     return {
       get prefixes() {
         return owner.prefixes;
@@ -119,11 +129,27 @@ export class WatchRegistry {
     this.open = false;
   }
 
-  /** The socket opened. A new connection watches nothing, so the union goes out again. */
+  /**
+   * The socket opened. A new connection watches nothing, so the union goes out
+   * again, and the owners that watched through an earlier connection hear that
+   * they may have missed changes. A handler that throws doesn't keep the others
+   * from hearing it; once they all have, the failure is thrown to the caller.
+   */
   connected(): void {
     this.open = true;
     this.sent = this.union();
     if (this.sent.length > 0) this.options.send([...this.sent]);
+    const live = this.live();
+    const missed = live.filter((owner) => owner.watched);
+    for (const owner of live) owner.watched = true;
+    this.deliver(
+      missed.map((owner) => ({
+        owner,
+        call: () => {
+          owner.handler.reconnected?.();
+        },
+      })),
+    );
   }
 
   /** The socket closed. Changes to the union wait for the next `connected`. */
@@ -166,9 +192,14 @@ export class WatchRegistry {
         });
       }
     }
+    this.deliver(deliveries);
+  }
+
+  /** Call each owner's handler, then throw what any of them threw. */
+  private deliver(deliveries: readonly { owner: OwnerState; call: () => void }[]): void {
     const failures: unknown[] = [];
     for (const { owner, call } of deliveries) {
-      // An owner that an earlier handler released while hearing this frame hears no more of it.
+      // An owner that an earlier handler released while hearing this hears no more of it.
       if (owner.released) continue;
       try {
         call();
