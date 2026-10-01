@@ -113,6 +113,8 @@ web/
 │   ├── main.ts               # App entry point
 │   ├── App.svelte            # The root: the setup wizard, or the shell; draws toasts and tooltips in both
 │   ├── shell/                # The shell: the rail, the phone's bottom bar and drawer, the hub banner, place routing, the Settings modal
+│   ├── places/               # Rebuilt places, one folder each
+│   │   └── home/             # Home: needs-you, the agents board, Across the team, Coming up, and the words and times they show
 │   ├── Chat.svelte           # Main chat view
 │   ├── Setup.svelte          # Setup wizard
 │   ├── Settings.svelte       # Settings panel
@@ -128,7 +130,7 @@ web/
 │   │   ├── ToolItem.svelte         # Individual tool call display
 │   │   ├── SessionsSidebar.svelte  # Live and finished agent sessions, hosted as the Activity place
 │   │   ├── SessionView.svelte      # One session's transcript, live activity, message box, stop
-│   │   ├── TeamView.svelte         # Team page, hosted as Home: lifecycle controls, autostart, delete, create agent
+│   │   ├── TeamView.svelte         # Agent management under Home's board: lifecycle controls, autostart, delete, restore, create agent
 │   │   ├── UserInbox.svelte        # The bound agent's user inbox, hosted as the Inbox place
 │   │   ├── Workbench.svelte        # Workbench artifact list; hosts the open artifact
 │   │   ├── WorkbenchArtifact.svelte # One artifact in its sandboxed frame; full view
@@ -145,6 +147,9 @@ web/
 │       ├── feed.svelte.ts        # Main chat feed state
 │       ├── feed-items.ts         # History-to-feed conversion shared by chat and session views
 │       ├── sessions.svelte.ts    # Agent sessions: listing, live frames, session view, commands
+│       ├── overview.svelte.ts    # The team overview: each agent's overview, team events, the newest unread inbox items, what needs the user
+│       ├── needs-you.ts          # What needs the user and in what order, and the rail's Home count
+│       ├── agent-failure.ts      # Plain words for why an agent couldn't start, and the Settings section that fixes it
 │       ├── routes.ts             # URL <-> location: places, the panel and settings parameters, redirects from old URLs, corrections
 │       ├── router.svelte.ts      # Current location; push/replace, closing by going back, overlay entries, the unsaved-edit guard
 │       ├── history-entry.ts      # The marks the router keeps in history.state
@@ -263,9 +268,25 @@ Old URLs redirect by replace: `/team`, `/agent/:name/sessions/:runId`, `/agent/:
 
 `shell/Shell.svelte` is the frame around every place: the rail (`Rail.svelte`) beside the main region at medium and wide widths, and on phones the bottom bar (`BottomBar.svelte`) with the rail in a `Drawer`. The main region starts with the hub banner (`HubBanner.svelte`, shown while the hub socket is down) and then the place, which `PlaceHost.svelte` picks from the router's location. The shell root carries `data-ui`, and mounts `ConfirmHost` (and gives the router's guard `confirmLeave`), `RecentNotifications`, the Settings modal and the legacy help and feedback overlays once each; `App.svelte` draws the toast region and tooltips, in setup too.
 
-The rail's agents are an accordion (`accordion.svelte.ts`): one agent's places are open at a time, a press on the open agent closes it, a row press never navigates, and arriving on an agent opens it. `rail-model.ts` works out each agent row's mark, word and unread badge from the hub's snapshot. The Home count is the number of agents that couldn't start, the Inbox count the bound agent's unread items, and an agent's Activity count the bound agent's running sessions. The rail's footer has a Help menu (keyboard shortcuts, Recent notifications, feedback, a bug report) and the Settings gear; both those and the rail's "+" go through `ShellActions`, which the shell answers.
+The rail's agents are an accordion (`accordion.svelte.ts`): one agent's places are open at a time, a press on the open agent closes it, a row press never navigates, and arriving on an agent opens it. `rail-model.ts` works out each agent row's mark, word and unread badge from the hub's snapshot. The Home count is the number of needs-you items, from the overview store, the Inbox count the bound agent's unread items, and an agent's Activity count the bound agent's running sessions. The rail's footer has a Help menu (keyboard shortcuts, Recent notifications, feedback, a bug report) and the Settings gear; both those and the rail's "+" go through `ShellActions`, which the shell answers.
 
-Places not rebuilt yet host their legacy view inside a `data-legacy-view` element, so the legacy global styles apply there and the new base styles don't: Home the team page, Inbox the bound agent's inbox, Chat the current chat, Activity the sessions list, Schedule the Scheduled page, Files and Shared files the workspace, and the Workbench itself. A session panel on an agent's place shows the session view in the main region, over the place. The Settings modal (`SettingsModal.svelte`) hosts the current Settings page, which lists the registry's sections and shows each with the panels that hold its settings; the Raw config section is its raw editors. The workbench's full view is a mode of that page and isn't in the URL. The help and feedback overlays aren't in the URL either.
+Home is rebuilt (see [Home and the overview](#home-and-the-overview)). Places not rebuilt yet host their legacy view inside a `data-legacy-view` element, so the legacy global styles apply there and the new base styles don't: Inbox the bound agent's inbox, Chat the current chat, Activity the sessions list, Schedule the Scheduled page, Files and Shared files the workspace, and the Workbench itself. A session panel on an agent's place shows the session view in the main region, over the place. The Settings modal (`SettingsModal.svelte`) hosts the current Settings page, which lists the registry's sections and shows each with the panels that hold its settings; the Raw config section is its raw editors. The workbench's full view is a mode of that page and isn't in the URL. The help and feedback overlays aren't in the URL either.
+
+### Home and the overview
+
+`lib/overview.svelte.ts` (`overview`) holds what Home and the rail's Home count show beyond the hub store's agent list, activity and stopping set, which it reads from there: each agent's overview (`overviews`, `overviewOf(name)`), the newest 50 team events (`events`), the newest five unread user-inbox items across agents (`unreadItems`), and `needsYou`, worked out by `lib/needs-you.ts`: its `items` worst first (an agent that couldn't start, a running agent's task to a remote agent it can't reach, an unread inbox item), `moreInInbox`, and `count`, the rail's number. `App.svelte` starts it before the hub socket connects, and it follows the socket through `hub.onFrame`:
+
+| Frame | The store |
+|---|---|
+| `hub_boot` | Fetches the overview and the team events. When the boot id differs from the last one, it first drops everything it holds, since that came from another hub process |
+| `agents_snapshot` | The first after `hub_boot` is the connection's own; any later one replaces frames the connection lost, so it fetches the overview and the events newer than its newest again |
+| `agent_overview` | Replaces that agent's overview. One that arrives while the overview request is out wins over the request's answer |
+| `agent_deleted` | Forgets that agent's overview |
+| `team_event` | Adds the event once; one from another boot id starts the events over |
+
+An overview answered by a different hub process than `hub_boot` announced is dropped. The inbox items are fetched again whenever an agent's unread count changes. A failed fetch lands in `loadError`, `eventsError` or `unreadItemsError` for the section that shows it, with Try again. `stopTask` and `stopWatching` act on a running agent's outbound task and drop its problem at once, ahead of the hub's frame; when the remote agent can't be reached, `taskNotes` says so on the item.
+
+Home's sections (`places/home/`) read the store and the hub store directly; `home-model.ts` holds their words and times. Restart and the kind-specific fixes on a failed agent go through the hub store and `lib/agent-failure.ts`, which finds the Settings section for Fix settings from the agent's validate endpoints, or Raw config. Agent management (start, stop, autostart, A2A card, delete, restore, create) is the legacy team page, hosted in a disclosure under the board; New agent and the rail's "+" open it on the name field (`agent-management.svelte.ts`).
 
 ### Agents in API calls
 

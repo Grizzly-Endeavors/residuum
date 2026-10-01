@@ -22,7 +22,7 @@ test.describe("shell", { tag: "@visual" }, () => {
 
   test("on Home, with every agent closed", async ({ page }) => {
     await page.goto("/home");
-    await expect(page.getByRole("region", { name: "Team" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Home", level: 1 })).toBeVisible();
     await shellScreenshot(page, "shell-home");
   });
 
