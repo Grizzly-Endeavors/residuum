@@ -131,7 +131,7 @@ web/
 │   │   └── setup/                  # Setup wizard steps
 │   ├── test/                 # Component-test helpers and harnesses
 │   └── lib/
-│       ├── ui/                   # Primitive controls and overlays (buttons, fields, badges, dialogs, sheets…); the overlay stack in ui/overlay/; gallery at /dev/gallery (see AESTHETIC.md)
+│       ├── ui/                   # Primitive controls and overlays (buttons, fields, badges, dialogs, sheets, menus, popovers, tooltips, toasts…); the overlay stack and float placement in ui/overlay/; gallery at /dev/gallery (see AESTHETIC.md)
 │       ├── icons/                # The Icon component and icon set
 │       ├── api.ts                # REST API client (typed fetch wrappers); every agent-scoped call takes the agent name first
 │       ├── paths.ts              # API and WebSocket URL builders for the agent, hub and team scopes
@@ -152,6 +152,8 @@ web/
 │       ├── workbench-bridge.ts   # What workbench artifacts may call, relayed from their frames on the artifacts origin
 │       ├── workbench.ts          # Where artifacts are served: relay origin or this host on the artifacts port
 │       ├── time.ts               # Relative times ("5m ago")
+│       ├── toast.svelte.ts       # Toasts: kinds, timings, actions (ui/ToastRegion draws them)
+│       ├── notifications.svelte.ts # What is surfaced to the user: a toast, kept in the Recent notifications history
 │       ├── generated/            # Protocol types generated from Rust (cargo test --test ts_export)
 │       ├── types.ts              # TypeScript types for API and messages
 │       ├── commands.ts           # Slash command parser (/help, /reload, etc.)

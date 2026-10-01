@@ -133,7 +133,7 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [ ] Agent chips: state, busy dots, unread (99+), failed-agent error tooltip, current highlight, arrow-key movement — **Changed:** rail agent rows (accordion) with a working indicator and a 99+ chat-unread badge; Up/Down move between rows; the error shows on Home and in the state card; an unknown agent in the URL redirects to Home with a toast
 - [ ] Switching agents keeps the kind of page — **Changed:** agent places are explicit routes; the rail accordion links to them
 - [ ] Hub offline note — **Changed:** hub banner
-- [ ] Toasts: info/success auto-dismiss (4 s, 10 s with action), errors sticky, dismiss, action button
+- [x] Toasts: info/success auto-dismiss (4 s, 10 s with action), errors sticky, dismiss, action button
 - [ ] Recent notifications history with details, clear and Undo — **Changed:** a Recent notifications dialog from the help menu and palette
 - [ ] User inbox: unread count, tabs, read on open, body and attachment downloads, archive, restore, empty states — **Changed:** one cross-agent Inbox place with live counts from the overview (no polling); bodies render as Markdown; load errors are shown, not swallowed
 - [ ] Feedback dialog: bug and feedback tabs with drafts kept, required fields, severity, receipt with public id and Copy, friendly errors
