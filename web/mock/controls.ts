@@ -207,8 +207,20 @@ async function hubSocketControl({ req, res, hub }: RouteContext): Promise<void> 
   json(res, 200, { online });
 }
 
+/**
+ * The app is rebuilt: a preview server serves its service worker as another
+ * version from then on (see `createRebuiltWorkerHandler`), so a page that has
+ * the old one finds an update. Answers `{ rebuilds }`, how many times so far.
+ * Reset starts over from the build as it is.
+ */
+function rebuildApp({ res, hub }: RouteContext): void {
+  hub.appRebuilds += 1;
+  json(res, 200, { rebuilds: hub.appRebuilds });
+}
+
 /** The test control routes. */
 export const controlRoutes: readonly Route[] = [
+  { method: "POST", pattern: "/api/mock/rebuild", handler: rebuildApp },
   { method: "GET", pattern: "/api/mock/push/presence", handler: presentPushDevices },
   { method: "POST", pattern: "/api/mock/hub-socket", handler: hubSocketControl },
   { method: "POST", pattern: "/api/mock/team-file", handler: changeTeamFileControl },

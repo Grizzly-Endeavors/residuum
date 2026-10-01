@@ -4,6 +4,7 @@ import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { svelteTesting } from "@testing-library/svelte/vite";
+import { serviceWorkerPlugin } from "./build/service-worker";
 import { mockServerPlugin } from "./mock/plugin";
 
 const isMock = process.env.VITE_MOCK === "1";
@@ -36,14 +37,18 @@ function fontLicenses(): Plugin {
 }
 
 export default defineConfig(({ command }) => ({
-  // The primitives gallery (`/dev/gallery`) is served by the dev server and
-  // built into mock builds. Production builds compile it out.
   define: {
+    // The primitives gallery (`/dev/gallery`) is served by the dev server and
+    // built into mock builds. Production builds compile it out.
     __UI_GALLERY__: JSON.stringify(command === "serve" || isMock),
+    // Only a build registers the service worker, so the dev server, the mock's
+    // dev mode and the tests never run one. A preview serves a build.
+    __SERVICE_WORKER__: JSON.stringify(command === "build"),
   },
   plugins: [
     svelte(isTest ? { compilerOptions: { hmr: false } } : {}),
     fontLicenses(),
+    serviceWorkerPlugin(),
     ...(isMock ? [mockServerPlugin()] : []),
   ],
   build: {
@@ -78,7 +83,7 @@ export default defineConfig(({ command }) => ({
         test: {
           name: "unit",
           environment: "node",
-          include: ["src/**/*.test.ts", "mock/**/*.test.ts"],
+          include: ["src/**/*.test.ts", "build/**/*.test.ts", "mock/**/*.test.ts"],
           exclude: componentTests,
         },
       },
