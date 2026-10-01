@@ -1,5 +1,7 @@
 import type { Page } from "@playwright/test";
+import type { AppReadyOptions } from "../support/app";
 import { expect, test } from "../support/fixtures";
+import { expectPaletteOpen } from "../support/lazy";
 import { expectScreenshot } from "../support/screenshot";
 
 /**
@@ -8,8 +10,12 @@ import { expectScreenshot } from "../support/screenshot";
  * closed in the rail, are in `home.spec.ts`.
  */
 
-async function shellScreenshot(page: Page, name: string): Promise<void> {
-  await expectScreenshot(page, name, { mask: [page.locator("[data-legacy-view]")] });
+async function shellScreenshot(
+  page: Page,
+  name: string,
+  options: AppReadyOptions = {},
+): Promise<void> {
+  await expectScreenshot(page, name, { ...options, mask: [page.locator("[data-legacy-view]")] });
 }
 
 test.describe("shell", { tag: "@visual" }, () => {
@@ -26,7 +32,12 @@ test.describe("shell", { tag: "@visual" }, () => {
     await expect(page.getByRole("heading", { name: /^Running now/ })).toBeVisible();
     await mock.post("/api/mock/hub-socket", { data: { online: false } });
     await expect(page.getByText("Can't reach Residuum.")).toBeVisible();
-    await shellScreenshot(page, "shell-offline");
+    // Retry shows a spinner while the socket makes an attempt, so shoot between two.
+    await expect(page.getByRole("button", { name: "Retry" })).not.toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+    await shellScreenshot(page, "shell-offline", { hub: "lost" });
   });
 
   test("the help menu", async ({ page, isMobile }) => {
@@ -64,7 +75,7 @@ test.describe("shell", { tag: "@visual" }, () => {
     } else {
       await page.keyboard.press("ControlOrMeta+k");
     }
-    await expect(page.getByRole("dialog", { name: "Search and commands" })).toBeVisible();
+    await expectPaletteOpen(page);
     await expectScreenshot(page, "shell-palette");
   });
 
