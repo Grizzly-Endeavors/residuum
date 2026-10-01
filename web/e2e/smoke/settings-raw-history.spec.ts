@@ -10,7 +10,7 @@ const sections = (page: Page): Locator =>
   page.getByRole("navigation", { name: "Settings sections" });
 const rawText = (page: Page): Locator =>
   page.getByRole("textbox", { name: "Contents of config.toml" });
-const timeout = (page: Page): Locator => page.getByLabel("Timeout (seconds)");
+const timeout = (page: Page): Locator => page.getByLabel("Reply time limit");
 const saveBar = (page: Page): Locator => page.getByRole("region", { name: "Unsaved changes" });
 
 /** Move to another section in the page, so nothing staged is lost; on a phone through the list. */

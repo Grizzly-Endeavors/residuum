@@ -133,7 +133,7 @@ describe("Raw config", () => {
     await vi.waitFor(() => {
       expect(screen.getByText(/You have unsaved edits to config\.toml in Raw config/)).toBeTruthy();
     });
-    expect(screen.getByLabelText("Timeout (seconds)")).toBeDisabled();
+    expect(screen.getByLabelText("Reply time limit")).toBeDisabled();
 
     await fireEvent.click(screen.getByRole("button", { name: "Open Raw config" }));
     await vi.waitFor(() => {
@@ -142,7 +142,7 @@ describe("Raw config", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Discard edits" }));
     await router.switchSettingsSection("runtime");
     await vi.waitFor(() => {
-      expect(screen.getByLabelText("Timeout (seconds)")).not.toBeDisabled();
+      expect(screen.getByLabelText("Reply time limit")).not.toBeDisabled();
     });
   });
 

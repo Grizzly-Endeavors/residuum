@@ -93,7 +93,7 @@ The end-of-turn evaluation runs in the background, off the gateway event loop (l
 | `learning` | `false` | Opt-in for `learn` signals (see [Learning trigger](#learning-trigger)). Independent of `enabled` — the subconscious can steer without learning enabled. |
 | `learning_cooldown_minutes` | `240` | Minimum time between `learner` spawns triggered by a `learn` signal. |
 
-The model is assigned via the `subconscious` role in `providers.toml`, following the standard `models.subconscious` → `models.default` → `main` precedence. All of these are also editable from the web Settings UI (Runtime and Providers panels).
+The model is assigned via the `subconscious` role in `providers.toml`, following the standard `models.subconscious` → `models.default` → `main` precedence. All of these are also editable from the web Settings UI: the switches and numbers under Reviewing replies and Learning from conversations in the agent's Memory settings, and the model under Reviewing replies in its Model settings. The reviewing settings and Learn from reviewed replies stay dimmed until Review replies is on.
 
 `[learning]` in `config.toml` is a separate, always-available section (not nested under `[subconscious]`) that covers the turn-count fallback:
 

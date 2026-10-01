@@ -6,17 +6,16 @@
     connectTarget,
     phaseOf,
   } from "../../lib/cloud.svelte";
-  import { numberOfText, textOfNumber } from "../../lib/settings-bind";
   import {
     Badge,
     Banner,
     Button,
     Disclosure,
-    NumberField,
     SecretField,
     Skeleton,
     TextField,
   } from "../../lib/ui";
+  import ConfigNumber from "./ConfigNumber.svelte";
   import { fieldError, type AllSectionProps } from "./sections";
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
@@ -229,17 +228,14 @@
         hint="Set this to run against a relay of your own, such as one on this machine while you develop. Signing in and connecting use it."
         error={relayError}
       />
-      <NumberField
+      <ConfigNumber
+        {scope}
+        field="cloud_local_port"
         label="Local port"
-        bind:value={
-          () => numberOfText(scope.config.cloud_local_port),
-          (value) => (scope.config.cloud_local_port = textOfNumber(value))
-        }
         placeholder={scope.config.gateway_port || "7700"}
         min={1}
         max={65535}
         hint="The port on this machine that the tunnel hands requests to. Leave it empty to use the gateway port."
-        error={portError}
       />
     </SettingsGroup>
   </Disclosure>

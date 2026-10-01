@@ -16,7 +16,10 @@ import DiagnosticsSection from "./DiagnosticsSection.svelte";
 import GeneralSection from "./GeneralSection.svelte";
 import HistorySection from "./HistorySection.svelte";
 import LimitsSection from "./LimitsSection.svelte";
+import Memory from "./Memory.svelte";
 import RawConfig from "./RawConfig.svelte";
+import Runtime from "./Runtime.svelte";
+import Schedule from "./Schedule.svelte";
 import UpdatesSection from "./UpdatesSection.svelte";
 
 export type SettingsScope = AgentScopeModel | AllScopeModel;
@@ -34,6 +37,9 @@ export interface AllSectionProps {
 }
 
 export const AGENT_SECTION_VIEWS: Partial<Record<AgentSectionId, Component<AgentSectionProps>>> = {
+  memory: Memory,
+  schedule: Schedule,
+  runtime: Runtime,
   raw: RawConfig,
   history: HistorySection,
 };
