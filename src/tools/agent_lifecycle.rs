@@ -1,9 +1,9 @@
 //! Teammate lifecycle tools: `agent_create` and `agent_delete`.
 //!
 //! Both call the hub's [`crate::hub::AgentDirectory`] as the calling agent,
-//! so the host files the toast and the inbox item that name it. Neither has
-//! an approval gate: the user sees what happened and can restore a deleted
-//! agent from its checkpoint.
+//! so the host publishes the event that names it, which becomes a toast and a
+//! team event. Neither has an approval gate: the user sees what happened and
+//! can restore a deleted agent from its checkpoint.
 
 use async_trait::async_trait;
 use serde::Deserialize;
