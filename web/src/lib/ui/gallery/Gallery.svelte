@@ -3,7 +3,11 @@
     Badge,
     Banner,
     Button,
+    ConfirmDialog,
+    ConfirmHost,
+    Dialog,
     Disclosure,
+    Drawer,
     EmptyState,
     IconButton,
     Kbd,
@@ -11,14 +15,18 @@
     SecretField,
     SegmentedControl,
     SelectField,
+    Sheet,
     Skeleton,
     StatusDot,
     Tabs,
     TextField,
     Toggle,
+    confirmations,
+    confirmLeave,
     type ButtonVariant,
     type StatusDotState,
   } from "..";
+  import { router } from "../../router.svelte";
 
   // Every primitive in every state, served at /dev/gallery in development and
   // mock builds. Controls are live, so keyboard behavior can be tried here.
@@ -73,6 +81,56 @@
   let jobsOpen = $state(true);
   let inboxTab = $state<"inbox" | "archived" | "later">("inbox");
   let showDismissible = $state(true);
+
+  // Back closes the overlays opened here, without the router reading this
+  // page's address as a place.
+  router.startForOverlays();
+
+  const AGENTS: readonly { name: string; role: string; state: StatusDotState; working?: true }[] = [
+    { name: "scout", role: "Research and reading lists", state: "running" },
+    { name: "atlas", role: "Travel plans", state: "running", working: true },
+    { name: "drifter", role: "Weekly review", state: "stopped" },
+    { name: "brittle", role: "Home automation", state: "failed" },
+  ];
+  const PLACES = [
+    "Home",
+    "Inbox",
+    ...AGENTS.map((agent) => agent.name),
+    "Workbench",
+    "Shared files",
+  ];
+
+  let createOpen = $state(false);
+  let newName = $state("");
+  let newPurpose = $state("");
+  let instructionsOpen = $state(false);
+  let discardOpen = $state(false);
+  let instructions = $state(
+    "Keep track of my reading list.\n\nWhen I finish a book, ask what I thought of it and file a short note under reading/. Suggest the next book from the list, and say why.\n\nOn Sunday evenings, summarize the week: what I read, what I abandoned, and what is overdue at the library.",
+  );
+  let sheetOpen = $state(false);
+  let chosenAgent = $state("scout");
+  let drawerOpen = $state(false);
+  let answer = $state("");
+
+  async function askDelete(): Promise<void> {
+    const confirmed = await confirmations.ask({
+      title: "Delete brittle?",
+      message:
+        "Its workspace, conversation and settings are removed. The notice that follows offers Undo.",
+      confirmLabel: "Delete brittle",
+      tone: "danger",
+    });
+    answer = confirmed ? "Deleted brittle." : "Kept brittle.";
+  }
+
+  async function askLeave(): Promise<void> {
+    const leave = await confirmLeave([
+      "Unsaved changes to SOUL.md",
+      "Staged model settings for atlas",
+    ]);
+    answer = leave ? "Left without saving." : "Kept editing.";
+  }
 </script>
 
 <div class="gallery" data-ui>
@@ -388,6 +446,28 @@
       </div>
     </section>
 
+    <section aria-labelledby="g-overlays">
+      <h2 id="g-overlays">Dialogs, sheets and drawers</h2>
+      <div class="gallery-surface">
+        <div class="gallery-row">
+          <span class="gallery-caption">dialogs</span>
+          <Button icon="plus" onclick={() => (createOpen = true)}>Create agent</Button>
+          <Button icon="edit" onclick={() => (instructionsOpen = true)}>Edit instructions</Button>
+        </div>
+        <div class="gallery-row">
+          <span class="gallery-caption">phone layers</span>
+          <Button onclick={() => (sheetOpen = true)}>Switch agent</Button>
+          <Button icon="menu" onclick={() => (drawerOpen = true)}>Agents and places</Button>
+        </div>
+        <div class="gallery-row">
+          <span class="gallery-caption">confirm</span>
+          <Button variant="danger" onclick={askDelete}>Delete brittle</Button>
+          <Button onclick={askLeave}>Leave with unsaved changes</Button>
+          <span class="gallery-note" role="status">{answer}</span>
+        </div>
+      </div>
+    </section>
+
     <section aria-labelledby="g-kbd">
       <h2 id="g-kbd">Keys</h2>
       <div class="gallery-surface">
@@ -406,6 +486,100 @@
     </section>
   </main>
 </div>
+
+<Dialog
+  bind:open={createOpen}
+  title="Create an agent"
+  description="Give it a name and say what it should help with. It asks you about the rest."
+>
+  <form
+    id="g-create"
+    class="gallery-form-dialog"
+    onsubmit={(event) => {
+      event.preventDefault();
+      createOpen = false;
+    }}
+  >
+    <TextField
+      label="Name"
+      bind:value={newName}
+      placeholder="research-buddy"
+      hint="Lowercase letters, numbers and hyphens. You can't change it later."
+    />
+    <TextField
+      label="What should it help with?"
+      bind:value={newPurpose}
+      multiline
+      rows={3}
+      placeholder="Keep track of my reading list"
+    />
+  </form>
+  {#snippet actions()}
+    <Button variant="quiet" onclick={() => (createOpen = false)}>Cancel</Button>
+    <Button variant="primary" type="submit" form="g-create">Create agent</Button>
+  {/snippet}
+</Dialog>
+
+<Dialog bind:open={instructionsOpen} title="scout's instructions" size="lg" fullscreenOnPhone>
+  <TextField label="SOUL.md" bind:value={instructions} multiline rows={12} />
+  {#snippet actions()}
+    <Button variant="danger" onclick={() => (discardOpen = true)}>Discard changes</Button>
+    <Button variant="primary" onclick={() => (instructionsOpen = false)}>Save</Button>
+  {/snippet}
+</Dialog>
+
+<ConfirmDialog
+  bind:open={discardOpen}
+  title="Discard your changes?"
+  message="scout keeps the instructions it had before you started editing."
+  confirmLabel="Discard changes"
+  cancelLabel="Keep editing"
+  tone="danger"
+  onconfirm={() => (instructionsOpen = false)}
+/>
+
+<Sheet bind:open={sheetOpen} title="Switch agent">
+  <div class="gallery-options" role="group" aria-label="Agents">
+    {#each AGENTS as agent (agent.name)}
+      <button
+        type="button"
+        class="gallery-option"
+        aria-pressed={chosenAgent === agent.name}
+        onclick={() => {
+          chosenAgent = agent.name;
+          sheetOpen = false;
+        }}
+      >
+        <StatusDot state={agent.state} working={agent.working} />
+        <span class="gallery-option-text">
+          <span class="gallery-option-name">{agent.name}</span>
+          <span class="gallery-option-role">{agent.role}</span>
+        </span>
+      </button>
+    {/each}
+  </div>
+</Sheet>
+
+<Drawer bind:open={drawerOpen} label="Agents and places">
+  <nav class="gallery-drawer" aria-label="Agents and places">
+    <div class="gallery-drawer-top">
+      <span class="gallery-drawer-title">Residuum</span>
+      <IconButton
+        icon="close"
+        label="Close menu"
+        data-overlay-close
+        onclick={() => (drawerOpen = false)}
+      />
+    </div>
+    {#each PLACES as place (place)}
+      <button type="button" class="gallery-place" onclick={() => (drawerOpen = false)}>
+        {place}
+      </button>
+    {/each}
+  </nav>
+</Drawer>
+
+<ConfirmHost />
 
 <style>
   .gallery {
@@ -495,6 +669,79 @@
     font-size: var(--font-size-xs);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+  }
+
+  .gallery-form-dialog {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-16);
+  }
+
+  .gallery-options,
+  .gallery-drawer {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .gallery-option {
+    display: flex;
+    align-items: center;
+    gap: var(--space-12);
+    min-height: 56px;
+    padding: var(--space-6) var(--space-8);
+    border-radius: var(--corner-md);
+    transition: background-color var(--duration-fast) var(--ease-out);
+
+    &:hover,
+    &[aria-pressed="true"] {
+      background: var(--color-stone-4);
+    }
+  }
+
+  .gallery-option-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .gallery-option-name {
+    font-weight: var(--font-weight-semibold);
+  }
+
+  .gallery-option-role {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-2);
+  }
+
+  .gallery-drawer {
+    padding: var(--space-8) var(--space-10) var(--space-24);
+  }
+
+  .gallery-drawer-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 0 var(--space-8) var(--space-8);
+  }
+
+  .gallery-drawer-title {
+    font-size: var(--font-size-heading);
+    font-weight: var(--font-weight-semibold);
+  }
+
+  .gallery-place {
+    min-height: 40px;
+    padding: 0 var(--space-10);
+    border-radius: var(--corner-sm);
+    font-size: var(--font-size-sm);
+    color: var(--color-text-2);
+    transition: background-color var(--duration-fast) var(--ease-out);
+
+    &:hover {
+      background: var(--color-stone-3);
+      color: var(--color-text);
+    }
   }
 
   @media (max-width: 760px) {
