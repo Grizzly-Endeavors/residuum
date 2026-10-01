@@ -106,6 +106,24 @@ export default tseslint.config(
     },
   },
 
+  // ── End-to-end specs wait on conditions ─────────────────────────────
+  // A fixed sleep passes on a quiet machine and fails on a loaded one, and on
+  // a quiet one it only slows the suite. Wait for what the next step needs
+  // with a web-first assertion (see `web/CONTRIBUTING.md`, "Testing").
+  {
+    files: ["e2e/**/*.ts"],
+    rules: {
+      "no-restricted-properties": [
+        "error",
+        {
+          property: "waitForTimeout",
+          message:
+            "Wait for the condition the next step depends on (a web-first assertion, expect.poll, or a helper in e2e/support), not for time to pass.",
+        },
+      ],
+    },
+  },
+
   // ── Rune store modules (*.svelte.ts) ────────────────────────────────
   // These also match the TypeScript block above, so they get its strict rules.
   // This block only makes the Svelte parser read them as TypeScript.
