@@ -7,13 +7,18 @@
 #
 #   scripts/with-playwright-container.sh npm --prefix web run e2e:visual
 #
+# With E2E_ALL_IN_CONTAINER=1 the config gives that browser to the desktop,
+# phone and preview-* projects too, so the machine needs no Chromium of its
+# own. The CI runners are such machines, and run the whole suite this way:
+#
+#   E2E_ALL_IN_CONTAINER=1 scripts/with-playwright-container.sh npm --prefix web run e2e:fast
+#
 # The image tag is the installed Playwright's version, so the browser builds in
-# the image are the ones that version expects. Only those projects use the
-# container; the test runner, the mock servers and the baselines' comparison
-# stay on this machine, and the container's browser reaches the mock through
-# Playwright's `exposeNetwork` tunnel. The container mounts the installed
-# playwright-core read-only to run its browser server, so both ends are the same
-# version by construction.
+# the image are the ones that version expects. The test runner, the mock servers
+# and the baselines' comparison stay on this machine, and the container's
+# browser reaches the mock through Playwright's `exposeNetwork` tunnel. The
+# container mounts the installed playwright-core read-only to run its browser
+# server, so both ends are the same version by construction.
 #
 # Baselines are made for linux/amd64 (the image is pulled for that platform on
 # any host), because rendering can differ between architectures.
@@ -34,14 +39,21 @@ fi
 version="$(node -p "require('./$core/package.json').version")"
 image="mcr.microsoft.com/playwright:v${version}-noble"
 
+if [ "${E2E_ALL_IN_CONTAINER:-}" = "1" ]; then
+    needs="E2E_ALL_IN_CONTAINER=1 runs every spec in the Playwright container."
+    without="To use this machine's Chromium instead, run 'just web-e2e-fast'."
+else
+    needs="Visual comparisons render in the Playwright container."
+    without="The other specs don't need it: run 'just web-e2e-fast'."
+fi
 if ! command -v docker >/dev/null 2>&1; then
-    echo "error: Docker is not installed, and visual comparisons render in the Playwright container." >&2
-    echo "       The other specs don't need it: run 'just web-e2e-fast'." >&2
+    echo "error: Docker is not installed. $needs" >&2
+    echo "       $without" >&2
     exit 1
 fi
 if ! docker info >/dev/null 2>&1; then
-    echo "error: Docker is installed but its daemon can't be reached, and visual comparisons render in the Playwright container." >&2
-    echo "       The other specs don't need it: run 'just web-e2e-fast'." >&2
+    echo "error: Docker is installed but its daemon can't be reached. $needs" >&2
+    echo "       $without" >&2
     exit 1
 fi
 

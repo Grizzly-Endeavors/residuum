@@ -67,6 +67,22 @@ function startPlugin(kind: ServerKind = "configureServer"): Promise<DevServer> {
   });
 }
 
+/** The types of the first two frames the hub socket at `url` sends. */
+function firstHubFrames(url: string): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url);
+    const seen: string[] = [];
+    ws.on("message", (raw) => {
+      seen.push((JSON.parse(frameText(raw)) as { type: string }).type);
+      if (seen.length === 2) {
+        ws.close();
+        resolve(seen);
+      }
+    });
+    ws.on("error", reject);
+  });
+}
+
 describe("the mock server plugin", () => {
   const running: Server[] = [];
 
@@ -170,19 +186,35 @@ describe("the mock server plugin", () => {
         .body as WorkbenchInfo;
       expect(info.port).not.toBeNull();
     });
-    const frames = await new Promise<string[]>((resolve, reject) => {
-      const ws = new WebSocket(`${preview.baseUrl.replace("http", "ws")}/api/hub/ws`);
-      const seen: string[] = [];
-      ws.on("message", (raw) => {
-        seen.push((JSON.parse(frameText(raw)) as { type: string }).type);
-        if (seen.length === 2) {
-          ws.close();
-          resolve(seen);
-        }
-      });
-      ws.on("error", reject);
+    expect(await firstHubFrames(`${preview.baseUrl.replace("http", "ws")}/api/hub/ws`)).toEqual([
+      "hub_boot",
+      "agents_snapshot",
+    ]);
+  });
+
+  it("forwards the API and the hub socket on the artifacts port, except what artifacts are refused", async () => {
+    const dev = await start();
+    await vi.waitFor(async () => {
+      const info = await fetchJson(`${dev.baseUrl}/api/team/workbench/info`);
+      expect((info.body as WorkbenchInfo).port).not.toBeNull();
     });
-    expect(frames).toEqual(["hub_boot", "agents_snapshot"]);
+    const { port } = (await fetchJson(`${dev.baseUrl}/api/team/workbench/info`))
+      .body as WorkbenchInfo;
+    const artifacts = `127.0.0.1:${String(port)}`;
+
+    const agents = await fetchJson(`http://${artifacts}/api/hub/agents`);
+    expect((agents.body as { agents: AgentSummary[] }).agents.map((a) => a.name)).toContain(
+      "atlas",
+    );
+    expect(await firstHubFrames(`ws://${artifacts}/api/hub/ws`)).toEqual([
+      "hub_boot",
+      "agents_snapshot",
+    ]);
+
+    const refused = await fetchJson(`http://${artifacts}/api/hub/stop-all`, { method: "POST" });
+    expect(refused.status).toBe(403);
+    const allowed = await fetchJson(`${dev.baseUrl}/api/hub/status`);
+    expect((allowed.body as { agents: { running: number } }).agents.running).toBe(2);
   });
 
   describe("when deterministic", () => {

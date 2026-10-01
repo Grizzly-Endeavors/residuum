@@ -2,6 +2,12 @@ import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, resolve } from "node:path";
 import { isValidArtifactName } from "./artifact-name";
+import {
+  forwardApiRequest,
+  forwardUpgrade,
+  isApiTarget,
+  type ArtifactsForwarding,
+} from "./artifacts-origin";
 import { WEB_ROOT } from "./assets";
 import { MOCK_FEATURES, MOCK_RESIDUUM_VERSION } from "./constants";
 import type { MockState } from "./state";
@@ -148,14 +154,28 @@ function serve(state: MockState, req: IncomingMessage, res: ServerResponse): voi
  * or on any free one for `0`, and records the port in `state.workbenchPort`
  * once it is listening. A port it can't bind is logged and left `null`, so
  * the workbench says artifacts can't open rather than the mock failing.
+ *
+ * Everything under `/api`, socket upgrades included, goes to the mock's API
+ * and sockets through `forwarding`, with the block list applied (see
+ * `artifacts-origin.ts`). No other path reaches them.
  */
 export function startArtifactsListener(
   state: MockState,
   log: (message: string) => void,
+  forwarding: ArtifactsForwarding,
   port = 0,
 ): Server {
   const server = createServer((req, res) => {
-    serve(state, req, res);
+    if (isApiTarget(req.url)) {
+      void forwardApiRequest(forwarding, req, res);
+    } else {
+      serve(state, req, res);
+    }
+  });
+  server.on("upgrade", (req, socket, head) => {
+    // Nothing but the API has a socket; refuse any other, as Node does for a server with no upgrade listener.
+    if (isApiTarget(req.url)) forwardUpgrade(forwarding, req, socket, head);
+    else socket.destroy();
   });
   server.on("error", (err) => {
     log(`  [mock] Workbench artifacts can't listen on port ${String(port)}: ${err.message}`);

@@ -1,11 +1,9 @@
-//! The artifact identity the workbench bridge attaches to every request it
-//! relays for an artifact.
+//! The artifact identity a request made on an artifact's behalf carries.
 //!
-//! The bridge (web UI code) sets `X-Residuum-Artifact: <name>` on every
-//! request it makes on an artifact's behalf, replacing any value the artifact
-//! supplied. The gateway's cross-site guard means only the web UI's own origin
-//! can make state-changing requests, so the header names the artifact whose
-//! frame made the request. Endpoints that attribute work to an artifact read
+//! The workbench bridge and the SDK set `X-Residuum-Artifact: <name>` on the
+//! requests they make for an artifact. The header is informative, not a
+//! security boundary: a page on the artifacts origin can call the API itself
+//! and send any valid name. Endpoints that attribute work to an artifact read
 //! it through [`artifact_identity`].
 
 use axum::http::HeaderMap;

@@ -76,7 +76,7 @@ The hub's reload queue carries two signals. `Hub` (from the config watcher, hub 
 
 ## Activity
 
-The host tracks two things per agent for the switcher: `busy`, true while a main turn runs, with `busy_since`, when that turn began, and `unread`, the number of main-conversation replies published while no web client was connected to that agent's `/ws`. Connecting a client resets `unread` to zero. Changes are published on the hub bus as `agent_activity` events, which the hub WebSocket (`/api/hub/ws`) forwards. A change in activity is never an `agent_state` event. The snapshot a hub WebSocket connection starts with, and `GET /api/hub/agents`, carry every agent's current activity, so a client that connects mid-turn knows which agents are busy and since when.
+The host tracks two things per agent for the switcher: `busy`, true while a main turn runs, with `busy_since`, when that turn began, and `unread`, the number of main-conversation replies published while no web client was connected to that agent's `/ws`. Connecting a client resets `unread` to zero. A socket opened through the artifacts origin by a workbench page is not a client, so it neither resets `unread` nor counts as connected (see [workbench.md](workbench.md#api-forwarding)). Changes are published on the hub bus as `agent_activity` events, which the hub WebSocket (`/api/hub/ws`) forwards. A change in activity is never an `agent_state` event. The snapshot a hub WebSocket connection starts with, and `GET /api/hub/agents`, carry every agent's current activity, so a client that connects mid-turn knows which agents are busy and since when.
 
 ## Watching running agents
 

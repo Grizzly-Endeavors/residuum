@@ -42,6 +42,7 @@ use crate::workspace::layout::WorkspaceLayout;
 use crate::workspace::team_files::TeamWriteCoordinator;
 use crate::workspace::watch::{WatchHealth, WorkspaceChange, WorkspaceChangeKind};
 
+mod artifacts_origin;
 mod events;
 mod inbox;
 mod overview;
