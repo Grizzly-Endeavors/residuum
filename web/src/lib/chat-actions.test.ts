@@ -7,12 +7,10 @@ function context(overrides: Partial<ChatActionContext> = {}): ChatActionContext 
     agent: "atlas",
     state: "running",
     replying: false,
-    verbose: false,
     hubConnection: "connected",
     agentConnection: "connected",
     send: vi.fn(),
     stopReply: vi.fn(),
-    setVerbose: vi.fn(),
     surface: vi.fn(),
     showConversationSize: vi.fn(),
     askForInboxNote: vi.fn(),
@@ -34,7 +32,6 @@ describe("the former slash commands", () => {
     ["/reload", "Reload settings"],
     ["/stop", "Stop reply"],
     ["/inbox", "Add a note to atlas's inbox"],
-    ["/verbose", "Show tool calls"],
     ["/status", "Show connection status"],
   ])("are found by their old name: %s is %s", (command, label) => {
     expect(matchActions(chatActions(context()), command).map((a) => a.label)).toEqual([label]);
@@ -58,6 +55,10 @@ describe("the former slash commands", () => {
     expect(ctx.surface).toHaveBeenCalledWith("notice", "Added a note to atlas's inbox.");
   });
 
+  it("leave /verbose out: tool activity always shows", () => {
+    expect(matchActions(chatActions(context()), "/verbose")).toEqual([]);
+  });
+
   it("show the conversation size in the panel, even for an agent that isn't running", () => {
     const ctx = context({ state: "stopped" });
     const size = byId(chatActions(ctx), "chat:context");
@@ -72,15 +73,6 @@ describe("the former slash commands", () => {
     byId(chatActions(ctx), "chat:inbox").run("  ");
     expect(ctx.askForInboxNote).toHaveBeenCalledWith("atlas");
     expect(ctx.send).not.toHaveBeenCalled();
-  });
-
-  it("flip tool calls and say which way", () => {
-    const ctx = context({ verbose: true });
-    const verbose = byId(chatActions(ctx), "chat:verbose");
-    expect(verbose.label).toBe("Hide tool calls");
-    verbose.run();
-    expect(ctx.setVerbose).toHaveBeenCalledWith(false);
-    expect(ctx.surface).toHaveBeenCalledWith("system", "Tool calls are hidden.");
   });
 });
 
@@ -112,7 +104,6 @@ describe("disabled reasons", () => {
 
   it("never hold back the actions that don't need the agent", () => {
     const disabled = reasons(context({ state: "stopped" }));
-    expect(disabled["chat:verbose"]).toBeUndefined();
     expect(disabled["chat:status"]).toBeUndefined();
   });
 });

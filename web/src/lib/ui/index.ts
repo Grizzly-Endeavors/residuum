@@ -36,5 +36,6 @@ export { default as Toggle } from "./Toggle.svelte";
 export { default as TooltipHost, tooltip } from "./TooltipHost.svelte";
 export { default as VisuallyHidden } from "./VisuallyHidden.svelte";
 export { confirmations, confirmLeave, type ConfirmRequest } from "./confirm.svelte";
+export { overlayOpen } from "./overlay/stack";
 export { provideTooltips, tooltipProvider, type TooltipProvider } from "./tooltip";
 export type * from "./types";

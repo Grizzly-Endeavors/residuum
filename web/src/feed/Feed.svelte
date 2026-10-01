@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick, untrack, type Snippet } from "svelte";
   import { FeedScroller } from "../lib/feed-scroll.svelte";
+  import type { ObservedTurnLookup } from "../lib/observed-turns.svelte";
   import type { FeedItem } from "../lib/types";
   import { Spinner } from "../lib/ui";
   import type { FeedHistory } from "./feed-history";
@@ -18,8 +19,6 @@
     /** The agent the conversation belongs to. */
     agent: string;
     items: FeedItem[];
-    /** Tool calls show ("Show tool calls"). */
-    verbose: boolean;
     /** The region's accessible name, such as "Conversation with atlas". */
     label: string;
     history?: FeedHistory;
@@ -29,6 +28,10 @@
     live?: boolean;
     /** The correlation id of the turn in flight, whose block is live. */
     liveTurnId?: string | null;
+    /** What the page saw of each turn while it ran: timing, how it ended, missed steps. */
+    observed?: ObservedTurnLookup;
+    /** Stops the turn in flight, from its activity line. */
+    onStop?: () => void;
     /** What shows when there are no items. */
     empty?: Snippet;
     /** Live content after the items, such as the turn in progress. */
@@ -38,23 +41,19 @@
   let {
     agent,
     items,
-    verbose,
     label,
     history,
     loading = false,
     live = false,
     liveTurnId = null,
+    observed,
+    onStop,
     empty,
     tail,
   }: Props = $props();
 
-  // A turn that has only made tool calls shows nothing until they're asked for.
-  const shown = $derived(
-    groupTurns(items, liveTurnId).filter(
-      (entry) => entry.kind === "single" || verbose || entry.items.length > 0,
-    ),
-  );
-  const isEmpty = $derived(items.length === 0 && !loading);
+  const shown = $derived(groupTurns(items, liveTurnId));
+  const isEmpty = $derived(items.length === 0 && !loading && liveTurnId === null);
 
   let scrollEl = $state<HTMLDivElement>();
   let innerEl = $state<HTMLDivElement>();
@@ -313,7 +312,12 @@
       {/if}
       {#each shown as entry (entry.key)}
         {#if entry.kind === "turn"}
-          <FeedTurn turn={entry} {agent} {verbose} />
+          <FeedTurn
+            turn={entry}
+            {agent}
+            observed={entry.turnId === null ? undefined : observed?.(entry.turnId)}
+            onStop={entry.live ? onStop : undefined}
+          />
         {:else}
           <div class="feed-item" data-feed-item data-kind={entry.item.kind}>
             <FeedItemView item={entry.item} {agent} />

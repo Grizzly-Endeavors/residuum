@@ -42,7 +42,7 @@ class WsCoordinator {
     keepalive: true,
   });
   /** The main chat's feed for the bound agent. Replaced on an agent switch. */
-  store = $state<FeedStore>(new FeedStore());
+  store = $state<FeedStore>(this.createFeed(null));
   /** The bound agent's sessions. Replaced on an agent switch. */
   sessions = $state<SessionsStore>(this.createSessions(null, this.store));
   private msgCounter = 0;
@@ -67,8 +67,6 @@ class WsCoordinator {
   /** Whether this connection already told the user live updates are off. */
   private liveUpdatesOffShown = false;
 
-  verbose = $state(false);
-
   constructor() {
     onViewedAgentChange((name) => {
       this.useAgent(name);
@@ -78,11 +76,6 @@ class WsCoordinator {
     this.frameListeners.add((msg) => {
       this.watches.handleFrame(msg);
     });
-    try {
-      this.verbose = localStorage.getItem("residuum-verbose") === "true";
-    } catch {
-      // localStorage unavailable
-    }
 
     // Wire transport events: route system events to the notification
     // surface, then hand the message to the feed store for any chat-state
@@ -127,9 +120,11 @@ class WsCoordinator {
     };
 
     this.transport.onConnected = () => {
-      if (this.verbose) {
-        this.transport.send({ type: "set_verbose", enabled: true });
-      }
+      // First on every connection: the activity line is built from the tool
+      // frames, which the agent sends only to a connection that asks.
+      this.transport.send({ type: "set_verbose", enabled: true });
+      // A turn still in flight carried on while the page was away.
+      if (this.hasConnected) this.store.markReconnectGap();
       // Load the sessions listing, or catch up on frames missed while
       // disconnected.
       this.sessions.resync();
@@ -200,6 +195,19 @@ class WsCoordinator {
   // ── Agent binding ─────────────────────────────────────────────────
 
   /**
+   * The main chat's feed for one agent. A turn the page joins already
+   * running is timed from when the hub says the agent became busy.
+   */
+  private createFeed(agent: string | null): FeedStore {
+    return new FeedStore(() => {
+      if (agent === null) return null;
+      const since = hub.activityOf(agent).busy_since;
+      const at = since === null ? Number.NaN : Date.parse(since);
+      return Number.isNaN(at) ? null : at;
+    });
+  }
+
+  /**
    * Build the sessions store for one agent's feed. A store never outlives its
    * agent: anything still in flight for the old one (a fetch, a stop) lands
    * on a store nobody reads.
@@ -221,7 +229,7 @@ class WsCoordinator {
   useAgent(name: string | null): void {
     if (name === this.agent) return;
     this.transport.reset();
-    const store = new FeedStore();
+    const store = this.createFeed(name);
     this.store = store;
     this.sessions = this.createSessions(name, store);
     this.hasConnected = false;
@@ -385,17 +393,8 @@ class WsCoordinator {
   stop(): void {
     const replyTo = this.store.activeTurnId;
     if (!replyTo) return;
+    this.store.askStop();
     this.transport.send({ type: "cancel", reply_to: replyTo });
-  }
-
-  setVerbose(enabled: boolean): void {
-    this.verbose = enabled;
-    try {
-      localStorage.setItem("residuum-verbose", String(enabled));
-    } catch {
-      // localStorage unavailable
-    }
-    this.transport.send({ type: "set_verbose", enabled });
   }
 }
 

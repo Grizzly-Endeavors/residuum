@@ -240,6 +240,27 @@ export function appendToolCall(
   if (stored) pending.set(call.id, stored);
 }
 
+/**
+ * The turn ended with calls still waiting on results: `stopped` when it was
+ * stopped or cut off, `done` when it finished and the page missed the result.
+ */
+export function settlePendingCalls(
+  pending: Map<string, ToolCallState>,
+  status: "done" | "stopped",
+): void {
+  for (const call of pending.values()) call.status = status;
+  pending.clear();
+}
+
+/** How many tool calls `items` hold for the turn `turnId`. */
+export function countTurnCalls(items: readonly FeedItem[], turnId: string): number {
+  let count = 0;
+  for (const item of items) {
+    if (item.kind === "tool-group" && item.turnId === turnId) count += item.calls.length;
+  }
+  return count;
+}
+
 /** Apply a live tool result to the call `pending` remembers for it. */
 export function applyToolResult(
   pending: Map<string, ToolCallState>,

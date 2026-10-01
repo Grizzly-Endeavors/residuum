@@ -56,19 +56,26 @@ export function groupTurns(items: readonly FeedItem[], liveTurnId: string | null
   const entries: FeedEntry[] = [];
   /** The turn the walk is in, and its output block once it has one. */
   let turn: { id: string | undefined; block: FeedTurn | null } | null = null;
+  /** Turns that have a block, so a turn's first block keeps one key from start to end. */
+  const keyed = new Set<string>();
+  let liveBlock: FeedTurn | null = null;
 
   for (const item of items) {
     if (isOutput(item)) {
       if (turn === null || turn.id !== item.turnId) turn = { id: item.turnId, block: null };
       if (turn.block === null) {
+        const id = item.turnId;
+        const first = id !== undefined && !keyed.has(id);
+        if (first) keyed.add(id);
         turn.block = {
           kind: "turn",
-          key: `turn-${String(item.id)}`,
-          turnId: item.turnId ?? null,
+          key: first ? `turn:${id}` : `turn-${String(item.id)}`,
+          turnId: id ?? null,
           calls: [],
           items: [],
-          live: item.turnId !== undefined && item.turnId === liveTurnId,
+          live: false,
         };
+        if (id !== undefined && id === liveTurnId) liveBlock = turn.block;
         entries.push(turn.block);
       }
       if (item.kind === "tool-group") turn.block.calls.push(...item.calls);
@@ -85,5 +92,19 @@ export function groupTurns(items: readonly FeedItem[], liveTurnId: string | null
       if (turn !== null) turn = { id: turn.id, block: null };
     }
   }
+  // The turn in flight shows from its start, before it has any output, and
+  // only its latest block is live.
+  if (liveTurnId !== null && liveBlock === null) {
+    liveBlock = {
+      kind: "turn",
+      key: `turn:${liveTurnId}`,
+      turnId: liveTurnId,
+      calls: [],
+      items: [],
+      live: false,
+    };
+    entries.push(liveBlock);
+  }
+  if (liveBlock !== null) liveBlock.live = true;
   return entries;
 }
