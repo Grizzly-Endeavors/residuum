@@ -28,7 +28,7 @@ fn minute(hour: u32, minute: u32) -> NaiveDateTime {
 }
 
 /// `GET /api/hub/overview`, and the entry of `agent`.
-async fn overview_of(h: &Harness, agent: &str) -> Value {
+pub(super) async fn overview_of(h: &Harness, agent: &str) -> Value {
     let body = h.get_expect("/api/hub/overview", StatusCode::OK).await;
     body["agents"]
         .as_array()
@@ -123,7 +123,7 @@ fn session_info(label: &str, state: SessionState) -> SessionInfo {
 }
 
 /// Say that `agent` changed, as its watcher would.
-fn changed(h: &Harness, agent: &str, kind: AgentChangeKind) {
+pub(super) fn changed(h: &Harness, agent: &str, kind: AgentChangeKind) {
     h.changes.publish(&AgentChange {
         agent: agent.to_string(),
         kind,
@@ -154,7 +154,7 @@ fn turn_ended(
 }
 
 /// Move `agent` to `state`, and say so as the host does.
-fn move_to(h: &Harness, agent: &str, state: AgentState) {
+pub(super) fn move_to(h: &Harness, agent: &str, state: AgentState) {
     let moved = h.directory.set_state(agent, state).unwrap();
     h.directory
         .events
@@ -163,7 +163,7 @@ fn move_to(h: &Harness, agent: &str, state: AgentState) {
 }
 
 /// The next overview frame, within `within`.
-async fn frame_within(
+pub(super) async fn frame_within(
     frames: &mut broadcast::Receiver<AgentOverview>,
     within: Duration,
 ) -> Option<AgentOverview> {
@@ -174,14 +174,16 @@ async fn frame_within(
 }
 
 /// The next overview frame, which must come.
-async fn next_overview(frames: &mut broadcast::Receiver<AgentOverview>) -> AgentOverview {
+pub(super) async fn next_overview(
+    frames: &mut broadcast::Receiver<AgentOverview>,
+) -> AgentOverview {
     frame_within(frames, Duration::from_secs(5))
         .await
         .expect("an overview frame arrives")
 }
 
 /// Check that no frame comes for several windows.
-async fn expect_no_frame(frames: &mut broadcast::Receiver<AgentOverview>) {
+pub(super) async fn expect_no_frame(frames: &mut broadcast::Receiver<AgentOverview>) {
     let got = frame_within(frames, OVERVIEW_WINDOW * 3).await;
     assert!(got.is_none(), "no frame was due, but one came: {got:?}");
 }

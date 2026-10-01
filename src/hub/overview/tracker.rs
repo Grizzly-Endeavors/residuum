@@ -112,15 +112,21 @@ fn parts_changed_by(kind: &AgentChangeKind) -> &'static [Part] {
         // enough to count the inbox again.
         AgentChangeKind::UserInboxAdded { .. }
         | AgentChangeKind::WatchedPathChanged(WatchedPath::UserInbox) => &[Part::Inbox],
-        // A turn changes the last message, which `turn_ended` records. No
-        // other part of the overview reads the rest.
-        AgentChangeKind::TurnEnded(_)
-        | AgentChangeKind::OutboundTaskChanged(_)
-        | AgentChangeKind::WatchedPathChanged(
+        // A pulse that ran moves its next run, and an edit to the pulses, the
+        // actions or the settings adds, removes or moves runs. A pulse system
+        // that is switched off in the settings has none.
+        AgentChangeKind::WatchedPathChanged(
             WatchedPath::ScheduledActions
             | WatchedPath::Heartbeat
             | WatchedPath::PulseState
             | WatchedPath::Config,
-        ) => &[],
+        ) => &[Part::Upcoming],
+        // A task's unreachable streak starting, passing the notice threshold
+        // and ending all arrive this way. The service also waits for the
+        // threshold itself, for the moment before the tracker announces it.
+        AgentChangeKind::OutboundTaskChanged(_) => &[Part::OutboundProblems],
+        // A turn changes the last message, which `turn_ended` records. No
+        // other part of the overview reads the rest.
+        AgentChangeKind::TurnEnded(_) => &[],
     }
 }

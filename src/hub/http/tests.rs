@@ -46,6 +46,7 @@ mod artifacts_origin;
 mod events;
 mod inbox;
 mod overview;
+mod overview_schedule;
 
 /// The boot id every harness hub reports.
 const TEST_BOOT_ID: &str = "boot-under-test";
