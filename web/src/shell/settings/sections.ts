@@ -14,6 +14,7 @@ import type { AgentSectionId, AllSectionId } from "../../lib/settings-sections";
 import CloudSection from "./CloudSection.svelte";
 import DiagnosticsSection from "./DiagnosticsSection.svelte";
 import GeneralSection from "./GeneralSection.svelte";
+import HistorySection from "./HistorySection.svelte";
 import LimitsSection from "./LimitsSection.svelte";
 import RawConfig from "./RawConfig.svelte";
 import UpdatesSection from "./UpdatesSection.svelte";
@@ -34,6 +35,7 @@ export interface AllSectionProps {
 
 export const AGENT_SECTION_VIEWS: Partial<Record<AgentSectionId, Component<AgentSectionProps>>> = {
   raw: RawConfig,
+  history: HistorySection,
 };
 
 export const ALL_SECTION_VIEWS: Partial<Record<AllSectionId, Component<AllSectionProps>>> = {

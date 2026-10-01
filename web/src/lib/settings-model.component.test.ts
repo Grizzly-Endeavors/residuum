@@ -1058,6 +1058,37 @@ describe("raw and form locking", () => {
     expect(scope.configFile.rawDraft).toBeNull();
     expect(scope.config.timeout_secs).toBe("1");
   });
+
+  it("keeps the text a draft started from while the file changes under it", async () => {
+    const f = fake();
+    const scope = await loadedScout(f);
+    scope.configFile.setRawDraft("timeout_secs = 1\n");
+    expect(scope.configFile.rawDraftBase).toBe(AGENT_CONFIG);
+
+    const changed = AGENT_CONFIG.replace("120", "150");
+    await f.outside(scoutConfig, changed);
+
+    expect(scope.configFile.raw).toBe(changed);
+    expect(scope.configFile.rawDraft).toBe("timeout_secs = 1\n");
+    expect(scope.configFile.rawDraftBase).toBe(AGENT_CONFIG);
+    scope.configFile.setRawDraft(null);
+    expect(scope.configFile.rawDraftBase).toBeNull();
+  });
+
+  it("counts a raw draft as unsaved work, which a reload drops", async () => {
+    const f = fake();
+    const model = f.model;
+    const scope = await loadedScout(f);
+    scope.mcpFile.setRawDraft("{}");
+
+    expect(scope.dirty).toBe(false);
+    expect(scope.unsaved).toBe(true);
+    expect(model.stagedScopes).toContain(scope);
+
+    await scope.reload();
+    expect(scope.mcpFile.rawDraft).toBeNull();
+    expect(scope.unsaved).toBe(false);
+  });
 });
 
 // ── Changes made elsewhere ────────────────────────────────────────────

@@ -64,7 +64,7 @@ The bundled `residuum-system` skill's [config reference](../../assets/bundled-sk
 
 ## Reload
 
-Three background pollers (`src/gateway/watcher.rs`) watch these files by mtime and signal a reload on change, regardless of what wrote the file — the web UI's Settings form, the Raw tab, a manual edit, or the agent's own file tools all take the same path.
+Three background pollers (`src/gateway/watcher.rs`) watch these files by mtime and signal a reload on change, regardless of what wrote the file — the web UI's Settings form, its Raw config section, a manual edit, or the agent's own file tools all take the same path.
 
 | Poller | Watches | Signal | Handler |
 |--------|---------|--------|---------|

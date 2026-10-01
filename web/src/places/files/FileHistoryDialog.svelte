@@ -8,6 +8,7 @@
   import { toast } from "../../lib/toast.svelte";
   import type { CheckpointSummary } from "../../lib/types";
   import { Banner, Button, Dialog, EmptyState, SegmentedControl, Skeleton } from "../../lib/ui";
+  import CheckpointText from "./CheckpointText.svelte";
   import { panelFile } from "./file-buffer.svelte";
   import { fileName, historyLocation, type FileSource } from "./file-source";
 
@@ -44,17 +45,6 @@
   let shown = $state<string | null | undefined>(undefined);
   let shownError = $state("");
   let restoring = $state(false);
-
-  /** A diff's lines, each marked as added, removed, a hunk heading or context. */
-  const diffLines = $derived(
-    (shown ?? "").split("\n").map((text) => {
-      let kind = "context";
-      if (text.startsWith("@@")) kind = "hunk";
-      else if (text.startsWith("+") && !text.startsWith("+++")) kind = "added";
-      else if (text.startsWith("-") && !text.startsWith("---")) kind = "removed";
-      return { text, kind };
-    }),
-  );
 
   async function load(): Promise<void> {
     checkpoints = null;
@@ -177,14 +167,12 @@
           <Skeleton lines={6} />
         {:else if shown === null}
           <EmptyState>{name} didn't change at this checkpoint.</EmptyState>
-        {:else if view === "diff"}
-          <div class="file-history-text">
-            {#each diffLines as line, index (index)}
-              <span class="file-history-line" data-kind={line.kind}>{line.text}</span>
-            {/each}
-          </div>
         {:else}
-          <pre class="file-history-text">{shown}</pre>
+          <CheckpointText
+            text={shown}
+            as={view}
+            label={view === "diff" ? `What changed in ${name}` : `${name} at this version`}
+          />
         {/if}
       </div>
     {/if}
@@ -267,38 +255,6 @@
     gap: var(--space-8);
   }
 
-  .file-history-text {
-    max-height: 40vh;
-    padding: var(--space-10) var(--space-12);
-    overflow: auto;
-    border-radius: var(--corner-md);
-    background: var(--color-stone-2);
-    color: var(--color-text-2);
-    font-family: var(--font-code);
-    font-size: var(--font-size-xs);
-    line-height: var(--line-height-ui);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
-
-  .file-history-line {
-    display: block;
-    min-height: calc(var(--line-height-ui) * 1em);
-    white-space: pre-wrap;
-
-    &[data-kind="added"] {
-      color: var(--color-moss-text);
-    }
-
-    &[data-kind="removed"] {
-      color: var(--color-err-text);
-    }
-
-    &[data-kind="hunk"] {
-      color: var(--color-text-3);
-    }
-  }
-
   @media (max-width: 760px) {
     .file-history-list {
       max-height: none;
@@ -311,10 +267,6 @@
       & .file-history-summary {
         grid-column: 1 / -1;
       }
-    }
-
-    .file-history-text {
-      max-height: none;
     }
   }
 </style>

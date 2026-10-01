@@ -371,11 +371,27 @@ describe("workspace routes", () => {
   });
 
   describe("validating", () => {
-    it("finds nothing to report, in either scope", async () => {
+    it("finds nothing to report in a file it has no parser for, in either scope", async () => {
       for (const url of [agent("/validate"), team("/validate")]) {
         const res = await send(url, "POST", { path: "HEARTBEAT.yml", content: "not: [valid" });
         expect(res).toEqual({ status: 200, body: { diagnostics: [] } });
       }
+    });
+
+    it("reports a JSON error in an agent's mcp.json at its line and column", async () => {
+      const res = await send(agent("/validate"), "POST", {
+        path: "config/mcp.json",
+        content: '{\n "a": 1\n "b": 2}',
+      });
+      expect(res.body).toEqual({
+        diagnostics: [
+          {
+            severity: "error",
+            message: expect.stringContaining("after property value") as unknown,
+            location: { kind: "line_column", line: 3, column: 2 },
+          },
+        ],
+      });
     });
 
     it("reports a TOML error in an agent's channels.toml, where it is, when checked or saved", async () => {
