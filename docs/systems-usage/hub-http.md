@@ -6,7 +6,7 @@ The hub serves everything the backend offers from one router over its `AgentDire
 
 | Prefix | Serves |
 |--------|--------|
-| `/api/hub/...` | Things that exist once per process: agent lifecycle and status, the hub WebSocket, every agent's user inbox in one list, hub config, secrets, agent keys, A2A caller keys, cloud, update, shutdown, tracing, timezone, the MCP catalog, onboarding, and the `hub` and `team` checkpoint repositories. |
+| `/api/hub/...` | Things that exist once per process: agent lifecycle and status, the hub WebSocket, every agent's user inbox in one list, Web Push, hub config, secrets, agent keys, A2A caller keys, cloud, update, shutdown, tracing, timezone, the MCP catalog, onboarding, and the `hub` and `team` checkpoint repositories. |
 | `/api/team/...` | The team folder: its file API (`/api/team/workspace/...`) and the workbench (`/api/team/workbench/...`). |
 | `/api/agents/{name}/...` | Everything one agent owns, resolved on every request. |
 | `/webhook/{agent}/{name}` | The named webhook of one agent. |
@@ -26,6 +26,7 @@ The hub serves everything the backend offers from one router over its `AgentDire
 | `GET /api/hub/status` | `{ version, uptime_secs, tunnel, agents }`. `tunnel` has the shape of `GET /api/hub/cloud/status`; `agents` counts `starting`, `running`, `stopped`, and `failed` agents. |
 | `GET /api/hub/ws` | The hub WebSocket, below. |
 | `GET /api/hub/inbox`, `GET /api/hub/inbox/unread`, `PUT /api/hub/inbox/{agent}/{id}/read`, `POST /api/hub/inbox/{agent}/{id}/archive`, `POST /api/hub/inbox/{agent}/{id}/restore` | Every agent's user inbox, read from their files, below. |
+| `GET /api/hub/push/key`, `GET`/`PUT /api/hub/push/devices`, `PATCH`/`DELETE /api/hub/push/devices/{id}`, `POST /api/hub/push/devices/{id}/test` | Web Push: the signing key and the devices that receive notifications, below. |
 | `GET`/`PUT /api/hub/config/raw`, `PATCH /api/hub/config/patch`, `POST /api/hub/config/validate` | The hub's `config.toml`. |
 | `POST /api/hub/config/complete-setup` | Onboarding: writes the hub config, the team layer, and the first agent's directory, then the hub starts that agent (see [hub.md](hub.md#start-up-and-shutdown)). `409` when an agent already exists. |
 | `POST /api/hub/providers/models` | Lists the models a provider offers from the settings in the request, with no agent. `secret:` keys resolve against the hub's secret store. |
@@ -66,6 +67,23 @@ The hub's inbox routes read and change each agent's user inbox files directly (s
 A listing is newest first by `at`, then `id`, then agent. A page holds `limit` items, 50 when it isn't given, and a limit above 200 is treated as 200. `next_cursor` is `null` on the last page. Otherwise it is an opaque string to pass as `before` to get the page that follows, which starts after the item the cursor names even if that item has since been archived or removed. A listing fails as a whole when any listed agent's inbox can't be read, naming the agent, instead of answering with its items missing.
 
 Errors are `{ "error": message }`: `400` for a `status` other than `active` or `archived`, a `limit` that is not a whole number of at least 1, a `before` the hub didn't issue, or an `id` that isn't a bare item id (empty, `.` or `..`, or containing `/`, `\`, or a NUL); `404` for an unknown agent, or an item that isn't where the call looks for it (`archive` needs it active, `restore` needs it archived); `409` when the destination already holds a different item with the same `id`, in which case both items stay where they are; and `500` when the files can't be read or changed.
+
+### Web Push devices
+
+The push routes register browsers and installed apps for notifications and say how delivery to each is going (see [Notifications](notifications.md#web-push) for what is sent, the signing key, and how failures are handled). They are open over the relay tunnel, so a phone on Residuum Cloud manages its own notifications.
+
+| Route | Answers |
+|-------|---------|
+| `GET /api/hub/push/key` | `{ public_key }`: the hub's VAPID public key as base64url, which a browser subscribes with (`applicationServerKey`). The key is created the first time it is asked for. |
+| `GET /api/hub/push/devices` | `{ devices: [PushDevice] }`, oldest first. |
+| `PUT /api/hub/push/devices` | Registers a device from `{ subscription, label?, preferences? }` and answers `{ device }`. `subscription` is the browser's `PushSubscription` JSON (`endpoint` and `keys.p256dh`/`keys.auth`). A subscription with the same `endpoint` updates the existing device, keeping its `id` and delivery history, so the call can be repeated. A new device without a `label` is called "Unnamed device"; one without `preferences` gets the defaults; an existing device keeps what the request doesn't name. |
+| `PATCH /api/hub/push/devices/{id}` | Changes `{ label?, preferences? }` (at least one) and answers `{ device }`. |
+| `DELETE /api/hub/push/devices/{id}` | `204`. The device stops receiving notifications; the browser's own subscription is the browser's to cancel. |
+| `POST /api/hub/push/devices/{id}/test` | Sends the test notification and answers `{ delivered, error }` once the push service has accepted or refused it. A refusal is a `200` with `delivered: false` and the reason in `error`. |
+
+`PushDevice` is `{ id, label, created_at, last_success_at, last_failure, preferences }`. `created_at` and `last_success_at` are RFC 3339 times (`last_success_at` is `null` until a notification has reached the push service), and `last_failure` is `{ at, status, message }` or `null` (see [Notifications](notifications.md#delivery)). `preferences` is `{ inbox_item, agent_failed, outbound_unreachable, reply_while_away }`, all booleans. A request's `preferences` may name only some of them. The subscription's address and keys are never returned.
+
+Errors are `{ "error": message }`: `400` for a body that can't be read, a blank `label`, a `PATCH` that sets nothing, or a subscription whose `endpoint` isn't an `https:` address or whose `p256dh` (a 65-byte P-256 public key) or `auth` (16 bytes) key is malformed; `404` for an unknown device; and `500` when the key or devices file can't be read or written, with a message that names the file.
 
 ### Team routes
 

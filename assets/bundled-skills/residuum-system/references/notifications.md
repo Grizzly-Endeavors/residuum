@@ -77,6 +77,16 @@ Input-only. The agent cannot write to inbox. Items arrive from:
 - Webhook routing configured to `inbox`.
 - Notification router deliveries.
 
+## Web Push
+
+Web Push delivers notifications to the user's browsers and installed apps through their push services, whether or not a Residuum window is open. It belongs to the hub: one signing key and one list of devices serve every agent. The user manages devices in the web UI; agents have no tool for it and can't write its files.
+
+A **device** is one browser or installed app registered for notifications, with a label and four preferences, one per event: `inbox_item` and `agent_failed` (on for a new device), `outbound_unreachable` and `reply_while_away` (off). A message goes only to devices whose preference for its event is on; the test notification goes to the device that asked, whatever its preferences. The device list is `hub/push-devices.json` and the signing key is `hub/push-vapid.key`, both readable only by their owner, outside the hub checkpoint allowlist (a restore never rolls them back), and blocked from agent writes. The key is created on first use and never regenerated automatically, because each subscription is bound to it.
+
+Payloads are encrypted for the device (RFC 8291) and signed with the key as a VAPID token naming a contact: the hub config's `[push] contact` (a `mailto:` or `https:` URL), or the project's GitHub address when unset. The decrypted JSON is `{ v: 1, event, agent, title, body, target, tag, badge }`, with `body` at most 120 characters.
+
+What the push service answers decides what happens: any 2xx sets the device's `last_success_at`; 404 or 410 removes the device (the browser revoked the subscription); 429, 5xx, or no answer is retried once after 30 seconds and then recorded; anything else is recorded without a retry. Recording sets the device's `last_failure` (when, HTTP status or `null`, a plain-language message) and logs at warn level with the device's label. Delivery never blocks or fails what triggered it. `POST /api/hub/push/devices/{id}/test` sends a test notification, tries once, and answers `{ delivered, error }`.
+
 ## Tools
 
 | Tool | Purpose |
