@@ -5,10 +5,7 @@
   import HubGeneral from "../../components/settings/HubGeneral.svelte";
   import Integrations from "../../components/settings/Integrations.svelte";
   import MCP from "../../components/settings/MCP.svelte";
-  import Memory from "../../components/settings/Memory.svelte";
   import Providers from "../../components/settings/Providers.svelte";
-  import Pulses from "../../components/settings/Pulses.svelte";
-  import Runtime from "../../components/settings/Runtime.svelte";
   import Secrets from "../../components/settings/Secrets.svelte";
   import SessionBudget from "../../components/settings/SessionBudget.svelte";
   import Tracing from "../../components/settings/Tracing.svelte";
@@ -84,12 +81,6 @@
         <Integrations bind:fields={agentScope.configFile.form} part="webhooks" {agent} />
       {:else if section === "tools"}
         <Integrations bind:fields={agentScope.configFile.form} part="tools" {agent} />
-      {:else if section === "memory"}
-        <Memory bind:fields={agentScope.configFile.form} />
-      {:else if section === "schedule"}
-        <Pulses bind:fields={agentScope.configFile.form} />
-      {:else if section === "runtime"}
-        <Runtime bind:fields={agentScope.configFile.form} />
       {:else if section === "servers"}
         <MCP bind:servers={agentScope.mcpFile.form} />
       {:else if section === "a2a"}

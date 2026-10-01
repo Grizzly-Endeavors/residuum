@@ -25,7 +25,7 @@ const writes = (): string[] =>
     .filter((request) => request.method === "PUT" || request.method === "PATCH")
     .map((request) => `${request.method} ${request.url}`);
 const toasts = (): string[] => [...toast.toasts.values()].map((shown) => shown.message);
-const timeout = (): HTMLInputElement => screen.getByLabelText("Timeout (seconds)");
+const timeout = (): HTMLInputElement => screen.getByLabelText("Reply time limit");
 const saveBar = (): HTMLElement | null => screen.queryByRole("region", { name: "Unsaved changes" });
 
 async function open(scope: string, section: SectionId | null): Promise<void> {
