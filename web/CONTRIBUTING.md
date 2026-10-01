@@ -117,7 +117,7 @@ web/
 │   ├── App.svelte            # The root: the setup wizard, or the shell; draws toasts and tooltips in both
 │   ├── shell/                # The shell: the rail, the phone's bottom bar and drawer, the hub banner, place routing, the Settings modal, the command palette, the app's actions, the shortcuts, feedback and Create agent dialogs
 │   │   ├── panel/                # The context panel: its frame and header, its width, and what each kind shows
-│   │   └── settings/             # The Settings modal's parts: scope picker and section list, save bar, the section API, hosted legacy sections, Raw config
+│   │   └── settings/             # The Settings modal's parts: scope picker and section list, save bar, the section API, hosted legacy sections, Raw config, Connections and Tools & skills, and the group, secret, number and folder-list pieces they are built from
 │   ├── places/               # Rebuilt places, one folder each
 │   │   ├── home/             # Home: needs-you, the agents board and its row menus, Recently deleted, Across the team, Coming up, and the words and times they show
 │   │   ├── inbox/            # Inbox: the list, the filter and tabs, an item opened in place, and the words for sources and sizes
@@ -379,6 +379,10 @@ The save bar (`settings/SaveBar.svelte`) shows while the scope has staged change
 - Start with `SettingsSection` (title, a line on what it holds, and the save's problems no field shows), then the fields.
 - Bind fields to the scope's forms (`scope.config.timeout_secs`, `scope.providers`, …); the frame loads the scope before the section renders, and the save bar follows the staged changes by itself.
 - Give a field its problems with `error={fieldError(scope, { kind: "config", field: "timeout_secs" })}`.
+- Group related fields in `SettingsGroup` (a title, a line on what it does, an optional state mark beside the title and actions at the end of that row). The pieces the Connections and Tools & skills sections use are in `settings/` for other sections to reuse:
+  - `SecretConfigField` for a credential. It takes the form's value and the value on disk (`scope.configFile.baseline`), shows where a saved reference lives with Change or Replace, and leaves a typed value for the save to store as a secret.
+  - `ConfigNumberField` for a number the form holds as text, where an empty box means the default.
+  - `PathList` for a list of folders, with a box to add one and staged removal.
 - A part that needs the agent running goes inside `RunningOnly` (`<RunningOnly agent={scope.agent} subject="its status">…</RunningOnly>`), which says "Start atlas to see its status." with Start until it runs.
 - Actions of the section's own register with `actionRegistry.register(key, source)` inside `untrack` in an `$effect` that returns the remover.
 - Immediate actions (secrets, keys, Cloud, updates) call their endpoints and report their own result; they have no part in the save bar.

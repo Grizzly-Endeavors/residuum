@@ -171,13 +171,13 @@ Agent scope:
 - [ ] Runtime: timeout, max tokens, default temperature, default thinking; subconscious (enabled, watch mid-turn, cadence, max transcript tokens, learn, cooldown); learning fallback; retry (max, initial delay, max delay, backoff); abilities (allow MCP changes, allow channel changes, max tool calls, repeat-call guard, steer after, stop after); idle (timeout, channel) — **Changed:** split across Model, Memory and Advanced → Runtime per design §8
 - [ ] Providers: name, type, API key, base URL, keep-alive; remove with Undo; add
 - [ ] Model roles: main, observer, reflector, pulse, subconscious, embedding, background small/medium/large; provider, model (live list or custom id), fallback warning, temperature, thinking — **Fix:** subconscious role's model list loads on open; failover lists are preserved; `models.default` gets a control or is shown read-only
-- [ ] Discord, Telegram, Teams fields and warnings
+- [x] Discord, Telegram, Teams fields and warnings — **Changed:** each channel is a group with its state (connected while the agent runs, which stays unknown for a stopped one), Disconnect clears its credentials as a staged change, and the half-filled Teams warning stays
 - [ ] Pulses & sessions: pulse enabled, idle timeouts per kind, episode floor, depth cap
 - [ ] Memory thresholds and search tuning
-- [ ] Skills folders, tools PATH folders, web search backend and keys, native search overrides
+- [x] Skills folders, tools PATH folders, web search backend and keys, native search overrides — **Changed:** a duplicate folder is named instead of ignored, and the provider options sit under a disclosure
 - [ ] MCP: list, remove with Undo, add stdio/http, catalog with inputs — **Fix:** a failed catalog fetch shows an error, not "Reading catalog." forever
 - [ ] A2A visibility and client: status, URL with Copy, relay note, listener warning, card error, visibility, remote agents with raw editor, card preview, open workspace
-- [ ] Webhooks: route preview, name, secret, routing, format, content fields, remove with Undo, add
+- [x] Webhooks: route preview, name, secret, routing, format, content fields, remove with Undo, add — **Changed:** removal is staged, and a toast with Undo follows it as well as Discard
 - [ ] History: workspace and agent-config repos
 - [ ] History browser (both scopes): repo toggle, path filter, stats, paged list, detail, undo checkpoint with reverted/skipped report, changed paths with diff, view file, restore, encrypted-store hint
 
