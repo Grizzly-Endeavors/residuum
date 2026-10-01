@@ -6,7 +6,7 @@
 //! Declared as `#[cfg(test)] mod server_e2e_tests;` from `mod.rs`, so this
 //! whole file (harness and tests alike) only exists in test builds.
 
-use crate::util::test_ports::free_port;
+use crate::util::test_ports::{ReservedPort, reserve_port};
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -374,8 +374,9 @@ async fn start_a2a_listener(
     card_state: &SharedCardState,
     task_store: &SharedTaskStore,
     executor: SessionExecutor,
-    port: u16,
-) -> (SharedA2aKeys, tokio::sync::watch::Sender<bool>) {
+    held: ReservedPort,
+) -> (SharedA2aKeys, tokio::sync::watch::Sender<bool>, u16) {
+    let port = held.port();
     let inner = DefaultRequestHandler::new(
         executor,
         crate::a2a::task_store::DelegatingTaskStore(Arc::clone(task_store)),
@@ -404,9 +405,12 @@ async fn start_a2a_listener(
         Arc::new(NoTunnel),
         shutdown_rx,
     );
+    // The listener below binds `port` for real; drop the reservation right
+    // before so no other test process can take it first.
+    drop(held);
     crate::util::spawn_in_span(listener.start());
     wait_until_listening(port).await;
-    (keys, shutdown_tx)
+    (keys, shutdown_tx, port)
 }
 
 /// Build the `SessionRuntime` a harness drives its scripted sessions
@@ -441,11 +445,11 @@ fn build_harness_runtime(
 async fn spawn_harness(opts: HarnessOptions) -> Harness {
     let (tempdir, workspace_dir, layout, skill_state) = setup_workspace(&opts).await;
 
-    let port = free_port();
+    let held = reserve_port();
     let card_runtime = CardRuntime::from_config(
         &A2aConfig {
             enabled: true,
-            port,
+            port: held.port(),
             public_url: None,
             visibility: A2aVisibility::Public,
         },
@@ -525,8 +529,8 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
         layout.agent_inbox_dir(),
         chrono_tz::UTC,
     );
-    let (keys, shutdown_tx) =
-        start_a2a_listener(&workspace_dir, &card_state, &task_store, executor, port).await;
+    let (keys, shutdown_tx, port) =
+        start_a2a_listener(&workspace_dir, &card_state, &task_store, executor, held).await;
 
     Harness {
         base_url: format!("http://127.0.0.1:{port}/agents/{AGENT_NAME}"),

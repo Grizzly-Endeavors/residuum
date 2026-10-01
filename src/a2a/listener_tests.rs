@@ -3,7 +3,7 @@
 //! visibility, over real HTTP with the official client. See
 //! `docs/systems-usage/a2a.md`.
 
-use crate::util::test_ports::free_port;
+use crate::util::test_ports::reserve_port;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -213,7 +213,8 @@ fn agent_router(
 /// Two agents behind one listener: `scout` (public) and `vault` (private).
 async fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
-    let port = free_port();
+    let reservation = reserve_port();
+    let port = reservation.port();
     let gate = Arc::new(Notify::new());
     let directory = Arc::new(
         StaticAgentDirectory::new()
@@ -238,6 +239,9 @@ async fn fixture() -> Fixture {
         Arc::new(NoTunnel),
         shutdown_rx,
     );
+    // `listener.start()` binds `port` for real; drop the reservation right
+    // before spawning it so no other test process can take it first.
+    drop(reservation);
     crate::util::spawn_in_span(listener.start());
     tokio::time::timeout(Duration::from_secs(20), async {
         while tokio::net::TcpStream::connect(("127.0.0.1", port))
