@@ -3,11 +3,13 @@
 //! Server to client: `hub_boot` and then an `agents_snapshot` on connect, then
 //! every hub event (`agent_state`, `agent_stopping`, `agent_created`,
 //! `agent_restored`, `agent_deleted`, `agent_activity`, `notice`,
-//! `hub_config_reloaded`), then `workspace_changed` frames for the team paths
-//! the client watches. Client to server: `watch_team`, the only message.
+//! `hub_config_reloaded`), a `team_event` for every entry the team event log
+//! records, and `workspace_changed` frames for the team paths the client
+//! watches. Client to server: `watch_team`, the only message.
 //!
-//! A connection that falls behind the hub's event stream can't know what it
-//! missed, so it gets a fresh `agents_snapshot` in place of the lost events.
+//! A connection that falls behind the hub's event stream or the team event
+//! log can't know what it missed, so it gets a fresh `agents_snapshot` in
+//! place of the lost events, and the client reads the log again.
 
 use std::sync::Arc;
 
@@ -24,6 +26,7 @@ use tokio::sync::{broadcast, watch};
 
 use crate::bus::{BusHandle, Subscriber, WorkspaceEvent, topics};
 use crate::gateway::protocol::ServerMessage;
+use crate::hub::team_events::{TeamEvent, TeamEventLog};
 use crate::hub::types::{AgentListResponse, HubClientMessage, HubSocketFrame};
 use crate::hub::{AgentDirectory, HubEvent};
 use crate::interfaces::websocket::subscriber::workspace_frame;
@@ -38,7 +41,7 @@ pub(super) struct HubWsState {
     pub directory: Arc<dyn AgentDirectory>,
     pub team_bus: BusHandle,
     pub team_watch_health: watch::Receiver<WatchHealth>,
-    pub boot_id: String,
+    pub team_events: Arc<TeamEventLog>,
 }
 
 /// The route that upgrades to the hub WebSocket.
@@ -62,11 +65,12 @@ async fn serve(socket: WebSocket, state: HubWsState) {
     // Subscribe before reading the list, so a change between the two reaches
     // the client as an event instead of falling in the gap.
     let mut events = state.directory.subscribe();
+    let mut log_entries = state.team_events.subscribe();
     let mut team_feed = subscribe_team_feed(&state.team_bus).await;
     let mut watch_set = WatchSet::default();
 
     let boot = HubSocketFrame::HubBoot {
-        boot_id: state.boot_id.clone(),
+        boot_id: state.team_events.boot_id().to_string(),
     };
     if !send_frame(&mut outbound, &boot).await {
         return;
@@ -82,6 +86,9 @@ async fn serve(socket: WebSocket, state: HubWsState) {
         let alive = tokio::select! {
             event = events.recv() => {
                 forward_hub_event(&mut outbound, state.directory.as_ref(), event).await
+            }
+            entry = log_entries.recv() => {
+                forward_log_entry(&mut outbound, &state, entry).await
             }
             event = next_team_event(&mut team_feed) => {
                 forward_team_event(&mut outbound, &watch_set, &mut team_feed, event).await
@@ -158,6 +165,32 @@ async fn forward_hub_event(
                 "hub websocket fell behind; resending the agent snapshot"
             );
             send_snapshot(outbound, directory).await
+        }
+        Err(broadcast::error::RecvError::Closed) => false,
+    }
+}
+
+/// Forward one new team event log entry, or a fresh snapshot when entries
+/// were lost. `false` when the connection should end.
+async fn forward_log_entry(
+    outbound: &mut Outbound,
+    state: &HubWsState,
+    entry: Result<TeamEvent, broadcast::error::RecvError>,
+) -> bool {
+    match entry {
+        Ok(event) => {
+            let frame = HubSocketFrame::TeamEvent {
+                boot_id: state.team_events.boot_id().to_string(),
+                event,
+            };
+            send_frame(outbound, &frame).await
+        }
+        Err(broadcast::error::RecvError::Lagged(missed)) => {
+            tracing::warn!(
+                missed,
+                "hub websocket fell behind the team event log; resending the agent snapshot"
+            );
+            send_snapshot(outbound, state.directory.as_ref()).await
         }
         Err(broadcast::error::RecvError::Closed) => false,
     }
