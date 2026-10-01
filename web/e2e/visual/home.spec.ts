@@ -46,4 +46,39 @@ test.describe("home", { tag: "@visual" }, () => {
     await page.getByRole("table", { name: "Agents" }).scrollIntoViewIfNeeded();
     await expectScreenshot(page, "home-board-phone");
   });
+
+  test("the Create agent dialog, a sheet on the phone", async ({ page }) => {
+    await openHome(page);
+    await page.getByRole("button", { name: "New agent" }).click();
+    const dialog = page.getByRole("dialog", { name: "Create an agent" });
+    await dialog.getByRole("textbox", { name: "Name" }).fill("Research");
+    await dialog
+      .getByRole("textbox", { name: "What should it help with?" })
+      .fill("Keep my reading list and remind me what I haven't finished");
+    await dialog.getByRole("button", { name: "More options" }).click();
+    await expect(dialog.getByRole("combobox", { name: "Who can find it" })).toBeVisible();
+    await expectScreenshot(page, "home-create-agent");
+  });
+
+  test("an agent's menu, open on its row", async ({ page }) => {
+    await openHome(page);
+    await page.getByRole("button", { name: "Manage atlas" }).click();
+    await expect(page.getByRole("menu", { name: "Manage atlas" })).toBeVisible();
+    await expectScreenshot(page, "home-agent-menu");
+  });
+
+  test("Recently deleted, open under the board", async ({ page }) => {
+    await openHome(page);
+    const removed = await page.request.delete("/api/hub/agents/drifter");
+    expect(removed.ok()).toBe(true);
+    const deleted = page.getByRole("status").filter({ hasText: "You deleted drifter." });
+    await deleted.getByRole("button", { name: "Dismiss notification" }).click();
+    await expect(deleted).toBeHidden();
+
+    await page.getByRole("button", { name: "Recently deleted" }).click();
+    const restore = page.getByRole("button", { name: "Restore drifter" });
+    await restore.scrollIntoViewIfNeeded();
+    await expect(restore).toBeVisible();
+    await expectScreenshot(page, "home-recently-deleted");
+  });
 });

@@ -115,10 +115,10 @@ web/
 ├── src/
 │   ├── main.ts               # App entry point
 │   ├── App.svelte            # The root: the setup wizard, or the shell; draws toasts and tooltips in both
-│   ├── shell/                # The shell: the rail, the phone's bottom bar and drawer, the hub banner, place routing, the Settings modal
+│   ├── shell/                # The shell: the rail, the phone's bottom bar and drawer, the hub banner, place routing, the Settings modal, the Create agent dialog
 │   │   └── panel/                # The context panel: its frame and header, its width, and what each kind shows
 │   ├── places/               # Rebuilt places, one folder each
-│   │   └── home/             # Home: needs-you, the agents board, Across the team, Coming up, and the words and times they show
+│   │   └── home/             # Home: needs-you, the agents board and its row menus, Recently deleted, Across the team, Coming up, and the words and times they show
 │   ├── Chat.svelte           # Main chat view
 │   ├── Setup.svelte          # Setup wizard
 │   ├── Settings.svelte       # Settings panel
@@ -136,7 +136,6 @@ web/
 │   │   ├── SessionView.svelte      # One session's transcript, live activity, message box, stop
 │   │   ├── Workspace.svelte        # A workspace: the file tree beside the editor, rename, delete, history
 │   │   ├── WorkspaceEditor.svelte  # One workspace file's editor: validation, Save, Discard, the save conflict
-│   │   ├── TeamView.svelte         # Agent management under Home's board: lifecycle controls, autostart, delete, restore, create agent
 │   │   ├── UserInbox.svelte        # The bound agent's user inbox, hosted as the Inbox place
 │   │   ├── Workbench.svelte        # Workbench artifact list; hosts the open artifact
 │   │   ├── WorkbenchArtifact.svelte # One artifact in its sandboxed frame; full view
@@ -279,6 +278,8 @@ The context panel (`panel/PanelHost.svelte`) is open while the URL has a `panel`
 
 The rail's agents are an accordion (`accordion.svelte.ts`): one agent's places are open at a time, a press on the open agent closes it, a row press never navigates, and arriving on an agent opens it. `rail-model.ts` works out each agent row's mark, word and unread badge from the hub's snapshot. The Home count is the number of needs-you items, from the overview store, the Inbox count the bound agent's unread items, and an agent's Activity count the bound agent's running sessions. The rail's footer has a Help menu (keyboard shortcuts, Recent notifications, feedback, a bug report) and the Settings gear; both those and the rail's "+" go through `ShellActions`, which the shell answers.
 
+`ShellActions.createAgent` is the one way to create an agent: Home's New agent and the rail's "+" call it, and it opens the Create agent dialog (`CreateAgentDialog.svelte`, a sheet on phones) over the current place. The name is checked against the backend's rules and the agent list as it is typed (`newAgentNameProblem` in `lib/agent-name.ts`), and a name a deleted agent had points at Recently deleted. Under More options are the agent to copy model settings from (the first by name until another is chosen) and who can find it (private by default). What was typed stays when the dialog closes without creating. Once the agent exists the dialog closes, the hub's `agent_created` frame raises the "You created …" toast, and beside the main region the new agent's rail row takes focus.
+
 Home is rebuilt (see [Home and the overview](#home-and-the-overview)). Places not rebuilt yet host their legacy view inside a `data-legacy-view` element, so the legacy global styles apply there and the new base styles don't: Inbox the bound agent's inbox, Chat the current chat, Activity the sessions list, Schedule the Scheduled page, Files and Shared files the workspace, and the Workbench itself. The Settings modal (`SettingsModal.svelte`) hosts the current Settings page, which lists the registry's sections and shows each with the panels that hold its settings; the Raw config section is its raw editors. The workbench's full view is a mode of that page and isn't in the URL. The help and feedback overlays aren't in the URL either.
 
 ### Home and the overview
@@ -295,7 +296,9 @@ Home is rebuilt (see [Home and the overview](#home-and-the-overview)). Places no
 
 An overview answered by a different hub process than `hub_boot` announced is dropped. The inbox items are fetched again whenever an agent's unread count changes. A failed fetch lands in `loadError`, `eventsError` or `unreadItemsError` for the section that shows it, with Try again. `stopTask` and `stopWatching` act on a running agent's outbound task and drop its problem at once, ahead of the hub's frame; when the remote agent can't be reached, `taskNotes` says so on the item.
 
-Home's sections (`places/home/`) read the store and the hub store directly; `home-model.ts` holds their words and times. Restart and the kind-specific fixes on a failed agent go through the hub store and `lib/agent-failure.ts`, which finds the Settings section for Fix settings from the agent's validate endpoints, or Raw config. Agent management (start, stop, autostart, A2A card, delete, restore, create) is the legacy team page, hosted in a disclosure under the board; New agent and the rail's "+" open it on the name field (`agent-management.svelte.ts`).
+Home's sections (`places/home/`) read the store and the hub store directly; `home-model.ts` holds their words and times. Restart and the kind-specific fixes on a failed agent go through the hub store and `lib/agent-failure.ts`, which finds the Settings section for Fix settings from the agent's validate endpoints, or Raw config.
+
+Each board row ends in a "…" menu (`AgentMenu.svelte`), headed by the agent's state: Open chat; Start, Stop and Restart, each offered when `lifecycleCommands` says the row's state takes it; Start automatically; Settings; and Delete. `agent-lifecycle.svelte.ts` runs them through the hub store, which surfaces any failure, one action per agent at a time. Start automatically shows the value being saved until the hub answers, then the hub's. Delete asks first (`confirmations.ask`), then drops the agent's staged settings (`settingsModel.drop`, which `App.svelte` also does for a deletion made elsewhere), and the hub's `agent_deleted` frame raises the "You deleted …" toast with Undo; a deletion that took no checkpoint says so in an error. Recently deleted (`RecentlyDeleted.svelte`), collapsed under the board, lists `hub.deleted` with Restore once there is something to list, or a failed load with Try again; restoring uses the checkpoint the deletion took. An agent's A2A card visibility is set in its Settings.
 
 ### Agents in API calls
 
