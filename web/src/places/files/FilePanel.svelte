@@ -5,28 +5,33 @@
   import { Icon } from "../../lib/icons";
   import { router } from "../../lib/router.svelte";
   import type { DiagnosticLocation } from "../../lib/types";
-  import { Badge, Banner, Button, Dialog, EmptyState, IconButton, Skeleton } from "../../lib/ui";
+  import { Badge, Banner, Button, Dialog, EmptyState, Skeleton } from "../../lib/ui";
   import type { WatchHandler, WatchOwner } from "../../lib/watch-registry";
   import { normalizeWatchPrefix } from "../../lib/workspace-watch";
   import { ws } from "../../lib/ws.svelte";
   import PanelHeader from "../../shell/panel/PanelHeader.svelte";
-  import { FileBuffer, panelFile } from "./file-buffer.svelte";
+  import { panelFile, type FileBuffer } from "./file-buffer.svelte";
   import FileHistoryDialog from "./FileHistoryDialog.svelte";
-  import { fileSourceFor, sameSource, type FileSource } from "./file-source";
+  import { fileSourceFor, sameSource } from "./file-source";
 
   // A file in the context panel, from the Files places' trees and from
   // `panel=file:` links: the editor with live validation, Save and Discard,
   // the save conflict, and the file's history. Unsaved edits are asked about
   // before anything closes the panel or shows another file.
 
-  let { source, path }: { source: FileSource; path: string } = $props();
+  interface Props {
+    /** The open file, which outlives this view while the panel stays open. */
+    buffer: FileBuffer;
+    /** The path the URL names. */
+    path: string;
+  }
+
+  let { buffer, path }: Props = $props();
 
   /** How long after the last keystroke the text is checked: long enough not to fire on every character. */
   const VALIDATE_DEBOUNCE_MS = 500;
 
-  // The panel host keys this by its source, so the buffer is made for one.
-  // svelte-ignore state_referenced_locally
-  const buffer = new FileBuffer(source);
+  const source = $derived(buffer.source);
   let editor = $state<HTMLTextAreaElement>();
   let historyOpen = $state(false);
 
@@ -111,21 +116,18 @@
   kind="File"
   title={buffer.name}
   code
-  meta={inFolder || buffer.dirty ? details : undefined}
+  meta={inFolder ? folder : undefined}
   actions={buffer.status === "ready" ? history : undefined}
 />
 
-{#snippet details()}
-  {#if inFolder}<code class="file-panel-path">{buffer.path}</code>{/if}
-  {#if buffer.dirty}<Badge tone="accent" dot>Unsaved</Badge>{/if}
+{#snippet folder()}
+  <code class="file-panel-path">{buffer.path}</code>
 {/snippet}
 
 {#snippet history()}
-  <IconButton
-    icon="restore"
-    label="History of {buffer.name}"
-    onclick={() => (historyOpen = true)}
-  />
+  <Button variant="quiet" size="sm" icon="restore" onclick={() => (historyOpen = true)}
+    >History</Button
+  >
 {/snippet}
 
 <div class="file-panel">
@@ -154,7 +156,7 @@
           : `${buffer.name} changed on disk while you were editing. Saving asks which to keep.`}
         {#snippet actions()}
           <Button variant="quiet" size="sm" onclick={() => void buffer.open(buffer.path)}
-            >Discard my edits</Button
+            >Reload from disk</Button
           >
         {/snippet}
       </Banner>
@@ -192,7 +194,7 @@
     {/if}
     {#if buffer.dirty}
       <div class="file-panel-save">
-        <span class="file-panel-save-note">Unsaved changes</span>
+        <span class="file-panel-save-note"><Badge tone="accent" dot>Unsaved changes</Badge></span>
         <Button variant="quiet" size="sm" onclick={() => buffer.discard()}>Discard</Button>
         <Button
           variant="primary"
@@ -321,8 +323,6 @@
 
   .file-panel-save-note {
     flex: 1;
-    color: var(--color-text-2);
-    font-size: var(--font-size-sm);
   }
 
   @media (max-width: 760px) {
@@ -332,6 +332,7 @@
     }
 
     .file-panel-save {
+      padding-bottom: calc(var(--space-10) + env(safe-area-inset-bottom, 0px));
       padding-left: var(--space-16);
     }
   }

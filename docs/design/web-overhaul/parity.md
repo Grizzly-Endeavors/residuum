@@ -74,17 +74,17 @@ Every capability the current web UI offers, grouped by the surface that has it t
 
 ## Workspace → Files, Shared files, context panel (design §5; W31)
 
-- [ ] Agent workspace and team files
-- [ ] Lazy tree with expand/collapse and empty directories
-- [ ] Identity-file tint — **Fix:** also applies in the team tree
-- [ ] Per-file History, Rename (inline; `/` moves), Delete (immediate with Undo)
-- [ ] Editor: filename, path, modified badge, Save / Discard when dirty; save toast with problems note
-- [ ] Live validation and diagnostics
-- [ ] Unsaved-edit prompt when switching files — **Fix:** also when leaving the place, closing the panel, or reloading
-- [ ] Save-conflict dialog: reload and discard, or overwrite
-- [ ] Phone: full-screen editor with back
-- [ ] File history: checkpoints (≤ 100), relative time, trigger, summary, auto-select newest, diff, view full content, restore
-- [ ] Team files have live updates — **Fix:** today the team view never subscribes to team change frames
+- [x] Agent workspace and team files
+- [x] Lazy tree with expand/collapse and empty directories
+- [x] Identity-file tint — **Fix:** also applies in the team tree
+- [x] Per-file History, Rename (inline; `/` moves), Delete (immediate with Undo) — **Changed:** an agent's `config.toml`, `providers.toml` and `mcp.json` offer History only, and save and restore through the config write coordinator
+- [x] Editor: filename, path, modified badge, Save / Discard when dirty; save toast with problems note
+- [x] Live validation and diagnostics
+- [x] Unsaved-edit prompt when switching files — **Fix:** also when leaving the place, closing the panel, or reloading
+- [x] Save-conflict dialog: reload and discard, or overwrite
+- [x] Phone: full-screen editor with back
+- [x] File history: checkpoints (≤ 100), relative time, trigger, summary, auto-select newest, diff, view full content, restore
+- [x] Team files have live updates — **Fix:** today the team view never subscribes to team change frames
 
 ## Workbench → Workbench launcher and standalone artifacts (design §5, §9.8–§9.10; W12b–W12d, W32a, W32b)
 

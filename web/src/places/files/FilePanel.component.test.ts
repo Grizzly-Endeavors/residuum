@@ -58,10 +58,10 @@ describe("the file panel", () => {
     const editor = await screen.findByRole("textbox", { name: "Contents of plan.md" });
     expect(screen.getByRole("heading", { name: "plan.md" })).toBeTruthy();
     expect(screen.getByText("notes/plan.md")).toBeTruthy();
-    expect(screen.queryByText("Unsaved")).toBeNull();
+    expect(screen.queryByText("Unsaved changes")).toBeNull();
 
     await userEvent.type(editor, "more");
-    expect(screen.getByText("Unsaved")).toBeTruthy();
+    expect(screen.getByText("Unsaved changes")).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     await settle();
     expect(files["notes/plan.md"]).toBe("line one\nline two\nline three\nmore");

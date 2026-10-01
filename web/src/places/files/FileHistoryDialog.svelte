@@ -115,7 +115,7 @@
 <Dialog
   bind:open
   title="History of {name}"
-  description={path}
+  description={path.includes("/") ? path : undefined}
   size="lg"
   fullscreenOnPhone
   {onclose}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { FileBuffer } from "../../places/files/file-buffer.svelte";
   import FilePanel from "../../places/files/FilePanel.svelte";
   import type { FileSource } from "../../places/files/file-source";
   import { providePanelFrame, type PanelLayout } from "../../shell/panel/panel-frame";
@@ -14,8 +15,10 @@
 
   // svelte-ignore state_referenced_locally
   providePanelFrame({ layout, titleId: "panel-title", close: onclose });
+  // svelte-ignore state_referenced_locally
+  const buffer = new FileBuffer(source);
 </script>
 
 <aside aria-labelledby="panel-title">
-  <FilePanel {source} {path} />
+  <FilePanel {buffer} {path} />
 </aside>

@@ -47,9 +47,9 @@ With [`just`](https://github.com/casey/just), `just web-mock` from the repo root
 - The team event log: `GET /api/hub/events` (with `before`, `after` and `limit`) and a `team_event` frame on the hub socket for each new entry. It records what the mock's own lifecycle, chat turns, sessions and notices do, worded as the backend words it, with ids counting from 1 and times from the mock's clock. It starts with `hub_started` and what starting the scenario's agents did, and starts over on reset. `POST /api/mock/user-inbox-add?agent=atlas` (`{ title?, body? }`) saves an item in an agent's user inbox the way its `user_inbox_add` tool does, which adds an `inbox_item_added` entry
 - The team overview: `GET /api/hub/overview` and an `agent_overview` frame on the hub socket whenever an agent's overview changes. Each agent's last message, live sessions and unread inbox count are read from the data the mock's other routes serve (its conversation, sessions and inbox), `upcoming` lists its three soonest runs (its pulses by their next fire time, and its pending scheduled actions) and `outbound_problems` its open tasks to other agents that have been unreachable for ten minutes, and changes are gathered so an agent gets at most one frame per simulated second (the next tick when delays are off). A created agent is sent at once. It starts over on reset
 - Push presence: the hub socket accepts `{ "type": "presence", "device_id", "active" }` and keeps what each connected page reported on the mock clock, as the hub does. A device is present for 60 seconds after an `active: true` report from a page that is still connected, and `active: false` or the page disconnecting ends it; a frame without a `device_id` string and an `active` boolean is refused with the warning `notice` any unreadable frame gets, and a valid one gets no answer. `GET /api/mock/push/presence` answers `{ "devices": [...] }`, the devices the real hub would send no push right now. The mock sends no pushes.
-- Workspace files, for an agent (`/api/agents/{name}/workspace/...`) and for the shared team tree (`/api/team/workspace/...`): directory listings with size, modification time and version, reads with the version as the `ETag`, writes that answer `412` when the client's `If-Match` no longer matches, and delete, move, validate, `dir`, `raw` reads and writes, the recursive `tree` (with `glob`, `depth` and `content`) and the batch `read` with the backend's size budgets. Edits change the listings, and the team tree is the same one under an agent's `team/`
+- Workspace files, for an agent (`/api/agents/{name}/workspace/...`) and for the shared team tree (`/api/team/workspace/...`): directory listings with size, modification time and version, reads with the version as the `ETag`, writes that answer `412` when the client's `If-Match` no longer matches, and delete (which checkpoints the workspace or team repository first and names it, so Undo restores it), move, validate (an agent's `config/channels.toml` is checked as TOML, with the line and column of a mistake; the backend's other checks aren't mocked), `dir`, `raw` reads and writes, the recursive `tree` (with `glob`, `depth` and `content`) and the batch `read` with the backend's size budgets. Edits change the listings, and the team tree is the same one under an agent's `team/`
 - The Scheduled view (`/api/agents/{name}/scheduled/...`): the pulses, with their next fire, last outcome and current run worked out from the agent's sessions the way the backend reads them, toggling a pulse, and the pending actions with cancel. One pulse is disabled and one failed to load
-- Checkpoints, for an agent (`workspace` and `agent_config` repositories) and for the hub (`hub` and `team`): list with `path`, `turn_id` and paging, stats, a checkpoint's detail, diff and file, restore and undo. Each repository keeps the whole tree of each checkpoint, so a restore writes the files back (Settings, the workspace and the team tree show it) and an undo skips a path that changed again since. A route answers `400` for a repository of the other scope, like the backend. The sample histories end at the live files, and `status` reports their stats
+- Checkpoints, for an agent (`workspace` and `agent_config` repositories) and for the hub (`hub` and `team`): list with `path`, `turn_id` and paging, stats, a checkpoint's detail, diff and file, restore and undo. Each repository keeps the whole tree of each checkpoint, so a restore writes the files back (Settings, Files and Shared files show it) and an undo skips a path that changed again since. A route answers `400` for a repository of the other scope, like the backend. The sample histories end at the live files, and `status` reports their stats
 - `POST /api/agents/{name}/agent-inbox` (what an artifact adds to the agent's own inbox, with the backend's ids, title default and `artifact:<name>` source), and the update routes (`/api/hub/update/status`, `check` and `apply`; the mock is always on the latest version) with `cloud/disconnect`
 - The user inbox: a listing, an archive, mark read, archive, restore and attachments (`/api/agents/{name}/inbox/...`), with the backend's response shapes, including its `500` for an item that isn't there. No sample item carries an attachment; an attachment serves a stand-in file of its type
 - The workbench (`/api/team/workbench/...`): the artifact list, where artifacts are served, and deleting an artifact along with its saved state. Artifacts are files in the team tree, `team/workbench/<name>.html` or a folder `team/workbench/<name>/index.html` with the files it loads, found the way the backend finds them (a folder wins over a page of the same name; `<name>.*` data files aren't part of an artifact). A delete checkpoints the team first and returns the checkpoint's id, so Undo (a restore of each removed path through the hub's checkpoint routes) brings back the page or folder and its data files. `POST /api/agents/{name}/model/complete` answers from a canned model, with parsed JSON when the call asks for a schema
@@ -67,7 +67,7 @@ With [`just`](https://github.com/casey/just), `just web-mock` from the repo root
 - No real LLM calls happen — responses are canned
 - Config saves don't persist across server restarts
 - Some edge cases (rate limits, network errors) aren't simulated
-- The workspace routes don't block paths the backend blocks, and a delete, move or raw write records no checkpoint (deleting a workbench artifact does). Only `POST /api/mock/team-file` and `POST /api/mock/agent-file` send `workspace_changed`, and only the first the artifact frames: a write through the workspace routes, or an Undo, changes the files without announcing it, and the mock has no batches, resyncs or lag. A raw write stores its body as text, so bytes that aren't valid UTF-8 don't round-trip
+- The workspace routes don't block paths the backend blocks, and a move or raw write records no checkpoint (a file delete and a workbench artifact delete do). An agent's `config/` folder in its workspace is separate from the config the config routes serve: `config.toml` and `providers.toml` aren't in it, and its `mcp.json` isn't the one Settings edits. Only `POST /api/mock/team-file` and `POST /api/mock/agent-file` send `workspace_changed`, and only the first the artifact frames: a write through the workspace routes, or an Undo, changes the files without announcing it, and the mock has no batches, resyncs or lag. A raw write stores its body as text, so bytes that aren't valid UTF-8 don't round-trip
 - The Scheduled view's pulses and actions are kept apart from `HEARTBEAT.yml` in the workspace: toggling a pulse doesn't edit that file
 - `POST /api/secrets` doesn't validate the value like the real server does — it accepts anything, including a `secret:` or `${ENV_VAR}` reference the real server would reject with a 400. The frontend already avoids sending those (see `lib/secrets.ts`), so this only matters if you're testing the rejection path itself
 
@@ -118,7 +118,8 @@ web/
 │   ├── shell/                # The shell: the rail, the phone's bottom bar and drawer, the hub banner, place routing, the Settings modal, the command palette, the app's actions, the shortcuts and feedback dialogs
 │   │   └── panel/                # The context panel: its frame and header, its width, and what each kind shows
 │   ├── places/               # Rebuilt places, one folder each
-│   │   └── home/             # Home: needs-you, the agents board, Across the team, Coming up, and the words and times they show
+│   │   ├── home/             # Home: needs-you, the agents board, Across the team, Coming up, and the words and times they show
+│   │   └── files/            # Files and Shared files: the tree, the file editor the context panel shows, a file's history
 │   ├── Chat.svelte           # Main chat view
 │   ├── Setup.svelte          # Setup wizard
 │   ├── Settings.svelte       # Settings panel
@@ -134,8 +135,6 @@ web/
 │   │   ├── ToolItem.svelte         # Individual tool call display
 │   │   ├── SessionsSidebar.svelte  # Live and finished agent sessions, hosted as the Activity place
 │   │   ├── SessionView.svelte      # One session's transcript, live activity, message box, stop
-│   │   ├── Workspace.svelte        # A workspace: the file tree beside the editor, rename, delete, history
-│   │   ├── WorkspaceEditor.svelte  # One workspace file's editor: validation, Save, Discard, the save conflict
 │   │   ├── TeamView.svelte         # Agent management under Home's board: lifecycle controls, autostart, delete, restore, create agent
 │   │   ├── UserInbox.svelte        # The bound agent's user inbox, hosted as the Inbox place
 │   │   ├── Workbench.svelte        # Workbench artifact list; hosts the open artifact
@@ -241,17 +240,17 @@ web/
 
 The URL is the source of truth for where the user is. A location is a place, an optional context panel, and an optional Settings modal:
 
-| URL | Place |
-|-----|-------|
-| `/` | Redirects to `/home` |
-| `/home` | Home |
-| `/inbox` | Inbox. `?agent=<name>` filters, `?tab=archived` shows the archive, `?item=<agent>:<id>` opens an item |
-| `/agent/:name` | That agent's Chat |
-| `/agent/:name/activity` | Its Activity |
-| `/agent/:name/schedule` | Its Schedule |
-| `/agent/:name/files` | Its Files |
-| `/team/workbench[/:artifact]` | The Workbench list, with an artifact's row selected |
-| `/team/files` | Shared files |
+| URL                           | Place                                                                                                 |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `/`                           | Redirects to `/home`                                                                                  |
+| `/home`                       | Home                                                                                                  |
+| `/inbox`                      | Inbox. `?agent=<name>` filters, `?tab=archived` shows the archive, `?item=<agent>:<id>` opens an item |
+| `/agent/:name`                | That agent's Chat                                                                                     |
+| `/agent/:name/activity`       | Its Activity                                                                                          |
+| `/agent/:name/schedule`       | Its Schedule                                                                                          |
+| `/agent/:name/files`          | Its Files                                                                                             |
+| `/team/workbench[/:artifact]` | The Workbench list, with an artifact's row selected                                                   |
+| `/team/files`                 | Shared files                                                                                          |
 
 Any place takes two more parameters:
 
@@ -276,11 +275,11 @@ Old URLs redirect by replace: `/team`, `/agent/:name/sessions/:runId`, `/agent/:
 
 `shell/Shell.svelte` is the frame around every place: the rail (`Rail.svelte`) beside the main region at medium and wide widths, and on phones the bottom bar (`BottomBar.svelte`) with the rail in a `Drawer`. The main region starts with the hub banner (`HubBanner.svelte`, shown while the hub socket is down) and then the place, which `PlaceHost.svelte` picks from the router's location. The shell root carries `data-ui`, and mounts `ConfirmHost` (and gives the router's guard `confirmLeave`), the Settings modal, the command palette, `RecentNotifications`, the Keyboard shortcuts dialog, the feedback dialog and the inbox-note prompt once each; `App.svelte` draws the toast region and tooltips, in setup too.
 
-The context panel (`panel/PanelHost.svelte`) is open while the URL has a `panel` its place can show. Its frame (`ContextPanel.svelte`) is a column beside the main region at wide widths, resized from its left edge by pointer or by the arrow keys, Home and End, between `--layout-panel-min-width` and half the viewport; the width the viewer chose is kept in local storage. At medium widths it floats over the main region's right edge at the default width, and on phones it is a full-screen sheet over the bottom bar, a `ModalLayer` whose history entry is the `panel` parameter. Beside or over the main region it takes focus when it opens, Esc inside it closes it, and focus goes back to where it was; on phones the sheet's layer does the same. Closing goes through `router.closePanel`, so Back closes it before it leaves the place. What the panel shows is chosen by kind in `PanelHost`, and each kind's content starts with `PanelHeader`, which names the panel and holds its actions and the way out (Close, or Back on a phone). Until their units rebuild them, a session shows the legacy session view, a file the workspace editor (from the agent's workspace on agent places, the team's folder on Shared files), and the conversation size the chat footer's figures, each inside a `data-legacy-view` element. The session view reads the bound agent's sessions, so on the Workbench a run on another agent offers to open it beside that agent's chat.
+The context panel (`panel/PanelHost.svelte`) is open while the URL has a `panel` its place can show. Its frame (`ContextPanel.svelte`) is a column beside the main region at wide widths, resized from its left edge by pointer or by the arrow keys, Home and End, between `--layout-panel-min-width` and half the viewport; the width the viewer chose is kept in local storage. At medium widths it floats over the main region's right edge at the default width, and on phones it is a full-screen sheet over the bottom bar, a `ModalLayer` whose history entry is the `panel` parameter. Beside or over the main region it takes focus when it opens, Esc inside it closes it, and focus goes back to where it was; on phones the sheet's layer does the same. Closing goes through `router.closePanel`, so Back closes it before it leaves the place. What the panel shows is chosen by kind in `PanelHost`, and each kind's content starts with `PanelHeader`, which names the panel and holds its actions and the way out (Close, or Back on a phone). A file shows the file editor (see [Files](#files)). Until their units rebuild them, a session shows the legacy session view and the conversation size the chat footer's figures, each inside a `data-legacy-view` element. The session view reads the bound agent's sessions, so on the Workbench a run on another agent offers to open it beside that agent's chat.
 
 The rail's agents are an accordion (`accordion.svelte.ts`): one agent's places are open at a time, a press on the open agent closes it, a row press never navigates, and arriving on an agent opens it. `rail-model.ts` works out each agent row's mark, word and unread badge from the hub's snapshot. The Home count is the number of needs-you items, from the overview store, the Inbox count the bound agent's unread items, and an agent's Activity count the bound agent's running sessions. The rail starts with a search row that opens the command palette, as the phone bar's Search tab and ⌘K or Ctrl+K do. Its footer has a Help menu, which lists the registry's help actions (Keyboard shortcuts, Recent notifications, Send feedback, Report a bug, and Install app while the browser offers it), and the Settings gear. The search row, the gear and the rail's "+" go through `ShellActions`, which the shell answers.
 
-Home is rebuilt (see [Home and the overview](#home-and-the-overview)). Places not rebuilt yet host their legacy view inside a `data-legacy-view` element, so the legacy global styles apply there and the new base styles don't: Inbox the bound agent's inbox, Chat the current chat, Activity the sessions list, Schedule the Scheduled page, Files and Shared files the workspace, and the Workbench itself. The Settings modal (`SettingsModal.svelte`) hosts the current Settings page, which lists the registry's sections and shows each with the panels that hold its settings; the Raw config section is its raw editors. The workbench's full view is a mode of that page and isn't in the URL. The palette and the help dialogs aren't in the URL either; each holds an overlay entry, so Back closes it.
+Home, Files and Shared files are rebuilt (see [Home and the overview](#home-and-the-overview) and [Files](#files)). Places not rebuilt yet host their legacy view inside a `data-legacy-view` element, so the legacy global styles apply there and the new base styles don't: Inbox the bound agent's inbox, Chat the current chat, Activity the sessions list, Schedule the Scheduled page, and the Workbench itself. The Settings modal (`SettingsModal.svelte`) hosts the current Settings page, which lists the registry's sections and shows each with the panels that hold its settings; the Raw config section is its raw editors. The workbench's full view is a mode of that page and isn't in the URL. The palette and the help dialogs aren't in the URL either; each holds an overlay entry, so Back closes it.
 
 ### Actions
 
@@ -294,21 +293,31 @@ Run actions with `actionRegistry.run(action, text?)`. It tells the registry's ru
 
 `lib/overview.svelte.ts` (`overview`) holds what Home and the rail's Home count show beyond the hub store's agent list, activity and stopping set, which it reads from there: each agent's overview (`overviews`, `overviewOf(name)`), the newest 50 team events (`events`), the newest five unread user-inbox items across agents (`unreadItems`), and `needsYou`, worked out by `lib/needs-you.ts`: its `items` worst first (an agent that couldn't start, a running agent's task to a remote agent it can't reach, an unread inbox item), `moreInInbox`, and `count`, the rail's number. `App.svelte` starts it before the hub socket connects, and it follows the socket through `hub.onFrame`:
 
-| Frame | The store |
-|---|---|
-| `hub_boot` | Fetches the overview and the team events. When the boot id differs from the last one, it first drops everything it holds, since that came from another hub process |
+| Frame             | The store                                                                                                                                                                    |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `hub_boot`        | Fetches the overview and the team events. When the boot id differs from the last one, it first drops everything it holds, since that came from another hub process           |
 | `agents_snapshot` | The first after `hub_boot` is the connection's own; any later one replaces frames the connection lost, so it fetches the overview and the events newer than its newest again |
-| `agent_overview` | Replaces that agent's overview. One that arrives while the overview request is out wins over the request's answer |
-| `agent_deleted` | Forgets that agent's overview |
-| `team_event` | Adds the event once; one from another boot id starts the events over |
+| `agent_overview`  | Replaces that agent's overview. One that arrives while the overview request is out wins over the request's answer                                                            |
+| `agent_deleted`   | Forgets that agent's overview                                                                                                                                                |
+| `team_event`      | Adds the event once; one from another boot id starts the events over                                                                                                         |
 
 An overview answered by a different hub process than `hub_boot` announced is dropped. The inbox items are fetched again whenever an agent's unread count changes. A failed fetch lands in `loadError`, `eventsError` or `unreadItemsError` for the section that shows it, with Try again. `stopTask` and `stopWatching` act on a running agent's outbound task and drop its problem at once, ahead of the hub's frame; when the remote agent can't be reached, `taskNotes` says so on the item.
 
 Home's sections (`places/home/`) read the store and the hub store directly; `home-model.ts` holds their words and times. Restart and the kind-specific fixes on a failed agent go through the hub store and `lib/agent-failure.ts`, which finds the Settings section for Fix settings from the agent's validate endpoints, or Raw config. Agent management (start, stop, autostart, A2A card, delete, restore, create) is the legacy team page, hosted in a disclosure under the board; New agent and the rail's "+" open it on the name field (`agent-management.svelte.ts`).
 
+### Files
+
+Files (an agent's workspace) and Shared files (the team's folder) are one place, `places/files/FilesPlace.svelte`, given a `FileSource` (`file-source.ts`): an agent and the `agent` scope, or no agent and the `team` scope. `fileSourceFor(place)` says which tree a `panel=file:<path>` names. The tree (`file-tree.svelte.ts`, drawn by `FileTreeView.svelte`) lists folders as they open, folders first, and follows the disk through the watch registry: the agent's socket (tied to that agent) or the hub's team watch. A change that adds or removes something lists that folder again; a resync, or the socket coming back after a drop (a watch owner's `reconnected`), lists every open folder again. Each file has History, Rename (inline; a `/` in the new name moves it into a folder below) and Delete, which acts at once and offers Undo from the checkpoint the delete returned.
+
+A file opens in the context panel. `FileBuffer` (`file-buffer.svelte.ts`) is the open file: its text on disk and in the editor, saving with `If-Match`, the save conflict (Reload, discard my edits; Overwrite with my edits; or put the question off), and `refresh`, which takes a change made elsewhere when there are no edits and otherwise keeps them and says the file changed on disk. `PanelHost` holds the buffer while the panel shows a file from one tree, so the edits survive the frame redrawing its content at another width. `FilePanel.svelte` is its view: the editor with live validation (diagnostics with a line jump to where they point), Save (also Ctrl or Cmd+S) and Discard, a missing-file state, a watch on the file, and the file's history (`FileHistoryDialog.svelte`, which restores through the config write coordinator). The tree tells the buffer the panel shows (`panelFile.shown`) when that file is renamed, deleted or restored.
+
+While the buffer has unsaved edits, `FilePanel` registers a check with `router.guard`: any navigation that doesn't show the same file from the same tree asks first. That covers changing place or agent, opening another file, closing the panel (Close, Esc, Back on a phone), Back and Forward, and reload or tab close.
+
+An agent's `config/config.toml`, `config/providers.toml` and `config/mcp.json` save through the config write coordinator as a whole-file write, so Settings hears about them, and the coordinator's re-read before a save asks the same question as the save conflict. Their history is in the agent-config repository (`config.toml`, `providers.toml`) or the workspace repository (`mcp.json`). The tree offers no Rename or Delete for them: the coordinator neither moves nor deletes, and a delete's checkpoint is the workspace's, which leaves `config.toml` and `providers.toml` out, so Undo couldn't bring them back.
+
 ### Agents in API calls
 
-No request reads the viewed agent. Every agent-scoped function in `lib/api.ts` takes the agent name as its first argument, and its cache key includes that agent. Components take the agent from their props (`Settings`, `Workspace`), stores hold the agent they were bound to (`ws.sessions`, `scheduled`, `userInbox`), and the chat's controls use `ws.agent`, the agent the WebSocket is bound to. The workbench bridge maps an artifact's unscoped paths onto `ws.agent` per request.
+No request reads the viewed agent. Every agent-scoped function in `lib/api.ts` takes the agent name as its first argument, and its cache key includes that agent. Components take the agent from their props (`Settings`, the Files places' `FileSource`), stores hold the agent they were bound to (`ws.sessions`, `scheduled`, `userInbox`), and the chat's controls use `ws.agent`, the agent the WebSocket is bound to. The workbench bridge maps an artifact's unscoped paths onto `ws.agent` per request.
 
 Calls that serve more than one scope take `agent: string | null`: the workspace and checkpoint functions accept `null` for the team's files and the hub and team repositories, and `fetchProviderModels(null, …)` asks the hub before any agent exists. Asking for an agent's own resource with `null` throws `NoAgentSelectedError` before any request is made.
 
@@ -316,13 +325,13 @@ Calls that serve more than one scope take `agent: string | null`: the workspace 
 
 Every write to a config file goes through `configCoordinator` in `lib/config-coordinator.ts`: an agent's `config.toml`, `providers.toml` and `mcp.json`, and the hub's `config.toml`. Name a file with `agentConfigFile(agent, "providers")` or `HUB_CONFIG_FILE`. Never call a `patch…`, `put…` or checkpoint restore function from `lib/api.ts` for one of these files directly.
 
-| Call | Does |
-|------|------|
-| `save(file, { baseline, edit, choose, source? })` | Writes `edit`, either `{ patch }` (merged into the file) or `{ text }` (the whole file). `baseline` is the file's text as the caller's view last loaded or saved it. Resolves to `{ kind: "saved", result, written, raw }`, where `raw` is the file's text now and becomes the caller's next baseline, or `{ kind: "used-disk", raw }`. |
-| `edit(file, build, source?)` | Reads the file, builds a patch from its text and writes it with no other write to that file in between. For a control that changes one key from the current text, like the composer's model and thinking controls. |
-| `reload(file, source?)` | Reads the file from disk and tells subscribers to do the same. |
-| `restore(agent, id, repo, path)` and `undo(agent, id, repo)` | Restore or undo a checkpoint and tell subscribers about any config file it wrote. Every caller that restores from a checkpoint uses these, whatever it restores. |
-| `subscribe(file, listener)` | Hears every change to `file`: `{ file, cause, source }`, with `cause` one of `write`, `reload`, `restore` or `external`. A view that shows a config value subscribes and reads the file again. Pass `source` to a write and skip notifications that carry it to ignore your own. |
+| Call                                                         | Does                                                                                                                                                                                                                                                                                                                                    |
+| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `save(file, { baseline, edit, choose, source? })`            | Writes `edit`, either `{ patch }` (merged into the file) or `{ text }` (the whole file). `baseline` is the file's text as the caller's view last loaded or saved it. Resolves to `{ kind: "saved", result, written, raw }`, where `raw` is the file's text now and becomes the caller's next baseline, or `{ kind: "used-disk", raw }`. |
+| `edit(file, build, source?)`                                 | Reads the file, builds a patch from its text and writes it with no other write to that file in between. For a control that changes one key from the current text, like the composer's model and thinking controls.                                                                                                                      |
+| `reload(file, source?)`                                      | Reads the file from disk and tells subscribers to do the same.                                                                                                                                                                                                                                                                          |
+| `restore(agent, id, repo, path)` and `undo(agent, id, repo)` | Restore or undo a checkpoint and tell subscribers about any config file it wrote. Every caller that restores from a checkpoint uses these, whatever it restores.                                                                                                                                                                        |
+| `subscribe(file, listener)`                                  | Hears every change to `file`: `{ file, cause, source }`, with `cause` one of `write`, `reload`, `restore` or `external`. A view that shows a config value subscribes and reads the file again. Pass `source` to a write and skip notifications that carry it to ignore your own.                                                        |
 
 Writes to one file are serialized. Before a save the coordinator reads the file again. When it differs from `baseline` and the keys that changed overlap the keys the edit sets (a raw `{ text }` save overlaps every change), it calls `choose` with `{ file, keys, disk }`. `choose` answers `"keep-mine"` ("Keep my changes"), which goes on with the write, or `"use-disk"` ("Use what's on disk"), which writes nothing and resolves `used-disk`. No lock is held while `choose` waits, so it can ask the user. When the changes don't overlap, a patch goes ahead and the other keys' changes survive.
 
@@ -334,14 +343,14 @@ Changes made outside the coordinator reach its subscribers through `lib/config-s
 
 Each file has a baseline (its text as the model last loaded or saved it) and a form (a copy parsed into the shapes the sections bind to). What the user changed is the difference between them, so every edit is staged, removals included, and the scope keeps it while the modal is closed or another scope is open. Read the form through the scope each time (`scope.config.timeout_secs`, `scope.providers`, `scope.models`, `scope.mcpServers`): a reload gives it new objects.
 
-| Call | Does |
-|------|------|
-| `load()` | Reads each file, keeping the staged changes of a file that has some, and follows changes made elsewhere. |
-| `reload()` | Discards the staged changes and reads every file again. |
-| `discard()` | Drops the staged changes. |
-| `save(choose)` | Stores typed secrets, then writes each changed file's diff through the coordinator, providers then config then MCP servers. A file that fails keeps its changes, and `config.toml` waits on `providers.toml`. Resolves to a `SaveResult`: what each file did, every checkpoint taken, and a plain-language message. |
-| `undo()` | Restores the last save's checkpoints in reverse order and reports each file's reverted and skipped paths, naming any file it couldn't restore. |
-| `fieldDiagnostics(ref)` and `sectionDiagnostics(section)` | The problems from a save. A diagnostic whose key path names a form field is on that field; the rest are for the top of a section. |
+| Call                                                      | Does                                                                                                                                                                                                                                                                                                                |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `load()`                                                  | Reads each file, keeping the staged changes of a file that has some, and follows changes made elsewhere.                                                                                                                                                                                                            |
+| `reload()`                                                | Discards the staged changes and reads every file again.                                                                                                                                                                                                                                                             |
+| `discard()`                                               | Drops the staged changes.                                                                                                                                                                                                                                                                                           |
+| `save(choose)`                                            | Stores typed secrets, then writes each changed file's diff through the coordinator, providers then config then MCP servers. A file that fails keeps its changes, and `config.toml` waits on `providers.toml`. Resolves to a `SaveResult`: what each file did, every checkpoint taken, and a plain-language message. |
+| `undo()`                                                  | Restores the last save's checkpoints in reverse order and reports each file's reverted and skipped paths, naming any file it couldn't restore.                                                                                                                                                                      |
+| `fieldDiagnostics(ref)` and `sectionDiagnostics(section)` | The problems from a save. A diagnostic whose key path names a form field is on that field; the rest are for the top of a section.                                                                                                                                                                                   |
 
 `dirty`, `saving`, `lastResult` and `undoable` drive the save bar. `file(name)` gives a file's `lockedBy` (`"form"` keeps its raw editor read-only, `"raw"` keeps its form read-only while the raw editor holds a draft set with `setRawDraft`), `changedOnDisk`, `unreadable` and `loadError`. A change to a file that has staged changes leaves them alone, so the coordinator's re-read before Save finds the clash. A typed credential is stored under its name (`discord`, `webhook_<name>`, a provider's name) and the reference goes in the file. Immediate actions have no state here.
 
@@ -378,36 +387,36 @@ Component tests live next to the component as `src/components/**/*.test.ts` (or 
 
 Tests sit in five layers. Use the lowest one that can show the behavior: a lower layer is faster and breaks for fewer unrelated reasons.
 
-| Layer | Runs in | Use it for | Lives in |
-|---|---|---|---|
-| Unit | Node, Vitest | Stores, routing, formatters, parsers, the mock's own logic | `src/**/*.test.ts`, `mock/**/*.test.ts` |
-| Component | jsdom and Testing Library, in Vitest | One component's empty, loading, error, populated and live states, with fixtures in place of a socket | `src/components/**/*.test.ts`, `src/**/*.component.test.ts` |
-| End-to-end | Playwright in real Chromium, against the mock | A user flow across components: navigation, sockets, focus, touch, anything that needs a real browser and real layout | `e2e/**/*.spec.ts` |
-| Accessibility | axe-core, inside an end-to-end spec | Every place and overlay a change touches | `expectNoAxeViolations` in `e2e/support/axe.ts` |
-| Visual | Playwright screenshots, in the Playwright container | How a surface looks: a few baselines per surface, at desktop and phone size | `e2e/visual/` |
+| Layer         | Runs in                                             | Use it for                                                                                                           | Lives in                                                    |
+| ------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Unit          | Node, Vitest                                        | Stores, routing, formatters, parsers, the mock's own logic                                                           | `src/**/*.test.ts`, `mock/**/*.test.ts`                     |
+| Component     | jsdom and Testing Library, in Vitest                | One component's empty, loading, error, populated and live states, with fixtures in place of a socket                 | `src/components/**/*.test.ts`, `src/**/*.component.test.ts` |
+| End-to-end    | Playwright in real Chromium, against the mock       | A user flow across components: navigation, sockets, focus, touch, anything that needs a real browser and real layout | `e2e/**/*.spec.ts`                                          |
+| Accessibility | axe-core, inside an end-to-end spec                 | Every place and overlay a change touches                                                                             | `expectNoAxeViolations` in `e2e/support/axe.ts`             |
+| Visual        | Playwright screenshots, in the Playwright container | How a surface looks: a few baselines per surface, at desktop and phone size                                          | `e2e/visual/`                                               |
 
 The unit and component layers run in `npm test`, and the pre-commit hook runs them. The other three run through Playwright and are not part of the hook. Pull requests don't run CI, so a frontend change runs `just web-e2e` before it is reported, and the release workflow runs the end-to-end suite too.
 
 ### Running the end-to-end suite
 
-| Recipe | Runs | Needs |
-|---|---|---|
-| `just web-e2e` | Everything: the specs on this machine, the visual comparisons in the Playwright container | Docker |
-| `just web-e2e-fast` | Everything but the visual comparisons | Chromium, installed on first use |
-| `just web-e2e-update` | Regenerates the visual baselines in the container | Docker |
-| `just web-e2e-webkit` | The same specs in a WebKit phone, in the container | Docker |
+| Recipe                | Runs                                                                                      | Needs                            |
+| --------------------- | ----------------------------------------------------------------------------------------- | -------------------------------- |
+| `just web-e2e`        | Everything: the specs on this machine, the visual comparisons in the Playwright container | Docker                           |
+| `just web-e2e-fast`   | Everything but the visual comparisons                                                     | Chromium, installed on first use |
+| `just web-e2e-update` | Regenerates the visual baselines in the container                                         | Docker                           |
+| `just web-e2e-webkit` | The same specs in a WebKit phone, in the container                                        | Docker                           |
 
 Extra arguments go to Playwright's test command, so `just web-e2e-fast e2e/smoke/chat.spec.ts` runs one file and `--grep`, `--headed` and `--debug` work. The recipes name their projects, so `--project` adds to them instead of narrowing; to run one project, call Playwright directly: `cd web && npx playwright test --project=phone e2e/smoke`. `npm run e2e:report` opens the last HTML report. The first Docker run pulls the Playwright image, about a gigabyte. A fresh Linux machine also needs Chromium's system libraries: `cd web && npx playwright install --with-deps chromium`.
 
 The projects:
 
-| Project | Browser and size | Runs specs |
-|---|---|---|
-| `desktop` | Chromium, 1440×900 | without a tag, against the Vite dev server |
-| `phone` | Chromium, 390×844, touch, mobile user agent | without a tag, against the Vite dev server |
-| `preview-desktop`, `preview-phone` | The same two | tagged `@preview`, against the production build |
-| `visual-desktop`, `visual-phone` | The same two, rendered in the Playwright container, with the page's clock frozen | tagged `@visual` |
-| `webkit-phone` | WebKit as an iPhone 13, 390×844 | without a tag, against the Vite dev server; local only, the release workflow leaves it out |
+| Project                            | Browser and size                                                                 | Runs specs                                                                                 |
+| ---------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `desktop`                          | Chromium, 1440×900                                                               | without a tag, against the Vite dev server                                                 |
+| `phone`                            | Chromium, 390×844, touch, mobile user agent                                      | without a tag, against the Vite dev server                                                 |
+| `preview-desktop`, `preview-phone` | The same two                                                                     | tagged `@preview`, against the production build                                            |
+| `visual-desktop`, `visual-phone`   | The same two, rendered in the Playwright container, with the page's clock frozen | tagged `@visual`                                                                           |
+| `webkit-phone`                     | WebKit as an iPhone 13, 390×844                                                  | without a tag, against the Vite dev server; local only, the release workflow leaves it out |
 
 A spec runs in every project that matches its tag, so one spec covers both sizes. Branch on the size only when behavior differs, with Playwright's `isMobile` fixture. Tags go on a test or a describe block: `test("installs", { tag: "@preview" }, async ({ page }) => { ... })`. Use `@preview` for what the dev server can't show (the service worker, installability, the bundle as shipped) and `@visual` for screenshot comparisons. Give a spec one of them: a spec tagged with both matches no project and never runs.
 
