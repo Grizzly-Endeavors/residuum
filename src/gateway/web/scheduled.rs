@@ -1,5 +1,5 @@
-//! Scheduled view HTTP API: pulses and one-off scheduled actions, backing
-//! the web UI's Scheduled sidebar view.
+//! Schedule place HTTP API: pulses and one-off scheduled actions, backing
+//! the web UI's Schedule place.
 //!
 //! - `GET /api/agents/{name}/scheduled/pulses` — every pulse in HEARTBEAT.yml, its next
 //!   fire time (the calculation the hub's team overview uses, see
@@ -39,7 +39,7 @@ use crate::pulse::next_run::{load_last_runs, next_run_at};
 use crate::pulse::types::{HeartbeatProblem, PulseDef, load_heartbeat};
 use crate::workspace::layout::WorkspaceLayout;
 
-/// Shared state for the Scheduled view API.
+/// Shared state for the Schedule place API.
 #[derive(Clone)]
 pub(crate) struct ScheduledApiState {
     pub registry: Arc<SessionRegistry>,
@@ -64,7 +64,7 @@ fn json_error(status: StatusCode, message: impl Into<String>) -> Response {
         .into_response()
 }
 
-/// Build the Scheduled view API router.
+/// Build the Schedule place API router.
 pub(crate) fn scheduled_api_router(state: ScheduledApiState) -> axum::Router {
     use axum::routing::{delete, get, put};
     axum::Router::new()
@@ -122,7 +122,7 @@ fn pulse_system_enabled(layout: &WorkspaceLayout) -> bool {
 /// every problem that names a pulse which didn't (a pulse rejected for
 /// using a removed option, a bad schedule, or a per-entry deserialize
 /// failure never makes it into `pulses` at all — the owner still needs to
-/// see it in the Scheduled view, not just in a log line).
+/// see it in the Schedule place, not just in a log line).
 async fn build_pulse_infos(
     pulses: &[PulseDef],
     problems: &[HeartbeatProblem],
@@ -276,7 +276,7 @@ async fn api_scheduled_pulse_set_enabled(
         );
     }
 
-    tracing::info!(pulse = %name, enabled = body.enabled, "pulse enabled flag toggled from the Scheduled view");
+    tracing::info!(pulse = %name, enabled = body.enabled, "pulse enabled flag toggled from the Schedule place");
     Json(serde_json::json!({ "name": name, "enabled": body.enabled })).into_response()
 }
 
@@ -317,7 +317,7 @@ async fn api_scheduled_action_cancel(
             "The action was cancelled but couldn't be saved. Check the logs for details.",
         );
     }
-    tracing::info!(id = %id, "scheduled action cancelled from the Scheduled view");
+    tracing::info!(id = %id, "scheduled action cancelled from the Schedule place");
     Json(serde_json::json!({ "id": id, "cancelled": true })).into_response()
 }
 

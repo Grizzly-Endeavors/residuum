@@ -1,7 +1,7 @@
 //! Derives artifact reloads from the workspace change feed: whenever a batch
 //! touches `team/workbench/` (or the feed asks watchers to resync), the
 //! workbench is rescanned and a [`WorkbenchEvent`] is published for each
-//! artifact that was added, changed, or removed, so open artifact views reload
+//! artifact that was added, changed, or removed, so open artifact pages reload
 //! live.
 //!
 //! An artifact is its page, or every file inside its folder. An artifact's

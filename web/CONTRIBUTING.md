@@ -1,6 +1,6 @@
 # Contributing to the Residuum Web UI
 
-Welcome! This guide will get you up and running with the frontend without needing the Rust backend.
+Welcome! This guide covers the Residuum web app (a Svelte 5 single-page app that the Rust binary embeds): how to run it without the Rust backend, how it is organized and how its parts work, the checks every change passes, and how it is tested. [AESTHETIC.md](./AESTHETIC.md) covers the visual system.
 
 ## Prerequisites
 
@@ -113,6 +113,8 @@ just web-mock-preview 4173   # builds, then: MOCK_DETERMINISTIC=1 npm run previe
 
 ## Project Structure
 
+The shell frames every place, and each place is a folder under `places/`. `feed/` draws a conversation for Chat and for session transcripts. `lib/` holds the data layer (API client, stores, routing, the settings model) and the primitive controls in `lib/ui/`. A store is a rune module (`*.svelte.ts`) that holds data and commands and never imports the router; views read stores, draw, and navigate.
+
 ```
 web/
 ├── src/
@@ -121,7 +123,7 @@ web/
 │   ├── shell/                # The shell: the rail, the phone's bottom bar and drawer, the hub banner and the Update ready banner, place routing, the Settings modal, the command palette, the app's actions, the install offer and its Add to Home Screen steps, the shortcuts, feedback and Create agent dialogs
 │   │   ├── panel/                # The context panel: its frame and header, its width, and what each kind shows
 │   │   └── settings/             # The Settings modal's parts: scope picker and section list, save bar, the section API and its shared group card and field components, focus on arrival, Raw config, the History browser, the All agents sections (General, Notifications, Residuum Cloud, Saved keys with its key lists, Updates, Session limits, the install's Agent-to-agent listener with its caller keys, Diagnostics) and the agent's Model (its roles, the settings for every model and the providers), Connections, Tools & skills (with the credential field and folder list they share), Tool servers, Agent-to-agent, Memory, Schedule and Runtime
-│   ├── places/               # Rebuilt places, one folder each
+│   ├── places/               # The places, one folder each
 │   │   ├── home/             # Home: needs-you, the agents board and its row menus, Recently deleted, Across the team, Coming up, and the words and times they show; the agent actions and failure fixes the Chat's state card shares
 │   │   ├── files/            # Files and Shared files: the tree, the file editor the context panel shows (Raw config shares it), a file's history
 │   │   ├── inbox/            # Inbox: the list, the filter and tabs, an item opened in place, and the words for sources
@@ -131,7 +133,7 @@ web/
 │   │   └── schedule/         # An agent's Schedule: its pulses and scheduled actions, and the words they show
 │   ├── feed/                 # A conversation: the feed, its turns and their activity lines, and each kind of message in it, shared by Chat and session transcripts; path links
 │   ├── Setup.svelte          # Setup wizard, built into a chunk of its own
-│   ├── styles/               # Design tokens, bundled fonts, base styles, legacy global styles
+│   ├── styles/               # Design tokens, bundled fonts, the base and reset styles, the shell breakpoints for scripts, and the contrast pairs the tokens are tested against
 │   ├── components/
 │   │   └── setup/                  # Setup wizard steps
 │   ├── sw/                   # The service worker, a TypeScript program of its own (the worker's globals): the worker, its caching rules and what it shows for a push as pure functions, and the messages the page and the worker share
@@ -139,12 +141,21 @@ web/
 │   └── lib/
 │       ├── ui/                   # Primitive controls and overlays (buttons, fields, badges, dialogs, sheets, menus, popovers, tooltips, toasts…); the overlay stack and float placement in ui/overlay/; gallery at /dev/gallery (see AESTHETIC.md)
 │       ├── icons/                # The Icon component and icon set
+│       ├── actions/              # Svelte actions
 │       ├── api.ts                # REST API client (typed fetch wrappers); every agent-scoped call takes the agent name first
 │       ├── paths.ts              # API and WebSocket URL builders for the agent, hub and team scopes
+│       ├── errors.ts             # Plain-language messages for failures, with the raw error logged
+│       ├── cache.ts              # The fetch cache behind the API client's GET wrappers: in-flight deduplication, kept in local storage
+│       ├── transport.svelte.ts   # The WebSocket transport: connecting, reconnecting, and holding what is sent while the connection is down
+│       ├── hub.svelte.ts         # The hub's state from `/api/hub/ws`: each agent's state, activity and stopping set, hub notices, deleted agents; up across agent switches
+│       ├── hub-types.ts          # Shapes for the hub API and frames: the generated ones, and the bodies the backend builds inline
 │       ├── viewed-agent.ts       # The bound agent: the router publishes it, the WebSocket coordinator binds to it
 │       ├── ws.svelte.ts          # WebSocket coordinator: routes frames to the feed and sessions stores; open while the bound agent runs
 │       ├── feed.svelte.ts        # Main chat feed state
 │       ├── feed-items.ts         # History-to-feed conversion shared by chat and session transcripts
+│       ├── feed-id.ts            # Feed item ids
+│       ├── feed-scroll.svelte.ts # Following new content while the reader is at the bottom of a feed, and the Jump to latest pill
+│       ├── observed-turns.svelte.ts # What the page saw of each turn while it ran: timing, how it ended, where it may have missed steps
 │       ├── sessions.svelte.ts    # The bound agent's sessions for Activity: live and finished runs, outbound tasks, Stop
 │       ├── session-run.svelte.ts # One run in the session panel, on any agent: transcript, the hub's relay, message and stop
 │       ├── session-format.ts     # Plain words for runs and outbound tasks: kinds, states, outcomes, durations
@@ -162,13 +173,25 @@ web/
 │       ├── agent-failure.ts      # Plain words for why an agent couldn't start, and the Settings section and field that fix it
 │       ├── agent-display-state.ts # The state an agent is shown in: the hub's, or stopping while its stop is under way
 │       ├── agent-lifecycle.ts    # Which of Start, Stop and Restart apply to an agent in a state
-│       ├── routes.ts             # URL <-> location: places, the panel and settings parameters, redirects from old URLs, corrections
+│       ├── routes.ts             # URL <-> location: places, the panel and settings parameters, redirects from URLs the app no longer uses, corrections
 │       ├── router.svelte.ts      # Current location; push/replace, closing by going back, overlay entries, the unsaved-edit guard
 │       ├── history-entry.ts      # The marks the router keeps in history.state
 │       ├── navigation-guard.ts   # Checks views register for unsaved work, and how the user is asked
-│       ├── settings-sections.ts  # Settings section registry: ids, scopes, labels, groups, old names, config keys
+│       ├── settings-sections.ts  # Settings section registry: ids, scopes, labels, groups, the section names of earlier settings URLs, config keys
 │       ├── session-address.ts    # Opens a session, on any agent, from where it is mentioned
 │       ├── relay.ts              # Recognizes agent-message headers in transcripts
+│       ├── watch-registry.ts     # One watch set per socket, merged from every owner's path prefixes
+│       ├── workspace-watch.ts    # How a watched path prefix is spelled and matched
+│       ├── tree-changes.ts       # Which listed folders of a file tree a batch of changes affects
+│       ├── checkpoints.ts        # Words and shapes for the checkpoint history
+│       ├── undo.ts               # Single-click destructive actions, and the Undo on their toast from the checkpoint the server took
+│       ├── turn-undo.ts          # Undo this turn
+│       ├── form-undo.ts          # Undo for an entry removed from a settings form list
+│       ├── diagnostics.ts        # Rendering a diagnostic: message, position, key path
+│       ├── file-size.ts          # A size in bytes as people read it
+│       ├── agent-name.ts         # The backend's agent-name rules, checked as a name is typed
+│       ├── mcp-form.ts           # The text forms a tool server's arguments, environment and headers are edited in
+│       ├── toml.ts               # The config files the setup wizard writes, generated from its state
 │       ├── workbench.ts          # Where artifacts open: the relay's origin, or this host on the artifacts port over plain HTTP, else why they can't
 │       ├── time.ts               # Relative times ("5m ago")
 │       ├── toast.svelte.ts       # Toasts: kinds, timings, actions (ui/ToastRegion draws them)
@@ -176,7 +199,7 @@ web/
 │       ├── generated/            # Protocol types generated from Rust (cargo test --test ts_export)
 │       ├── types.ts              # TypeScript types for API and messages
 │       ├── action-registry.svelte.ts # The action registry: sources of named actions, matching, `/name` lines, running
-│       ├── chat-actions.ts       # The chat actions (the former slash commands) and why each can't run
+│       ├── chat-actions.ts       # The chat actions (typed as `/name` in the composer) and why each can't run
 │       ├── models.ts             # Model fetching and caching
 │       ├── model-roles.ts        # Model roles named by their job, the providers a role can name, and how a role's value splits
 │       ├── markdown.ts           # Message Markdown to sanitized nodes: code blocks with Copy, workspace paths as links
@@ -201,6 +224,12 @@ web/
 │   ├── middleware.ts         # The /api request handler and its Connect middleware
 │   ├── state.ts              # Per-agent and hub state, and the agent and hub types
 │   ├── http.ts               # Request and response helpers, typed body parsing
+│   ├── assets.ts             # Reading the example config files and the web root
+│   ├── constants.ts          # Values the mock shares: its version and features, the deterministic boot id, and why `brittle` can't start
+│   ├── util.ts               # Ordering helpers
+│   ├── zone.ts               # The mock hub's timezone, and the conversions between instants and the local times its files keep
+│   ├── agent-name.ts         # The backend's agent-name rule
+│   ├── diagnostics.ts        # The problems the backend's validators find in a config file's text
 │   ├── hub.ts                # The hub: agents, activity and unread, run state changes, reset
 │   ├── hub-inbox.ts          # The cross-agent inbox: every agent's items in one listing
 │   ├── push.ts               # Web Push: the public key and the registered devices, with a test send that always succeeds
@@ -243,7 +272,7 @@ web/
 │   └── *.test.ts             # Unit tests, run by `npm test`
 ├── e2e/                      # Playwright specs, checked like src/ (see Testing)
 │   ├── support/              # Fixtures, "the app is ready" and lazy-chunk waits, the axe scan, the screenshot helper, the dev server warm-up, server ports
-│   ├── smoke/                # Flows on the current UI; `@preview` specs run on the production build
+│   ├── smoke/                # User flows; `@preview` specs run on the production build
 │   ├── visual/               # `@visual` specs; their baselines are in __screenshots__/
 │   └── harness/              # Specs for the harness itself
 ├── public/                   # Served as is: the manifest, the icons, the favicon, the MCP catalog
@@ -252,7 +281,11 @@ web/
 └── package.json
 ```
 
-## Routing
+## How the App Works
+
+This part describes each system in the order you meet it: how a URL becomes a place (Routing), the frame around every place (The shell), installing the app and its service worker, the action registry the command palette and the composer's `/` menu share, then each place (Home, Files, the Inbox, the chat feed and the composer, Activity, the Schedule, the Workbench), and the data layer and Settings modal under them.
+
+### Routing
 
 The URL is the source of truth for where the user is. A location is a place, an optional context panel, and an optional Settings modal:
 
@@ -273,13 +306,13 @@ Any place takes two more parameters:
 - `panel=session:<agent>:<runId>`, `panel=file:<path>` or `panel=size` is the context panel. A session shows on the viewed agent's places (for that agent) and on the Workbench, a file on agent places and Shared files, and the conversation size on agent places. Anywhere else the router removes it.
 - `settings=<agent | _all>[/<section>]` is the Settings modal. `_all` is the install-wide scope. Without a section, the frame opens the scope's default section, or on phones its section list. Section ids are in `lib/settings-sections.ts`.
 
-Old URLs redirect by replace: `/team`, `/agent/:name/sessions/:runId`, `/agent/:name/workspace`, `/agent/:name/scheduled`, `/agent/:name/settings[/:section]`, `/team/settings[/:section]`, `/workbench[/…]`, and the unprefixed `/settings`, `/scheduled`, `/sessions/:runId` and `/notification/<id>`, which resolve under the last-used agent once the agent list is known. Old settings section names map to the new scope and section (`lib/settings-sections.ts`). A URL the router can't read, an agent or artifact that doesn't exist, and a panel a place can't show are corrected by replace, with a toast where the user should know.
+URLs the app no longer uses redirect by replace: `/team`, `/agent/:name/sessions/:runId`, `/agent/:name/workspace`, `/agent/:name/scheduled`, `/agent/:name/settings[/:section]`, `/team/settings[/:section]`, `/workbench[/…]`, and the unprefixed `/settings`, `/scheduled`, `/sessions/:runId` and `/notification/<id>`, which resolve under the last-used agent once the agent list is known. The section names of those settings URLs map to a scope and section (`lib/settings-sections.ts`). A URL the router can't read, an agent or artifact that doesn't exist, and a panel a place can't show are corrected by replace, with a toast where the user should know.
 
 `routes.ts` reads and formats URLs and knows nothing of the browser. `router.svelte.ts` holds the location. Stores never import it: they expose data and commands, and views navigate (ESLint enforces this under `src/lib/`).
 
 **Navigation.** `openPlace`, `openPanel`, `openSettings` and `openSettingsSection` (a section opened from the phone's section list) push. `replacePlace`, `replacePanel`, `switchSettingsSection` and `switchSettingsScope` replace, and so does every correction and redirect. `closeSettingsSection` is a phone section's Back: it goes back to the list when this page pushed the section from it, and replaces the section away otherwise. Each returns whether the navigation happened.
 
-**The Inbox's parameters.** Design §3 leaves them open, so the Inbox decides: opening an item from the list pushes (`openPlace` with `item`), and opening another while one is open replaces it, the way the panel switches files. Changing the agent filter or the tab replaces and closes the open item, so Back leaves the Inbox instead of stepping through filters. A link to an item that's gone is corrected by replace, with a toast.
+**The Inbox's parameters.** Opening an item from the list pushes (`openPlace` with `item`), and opening another while one is open replaces it, the way the panel switches files. Changing the agent filter or the tab replaces and closes the open item, so Back leaves the Inbox instead of stepping through filters. A link to an item that's gone is corrected by replace, with a toast.
 
 **The Workbench's artifact.** Selecting a row pushes (`openPlace` with `artifact`), and selecting another while one is selected replaces it, as the Inbox does with its items.
 
@@ -293,7 +326,7 @@ Old URLs redirect by replace: `/team`, `/agent/:name/sessions/:runId`, `/agent/:
 
 ### The shell
 
-`shell/Shell.svelte` is the frame around every place: the rail (`Rail.svelte`) beside the main region at medium and wide widths, and on phones the bottom bar (`BottomBar.svelte`) with the rail in a `Drawer`. The main region starts with the hub banner (`HubBanner.svelte`, shown while the hub socket is down) and then the place, which `PlaceHost.svelte` picks from the router's location. The shell root carries `data-ui`, and mounts `ConfirmHost` (and gives the router's guard `confirmLeave`), the Settings modal and the command palette (each once its code has loaded, see [Installing the app and code splitting](#installing-the-app-and-code-splitting)), `RecentNotifications`, the Keyboard shortcuts dialog, the Add to Home Screen steps, the feedback dialog, the inbox-note prompt and the Create agent dialog once each; `App.svelte` draws the toast region and tooltips, in setup too.
+`shell/Shell.svelte` is the frame around every place: the rail (`Rail.svelte`) beside the main region at medium and wide widths, and on phones the bottom bar (`BottomBar.svelte`) with the rail in a `Drawer`. The main region starts with the hub banner (`HubBanner.svelte`, shown while the hub socket is down) and then the place, which `PlaceHost.svelte` picks from the router's location. The shell root mounts `ConfirmHost` (and gives the router's guard `confirmLeave`), the Settings modal and the command palette (each once its code has loaded, see [Installing the app and code splitting](#installing-the-app-and-code-splitting)), `RecentNotifications`, the Keyboard shortcuts dialog, the Add to Home Screen steps, the feedback dialog, the inbox-note prompt and the Create agent dialog once each; `App.svelte` draws the toast region and tooltips, in setup too.
 
 The context panel (`panel/PanelHost.svelte`) is open while the URL has a `panel` its place can show. Its frame (`ContextPanel.svelte`) is a column beside the main region at wide widths, resized from its left edge by pointer or by the arrow keys, Home and End, between `--layout-panel-min-width` and half the viewport; the width the viewer chose is kept in local storage. At medium widths it floats over the main region's right edge at the default width, and on phones it is a full-screen sheet over the bottom bar, a `ModalLayer` whose history entry is the `panel` parameter. Beside or over the main region it takes focus when it opens, Esc inside it closes it, and focus goes back to where it was; on phones the sheet's layer does the same. Closing goes through `router.closePanel`, so Back closes it before it leaves the place. What the panel shows is chosen by kind in `PanelHost`, and each kind's content starts with `PanelHeader`, which names the panel and holds its actions and the way out (Close, or Back on a phone). A file shows the file editor (see [Files](#files)), a session run the session panel (see [Activity and the session panel](#activity-and-the-session-panel)), and `size` the conversation size (see [The composer](#the-composer)).
 
@@ -301,7 +334,7 @@ The rail's agents are an accordion (`accordion.svelte.ts`): one agent's places a
 
 `ShellActions.createAgent` is the one way to create an agent: Home's New agent, the rail's "+" and the palette's Create an agent call it, and it opens the Create agent dialog (`CreateAgentDialog.svelte`, a sheet on phones) over the current place. The name is checked against the backend's rules and the agent list as it is typed (`newAgentNameProblem` in `lib/agent-name.ts`), and a name a deleted agent had points at Recently deleted. Under More options are the agent to copy model settings from (the first by name until another is chosen) and who can find it (private by default). What was typed stays when the dialog closes without creating. Once the agent exists the dialog closes, the hub's `agent_created` frame raises the "You created …" toast, and beside the main region the new agent's rail row takes focus.
 
-Every place is rebuilt (see [Home and the overview](#home-and-the-overview), [The Inbox](#the-inbox), [The chat feed](#the-chat-feed), [Activity and the session panel](#activity-and-the-session-panel), [The Schedule](#the-schedule), [Files](#files) and [The Workbench](#the-workbench)). The Settings modal is described in [The Settings modal](#the-settings-modal). The palette and the help dialogs aren't in the URL either; each holds an overlay entry, so Back closes it.
+Every place has its own section (see [Home and the overview](#home-and-the-overview), [The Inbox](#the-inbox), [The chat feed](#the-chat-feed), [Activity and the session panel](#activity-and-the-session-panel), [The Schedule](#the-schedule), [Files](#files) and [The Workbench](#the-workbench)). The Settings modal is described in [The Settings modal](#the-settings-modal). The palette and the help dialogs aren't in the URL either; each holds an overlay entry, so Back closes it.
 
 ### Installing the app and code splitting
 
@@ -335,7 +368,7 @@ The service worker (`src/sw/worker.ts`, served as `/sw.js`) holds the app shell 
 
 `lib/action-registry.svelte.ts` holds the one list of named actions that the command palette (`shell/CommandPalette.svelte`), the composer's `/` menu and the rail's help menu draw from. A source is a function that builds actions from current state; `actionRegistry.register(key, source)` adds one (replacing the source under that key) and returns a function that removes it, and `actionRegistry.all` is every source's actions in registration order. The shell registers the app's sources (`shell/app-actions.svelte.ts`): the team places, every agent, the bound agent's places and live sessions, the settings sections, the chat actions, Start, Stop and Restart where they apply, Create an agent, and help. Another agent's places, settings and lifecycle actions are `searchOnly`: the palette lists them once something is typed. A unit adds actions by registering a source of its own, or by adding them to the source they belong with.
 
-An action has a heading (`group`), a plain-language `label`, an optional `hint` and `terms` it is also found by, and `run(text?)`. A chat action has a `command`, its old slash name: `/observe` in the composer, or typing `/observe` in the palette, finds "Summarize older messages now". `takesText` marks one that acts on what follows `/name`, and asks for text otherwise. `disabled` holds the reason it can't run now ("Start atlas first"); the palette and the `/` menu show the reason in place of the hint, and running it does nothing. `matchActions` finds the actions holding every typed word; `readCommandLine` reads a `/name text` line the composer sends.
+An action has a heading (`group`), a plain-language `label`, an optional `hint` and `terms` it is also found by, and `run(text?)`. A chat action has a `command`, its slash name: `/observe` in the composer, or typing `/observe` in the palette, finds "Summarize older messages now". `takesText` marks one that acts on what follows `/name`, and asks for text otherwise. `disabled` holds the reason it can't run now ("Start atlas first"); the palette and the `/` menu show the reason in place of the hint, and running it does nothing. `matchActions` finds the actions holding every typed word; `readCommandLine` reads a `/name text` line the composer sends.
 
 Run actions with `actionRegistry.run(action, text?)`. It tells the registry's run listeners first, then runs the action once the page has settled: the shell closes the phone drawer there, so a dialog an action opens, or a place it goes to, never sits under the drawer. `installOffer.install`, in `app-actions.svelte.ts`, lists Install app among the help actions while it is set (see [Installing the app and code splitting](#installing-the-app-and-code-splitting)).
 
@@ -404,7 +437,7 @@ The conversation is `feed/Feed.svelte`, made for any agent's conversation, the m
 
 **Turns.** The feed groups each turn's output into one block (`groupTurns` in `feed/turns.ts`, drawn by `feed/FeedTurn.svelte`): its activity line, built from every tool call of the turn, first, then the agent's intermediate texts, attachments and final reply in order. A `FeedItem` carries the `turnId` of its turn: from history where messages carry `turn_id`, and from the turn in flight for live items (`turn_started` tags the user message that began it, and a message sent mid-turn joins it, as the agent takes it into the turn it runs). A change of `turnId` ends a turn; where items carry none (episodes, older records), the next user message or agent message does. A message carrying the id of the turn whose output came before it stays inside that block, and a divider or note ends one. Each block is a `FeedTurn` entry with the turn's `turnId`, its `calls`, its other `items`, and `live` when it is `liveTurnId`'s (only the turn's latest block, and an empty one from `turn_started` on, before any output); everything else is a single entry. A turn's first block is keyed by its id, so it stays one block from start to end.
 
-**The activity line** (`feed/ActivityLine.svelte`) is design §4's three levels. Collapsed, it is one summary of the steps (`summarizeActivity` in `feed/activity.ts`): friendly labels joined in order, repeats merged and counted ("Searched memory, read 2 files"), and for a turn the page watched, how long it took, how many steps failed, and "stopped by you" or "didn't finish". Opened, it lists the steps (`feed/ActivityStep.svelte`), each with its label and target: a workspace path links into the context panel, a session a spawn started opens that session, and while the turn is watched each shows whether it is running, failed or stopped. A step opens to its details (`feed/StepDetail.svelte`): its arguments, summarized per tool (`feed/step-args.ts`), and its result through `lib/format-tool-result.ts`. The labels come from one table in `activity.ts` keyed by tool name, covering every built-in tool; any other tool reads "Used <tool>", and a tool known to come from a tool server "Used <server>: <tool>". While the turn runs the line is open: a working mark, the time since the turn started, Stop, and each step as it arrives; when the turn ends it collapses to its summary. A turn with no tool calls that ended on its own has no line.
+**The activity line** (`feed/ActivityLine.svelte`) has three levels. Collapsed, it is one summary of the steps (`summarizeActivity` in `feed/activity.ts`): friendly labels joined in order, repeats merged and counted ("Searched memory, read 2 files"), and for a turn the page watched, how long it took, how many steps failed, and "stopped by you" or "didn't finish". Opened, it lists the steps (`feed/ActivityStep.svelte`), each with its label and target: a workspace path links into the context panel, a session a spawn started opens that session, and while the turn is watched each shows whether it is running, failed or stopped. A step opens to its details (`feed/StepDetail.svelte`): its arguments, summarized per tool (`feed/step-args.ts`), and its result through `lib/format-tool-result.ts`. The labels come from one table in `activity.ts` keyed by tool name, covering every built-in tool; any other tool reads "Used <tool>", and a tool known to come from a tool server "Used <server>: <tool>". While the turn runs the line is open: a working mark, the time since the turn started, Stop, and each step as it arrives; when the turn ends it collapses to its summary. A turn with no tool calls that ended on its own has no line.
 
 What the page saw of each turn is `ObservedTurns` (`lib/observed-turns.svelte.ts`), which the feed store (`store.observed`) and a session run keep: when the turn started and ended, how it ended (`finished`, `stopped` when the user asked, `interrupted` when the agent stopped under it), whether a stop was asked for, and its gaps. A frame of a turn the page didn't see start (it connected while the turn ran) starts that turn, joined partway, with a gap at 0 ("Earlier steps happened before this page connected"), under the id of the first frame that names it; the main chat times it from the hub's `busy_since`. A reconnect during a turn adds a gap where the page had got to. History records neither timing nor failures, so loading history drops these records, and the next load shows the whole line. The coordinator sends `set_verbose {enabled: true}` first on every agent connection, since the line is built from the tool frames.
 
@@ -438,7 +471,7 @@ The feed follows new content while the reader is within 120px of the bottom; fur
 
 ### The Workbench
 
-`places/workbench/Workbench.svelte` is a launcher: an artifact opens in a tab of its own on the artifacts origin, and nothing in the app embeds one. Its list is a `WorkbenchList` (`workbench-list.svelte.ts`), which reads the artifacts and where they open (`resolveArtifactsOrigin` in `lib/workbench.ts`, design §5's origin rule), and follows the hub socket through `hub.onFrame`: `artifact_updated` marks the artifact "updating now" for a moment and reads the list again, `artifact_removed` reads it again, and `hub_boot` reads it again after a reconnect. Each fresh read settles the URL through `router.resolveArtifacts`, so an artifact that isn't there goes back to the list with a toast. While artifacts can't open, a banner says why and the list is read again every 10 seconds. A row (`ArtifactRow.svelte`) has Open, a link with `target="_blank"`, and a menu with Copy link and Delete, which acts at once and offers Undo from the team checkpoint. An artifact's running sessions come from the overview store's live sessions whose source label is `artifact:<name>` (`artifactRuns` in `workbench-model.ts`), on any agent; the selected row lists them with Stop, and each opens in the context panel.
+`places/workbench/Workbench.svelte` is a launcher: an artifact opens in a tab of its own on the artifacts origin, and nothing in the app embeds one. Its list is a `WorkbenchList` (`workbench-list.svelte.ts`), which reads the artifacts and where they open (`resolveArtifactsOrigin` in `lib/workbench.ts`: the relay's artifacts origin when the page is viewed through the relay, else this host on the artifacts port over plain HTTP, else the reason artifacts can't open), and follows the hub socket through `hub.onFrame`: `artifact_updated` marks the artifact "updating now" for a moment and reads the list again, `artifact_removed` reads it again, and `hub_boot` reads it again after a reconnect. Each fresh read settles the URL through `router.resolveArtifacts`, so an artifact that isn't there goes back to the list with a toast. While artifacts can't open, a banner says why and the list is read again every 10 seconds. A row (`ArtifactRow.svelte`) has Open, a link with `target="_blank"`, and a menu with Copy link and Delete, which acts at once and offers Undo from the team checkpoint. An artifact's running sessions come from the overview store's live sessions whose source label is `artifact:<name>` (`artifactRuns` in `workbench-model.ts`), on any agent; the selected row lists them with Stop, and each opens in the context panel.
 
 ### Agents in API calls
 
@@ -521,6 +554,7 @@ Before submitting changes, run:
 ```bash
 npm run lint          # ESLint, then the style lint
 npm run format        # Prettier auto-format
+npm run format:check  # Prettier check, as the pre-commit hook runs it
 npm run check         # TypeScript / Svelte type check; warnings fail it
 npm test              # Vitest: lib unit tests and Svelte component tests
 npm run test:coverage # The same tests with a coverage summary (HTML report in coverage/)
@@ -531,9 +565,9 @@ npm run e2e:fast      # Playwright specs in Chromium, visual comparisons left ou
 
 **TypeScript lint.** Every `.ts` module under `src/` and `e2e/`, including the rune store modules (`*.svelte.ts`), gets the strict type-aware ESLint rules. Only `.svelte` files get the relaxed set that fits runes. When a rule is wrong for one line, use a scoped `// eslint-disable-next-line <rule> -- <reason>`, never a blanket disable.
 
-**Style lint.** `npm run lint` also runs Stylelint over `src/**/*.css` and the `<style>` blocks of `.svelte` files. Outside the token files (`src/styles/tokens.css`, the design token set described in [AESTHETIC.md](./AESTHETIC.md), and `src/styles/variables.css`, the legacy variables) it forbids literal colors (hex, named, `rgb()` and the like), raw `font-size` and `font` values, raw `z-index` values, literal durations and easing curves in `transition` and `animation`, and `transition: all`. Reference a token with `var(--…)` instead. Viewport media queries may use only the shell breakpoints, written as `min-width`/`max-width`; a component that needs its own responsive rule uses a container query. Stylesheets and components that still carry literal values are listed in `stylelint.config.js` and exempt from these rules; remove an entry when its file is rewritten or deleted, and never add new styles to the list.
+**Style lint.** `npm run lint` also runs Stylelint over `src/**/*.css` and the `<style>` blocks of `.svelte` files. Outside the token file (`src/styles/tokens.css`, the design token set described in [AESTHETIC.md](./AESTHETIC.md)) it forbids literal colors (hex, named, `rgb()` and the like), raw `font-size` and `font` values, raw `z-index` values, literal durations and easing curves in `transition` and `animation`, and `transition: all`. Reference a token with `var(--…)` instead. Viewport media queries may use only the shell breakpoints, written as `min-width`/`max-width`; a component that needs its own responsive rule uses a container query. No stylesheet or component is exempt. When a value has no token, add a token to `tokens.css` rather than a literal.
 
-**svelte-check.** It runs with `--fail-on-warnings`. The one accepted warning, a label without an associated control, is filtered in `svelte.config.js`.
+**svelte-check.** It runs with `--fail-on-warnings` and filters nothing, so every warning, accessibility ones included, fails it. Fix the markup rather than suppressing the warning.
 
 **Generated types.** `src/lib/generated/` comes from the Rust types. After changing an exported Rust type, run `just types` and commit the result; `just types-check` (and CI) fails when the committed files are out of date.
 
@@ -611,7 +645,7 @@ test("a teammate's message shows in the chat", async ({ page, mock }) => {
 
 The dev server compiles a module the first time it is asked for, so Playwright's global setup (`e2e/support/warmup.ts`) asks for every module of the app, lazy chunks and the gallery included, before the first test. The first spec to reach a part of the app doesn't pay for it.
 
-**Accessibility.** `expectNoAxeViolations(page)` from `e2e/support/axe.ts` scans the page as it stands and fails on serious and critical violations, naming the rule and the elements. Put the page in the state under test first (open the menu, then scan), and scan each place and overlay a change touches. The scan waits for animations that end, such as an overlay fading in, since text at part opacity reads as low contrast. `{ within: "[role=dialog]" }` limits the scan to a region. The full result is attached to the test. A screen that is known to fail and that a later change replaces lists its violations in the spec, each with the reason and the change that removes it: `{ allow: [{ rule: "color-contrast", reason: "legacy header, removed with the new shell" }] }`. The scan fails when an allowed rule no longer fires, so an entry goes away with the screen it excuses. Minor and moderate findings don't fail; they are in the attached result.
+**Accessibility.** `expectNoAxeViolations(page)` from `e2e/support/axe.ts` scans the page as it stands and fails on serious and critical violations, naming the rule and the elements. Put the page in the state under test first (open the menu, then scan), and scan each place and overlay a change touches. The scan waits for animations that end, such as an overlay fading in, since text at part opacity reads as low contrast. `{ within: "[role=dialog]" }` limits the scan to a region. The full result is attached to the test. A violation that can't be fixed at once is listed in the spec with its reason: `{ allow: [{ rule: "color-contrast", reason: "…" }] }`. The scan fails when an allowed rule no longer fires, so an entry goes away with the problem it excuses. Minor and moderate findings don't fail; they are in the attached result.
 
 **Visual.** `expectScreenshot(page, "name")` from `e2e/support/screenshot.ts` compares the page with the baseline `name` in `e2e/__screenshots__/`, one per project. Wait for the page to reach the state under test first. The helper itself waits until the app is usable (so it never shoots the "Can't reach Residuum" banner of a hub socket that is still connecting; a spec of the banner takes the hub down first, see Waiting), the animations that end have finished, and the fonts and images the page uses have loaded. Put `@visual` on the test, so it runs in the `visual-*` projects, where the page's clock is frozen at the mock's clock (so "2h ago" reads the same on every run) and reduced motion is on. The helper turns off animations and hides the caret, and it paints over anything carrying a `data-visual-mask` attribute; pass `mask: [locator]` to cover a region for one screenshot. Compare the viewport unless a spec needs `fullPage: true`.
 

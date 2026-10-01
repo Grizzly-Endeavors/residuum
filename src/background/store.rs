@@ -70,10 +70,10 @@ pub struct RunRecord {
     /// [`SessionStore::append_transcript`]).
     #[serde(default)]
     pub transcript: Vec<Message>,
-    /// This run's cumulative token usage, for the `SessionView` footer.
+    /// This run's cumulative token usage, for the session panel's Details.
     /// Copied from the registry entry's own running total (see
     /// [`super::registry::SessionRegistry::accumulate_usage`]) each time
-    /// this record is written, so a completed run's footer keeps its
+    /// this record is written, so a completed run keeps its
     /// final totals.
     #[serde(default)]
     pub usage: crate::agent::usage::SessionUsageTotals,

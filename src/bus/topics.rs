@@ -82,12 +82,12 @@ impl Carries<ToolActivityEvent> for Endpoint {
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
 impl Carries<TurnLifecycleEvent> for Endpoint {
-    // Turn start/end drives visible turn state (e.g. the running indicator);
+    // Turn start/end drives visible turn state (e.g. the activity line of a running turn);
     // a dropped `Ended` would leave the UI showing a turn that never stops.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
 impl Carries<TurnUsageEvent> for Endpoint {
-    // Cumulative token-count ticks for a running-turn indicator — each one
+    // Cumulative token-count ticks for a running turn's progress — each one
     // supersedes the last, so missing intermediate ticks is invisible.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossy;
 }
@@ -193,12 +193,12 @@ impl Carries<ErrorEvent> for Notification {
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
 impl Carries<OutboundA2aTaskEvent> for Notification {
-    // A dropped update would leave the sessions sidebar showing a task
+    // A dropped update would leave Activity's Running now showing a task
     // that already finished, with a Stop button that no longer applies.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
 impl Carries<PostTurnActivityEvent> for Notification {
-    // A dropped `active: false` would leave the web UI's quiet indicator
+    // A dropped `active: false` would leave the web UI's post-turn status line
     // stuck showing background work that already finished.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
@@ -251,7 +251,7 @@ impl Carries<A2aTaskSignalEvent> for A2aTaskSignal {
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
 
-/// Workbench artifact file changes, for web UI views showing an artifact live.
+/// Workbench artifact file changes, for the Workbench list and artifact pages that update live.
 pub struct Workbench;
 
 impl Topic for Workbench {

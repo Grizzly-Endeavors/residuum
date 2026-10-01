@@ -2,10 +2,10 @@
 //! where they are served.
 //!
 //! Artifacts themselves are never served here. They run on the artifacts
-//! listener (`crate::workbench::server`), a separate origin, so an
-//! agent-written page can't call this API directly; it goes through the web
-//! UI's bridge (`web/src/lib/workbench-bridge.ts`), which decides what
-//! artifacts may call.
+//! listener (`crate::workbench::server`), a separate origin from the web UI,
+//! so an agent-written page never shares the UI's origin. The listener
+//! forwards `/api` to the hub router (`crate::workbench::forward`), refusing
+//! the few calls only the Residuum app makes.
 
 use std::path::PathBuf;
 

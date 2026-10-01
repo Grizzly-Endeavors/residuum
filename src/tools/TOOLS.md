@@ -191,7 +191,7 @@ None.
 
 `"{N} agent key(s). Expose one to a command with exec's \`keys\` parameter; values are redacted from all output."` followed by one line per key: `"- {name} -> ${ENV_VAR} (created by user|agent): {description}"` (`(no description)` when empty).
 
-With no keys: a message saying the user can add one with `residuum agent-keys set <name>` or in the web UI, and that the agent can mint one with exec's `store_output_as`.
+With no keys: a message saying the user can add one with `residuum agent-keys set <name>` or in the web UI under Settings → All agents → Saved keys, and that the agent can mint one with exec's `store_output_as`.
 
 On error: `"couldn't read the agent key store: {reason}"`.
 

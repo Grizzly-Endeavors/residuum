@@ -38,7 +38,7 @@ Everything else, except an `artifact` session's or a conversation-triggered sess
 
 ## Error and Degradation Notices
 
-Turn and session failures are classified into a plain-language message with a next step (bad API key, rate limiting, network problem, timeout, context limit exceeded, model unavailable, provider outage) rather than shown raw. The full technical chain travels alongside as a separate `details` field, shown in the web UI behind an expandable toggle and always in the logs — chat interfaces get the plain message only.
+Turn and session failures are classified into a plain-language message with a next step (bad API key, rate limiting, network problem, timeout, context limit exceeded, model unavailable, provider outage) rather than shown raw. The full technical chain travels alongside as a separate `details` field, shown in the web UI behind a Details disclosure and always in the logs — chat interfaces get the plain message only.
 
 A fallback or recovery on the main model gets one notice per transition (failing over, and coming back), never per call or per retry. A response cut off by the output-token limit gets a notice naming the limit, plus a system note in the turn's own transcript — no automatic continuation. Startup degradations (an MCP server failing, a broken skills directory, channels or the action store failing to load, memory/embedding providers unavailable) are collected and published as one grouped notice once startup finishes, instead of sitting log-only.
 
@@ -66,9 +66,9 @@ Output-only channels for push delivery. Configured in `config/channels.toml`.
 
 On macOS an urgent result posts at the `time_sensitive` interruption level so it breaks through Focus modes. Windows Toasts do not vary by urgency.
 
-Both platforms batch deliveries within a throttle window (default 30s): past three notifications in one window, the rest collapse into a single summary rather than flooding the notification surface. The summary's body always ends with "All of them are in your agent's inbox: inbox/agent in the workspace." — every result that reaches a native channel was filed to your inbox too (the one `inbox_list` reads), so nothing summarized is ever lost, just not individually shown; if the user asks about them, `inbox_list` has the full set. On macOS a notification's "Open" action opens the web UI's workspace panel; Windows Toasts have no click action at all, which is why the body text carries the pointer.
+Both platforms batch deliveries within a throttle window (default 30s): past three notifications in one window, the rest collapse into a single summary rather than flooding the notification surface. The summary's body always ends with "All of them are in your agent's inbox: inbox/agent in the workspace." — every result that reaches a native channel was filed to your inbox too (the one `inbox_list` reads), so nothing summarized is ever lost, just not individually shown; if the user asks about them, `inbox_list` has the full set. On macOS a notification's "Open" action opens the web UI at the Files place of the agent the user used last; Windows Toasts have no click action at all, which is why the body text carries the pointer.
 
-Editing `config/channels.toml` via `write_file`/`edit_file`, the workspace editor, or `POST /api/agents/<agent>/workspace/validate` reports a TOML syntax error, a channel missing a required field, an unrecognized channel type, or a retired option left in place as a diagnostic alongside the save — the write always goes through rather than being rejected.
+Editing `config/channels.toml` via `write_file`/`edit_file`, the Files editor, or `POST /api/agents/<agent>/workspace/validate` reports a TOML syntax error, a channel missing a required field, an unrecognized channel type, or a retired option left in place as a diagnostic alongside the save — the write always goes through rather than being rejected.
 
 ### Inbox
 

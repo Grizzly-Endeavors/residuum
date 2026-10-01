@@ -8,19 +8,19 @@ The agent you create during setup is your first agent. There is no lead agent: a
 
 Pick a short name of 1 to 24 lowercase letters, digits and hyphens, such as `research-buddy`. The name is permanent: it is the agent's directory, its address for teammates, and its A2A address. `hub`, `team` and `agents` are taken.
 
-- **From the web UI**: choose **New agent** on Home, the **+** beside **Agents** in the sidebar, or **Create an agent** in the search palette (⌘K or Ctrl+K). Give it a name and, optionally, say what it should help with. Under **More options**, choose which agent to **copy model settings from** and **who can find it** (its A2A visibility). The name is checked as you type.
+- **From the web UI**: choose **New agent** on Home, the **+** beside **Agents** in the left-hand rail, or **Create an agent** in the search palette (⌘K or Ctrl+K; on a phone, **Search** in the bottom bar). Give it a name and, optionally, say what it should help with (**What should it help with?**). Under **More options**, choose which agent to **Copy model settings from** and **Who can find it** (its A2A visibility). The name is checked as you type. When you choose **Create agent**, the new agent appears in the rail and on Home, and you stay where you were.
 - **From a terminal**: `residuum agent create research-buddy --description "Keeps my reading list and summarizes new papers each morning."`. Add `--models-from <agent>` to say whose model settings to copy (it is required when more than one agent is running), and `--public` to make the agent's card visible to other agents. Residuum must be running.
 - **By asking an agent**: tell any agent something like "create an agent called research-buddy that keeps my reading list." It uses its `agent_create` tool. The new agent copies that agent's model settings and A2A visibility. You get a notice when it happens.
 
 The description is optional but useful. The new agent receives it as its first message and turns it into notes in its own `SOUL.md` and a role page in the shared wiki, so it starts knowing what it is for. A new agent skips the first-run interview.
 
-If the new agent can't start (a bad model setting, say), it is still created. Home lists it under **Needs you** with the reason, and you can fix its settings and start it.
+If the new agent can't start (a bad model setting, say), it is still created. Home lists it under **Needs you** with the reason, and its **Chat** shows a card saying it couldn't start, with **Restart** and, for a settings problem, **Fix settings**, which opens the setting at fault in **Settings** for that agent (the gear at the bottom of the rail, or **Settings** in the phone's bottom bar; **Settings for** at the top picks the agent, written **Settings → (agent)** in this guide). Change it there, choose **Save changes**, then restart the agent.
 
 ## Switch between agents
 
-The sidebar lists every agent with a dot for its state and a marker when it is working or has replies you haven't seen. Select one to show its places: chat, activity, schedule and files. Each agent's URL carries its name, so you can bookmark one. Under **Team** are the team-wide pages: the workbench and the shared files.
+The left-hand rail (on a phone, **☰** in the bottom bar opens it) lists every agent under **Agents**, each with a dot for its state, a working mark while it is busy, and a count of replies you haven't seen. Select an agent to open its places, then pick one: **Chat**, **Activity**, **Schedule** or **Files**. One agent's places are open at a time. Each agent's URL carries its name (`/agent/research-buddy`), so you can bookmark one. Under **Team** are the team-wide places: **Workbench** and **Shared files**. **Home** and **Inbox**, at the top of the rail, cover every agent at once, and **Search or jump to** (⌘K or Ctrl+K) goes to any agent, place or setting by name.
 
-Home shows every agent on one board. Each agent's **…** menu is where you start, stop and restart it, turn **Start automatically** on or off, open its settings, and delete it; an agent that failed to start is listed under **Needs you** with what went wrong. From a terminal, `residuum agent list` shows the same states, and `residuum agent start|stop|restart <name>` controls them. A stopped agent does nothing and receives nothing until you start it.
+Home shows every agent on one board: its state, what it is doing now, how many sessions it has running and what runs next. Each agent's **…** menu is where you **Open chat**, start, stop and restart it, turn **Start automatically** on or off, open its **Settings**, and delete it; an agent that failed to start is listed under **Needs you** with what went wrong. From a terminal, `residuum agent list` shows the same states, and `residuum agent start|stop|restart <name>` controls them. A stopped agent does nothing and receives nothing until you start it.
 
 ## Hand work between agents
 
@@ -52,11 +52,11 @@ To undo a deletion, restore the agent:
 - On Home, open **Recently deleted** under the agents and use **Restore**.
 - Run `residuum agent deleted` to see what can be restored, then `residuum agent restore <name>`.
 
-A restored agent comes back with its notes, memory, sessions, settings, role page and roster entry, and starts if it was set to start automatically. Only you can restore an agent; agents have no restore tool. `residuum agent restore <name> --checkpoint <id>` restores its files from an earlier checkpoint instead. If you create a new agent with a deleted agent's name, it continues the same checkpoint history: the old agent's checkpoints stay in its Checkpoints view, and it stops appearing under Recently deleted.
+A restored agent comes back with its notes, memory, sessions, settings, role page and roster entry, and starts if it was set to start automatically. Only you can restore an agent; agents have no restore tool. `residuum agent restore <name> --checkpoint <id>` restores its files from an earlier checkpoint instead. If you create a new agent with a deleted agent's name, it continues the same checkpoint history: the old agent's checkpoints stay in **Settings → (agent) → Advanced → History**, and it stops appearing under Recently deleted.
 
 ## Choose who else can reach an agent
 
-Agents in your team never need A2A to talk to each other. A2A is for agents outside your install, including your own other installs. Each agent has its own visibility, chosen under **Who can find it** when you create it, then set in the agent's **Settings → A2A**, or with `visibility` under `[a2a]` in its `config/config.toml`:
+Agents in your team never need A2A to talk to each other. A2A is for agents outside your install, including your own other installs. Each agent has its own visibility, chosen under **Who can find it** when you create it, then set in **Settings → (agent) → Advanced → Agent-to-agent → Who can find (agent)**, or with `visibility` under `[a2a]` in its `config/config.toml`:
 
 - **Private** (the default for agents you create): callers with no key, and no relationship to your other installs, get nothing, not even the agent's card.
 - **Public**: anyone can read the card. Sending tasks still needs a caller key.

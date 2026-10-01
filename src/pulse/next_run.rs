@@ -1,5 +1,5 @@
 //! When a pulse next runs: the one calculation behind the team overview's
-//! `upcoming` and the Scheduled view's `next_fire_at`.
+//! `upcoming` and the Schedule place's `next_fire_at`.
 //!
 //! It follows the rules the scheduler applies on its minute ticks (see
 //! [`PulseScheduler::due_pulses`](super::scheduler::PulseScheduler::due_pulses)):

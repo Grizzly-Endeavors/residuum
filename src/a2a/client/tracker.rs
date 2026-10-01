@@ -369,8 +369,8 @@ impl RemoteTaskTracker {
         self.spawn_watch(task_id);
     }
 
-    /// Every open task, from every sender, newest first — the web sessions
-    /// sidebar's list of tasks sent to other agents.
+    /// Every open task, from every sender, newest first — the web UI's list of
+    /// tasks sent to other agents (Activity's Running now).
     pub async fn open_tasks(&self) -> Vec<TrackedTask> {
         let store = self.store.read().await;
         let mut tasks: Vec<TrackedTask> = store
@@ -383,8 +383,8 @@ impl RemoteTaskTracker {
         tasks
     }
 
-    /// Cancel the open task `task_id` on its remote agent — the web sessions
-    /// sidebar's Stop button. The sending agent is told the task was
+    /// Cancel the open task `task_id` on its remote agent — the Stop task button
+    /// in Activity. The sending agent is told the task was
     /// canceled and that the user stopped it.
     ///
     /// Returns `Ok(None)` when no open task has that id.
@@ -634,7 +634,7 @@ impl RemoteTaskTracker {
         }
     }
 
-    /// Tell the web sessions sidebar a task was recorded or changed state.
+    /// Tell the web UI a task was recorded or changed state.
     async fn publish_task_change(&self, task: &TrackedTask) {
         if let Err(e) = self
             .messenger
@@ -1614,7 +1614,7 @@ mod tests {
         assert_eq!(recorded.task.task_id, "t1");
         assert_eq!(recorded.task.state, "working");
 
-        // A poll that changes nothing the sidebar shows publishes nothing.
+        // A poll that changes nothing Activity shows publishes nothing.
         tracker.update_state("t1", "working", None, false).await;
         assert!(
             tokio::time::timeout(Duration::from_millis(50), events.recv())

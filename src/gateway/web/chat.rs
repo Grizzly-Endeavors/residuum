@@ -133,7 +133,7 @@ pub(super) async fn api_chat_history(
 }
 
 /// `GET /api/agents/{name}/usage` — the main agent's cumulative session token usage, for
-/// the chat footer to render correctly on load or reconnect without
+/// the conversation size to render correctly on load or reconnect without
 /// waiting for the next model call.
 ///
 /// Reads the same on-disk totals the running agent writes through to after

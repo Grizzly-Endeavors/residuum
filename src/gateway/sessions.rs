@@ -1,6 +1,6 @@
 //! Web-facing view of agent sessions: turning registry entries, store
 //! records, and bus events into protocol types, and carrying out the
-//! send-message and stop commands the sessions sidebar (over the WebSocket)
+//! send-message and stop commands the session panel (over the WebSocket)
 //! and workbench artifacts (over HTTP) share.
 
 use crate::background::messaging::{AgentMessenger, DeliveryOutcome, SendError};
@@ -15,7 +15,7 @@ use crate::gateway::protocol::{
     SessionSummary,
 };
 
-/// Category label a sidebar message carries as its sender's category.
+/// Category label a message from the owner carries as its sender's category.
 const OWNER_CATEGORY: &str = "owner";
 
 /// Summarize a live run from its registry entry.
@@ -195,7 +195,7 @@ pub(crate) fn session_event_to_server_message(event: SessionEvent) -> ServerMess
     }
 }
 
-/// A session command the sidebar sent could not be carried out.
+/// A session command the web UI sent could not be carried out.
 #[derive(Debug, Clone)]
 pub(crate) struct SessionCommandError {
     /// Machine-readable reason.
@@ -216,10 +216,10 @@ impl SessionCommandError {
 /// Who a message sent to a session from outside the agent system comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SessionMessageAuthor {
-    /// The owner, typing into the web UI (the sessions sidebar, or an HTTP
+    /// The owner, typing into the web UI (a session panel, or an HTTP
     /// request without an artifact identity).
     Owner,
-    /// The workbench artifact with this name, through the bridge.
+    /// The workbench artifact with this name, identified by its SDK's header.
     Artifact(String),
 }
 
@@ -307,7 +307,7 @@ pub(crate) async fn send_session_message(
     }
 }
 
-/// Stop the live session at `address`, as the sidebar's stop button and the
+/// Stop the live session at `address`, as the Stop button in Activity and the
 /// `POST /api/agents/{name}/sessions/{address}/stop` endpoint do.
 ///
 /// # Errors
@@ -405,7 +405,7 @@ mod tests {
         let Some(Interrupt::AgentMessage(msg)) = rx.try_recv().ok() else {
             panic!("the session should have received an agent message");
         };
-        assert_eq!(msg.hop_count, 0, "sidebar input is hop count 0");
+        assert_eq!(msg.hop_count, 0, "owner input is hop count 0");
         assert_eq!(msg.from.as_ref(), OWNER_ADDRESS);
         assert!(
             msg.format_for_agent()
@@ -734,7 +734,7 @@ mod tests {
         assert_eq!(
             summary.error_details.as_deref(),
             Some("connect timeout after 30s: api.example.com:443"),
-            "the full cause chain must survive into the summary behind the details toggle"
+            "the full cause chain must survive into the summary behind the Details disclosure"
         );
     }
 

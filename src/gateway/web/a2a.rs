@@ -1,8 +1,8 @@
 //! A2A web API endpoints: caller-key management, the client-side "remote
 //! agents" endpoints (`GET /api/agents/{name}/a2a/agents` for live status and
 //! `GET`/`PUT /api/agents/{name}/a2a/agents/raw` for the `config/a2a.json` editor), the
-//! sessions sidebar's tasks sent to remote agents (`GET /api/agents/{name}/a2a/outbound`
-//! and the stop endpoints under it), and the settings page's
+//! Activity's tasks sent to remote agents (`GET /api/agents/{name}/a2a/outbound`
+//! and the stop endpoints under it), and the Agent-to-agent settings'
 //! `GET /api/agents/{name}/a2a/status` and `GET /api/agents/{name}/a2a/card`.
 //!
 //! Each request opens its own handle on the key store; writes are serialized
@@ -491,7 +491,7 @@ async fn probe_listener_running(port: u16) -> bool {
 }
 
 /// Plain-language explanation of a broken workspace agent-card file, for the
-/// settings page — never the raw `CardError` display, which names internal
+/// Agent-to-agent settings — never the raw `CardError` display, which names internal
 /// error kinds a non-technical user has no use for.
 fn plain_card_error(e: &CardError) -> String {
     match e {
@@ -547,7 +547,7 @@ pub(super) struct A2aStatusResponse {
     card_error: Option<String>,
 }
 
-/// State for the settings page's A2A status and card endpoints: the agent's
+/// State for the Agent-to-agent settings' status and card endpoints: the agent's
 /// config and the relay tunnel's status.
 #[derive(Clone)]
 pub(crate) struct A2aStatusState {
@@ -555,7 +555,7 @@ pub(crate) struct A2aStatusState {
     pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
 }
 
-/// Build the router for the settings page's A2A status and card endpoints.
+/// Build the router for the Agent-to-agent settings' status and card endpoints.
 pub(crate) fn a2a_status_router(state: A2aStatusState) -> axum::Router {
     axum::Router::new()
         .route("/api/a2a/status", axum::routing::get(api_a2a_status))

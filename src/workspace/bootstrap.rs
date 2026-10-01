@@ -57,7 +57,7 @@ const MEMORY_ANALYST_SKILL_MD: &str =
 const WIKI_SKILL_MD: &str = include_str!("../../assets/bundled-skills/wiki/SKILL.md");
 
 /// Built-in `workbench` skill: building interactive HTML artifacts in `workbench/`
-/// that the web UI shows sandboxed, with the injected `residuum` SDK.
+/// that open in a tab of their own, with the injected `residuum` SDK.
 const WORKBENCH_SKILL_MD: &str = include_str!("../../assets/bundled-skills/workbench/SKILL.md");
 
 /// Endpoint, event, and blocked-route reference for the `workbench` skill.

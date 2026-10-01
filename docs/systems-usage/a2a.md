@@ -200,7 +200,7 @@ Residuum can also delegate to other agents over A2A through the same native tool
 
 A bad entry (an invalid name, an empty url, or a header referencing an unknown agent key) is skipped with a warning; the rest of the file still loads. The agent may edit this file directly — it isn't write-blocked. It is watched alongside `mcp.json`, `channels.toml`, and `agent-card.json`: a change is picked up within a few seconds. **Web UI:** `GET`/`PUT /api/agents/{name}/a2a/agents/raw` reads and saves the raw file, and answers for a stopped agent too (a saved file is read when the agent next starts); `GET /api/agents/{name}/a2a/agents` returns each agent's live status.
 
-Editing `config/a2a.json` through the agent's `write_file`/`edit_file` tools, the workspace editor, `POST /api/agents/{name}/workspace/validate`, or the remote-agents editor in Settings (`PUT /api/agents/{name}/a2a/agents/raw`) reports the same problems the loader would skip — a JSON syntax error (with `serde_json`'s line/column), an invalid agent name, or an empty url — without blocking the write; a diagnostic names which agent won't load instead.
+Editing `config/a2a.json` through the agent's `write_file`/`edit_file` tools, the Files editor, `POST /api/agents/{name}/workspace/validate`, or the remote-agents editor in Settings (`PUT /api/agents/{name}/a2a/agents/raw`) reports the same problems the loader would skip — a JSON syntax error (with `serde_json`'s line/column), an invalid agent name, or an empty url — without blocking the write; a diagnostic names which agent won't load instead.
 
 ### Card resolution and status
 
