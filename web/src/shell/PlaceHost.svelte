@@ -1,20 +1,19 @@
 <script lang="ts">
-  import { hub } from "../lib/hub.svelte";
   import { router } from "../lib/router.svelte";
   import { isAgentPlace } from "../lib/routes";
   import { ws } from "../lib/ws.svelte";
-  import Chat from "../Chat.svelte";
   import Scheduled from "../Scheduled.svelte";
   import SessionsSidebar from "../components/SessionsSidebar.svelte";
   import UserInbox from "../components/UserInbox.svelte";
   import Workbench from "../components/Workbench.svelte";
   import Workspace from "../components/Workspace.svelte";
+  import ChatPlace from "../places/chat/ChatPlace.svelte";
   import Home from "../places/home/Home.svelte";
   import PlaceHeader from "./PlaceHeader.svelte";
   import { agentPlaceLabel } from "./rail-model";
   import type { ShellActions } from "./shell-actions";
 
-  // The main region's place: Home, or a place that hasn't been rebuilt,
+  // The main region's place: Home, an agent's Chat, or a place that hasn't been rebuilt,
   // which hosts its legacy view inside a `data-legacy-view` element, where
   // the legacy global styles still apply and the new base styles don't.
 
@@ -41,13 +40,13 @@
 
 {#if place.kind === "home"}
   <Home {actions} />
+{:else if place.kind === "chat"}
+  {#key place.agent}
+    <ChatPlace agent={place.agent} />
+  {/key}
 {:else}
   {#if isAgentPlace(place)}
-    <PlaceHeader
-      title={place.agent}
-      agent={place.agent}
-      sub={place.kind === "chat" ? hub.agent(place.agent)?.role : agentPlaceLabel(place.kind)}
-    />
+    <PlaceHeader title={place.agent} agent={place.agent} sub={agentPlaceLabel(place.kind)} />
   {:else if place.kind === "inbox"}
     <PlaceHeader title="Inbox" />
   {:else if place.kind === "shared-files"}
@@ -57,9 +56,7 @@
   <div class="shell-legacy" data-legacy-view>
     {#if isAgentPlace(place)}
       {#key place.agent}
-        {#if place.kind === "chat"}
-          <Chat />
-        {:else if place.kind === "activity"}
+        {#if place.kind === "activity"}
           <SessionsSidebar onSelect={openRun} />
         {:else if place.kind === "schedule"}
           <Scheduled />

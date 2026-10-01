@@ -340,6 +340,25 @@ export interface SessionsStoreDeps {
   pushToMain: (from: string, runId: string, content: string, category: string | null) => void;
 }
 
+/**
+ * The newest run, live first, of `agent`'s session at `address`, asked of the
+ * server. Null, after telling the user, when there is none or the lookup fails.
+ */
+export async function lookUpNewestRun(agent: string, address: string): Promise<string | null> {
+  try {
+    const page = await fetchSessions(agent, { address, limit: 1 });
+    const run = page.live[0] ?? page.completed[0];
+    if (run) return run.run_id;
+    notifications.surface("error", `There's no record of the session ${address}.`);
+  } catch (err) {
+    notifications.surface(
+      "error",
+      userErrorMessage(err, { action: `Couldn't open the session ${address}.` }),
+    );
+  }
+  return null;
+}
+
 export class SessionsStore {
   /** Live runs (forking, running, idle, completing), newest first. */
   live = $state<SessionSummary[]>([]);
@@ -497,18 +516,7 @@ export class SessionsStore {
     if (runId) return runId;
     const known = this.findByAddress(address);
     if (known) return known.run_id;
-    try {
-      const page = await fetchSessions(requireAgent(this.deps.agent), { address, limit: 1 });
-      const run = page.live[0] ?? page.completed[0];
-      if (run) return run.run_id;
-      notifications.surface("error", `There's no record of the session ${address}.`);
-    } catch (err) {
-      notifications.surface(
-        "error",
-        userErrorMessage(err, { action: `Couldn't open the session ${address}.` }),
-      );
-    }
-    return null;
+    return lookUpNewestRun(requireAgent(this.deps.agent), address);
   }
 
   /** Take the run out of the main pane. Called when the location changes. */

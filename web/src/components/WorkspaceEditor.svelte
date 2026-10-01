@@ -190,6 +190,9 @@
     {/if}
     {#if loading}
       <div class="workspace-empty">Loading...</div>
+    {:else if error}
+      <!-- A file that couldn't be opened offers nothing to edit or save. -->
+      <div class="workspace-error" role="alert">{error}</div>
     {:else}
       <textarea
         class="workspace-textarea"
@@ -228,9 +231,6 @@
           </div>
         {/if}
       </div>
-    {/if}
-    {#if error}
-      <div class="workspace-error">{error}</div>
     {/if}
   {:else}
     <div class="workspace-empty">
