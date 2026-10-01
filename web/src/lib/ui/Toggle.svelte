@@ -8,6 +8,8 @@
     "children" | "id" | "role" | "onchange" | "aria-checked"
   > {
     label: string;
+    /** Keep the label for assistive technology only. */
+    labelHidden?: boolean;
     checked?: boolean;
     hint?: string;
     error?: string;
@@ -24,6 +26,7 @@
 
   let {
     label,
+    labelHidden = false,
     checked = $bindable(false),
     hint,
     error,
@@ -41,7 +44,7 @@
   }
 </script>
 
-<Field {label} {hint} {error} {layout}>
+<Field {label} {labelHidden} {hint} {error} {layout}>
   {#snippet children(control)}
     <span class="ui-toggle">
       {#if loading}
