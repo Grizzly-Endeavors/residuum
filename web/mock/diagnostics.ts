@@ -25,9 +25,17 @@ export function diagnoseConfigText(format: "toml" | "json", content: string): Di
   }
 }
 
-/** A validate or raw-save answer for `content`, as `ValidateResponse::from_diagnostics` builds it. */
-export function validation(format: "toml" | "json", content: string): ValidateResponse {
-  const diagnostics = diagnoseConfigText(format, content);
+/**
+ * A validate or raw-save answer for `content`, as `ValidateResponse::from_diagnostics`
+ * builds it. `check` adds the problems of text that parses.
+ */
+export function validation(
+  format: "toml" | "json",
+  content: string,
+  check: (text: string) => Diagnostic[] = () => [],
+): ValidateResponse {
+  const syntax = diagnoseConfigText(format, content);
+  const diagnostics = syntax.length > 0 ? syntax : check(content);
   const first = diagnostics[0];
   return first === undefined
     ? { valid: true }

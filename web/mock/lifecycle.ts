@@ -8,9 +8,10 @@ import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { agentNameProblem } from "./agent-name";
 import { checkpointBeforeAction } from "./checkpoints";
 import { cloudStatusOf } from "./cloud";
-import { MOCK_RESIDUUM_VERSION } from "./constants";
+import { MOCK_RESIDUUM_VERSION, providersStartFailure } from "./constants";
 import { json, readJsonObject, stringField, type JsonObject } from "./http";
 import { decodedParam, type Route, type RouteContext } from "./routes";
+import { modelProblems } from "./provider-models";
 import type { MockAgent, MockHub } from "./state";
 import { byName } from "./util";
 
@@ -242,7 +243,8 @@ async function patchAgent(ctx: RouteContext): Promise<void> {
 
 /**
  * `POST /api/hub/agents/{name}/(start|stop|restart)`. A start takes a moment,
- * and an agent with a start failure (`brittle`) fails it.
+ * and fails while the agent's `providers.toml` names a model its provider
+ * doesn't offer, as brittle's does.
  */
 async function runAgentAction(ctx: RouteContext): Promise<void> {
   const agent = namedAgent(ctx);
@@ -256,8 +258,10 @@ async function runAgentAction(ctx: RouteContext): Promise<void> {
     if (action === "restart" && agent.runState === "running") await stopAgent(hub, agent);
     hub.transition(agent, "starting");
     await hub.env.sleep(STARTUP_MS);
-    if (agent.startFailure !== null) {
-      agent.lastError = { ...agent.startFailure, at: hub.env.clock.iso() };
+    const [problem] = modelProblems(agent.state.providersToml);
+    if (problem !== undefined) {
+      const failure = providersStartFailure(agent.name, problem.message);
+      agent.lastError = { ...failure, at: hub.env.clock.iso() };
       hub.transition(agent, "failed");
     } else {
       hub.transition(agent, "running");

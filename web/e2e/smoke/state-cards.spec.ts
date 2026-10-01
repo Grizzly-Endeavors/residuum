@@ -75,11 +75,13 @@ test("Fix settings opens brittle's settings where the problem shows", async ({ p
   await page.goto("/agent/brittle");
   await card(page, "brittle couldn't start").getByRole("button", { name: "Fix settings" }).click();
 
-  // The mock's validate endpoints report nothing a form holds, so it lands on Raw config.
-  await expect(page).toHaveURL(/\/agent\/brittle\?settings=brittle\/raw$/);
+  // The check names brittle's main model, so it lands on Model with that field flagged.
+  await expect(page).toHaveURL(/\/agent\/brittle\?settings=brittle\/model$/);
+  const settings = page.getByRole("dialog", { name: "Settings" });
+  await expect(settings.getByRole("heading", { name: "Model", level: 2 })).toBeVisible();
   await expect(
-    page.getByRole("dialog", { name: "Settings" }).getByRole("heading", { name: "Raw config" }),
-  ).toBeVisible();
+    settings.getByRole("region", { name: "Main model" }).getByRole("combobox", { name: "Model" }),
+  ).toHaveAttribute("aria-invalid", "true");
 });
 
 test("a stopped agent offers Start and Start automatically", async ({ page }) => {

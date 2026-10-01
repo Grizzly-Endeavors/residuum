@@ -42,7 +42,10 @@
     variant="quiet"
     size="sm"
     icon="sliders"
-    onclick={() => void router.switchSettingsSection("model")}
+    onclick={() => {
+      scope.requestFocus({ kind: "role", role: "subconscious" });
+      void router.switchSettingsSection("model");
+    }}
   >
     Choose the model that reviews replies
   </Button>
