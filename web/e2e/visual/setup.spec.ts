@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "../support/fixtures";
+import { expectSetupOpen } from "../support/lazy";
 import { expectScreenshot } from "../support/screenshot";
 
 /**
@@ -27,6 +28,7 @@ test.describe("setup wizard", { tag: "@visual" }, () => {
   test("every step", async ({ page, mock }) => {
     await mock.post("/api/mock/reset", { data: { setup: true } });
     await page.goto("/");
+    await expectSetupOpen(page);
 
     await capture(page, "Welcome to Residuum", "setup-welcome");
     await page.getByRole("button", { name: "Next" }).click();

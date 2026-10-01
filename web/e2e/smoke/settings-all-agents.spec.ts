@@ -1,6 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
+import { expectSettingsOpen } from "../support/lazy";
 
 /** The All agents scope's General, Residuum Cloud, Updates, Session limits and Diagnostics sections. */
 
@@ -17,7 +18,7 @@ async function hubConfig(page: Page): Promise<string> {
 
 async function openSection(page: Page, section: string): Promise<void> {
   await page.goto(`/home?settings=_all/${section}`);
-  await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
+  await expectSettingsOpen(page);
 }
 
 /** Record what the page opens in a new tab, since the relay's sign-in page can't load here. */

@@ -1,6 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
+import { expectFileOpen } from "../support/lazy";
 
 /**
  * Files and Shared files: the tree, the editor in the context panel, rename,
@@ -38,9 +39,8 @@ async function onDisk(page: Page, path: string): Promise<string> {
 
 async function openFile(page: Page, isMobile: boolean, name: string): Promise<Locator> {
   await row(page, name).click();
-  const panel = filePanel(page, isMobile, name);
-  await expect(editor(panel, name)).toBeVisible();
-  return panel;
+  await expectFileOpen(page, name);
+  return filePanel(page, isMobile, name);
 }
 
 async function rowMenu(page: Page, name: string): Promise<void> {

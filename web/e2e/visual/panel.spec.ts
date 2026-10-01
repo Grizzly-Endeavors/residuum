@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "../support/fixtures";
+import { expectFileOpen } from "../support/lazy";
 import { expectScreenshot } from "../support/screenshot";
 
 /**
@@ -22,9 +23,7 @@ test.describe("context panel", { tag: "@visual" }, () => {
   test("a file beside the chat, or over it on a phone", async ({ page }) => {
     await page.goto("/agent/atlas?panel=file:team/wiki/index.md");
     await expect(page.getByRole("heading", { name: "index.md" })).toBeVisible();
-    await expect(page.getByRole("textbox", { name: "Contents of index.md" })).toHaveValue(
-      /# Wiki Index/,
-    );
+    await expect(await expectFileOpen(page, "index.md")).toHaveValue(/# Wiki Index/);
     await panelScreenshot(page, "panel-file");
   });
 
@@ -40,7 +39,7 @@ test.describe("context panel", { tag: "@visual" }, () => {
     await page.setViewportSize({ width: 1000, height: 760 });
     await page.goto("/agent/scout/schedule?panel=file:SOUL.md");
     await expect(page.getByRole("heading", { name: "Pulses" })).toBeVisible();
-    await expect(page.getByRole("textbox", { name: "Contents of SOUL.md" })).toHaveValue(/# Soul/);
+    await expect(await expectFileOpen(page, "SOUL.md")).toHaveValue(/# Soul/);
     await panelScreenshot(page, "panel-medium");
   });
 });

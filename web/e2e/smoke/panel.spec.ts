@@ -1,6 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
+import { expectFileOpen } from "../support/lazy";
 
 /**
  * The context panel: opened and closed by link and by Back, resized at wide
@@ -109,9 +110,7 @@ test("a linked file opens in the panel, and Esc closes it by replacing the URL",
   const panel = contextPanel(page, isMobile, "index.md");
   await expect(panel).toBeVisible();
   await expect(panel.getByText("team/wiki/index.md").first()).toBeVisible();
-  await expect(panel.getByRole("textbox", { name: "Contents of index.md" })).toHaveValue(
-    /# Wiki Index/,
-  );
+  await expect(await expectFileOpen(page, "index.md")).toHaveValue(/# Wiki Index/);
   await scanPanel(page, isMobile);
 
   await page.keyboard.press("Escape");
@@ -125,10 +124,8 @@ test("a linked file opens in the panel, and Esc closes it by replacing the URL",
 
 test("on Shared files, a file is read from the team's folder", async ({ page, isMobile }) => {
   await page.goto("/team/files?panel=file:wiki/index.md");
-  const panel = contextPanel(page, isMobile, "index.md");
-  await expect(panel.getByRole("textbox", { name: "Contents of index.md" })).toHaveValue(
-    /# Wiki Index/,
-  );
+  await expect(contextPanel(page, isMobile, "index.md")).toBeVisible();
+  await expect(await expectFileOpen(page, "index.md")).toHaveValue(/# Wiki Index/);
 });
 
 // Each URL, and where it is corrected to.
@@ -141,16 +138,17 @@ const CORRECTIONS: readonly (readonly [from: string, to: string])[] = [
   ["/team/workbench?panel=file:SOUL.md", "/team/workbench"],
 ];
 
-test("a panel value that is invalid, or that its place can't show, is removed", async ({
-  page,
-}) => {
+// One test for each URL: every one is a full page load, so a single test over all of them spends its timeout on the sum of the loads.
+test.describe("a panel value that is invalid, or that its place can't show, is removed", () => {
   for (const [from, to] of CORRECTIONS) {
-    await page.goto(from);
-    await expect.poll(() => address(page), from).toBe(to);
-    await expect(page.getByRole("main")).toBeVisible();
-    // Home has a complementary landmark of its own, so the panel is told apart by its way out.
-    await expect(page.getByRole("button", { name: "Close panel", exact: true })).toHaveCount(0);
-    await expect(page.locator("[data-overlay-host] dialog")).toHaveCount(0);
+    test(`${from} is corrected to ${to}`, async ({ page }) => {
+      await page.goto(from);
+      await expect.poll(() => address(page), from).toBe(to);
+      await expect(page.getByRole("main")).toBeVisible();
+      // Home has a complementary landmark of its own, so the panel is told apart by its way out.
+      await expect(page.getByRole("button", { name: "Close panel", exact: true })).toHaveCount(0);
+      await expect(page.locator("[data-overlay-host] dialog")).toHaveCount(0);
+    });
   }
 });
 

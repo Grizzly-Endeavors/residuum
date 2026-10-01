@@ -1,6 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
+import { expectSettingsOpen } from "../support/lazy";
 
 /**
  * The state card an agent's Chat shows in place of the composer while the
@@ -77,7 +78,7 @@ test("Fix settings opens brittle's settings where the problem shows", async ({ p
 
   // The check names brittle's main model, so it lands on Model with that field flagged.
   await expect(page).toHaveURL(/\/agent\/brittle\?settings=brittle\/model$/);
-  const settings = page.getByRole("dialog", { name: "Settings" });
+  const settings = await expectSettingsOpen(page);
   await expect(settings.getByRole("heading", { name: "Model", level: 2 })).toBeVisible();
   await expect(
     settings.getByRole("region", { name: "Main model" }).getByRole("combobox", { name: "Model" }),
