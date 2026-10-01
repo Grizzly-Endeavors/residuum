@@ -174,6 +174,8 @@ describe("what each scope owns", () => {
     "system/timezone",
     "mcp-catalog",
     "agents",
+    "push/key",
+    "push/devices",
     "inbox-not-really",
   ])("answers 404 for an agent's /%s, which isn't its own", (route) => {
     const scoped = scopeRequest(hub, `/api/agents/atlas/${route}`, query);
@@ -191,6 +193,9 @@ describe("what each scope owns", () => {
     "mcp-catalog",
     "providers/models",
     "checkpoints/stats",
+    "push/key",
+    "push/devices",
+    "push/devices/push-device-1/test",
   ])("gives the hub /%s", (route) => {
     expect(scopeRequest(hub, `/api/hub/${route}`, query)).toEqual({
       state: hub.hubState,

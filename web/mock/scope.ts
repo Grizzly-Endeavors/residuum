@@ -15,14 +15,14 @@ const REPAIR_ROUTES = /^\/(config|providers|mcp|workspace|checkpoints)(\/|$)/;
  * - An agent: its status, files, config, conversation, sessions, schedule,
  *   inbox, model calls, and the A2A routes that describe it.
  * - The hub: secrets and keys, the cloud tunnel, updates, tracing, the
- *   timezone and MCP catalog, onboarding's provider lookup, and the `hub` and
- *   `team` checkpoint repositories.
+ *   timezone and MCP catalog, onboarding's provider lookup, Web Push, and the
+ *   `hub` and `team` checkpoint repositories.
  * - The team: the workbench. Team files keep their own spelling.
  */
 const AGENT_ROUTES =
   /^\/(status|config|providers|mcp|workspace|checkpoints|chat|usage|inbox|agent-inbox|sessions|scheduled|files|memory|model|a2a\/(status|card|agents|outbound))(\/|$)/;
 const HUB_ROUTES =
-  /^\/(secrets|agent-keys|a2a\/keys|cloud|update|tracing|system|mcp-catalog|providers\/models|shutdown|checkpoints)(\/|$)/;
+  /^\/(secrets|agent-keys|a2a\/keys|cloud|update|tracing|system|mcp-catalog|providers\/models|shutdown|checkpoints|push)(\/|$)/;
 const TEAM_ROUTES = /^\/workbench(\/|$)/;
 
 function notInScope(path: string, owner: string): ScopeRefusal {
