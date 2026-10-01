@@ -16,7 +16,8 @@
 
   // Every agent in one aligned table: what it is, its state, what it is doing
   // and said last, how many sessions it runs, and what it runs next. A row
-  // opens the agent's chat. On phones each row is a card.
+  // opens the agent's chat. The board's own width picks its layout: Next up
+  // goes under 720px, and under 560px, on phones, each row is a card.
 
   let { now }: { now: number } = $props();
 </script>
@@ -279,7 +280,8 @@
     }
   }
 
-  @media (max-width: 760px) {
+  /* Too narrow for aligned columns, a phone or a narrow window: one card per agent. */
+  @container home-board (max-width: 559px) {
     .board-head {
       display: none;
     }
