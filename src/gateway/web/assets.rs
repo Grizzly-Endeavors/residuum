@@ -273,6 +273,7 @@ mod tests {
             ("/index.html", "text/html"),
             ("/mcp-catalog.json", "application/json"),
             ("/manifest.webmanifest", "application/manifest+json"),
+            ("/sw.js", "text/javascript"),
             ("/favicon.svg", "image/svg+xml"),
             ("/icons/icon-192.png", "image/png"),
         ] {
@@ -301,6 +302,7 @@ mod tests {
     async fn non_html_embedded_files_revalidate_against_a_strong_etag() {
         for path in [
             "/manifest.webmanifest",
+            "/sw.js",
             "/favicon.svg",
             "/mcp-catalog.json",
             "/icons/icon-192.png",
@@ -404,7 +406,7 @@ mod tests {
 
     #[tokio::test]
     async fn matching_if_none_match_gets_a_bodyless_304() {
-        for path in ["/manifest.webmanifest", "/icons/icon-192.png"] {
+        for path in ["/manifest.webmanifest", "/sw.js", "/icons/icon-192.png"] {
             let etag = header_of(&get(path, &[]).await, "etag")
                 .unwrap()
                 .to_string();
@@ -516,6 +518,44 @@ mod tests {
         let brotlied = body_of(brotli).await;
         assert_ne!(brotlied, original);
         assert!(brotlied.len() < original.len(), "brotli shrinks the bundle");
+    }
+
+    /// The service worker's script sits at the root, which makes its scope the
+    /// whole app with no `Service-Worker-Allowed` header. A browser rejects a
+    /// worker script that isn't served as JavaScript, so a missing script must
+    /// answer 404 rather than the app shell.
+    #[tokio::test]
+    async fn the_service_worker_is_a_root_script_the_browser_revalidates() {
+        let original = embedded_bytes("sw.js");
+        assert!(
+            original.starts_with(b"/* residuum-sw "),
+            "the build names the worker's version on its first line"
+        );
+
+        let plain = get("/sw.js", &[]).await;
+        assert_eq!(plain.status(), StatusCode::OK);
+        assert_eq!(header_of(&plain, "content-type"), Some("text/javascript"));
+        assert_eq!(header_of(&plain, "cache-control"), Some("no-cache"));
+        assert!(
+            plain.headers().get("etag").is_some(),
+            "a 304 needs a validator"
+        );
+        assert_eq!(
+            body_of(plain).await,
+            original,
+            "the script, not the app shell"
+        );
+
+        let gzip = get("/sw.js", &[("accept-encoding", "gzip")]).await;
+        assert_eq!(header_of(&gzip, "content-encoding"), Some("gzip"));
+        assert_eq!(header_of(&gzip, "cache-control"), Some("no-cache"));
+
+        let nested = get("/agent/sw.js", &[]).await;
+        assert_eq!(
+            nested.status(),
+            StatusCode::NOT_FOUND,
+            "only the root script exists, so no other path answers as a worker"
+        );
     }
 
     #[tokio::test]

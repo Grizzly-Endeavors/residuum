@@ -38,23 +38,29 @@ test.describe("the production build", { tag: "@preview" }, () => {
     expect(loaded(requested, "SettingsModal")).toBe(true);
   });
 
-  test("tells the person when the Settings code can't load, and leaves Settings closed", async ({
-    page,
-    isMobile,
-  }) => {
-    await page.goto("/agent/atlas");
-    await expect(page.getByRole("heading", { name: "atlas", level: 1 })).toBeVisible();
-    await page.route(/\/assets\/SettingsModal-[^/]+\.js$/, (route) => route.abort());
+  test.describe("without the service worker", () => {
+    // The worker holds every chunk and answers for it, so a request the test aborts is never made. Where
+    // no worker runs (a browser without one, or the first load before it is ready) the fetch can fail.
+    test.use({ serviceWorkers: "block" });
 
-    const control = isMobile
-      ? page.getByRole("navigation", { name: "Main" })
-      : page.getByRole("navigation", { name: "Places and agents" });
-    await control.getByRole("button", { name: "Settings" }).click();
+    test("tells the person when the Settings code can't load, and leaves Settings closed", async ({
+      page,
+      isMobile,
+    }) => {
+      await page.goto("/agent/atlas");
+      await expect(page.getByRole("heading", { name: "atlas", level: 1 })).toBeVisible();
+      await page.route(/\/assets\/SettingsModal-[^/]+\.js$/, (route) => route.abort());
 
-    await expect(page.getByText(/Couldn't open Settings\./)).toBeVisible();
-    await expect(page.getByRole("dialog", { name: "Settings" })).toBeHidden();
-    // The URL went back to the place, so the next press asks again.
-    await expect.poll(() => new URL(page.url()).search).toBe("");
+      const control = isMobile
+        ? page.getByRole("navigation", { name: "Main" })
+        : page.getByRole("navigation", { name: "Places and agents" });
+      await control.getByRole("button", { name: "Settings" }).click();
+
+      await expect(page.getByText(/Couldn't open Settings\./)).toBeVisible();
+      await expect(page.getByRole("dialog", { name: "Settings" })).toBeHidden();
+      // The URL went back to the place, so the next press asks again.
+      await expect.poll(() => new URL(page.url()).search).toBe("");
+    });
   });
 
   test("loads the palette's code the first time it opens", async ({ page, isMobile }) => {

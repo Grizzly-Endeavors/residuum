@@ -23,7 +23,7 @@ export default tseslint.config(
 
   // ── TypeScript files ────────────────────────────────────────────────
   {
-    files: ["src/**/*.ts", "mock/**/*.ts", "e2e/**/*.ts"],
+    files: ["src/**/*.ts", "build/**/*.ts", "mock/**/*.ts", "e2e/**/*.ts"],
     languageOptions: {
       parserOptions: {
         projectService: true,

@@ -152,11 +152,13 @@ The web app is embedded in the binary (`web/dist/`, served by `src/gateway/web/a
 |-------|-----------------|-----------|
 | Everything under `/assets/`, which the build names by content hash | `public, max-age=31536000, immutable` | None. |
 | HTML documents: `index.html`, also when it answers a client route | `no-cache` | None. |
-| Every other embedded file: `/manifest.webmanifest`, the icons, `favicon.svg`, `mcp-catalog.json` | `no-cache` | A strong `ETag` from a hash of the file's content. |
+| Every other embedded file: `/sw.js`, `/manifest.webmanifest`, the icons, `favicon.svg`, `mcp-catalog.json` | `no-cache` | A strong `ETag` from a hash of the file's content. |
 
 A `GET` or `HEAD` for a file with an `ETag` whose `If-None-Match` lists that `ETag` (or `*`; a `W/` prefix on the client's copy is ignored) gets `304` with no body, carrying the `ETag`, `Cache-Control`, and `Vary`. An HTML document has no `ETag` and never answers `304`, so a browser always fetches it whole. The relay rewrites top-level HTML on the way out (see below), and a `304` would leave the browser showing its old rewrite.
 
 JavaScript, CSS, JSON, SVG, and the web manifest are compressed with brotli or gzip, whichever the request's `Accept-Encoding` prefers. They carry `Vary: Accept-Encoding` whether or not the request accepted compression, and a file has the same `ETag` in every encoding. HTML and images are never compressed. HTML stays plain and uncached because Residuum Cloud's relay inserts its instance switcher before the `</body>` of a top-level page: it finds that tag by searching the body as text, and the switcher shows which instances are connected at the moment of the request. API responses are not compressed.
+
+The web app's service worker is the embedded file `/sw.js`. It is served from the root, so its scope is the whole app and the response needs no `Service-Worker-Allowed` header, and it is served as JavaScript with the `no-cache` and `ETag` of any other root file, which is how a browser sees that the app was rebuilt. A browser registers it only from a secure context (HTTPS, or localhost). It holds the app shell and never handles `/api`, the sockets, `/webhook` or `/cloud/callback`.
 
 Through Residuum Cloud the tunnel's loopback client passes the browser's `Accept-Encoding` and `If-None-Match` to this router unchanged and returns the answer's headers and body as received, without decompressing (see [Residuum Cloud Tunnel](cloud-tunnel.md)).
 

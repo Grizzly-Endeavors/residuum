@@ -62,4 +62,45 @@ describe("NavigationGuard", () => {
     guard.onBeforeUnload(dirty);
     expect(dirty.defaultPrevented).toBe(true);
   });
+
+  describe("a reload the app starts itself", () => {
+    const unload = (guard: NavigationGuard): boolean => {
+      const event = new Event("beforeunload", { cancelable: true }) as BeforeUnloadEvent;
+      guard.onBeforeUnload(event);
+      return event.defaultPrevented;
+    };
+
+    it("goes ahead without asking when nothing would be lost", async () => {
+      const guard = new NavigationGuard();
+      const confirm = vi.fn((_losses: readonly string[]) => Promise.resolve(true));
+      guard.setConfirm(confirm);
+      await expect(guard.confirmReload()).resolves.toBe(true);
+      expect(confirm).not.toHaveBeenCalled();
+    });
+
+    it("asks what the reload would lose, and stops when the person keeps editing", async () => {
+      const guard = new NavigationGuard();
+      guard.register((target) => (target === null ? "an unsaved file" : null));
+      const confirm = vi.fn((_losses: readonly string[]) => Promise.resolve(false));
+      guard.setConfirm(confirm);
+      await expect(guard.confirmReload()).resolves.toBe(false);
+      expect(confirm).toHaveBeenCalledWith(["an unsaved file"]);
+      // Still guarded: the person's own reload gets the browser's prompt.
+      expect(unload(guard)).toBe(true);
+    });
+
+    it("stops the browser's prompt from asking a second time once the person has agreed", async () => {
+      const guard = new NavigationGuard();
+      guard.register((target) => (target === null ? "an unsaved file" : null));
+      guard.setConfirm(() => Promise.resolve(true));
+      await expect(guard.confirmReload()).resolves.toBe(true);
+      expect(unload(guard)).toBe(false);
+    });
+
+    it("refuses when something would be lost and there is no way to ask", async () => {
+      const guard = new NavigationGuard();
+      guard.register(() => "an unsaved file");
+      await expect(guard.confirmReload()).resolves.toBe(false);
+    });
+  });
 });

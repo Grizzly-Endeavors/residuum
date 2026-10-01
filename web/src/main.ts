@@ -4,6 +4,7 @@ import "./styles/index.css";
 import "./styles/ui-base.css";
 import { mount } from "svelte";
 import App from "./App.svelte";
+import { startServiceWorker } from "./lib/app-update.svelte";
 import { startConfigSync } from "./lib/config-sync";
 import { startInstallOffer } from "./shell/install-offer";
 
@@ -23,5 +24,7 @@ if (__UI_GALLERY__ && window.location.pathname === UI_GALLERY_PATH) {
   // Config changes made outside this page reach the views that show them.
   startConfigSync();
   startInstallOffer();
+  // Builds only: the app opens with no network, and a rebuilt app shows Update ready.
+  startServiceWorker();
   mount(App, { target });
 }
