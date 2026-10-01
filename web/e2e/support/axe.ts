@@ -46,12 +46,32 @@ function describeViolation(violation: Violation): string {
   return `${violation.id} [${impact}]: ${violation.help}, at ${nodes}${more}. ${violation.helpUrl}`;
 }
 
-/** Scan `page` with axe and fail on serious and critical violations that aren't allowed. */
+/**
+ * Wait for every animation that ends to finish. A layer still fading in has
+ * its text at part opacity, which axe measures as low contrast.
+ */
+async function settleAnimations(page: Page): Promise<void> {
+  await page.evaluate(() =>
+    Promise.all(
+      document
+        .getAnimations()
+        .filter((animation) => animation.effect?.getComputedTiming().endTime !== Infinity)
+        .map((animation) => animation.finished.catch(() => undefined)),
+    ),
+  );
+}
+
+/**
+ * Scan `page` with axe and fail on serious and critical violations that aren't
+ * allowed. Entrance animations finish first; spinners and other endless ones
+ * are left running.
+ */
 export async function expectNoAxeViolations(
   page: Page,
   options: AxeScanOptions = {},
 ): Promise<void> {
   const { allow = [], within } = options;
+  await settleAnimations(page);
   const builder = new AxeBuilder({ page });
   if (within !== undefined) builder.include(within);
   const results = await builder.analyze();

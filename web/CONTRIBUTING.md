@@ -133,7 +133,7 @@ web/
 │   │   └── setup/                  # Setup wizard steps
 │   ├── test/                 # Component-test helpers and harnesses
 │   └── lib/
-│       ├── ui/                   # Primitive controls and overlays (buttons, fields, badges, dialogs, sheets…); the overlay stack in ui/overlay/; gallery at /dev/gallery (see AESTHETIC.md)
+│       ├── ui/                   # Primitive controls and overlays (buttons, fields, badges, dialogs, sheets, menus, popovers, tooltips, toasts…); the overlay stack and float placement in ui/overlay/; gallery at /dev/gallery (see AESTHETIC.md)
 │       ├── icons/                # The Icon component and icon set
 │       ├── api.ts                # REST API client (typed fetch wrappers); every agent-scoped call takes the agent name first
 │       ├── paths.ts              # API and WebSocket URL builders for the agent, hub and team scopes
@@ -154,6 +154,8 @@ web/
 │       ├── workbench-bridge.ts   # What workbench artifacts may call, relayed from their frames on the artifacts origin
 │       ├── workbench.ts          # Where artifacts are served: relay origin or this host on the artifacts port
 │       ├── time.ts               # Relative times ("5m ago")
+│       ├── toast.svelte.ts       # Toasts: kinds, timings, actions (ui/ToastRegion draws them)
+│       ├── notifications.svelte.ts # What is surfaced to the user: a toast, kept in the Recent notifications history
 │       ├── generated/            # Protocol types generated from Rust (cargo test --test ts_export)
 │       ├── types.ts              # TypeScript types for API and messages
 │       ├── commands.ts           # Slash command parser (/help, /reload, etc.)
@@ -382,7 +384,7 @@ test("a teammate's message shows in the chat", async ({ page, mock }) => {
 
 `mock.post(path, { params, data })` calls one of the mock's test controls (see [Deterministic mode](#deterministic-mode)) and fails the test on any answer but 2xx. Locate elements by role and accessible name, and wait with web-first assertions (`expect(locator).toBeVisible()`), never with fixed sleeps. The mock runs with zero delays and a fixed clock, so what a spec waits for arrives at once and looks the same on every run; `POST /api/mock/delays` slows it down for a spec about waiting.
 
-**Accessibility.** `expectNoAxeViolations(page)` from `e2e/support/axe.ts` scans the page as it stands and fails on serious and critical violations, naming the rule and the elements. Put the page in the state under test first (open the menu, then scan), and scan each place and overlay a change touches. `{ within: "[role=dialog]" }` limits the scan to a region. The full result is attached to the test. A screen that is known to fail and that a later change replaces lists its violations in the spec, each with the reason and the change that removes it: `{ allow: [{ rule: "color-contrast", reason: "legacy header, removed with the new shell" }] }`. The scan fails when an allowed rule no longer fires, so an entry goes away with the screen it excuses. Minor and moderate findings don't fail; they are in the attached result.
+**Accessibility.** `expectNoAxeViolations(page)` from `e2e/support/axe.ts` scans the page as it stands and fails on serious and critical violations, naming the rule and the elements. Put the page in the state under test first (open the menu, then scan), and scan each place and overlay a change touches. The scan waits for animations that end, such as an overlay fading in, since text at part opacity reads as low contrast. `{ within: "[role=dialog]" }` limits the scan to a region. The full result is attached to the test. A screen that is known to fail and that a later change replaces lists its violations in the spec, each with the reason and the change that removes it: `{ allow: [{ rule: "color-contrast", reason: "legacy header, removed with the new shell" }] }`. The scan fails when an allowed rule no longer fires, so an entry goes away with the screen it excuses. Minor and moderate findings don't fail; they are in the attached result.
 
 **Visual.** `expectScreenshot(page, "name")` from `e2e/support/screenshot.ts` compares the page with the baseline `name` in `e2e/__screenshots__/`, one per project. Wait for the page to reach the state under test first; the helper waits only for fonts. Put `@visual` on the test, so it runs in the `visual-*` projects, where the page's clock is frozen at the mock's clock (so "2h ago" reads the same on every run) and reduced motion is on. The helper turns off animations and hides the caret, and it paints over anything carrying a `data-visual-mask` attribute; pass `mask: [locator]` to cover a region for one screenshot. Compare the viewport unless a spec needs `fullPage: true`.
 
