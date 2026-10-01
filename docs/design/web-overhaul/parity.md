@@ -14,7 +14,7 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [x] Status lines with expandable details (session views)
 - [x] Day dividers; episode dividers ("ep-NNN · date") above lazily loaded episodes
 - [x] Compressed-history marker with an explanation — **Changed:** explained in plain words inline
-- [ ] Tool calls with per-tool argument summaries and shaped results (text, JSON, file with gutter, list; long results collapse) — **Changed:** inside the activity line's step details; always available, no `/verbose`
+- [x] Tool calls with per-tool argument summaries and shaped results (text, JSON, file with gutter, list; long results collapse) — **Changed:** inside the activity line's step details; always available, no `/verbose`; **Fix:** the summaries match the real tool names (`read_file`, `write_file`, `edit_file`)
 - [x] Agent file attachments: caption, inline image, audio player, download with filename and size
 - [x] Empty state — **Fix:** exactly one empty state (today two render)
 - [x] Lazy loading of older episodes near the top, with a loading slot, stable scroll anchor, and fill-until-overflow
@@ -24,7 +24,7 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [x] Sending scrolls to the bottom
 - [x] Reconnect reconciliation: missed messages merge in; otherwise reload that keeps the in-flight turn and re-anchors a scrolled-up reader
 - [x] Undo this turn on user messages whose turn changed files; reports reverted and skipped paths
-- [ ] Live turn indicator: elapsed, output, tool-call count, stop hint — **Changed:** part of the live activity line; token figures move to the conversation-size view
+- [x] Live turn indicator: elapsed, output, tool-call count, stop hint — **Changed:** part of the live activity line (elapsed, each step as it runs, Stop), in chat and in session transcripts; token figures move to the conversation-size view
 - [x] Main history hides background turns unless they started with an agent message
 
 ## Composer → Agent Chat composer (design §4; W25, with the action registry from W21)
@@ -32,7 +32,7 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [ ] Auto-growing input; Enter sends, Shift+Enter new line
 - [x] Slash autocomplete when `/` is the first character: arrow keys, Tab completes, Enter runs, Esc closes; toolbar button toggles the full list; click outside closes — **Changed:** draws from the action registry
 - [x] `/help` — **Changed:** Keyboard shortcuts dialog / palette
-- [ ] `/verbose` — **Dropped:** tool activity is always shown, collapsed by default
+- [x] `/verbose` — **Dropped:** tool activity is always shown, collapsed by default
 - [x] `/status` — **Changed:** palette action "Show connection status"
 - [x] `/observe`, `/reflect`, `/reload`, `/stop` — **Changed:** registry actions with plain labels ("Summarize older messages now", "Condense memories now", "Reload settings", "Stop reply"), still reachable from `/`
 - [x] `/context` — **Changed:** "Show conversation size" opens the context panel
@@ -40,7 +40,7 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [x] Unknown-command error
 - [ ] Image attach by button, paste, drag-and-drop with highlight; JPEG/PNG/GIF/WebP ≤ 5 MB; rejection message; removable thumbnails; image-only sends
 - [ ] Send becomes Stop while running and empty; typing restores Send for mid-turn steering
-- [ ] Esc stops a running turn while the composer has focus
+- [x] Esc stops a running turn while the composer has focus — **Fix:** an open overlay takes that Esc instead
 - [x] Feedback entry point — **Changed:** help menu and palette
 - [ ] Model control: current main model, choose from the main provider's models, writes `models.main` keeping overrides, then reloads — **Fix:** refreshes after settings changes; goes through the config write coordinator
 - [ ] Thinking control: Off / Low / Med / High; clicking the active level clears it — **Fix:** refreshes after settings changes

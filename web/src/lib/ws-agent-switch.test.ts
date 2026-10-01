@@ -205,7 +205,10 @@ describe("switching agents leaves nothing of the old agent behind", () => {
     expect(ws.transport.pendingCount).toBe(0);
     FakeWebSocket.last.simulateOpen();
 
-    expect(FakeWebSocket.last.sent).toEqual([]);
+    // Only the frame every connection starts with: the tool frames turned on.
+    expect(FakeWebSocket.last.sent).toEqual([
+      JSON.stringify({ type: "set_verbose", enabled: true }),
+    ]);
   });
 
   it("ignores frames that arrive from the old agent's socket after the switch", async () => {

@@ -257,6 +257,10 @@ describe("agent socket", () => {
         "broadcast_response",
         "tool_call",
         "tool_result",
+        "tool_call",
+        "tool_call",
+        "tool_result",
+        "tool_result",
         "response",
         "turn_ended",
       ]);
@@ -282,13 +286,16 @@ describe("agent socket", () => {
       });
       const history = harness.hub.agents.get("atlas")?.state.extraRecent ?? [];
       // Every agent but scout opens its conversation with a greeting.
-      expect(history.slice(-4).map((m) => m.role)).toEqual([
+      expect(history.slice(-7).map((m) => m.role)).toEqual([
         "user",
         "assistant",
         "tool",
         "assistant",
+        "tool",
+        "tool",
+        "assistant",
       ]);
-      expect(history.at(-4)?.content).toBe("hello");
+      expect(history.at(-7)?.content).toBe("hello");
     });
   });
 });

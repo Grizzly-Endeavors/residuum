@@ -484,7 +484,11 @@ export interface ToolCallState {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
-  status: "running" | "done" | "error";
+  /**
+   * `error` when the live result said the call failed (history doesn't keep
+   * that); `stopped` when its turn was stopped or cut off before it finished.
+   */
+  status: "running" | "done" | "error" | "stopped";
   result?: string;
 }
 
