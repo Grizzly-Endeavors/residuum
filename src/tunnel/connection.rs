@@ -309,6 +309,7 @@ where
     } = ctx;
     let mut local_ws_channels: HashMap<String, mpsc::Sender<String>> = HashMap::new();
     let mut last_frame = tokio::time::Instant::now();
+    let mut agents_open = true;
 
     // Channel for what local sockets report — spawned tasks send back each
     // channel's sender when it opens and its id when it closes, so the frame
@@ -379,13 +380,15 @@ where
             Some(request_id) = a2a_done_rx.recv() => {
                 a2a_streams.remove(&request_id);
             }
-            changed = agents_rx.changed() => {
+            changed = agents_rx.changed(), if agents_open => {
                 if changed.is_ok() {
                     send_agents_update(write, agents_rx).await;
                 } else {
                     // The hub dropped its side: no further changes will
-                    // come, so stop polling a closed channel.
-                    std::future::pending::<()>().await;
+                    // come, so stop polling a closed channel. Waiting on it
+                    // here instead would stop the loop from serving the relay.
+                    agents_open = false;
+                    debug!("agent list sender dropped; no further agent updates will be sent");
                 }
             }
             _ = shutdown_rx.changed() => {
@@ -1433,6 +1436,27 @@ mod tests {
         assert!(extra.is_err(), "changes made together must be one update");
 
         harness.stop().await;
+    }
+
+    #[tokio::test]
+    async fn the_loop_keeps_running_after_the_agent_list_sender_is_dropped() {
+        let LoopHarness {
+            relay: _relay,
+            agents_tx,
+            shutdown_tx,
+            task,
+        } = spawn_idle_loop(vec![agent_info("scout", true)]).await;
+
+        drop(agents_tx);
+        // Give the loop time to see the sender go before it is asked to stop.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        shutdown_tx.send(true).unwrap();
+        let exit = with_timeout(task).await.unwrap();
+        assert!(
+            matches!(exit, LoopExit::Shutdown),
+            "a closed agent list must not stop the loop from serving the relay"
+        );
     }
 
     #[test]
