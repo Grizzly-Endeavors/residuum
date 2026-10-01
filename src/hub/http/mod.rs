@@ -16,8 +16,10 @@
 //! - `/cloud/callback`, and the embedded web app for every other path.
 //!
 //! The cross-site guard covers the whole app. The remote-control guard covers
-//! hub shutdown and cloud disconnect.
+//! hub shutdown and cloud disconnect. Requests the artifacts listener forwards
+//! here are refused on the routes in [`artifacts_origin`].
 
+mod artifacts_origin;
 mod dispatch;
 mod error;
 mod events;
@@ -78,6 +80,9 @@ pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Rout
         .merge(dispatch::routes(directory))
         .route("/api/sessions", post(sessions_need_an_agent))
         .fallback_service(web::static_assets())
+        .layer(axum::middleware::from_fn(
+            artifacts_origin::refuse_blocked_artifact_calls,
+        ))
         .layer(axum::middleware::from_fn(
             crate::gateway::cross_site::reject_cross_site_requests,
         ));

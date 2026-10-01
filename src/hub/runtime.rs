@@ -20,6 +20,7 @@ use crate::gateway::types::{GatewayExit, ReloadReceiver, ReloadSignal, TermSigna
 use crate::inference::EmbeddingProvider;
 use crate::tunnel::TunnelStatus;
 use crate::util::FatalError;
+use crate::workbench::forward::HubApi;
 
 use super::directory::AgentDirectory;
 use super::host::AgentHost;
@@ -273,7 +274,7 @@ impl HubRuntime {
         let tunnel_status_tx = Arc::new(tunnel_status_tx);
 
         let scan = scan_agents(root, &hub_cfg);
-        let (workbench_serving, workbench_shutdown_tx) =
+        let (workbench_serving, workbench_shutdown_tx, workbench_api) =
             start_workbench_listener(root, &hub_cfg, &scan.teams_ports).await;
         let services = HubServices::open(
             root,
@@ -290,16 +291,7 @@ impl HubRuntime {
         .await?;
 
         let host = AgentHost::new(services.clone(), hub_cfg.clone());
-        // The log and its recorder come first, so the hub's startup notices
-        // and every agent's start are in the log: nothing they listen to is
-        // replayed. The boot id is the log's; the hub socket sends it too.
-        let team_events = TeamEventLog::new(uuid::Uuid::new_v4().to_string());
-        record_hub_started(&team_events);
-        let recorder = TeamEventRecorder::spawn(
-            Arc::clone(&team_events),
-            host.subscribe(),
-            host.agent_changes().subscribe(),
-        );
+        let (team_events, recorder) = start_team_event_log(&host);
         host.note_team_embedding(scan.team_embedding).await;
         let agents = host.discover()?;
         tracing::info!(agents = agents.len(), names = %agents.join(", "), "found agents");
@@ -317,6 +309,7 @@ impl HubRuntime {
             reload_tx.clone(),
             setup_done,
         )?;
+        workbench_api.bind(app.clone());
         let server = spawn_http_server(&hub_cfg.gateway, app.clone()).await?;
         let a2a = hub_cfg
             .a2a
@@ -761,9 +754,29 @@ async fn poll_tunnel(tunnel: &mut Option<TunnelTask>) -> Result<(), tokio::task:
     }
 }
 
+/// Create the team event log and start the recorder that fills it.
+///
+/// They come before anything else the host does, so the hub's startup notices
+/// and every agent's start are in the log: nothing the recorder listens to is
+/// replayed. The boot id is the log's; the hub socket sends it too.
+fn start_team_event_log(host: &AgentHost) -> (Arc<TeamEventLog>, TeamEventRecorder) {
+    let team_events = TeamEventLog::new(uuid::Uuid::new_v4().to_string());
+    record_hub_started(&team_events);
+    let recorder = TeamEventRecorder::spawn(
+        Arc::clone(&team_events),
+        host.subscribe(),
+        host.agent_changes().subscribe(),
+    );
+    (team_events, recorder)
+}
+
 /// Start the workbench artifacts listener beside the gateway. Teams' and
 /// A2A's configured ports stay free for them, and so do their defaults, so
 /// enabling either later can't collide with the artifacts listener.
+///
+/// The listener forwards `/api` to the hub router, which needs the listener's
+/// port and so is built after it. The returned handle is where the caller
+/// binds that router once it exists.
 async fn start_workbench_listener(
     root: &Path,
     hub: &HubConfig,
@@ -771,6 +784,7 @@ async fn start_workbench_listener(
 ) -> (
     crate::workbench::server::WorkbenchServing,
     Option<watch::Sender<bool>>,
+    HubApi,
 ) {
     let mut reserved = vec![
         crate::config::DEFAULT_TEAMS_PORT,
@@ -780,13 +794,16 @@ async fn start_workbench_listener(
     reserved.extend_from_slice(teams_ports);
     let workbench_dir =
         crate::config::paths::TeamPaths::new(crate::config::paths::team_dir(root)).workbench_dir();
-    crate::workbench::server::start(
+    let api = HubApi::new();
+    let (serving, shutdown_tx) = crate::workbench::server::start(
         &hub.gateway.bind,
         hub.gateway.port,
         &reserved,
         workbench_dir,
+        api.clone(),
     )
-    .await
+    .await;
+    (serving, shutdown_tx, api)
 }
 
 /// Report what the hub itself found wrong while starting: a fallback to its

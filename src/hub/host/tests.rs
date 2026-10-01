@@ -2457,6 +2457,7 @@ async fn the_team_block_lists_teammates_and_follows_their_state() {
 }
 
 mod agent_watch;
+mod artifacts_origin;
 mod hub_inbox;
 mod lifecycle_tools;
 mod restore;

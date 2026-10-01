@@ -1,6 +1,6 @@
 # Hub HTTP Surface
 
-The hub serves everything the backend offers from one router over its `AgentDirectory` (`src/hub/http/`, built by `hub_router`). Every API path lives under `/api/`. The only paths outside it are the relay callback (`/cloud/callback`), webhooks (`/webhook/{agent}/{name}`), and the embedded web app (see [Embedded web app](#embedded-web-app)), which answers every other path.
+The hub serves everything the backend offers from one router over its `AgentDirectory` (`src/hub/http/`, built by `hub_router`). Every API path lives under `/api/`. The only paths outside it are the relay callback (`/cloud/callback`), webhooks (`/webhook/{agent}/{name}`), and the embedded web app (see [Embedded web app](#embedded-web-app)), which answers every other path. The gateway's listener serves the whole router. The artifacts listener serves its `/api` paths from the same router (see [Request guards](#request-guards)) and nothing else of it.
 
 ## Route layout
 
@@ -44,7 +44,7 @@ The hub serves everything the backend offers from one router over its `AgentDire
 
 `AgentLastError` is `{ message, kind, reason, at }`. `message` is the plain-language text for the user, which wraps the failure with what to do next. `reason` is the underlying error text alone. `kind` says what sort of failure it was, so a client can offer the matching next step: `config` (start-up rejected the agent's configuration), `port_conflict` (another agent holds its Teams port), `crash` (the agent panicked, or its event loop ended on its own), or `other`. `at` is an RFC 3339 time.
 
-`AgentActivity` is `{ busy, busy_since, unread }`. `busy` is true while a main turn runs and `busy_since` is when that turn began, as an RFC 3339 time, or `null` while none runs. `unread` counts main-conversation replies published while no web client had the agent's WebSocket open.
+`AgentActivity` is `{ busy, busy_since, unread }`. `busy` is true while a main turn runs and `busy_since` is when that turn began, as an RFC 3339 time, or `null` while none runs. `unread` counts main-conversation replies published while no web client had the agent's WebSocket open; a socket a workbench page opens through the artifacts origin doesn't count as a web client.
 
 A lifecycle request is always made on the user's behalf. Errors are `{ "error": message }` with `404` for an unknown agent, `400` for an invalid name or request body, `409` for a name that exists or an agent in the wrong state, `503` for `start`, `restart`, or `create` refused because the hub is shutting down (see [hub.md](hub.md#start-up-and-shutdown)), and `500` for a failure the user can read in the message.
 
@@ -104,8 +104,9 @@ A session runs on one agent, so an artifact names it (`residuum.sessions.start({
 
 ## Request guards
 
-- The **cross-site guard** covers every route: state-changing requests and WebSocket upgrades from another site are refused with `403` (see [workbench.md](workbench.md#security-model)).
+- The **cross-site guard** covers every route on both listeners: state-changing requests and WebSocket upgrades from another site are refused with `403` (see [workbench.md](workbench.md#security-model)).
 - The **remote-control guard** covers `POST /api/hub/shutdown` and `POST /api/hub/cloud/disconnect` (see [cloud-tunnel.md](cloud-tunnel.md)): a request that arrived through the relay tunnel is refused with `403`.
+- The **artifacts-origin block list** covers `/api/hub/shutdown`, `/api/hub/stop-all`, `/api/hub/update/check`, `/api/hub/update/apply`, `/api/hub/update/restart` and `/api/hub/config/complete-setup`. The artifacts listener serves `/api` by handing requests to this router in-process, marked by an internal request extension that a client can't send, and a marked request to one of these routes is refused with `403` and `{ "error" }`. A marked agent socket (`/api/agents/{name}/ws`) doesn't count as a client for the agent's unread count or connected state. The same routes work on the gateway. See [API forwarding](workbench.md#api-forwarding).
 
 ## Embedded web app
 
