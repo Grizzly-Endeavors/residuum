@@ -28,9 +28,8 @@
 
   const busy = $derived(agentActions.pendingOf(agent.name));
 
-  /** An agent that is stopping takes none of Start, Stop and Restart until it has stopped. */
   function offered(action: LifecycleAction): boolean {
-    return state !== "stopping" && lifecycleApplies(action, agent.state) && busy === undefined;
+    return lifecycleApplies(action, state) && busy === undefined;
   }
 </script>
 

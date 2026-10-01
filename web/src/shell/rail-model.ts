@@ -1,6 +1,7 @@
 // What the rail shows about each agent, worked out from the hub's agent list:
 // its row's mark, word and badge, and the places listed under it.
 
+import { displayState } from "../lib/agent-display-state";
 import type { AgentActivity, AgentSummary } from "../lib/hub-types";
 import type { IconName } from "../lib/icons";
 import type { AgentPlaceKind } from "../lib/routes";
@@ -67,7 +68,7 @@ export function stateWord(state: StatusDotState): string {
  * that isn't running, then "Working" for a busy agent the user isn't viewing.
  */
 export function agentRowStatus(agent: AgentSummary, context: AgentRowContext): AgentRowStatus {
-  const dot: StatusDotState = context.stopping ? "stopping" : agent.state;
+  const dot = displayState(agent.state, context.stopping);
   const working = dot === "running" && context.activity.busy;
   const unread = context.onItsChat ? 0 : context.activity.unread;
 

@@ -4,7 +4,7 @@
 // that go over its connection need it running.
 
 import type { AppAction } from "./action-registry.svelte";
-import type { AgentState } from "./hub-types";
+import type { AgentDisplayState } from "./agent-display-state";
 import type { NotificationKind } from "./notifications.svelte";
 import type { ClientMessage, ConnectionStatus } from "./types";
 
@@ -13,10 +13,8 @@ export const CHAT_GROUP = "Actions";
 export interface ChatActionContext {
   /** The bound agent, or null before there is one. */
   agent: string | null;
-  /** Its state, or null when the hub hasn't listed it yet. */
-  state: AgentState | null;
-  /** The hub has begun stopping it. */
-  stopping: boolean;
+  /** Its state as shown, or null when the hub hasn't listed it yet. */
+  state: AgentDisplayState | null;
   /** A reply is under way in its chat. */
   replying: boolean;
   /** Tool calls show in its chat. */
@@ -36,7 +34,7 @@ export interface ChatActionContext {
 /** Why an action that goes over the agent's connection can't run, or undefined when it can. */
 export function needsRunningAgent(ctx: ChatActionContext): string | undefined {
   if (ctx.agent === null) return "Open an agent first";
-  if (ctx.stopping) return `${ctx.agent} is stopping`;
+  if (ctx.state === "stopping") return `${ctx.agent} is stopping`;
   if (ctx.state === "starting") return `${ctx.agent} is still starting`;
   if (ctx.state !== "running") return `Start ${ctx.agent} first`;
   return undefined;
@@ -50,7 +48,7 @@ export function connectionStatusMessage(ctx: ChatActionContext): string {
       : "Can't reach Residuum right now. Trying again.";
   if (ctx.agent === null) return hub;
   let agent: string;
-  if (ctx.state !== "running")
+  if (ctx.state !== "running" && ctx.state !== "stopping")
     agent = `${ctx.agent} isn't running, so there's no connection to it.`;
   else if (ctx.agentConnection === "connected") agent = `${ctx.agent} is connected.`;
   else agent = `Reconnecting to ${ctx.agent}. Messages you send will go out once it's back.`;

@@ -27,7 +27,7 @@
   <Inbox {place} />
 {:else if place.kind === "chat"}
   {#key place.agent}
-    <ChatPlace agent={place.agent} />
+    <ChatPlace agent={place.agent} {actions} />
   {/key}
 {:else if place.kind === "activity"}
   {#key place.agent}

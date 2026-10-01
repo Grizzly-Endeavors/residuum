@@ -128,10 +128,12 @@ test("Runtime: a refused save names the problem and keeps the number staged", as
 test("a stopped agent's Memory, Schedule and Runtime stay editable, with nothing asking to start it", async ({
   page,
 }) => {
+  // The chat behind the modal offers Start on drifter's state card; the sections don't.
+  const settings = page.getByRole("dialog", { name: "Settings" });
   for (const section of ["memory", "schedule", "runtime"]) {
     await page.goto(`/agent/drifter?settings=drifter/${section}`);
-    await expect(page.getByRole("heading", { level: 2 }).first()).toBeVisible();
-    await expect(page.getByRole("button", { name: /^Start drifter/ })).toHaveCount(0);
+    await expect(settings.getByRole("heading", { level: 2 }).first()).toBeVisible();
+    await expect(settings.getByRole("button", { name: /^Start drifter/ })).toHaveCount(0);
   }
   await page.getByLabel("Reply length").fill("2048");
   await saveChanges(page);

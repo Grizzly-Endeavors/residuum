@@ -23,7 +23,6 @@
   import { ws } from "../../lib/ws.svelte";
   import PlaceHeader from "../../shell/PlaceHeader.svelte";
   import { agentPlaceLabel } from "../../shell/rail-model";
-  import { rowState } from "../home/home-model";
   import { notRunningTitle } from "../schedule/schedule-model";
   import RunStatus from "./RunStatus.svelte";
 
@@ -37,9 +36,7 @@
   const uid = $props.id();
   const sessions = $derived(ws.sessions);
   const summary = $derived(hub.agent(agent));
-  const agentState = $derived(
-    summary ? rowState({ agent: summary, stopping: hub.isStopping(agent) }) : null,
-  );
+  const agentState = $derived(hub.displayStateOf(agent));
   const running = $derived(agentState === "running" || agentState === "stopping");
   const finished = $derived(sessions.finished[sessions.finishedKind]);
   const shownRun = $derived(router.panel?.kind === "session" ? router.panel.runId : null);

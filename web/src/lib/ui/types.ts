@@ -1,7 +1,7 @@
 /** Types shared by the primitive controls and their callers. */
 
 import type { Attachment } from "svelte/attachments";
-import type { AgentState } from "../hub-types";
+import type { AgentDisplayState } from "../agent-display-state";
 
 /**
  * How much a button asks for attention. Primary fills with `vein-dim`,
@@ -34,8 +34,8 @@ export type SecretSource =
   | { readonly kind: "env"; readonly variable: string }
   | { readonly kind: "none" };
 
-/** An agent's lifecycle state as a status dot draws it. `stopping` is the hub's stopping set. */
-export type StatusDotState = AgentState | "stopping";
+/** An agent's state as a status dot draws it. */
+export type StatusDotState = AgentDisplayState;
 
 /** Badge and banner tones. Each keeps to the contrast pairs its surface allows. */
 export type BadgeTone = "neutral" | "accent" | "positive" | "danger";

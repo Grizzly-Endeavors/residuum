@@ -1,5 +1,4 @@
 <script lang="ts">
-  import ToolGroup from "../components/ToolGroup.svelte";
   import type { FeedItem } from "../lib/types";
   import AgentMessageCard from "./AgentMessageCard.svelte";
   import CompressedMarker from "./CompressedMarker.svelte";
@@ -11,8 +10,8 @@
   import UserMessage from "./UserMessage.svelte";
 
   // One feed item, in the main chat or a session's transcript. `agent` is the
-  // agent the conversation belongs to, which its links and Undo act on.
-  // Tool calls show the legacy tool rows, and only while "Show tool calls" is on.
+  // agent the conversation belongs to, which its links and Undo act on. Tool
+  // calls show at the head of their turn (`FeedTurn`), not one by one here.
 
   let { item, agent }: { item: FeedItem; agent: string } = $props();
 </script>
@@ -33,8 +32,4 @@
   <StatusLine tone={item.tone} content={item.content} details={item.details} />
 {:else if item.kind === "local-system"}
   <LocalNote content={item.content} />
-{:else}
-  <div data-legacy-view>
-    <ToolGroup calls={item.calls} verbose />
-  </div>
 {/if}

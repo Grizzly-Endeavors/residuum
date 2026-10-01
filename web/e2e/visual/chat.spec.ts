@@ -4,9 +4,9 @@ import { expectScreenshot } from "../support/screenshot";
 
 /**
  * The chat feed's baselines: the latest messages, the summarized past with
- * Jump to latest, the empty state and the header's menu. The composer and the
- * running-turn line are legacy views, painted over until their units give
- * them baselines.
+ * Jump to latest, the state cards of a stopped and a failed agent, and the
+ * header's menu. The composer and the running-turn line are legacy views,
+ * painted over until their units give them baselines.
  */
 
 const GREETING = "Hi, this is atlas. You are in my conversation, not scout's.";
@@ -48,10 +48,26 @@ test.describe("chat feed", { tag: "@visual" }, () => {
     await chatScreenshot(page, "chat-history");
   });
 
-  test("an agent with no conversation", async ({ page }) => {
+  test("a stopped agent with no conversation", async ({ page }) => {
     await page.goto("/agent/drifter");
-    await expect(conversation(page, "drifter").getByText("No messages yet")).toBeVisible();
-    await chatScreenshot(page, "chat-empty");
+    await expect(page.getByRole("region", { name: "drifter is stopped" })).toBeVisible();
+    await chatScreenshot(page, "chat-stopped");
+  });
+
+  test("an agent that couldn't start, with its details open", async ({ page }) => {
+    await page.goto("/agent/brittle");
+    const failed = page.getByRole("region", { name: "brittle couldn't start" });
+    await failed.getByRole("button", { name: "Details" }).click();
+    await expect(failed.getByText(/is not offered by provider/)).toBeVisible();
+    await chatScreenshot(page, "chat-failed");
+  });
+
+  test("a stopped agent under its conversation", async ({ page }) => {
+    await page.request.post("/api/hub/agents/atlas/stop");
+    await page.goto("/agent/atlas");
+    await expect(page.getByRole("region", { name: "atlas is stopped" })).toBeInViewport();
+    await expect(conversation(page).getByText(GREETING)).toBeVisible();
+    await chatScreenshot(page, "chat-stopped-below");
   });
 
   test("the header's menu", async ({ page }) => {

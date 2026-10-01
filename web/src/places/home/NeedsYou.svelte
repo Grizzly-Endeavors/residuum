@@ -1,15 +1,14 @@
 <script lang="ts">
   import { slide } from "svelte/transition";
-  import { failureLine, fixSettingsSection } from "../../lib/agent-failure";
-  import { hub } from "../../lib/hub.svelte";
+  import { failureLine } from "../../lib/agent-failure";
   import { Icon, type IconName } from "../../lib/icons";
   import type { NeedsYouItem } from "../../lib/needs-you";
   import { overview } from "../../lib/overview.svelte";
-  import { router } from "../../lib/router.svelte";
   import { formatLocation, locationAt, type Place } from "../../lib/routes";
   import { relativeTime } from "../../lib/time";
   import { Badge, Button, Disclosure } from "../../lib/ui";
   import type { ShellActions } from "../../shell/shell-actions";
+  import FailedAgentActions from "./FailedAgentActions.svelte";
   import { followLink } from "./follow-link";
 
   // What needs the user, worst first, each with the fix beside it. An item
@@ -46,11 +45,6 @@
     }
   }
 
-  async function fixSettings(agent: string): Promise<void> {
-    const section = await fixSettingsSection(agent);
-    await router.openSettings({ scope: agent, section });
-  }
-
   function inboxPlace(agent: string, id: string): Place {
     return { kind: "inbox", agent: null, tab: "active", item: { agent, id } };
   }
@@ -61,40 +55,6 @@
     return slide(node, { duration: Number.parseFloat(token) || 0 });
   }
 </script>
-
-{#snippet failedActions(item: Extract<NeedsYouItem, { kind: "failed" }>)}
-  {@const kind = item.error?.kind ?? "other"}
-  {@const busy = pending[item.key]}
-  {#if kind === "config"}
-    <Button
-      variant="primary"
-      size="sm"
-      loading={busy === "fix"}
-      onclick={() => void run(item.key, "fix", () => fixSettings(item.agent))}>Fix settings</Button
-    >
-  {:else if kind === "port_conflict"}
-    <Button
-      variant="primary"
-      size="sm"
-      onclick={() => void router.openSettings({ scope: item.agent, section: "connections" })}
-      >Open Connections</Button
-    >
-  {/if}
-  <Button
-    variant={kind === "config" || kind === "port_conflict" ? "quiet" : "primary"}
-    size="sm"
-    icon="reload"
-    loading={busy === "restart"}
-    aria-label="Restart {item.agent}"
-    onclick={() => void run(item.key, "restart", () => hub.restartAgent(item.agent))}
-    >Restart</Button
-  >
-  {#if kind === "crash" || kind === "other"}
-    <Button variant="quiet" size="sm" icon="bug" onclick={() => actions.openFeedback("bug")}
-      >Report a bug</Button
-    >
-  {/if}
-{/snippet}
 
 <section class="needs-section" aria-labelledby="{uid}-heading">
   <h2 class="home-heading" id="{uid}-heading">
@@ -146,7 +106,12 @@
           </div>
           <div class="need-actions">
             {#if item.kind === "failed"}
-              {@render failedActions(item)}
+              <FailedAgentActions
+                agent={item.agent}
+                kind={item.error?.kind ?? "other"}
+                size="sm"
+                {actions}
+              />
             {:else if item.kind === "outbound"}
               {@const busy = pending[item.key]}
               <Button

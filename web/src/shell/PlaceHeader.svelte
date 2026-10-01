@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
+  import { displayState } from "../lib/agent-display-state";
   import { hub } from "../lib/hub.svelte";
   import { StatusDot } from "../lib/ui";
 
@@ -25,7 +26,7 @@
   <h1 class="place-title">
     {#if summary}
       <StatusDot
-        state={hub.isStopping(summary.name) ? "stopping" : summary.state}
+        state={displayState(summary.state, hub.isStopping(summary.name))}
         working={hub.activityOf(summary.name).busy}
       />
     {/if}
