@@ -3,7 +3,8 @@ import { apiRoutes } from "./api-routes";
 import { startArtifactsListener } from "./artifacts-listener";
 import { createMockEnv } from "./env";
 import { createHub } from "./hub";
-import { apiMiddleware, createApiHandler } from "./middleware";
+import { apiMiddleware, createApiHandler, firstToHandle } from "./middleware";
+import { createRebuiltWorkerHandler } from "./rebuilt-worker";
 import { seedAgents } from "./scenario";
 import type { MockHub } from "./state";
 
@@ -51,11 +52,15 @@ export type MockHost = Pick<ViteDevServer | PreviewServer, "httpServer" | "middl
  * API behind the server's middleware, and the artifacts listener, which closes
  * with the server and forwards its own `/api` to the same API and sockets. The
  * dev server and the preview server both serve the whole mock this way.
+ *
+ * A preview server also gives `distDir`, the build it serves, which is where
+ * the mock reads the service worker it serves as a rebuilt app's.
  */
 export function startMock(
   host: MockHost,
   options: MockOptions,
   log: (message: string) => void,
+  distDir?: string,
 ): MockHub {
   const hub = createHub(host.httpServer, {
     env: createMockEnv(options),
@@ -63,7 +68,11 @@ export function startMock(
     seed: options.setup ? undefined : seedAgents,
   });
   const api = createApiHandler({ hub, routes: apiRoutes });
-  host.middlewares.use(apiMiddleware(api));
+  host.middlewares.use(
+    apiMiddleware(
+      distDir === undefined ? api : firstToHandle(api, createRebuiltWorkerHandler(hub, distDir)),
+    ),
+  );
   const listener = startArtifactsListener(
     hub.hubState,
     log,

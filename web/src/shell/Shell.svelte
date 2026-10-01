@@ -30,6 +30,7 @@
   import Rail from "./Rail.svelte";
   import type { FeedbackTab, ShellActions } from "./shell-actions";
   import ShortcutsDialog from "./ShortcutsDialog.svelte";
+  import UpdateBanner from "./UpdateBanner.svelte";
 
   // The frame around every place: the rail beside the main region at medium
   // and wide widths, and the context panel beside it (wide) or over it
@@ -191,6 +192,7 @@
     <Rail {accordion} {actions} />
   </div>
   <main class="shell-main">
+    <UpdateBanner />
     <HubBanner />
     <PlaceHost {actions} />
   </main>

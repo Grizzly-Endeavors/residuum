@@ -54,6 +54,18 @@ export function createApiHandler(
   };
 }
 
+/** One handler from several: each is tried in turn, and the request is handled once one answers `true`. */
+export function firstToHandle(
+  ...handlers: ((req: IncomingMessage, res: ServerResponse) => Promise<boolean>)[]
+): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {
+  return async (req, res) => {
+    for (const handler of handlers) {
+      if (await handler(req, res)) return true;
+    }
+    return false;
+  };
+}
+
 /** Connect middleware that runs the API handler, and passes on what it doesn't handle. */
 export function apiMiddleware(
   handler: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>,
