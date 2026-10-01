@@ -8,7 +8,7 @@ The agent you create during setup is your first agent. There is no lead agent: a
 
 Pick a short name of 1 to 24 lowercase letters, digits and hyphens, such as `research-buddy`. The name is permanent: it is the agent's directory, its address for teammates, and its A2A address. `hub`, `team` and `agents` are taken.
 
-- **From the web UI**: choose **New agent** on Home, or the **+** beside **Agents** in the sidebar. Give it a name and, optionally, say what it should help with. Under **More options**, choose which agent to **copy model settings from** and **who can find it** (its A2A visibility). The name is checked as you type.
+- **From the web UI**: choose **New agent** on Home, the **+** beside **Agents** in the sidebar, or **Create an agent** in the search palette (⌘K or Ctrl+K). Give it a name and, optionally, say what it should help with. Under **More options**, choose which agent to **copy model settings from** and **who can find it** (its A2A visibility). The name is checked as you type.
 - **From a terminal**: `residuum agent create research-buddy --description "Keeps my reading list and summarizes new papers each morning."`. Add `--models-from <agent>` to say whose model settings to copy (it is required when more than one agent is running), and `--public` to make the agent's card visible to other agents. Residuum must be running.
 - **By asking an agent**: tell any agent something like "create an agent called research-buddy that keeps my reading list." It uses its `agent_create` tool. The new agent copies that agent's model settings and A2A visibility. You get a notice when it happens.
 

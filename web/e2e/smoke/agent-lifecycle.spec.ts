@@ -4,8 +4,8 @@ import { expect, test } from "../support/fixtures";
 
 /**
  * Creating agents and running their lifecycle from Home: the Create agent
- * dialog (a sheet on phones) from Home's New agent and the rail's "+", a
- * board row's menu, delete with Undo, and Recently deleted. The scenario has
+ * dialog (a sheet on phones) from Home's New agent, the rail's "+" and the
+ * palette, a board row's menu, delete with Undo, and Recently deleted. The scenario has
  * atlas and scout running, drifter stopped and brittle failed.
  */
 
@@ -105,6 +105,33 @@ test("the rail's + opens Create agent where the user is", async ({ page, isMobil
   await expect(
     (await openRail(page, isMobile)).getByRole("button", { name: /^nova\b/ }),
   ).toBeVisible();
+});
+
+test("the palette's Create an agent opens the same dialog", async ({ page, isMobile }) => {
+  await page.goto("/agent/scout");
+  await expect(page.getByRole("heading", { name: "scout", level: 1 })).toBeVisible();
+  if (isMobile) {
+    await page
+      .getByRole("navigation", { name: "Main" })
+      .getByRole("button", { name: "Search" })
+      .click();
+  } else {
+    await page.keyboard.press("ControlOrMeta+k");
+  }
+  const palette = page.getByRole("dialog", { name: "Search and commands" });
+  await expect(palette.getByRole("combobox")).toBeFocused();
+  await page.keyboard.type("new agent");
+  await palette.getByRole("option", { name: /Create an agent/ }).click();
+
+  const dialog = createDialog(page);
+  await expect(palette).toBeHidden();
+  await expect(dialog.getByRole("textbox", { name: "Name" })).toBeFocused();
+  await dialog.getByRole("textbox", { name: "Name" }).fill("kit");
+  await page.keyboard.press("Enter");
+
+  await expect(dialog).toBeHidden();
+  await expect(toast(page, "You created kit.")).toBeVisible();
+  expect(address(page)).toBe("/agent/scout");
 });
 
 test("a name the rules refuse is flagged as it is typed, and nothing is created", async ({

@@ -10,15 +10,15 @@ import { notifications } from "../../lib/notifications.svelte";
 import { settingsModel } from "../../lib/settings-model.svelte";
 import { confirmations } from "../../lib/ui";
 
-export type LifecycleAction = "start" | "stop" | "restart" | "autostart" | "delete" | "restore";
+export type PendingAction = "start" | "stop" | "restart" | "autostart" | "delete" | "restore";
 
-class AgentLifecycle {
-  private pending = $state<Record<string, LifecycleAction | undefined>>({});
+class AgentActions {
+  private pending = $state<Record<string, PendingAction | undefined>>({});
   /** The Start automatically value being saved, shown until the hub answers. */
   private autostartWanted = $state<Record<string, boolean | undefined>>({});
 
   /** The action in flight for an agent, if any. */
-  pendingOf(name: string): LifecycleAction | undefined {
+  pendingOf(name: string): PendingAction | undefined {
     return this.pending[name];
   }
 
@@ -86,7 +86,7 @@ class AgentLifecycle {
 
   private async run(
     name: string,
-    action: LifecycleAction,
+    action: PendingAction,
     call: () => Promise<unknown>,
   ): Promise<void> {
     if (this.pending[name] !== undefined) return;
@@ -99,4 +99,4 @@ class AgentLifecycle {
   }
 }
 
-export const agentLifecycle = new AgentLifecycle();
+export const agentActions = new AgentActions();

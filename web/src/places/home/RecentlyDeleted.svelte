@@ -4,7 +4,7 @@
   import { hub } from "../../lib/hub.svelte";
   import { relativeTime } from "../../lib/time";
   import { Button, Disclosure } from "../../lib/ui";
-  import { agentLifecycle } from "./agent-lifecycle.svelte";
+  import { agentActions } from "./agent-actions.svelte";
 
   // Recently deleted, collapsed under the board: every deleted agent that can
   // be restored, with Restore. It shows once there is something to list or a
@@ -20,7 +20,7 @@
   });
 
   async function restore(gone: DeletedAgent): Promise<void> {
-    await agentLifecycle.restore(gone.name, gone.checkpoint_id);
+    await agentActions.restore(gone.name, gone.checkpoint_id);
     await tick();
     // A restored agent's row goes with its button, so focus goes back to the disclosure.
     if (container !== undefined && !container.contains(document.activeElement)) {
@@ -54,7 +54,7 @@
               <Button
                 size="sm"
                 icon="restore"
-                loading={agentLifecycle.pendingOf(gone.name) === "restore"}
+                loading={agentActions.pendingOf(gone.name) === "restore"}
                 aria-label="Restore {gone.name}"
                 onclick={() => void restore(gone)}>Restore</Button
               >
