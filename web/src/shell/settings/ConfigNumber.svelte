@@ -1,12 +1,15 @@
 <script lang="ts">
+  import { numberOfText, textOfNumber } from "../../lib/settings-bind";
   import { NumberField } from "../../lib/ui";
   import type { TextKey } from "./config-keys";
   import { fieldError, type SettingsScope } from "./sections";
 
-  // A number in the scope's `config.toml` form. The form keeps it as text, so
-  // a blank box is an unset key, which the agent reads as its default. The
-  // default shows in the box while it's blank and ends the hint, with the
-  // unit, so every number reads with what it counts.
+  // A number in the scope's `config.toml` form, bound through
+  // `lib/settings-bind.ts`. The form keeps it as text, so a blank box is an
+  // unset key, which is read as its default. `fallback` shows that default in
+  // the box while it's blank and ends the hint, with the unit, so every number
+  // reads with what it counts; a section that words the default itself passes
+  // `placeholder` alone.
 
   interface Props {
     scope: SettingsScope;
@@ -29,13 +32,6 @@
   let { scope, field, label, hint, unit, fallback, placeholder, min, max, step, disabled }: Props =
     $props();
 
-  function numberOf(text: string): number | null {
-    const trimmed = text.trim();
-    if (trimmed === "") return null;
-    const parsed = Number(trimmed);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-
   const defaultNote = $derived(
     fallback === undefined
       ? undefined
@@ -55,9 +51,9 @@
   placeholder={placeholder ?? (fallback === undefined ? undefined : String(fallback))}
   error={fieldError(scope, { kind: "config", field })}
   bind:value={
-    () => numberOf(scope.config[field]),
+    () => numberOfText(scope.config[field]),
     (next) => {
-      scope.config[field] = next === null ? "" : String(next);
+      scope.config[field] = textOfNumber(next);
     }
   }
 />
