@@ -73,6 +73,7 @@
       class="raw-text"
       aria-label="Contents of {label}"
       spellcheck="false"
+      wrap="off"
       readonly={locked}
       value={target.rawDraft ?? target.raw ?? ""}
       oninput={(event) => {
