@@ -13,7 +13,7 @@ The inbox is a capture system for items the agent or background tasks want to sa
 
 The agent inbox is a queue for the agent itself to triage — it's where the `inbox` notification-routing target delivers results. The user inbox is a one-way delivery channel *to* the user: the agent (often a background sub-agent, e.g. the built-in `introspection` skill) writes to it with `user_inbox_add`, and the user reads and archives items through the web UI. The agent has no tool to list, read, or archive the user inbox — only to add to it.
 
-Archiving is a soft delete in both inboxes, not a permanent one: an archived item's JSON file (and its attachments directory, if it has one) simply moves under `archive/inbox/`, so restoring it is just moving it back. The agent restores its own inbox items with `inbox_restore`; the user restores inbox items through the web UI's archived view, which calls `POST /api/agents/{name}/inbox/{id}/restore`.
+Archiving is a soft delete in both inboxes, not a permanent one: an archived item's JSON file (and its attachments directory, if it has one) simply moves under `archive/inbox/`, so restoring it is just moving it back. The agent restores its own inbox items with `inbox_restore`; the user restores inbox items from the web UI Inbox's Archived tab, which calls the hub's `POST /api/hub/inbox/{agent}/{id}/restore` (see [Cross-Agent View](#cross-agent-view)); `POST /api/agents/{name}/inbox/{id}/restore` makes the same move for one agent.
 
 The user inbox's HTTP routes (`GET /api/agents/{name}/inbox` and `.../inbox/archive`, `PUT .../inbox/{id}/read`, `POST .../inbox/{id}/archive` and `.../restore`, and `GET .../inbox/{id}/attachments/{index}`) only read and write the inbox files, so they answer for a stopped or failed agent as well as a running one (see [Hub HTTP Surface](hub-http.md#agent-routes)). `POST /api/agents/{name}/agent-inbox`, which adds to the agent inbox, needs the agent running.
 
@@ -76,8 +76,8 @@ A user inbox item created with `user_inbox_add`'s `attachments` parameter record
 - **No size cap**: these are already-local files, not something arriving over a platform with its own upload limit.
 - **Partial failure is not fatal**: a file that fails to copy (missing, unreadable) is skipped and logged; the item is still created with whichever attachments did succeed, and the tool result names each one that failed.
 - **Archiving moves attachments too**: when the user archives an item, its `inbox/user/attachments/{item id}/` directory moves to `archive/inbox/user/attachments/{item id}/` alongside the JSON file, so the item's attachments keep serving after archiving; restoring the item reverses that move.
-- **Serving**: the web UI fetches attachments from `GET /api/agents/{name}/inbox/{id}/attachments/{index}`, which checks the active inbox first, then the archive, and confines every resolved path to the item's own attachment directory before serving — an out-of-tree path 404s rather than confirming it exists.
-- **Restoring**: `GET /api/agents/{name}/inbox/archive` lists archived user inbox items the same shape as `GET /api/agents/{name}/inbox`; `POST /api/agents/{name}/inbox/{id}/restore` moves one back to the active inbox. The web UI's inbox has an archived view with a Restore action wired to this endpoint.
+- **Serving**: the web UI downloads attachments from `GET /api/agents/{name}/inbox/{id}/attachments/{index}`, which checks the active inbox first, then the archive, and confines every resolved path to the item's own attachment directory before serving — an out-of-tree path 404s rather than confirming it exists.
+- **Restoring**: `GET /api/agents/{name}/inbox/archive` lists archived user inbox items the same shape as `GET /api/agents/{name}/inbox`; `POST /api/agents/{name}/inbox/{id}/restore` moves one back to the active inbox. The web UI's Inbox lists and restores archived items through the hub's cross-agent routes instead, which make the same moves.
 
 ## Cross-Agent View
 
@@ -89,6 +89,7 @@ A user inbox item created with `user_inbox_add`'s `attachments` parameter record
 - An item's time is the stored naive local time read in the hub's configured timezone at the moment of the request, so changing the timezone changes the instants reported. A local time that happened twice (a DST fall-back) takes its first occurrence, and one that never happened (a spring-forward gap) moves forward by the length of the gap.
 - Marking an item read, archiving it, and restoring it make the same file changes as the per-agent routes.
 - Attachment links point at the per-agent attachment route, which serves a stopped agent as well.
+- The web UI's Inbox is built on these routes: one list across agents, an agent filter, an Archived tab, and the unread counts from the team overview. Opening an item marks it read.
 
 ## Intended Usage
 

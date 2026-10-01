@@ -8,7 +8,6 @@
 import { WsTransport } from "./transport.svelte";
 import { agentWsUrl } from "./paths";
 import { onViewedAgentChange } from "./viewed-agent";
-import { userInbox } from "./inbox.svelte";
 import { scheduled } from "./scheduled.svelte";
 import { FeedStore } from "./feed.svelte";
 import { SessionsStore, isSessionFrame } from "./sessions.svelte";
@@ -184,7 +183,6 @@ class WsCoordinator {
     this.liveUpdatesOffShown = false;
     this.watches.bind(name);
     scheduled.reset(name);
-    userInbox.reset(name);
     this.agent = name;
     if (name === null) return;
     this.transport.connect();

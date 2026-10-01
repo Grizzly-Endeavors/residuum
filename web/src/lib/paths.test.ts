@@ -287,24 +287,19 @@ describe("api functions use the contract paths", () => {
       "GET /api/agents/scout/a2a/outbound",
     ],
     [
-      "markUserInboxItemRead",
-      () => api.markUserInboxItemRead("scout", "i"),
-      "PUT /api/agents/scout/inbox/i/read",
+      "markHubInboxItemRead",
+      () => api.markHubInboxItemRead("scout", "i"),
+      "PUT /api/hub/inbox/scout/i/read",
     ],
     [
-      "archiveUserInboxItem",
-      () => api.archiveUserInboxItem("scout", "i"),
-      "POST /api/agents/scout/inbox/i/archive",
+      "archiveHubInboxItem",
+      () => api.archiveHubInboxItem("scout", "i"),
+      "POST /api/hub/inbox/scout/i/archive",
     ],
     [
-      "fetchArchivedUserInbox",
-      () => api.fetchArchivedUserInbox("scout"),
-      "GET /api/agents/scout/inbox/archive",
-    ],
-    [
-      "restoreUserInboxItem",
-      () => api.restoreUserInboxItem("scout", "i"),
-      "POST /api/agents/scout/inbox/i/restore",
+      "restoreHubInboxItem",
+      () => api.restoreHubInboxItem("scout", "i"),
+      "POST /api/hub/inbox/scout/i/restore",
     ],
     [
       "fetchSessions",
