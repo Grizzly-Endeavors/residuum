@@ -302,3 +302,73 @@ describe("changing a team file from outside", () => {
     });
   });
 });
+
+describe("changing a file in an agent's own workspace from outside", () => {
+  let mock: MockServerHarness;
+
+  beforeEach(async () => {
+    mock = await startMockServer({ deterministic: true });
+  });
+
+  afterEach(async () => {
+    await mock.close();
+  });
+
+  async function change(agent: string, body: unknown): Promise<{ status: number; body: unknown }> {
+    return fetchJson(`${mock.baseUrl}/api/mock/agent-file?agent=${agent}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async function watching(agent: string, prefixes: string[]): Promise<TestSocket> {
+    const socket = await mock.openSocket(`/api/agents/${agent}/ws`);
+    socket.send({ type: "watch_workspace", prefixes });
+    await socket.settled();
+    return socket;
+  }
+
+  /** What an agent's socket was sent since it last settled, without the ping's answer. */
+  async function sentTo(socket: TestSocket): Promise<Frame[]> {
+    return (await socket.settled()).filter((frame) => frame.type !== "pong");
+  }
+
+  it("writes the file and tells that agent's pages watching it, and no one else", async () => {
+    const notes = await watching("atlas", ["notes"]);
+    const memory = await watching("atlas", ["memory"]);
+    const scout = await watching("scout", [""]);
+    const hub = await mock.openSocket("/api/hub/ws");
+    await hub.nextOfType("agents_snapshot");
+
+    const res = await change("atlas", { path: "notes/today.md", content: "- water the plants" });
+    expect(res).toEqual({
+      status: 200,
+      body: { changes: [{ path: "notes", kind: "created" }] },
+    });
+    const sent = { type: "workspace_changed", changes: [{ path: "notes", kind: "created" }] };
+    expect(await sentTo(notes)).toEqual([sent]);
+    expect(await sentTo(memory)).toEqual([]);
+    expect(await sentTo(scout)).toEqual([]);
+    expect(hub.frames.filter((frame) => frame.type === "workspace_changed")).toEqual([]);
+
+    const read = await fetch(
+      `${mock.baseUrl}/api/agents/atlas/workspace/file?path=notes%2Ftoday.md`,
+    );
+    expect(await read.text()).toBe("- water the plants");
+
+    await change("atlas", { path: "notes/today.md", content: null });
+    expect(await sentTo(notes)).toEqual([
+      { type: "workspace_changed", changes: [{ path: "notes/today.md", kind: "removed" }] },
+    ]);
+  });
+
+  it.each([
+    ["atlas", { path: "team/wiki/a.md", content: "x" }, 422],
+    ["atlas", { path: "", content: "x" }, 422],
+    ["atlas", { path: "../x", content: "x" }, 422],
+    ["atlas", { path: "nothing/here.md", content: null }, 404],
+    ["nobody", { path: "notes/a.md", content: "x" }, 404],
+  ])("answers %s %j with %i", async (agent, body, status) => {
+    expect((await change(agent, body)).status).toBe(status);
+  });
+});

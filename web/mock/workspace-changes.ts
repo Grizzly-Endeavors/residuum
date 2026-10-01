@@ -1,5 +1,5 @@
 import type { ServerMessage, WorkspaceChange } from "../src/lib/generated/protocol";
-import type { MockHub } from "./state";
+import type { MockAgent, MockHub, MockState } from "./state";
 import { normalizeWatchPrefix, watchPrefixProblem } from "./sockets";
 import { discoverArtifacts } from "./workbench-files";
 import { pathKind, removePath, writeFile } from "./workspace-tree";
@@ -12,10 +12,45 @@ export interface TeamChangeOutcome {
   artifacts: { updated: string[]; removed: string[] };
 }
 
+/** What a change to a file in an agent's own workspace sent. */
+export interface AgentChangeOutcome {
+  /** The `workspace_changed` batch: one change, in the agent's workspace paths. */
+  changes: WorkspaceChange[];
+}
+
 /** A change the mock refused, and the status it answers with. */
-export interface TeamChangeRefusal {
+export interface FileChangeRefusal {
   status: number;
   error: string;
+}
+
+/**
+ * Write `content` at `path` in `tree`, or remove what is there for `null`,
+ * and say what the change feed reports for it. As in the feed, a new folder
+ * is reported alone, standing for what it holds.
+ */
+function applyFileChange(
+  tree: MockState,
+  path: string,
+  content: string | null,
+): WorkspaceChange | FileChangeRefusal {
+  const kind = pathKind(tree, path);
+  if (content === null && kind === null) {
+    return { status: 404, error: `mock: there is nothing at ${path} to remove` };
+  }
+  if (content !== null && kind === "directory") {
+    return { status: 422, error: `mock: ${path} is a folder, so it has no content to write` };
+  }
+  if (content === null) {
+    removePath(tree, path);
+    return { path, kind: "removed" };
+  }
+  const segments = path.split("/");
+  const newest = segments
+    .map((_, at) => segments.slice(0, at + 1).join("/"))
+    .find((prefix) => pathKind(tree, prefix) === null);
+  writeFile(tree, path, content);
+  return newest === undefined ? { path, kind: "modified" } : { path: newest, kind: "created" };
 }
 
 /**
@@ -24,9 +59,8 @@ export interface TeamChangeRefusal {
  * watch the path, on the hub socket and on every agent's, and for a change to
  * an artifact's page or folder `artifact_updated` or `artifact_removed` on
  * the hub socket and on every agent's socket. `content: null` removes the file, or the folder and
- * everything in it. As in the feed, a new folder is reported alone (it stands
- * for what it holds), and a rewrite that leaves an artifact's files as they
- * were sends no artifact frame.
+ * everything in it. A rewrite that leaves an artifact's files as they were
+ * sends no artifact frame.
  *
  * `path` is in the file API's namespace, so `team/workbench/tip-splitter.html`.
  */
@@ -34,7 +68,7 @@ export function changeTeamFile(
   hub: MockHub,
   requested: string,
   content: string | null,
-): TeamChangeOutcome | TeamChangeRefusal {
+): TeamChangeOutcome | FileChangeRefusal {
   const team = hub.hubState;
   const path = normalizeWatchPrefix(requested);
   const segments = path.split("/");
@@ -44,27 +78,10 @@ export function changeTeamFile(
       error: `mock: \`path\` must be under team/, not ${JSON.stringify(requested)}`,
     };
   }
-  const kind = pathKind(team, path);
-  if (content === null && kind === null) {
-    return { status: 404, error: `mock: there is nothing at ${path} to remove` };
-  }
-  if (content !== null && kind === "directory") {
-    return { status: 422, error: `mock: ${path} is a folder, so it has no content to write` };
-  }
 
   const artifactsBefore = discoverArtifacts(team);
-  let change: WorkspaceChange = { path, kind: "modified" };
-  if (content === null) {
-    change = { path, kind: "removed" };
-    removePath(team, path);
-  } else {
-    const newest = segments
-      .map((_, at) => segments.slice(0, at + 1).join("/"))
-      .find((prefix) => pathKind(team, prefix) === null);
-    if (newest !== undefined) change = { path: newest, kind: "created" };
-    writeFile(team, path, content);
-  }
-
+  const change = applyFileChange(team, path, content);
+  if ("status" in change) return change;
   const artifactsAfter = discoverArtifacts(team);
   const updated = [...artifactsAfter.values()]
     .filter(({ name, stamp }) => artifactsBefore.get(name)?.stamp !== stamp)
@@ -86,4 +103,31 @@ export function changeTeamFile(
     for (const frame of frames) agent.state.broadcast(frame);
   }
   return { changes, artifacts: { updated, removed } };
+}
+
+/**
+ * Change a file in `agent`'s own workspace the way the agent does, then send
+ * `workspace_changed` to the pages on its socket that watch the path.
+ * `content: null` removes the file, or the folder and everything in it.
+ *
+ * `path` is relative to the agent's workspace, so `notes/today.md`; team files
+ * change through `changeTeamFile`.
+ */
+export function changeAgentFile(
+  agent: MockAgent,
+  requested: string,
+  content: string | null,
+): AgentChangeOutcome | FileChangeRefusal {
+  const path = normalizeWatchPrefix(requested);
+  if (path === "" || path.split("/")[0] === "team" || watchPrefixProblem(requested) !== null) {
+    return {
+      status: 422,
+      error: `mock: \`path\` must be a file in ${agent.name}'s own workspace, not ${JSON.stringify(requested)} (team files change through /api/mock/team-file)`,
+    };
+  }
+  const change = applyFileChange(agent.state, path, content);
+  if ("status" in change) return change;
+  const changes = [change];
+  agent.state.broadcast({ type: "workspace_changed", changes });
+  return { changes };
 }

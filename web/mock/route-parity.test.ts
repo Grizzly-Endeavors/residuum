@@ -3,7 +3,7 @@ import type * as ApiModule from "../src/lib/api";
 import type { RepoKind } from "../src/lib/generated/protocol";
 import type { WorkspaceScope } from "../src/lib/hub-types";
 import * as api from "../src/lib/api";
-import { agentWsUrl, hubWsUrl, scopeApiPath } from "../src/lib/paths";
+import { agentWsUrl, hubWsUrl } from "../src/lib/paths";
 import { apiRoutes } from "./api-routes";
 import { matchRoute, type Route } from "./routes";
 import { isRefusal, scopeRequest } from "./scope";
@@ -246,28 +246,30 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
 };
 
 /**
- * What workbench artifacts can reach through the bridge, in the unscoped
- * spelling artifact authors use (`scopeApiPath` scopes it). The client doesn't
- * call these, so they are listed here.
+ * What the workbench SDK (`assets/workbench/sdk.js`) calls on an artifact
+ * page's own origin, which forwards `/api` to the same routes. The client
+ * doesn't call these, so they are listed here.
  */
 const ARTIFACT_CALLS: ReadonlyArray<readonly [string, string]> = [
-  ["POST", "/api/agent-inbox"],
-  ["POST", "/api/model/complete"],
-  ["GET", "/api/sessions"],
-  ["POST", "/api/sessions"],
-  ["POST", "/api/sessions/spawned-1/stop"],
-  ["POST", "/api/sessions/spawned-1/messages"],
-  ["GET", "/api/workspace/files?path=a"],
-  ["GET", "/api/workspace/file?path=a.md"],
-  ["PUT", "/api/workspace/file"],
-  ["DELETE", "/api/workspace/file?path=a.md"],
-  ["GET", "/api/workspace/raw?path=a.md"],
-  ["PUT", "/api/workspace/raw?path=a.md"],
-  ["POST", "/api/workspace/dir"],
-  ["POST", "/api/workspace/move"],
-  ["GET", "/api/workspace/tree?path=a"],
-  ["POST", "/api/workspace/read"],
-  ["GET", "/api/workbench/artifacts"],
+  ["POST", `/api/agents/${AGENT}/agent-inbox`],
+  ["POST", `/api/agents/${AGENT}/model/complete`],
+  ["GET", `/api/agents/${AGENT}/sessions?artifact=tip-splitter`],
+  ["POST", `/api/agents/${AGENT}/sessions`],
+  ["POST", `/api/agents/${AGENT}/sessions/spawned-1/stop`],
+  ["POST", `/api/agents/${AGENT}/sessions/spawned-1/messages`],
+  ["GET", `/api/agents/${AGENT}/workspace/file?path=a.md`],
+  ["GET", "/api/team/workspace/files?path=a"],
+  ["GET", "/api/team/workspace/file?path=a.md"],
+  ["PUT", "/api/team/workspace/file"],
+  ["DELETE", "/api/team/workspace/file?path=a.md"],
+  ["GET", "/api/team/workspace/raw?path=a.md"],
+  ["PUT", "/api/team/workspace/raw?path=a.md"],
+  ["POST", "/api/team/workspace/dir"],
+  ["POST", "/api/team/workspace/move"],
+  ["GET", "/api/team/workspace/tree?path=a"],
+  ["POST", "/api/team/workspace/read"],
+  ["GET", "/api/team/workbench/artifacts"],
+  ["GET", "/api/hub/system/timezone"],
 ];
 
 interface Request {
@@ -354,9 +356,9 @@ describe("route parity between the API client and the mock", () => {
     ]);
   });
 
-  it("serves every route an artifact can reach through the bridge", () => {
+  it("serves every route the workbench SDK calls", () => {
     const unserved = ARTIFACT_CALLS.flatMap(([method, path]) => {
-      const problem = problemWith(apiRoutes, { method, url: scopeApiPath(path, AGENT) });
+      const problem = problemWith(apiRoutes, { method, url: path });
       return problem === null ? [] : [`${method} ${path} (${problem})`];
     });
     expect(unserved).toEqual([]);

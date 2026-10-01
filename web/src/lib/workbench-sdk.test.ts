@@ -1,374 +1,307 @@
-import { readFileSync } from "node:fs";
-import { runInNewContext } from "node:vm";
-import { describe, expect, it } from "vitest";
-import { BRIDGE_TAG } from "./workbench-bridge";
+// residuum.fetch, residuum.ask and residuum.state in the workbench SDK
+// (assets/workbench/sdk.js): how a page's calls reach Residuum on its own origin.
 
-// Runs the real SDK (assets/workbench/sdk.js) against a stand-in for the
-// artifact's window and the bridge on the other side of postMessage.
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { described, lastRequest, loadSdk, settle } from "../test/workbench-sdk";
 
-const SDK_SOURCE = readFileSync(
-  new URL("../../../assets/workbench/sdk.js", import.meta.url),
-  "utf8",
-);
+afterEach(() => {
+  vi.useRealTimers();
+});
 
-interface Frame {
-  type: string;
-  address?: string;
-  session?: { address: string; run_id: string };
-  content?: string;
-}
-
-interface SessionHandle {
-  agent: string;
-  address: string;
-  on(type: string, handler: (frame: Frame) => void): () => void;
-  send(text: string): Promise<string>;
-  stop(): Promise<void>;
-}
-
-interface Sdk {
-  state: { get(): Promise<unknown>; set(value: unknown): Promise<void> };
-  sessions: {
-    start(options: { agent?: string; prompt: string; model?: string }): Promise<SessionHandle>;
-  };
-  ask(request: string | Record<string, unknown>, options?: { agent?: string }): Promise<unknown>;
-}
-
-interface Posted {
-  kind: string;
-  id?: string;
-  path?: string;
-  method?: string;
-  body?: string | null;
-}
-
-type Listener = (event: { source: unknown; data: unknown }) => void;
-
-/** Load the SDK into a fake embedded window; returns it and the bridge side. */
-function loadSdk(): {
-  sdk: Sdk;
-  posted: Posted[];
-  deliver: (data: Record<string, unknown>) => void;
-  reply: (id: string, status: number, body: unknown) => void;
-} {
-  const posted: Posted[] = [];
-  const listeners: Listener[] = [];
-  const parent = {
-    postMessage: (message: Posted): void => {
-      posted.push(message);
-    },
-  };
-  const win: Record<string, unknown> = {
-    parent,
-    addEventListener: (type: string, listener: Listener): void => {
-      if (type === "message") listeners.push(listener);
-    },
-  };
-  runInNewContext(SDK_SOURCE, {
-    window: win,
-    __RESIDUUM_ARTIFACT__: "wiki",
-    __RESIDUUM_VERSION__: "2026.09.23",
-    __RESIDUUM_FEATURES__: ["artifact-sessions"],
-    Response,
-    queueMicrotask,
-    console,
-  });
-  const deliver = (data: Record<string, unknown>): void => {
-    for (const listener of listeners)
-      listener({ source: parent, data: { tag: BRIDGE_TAG, ...data } });
-  };
-  const reply = (id: string, status: number, body: unknown): void => {
-    const bytes = new TextEncoder().encode(JSON.stringify(body));
-    deliver({
-      kind: "result",
-      id,
-      result: {
-        status,
-        statusText: "",
-        headers: [["content-type", "application/json"]],
-        body: bytes.buffer,
-      },
-    });
-  };
-  return { sdk: win.residuum as Sdk, posted, deliver, reply };
-}
-
-function lastFetch(posted: Posted[]): Posted {
-  const fetches = posted.filter((m) => m.kind === "fetch");
-  const last = fetches[fetches.length - 1];
-  if (!last) throw new Error("no fetch was posted");
-  return last;
-}
-
-/** Let the SDK's promise chains and queued microtasks run. */
-async function settle(): Promise<void> {
-  for (let i = 0; i < 10; i += 1) await Promise.resolve();
-}
-
-describe("residuum.sessions.start", () => {
-  it("posts the start request and hands back a handle for the new address", async () => {
-    const { sdk, posted, reply } = loadSdk();
-    const started = sdk.sessions.start({ agent: "scout", prompt: "write a page", model: "small" });
+describe("residuum.fetch paths", () => {
+  it.each([
+    ["/api/hub/status", "/api/hub/status"],
+    ["/api/team/workspace/file?path=a.md", "/api/team/workspace/file?path=a.md"],
+    ["/api/agents/atlas/sessions?artifact=chart", "/api/agents/atlas/sessions?artifact=chart"],
+    ["/api/secrets", "/api/hub/secrets"],
+    ["/api/a2a/keys/laptop", "/api/hub/a2a/keys/laptop"],
+    ["/api/system/timezone", "/api/hub/system/timezone"],
+    ["/api/update/status", "/api/hub/update/status"],
+    ["/api/checkpoints?repo=team", "/api/hub/checkpoints?repo=team"],
+    ["/api/workbench/artifacts", "/api/team/workbench/artifacts"],
+    [`http://localhost:7702/api/hub/status`, "/api/hub/status"],
+  ])("sends %s to %s", async (path, sent) => {
+    const { sdk, requests } = loadSdk();
+    void sdk.fetch(path);
     await settle();
-
-    expect(posted.some((m) => m.kind === "subscribe")).toBe(true);
-    const request = lastFetch(posted);
-    expect(request.method).toBe("POST");
-    expect(request.path).toBe("/api/agents/scout/sessions");
-    expect(JSON.parse(request.body ?? "")).toEqual({ prompt: "write a page", model: "small" });
-
-    reply(request.id ?? "", 202, { address: "artifact-wiki-0001" });
-    const handle = await started;
-    expect(handle.address).toBe("artifact-wiki-0001");
-    expect(handle.agent).toBe("scout");
+    expect(lastRequest(requests).url).toBe(sent);
   });
 
-  it("needs an agent, and asks nothing of the gateway without one", async () => {
-    const { sdk, posted } = loadSdk();
-    await expect(sdk.sessions.start({ prompt: "go" })).rejects.toThrow(
-      "residuum.sessions.start needs { agent, prompt }",
+  it.each([
+    ["GET", "/api/status", "/api/agents/<name>/status"],
+    ["GET", "/api/inbox?limit=5", "/api/agents/<name>/inbox"],
+    ["GET", "/api/checkpoints?repo=workspace", "/api/agents/<name>/checkpoints"],
+    ["GET", "/api/sessions", "/api/agents/<name>/sessions"],
+    ["GET", "/api/secretsvault", "/api/agents/<name>/secretsvault"],
+  ])(
+    "answers an unscoped agent path (%s %s) with 400 saying to name the agent",
+    async (method, path, named) => {
+      const { sdk, requests, console } = loadSdk();
+      const resp = await sdk.fetch(path, { method });
+      expect(resp.status).toBe(400);
+      const { error } = (await resp.json()) as { error: string };
+      expect(error).toContain(named);
+      expect(error).toContain("/api/hub/agents");
+      expect(requests).toEqual([]);
+      expect(console.warn).toHaveBeenCalledWith(expect.stringContaining(named));
+    },
+  );
+
+  it("points a session start and a model call without an agent at the SDK call that names one", async () => {
+    const { sdk, requests } = loadSdk();
+    const session = await sdk.fetch("/api/sessions", { method: "POST", body: { prompt: "go" } });
+    expect(session.status).toBe(400);
+    expect(((await session.json()) as { error: string }).error).toContain(
+      "residuum.sessions.start({ agent, prompt })",
     );
-    await expect(sdk.sessions.start({ agent: "", prompt: "go" })).rejects.toThrow("needs");
-    expect(posted.filter((m) => m.kind === "fetch")).toEqual([]);
+    const model = await sdk.fetch("/api/model/complete", { method: "post" });
+    expect(model.status).toBe(400);
+    expect(((await model.json()) as { error: string }).error).toContain(
+      "residuum.ask(prompt, { agent })",
+    );
+    expect(requests).toEqual([]);
   });
 
-  it("escapes the agent name in the request path", async () => {
-    const { sdk, posted } = loadSdk();
-    void sdk.sessions.start({ agent: "a/b", prompt: "go" }).catch(() => undefined);
-    await settle();
-    expect(lastFetch(posted).path).toBe("/api/agents/a%2Fb/sessions");
+  it("answers a path outside the API with 400", async () => {
+    const { sdk, requests } = loadSdk();
+    for (const path of [
+      "/chart/data.json",
+      "https://example.com/api/hub/status",
+      "api/hub/status",
+    ]) {
+      const resp = await sdk.fetch(path);
+      expect(resp.status).toBe(400);
+      expect(((await resp.json()) as { error: string }).error).toContain("/api/");
+    }
+    expect(requests).toEqual([]);
   });
 
-  it("rejects with the state when the agent isn't running", async () => {
-    const { sdk, posted, reply } = loadSdk();
-    const started = sdk.sessions.start({ agent: "quiet", prompt: "go" });
+  it("rejects a path that isn't a string", async () => {
+    const { sdk } = loadSdk();
+    await expect(sdk.fetch(42).catch(described)).resolves.toMatchObject({ name: "TypeError" });
+  });
+});
+
+describe("residuum.fetch requests", () => {
+  it("names the artifact on every request, whatever the page set", async () => {
+    const { sdk, requests } = loadSdk("chart");
+    void sdk.fetch("/api/hub/status", { headers: { "x-residuum-artifact": "other" } });
     await settle();
-    reply(lastFetch(posted).id ?? "", 409, { error: "quiet is stopped", state: "stopped" });
-    await expect(started).rejects.toMatchObject({
-      message: "quiet is stopped",
-      state: "stopped",
-      status: 409,
-    });
+    expect(lastRequest(requests).headers.get("X-Residuum-Artifact")).toBe("chart");
   });
 
-  it("rejects with the gateway's error when the agent doesn't exist", async () => {
-    const { sdk, posted, reply } = loadSdk();
-    const started = sdk.sessions.start({ agent: "ghost", prompt: "go" });
+  it("sends a plain object as JSON and binary bodies unchanged", async () => {
+    const { sdk, requests } = loadSdk();
+    void sdk.fetch("/api/team/workspace/file", { method: "PUT", body: { path: "a.md" } });
     await settle();
-    reply(lastFetch(posted).id ?? "", 404, { error: "no agent named 'ghost'" });
-    await expect(started).rejects.toMatchObject({
-      message: "no agent named 'ghost'",
-      status: 404,
-    });
+    const json = lastRequest(requests);
+    expect(json.method).toBe("PUT");
+    expect(json.body).toBe('{"path":"a.md"}');
+    expect(json.headers.get("content-type")).toBe("application/json");
+
+    const bytes = new Uint8Array([1, 2, 3]);
+    void sdk.fetch("/api/team/workspace/raw?path=a.bin", { method: "PUT", body: bytes });
+    await settle();
+    expect(lastRequest(requests).body).toBe(bytes);
+    expect(lastRequest(requests).headers.get("content-type")).toBeNull();
   });
 
-  it("delivers only its own session's frames, including ones that beat the reply", async () => {
-    const { sdk, posted, deliver, reply } = loadSdk();
-    const started = sdk.sessions.start({ agent: "scout", prompt: "go" });
-    await settle();
-    // The run can announce itself before the start request's reply arrives.
-    deliver({
-      kind: "event",
-      frame: {
-        agent: "scout",
-        type: "session_started",
-        session: { address: "artifact-wiki-0001", run_id: "r1" },
-      },
-    });
-    deliver({
-      kind: "event",
-      frame: {
-        agent: "scout",
-        type: "session_started",
-        session: { address: "artifact-other-0002", run_id: "r2" },
-      },
-    });
-    reply(lastFetch(posted).id ?? "", 202, { address: "artifact-wiki-0001" });
-    const handle = await started;
-
-    const announced: Frame[] = [];
-    const all: Frame[] = [];
-    handle.on("session_started", (frame) => announced.push(frame));
-    handle.on("*", (frame) => all.push(frame));
-    await settle();
-    expect(announced.map((f) => f.session?.run_id)).toEqual(["r1"]);
-
-    deliver({
-      kind: "event",
-      frame: {
-        agent: "scout",
-        type: "session_response",
-        address: "artifact-other-0002",
-        content: "not mine",
-      },
-    });
-    deliver({
-      kind: "event",
-      frame: {
-        agent: "scout",
-        type: "session_response",
-        address: "artifact-wiki-0001",
-        content: "mine",
-      },
-    });
-    deliver({ kind: "event", frame: { type: "chat_message", content: "main chat" } });
-    deliver({
-      kind: "event",
-      frame: { agent: "scout", type: "session_message_delivered", address: "artifact-wiki-0001" },
-    });
-    await settle();
-
-    expect(all.map((f) => f.type)).toEqual(["session_started", "session_response"]);
-    expect(all.map((f) => f.content ?? f.session?.run_id)).toEqual(["r1", "mine"]);
+  it("refuses a body it can't send", async () => {
+    const { sdk } = loadSdk();
+    await expect(
+      sdk.fetch("/api/hub/status", { method: "POST", body: new Map() }).catch(described),
+    ).resolves.toMatchObject({ name: "TypeError" });
   });
 
-  it("keys sessions by agent and address, so a same-address session on another agent is never mixed in", async () => {
-    const { sdk, posted, deliver, reply } = loadSdk();
-    const started = sdk.sessions.start({ agent: "scout", prompt: "go" });
+  it("returns Residuum's response as it is", async () => {
+    const { sdk, requests } = loadSdk();
+    const pending = sdk.fetch("/api/hub/shutdown", { method: "POST" });
     await settle();
-    // Another agent's session can hold the very same address.
-    deliver({
-      kind: "event",
-      frame: {
-        agent: "atlas",
-        type: "session_started",
-        session: { address: "artifact-wiki-0001", run_id: "atlas-run" },
-      },
-    });
-    reply(lastFetch(posted).id ?? "", 202, { address: "artifact-wiki-0001" });
-    const handle = await started;
-    const all: Frame[] = [];
-    handle.on("*", (frame) => all.push(frame));
-    await settle();
-    expect(all).toEqual([]);
-
-    deliver({
-      kind: "event",
-      frame: {
-        agent: "atlas",
-        type: "session_response",
-        address: "artifact-wiki-0001",
-        content: "atlas",
-      },
-    });
-    deliver({
-      kind: "event",
-      frame: {
-        agent: "scout",
-        type: "session_response",
-        address: "artifact-wiki-0001",
-        content: "scout",
-      },
-    });
-    // A session frame that names no agent belongs to no handle.
-    deliver({
-      kind: "event",
-      frame: { type: "session_response", address: "artifact-wiki-0001", content: "unattributed" },
-    });
-    await settle();
-    expect(all.map((f) => f.content)).toEqual(["scout"]);
+    lastRequest(requests).respond(403, { error: "not from the workbench" });
+    const resp = await pending;
+    expect(resp.status).toBe(403);
+    expect(await resp.json()).toEqual({ error: "not from the workbench" });
   });
 
-  it("sends messages and stops through the session's own endpoints", async () => {
-    const { sdk, posted, reply } = loadSdk();
-    const started = sdk.sessions.start({ agent: "scout", prompt: "go" });
+  it("explains a request that never reached Residuum", async () => {
+    const { sdk, requests } = loadSdk();
+    const pending = sdk.fetch("/api/hub/status").catch(described);
     await settle();
-    reply(lastFetch(posted).id ?? "", 202, { address: "artifact-wiki-0001" });
-    const handle = await started;
+    lastRequest(requests).fail(new TypeError("Failed to fetch"));
+    expect(await pending).toEqual({
+      name: "Error",
+      message: "Couldn't reach Residuum. Check that it's running, then try again.",
+    });
+  });
+});
 
-    const sent = handle.send("keep going");
+describe("residuum.fetch lanes", () => {
+  it("runs at most 8 ordinary requests at once and starts the next in order", async () => {
+    const { sdk, requests } = loadSdk();
+    for (let i = 0; i < 10; i += 1) void sdk.fetch(`/api/hub/status?n=${i}`);
     await settle();
-    const message = lastFetch(posted);
-    expect(message.path).toBe("/api/agents/scout/sessions/artifact-wiki-0001/messages");
-    expect(JSON.parse(message.body ?? "")).toEqual({ content: "keep going" });
-    reply(message.id ?? "", 200, { outcome: "live" });
-    expect(await sent).toBe("live");
+    expect(requests.map((r) => r.url)).toEqual(
+      [0, 1, 2, 3, 4, 5, 6, 7].map((i) => `/api/hub/status?n=${i}`),
+    );
 
-    const stopped = handle.stop();
+    requests[3]?.respond(200, {});
     await settle();
-    const stop = lastFetch(posted);
-    expect(stop.path).toBe("/api/agents/scout/sessions/artifact-wiki-0001/stop");
-    reply(stop.id ?? "", 404, { error: "not running", code: "not_live" });
-    await expect(stopped).rejects.toMatchObject({ message: "not running", code: "not_live" });
+    expect(requests).toHaveLength(9);
+    expect(lastRequest(requests).url).toBe("/api/hub/status?n=8");
   });
 
-  it("rejects with the gateway's error when the start is refused", async () => {
-    const { sdk, posted, reply } = loadSdk();
-    const started = sdk.sessions.start({ agent: "scout", prompt: "go" });
+  it("runs at most 4 model calls at once, beside the ordinary requests", async () => {
+    const { sdk, requests } = loadSdk();
+    for (let i = 0; i < 8; i += 1) void sdk.fetch(`/api/hub/status?n=${i}`);
+    for (let i = 0; i < 6; i += 1) void sdk.ask(`question ${i}`, { agent: "atlas" });
     await settle();
-    reply(lastFetch(posted).id ?? "", 400, { error: "unknown skill" });
-    await expect(started).rejects.toThrow("unknown skill");
+    const modelCalls = (): number =>
+      requests.filter((r) => r.url === "/api/agents/atlas/model/complete").length;
+    expect(requests).toHaveLength(12);
+    expect(modelCalls()).toBe(4);
+
+    requests.find((r) => r.url === "/api/agents/atlas/model/complete")?.respond(200, {});
+    await settle();
+    expect(modelCalls()).toBe(5);
+  });
+});
+
+describe("residuum.fetch overload retries", () => {
+  it("retries the relay's overloaded 503 with backoff until it goes through", async () => {
+    vi.useFakeTimers();
+    const { sdk, requests } = loadSdk();
+    const pending = sdk.fetch("/api/agents/atlas/status");
+    await settle();
+    lastRequest(requests).respond(503, "agent overloaded");
+    await settle();
+    expect(requests).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(600);
+    expect(requests).toHaveLength(2);
+    lastRequest(requests).respond(503, "agent overloaded\n");
+    await settle();
+    await vi.advanceTimersByTimeAsync(1200);
+    expect(requests).toHaveLength(3);
+    lastRequest(requests).respond(200, { mode: "running" });
+    expect((await pending).status).toBe(200);
+  });
+
+  it("gives up after three retries and returns the 503", async () => {
+    vi.useFakeTimers();
+    const { sdk, requests, console } = loadSdk();
+    const pending = sdk.fetch("/api/agents/atlas/status");
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      await settle();
+      expect(requests).toHaveLength(attempt);
+      lastRequest(requests).respond(503, "agent overloaded");
+      await settle();
+      await vi.advanceTimersByTimeAsync(5000);
+    }
+    const resp = await pending;
+    expect(resp.status).toBe(503);
+    expect(await resp.text()).toBe("agent overloaded");
+    expect(requests).toHaveLength(4);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("giving up"));
+  });
+
+  it("returns any other 503 at once", async () => {
+    vi.useFakeTimers();
+    const { sdk, requests } = loadSdk();
+    const pending = sdk.fetch("/api/hub/agents/atlas/start", { method: "POST" });
+    await settle();
+    lastRequest(requests).respond(503, { error: "Residuum is shutting down" });
+    expect((await pending).status).toBe(503);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(requests).toHaveLength(1);
+  });
+
+  it("holds the lane while it retries", async () => {
+    vi.useFakeTimers();
+    const { sdk, requests } = loadSdk();
+    for (let i = 0; i < 9; i += 1) void sdk.fetch(`/api/hub/status?n=${i}`);
+    await settle();
+    requests[0]?.respond(503, "agent overloaded");
+    await settle();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(requests.map((r) => r.url).filter((u) => u.endsWith("n=8"))).toEqual([]);
+    expect(lastRequest(requests).url).toBe("/api/hub/status?n=0");
   });
 });
 
 describe("residuum.state", () => {
   it("reads the artifact's state file from the team workbench", async () => {
-    const { sdk, posted, reply } = loadSdk();
+    const { sdk, requests } = loadSdk("wiki");
     const loaded = sdk.state.get();
     await settle();
-
-    const request = lastFetch(posted);
+    const request = lastRequest(requests);
     expect(request.method).toBe("GET");
-    expect(request.path).toBe("/api/team/workspace/file?path=workbench%2Fwiki.state.json");
-
-    reply(request.id ?? "", 200, { picked: 3 });
+    expect(request.url).toBe("/api/team/workspace/file?path=workbench%2Fwiki.state.json");
+    request.respond(200, { picked: 3 });
     expect(await loaded).toEqual({ picked: 3 });
   });
 
   it("resolves to null before the first set", async () => {
-    const { sdk, posted, reply } = loadSdk();
+    const { sdk, requests } = loadSdk("wiki");
     const loaded = sdk.state.get();
     await settle();
-    reply(lastFetch(posted).id ?? "", 404, "");
+    lastRequest(requests).respond(404, "");
     expect(await loaded).toBeNull();
   });
 
   it("writes the state file into the team workbench", async () => {
-    const { sdk, posted, reply } = loadSdk();
+    const { sdk, requests } = loadSdk("wiki");
     const saved = sdk.state.set({ picked: 4 });
     await settle();
-
-    const request = lastFetch(posted);
+    const request = lastRequest(requests);
     expect(request.method).toBe("PUT");
-    expect(request.path).toBe("/api/team/workspace/file");
-    expect(JSON.parse(request.body ?? "")).toEqual({
+    expect(request.url).toBe("/api/team/workspace/file");
+    expect(JSON.parse(request.body as string)).toEqual({
       path: "workbench/wiki.state.json",
       content: JSON.stringify({ picked: 4 }),
     });
-
-    reply(request.id ?? "", 200, {});
+    request.respond(200, {});
     await saved;
   });
 });
 
 describe("residuum.ask", () => {
   it("calls the named agent's model route and leaves the agent out of the body", async () => {
-    const { sdk, posted, reply } = loadSdk();
+    const { sdk, requests } = loadSdk();
     const asked = sdk.ask({ agent: "scout", prompt: "summarize", max_tokens: 50 });
     await settle();
-
-    const request = lastFetch(posted);
+    const request = lastRequest(requests);
     expect(request.method).toBe("POST");
-    expect(request.path).toBe("/api/agents/scout/model/complete");
-    expect(JSON.parse(request.body ?? "")).toEqual({ prompt: "summarize", max_tokens: 50 });
-
-    reply(request.id ?? "", 200, { text: "done" });
-    expect(await asked).toEqual({ text: "done" });
+    expect(request.url).toBe("/api/agents/scout/model/complete");
+    expect(JSON.parse(request.body as string)).toEqual({ prompt: "summarize", max_tokens: 50 });
+    request.respond(200, { content: "done" });
+    expect(await asked).toEqual({ content: "done" });
   });
 
   it("takes the agent as a second argument for the prompt shorthand", async () => {
-    const { sdk, posted } = loadSdk();
+    const { sdk, requests } = loadSdk();
     void sdk.ask("hello", { agent: "scout" });
     await settle();
-    const request = lastFetch(posted);
-    expect(request.path).toBe("/api/agents/scout/model/complete");
-    expect(JSON.parse(request.body ?? "")).toEqual({ prompt: "hello" });
+    expect(lastRequest(requests).url).toBe("/api/agents/scout/model/complete");
+    expect(JSON.parse(lastRequest(requests).body as string)).toEqual({ prompt: "hello" });
   });
 
-  it("needs an agent, and asks nothing of the gateway without one", async () => {
-    const { sdk, posted } = loadSdk();
-    await expect(sdk.ask("hello")).rejects.toThrow("residuum.ask needs an agent");
-    await expect(sdk.ask({ prompt: "hello" })).rejects.toThrow("needs");
-    expect(posted.filter((m) => m.kind === "fetch")).toEqual([]);
+  it("needs an agent, and sends nothing without one", async () => {
+    const { sdk, requests } = loadSdk();
+    await expect(sdk.ask("hello").catch(described)).resolves.toMatchObject({
+      name: "TypeError",
+      message: expect.stringContaining("residuum.ask needs an agent") as unknown,
+    });
+    await expect(sdk.ask({ prompt: "hello" }).catch(described)).resolves.toMatchObject({
+      name: "TypeError",
+    });
+    expect(requests).toEqual([]);
+  });
+
+  it("rejects with Residuum's error", async () => {
+    const { sdk, requests } = loadSdk();
+    const asked = sdk.ask("hello", { agent: "drifter" }).catch(described);
+    await settle();
+    lastRequest(requests).respond(409, { error: "drifter is stopped", state: "stopped" });
+    expect(await asked).toMatchObject({ message: "drifter is stopped" });
   });
 });
