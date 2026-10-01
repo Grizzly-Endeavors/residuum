@@ -283,8 +283,17 @@ async fn handle_client_frame(
 ) -> bool {
     let text = match frame {
         Some(Ok(Message::Text(text))) => text,
-        Some(Ok(Message::Close(_)) | Err(_)) | None => return false,
+        Some(Ok(Message::Close(frame))) => {
+            // Axum doesn't answer a client's Close frame on its own: without
+            // an explicit reply, and a shutdown of the transport to go with
+            // it, the client sees code 1006 (abnormal closure) instead of
+            // the code it asked to close with.
+            outbound.send(Message::Close(frame)).await.ok();
+            outbound.close().await.ok();
+            return false;
+        }
         Some(Ok(_)) => return true,
+        Some(Err(_)) | None => return false,
     };
     let request: HubClientMessage = match serde_json::from_str(&text) {
         Ok(request) => request,
