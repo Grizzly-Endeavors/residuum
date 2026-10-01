@@ -133,7 +133,7 @@ web/
 │   │   └── schedule/         # An agent's Schedule: its pulses and scheduled actions, and the words they show
 │   ├── feed/                 # A conversation: the feed, its turns and their activity lines, and each kind of message in it, shared by Chat and session transcripts; path links
 │   ├── Setup.svelte          # Setup wizard, built into a chunk of its own
-│   ├── styles/               # Design tokens, bundled fonts, the base styles for components, the shell breakpoints for scripts, and the contrast pairs the tokens are tested against
+│   ├── styles/               # Design tokens, bundled fonts, the base and reset styles, the shell breakpoints for scripts, and the contrast pairs the tokens are tested against
 │   ├── components/
 │   │   └── setup/                  # Setup wizard steps
 │   ├── sw/                   # The service worker, a TypeScript program of its own (the worker's globals): the worker, its caching rules and what it shows for a push as pure functions, and the messages the page and the worker share
