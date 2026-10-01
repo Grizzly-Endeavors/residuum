@@ -46,7 +46,7 @@ async function openDrawer(page: Page): Promise<Locator> {
 
 test("the palette goes to another agent's place, found by typing", async ({ page, isMobile }) => {
   await page.goto("/home");
-  await expect(page.getByRole("region", { name: "Team" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Home", level: 1 })).toBeVisible();
   const dialog = await openPalette(page, isMobile);
   await expectNoAxeViolations(page, { within: OVERLAYS });
 
@@ -230,7 +230,7 @@ test("the shortcuts dialog lists Esc for stopping a reply and what / does", asyn
   isMobile,
 }) => {
   await page.goto("/home");
-  await expect(page.getByRole("region", { name: "Team" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Home", level: 1 })).toBeVisible();
   if (isMobile) {
     const rail = await openDrawer(page);
     await rail.getByRole("button", { name: "Help" }).click();
