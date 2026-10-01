@@ -126,6 +126,13 @@ jobs:
               sed '/^$/d' web/coverage/summary.txt
               echo '```'
             fi
+            # Reported with no threshold: a missing build or an unreadable index.html never fails the job.
+            if [ -f web/dist/index.html ]; then
+              echo ''
+              echo '### Web initial-route size'
+              echo ''
+              scripts/web-initial-route-size.sh web/dist || echo 'The size could not be read from `web/dist/index.html`.'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   rust:

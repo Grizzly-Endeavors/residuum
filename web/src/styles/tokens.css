@@ -113,6 +113,16 @@
   --space-48: 48px;
   --space-64: 64px;
 
+  /* ── Safe areas ────────────────────────────────────────────────────── */
+  /* What a notch, a rounded corner, the status bar of an installed app or a
+     home indicator takes from each edge. The viewport's viewport-fit=cover
+     makes the browser report them. The shell, and every surface pinned to an
+     edge of the screen, pads by these. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+
   /* ── Layout ────────────────────────────────────────────────────────── */
   --layout-rail-width: 248px;
   --layout-panel-width: 440px;
@@ -124,9 +134,7 @@
   --layout-bottom-bar-height: 60px;
   /* What the phone bottom bar covers, safe-area inset included. Anything
      pinned to the bottom of the viewport sits above this. */
-  --layout-bottom-bar-offset: calc(
-    var(--layout-bottom-bar-height) + env(safe-area-inset-bottom, 0px)
-  );
+  --layout-bottom-bar-offset: calc(var(--layout-bottom-bar-height) + var(--safe-bottom));
   --layout-touch-target: 44px;
 
   /* ── Breakpoints ───────────────────────────────────────────────────── */

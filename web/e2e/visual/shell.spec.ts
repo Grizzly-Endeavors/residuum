@@ -94,6 +94,33 @@ test.describe("shell", { tag: "@visual" }, () => {
     await expectScreenshot(page, "shell-bug-report");
   });
 
+  test("the Add to Home Screen steps", async ({ page, isMobile }) => {
+    // An iPhone has no install prompt, so Install app opens these steps.
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "userAgent", {
+        value:
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1",
+      });
+    });
+    await page.goto("/agent/atlas/schedule");
+    await expect(page.getByRole("heading", { name: "Pulses" })).toBeVisible();
+    if (isMobile) {
+      await page
+        .getByRole("navigation", { name: "Main" })
+        .getByRole("button", { name: "Menu" })
+        .click();
+    }
+    await page
+      .getByRole("navigation", { name: "Places and agents" })
+      .getByRole("button", { name: "Help" })
+      .click();
+    await page.getByRole("menuitem", { name: "Install app" }).click();
+    await expect(
+      page.getByRole("dialog", { name: "Add Residuum to your Home Screen" }),
+    ).toBeVisible();
+    await expectScreenshot(page, "shell-install-steps");
+  });
+
   test("at medium width", async ({ page, isMobile }) => {
     test.skip(isMobile, "Medium width is a desktop window narrowed.");
     await page.setViewportSize({ width: 1000, height: 760 });

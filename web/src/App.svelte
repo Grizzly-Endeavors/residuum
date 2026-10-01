@@ -8,7 +8,9 @@
   import { router } from "./lib/router.svelte";
   import { settingsModel } from "./lib/settings-model.svelte";
   import { Icon } from "./lib/icons";
+  import { LazyComponent } from "./lib/lazy-component.svelte";
   import {
+    Button,
     provideTooltips,
     Spinner,
     ToastRegion,
@@ -16,11 +18,16 @@
     TooltipHost,
     VisuallyHidden,
   } from "./lib/ui";
-  import Setup from "./Setup.svelte";
   import Shell from "./shell/Shell.svelte";
 
   // The app's root: first-run setup when the hub has no agents, else the
-  // shell. Toasts and tooltips are drawn here in every mode.
+  // shell. Toasts and tooltips are drawn here in every mode. The setup wizard
+  // is built apart from the shell and loads only when it is needed.
+
+  const setupWizard = new LazyComponent<{ onComplete: () => void }>(
+    () => import("./Setup.svelte"),
+    "the setup wizard",
+  );
 
   provideTooltips(tooltip);
 
@@ -67,6 +74,10 @@
     };
   });
 
+  $effect(() => {
+    if (mode === "setup") setupWizard.ensure();
+  });
+
   // Settle on agents that exist: a URL on an agent that doesn't goes to Home,
   // and one that resolves under the last-used agent finds it.
   $effect(() => {
@@ -85,16 +96,23 @@
   }
 </script>
 
-{#if mode === "loading"}
+{#if mode === "running"}
+  <Shell />
+{:else if mode === "setup" && setupWizard.component !== null}
+  {@const Setup = setupWizard.component}
+  <Setup onComplete={() => void finishSetup()} />
+{:else if mode === "setup" && setupWizard.failed}
+  <div class="app-loading" data-ui role="alert">
+    <span class="app-loading-mark"><Icon name="mark" size={18} />Residuum</span>
+    <p>Couldn't load the setup wizard. Check your connection, then try again.</p>
+    <Button onclick={() => setupWizard.ensure()}>Try again</Button>
+  </div>
+{:else}
   <div class="app-loading" data-ui role="status">
     <span class="app-loading-mark"><Icon name="mark" size={18} />Residuum</span>
     <Spinner size={16} />
-    <VisuallyHidden>Loading your agents</VisuallyHidden>
+    <VisuallyHidden>{mode === "loading" ? "Loading your agents" : "Loading setup"}</VisuallyHidden>
   </div>
-{:else if mode === "setup"}
-  <Setup onComplete={() => void finishSetup()} />
-{:else}
-  <Shell />
 {/if}
 
 <ToastRegion clearance={toastClearance} />

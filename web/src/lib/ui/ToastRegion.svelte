@@ -71,7 +71,7 @@
 <style>
   .ui-toasts {
     position: fixed;
-    bottom: var(--space-24);
+    bottom: calc(var(--space-24) + var(--safe-bottom));
     left: 50%;
     z-index: var(--z-toast);
     display: flex;
