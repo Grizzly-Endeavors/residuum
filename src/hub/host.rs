@@ -27,6 +27,7 @@ use tokio::sync::{broadcast, watch};
 use tokio::task::AbortHandle;
 use tracing::Instrument;
 
+use crate::background::registry::SessionInfo;
 use crate::config::paths::TeamPaths;
 use crate::config::{Config, HubConfig};
 use crate::gateway::ReloadSignal;
@@ -1807,6 +1808,20 @@ impl AgentDirectory for AgentHost {
             })
             .map(|slot| slot.name.clone())
             .collect()
+    }
+
+    fn live_sessions(&self, name: &str) -> Vec<SessionInfo> {
+        let Ok(slot) = self.slot(name) else {
+            return Vec::new();
+        };
+        let registry = slot
+            .lock()
+            .running
+            .as_ref()
+            .map(|running| Arc::clone(&running.control.session_registry));
+        registry
+            .map(|registry| registry.list_live())
+            .unwrap_or_default()
     }
 
     async fn create(

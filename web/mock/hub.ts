@@ -6,6 +6,7 @@ import { HUB_STATE_NAME, MOCK_DETERMINISTIC_BOOT_ID } from "./constants";
 import { createMockEnv, type MockEnv } from "./env";
 import { createHubConfigReloader } from "./hub-config-reload";
 import { openHubSocket } from "./hub-socket";
+import { createOverview } from "./overview";
 import type { UpgradeHost } from "./sockets";
 import { createState, seedAgentData, type MockAgent, type MockHub } from "./state";
 import { createTeamEvents } from "./team-events";
@@ -87,17 +88,20 @@ export function createHub(
     setOnline: setHubSocketOnline,
   } = openHubSocket(host, bootId, listing);
   const teamEvents = createTeamEvents(env, bootId, sendToPages);
-  // Every frame the hub sends is also read by the log, as the backend's
-  // recorder reads the hub bus.
+  const overview = createOverview(env, bootId, agents, sendToPages);
+  // Every frame the hub sends is also read by the log and the overview, as
+  // the backend's recorder and tracker read the hub bus.
   const broadcast = (frame: HubServerMessage): void => {
     sendToPages(frame);
     teamEvents.observeHub(frame);
+    overview.observeHub(frame);
   };
   /** The log of a hub that has just started the agents the scenario created. */
   const beginLog = (): void => {
     teamEvents.begin(
       [...agents.values()].sort((a, b) => byName(a.name, b.name)).map(mockAgentSummary),
     );
+    overview.begin();
   };
 
   const hub: MockHub = {
@@ -107,6 +111,7 @@ export function createHub(
     hubState,
     broadcast,
     teamEvents,
+    overview,
     summary: mockAgentSummary,
     listing,
     reloadHubConfig: createHubConfigReloader(hubState, broadcast),
@@ -131,6 +136,7 @@ export function createHub(
       agents.set(name, agent);
       openAgentSocket(host, hub, agent);
       teamEvents.watchAgent(agent);
+      overview.watchAgent(agent);
       return agent;
     },
     setBusy(agent, busy) {

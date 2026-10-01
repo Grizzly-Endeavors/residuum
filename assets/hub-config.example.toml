@@ -53,6 +53,16 @@ port = 7700
 #                              # card advertises <public_url>/agents/<name>. Empty
 #                              # uses the local address.
 
+# ── Web Push (optional) ──────────────────────────────────────────────────────
+# Browser and installed-app notifications. Devices are registered from the
+# web UI (All agents > Notifications). The contact is how a push service
+# (Google, Apple, Mozilla) can reach you about misbehaving traffic; it is sent
+# with every push as the VAPID "sub" claim and is never shown to your devices.
+#
+# [push]
+# contact = "mailto:you@example.com"   # a mailto: address or an https:// URL. Empty or unset
+#                                       # uses https://github.com/Grizzly-Endeavors/residuum
+
 # ── Tracing and observability (optional) ─────────────────────────────────────
 # [tracing]
 # log_level = "debug"             # "info", "debug", or "trace"

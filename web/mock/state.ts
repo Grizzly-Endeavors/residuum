@@ -15,7 +15,9 @@ import { createArchivedInboxItems, createInboxItems } from "./data/inbox";
 import { createSessions, type MockSessions } from "./data/sessions";
 import { createWorkspaceFileContents, createWorkspaceFiles } from "./data/workspace";
 import { createMockEnv, type MockEnv } from "./env";
+import type { MockPushDevice } from "./push";
 import { createScheduled, type MockScheduled } from "./scheduled";
+import type { MockOverview } from "./overview";
 import type { MockTeamEvents } from "./team-events";
 import type { MockUpdateStatus } from "./update";
 
@@ -68,6 +70,8 @@ export interface MockState {
   scheduled: MockScheduled;
   /** What the hub knows about updates, for the update routes. */
   update: MockUpdateStatus;
+  /** The devices registered for Web Push, oldest first. Only the hub's state holds any. */
+  pushDevices: MockPushDevice[];
   /** The checkpoint histories this state holds: an agent's own, or the hub's. */
   checkpoints: MockCheckpoints;
   /**
@@ -155,6 +159,8 @@ export interface MockHub {
   broadcast: (frame: HubServerMessage) => void;
   /** What has happened across the team since the hub started: `GET /api/hub/events` and the `team_event` frames. */
   teamEvents: MockTeamEvents;
+  /** What Home shows about each agent: `GET /api/hub/overview` and the `agent_overview` frames. */
+  overview: MockOverview;
   setBusy: (agent: MockAgent, busy: boolean) => void;
   /** Tell hub clients the agent's stop has begun. Its state changes when `transition` moves it on. */
   markStopping: (agent: MockAgent) => void;
@@ -289,6 +295,7 @@ export function createState(
     agentInbox: [],
     scheduled: { pulses: [], actions: [] },
     update: { latest: null, lastChecked: null },
+    pushDevices: [],
     checkpoints: {},
     hasConversation: false,
   };

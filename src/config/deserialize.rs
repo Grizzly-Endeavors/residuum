@@ -13,8 +13,8 @@ use serde::Deserialize;
 
 /// Raw TOML hub config file structure (`hub/config.toml`), deserialized
 /// directly. Hub-level: the timezone, gateway bind/port, cloud tunnel, the
-/// A2A listener's enablement/port/public URL, tracing, and the shared
-/// background session budget and hop limits.
+/// A2A listener's enablement/port/public URL, tracing, Web Push, and the
+/// shared background session budget and hop limits.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct HubConfigFile {
@@ -30,6 +30,17 @@ pub(crate) struct HubConfigFile {
     pub(super) a2a: Option<HubA2aConfigFile>,
     /// Shared background session budget and cross-agent hop limits.
     pub(super) background: Option<HubBackgroundConfigFile>,
+    /// Web Push settings.
+    pub(super) push: Option<HubPushConfigFile>,
+}
+
+/// Raw TOML `[push]` section in `hub/config.toml`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct HubPushConfigFile {
+    /// Contact URI (`mailto:` or `https:`) sent to push services as the
+    /// VAPID `sub` claim. Empty or absent uses the project's default.
+    pub(super) contact: Option<String>,
 }
 
 /// Raw TOML `[a2a]` section in `hub/config.toml`.

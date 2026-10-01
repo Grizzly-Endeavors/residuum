@@ -2,7 +2,7 @@
 
 `~/.residuum/` holds `hub/` (hub-level state: never any one agent's workspace), `team/` (the shared team layer), and one directory per agent, each of which *is* that agent's workspace root.
 
-Hub-level settings live in `hub/config.toml`: the timezone (shared by every agent), the gateway bind/port, the cloud tunnel, the A2A listener's enablement/port/public URL, tracing, and the shared background session budget and cross-agent hop limits. `hub/` also holds the encrypted secret store (`secrets.toml.enc`), the agent-key store (`agent-keys.toml.enc`), and A2A caller keys (`a2a-keys.toml`) — all shared by every agent.
+Hub-level settings live in `hub/config.toml`: the timezone (shared by every agent), the gateway bind/port, the cloud tunnel, the A2A listener's enablement/port/public URL, tracing, the Web Push contact, and the shared background session budget and cross-agent hop limits. `hub/` also holds the encrypted secret store (`secrets.toml.enc`), the agent-key store (`agent-keys.toml.enc`), A2A caller keys (`a2a-keys.toml`), and the Web Push signing key and device list (`push-vapid.key`, `push-devices.json`; see [Notifications](notifications.md#web-push)) — all shared by every agent.
 
 Everything else lives in the agent's own `config/` directory (`~/.residuum/<agent-name>/config/`): `config.toml` (memory, pulse, subconscious, adapters, agent abilities, idle, `autostart`, this agent's A2A `visibility`, and more), `providers.toml` (provider credentials and `[models]` role assignments), plus the narrower per-system files `mcp.json`, `channels.toml`, `agent-card.json`, and `a2a.json` — see each system's own doc.
 
@@ -15,6 +15,7 @@ Everything else lives in the agent's own `config/` directory (`~/.residuum/<agen
 │   ├── secrets.toml.enc, secrets.key
 │   ├── agent-keys.toml.enc, agent-keys.key, agent-keys.lock
 │   ├── a2a-keys.toml, a2a-keys.lock
+│   ├── push-vapid.key, push-devices.json
 │   ├── logs/, bin/, checkpoints/
 │   ├── residuum.pid, residuum.lock, residuum.ready, residuum.startup-error, crash.log
 │   └── *.last-known-good.toml (hub's and each agent's), update markers
@@ -34,7 +35,7 @@ An agent is any directory directly under `~/.residuum/` that holds `config/confi
 
 | File | Holds |
 |------|-------|
-| `hub/config.toml` | `timezone` (shared), `[gateway]` bind and port, `[cloud]`, `[a2a]` `enabled`/`port`/`public_url`, `[tracing]`, `[background]` `max_concurrent` (the session budget) and `hop_soft_limit`/`hop_hard_limit` |
+| `hub/config.toml` | `timezone` (shared), `[gateway]` bind and port, `[cloud]`, `[a2a]` `enabled`/`port`/`public_url`, `[tracing]`, `[push]` `contact` (a `mailto:` address or `https:` URL sent to push services; the project's address when unset), `[background]` `max_concurrent` (the session budget) and `hop_soft_limit`/`hop_hard_limit` |
 | `<agent>/config/config.toml` | Everything else: `autostart` (default `true`), `timeout_secs`, `max_tokens`, `temperature`, `thinking`, `[memory]`, `[pulse]`, `[subconscious]`, `[learning]`, `[retry]`, `[agent]`, `[idle]`, `[discord]`, `[telegram]`, `[teams]`, `[webhooks]`, `[skills]`, `[tools]`, `[web_search]`, `[a2a]` `visibility`, and `[background]` idle timeouts, `episode_skip_token_floor`, and `subagent_depth_cap` |
 | `<agent>/config/providers.toml` | `[providers.*]`, `[models]`, `[background.models]` |
 
@@ -53,7 +54,7 @@ Hub-level overrides apply: `RESIDUUM_TIMEZONE`, `RESIDUUM_GATEWAY_BIND`, `RESIDU
 | `config/mcp.json`, `config/channels.toml` | Yes, unless `agent.modify_mcp`/`agent.modify_channels` is turned off in the agent's `config.toml`. |
 | `config/a2a.json`, `HEARTBEAT.yml` | Yes, same as any other workspace file — no ability gate. |
 | `hub/config.toml` | Yes, by absolute path, same as the agent's own `config.toml`. Its reload outcome reaches the agent the same way (see below). |
-| `hub/secrets.toml.enc`, `hub/secrets.key`, `hub/agent-keys.*`, `hub/a2a-keys.*` (the credential stores) | No. `PathPolicy` refuses every write. |
+| `hub/secrets.toml.enc`, `hub/secrets.key`, `hub/agent-keys.*`, `hub/a2a-keys.*`, `hub/push-vapid.key`, `hub/push-devices.json` (the credential stores, and the Web Push key and device list) | No. `PathPolicy` refuses every write. |
 
 The `.example.toml` files are reference templates, not user config: `config::bootstrap::bootstrap_agent_at` (and `bootstrap_hub_at` for the hub's own example) regenerate them from the binary's compiled-in defaults on every startup, so a write to either would appear to succeed and then be silently overwritten at the next restart. `PathPolicy::check_write` gives a write refusal for one of them a distinct message naming this and pointing at the writable file instead of the generic "user-managed configuration" refusal every other blocked path gets.
 

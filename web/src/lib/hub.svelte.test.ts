@@ -169,6 +169,30 @@ describe("HubStore frames", () => {
     expect(notifications.history).toEqual([]);
   });
 
+  it("passes an agent's overview to listeners and never raises a notice for it", () => {
+    const hub = new HubStore();
+    hub.handleFrame(snapshot([agent("scout")]));
+    const seen: string[] = [];
+    hub.onFrame((frame) => seen.push(frame.type));
+
+    hub.handleFrame({
+      type: "agent_overview",
+      overview: {
+        name: "scout",
+        last_message: null,
+        live_sessions: [],
+        upcoming: [],
+        inbox_unread: 2,
+        outbound_problems: [],
+      },
+    });
+
+    expect(seen).toEqual(["agent_overview"]);
+    expect(hub.notices).toEqual([]);
+    expect(toast.toasts.size).toBe(0);
+    expect(notifications.history).toEqual([]);
+  });
+
   it("updates an agent's state in place", () => {
     const hub = new HubStore();
     hub.handleFrame(snapshot([agent("atlas"), agent("scout")]));

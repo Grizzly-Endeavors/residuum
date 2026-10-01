@@ -4,7 +4,8 @@
 //! [`crate::hub::inbox`], so an agent answers in any state. Failures are
 //! `{ "error": message }`: `400` for a request that can't be read, `404` for
 //! an unknown agent or item, `409` when a move would replace another item, and
-//! `500` when the files can't be read or changed.
+//! `500` when the files can't be read or changed. An item the hub changed
+//! through these routes is counted again in its agent's overview.
 
 use std::sync::Arc;
 
@@ -18,19 +19,28 @@ use serde::Deserialize;
 
 use super::error::json_error;
 use crate::hub::AgentDirectory;
-use crate::hub::inbox::{self, HubInboxError, InboxStatus, ListQuery};
+use crate::hub::inbox::{self, HubInboxError, HubInboxItem, InboxStatus, ListQuery};
+use crate::hub::overview::TeamOverview;
 
-type Directory = Arc<dyn AgentDirectory>;
+/// What the inbox routes read and tell.
+#[derive(Clone)]
+pub(super) struct InboxState {
+    /// Where the agents' files are.
+    pub directory: Arc<dyn AgentDirectory>,
+    /// Told when the hub changes an item, so the agent's unread count is
+    /// read again.
+    pub overview: Arc<TeamOverview>,
+}
 
 /// The list, unread count, and per-item routes.
-pub(super) fn routes(directory: Directory) -> Router {
+pub(super) fn routes(state: InboxState) -> Router {
     Router::new()
         .route("/api/hub/inbox", get(list_inbox))
         .route("/api/hub/inbox/unread", get(unread_inbox))
         .route("/api/hub/inbox/{agent}/{id}/read", put(read_item))
         .route("/api/hub/inbox/{agent}/{id}/archive", post(archive_item))
         .route("/api/hub/inbox/{agent}/{id}/restore", post(restore_item))
-        .with_state(directory)
+        .with_state(state)
 }
 
 /// The query of `GET /api/hub/inbox`, kept as text so a value that can't be
@@ -83,7 +93,7 @@ fn inbox_error_response(error: &HubInboxError) -> Response {
 
 /// `GET /api/hub/inbox` — one page of items, newest first.
 async fn list_inbox(
-    State(directory): State<Directory>,
+    State(state): State<InboxState>,
     params: Result<Query<ListParams>, QueryRejection>,
 ) -> Response {
     let query = match params {
@@ -93,48 +103,59 @@ async fn list_inbox(
         },
         Err(rejection) => return json_error(StatusCode::BAD_REQUEST, rejection.body_text()),
     };
-    match inbox::list(directory.as_ref(), &query).await {
+    match inbox::list(state.directory.as_ref(), &query).await {
         Ok(page) => Json(page).into_response(),
         Err(e) => inbox_error_response(&e),
     }
 }
 
 /// `GET /api/hub/inbox/unread` — unread items, in total and per agent.
-async fn unread_inbox(State(directory): State<Directory>) -> Response {
-    match inbox::unread(directory.as_ref()).await {
+async fn unread_inbox(State(state): State<InboxState>) -> Response {
+    match inbox::unread(state.directory.as_ref()).await {
         Ok(unread) => Json(unread).into_response(),
         Err(e) => inbox_error_response(&e),
     }
 }
 
-/// The `{ "item": ... }` body of the per-item routes.
-fn item_response(result: Result<inbox::HubInboxItem, HubInboxError>) -> Response {
+/// The `{ "item": ... }` body of the per-item routes. A changed item is told
+/// to the overview, which counts the agent's inbox again.
+async fn item_response(
+    overview: &TeamOverview,
+    agent: &str,
+    result: Result<HubInboxItem, HubInboxError>,
+) -> Response {
     match result {
-        Ok(item) => Json(serde_json::json!({ "item": item })).into_response(),
+        Ok(item) => {
+            overview.inbox_changed(agent).await;
+            Json(serde_json::json!({ "item": item })).into_response()
+        }
         Err(e) => inbox_error_response(&e),
     }
 }
 
 /// `PUT /api/hub/inbox/{agent}/{id}/read`.
 async fn read_item(
-    State(directory): State<Directory>,
+    State(state): State<InboxState>,
     Path((agent, id)): Path<(String, String)>,
 ) -> Response {
-    item_response(inbox::mark_read(directory.as_ref(), &agent, &id).await)
+    let result = inbox::mark_read(state.directory.as_ref(), &agent, &id).await;
+    item_response(&state.overview, &agent, result).await
 }
 
 /// `POST /api/hub/inbox/{agent}/{id}/archive`.
 async fn archive_item(
-    State(directory): State<Directory>,
+    State(state): State<InboxState>,
     Path((agent, id)): Path<(String, String)>,
 ) -> Response {
-    item_response(inbox::archive(directory.as_ref(), &agent, &id).await)
+    let result = inbox::archive(state.directory.as_ref(), &agent, &id).await;
+    item_response(&state.overview, &agent, result).await
 }
 
 /// `POST /api/hub/inbox/{agent}/{id}/restore`.
 async fn restore_item(
-    State(directory): State<Directory>,
+    State(state): State<InboxState>,
     Path((agent, id)): Path<(String, String)>,
 ) -> Response {
-    item_response(inbox::restore(directory.as_ref(), &agent, &id).await)
+    let result = inbox::restore(state.directory.as_ref(), &agent, &id).await;
+    item_response(&state.overview, &agent, result).await
 }

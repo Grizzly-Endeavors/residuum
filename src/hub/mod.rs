@@ -3,8 +3,10 @@
 //! [`types`] holds the shapes shared by the agent host, the hub HTTP API,
 //! and the hub WebSocket; [`directory`] is the interface the HTTP surface
 //! and the A2A listener use to reach hosted agents; [`provision`] writes and
-//! removes agent directories; [`team_events`] is the log of what happened
-//! across the team; [`http`] is the hub's HTTP app. See
+//! removes agent directories; [`push`] sends Web Push notifications;
+//! [`team_events`] is the log of what happened across the team;
+//! [`overview`] is what Home shows about each agent;
+//! [`http`] is the hub's HTTP app. See
 //! `docs/systems-usage/hub.md` and `docs/systems-usage/hub-http.md`.
 
 pub mod activity;
@@ -14,7 +16,9 @@ pub mod directory;
 pub mod host;
 pub mod http;
 pub mod inbox;
+pub mod overview;
 pub mod provision;
+pub mod push;
 mod relay_agents;
 pub mod runtime;
 pub mod services;

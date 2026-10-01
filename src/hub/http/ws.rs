@@ -4,12 +4,14 @@
 //! every hub event (`agent_state`, `agent_stopping`, `agent_created`,
 //! `agent_restored`, `agent_deleted`, `agent_activity`, `notice`,
 //! `hub_config_reloaded`), a `team_event` for every entry the team event log
-//! records, and `workspace_changed` frames for the team paths the client
+//! records, an `agent_overview` whenever something in an agent's overview
+//! changes, and `workspace_changed` frames for the team paths the client
 //! watches. Client to server: `watch_team`, the only message.
 //!
-//! A connection that falls behind the hub's event stream or the team event
-//! log can't know what it missed, so it gets a fresh `agents_snapshot` in
-//! place of the lost events, and the client reads the log again.
+//! A connection that falls behind the hub's event stream, the team event
+//! log or the overview frames can't know what it missed, so it gets a fresh
+//! `agents_snapshot` in place of the lost events, and the client reads the
+//! log and the overview again.
 
 use std::sync::Arc;
 
@@ -26,6 +28,7 @@ use tokio::sync::{broadcast, watch};
 
 use crate::bus::{BusHandle, Subscriber, WorkspaceEvent, topics};
 use crate::gateway::protocol::ServerMessage;
+use crate::hub::overview::{AgentOverview, TeamOverview};
 use crate::hub::team_events::{TeamEvent, TeamEventLog};
 use crate::hub::types::{AgentListResponse, HubClientMessage, HubSocketFrame};
 use crate::hub::{AgentDirectory, HubEvent};
@@ -42,6 +45,7 @@ pub(super) struct HubWsState {
     pub team_bus: BusHandle,
     pub team_watch_health: watch::Receiver<WatchHealth>,
     pub team_events: Arc<TeamEventLog>,
+    pub overview: Arc<TeamOverview>,
 }
 
 /// The route that upgrades to the hub WebSocket.
@@ -66,6 +70,7 @@ async fn serve(socket: WebSocket, state: HubWsState) {
     // the client as an event instead of falling in the gap.
     let mut events = state.directory.subscribe();
     let mut log_entries = state.team_events.subscribe();
+    let mut overviews = state.overview.subscribe();
     let mut team_feed = subscribe_team_feed(&state.team_bus).await;
     let mut watch_set = WatchSet::default();
 
@@ -89,6 +94,9 @@ async fn serve(socket: WebSocket, state: HubWsState) {
             }
             entry = log_entries.recv() => {
                 forward_log_entry(&mut outbound, &state, entry).await
+            }
+            overview = overviews.recv() => {
+                forward_overview(&mut outbound, state.directory.as_ref(), overview).await
             }
             event = next_team_event(&mut team_feed) => {
                 forward_team_event(&mut outbound, &watch_set, &mut team_feed, event).await
@@ -191,6 +199,26 @@ async fn forward_log_entry(
                 "hub websocket fell behind the team event log; resending the agent snapshot"
             );
             send_snapshot(outbound, state.directory.as_ref()).await
+        }
+        Err(broadcast::error::RecvError::Closed) => false,
+    }
+}
+
+/// Forward one agent's changed overview, or a fresh snapshot when overviews
+/// were lost. `false` when the connection should end.
+async fn forward_overview(
+    outbound: &mut Outbound,
+    directory: &dyn AgentDirectory,
+    overview: Result<AgentOverview, broadcast::error::RecvError>,
+) -> bool {
+    match overview {
+        Ok(overview) => send_frame(outbound, &HubSocketFrame::AgentOverview { overview }).await,
+        Err(broadcast::error::RecvError::Lagged(missed)) => {
+            tracing::warn!(
+                missed,
+                "hub websocket fell behind the team overview; resending the agent snapshot"
+            );
+            send_snapshot(outbound, directory).await
         }
         Err(broadcast::error::RecvError::Closed) => false,
     }

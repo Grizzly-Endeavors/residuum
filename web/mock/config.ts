@@ -34,6 +34,7 @@ import {
 } from "./http";
 import { decodedParam, type Route, type RouteContext } from "./routes";
 import { byName } from "./util";
+import { MOCK_TIMEZONE } from "./zone";
 
 const modelsByProvider: Record<string, Array<{ id: string; name: string }>> = {
   anthropic: [
@@ -131,7 +132,7 @@ const systemRoutes: readonly Route[] = [
     method: "GET",
     pattern: "/api/system/timezone",
     handler: ({ res }) => {
-      json(res, 200, { timezone: "America/New_York" } satisfies TimezoneResponse);
+      json(res, 200, { timezone: MOCK_TIMEZONE } satisfies TimezoneResponse);
     },
   },
   {

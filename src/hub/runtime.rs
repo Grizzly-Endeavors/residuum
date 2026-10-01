@@ -20,10 +20,12 @@ use crate::gateway::types::{GatewayExit, ReloadReceiver, ReloadSignal, TermSigna
 use crate::inference::EmbeddingProvider;
 use crate::tunnel::TunnelStatus;
 use crate::util::FatalError;
+use crate::workbench::forward::HubApi;
 
 use super::directory::AgentDirectory;
 use super::host::AgentHost;
 use super::http::{HubHttpState, hub_router};
+use super::overview::{OverviewTracker, TeamOverview};
 use super::relay_agents::RelayAgents;
 use super::services::{HubControl, HubServices};
 use super::team_embedding::EmbeddingSource;
@@ -233,14 +235,56 @@ async fn stop_task(name: &str, shutdown_tx: &watch::Sender<bool>, handle: JoinHa
     }
 }
 
+/// What the hub tells its clients about the team, and what keeps it current:
+/// the event log and the overview, each fed from the host's events and from
+/// the feed of agent changes for as long as this lives.
+struct TeamTracking {
+    /// What has happened across the team since this process started.
+    events: Arc<TeamEventLog>,
+    /// What Home shows about each agent.
+    overview: Arc<TeamOverview>,
+    _recorder: TeamEventRecorder,
+    _tracker: OverviewTracker,
+}
+
+impl TeamTracking {
+    /// Start tracking `host`. The log is the process's: its boot id is the
+    /// one the hub socket announces, and the overview names it too.
+    fn start(host: &Arc<AgentHost>) -> Self {
+        let events = TeamEventLog::new(uuid::Uuid::new_v4().to_string());
+        record_hub_started(&events);
+        let recorder = TeamEventRecorder::spawn(
+            Arc::clone(&events),
+            host.subscribe(),
+            host.agent_changes().subscribe(),
+        );
+        let overview = TeamOverview::new(
+            events.boot_id(),
+            Arc::clone(host) as Arc<dyn AgentDirectory>,
+        );
+        let tracker = OverviewTracker::spawn(
+            Arc::clone(&overview),
+            host.subscribe(),
+            host.agent_changes().subscribe(),
+        );
+        Self {
+            events,
+            overview,
+            _recorder: recorder,
+            _tracker: tracker,
+        }
+    }
+}
+
 /// The hub's process-level state.
 struct HubRuntime {
     hub_dir: std::path::PathBuf,
     hub_cfg: HubConfig,
     services: HubServices,
     host: Arc<AgentHost>,
-    /// Records what happens across the team for as long as the hub runs.
-    _team_events: TeamEventRecorder,
+    /// Records what happens across the team and keeps every agent's
+    /// overview current, for as long as the hub runs.
+    _team_tracking: TeamTracking,
     app: axum::Router,
     server: HttpServer,
     /// Resolves when onboarding has written the first agent; `None` once the
@@ -273,7 +317,7 @@ impl HubRuntime {
         let tunnel_status_tx = Arc::new(tunnel_status_tx);
 
         let scan = scan_agents(root, &hub_cfg);
-        let (workbench_serving, workbench_shutdown_tx) =
+        let (workbench_serving, workbench_shutdown_tx, workbench_api) =
             start_workbench_listener(root, &hub_cfg, &scan.teams_ports).await;
         let services = HubServices::open(
             root,
@@ -290,16 +334,10 @@ impl HubRuntime {
         .await?;
 
         let host = AgentHost::new(services.clone(), hub_cfg.clone());
-        // The log and its recorder come first, so the hub's startup notices
-        // and every agent's start are in the log: nothing they listen to is
-        // replayed. The boot id is the log's; the hub socket sends it too.
-        let team_events = TeamEventLog::new(uuid::Uuid::new_v4().to_string());
-        record_hub_started(&team_events);
-        let recorder = TeamEventRecorder::spawn(
-            Arc::clone(&team_events),
-            host.subscribe(),
-            host.agent_changes().subscribe(),
-        );
+        // Tracking comes first, so the hub's startup notices and every
+        // agent's start reach the log and the overview: nothing they listen
+        // to is replayed.
+        let team = TeamTracking::start(&host);
         host.note_team_embedding(scan.team_embedding).await;
         let agents = host.discover()?;
         tracing::info!(agents = agents.len(), names = %agents.join(", "), "found agents");
@@ -313,10 +351,12 @@ impl HubRuntime {
         let app = build_app(
             &host,
             &services,
-            &team_events,
+            &team.events,
+            &team.overview,
             reload_tx.clone(),
             setup_done,
         )?;
+        workbench_api.bind(app.clone());
         let server = spawn_http_server(&hub_cfg.gateway, app.clone()).await?;
         let a2a = hub_cfg
             .a2a
@@ -362,7 +402,7 @@ impl HubRuntime {
             hub_cfg,
             services,
             host,
-            _team_events: recorder,
+            _team_tracking: team,
             app,
             server,
             setup_done_rx,
@@ -589,6 +629,12 @@ impl HubRuntime {
         if old.timezone != new_hub.timezone {
             changed.push("timezone");
         }
+        if old.push != new_hub.push {
+            changed.push("push");
+            self.services
+                .push
+                .set_contact(new_hub.push.contact.as_deref());
+        }
         if old.background.max_concurrent != new_hub.background.max_concurrent {
             changed.push("background limits");
             self.host.notice(
@@ -702,8 +748,8 @@ async fn setup_finished(setup_done_rx: &mut Option<watch::Receiver<bool>>) {
 }
 
 /// Build the hub's HTTP app over `host`, with the process-wide handles from
-/// `services` and the team event log `team_events`, whose boot id the hub
-/// socket announces.
+/// `services`, the team event log `team_events`, whose boot id the hub socket
+/// announces, and the team `overview`.
 ///
 /// # Errors
 /// Returns `FatalError::Gateway` if the hub-level checkpoint repositories
@@ -712,6 +758,7 @@ pub(super) fn build_app(
     host: &Arc<AgentHost>,
     services: &HubServices,
     team_events: &Arc<TeamEventLog>,
+    overview: &Arc<TeamOverview>,
     reload_tx: crate::gateway::types::ReloadSender,
     setup_done: Option<Arc<watch::Sender<bool>>>,
 ) -> Result<axum::Router, FatalError> {
@@ -740,7 +787,9 @@ pub(super) fn build_app(
         team_bus: services.team_feed.bus.clone(),
         team_watch_health: services.team_feed.health.clone(),
         started_at: std::time::Instant::now(),
+        push: Arc::clone(&services.push),
         team_events: Arc::clone(team_events),
+        overview: Arc::clone(overview),
     };
     Ok(hub_router(
         Arc::clone(host) as Arc<dyn AgentDirectory>,
@@ -764,6 +813,10 @@ async fn poll_tunnel(tunnel: &mut Option<TunnelTask>) -> Result<(), tokio::task:
 /// Start the workbench artifacts listener beside the gateway. Teams' and
 /// A2A's configured ports stay free for them, and so do their defaults, so
 /// enabling either later can't collide with the artifacts listener.
+///
+/// The listener forwards `/api` to the hub router, which needs the listener's
+/// port and so is built after it. The returned handle is where the caller
+/// binds that router once it exists.
 async fn start_workbench_listener(
     root: &Path,
     hub: &HubConfig,
@@ -771,6 +824,7 @@ async fn start_workbench_listener(
 ) -> (
     crate::workbench::server::WorkbenchServing,
     Option<watch::Sender<bool>>,
+    HubApi,
 ) {
     let mut reserved = vec![
         crate::config::DEFAULT_TEAMS_PORT,
@@ -780,13 +834,16 @@ async fn start_workbench_listener(
     reserved.extend_from_slice(teams_ports);
     let workbench_dir =
         crate::config::paths::TeamPaths::new(crate::config::paths::team_dir(root)).workbench_dir();
-    crate::workbench::server::start(
+    let api = HubApi::new();
+    let (serving, shutdown_tx) = crate::workbench::server::start(
         &hub.gateway.bind,
         hub.gateway.port,
         &reserved,
         workbench_dir,
+        api.clone(),
     )
-    .await
+    .await;
+    (serving, shutdown_tx, api)
 }
 
 /// Report what the hub itself found wrong while starting: a fallback to its
@@ -863,6 +920,7 @@ mod tests {
         a2a_port: u16,
         events: tokio::sync::broadcast::Receiver<HubEvent>,
         host: Arc<AgentHost>,
+        push: Arc<crate::hub::push::PushService>,
         exit: JoinHandle<GatewayExit>,
         http: reqwest::Client,
         model: MockServer,
@@ -927,12 +985,14 @@ mod tests {
             .unwrap();
             let events = runtime.host.subscribe();
             let host = Arc::clone(&runtime.host);
+            let push = Arc::clone(&runtime.services.push);
             Self {
                 root,
                 gateway_port,
                 a2a_port,
                 events,
                 host,
+                push,
                 exit: crate::util::spawn_in_span(runtime.run(false)),
                 http: reqwest::Client::new(),
                 model,
@@ -1243,6 +1303,34 @@ mod tests {
             Some("hub configuration reloaded: timezone")
         );
         assert_eq!(reload.notices, ["hub configuration reloaded: timezone"]);
+        hub.shut_down().await;
+    }
+
+    #[tokio::test]
+    async fn a_hub_config_reload_applies_a_changed_push_contact() {
+        let mut hub = RunningHub::start().await;
+        assert_eq!(hub.push.subject(), crate::hub::push::DEFAULT_CONTACT);
+
+        let config = std::fs::read_to_string(hub.hub_config_path()).unwrap();
+        std::fs::write(
+            hub.hub_config_path(),
+            format!("{config}\n[push]\ncontact = \"mailto:bear@example.com\"\n"),
+        )
+        .unwrap();
+        let set = hub.next_reload().await;
+        assert_eq!(
+            set.message.as_deref(),
+            Some("hub configuration reloaded: push")
+        );
+        assert_eq!(hub.push.subject(), "mailto:bear@example.com");
+
+        std::fs::write(hub.hub_config_path(), config).unwrap();
+        let cleared = hub.next_reload().await;
+        assert_eq!(
+            cleared.message.as_deref(),
+            Some("hub configuration reloaded: push")
+        );
+        assert_eq!(hub.push.subject(), crate::hub::push::DEFAULT_CONTACT);
         hub.shut_down().await;
     }
 

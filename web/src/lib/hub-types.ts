@@ -17,6 +17,7 @@ export type { AgentActivity } from "./generated/AgentActivity";
 export type { AgentErrorKind } from "./generated/AgentErrorKind";
 export type { AgentLastError } from "./generated/AgentLastError";
 export type { AgentListResponse } from "./generated/AgentListResponse";
+export type { AgentOverview } from "./generated/AgentOverview";
 export type { AgentPatch } from "./generated/AgentPatch";
 export type { AgentState } from "./generated/AgentState";
 export type { AgentSummary } from "./generated/AgentSummary";
@@ -27,7 +28,12 @@ export type { DeletedAgentListResponse } from "./generated/DeletedAgentListRespo
 export type { HubClientMessage } from "./generated/HubClientMessage";
 export type { HubEvent } from "./generated/HubEvent";
 export type { HubSocketFrame } from "./generated/HubSocketFrame";
+export type { LastMessage } from "./generated/LastMessage";
+export type { LastMessageRole } from "./generated/LastMessageRole";
+export type { LiveSession } from "./generated/LiveSession";
 export type { NoticeLevel } from "./generated/NoticeLevel";
+export type { OutboundProblem } from "./generated/OutboundProblem";
+export type { OverviewResponse } from "./generated/OverviewResponse";
 export type { RestoreAgentRequest } from "./generated/RestoreAgentRequest";
 export type { TeamEvent } from "./generated/TeamEvent";
 export type { TeamEventKind } from "./generated/TeamEventKind";
@@ -35,6 +41,9 @@ export type { TeamEventLevel } from "./generated/TeamEventLevel";
 export type { TeamEventPage } from "./generated/TeamEventPage";
 export type { TeamEventPlace } from "./generated/TeamEventPlace";
 export type { TeamEventTarget } from "./generated/TeamEventTarget";
+export type { TimePrecision } from "./generated/TimePrecision";
+export type { UpcomingKind } from "./generated/UpcomingKind";
+export type { UpcomingRun } from "./generated/UpcomingRun";
 
 /** `GET /api/hub/status`. */
 export interface HubStatusResponse {

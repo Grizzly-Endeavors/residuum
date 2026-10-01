@@ -9,6 +9,7 @@ import type { MockClock } from "./env";
 import { json, readJsonObject } from "./http";
 import { decodedParam, type Route, type RouteContext } from "./routes";
 import type { MockState } from "./state";
+import { instantOfLocal, localMs } from "./zone";
 
 /** A pulse as HEARTBEAT.yml declares it, and when it last ran (`pulse_state.json`). */
 export interface MockPulse {
@@ -34,7 +35,9 @@ export interface MockScheduled {
   actions: MockAction[];
 }
 
+const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;
+const DAY_MS = 24 * HOUR_MS;
 
 export function createScheduled(clock: MockClock): MockScheduled {
   return {
@@ -119,11 +122,64 @@ function lastOutcome(state: MockState, source: string): ScheduledRunOutcome | nu
   };
 }
 
+/** The `parse_active_hours` of the backend: the window as minutes into the day, or `null` for one it refuses. */
+function parseActiveHours(hours: string): readonly [number, number] | null {
+  const match = /^(\d+):(\d+)-(\d+):(\d+)$/.exec(hours);
+  if (match === null) return null;
+  const [startHour, startMinute, endHour, endMinute] = match.slice(1).map(Number) as [
+    number,
+    number,
+    number,
+    number,
+  ];
+  if (startHour > 23 || endHour > 23 || startMinute > 59 || endMinute > 59) return null;
+  return [startHour * 60 + startMinute, endHour * 60 + endMinute];
+}
+
+/**
+ * The first wall-clock moment at or after `local` inside the window, `null`
+ * for a window that never opens: `next_active_moment` in `src/pulse/next_run.rs`.
+ */
+function intoActiveHours(local: number, [start, end]: readonly [number, number]): number | null {
+  if (start === end) return null;
+  const day = Math.floor(local / DAY_MS) * DAY_MS;
+  const time = (local - day) / MINUTE_MS;
+  const inside = start < end ? time >= start && time < end : time >= start || time < end;
+  if (inside) return local;
+  const opensToday = day + start * MINUTE_MS;
+  return local < opensToday ? opensToday : opensToday + DAY_MS;
+}
+
+/**
+ * When the pulse next runs, as an instant in milliseconds, or `null` when it
+ * will not: `next_run_at` in `src/pulse/next_run.rs`, the one calculation behind
+ * the Scheduled view's `next_fire_at` and the overview's `upcoming`.
+ *
+ * It is the first moment at or after the later of `nowMs` and the end of the
+ * schedule since the last run that falls inside the active hours, read in the
+ * hub's timezone. A pulse that is due already is reported at the start of the
+ * current minute.
+ */
+export function nextPulseRun(pulse: MockPulse, nowMs: number): number | null {
+  const interval = pulse.schedule === null ? null : scheduleMs(pulse.schedule);
+  if (!pulse.enabled || interval === null) return null;
+  const window = pulse.activeHours === null ? null : parseActiveHours(pulse.activeHours);
+  if (pulse.activeHours !== null && window === null) return null;
+
+  const thisMinute = Math.floor(nowMs / MINUTE_MS) * MINUTE_MS;
+  const nowLocal = localMs(thisMinute);
+  const due =
+    pulse.lastRunAt === null
+      ? nowLocal
+      : Math.max(localMs(Date.parse(pulse.lastRunAt)) + interval, nowLocal);
+  const at = window === null ? due : intoActiveHours(due, window);
+  if (at === null) return null;
+  return at <= nowLocal ? thisMinute : instantOfLocal(at);
+}
+
 function nextFireAt(pulse: MockPulse, clock: MockClock): string | null {
-  const duration = pulse.schedule === null ? null : scheduleMs(pulse.schedule);
-  if (!pulse.enabled || duration === null) return null;
-  if (pulse.lastRunAt === null) return clock.iso();
-  return new Date(Date.parse(pulse.lastRunAt) + duration).toISOString();
+  const at = nextPulseRun(pulse, clock.now());
+  return at === null ? null : new Date(at).toISOString();
 }
 
 function pulseInfo(state: MockState, pulse: MockPulse): PulseInfo {
@@ -139,6 +195,16 @@ function pulseInfo(state: MockState, pulse: MockPulse): PulseInfo {
     current_run: currentRun(state, source),
     problems: pulse.problems,
   };
+}
+
+/**
+ * A running agent's file watcher sees an edit to its pulses or its actions,
+ * and the hub reads its schedule again. Nothing watches a stopped agent's, so
+ * its schedule is read the next time the overview is asked for.
+ */
+function noticeScheduleChange(ctx: RouteContext): void {
+  const agent = ctx.hub.agents.get(ctx.state.agentName);
+  if (agent?.runState === "running") ctx.hub.overview.changed(agent);
 }
 
 /** `PUT .../scheduled/pulses/{pulse}/enabled`: body `{ enabled }`; answers `{ name, enabled }`. */
@@ -160,6 +226,7 @@ async function setPulseEnabled(ctx: RouteContext): Promise<void> {
     return;
   }
   pulse.enabled = enabled;
+  noticeScheduleChange(ctx);
   json(res, 200, { name, enabled });
 }
 
@@ -173,6 +240,7 @@ function cancelAction(ctx: RouteContext): void {
     return;
   }
   state.scheduled.actions.splice(at, 1);
+  noticeScheduleChange(ctx);
   json(res, 200, { id, cancelled: true });
 }
 

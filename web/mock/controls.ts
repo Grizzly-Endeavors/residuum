@@ -60,6 +60,7 @@ function teammateMessage({ res, hub, query }: RouteContext): void {
   );
   agent.state.broadcast({ type: "response", reply_to: "teammate", content: reply });
   hub.teamEvents.agentReplied(agent);
+  hub.overview.changed(agent);
   if (agent.connectedClients() === 0) hub.addUnread(agent);
   json(res, 200, { ok: true });
 }
