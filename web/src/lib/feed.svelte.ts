@@ -277,8 +277,9 @@ export class FeedStore {
         break;
 
       case "error":
-        // Server error clears the thinking indicator. The notification
-        // surface itself is dispatched by WsCoordinator before this runs.
+        // A server error ends the reply in progress (the composer's Stop
+        // goes back to Send). The notification surface itself is
+        // dispatched by WsCoordinator before this runs.
         this.isProcessing = false;
         break;
 

@@ -78,7 +78,7 @@ class WsCoordinator {
 
     // Wire transport events: route system events to the notification
     // surface, then hand the message to the feed store for any chat-state
-    // side effects (e.g. clearing the thinking indicator on errors).
+    // side effects (e.g. an error clears the reply in progress).
     this.transport.onMessage = (msg) => {
       for (const listener of this.frameListeners) {
         try {
