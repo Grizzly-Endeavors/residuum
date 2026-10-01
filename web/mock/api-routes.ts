@@ -1,6 +1,7 @@
 import { agentInboxRoutes } from "./agent-inbox";
 import { checkpointRoutes } from "./checkpoints";
 import { chatRoutes } from "./chat";
+import { cloudRoutes } from "./cloud";
 import { configRoutes } from "./config";
 import { controlRoutes } from "./controls";
 import { hubInboxRoutes } from "./hub-inbox";
@@ -31,6 +32,7 @@ export const apiRoutes: readonly Route[] = [
   ...agentInboxRoutes,
   ...scheduledRoutes,
   ...updateRoutes,
+  ...cloudRoutes,
   ...checkpointRoutes,
   ...workspaceRoutes,
   ...workbenchRoutes,

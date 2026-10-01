@@ -22,7 +22,7 @@ import type {
 import { agentNameProblem } from "./agent-name";
 import { WEB_ROOT } from "./assets";
 import { checkpointBeforeAction, repoStats } from "./checkpoints";
-import { MOCK_CLOUD_STATUS, MOCK_FEATURES, MOCK_RESIDUUM_VERSION } from "./constants";
+import { MOCK_FEATURES, MOCK_RESIDUUM_VERSION } from "./constants";
 import {
   json,
   parseJsonObject,
@@ -135,21 +135,6 @@ const systemRoutes: readonly Route[] = [
     pattern: "/api/system/timezone",
     handler: ({ res }) => {
       json(res, 200, { timezone: MOCK_TIMEZONE } satisfies TimezoneResponse);
-    },
-  },
-  {
-    method: "GET",
-    pattern: "/api/cloud/status",
-    handler: ({ res }) => {
-      json(res, 200, MOCK_CLOUD_STATUS);
-    },
-  },
-  {
-    // The mock's tunnel is always disconnected, so there is nothing to turn off.
-    method: "POST",
-    pattern: "/api/cloud/disconnect",
-    handler: ({ res }) => {
-      json(res, 200, { ok: true });
     },
   },
   {
