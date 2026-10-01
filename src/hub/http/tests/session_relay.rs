@@ -108,18 +108,35 @@ async fn artifact_events_reach_the_socket_with_no_agent_running() {
     let h = Harness::over_team_bus(feed.bus.clone());
     let mut socket = connect_ready(&h).await;
 
+    // The feed arms its OS watcher on its own task, and a file written before
+    // the watch is placed is never reported. The watcher is a separate thread
+    // that a busy machine can starve, so write only once the feed says it runs.
+    let mut health = feed.health.clone();
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        health.wait_for(|health| *health != WatchHealth::Starting),
+    )
+    .await
+    .expect("the team change feed never started its watcher")
+    .unwrap();
+    assert_ne!(
+        *health.borrow(),
+        WatchHealth::Off,
+        "the team change feed couldn't watch the team directory"
+    );
+
     let workbench = team_root.join("workbench");
     std::fs::create_dir_all(&workbench).unwrap();
     std::fs::write(workbench.join("chart.html"), "<p>v1</p>").unwrap();
-    // Notifications are debounced and the poller sweeps the real filesystem
-    // every two seconds on its own thread, outside tokio's clock, so a frame
-    // can take a moment that a busy machine can stretch further. `next_frame`
-    // has its own hardcoded 5s timeout that would fire first, so read the
-    // socket directly with a generous bound instead of going through it.
+    // A frame follows an OS file notification, delivered on the watcher's own
+    // thread, and the feed's debounce on the real clock, so a paused clock
+    // can't stand in for either. `next_frame`'s 5s bound is meant for frames
+    // the hub sends at once, so read the socket directly: the bound here only
+    // turns a notification that never comes into a failure instead of a hang.
     let next = async |connection: &mut ClientSocket| {
         let message = tokio::time::timeout(Duration::from_secs(30), connection.next())
             .await
-            .expect("timed out waiting for a frame")
+            .expect("timed out waiting for an artifact frame")
             .expect("socket closed")
             .expect("socket error");
         match message {
