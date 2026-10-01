@@ -99,6 +99,9 @@ export const chatRoutes: readonly Route[] = [
 
 type SendMessage = Extract<ClientMessage, { type: "send_message" }>;
 
+/** The files a chat turn reads, after searching memory. */
+const READ_PATHS = ["team/wiki/index.md", "team/wiki/projects/residuum.md"] as const;
+
 /**
  * How long a turn runs. One that loses its connection either ends while the
  * page is away, or is still running when the page is back.
@@ -164,6 +167,16 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
         timestamp: env.clock.iso(),
       },
     ]);
+    // Then two files read at once; a message starting with "fail" can't read the second.
+    const reads = READ_PATHS.map((path, i) => ({
+      id: `tc_mock_${String(env.nextId())}`,
+      path,
+      output:
+        i === 1 && lower.startsWith("fail")
+          ? `file not found: ${path}`
+          : `   1\t# ${path}\n   2\t(the page as it is today)`,
+      isError: i === 1 && lower.startsWith("fail"),
+    }));
     const response = cannedResponses[responseIndex % cannedResponses.length] ?? "";
     responseIndex++;
 
@@ -185,6 +198,29 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
       live({ type: "broadcast_response", content: "Looking through recent notes first." });
       live({ type: "tool_call", id: toolCallId, name: "memory_search", arguments: toolArgs });
     });
+    later(600, () => {
+      live({
+        type: "tool_result",
+        tool_call_id: toolCallId,
+        name: "memory_search",
+        output: toolOutput,
+        is_error: false,
+      });
+      for (const read of reads) {
+        live({ type: "tool_call", id: read.id, name: "read_file", arguments: { path: read.path } });
+      }
+    });
+    reads.forEach((read, i) => {
+      later(900 + i * 300, () => {
+        live({
+          type: "tool_result",
+          tool_call_id: read.id,
+          name: "read_file",
+          output: read.output,
+          is_error: read.isError,
+        });
+      });
+    });
 
     if (drop) {
       later(600, () => {
@@ -202,13 +238,6 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
 
     later(turnLengthMs(drop, finishWhileDown), () => {
       inFlight.delete(replyTo);
-      live({
-        type: "tool_result",
-        tool_call_id: toolCallId,
-        name: "memory_search",
-        output: toolOutput,
-        is_error: false,
-      });
       live({ type: "response", reply_to: replyTo, content: response });
       live({ type: "turn_ended", reply_to: replyTo });
       hub.setBusy(agent, false);
@@ -226,6 +255,19 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
           ...ofTurn,
         },
         { role: "tool", content: toolOutput, tool_call_id: toolCallId, ...ofTurn },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: reads.map((r) => ({
+            id: r.id,
+            name: "read_file",
+            arguments: { path: r.path },
+          })),
+          ...ofTurn,
+        },
+        ...reads.map(
+          (r) => ({ role: "tool", content: r.output, tool_call_id: r.id, ...ofTurn }) as const,
+        ),
         { role: "assistant", content: response, ...ofTurn },
       );
       hub.overview.changed(agent);
