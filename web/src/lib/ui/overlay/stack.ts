@@ -25,8 +25,12 @@ export interface LayerOptions {
   dismiss: () => void;
   /** For a float: what opened it. A pointer on it doesn't count as outside, so the trigger can toggle. */
   anchor?: HTMLElement | null;
-  /** Where focus goes when the layer closes. The element focused when it opened, by default. */
-  returnFocus?: HTMLElement | null;
+  /**
+   * Where focus goes when the layer closes. The element focused when it
+   * opened, by default. `false` for a layer that never takes focus (a
+   * tooltip): closing it leaves focus where it is.
+   */
+  returnFocus?: HTMLElement | null | false;
 }
 
 export interface LayerHandle {
@@ -60,7 +64,8 @@ class OverlayStack {
     if (options.kind === "modal") {
       for (const layer of this.topFloats()) layer.dismiss();
     }
-    const returnTo = options.returnFocus ?? focusedElement();
+    const returnTo =
+      options.returnFocus === false ? null : (options.returnFocus ?? focusedElement());
     const { layers } = this;
     const returnLayer = layers.find((open) => returnTo !== null && open.element.contains(returnTo));
     const layer: Layer = { ...options, returnTo, returnLayer };
@@ -86,6 +91,8 @@ class OverlayStack {
     if (at < 0) return;
     this.layers.splice(at, 1);
     this.update();
+    // Focus can't have been lost with a layer that never held it.
+    if (layer.returnFocus === false) return;
     // Focus stays wherever the user moved it; only focus lost with the layer goes back.
     const focused = focusedElement();
     if (focused !== null && !layer.element.contains(focused)) return;

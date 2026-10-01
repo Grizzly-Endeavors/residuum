@@ -1,5 +1,6 @@
 /** Types shared by the primitive controls and their callers. */
 
+import type { Attachment } from "svelte/attachments";
 import type { AgentState } from "../hub-types";
 
 /**
@@ -59,3 +60,26 @@ export type DialogSize = "sm" | "md" | "lg";
 
 /** A confirm dialog's go-ahead button: primary, or danger when it loses or removes something. */
 export type ConfirmTone = "default" | "danger";
+
+/** The side of its anchor a floating layer opens on, before flipping to fit. */
+export type FloatSide = "top" | "bottom" | "left" | "right";
+
+/** Where a floating layer lines up along its anchor's side, before shifting to fit. */
+export type FloatAlign = "start" | "center" | "end";
+
+/** The card a floating layer draws: a menu, a popover, or a tooltip's label. */
+export type FloatShape = "menu" | "popover" | "tooltip";
+
+/**
+ * What a menu or popover hands its trigger snippet: spread it onto the button
+ * that opens it, such as `<IconButton {...props} />`.
+ */
+export interface FloatTriggerProps {
+  readonly "aria-haspopup": "menu" | "dialog";
+  readonly "aria-expanded": boolean;
+  readonly "aria-controls": string | undefined;
+  readonly onclick: (event: MouseEvent) => void;
+  readonly onkeydown?: (event: KeyboardEvent) => void;
+  /** An attachment that tells the layer which element it is anchored to. */
+  readonly [key: symbol]: Attachment<HTMLElement>;
+}

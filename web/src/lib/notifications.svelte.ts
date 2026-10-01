@@ -1,5 +1,6 @@
 // System-notification orchestrator: shows an ephemeral toast AND records the
-// message in a recall history list shown in the notification corner dropdown.
+// message in a recall history list, shown in the notification corner dropdown
+// and the Recent notifications dialog.
 //
 // Use `surface()` for system-originated events (server errors/notices, slash
 // command output) where the user might want to recall the message later.
@@ -58,9 +59,10 @@ class NotificationStore {
   }
 
   /** Restore entries {@link clear} removed, e.g. from a toast's Undo
-   * action. A no-op if something new has arrived since (never clobbers it). */
+   * action. Anything that arrived since stays, ahead of them, so the
+   * history keeps its newest-first order. */
   restore(entries: Notification[]): void {
-    this.history = [...entries, ...this.history];
+    this.history = [...this.history, ...entries];
   }
 }
 
