@@ -9,7 +9,13 @@ import {
   type ConfigFile,
   type ConfigIo,
 } from "./config-coordinator";
-import { ConflictUnanswered, SettingsModel, type SettingsDeps } from "./settings-model.svelte";
+import { hub as hubStore } from "./hub.svelte";
+import {
+  ConflictUnanswered,
+  SettingsModel,
+  settingsModel,
+  type SettingsDeps,
+} from "./settings-model.svelte";
 import type { Diagnostic, RepoKind, ValidateResponse } from "./types";
 
 // ── A fake server ─────────────────────────────────────────────────────
@@ -1237,5 +1243,16 @@ describe("external changes", () => {
 
     expect(scope.config.timeout_secs).toBe("120");
     expect(f.model.agent("scout")).not.toBe(scope);
+  });
+});
+
+describe("the app's settings model", () => {
+  it("drops a deleted agent's scope when the hub says it was deleted", () => {
+    const before = settingsModel.agent("ghost");
+    expect(settingsModel.agent("ghost")).toBe(before);
+
+    hubStore.handleFrame({ type: "agent_deleted", name: "ghost", by: "user" });
+
+    expect(settingsModel.agent("ghost")).not.toBe(before);
   });
 });

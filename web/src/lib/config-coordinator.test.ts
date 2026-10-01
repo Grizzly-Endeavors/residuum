@@ -211,8 +211,9 @@ describe("serializing writes", () => {
       edit: { patch: { b: 3 } },
       choose,
     });
-    await flush();
-    expect(choose).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(choose).toHaveBeenCalledTimes(1);
+    });
 
     // The composer can still write the file while the user decides.
     const other = await coordinator.edit(providers, () => ({ a: 9 }));

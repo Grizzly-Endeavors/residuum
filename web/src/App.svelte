@@ -6,7 +6,6 @@
   import { notifications } from "./lib/notifications.svelte";
   import { userErrorMessage } from "./lib/errors";
   import { router } from "./lib/router.svelte";
-  import { settingsModel } from "./lib/settings-model.svelte";
   import { Icon } from "./lib/icons";
   import { LazyComponent } from "./lib/lazy-component.svelte";
   import {
@@ -49,10 +48,6 @@
   onMount(() => {
     // The overview follows the hub socket from its first frame, which says what to fetch.
     const stopOverview = overview.start();
-    // A deleted agent's staged settings go with it, whoever deleted it.
-    const stopDropping = hub.onFrame((msg) => {
-      if (msg.type === "agent_deleted") settingsModel.drop(msg.name);
-    });
     hub.connect();
     void (async () => {
       try {
@@ -68,7 +63,6 @@
     })();
     return () => {
       stopOverview();
-      stopDropping();
       hub.disconnect();
       ws.disconnect();
     };

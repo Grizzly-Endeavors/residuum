@@ -40,6 +40,7 @@ import {
   type ConfigFile,
 } from "./config-coordinator";
 import { userErrorMessage, userErrorReason } from "./errors";
+import { hub } from "./hub.svelte";
 import {
   fieldRefKey,
   keyPathOf,
@@ -1032,3 +1033,9 @@ export class SettingsModel {
 }
 
 export const settingsModel = new SettingsModel();
+
+// A deleted agent's staged settings go with it, whoever deleted it. The model
+// loads with Settings, so before then there is nothing to drop.
+hub.onFrame((msg) => {
+  if (msg.type === "agent_deleted") settingsModel.drop(msg.name);
+});
