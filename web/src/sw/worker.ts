@@ -1,13 +1,16 @@
 // The app's service worker (design §11), served at `/sw.js`. It keeps the app
 // shell so the app opens with no network, and nothing else: it never caches or
-// answers `/api`, sockets, webhooks or the cloud callback (see `rules.ts`).
+// answers `/api`, sockets, webhooks or the cloud callback (see `rules.ts`). It
+// also shows the hub's push notifications and opens the app where one leads
+// (see `push.ts`).
 //
 // `build/service-worker.ts` bundles this file and fills in the two constants
 // below at build time: the files to precache, and a version derived from them.
 // Every build whose files differ produces a different worker, which is how a
 // browser notices an update.
 
-import { isPageMessage } from "./protocol";
+import { isPageMessage, openTargetMessage } from "./protocol";
+import { clickTarget, notificationFor, readPushData, windowForClick } from "./push";
 import {
   handlingOf,
   isGatewayFailure,
@@ -153,4 +156,50 @@ self.addEventListener("fetch", (event) => {
     case "pass":
       break;
   }
+});
+
+/** Show the push's notification and set the app badge to the unread count it carries. */
+async function showPush(data: PushMessageData | null): Promise<void> {
+  const shown = notificationFor(readPushData(data));
+  await Promise.all([
+    self.registration.showNotification(shown.title, shown.options),
+    shown.badge === null ? null : showBadge(shown.badge),
+  ]);
+}
+
+/** The badge is a courtesy: a browser without it, or one that refuses, changes nothing else. */
+async function showBadge(count: number): Promise<void> {
+  const nav = self.navigator as Partial<Pick<WorkerNavigator, "setAppBadge" | "clearAppBadge">>;
+  try {
+    await (count > 0 ? nav.setAppBadge?.(count) : nav.clearAppBadge?.());
+  } catch {
+    // The app isn't installed, or badges are off for it.
+  }
+}
+
+/** Bring a window of the app forward on `target`, or open one there. */
+async function openTarget(target: string): Promise<void> {
+  const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  const chosen = windowForClick(windows);
+  if (chosen === null) {
+    await self.clients.openWindow(target);
+    return;
+  }
+  try {
+    await chosen.focus();
+  } catch {
+    // A browser may refuse focus; the window still goes to the target.
+  }
+  chosen.postMessage(openTargetMessage(target));
+}
+
+// Every push shows a notification: suppressing one while the app is in use is
+// the hub's job (design §9.7), since a push that shows nothing is punished.
+self.addEventListener("push", (event) => {
+  event.waitUntil(showPush(event.data));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(openTarget(clickTarget(event.notification.data)));
 });
