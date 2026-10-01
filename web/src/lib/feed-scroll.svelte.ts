@@ -50,7 +50,10 @@ export class FeedScroller {
   /**
    * Start tracking the scrolling `el`, whose `content` element holds the
    * feed; returns the cleanup. Content growing in place (a tool result
-   * filling in, an image loading) keeps a following reader at the bottom.
+   * filling in, an image loading) keeps a following reader at the bottom, and
+   * so does `el` itself shrinking under them (the composer below it growing,
+   * the window narrowing), which cuts off the newest lines without moving the
+   * content.
    */
   attach(el: HTMLElement, content: HTMLElement): () => void {
     this.el = el;
@@ -58,6 +61,7 @@ export class FeedScroller {
       if (this.following) this.pinToBottom();
     });
     resizes.observe(content);
+    resizes.observe(el);
     el.addEventListener("scroll", this.onScroll, { passive: true });
     for (const type of READER_SCROLL_EVENTS) {
       el.addEventListener(type, this.onReaderScroll, { passive: true });

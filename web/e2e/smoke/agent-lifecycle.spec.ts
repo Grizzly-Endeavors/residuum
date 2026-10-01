@@ -1,6 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
+import { expectPaletteOpen, expectSettingsOpen } from "../support/lazy";
 
 /**
  * Creating agents and running their lifecycle from Home: the Create agent
@@ -39,11 +40,16 @@ async function openRail(page: Page, isMobile: boolean): Promise<Locator> {
   return page.getByRole("navigation", { name: "Places and agents" });
 }
 
-/** Open an agent's "…" menu on the board. */
+/**
+ * Open an agent's "…" menu on the board. The trigger is ready once it is
+ * enabled and closed; before that a click lands on a row the board is still
+ * drawing, or opens nothing because a dialog that was closing still covers it.
+ */
 async function openMenu(page: Page, agent: string): Promise<Locator> {
-  await board(page)
-    .getByRole("button", { name: `Manage ${agent}` })
-    .click();
+  const trigger = board(page).getByRole("button", { name: `Manage ${agent}` });
+  await expect(trigger).toBeEnabled();
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  await trigger.click();
   const menu = page.getByRole("menu", { name: `Manage ${agent}` });
   await expect(menu).toBeVisible();
   return menu;
@@ -118,7 +124,7 @@ test("the palette's Create an agent opens the same dialog", async ({ page, isMob
   } else {
     await page.keyboard.press("ControlOrMeta+k");
   }
-  const palette = page.getByRole("dialog", { name: "Search and commands" });
+  const palette = await expectPaletteOpen(page);
   await expect(palette.getByRole("combobox")).toBeFocused();
   await page.keyboard.type("new agent");
   await palette.getByRole("option", { name: /Create an agent/ }).click();
@@ -199,9 +205,11 @@ test("a row's menu opens the agent's chat and its settings", async ({ page }) =>
   await (await openMenu(page, "scout")).getByRole("menuitem", { name: "Settings" }).click();
   await expect.poll(() => address(page)).toMatch(/^\/home\?settings=scout/);
   // The modal's code loads the first time it opens, so Esc waits for the modal to be there.
-  await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
+  const settings = await expectSettingsOpen(page);
   await page.keyboard.press("Escape");
   await expect.poll(() => address(page)).toBe("/home");
+  // The board is out of reach until the modal has gone.
+  await expect(settings).toBeHidden();
 
   await (await openMenu(page, "scout")).getByRole("menuitem", { name: "Open chat" }).click();
   await expect.poll(() => address(page)).toBe("/agent/scout");

@@ -1,6 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
+import { expectPaletteOpen } from "../support/lazy";
 
 /**
  * Installing the app (design §11): the manifest and its icons, the document's
@@ -165,7 +166,7 @@ async function openPalette(page: Page, isMobile: boolean): Promise<Locator> {
   } else {
     await page.keyboard.press("ControlOrMeta+k");
   }
-  const palette = page.getByRole("dialog", { name: "Search and commands" });
+  const palette = await expectPaletteOpen(page);
   await expect(palette.getByRole("combobox")).toBeFocused();
   return palette;
 }

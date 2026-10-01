@@ -15,11 +15,6 @@ function conversation(page: Page, agent = "atlas"): Locator {
   return page.getByRole("region", { name: `Conversation with ${agent}` });
 }
 
-/** The hub socket is up: the inbox count comes from the overview it brings. */
-async function hubConnected(page: Page): Promise<void> {
-  await expect(page.getByRole("link", { name: /^Inbox.*\d+ unread/ }).first()).toBeAttached();
-}
-
 async function chatScreenshot(page: Page, name: string): Promise<void> {
   await expectScreenshot(page, name, { mask: [page.locator("[data-legacy-view]")] });
 }
@@ -79,7 +74,6 @@ test.describe("chat feed", { tag: "@visual" }, () => {
     await page.goto("/agent/atlas");
     const feed = conversation(page);
     await expect(feed.getByText(GREETING)).toBeInViewport();
-    await hubConnected(page);
     await feed.getByRole("button", { name: "Ran 1 command" }).click();
     const step = feed.getByRole("button", { name: "Ran residuum memory stats" });
     await step.click();
@@ -100,7 +94,6 @@ test.describe("chat feed", { tag: "@visual" }, () => {
     await page.goto("/agent/atlas");
     const feed = conversation(page);
     await expect(feed.getByText(GREETING)).toBeInViewport();
-    await hubConnected(page);
     await page.getByRole("textbox", { name: "Send a message..." }).fill("Check the wiki index");
     await page.getByRole("textbox", { name: "Send a message..." }).press("Enter");
     await expect(feed.getByRole("button", { name: "Read team/wiki/index.md" })).toBeVisible({
