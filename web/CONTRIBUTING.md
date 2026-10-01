@@ -112,14 +112,14 @@ web/
 ├── src/
 │   ├── main.ts               # App entry point
 │   ├── App.svelte            # The root: the setup wizard, or the shell; draws toasts and tooltips in both
-│   ├── shell/                # The shell: the rail, the phone's bottom bar and drawer, the hub banner, place routing, the Settings modal
+│   ├── shell/                # The shell: the rail, the phone's bottom bar and drawer, the hub banner, place routing, the Settings modal, the command palette, the app's actions, the shortcuts and feedback dialogs
 │   ├── Chat.svelte           # Main chat view
 │   ├── Setup.svelte          # Setup wizard
 │   ├── Settings.svelte       # Settings panel
 │   ├── styles/               # Design tokens, bundled fonts, base styles, legacy global styles
 │   ├── components/
 │   │   ├── ChatFeed.svelte         # Main chat message list (lazy-loads older episodes)
-│   │   ├── ChatInput.svelte        # Input box with slash commands
+│   │   ├── ChatInput.svelte        # Input box with the `/` menu of chat actions (SlashMenu.svelte)
 │   │   ├── ChatFooter.svelte       # Quiet status line: model, session tokens, context size
 │   │   ├── ThinkingIndicator.svelte # Running-turn indicator: elapsed time, tokens, stop hint
 │   │   ├── FeedItemView.svelte     # Renders one feed item; shared by chat and session views
@@ -159,7 +159,8 @@ web/
 │       ├── notifications.svelte.ts # What is surfaced to the user: a toast, kept in the Recent notifications history
 │       ├── generated/            # Protocol types generated from Rust (cargo test --test ts_export)
 │       ├── types.ts              # TypeScript types for API and messages
-│       ├── commands.ts           # Slash command parser (/help, /reload, etc.)
+│       ├── action-registry.svelte.ts # The action registry: sources of named actions, matching, `/name` lines, running
+│       ├── chat-actions.ts       # The chat actions (the former slash commands) and why each can't run
 │       ├── models.ts             # Model fetching and caching
 │       ├── markdown.ts           # Markdown rendering
 │       ├── format-usage.ts       # Elapsed time / token count formatting for the indicator and footer
@@ -261,11 +262,19 @@ Old URLs redirect by replace: `/team`, `/agent/:name/sessions/:runId`, `/agent/:
 
 ### The shell
 
-`shell/Shell.svelte` is the frame around every place: the rail (`Rail.svelte`) beside the main region at medium and wide widths, and on phones the bottom bar (`BottomBar.svelte`) with the rail in a `Drawer`. The main region starts with the hub banner (`HubBanner.svelte`, shown while the hub socket is down) and then the place, which `PlaceHost.svelte` picks from the router's location. The shell root carries `data-ui`, and mounts `ConfirmHost` (and gives the router's guard `confirmLeave`), `RecentNotifications`, the Settings modal and the legacy help and feedback overlays once each; `App.svelte` draws the toast region and tooltips, in setup too.
+`shell/Shell.svelte` is the frame around every place: the rail (`Rail.svelte`) beside the main region at medium and wide widths, and on phones the bottom bar (`BottomBar.svelte`) with the rail in a `Drawer`. The main region starts with the hub banner (`HubBanner.svelte`, shown while the hub socket is down) and then the place, which `PlaceHost.svelte` picks from the router's location. The shell root carries `data-ui`, and mounts `ConfirmHost` (and gives the router's guard `confirmLeave`), the Settings modal, the command palette, `RecentNotifications`, the Keyboard shortcuts dialog, the feedback dialog and the inbox-note prompt once each; `App.svelte` draws the toast region and tooltips, in setup too.
 
-The rail's agents are an accordion (`accordion.svelte.ts`): one agent's places are open at a time, a press on the open agent closes it, a row press never navigates, and arriving on an agent opens it. `rail-model.ts` works out each agent row's mark, word and unread badge from the hub's snapshot. The Home count is the number of agents that couldn't start, the Inbox count the bound agent's unread items, and an agent's Activity count the bound agent's running sessions. The rail's footer has a Help menu (keyboard shortcuts, Recent notifications, feedback, a bug report) and the Settings gear; both those and the rail's "+" go through `ShellActions`, which the shell answers.
+The rail's agents are an accordion (`accordion.svelte.ts`): one agent's places are open at a time, a press on the open agent closes it, a row press never navigates, and arriving on an agent opens it. `rail-model.ts` works out each agent row's mark, word and unread badge from the hub's snapshot. The Home count is the number of agents that couldn't start, the Inbox count the bound agent's unread items, and an agent's Activity count the bound agent's running sessions. The rail starts with a search row that opens the command palette, as the phone bar's Search tab and ⌘K or Ctrl+K do. Its footer has a Help menu, which lists the registry's help actions (Keyboard shortcuts, Recent notifications, Send feedback, Report a bug, and Install app while the browser offers it), and the Settings gear. The search row, the gear and the rail's "+" go through `ShellActions`, which the shell answers.
 
-Places not rebuilt yet host their legacy view inside a `data-legacy-view` element, so the legacy global styles apply there and the new base styles don't: Home the team page, Inbox the bound agent's inbox, Chat the current chat, Activity the sessions list, Schedule the Scheduled page, Files and Shared files the workspace, and the Workbench itself. A session panel on an agent's place shows the session view in the main region, over the place. The Settings modal (`SettingsModal.svelte`) hosts the current Settings page, which lists the registry's sections and shows each with the panels that hold its settings; the Raw config section is its raw editors. The workbench's full view is a mode of that page and isn't in the URL. The help and feedback overlays aren't in the URL either.
+Places not rebuilt yet host their legacy view inside a `data-legacy-view` element, so the legacy global styles apply there and the new base styles don't: Home the team page, Inbox the bound agent's inbox, Chat the current chat, Activity the sessions list, Schedule the Scheduled page, Files and Shared files the workspace, and the Workbench itself. A session panel on an agent's place shows the session view in the main region, over the place. The Settings modal (`SettingsModal.svelte`) hosts the current Settings page, which lists the registry's sections and shows each with the panels that hold its settings; the Raw config section is its raw editors. The workbench's full view is a mode of that page and isn't in the URL. The palette and the help dialogs aren't in the URL either; each holds an overlay entry, so Back closes it.
+
+### Actions
+
+`lib/action-registry.svelte.ts` holds the one list of named actions that the command palette (`shell/CommandPalette.svelte`), the composer's `/` menu and the rail's help menu draw from. A source is a function that builds actions from current state; `actionRegistry.register(key, source)` adds one (replacing the source under that key) and returns a function that removes it, and `actionRegistry.all` is every source's actions in registration order. The shell registers the app's sources (`shell/app-actions.svelte.ts`): the team places, every agent, the bound agent's places and live sessions, the settings sections, the chat actions, Start, Stop and Restart where they apply, Create an agent, and help. Another agent's places, settings and lifecycle actions are `searchOnly`: the palette lists them once something is typed. A unit adds actions by registering a source of its own, or by adding them to the source they belong with.
+
+An action has a heading (`group`), a plain-language `label`, an optional `hint` and `terms` it is also found by, and `run(text?)`. A chat action has a `command`, its old slash name: `/observe` in the composer, or typing `/observe` in the palette, finds "Summarize older messages now". `takesText` marks one that acts on what follows `/name`, and asks for text otherwise. `disabled` holds the reason it can't run now ("Start atlas first"); the palette and the `/` menu show the reason in place of the hint, and running it does nothing. `matchActions` finds the actions holding every typed word; `readCommandLine` reads a `/name text` line the composer sends.
+
+Run actions with `actionRegistry.run(action, text?)`. It tells the registry's run listeners first, then runs the action once the page has settled: the shell closes the phone drawer there, so a dialog an action opens, or a place it goes to, never sits under the drawer. `installOffer.install`, in `app-actions.svelte.ts`, lists Install app among the help actions while it is set.
 
 ### Agents in API calls
 
