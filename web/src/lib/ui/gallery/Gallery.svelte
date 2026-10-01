@@ -161,7 +161,7 @@
   }
 </script>
 
-<div class="gallery" data-ui>
+<div class="gallery">
   <main class="gallery-page">
     <header class="gallery-head">
       <h1>Primitives</h1>

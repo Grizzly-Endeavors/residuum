@@ -15,7 +15,7 @@ import {
 const ids = (kind: "agent" | "all"): string[] => sectionsOf(kind).map((s) => s.id);
 
 describe("section registry", () => {
-  it("lists an agent's sections as design §8 does, with the Advanced group last", () => {
+  it("lists an agent's sections in order, with the Advanced group last", () => {
     expect(AGENT_SECTIONS.map((s) => [s.id, s.label, s.group])).toEqual([
       ["model", "Model", "main"],
       ["connections", "Connections", "main"],
@@ -30,7 +30,7 @@ describe("section registry", () => {
     ]);
   });
 
-  it("lists the install-wide sections as design §8 does", () => {
+  it("lists the install-wide sections in order", () => {
     expect(ALL_SECTIONS.map((s) => [s.id, s.label, s.group])).toEqual([
       ["general", "General", "main"],
       ["notifications", "Notifications", "main"],

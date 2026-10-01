@@ -14,7 +14,7 @@
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
 
-  // The Model section (design §8): the main model and how hard it thinks,
+  // The Model section: the main model and how hard it thinks,
   // thinking and temperature for every model, a model for each job that
   // needs its own, and the providers they come from. Roles are saved to the
   // agent's `providers.toml`, the settings for every model to its

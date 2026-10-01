@@ -10,7 +10,7 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [x] Sender line for messages from another interface ("name · interface · location") and from a workbench artifact
 - [x] Agent replies as sanitized Markdown (GFM, line breaks) — **Changed:** unboxed prose; code blocks gain a copy button
 - [x] Session/teammate message cards: kind, sender, clamped body with Show all / Show less, Open session — **Fix:** Open session appears for session senders only, not teammates (`agent:<name>`)
-- [ ] Inline output for chat-scoped actions (help, status, conversation size) — **Changed:** status and help open as dialogs; conversation size opens in the context panel
+- [x] Inline output for chat-scoped actions (help, status, conversation size) — **Changed:** status and help open as dialogs; conversation size opens in the context panel
 - [x] Status lines with expandable details (session views)
 - [x] Day dividers; episode dividers ("ep-NNN · date") above lazily loaded episodes
 - [x] Compressed-history marker with an explanation — **Changed:** explained in plain words inline
@@ -97,12 +97,12 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [x] In-flight model call count and Cancel calls — **Dropped:** a page manages its own calls
 - [x] Live reload on agent edits — **Changed:** the SDK reloads the page itself, unless the page handles `artifact_updated`
 - [x] Unknown artifact — **Fix:** the route redirects to the list with a toast
-- [ ] SDK: `fetch`, `ask`, `on`, `watch`, `state.get`/`set`, `sessions.start` with handle `on`/`send`/`stop`, connection events, `features`, `artifact`, `version` — **Changed:** direct access from the page's own origin; no implicit agent (agent-specific calls name their agent, with `agent(name)` added); `embedded`, `ready` and Esc forwarding removed; **Fix:** session frames arrive for sessions on any agent (#292); no reply crosses documents, because the bridge is gone (#307). Artifacts never shipped in a release, so no migration applies.
-- [ ] Unscoped fetch paths: hub prefixes to the hub, `/api/workbench/` to team — **Changed:** agent paths must name the agent; one that doesn't gets a 400 with a clear error
-- [ ] `watch` of `team/` prefixes, resync on reconnect — **Changed:** agent-workspace watches go through `agent(name).watch`
-- [ ] Request lanes: 8 ordinary, 4 model calls per page; retry on the relay's "agent overloaded" 503 — kept, in the SDK
-- [ ] Request limits — **Changed:** artifacts can call everything the UI can, except shutdown, stop-all, updates and setup, enforced where the artifacts origin forwards the API
-- [ ] Artifacts origin and relay workbench host — **Changed:** they also forward the API and sockets (relay-project change)
+- [x] SDK: `fetch`, `ask`, `on`, `watch`, `state.get`/`set`, `sessions.start` with handle `on`/`send`/`stop`, connection events, `features`, `artifact`, `version` — **Changed:** direct access from the page's own origin; no implicit agent (agent-specific calls name their agent, with `agent(name)` added); `embedded`, `ready` and Esc forwarding removed; **Fix:** session frames arrive for sessions on any agent (#292); no reply crosses documents, because the bridge is gone (#307). Artifacts never shipped in a release, so no migration applies.
+- [x] Unscoped fetch paths: hub prefixes to the hub, `/api/workbench/` to team — **Changed:** agent paths must name the agent; one that doesn't gets a 400 with a clear error
+- [x] `watch` of `team/` prefixes, resync on reconnect — **Changed:** agent-workspace watches go through `agent(name).watch`
+- [x] Request lanes: 8 ordinary, 4 model calls per page; retry on the relay's "agent overloaded" 503 — kept, in the SDK
+- [x] Request limits — **Changed:** artifacts can call everything the UI can, except shutdown, stop-all, updates and setup, enforced where the artifacts origin forwards the API
+- [x] Artifacts origin and relay workbench host — **Changed:** they also forward the API and sockets (relay-project change)
 
 ## Scheduled → Schedule place (design §5; W30)
 
@@ -192,12 +192,12 @@ Agent scope:
 ## Global (W15b toasts, W17 routing, W19 connection and errors, W21 keyboard)
 
 - [x] Keyboard: `?` help, Enter/Shift+Enter, slash-menu keys, Esc (stop reply, close overlays), rail keyboard navigation, focus trapping in overlays, Enter/Space on disclosures — **Dropped:** F for artifact full view (artifacts open in their own tab)
-- [ ] Agent socket reconnect with backoff, ping, queued sends; resync of sessions, history, usage, workspace watch and workbench on reconnect
+- [x] Agent socket reconnect with backoff, ping, queued sends; resync of sessions, history, usage, workspace watch and workbench on reconnect
 - [x] Hub socket offline handling
-- [ ] Gateway reloading toast and cache invalidation
-- [ ] Plain-language error messages for unreachable, 404, 401/403, 5xx and server messages; error frames as toasts with details; notices as info
+- [x] Gateway reloading toast and cache invalidation
+- [x] Plain-language error messages for unreachable, 404, 401/403, 5xx and server messages; error frames as toasts with details; notices as info
 - [x] Time-of-day vein intensity — **Dropped:** see design §1
 - [x] Deep links and back/forward — **Changed:** route model in design §3 with redirects from every current URL
 - [x] macOS notification "Open" link lands on the last-used agent's Files, as today
-- [ ] Persisted preferences: last agent, API cache, setup draft — sidebar open state, settings mode and verbose are **Dropped** with the features they served
+- [x] Persisted preferences: last agent, API cache, setup draft — sidebar open state, settings mode and verbose are **Dropped** with the features they served
 - [x] Reduced motion respected

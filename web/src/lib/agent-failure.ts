@@ -11,7 +11,8 @@ import {
 } from "./api";
 import { invalidate } from "./cache";
 import type { AgentErrorKind } from "./hub-types";
-import { placeDiagnostic, type FieldFile, type FieldRef } from "./settings-fields";
+import type * as SettingsFields from "./settings-fields";
+import type { FieldFile, FieldRef } from "./settings-fields";
 import { RAW_SECTION, type SectionId } from "./settings-sections";
 import type { Diagnostic } from "./types";
 
@@ -66,6 +67,14 @@ export async function findSettingsFix(agent: string): Promise<SettingsFix> {
       continue;
     }
     const problems = result.diagnostics ?? [];
+    if (problems.length === 0) continue;
+    // Placing a problem reads the settings forms' fields, which load with Settings.
+    let placeDiagnostic: typeof SettingsFields.placeDiagnostic;
+    try {
+      ({ placeDiagnostic } = await import("./settings-fields"));
+    } catch {
+      break;
+    }
     for (const diagnostic of problems) {
       const placed = placeDiagnostic("agent", file, diagnostic);
       if (placed.field !== null && placed.section !== null) {

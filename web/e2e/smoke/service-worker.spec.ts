@@ -3,7 +3,7 @@ import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 
 /**
- * The service worker (design §11): it holds the app shell so a reload with no
+ * The service worker: it holds the app shell so a reload with no
  * network still opens the app, it never touches `/api`, and a rebuilt app
  * shows Update ready. The worker is built only into the production build, so
  * these run there (`@preview`).

@@ -58,17 +58,37 @@ describe("Setup wizard", () => {
   });
 
   it("saves the draft without the API keys typed into it", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // The clock moves only when the test moves it, so the draft saves once,
+    // after the last keystroke, and holds everything typed.
+    vi.useFakeTimers();
     const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
     render(Setup, { onComplete: () => {} });
     await settle();
 
     await user.click(screen.getByRole("button", { name: "Next" }));
     await user.type(screen.getByLabelText("Anthropic API key"), "sk-secret");
-    await vi.advanceTimersByTimeAsync(600);
+    expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
 
-    const draft = localStorage.getItem(DRAFT_KEY) ?? "";
-    expect(JSON.parse(draft)).toMatchObject({ step: 1 });
-    expect(draft).not.toContain("sk-secret");
+    // vi.waitFor moves the faked clock by its interval on every check.
+    await vi.waitFor(
+      () => {
+        expect(JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "null")).toMatchObject({ step: 1 });
+      },
+      { interval: 100, timeout: 5000 },
+    );
+    expect(localStorage.getItem(DRAFT_KEY)).not.toContain("sk-secret");
+  });
+
+  it("drops a draft save still waiting when the wizard closes", async () => {
+    vi.useFakeTimers();
+    const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
+    const view = render(Setup, { onComplete: () => {} });
+    await settle();
+
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    view.unmount();
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
   });
 });

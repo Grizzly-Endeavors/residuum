@@ -1,6 +1,6 @@
 // The app's service worker as the page sees it: registering it, noticing that
 // the app was rebuilt, and switching to the new version when the person says
-// (design §11). The worker itself is `src/sw/worker.ts`.
+// so. The worker itself is `src/sw/worker.ts`.
 //
 // A rebuilt app installs a new worker beside the active one, and it waits: it
 // takes over only when asked, so the files under an open page never change on

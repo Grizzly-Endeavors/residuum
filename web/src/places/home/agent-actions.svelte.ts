@@ -8,9 +8,14 @@ import { findSettingsFix } from "../../lib/agent-failure";
 import type { AgentSummary } from "../../lib/hub-types";
 import { hub } from "../../lib/hub.svelte";
 import { notifications } from "../../lib/notifications.svelte";
+import type * as SettingsModel from "../../lib/settings-model.svelte";
 import type { SectionId } from "../../lib/settings-sections";
-import { settingsModel } from "../../lib/settings-model.svelte";
 import { confirmations } from "../../lib/ui";
+
+/** The settings model, which loads with Settings rather than with Home. */
+function loadSettingsModel(): Promise<typeof SettingsModel> {
+  return import("../../lib/settings-model.svelte");
+}
 
 export type PendingAction =
   | "start"
@@ -71,6 +76,7 @@ class AgentActions {
     await this.run(name, "fix", async () => {
       const fix = await findSettingsFix(name);
       if (fix.field !== null) {
+        const { settingsModel } = await loadSettingsModel();
         const scope = settingsModel.agent(name);
         scope.flagProblems(fix.field.file, fix.field.problems);
         scope.requestFocus(fix.field.ref);
@@ -97,6 +103,8 @@ class AgentActions {
     await this.run(name, "delete", async () => {
       const outcome = await hub.deleteAgent(name);
       if (outcome === null) return;
+      // The hub's agent_deleted frame drops it too, while the hub socket is up.
+      const { settingsModel } = await loadSettingsModel();
       settingsModel.drop(name);
       if (outcome.checkpoint_id === null) {
         notifications.surface(

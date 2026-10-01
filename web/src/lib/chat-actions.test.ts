@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { matchActions, type AppAction } from "./action-registry.svelte";
-import { chatActions, connectionStatusMessage, type ChatActionContext } from "./chat-actions";
+import { chatActions, type ChatActionContext } from "./chat-actions";
 
 function context(overrides: Partial<ChatActionContext> = {}): ChatActionContext {
   return {
@@ -14,6 +14,7 @@ function context(overrides: Partial<ChatActionContext> = {}): ChatActionContext 
     surface: vi.fn(),
     showConversationSize: vi.fn(),
     askForInboxNote: vi.fn(),
+    showConnectionStatus: vi.fn(),
     ...overrides,
   };
 }
@@ -112,18 +113,11 @@ describe("disabled reasons", () => {
     const disabled = reasons(context({ state: "stopped" }));
     expect(disabled["chat:status"]).toBeUndefined();
   });
-});
 
-describe("connectionStatusMessage", () => {
-  it("names the hub and the agent connection in plain words", () => {
-    expect(connectionStatusMessage(context())).toBe("Connected to Residuum. atlas is connected.");
-    expect(connectionStatusMessage(context({ agentConnection: "connecting" }))).toBe(
-      "Connected to Residuum. Reconnecting to atlas. Messages you send will go out once it's back.",
-    );
-    expect(
-      connectionStatusMessage(context({ hubConnection: "disconnected", state: "stopped" })),
-    ).toBe(
-      "Can't reach Residuum right now. Trying again. atlas isn't running, so there's no connection to it.",
-    );
+  it("open the connection status dialog instead of a toast", () => {
+    const ctx = context();
+    byId(chatActions(ctx), "chat:status").run();
+    expect(ctx.showConnectionStatus).toHaveBeenCalledOnce();
+    expect(ctx.surface).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,5 @@
-// The router: the URL is the source of truth for where the user is (design
-// §3). This holds the current location, navigates by push or replace, and keeps
+// The router: the URL is the source of truth for where the user is. This
+// holds the current location, navigates by push or replace, and keeps
 // the history rules that make Back behave: closing a panel or modal is
 // `history.back()` when this page pushed what opened it, overlays own an entry
 // so Back closes them, and unsaved work is asked about before it is lost.
@@ -281,7 +281,7 @@ class Router {
   }
 
   /**
-   * Hold a history entry for an overlay that is open (design §3), so Back
+   * Hold a history entry for an overlay that is open, so Back
    * closes the overlay before it leaves the place. `onDismiss` runs when the
    * entry is left by anything but the returned handle: Back, or navigating
    * elsewhere. The overlay closes itself through the handle, which pops the

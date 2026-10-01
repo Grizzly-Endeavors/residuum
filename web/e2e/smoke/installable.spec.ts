@@ -4,7 +4,7 @@ import { expect, test } from "../support/fixtures";
 import { expectPaletteOpen } from "../support/lazy";
 
 /**
- * Installing the app (design §11): the manifest and its icons, the document's
+ * Installing the app: the manifest and its icons, the document's
  * metas, and the Install app entry in the palette and the help menu. The
  * `@preview` specs run on the production build, where the manifest is as it
  * ships; the rest run on the dev server.

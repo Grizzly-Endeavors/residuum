@@ -8,8 +8,16 @@ import { userErrorMessage } from "../../lib/errors";
 import { providerOptions, providerTypeLabel, splitModel } from "../../lib/model-roles";
 import { fetchModels, type ModelEntry } from "../../lib/models";
 import { notifications } from "../../lib/notifications.svelte";
-import { modelRoleJson, parseProvidersToml } from "../../lib/settings-toml";
+import type * as SettingsToml from "../../lib/settings-toml";
 import type { SettingsModelAssignments } from "../../lib/types";
+
+/**
+ * Reading and writing the file's TOML. It loads when the control first reads
+ * its file, not with the page: the parser is most of Settings' weight.
+ */
+function loadSettingsToml(): Promise<typeof SettingsToml> {
+  return import("../../lib/settings-toml");
+}
 
 /** The levels the composer offers. None chosen leaves thinking to the agent's default. */
 export const COMPOSER_THINKING: readonly { value: string; label: string }[] = [
@@ -80,19 +88,20 @@ export class MainModel {
   async load(): Promise<void> {
     const read = ++this.reads;
     let raw: string;
+    let toml: typeof SettingsToml;
     try {
-      raw = await configCoordinator.read(this.file);
+      [raw, toml] = await Promise.all([configCoordinator.read(this.file), loadSettingsToml()]);
     } catch (err) {
       if (read !== this.reads) return;
       this.loadError = userErrorMessage(err, { action: `Couldn't read ${this.agent}'s model.` });
       this.loaded = true;
       return;
     }
-    if (read === this.reads) await this.show(raw, read);
+    if (read === this.reads) await this.show(toml, raw, read);
   }
 
-  private async show(raw: string, read: number): Promise<void> {
-    const parsed = parseProvidersToml(raw);
+  private async show(toml: typeof SettingsToml, raw: string, read: number): Promise<void> {
+    const parsed = toml.parseProvidersToml(raw);
     this.value = parsed.models.main;
     this.thinking = parsed.models.overrides.main?.thinking ?? "";
     this.loadError = null;
@@ -118,8 +127,8 @@ export class MainModel {
     if (modelId === this.model) return Promise.resolve();
     const { provider } = splitModel(this.value);
     return this.write(
-      (models) =>
-        modelRoleJson(`${provider}/${modelId}`, models.overrides.main, models.fallbacks.main),
+      (models, toml) =>
+        toml.modelRoleJson(`${provider}/${modelId}`, models.overrides.main, models.fallbacks.main),
       "Couldn't switch the model.",
     );
   }
@@ -127,24 +136,25 @@ export class MainModel {
   /** Set the thinking level; choosing the level already set clears it. */
   toggleThinking(level: string): Promise<void> {
     const next = level === this.thinking ? "" : level;
-    return this.write((models) => {
+    return this.write((models, toml) => {
       const overrides = { temperature: models.overrides.main?.temperature ?? "", thinking: next };
-      return modelRoleJson(models.main, overrides, models.fallbacks.main);
+      return toml.modelRoleJson(models.main, overrides, models.fallbacks.main);
     }, "Couldn't change the thinking level.");
   }
 
   /** Write the main role, built from the file as it is now so nothing else in it is lost. */
   private async write(
-    buildMain: (models: SettingsModelAssignments) => unknown,
+    buildMain: (models: SettingsModelAssignments, toml: typeof SettingsToml) => unknown,
     failure: string,
   ): Promise<void> {
     this.writes += 1;
     try {
+      const toml = await loadSettingsToml();
       const saved = await configCoordinator.edit(
         this.file,
         (raw) => {
-          const { models } = parseProvidersToml(raw);
-          return models.main === "" ? null : { models: { main: buildMain(models) } };
+          const { models } = toml.parseProvidersToml(raw);
+          return models.main === "" ? null : { models: { main: buildMain(models, toml) } };
         },
         this.source,
       );
@@ -157,11 +167,23 @@ export class MainModel {
         return;
       }
       if (saved.written) this.onWritten();
-      if (saved.raw !== null) await this.show(saved.raw, ++this.reads);
+      if (saved.raw !== null) await this.show(toml, saved.raw, ++this.reads);
     } catch (err) {
       notifications.surface("error", userErrorMessage(err, { action: failure }));
     } finally {
       this.writes -= 1;
     }
   }
+}
+
+/** The agent's main model, in the same words as the composer's control. */
+export async function readMainModelLabel(agent: string): Promise<string> {
+  const raw = await configCoordinator.read(agentConfigFile(agent, "providers"));
+  const toml = await loadSettingsToml();
+  const parsed = toml.parseProvidersToml(raw);
+  const value = parsed.models.main;
+  if (value === "") return "No main model set";
+  const thinking = parsed.models.overrides.main?.thinking ?? "";
+  const { model } = splitModel(value);
+  return modelControlLabel(model === "" ? value : model, thinking);
 }

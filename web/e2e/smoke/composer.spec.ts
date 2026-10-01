@@ -3,7 +3,7 @@ import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 
 /**
- * The composer (design §4): the chat actions under `/`, images attached by
+ * The composer: the chat actions under `/`, images attached by
  * button and by drop, a draft kept per agent across navigation and reload,
  * the model and thinking control (a popover, a sheet on phones), messages
  * waiting while the connection is down, and the conversation size in the

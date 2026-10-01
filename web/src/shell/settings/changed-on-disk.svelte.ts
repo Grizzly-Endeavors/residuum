@@ -1,5 +1,5 @@
 // The question a save asks when a file changed on disk under the keys it is
-// about to write (design §8): keep the user's changes, or use what is on disk.
+// about to write: keep the user's changes, or use what is on disk.
 // `ChangedOnDiskDialog`, mounted with the Settings modal, shows it.
 
 import type { ConfigChoice, ConfigChooser, ConfigConflict } from "../../lib/config-coordinator";

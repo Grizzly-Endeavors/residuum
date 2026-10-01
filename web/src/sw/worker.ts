@@ -1,4 +1,4 @@
-// The app's service worker (design §11), served at `/sw.js`. It keeps the app
+// The app's service worker, served at `/sw.js`. It keeps the app
 // shell so the app opens with no network, and nothing else: it never caches or
 // answers `/api`, sockets, webhooks or the cloud callback (see `rules.ts`). It
 // also shows the hub's push notifications and opens the app where one leads
@@ -194,7 +194,7 @@ async function openTarget(target: string): Promise<void> {
 }
 
 // Every push shows a notification: suppressing one while the app is in use is
-// the hub's job (design §9.7), since a push that shows nothing is punished.
+// the hub's job, since a push that shows nothing is punished.
 self.addEventListener("push", (event) => {
   event.waitUntil(showPush(event.data));
 });

@@ -11,7 +11,7 @@
   import SettingsSection from "./SettingsSection.svelte";
   import ThisDeviceGroup from "./ThisDeviceGroup.svelte";
 
-  // Notifications (design §11): push on this device, every other device that
+  // Notifications: push on this device, every other device that
   // gets notifications with how delivery to it is going, and under More
   // options the contact push services are given. The devices act at once;
   // only the contact is staged and saved with Save changes.

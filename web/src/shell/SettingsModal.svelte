@@ -19,7 +19,7 @@
   import { AGENT_SECTION_VIEWS, ALL_SECTION_VIEWS, type SettingsScope } from "./settings/sections";
   import SettingsNav from "./settings/SettingsNav.svelte";
 
-  // The Settings modal (design §8), open while the URL names a `settings`
+  // The Settings modal, open while the URL names a `settings`
   // scope. The URL parameter is its history entry, so the layer pushes none
   // of its own. Switching scope or section never remounts the modal: only the
   // content pane swaps, with a short fade, once the new scope has loaded. On a

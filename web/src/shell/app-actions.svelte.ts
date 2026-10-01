@@ -31,6 +31,9 @@ export const installOffer = $state<InstallOffer>({ install: null });
 /** Whether the Add to Home Screen explanation is open, for browsers that install from the share sheet. */
 export const installHelp = $state({ open: false });
 
+/** Whether Show connection status is open. */
+export const connectionStatusDialog = $state({ open: false });
+
 const INBOX: Place = { kind: "inbox", agent: null, tab: "active", item: null };
 
 function open(place: Place): () => void {
@@ -205,6 +208,9 @@ function chat(shell: ShellActions): AppAction[] {
       else void router.openPlace({ kind: "chat", agent: name }, { panel });
     },
     askForInboxNote: shell.addInboxNote,
+    showConnectionStatus: () => {
+      connectionStatusDialog.open = true;
+    },
   });
 }
 

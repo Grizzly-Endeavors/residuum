@@ -7,6 +7,7 @@
   import { notifications } from "../lib/notifications.svelte";
   import { overview } from "../lib/overview.svelte";
   import { router } from "../lib/router.svelte";
+  import { ws } from "../lib/ws.svelte";
   import { ALL_SCOPE } from "../lib/settings-sections";
   import {
     ConfirmHost,
@@ -18,8 +19,9 @@
   } from "../lib/ui";
   import { PHONE_QUERY } from "../styles/breakpoints";
   import { RailAccordion } from "./accordion.svelte";
-  import { installHelp, registerAppActions } from "./app-actions.svelte";
+  import { connectionStatusDialog, installHelp, registerAppActions } from "./app-actions.svelte";
   import BottomBar from "./BottomBar.svelte";
+  import ConnectionStatusDialog from "./ConnectionStatusDialog.svelte";
   import CreateAgentDialog from "./CreateAgentDialog.svelte";
   import FeedbackDialog from "./FeedbackDialog.svelte";
   import HubBanner from "./HubBanner.svelte";
@@ -184,7 +186,6 @@
 <!-- data-hub and data-overview say how far the hub's state has arrived (the socket, then the counts it brings), for the end-to-end suite, which waits for "connected" and "loaded" before it acts. -->
 <div
   class="shell"
-  data-ui
   data-hub={hub.transport.lost ? "lost" : hub.transport.status}
   data-overview={overview.loaded ? "loaded" : "loading"}
 >
@@ -205,7 +206,7 @@
 </Drawer>
 {#if settingsModal.loading || commandPalette.loading}
   <!-- Fades in after a moment, so a chunk that arrives quickly never flashes it. -->
-  <div class="shell-opening" role="status" data-ui>
+  <div class="shell-opening" role="status">
     <Spinner size={20} />
     <VisuallyHidden>Opening</VisuallyHidden>
   </div>
@@ -221,6 +222,13 @@
 <CreateAgentDialog bind:open={createOpen} oncreated={(name) => void focusCreatedAgent(name)} />
 <RecentNotifications bind:open={notificationsOpen} />
 <ShortcutsDialog bind:open={shortcutsOpen} />
+<ConnectionStatusDialog
+  bind:open={connectionStatusDialog.open}
+  agent={ws.agent}
+  agentState={ws.agent === null ? null : hub.displayStateOf(ws.agent)}
+  hubConnection={hub.transport.status}
+  agentConnection={ws.transport.status}
+/>
 <InstallHelpDialog bind:open={installHelp.open} />
 <FeedbackDialog bind:open={feedbackOpen} bind:tab={feedbackTab} />
 <InboxNoteDialog

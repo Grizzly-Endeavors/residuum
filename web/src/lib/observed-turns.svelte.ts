@@ -1,4 +1,4 @@
-// What a page saw of each turn while it ran (design §4): when it started and
+// What a page saw of each turn while it ran: when it started and
 // ended, how it ended, and where the page may have missed steps. History
 // records none of this, so only turns this page watched have a record, and a
 // history load that renders a turn again drops its record.

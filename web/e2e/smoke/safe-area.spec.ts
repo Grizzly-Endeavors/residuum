@@ -3,7 +3,7 @@ import { expect, test } from "../support/fixtures";
 import { expectPaletteOpen, expectSettingsOpen } from "../support/lazy";
 
 /**
- * The safe areas (design §2): with `viewport-fit=cover` a phone's notch,
+ * The safe areas: with `viewport-fit=cover` a phone's notch,
  * status bar and home indicator sit over the page, and the shell and every
  * surface pinned to an edge keep their content out of them. Chromium reports
  * no insets, so each spec sets the four `--safe-*` tokens the stylesheets

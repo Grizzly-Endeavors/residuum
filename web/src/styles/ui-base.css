@@ -1,18 +1,25 @@
 /*
- * Base styles and reset for the web UI's components.
- *
- * They apply inside the element marked `data-ui` (the shell root) and skip
- * everything inside a `data-legacy-view` wrapper, where a hosted legacy view
- * keeps the legacy global styles. Each selector sits in :where(), so any rule
- * a component writes overrides the base.
+ * Base styles and reset for the whole document. Each selector sits in
+ * :where(), so any rule a component writes overrides the base.
  */
 
-:where([data-ui]) {
+/* The app fills the viewport. Its roots (the shell, the setup wizard and the
+   loading screens) take their height from #app. */
+:where(html, body) {
+  height: 100dvh;
+}
+
+:where(#app) {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+:where(html) {
   font-family: var(--font-ui);
   font-size: var(--font-size-ui);
   font-weight: var(--font-weight-regular);
   line-height: var(--line-height-ui);
-  font-feature-settings: normal;
   color: var(--color-text);
   background: var(--color-stone-0);
   -webkit-font-smoothing: antialiased;
@@ -20,40 +27,43 @@
   text-size-adjust: 100%;
 }
 
-:where([data-ui], [data-ui] :not([data-legacy-view] *)),
-:where([data-ui], [data-ui] :not([data-legacy-view] *))::before,
-:where([data-ui], [data-ui] :not([data-legacy-view] *))::after {
+:where(*, *::before, *::after) {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
 }
 
-:where([data-ui] [hidden]:not([data-legacy-view] *)) {
+:where([hidden]) {
   display: none !important;
+}
+
+::selection {
+  background: var(--color-vein-line);
+  color: inherit;
 }
 
 /* ── Type ──────────────────────────────────────────────────────────── */
 
 /* Headings take their size and weight from the component, never from the
    browser's defaults, which sit outside the type scale. */
-:where([data-ui] :is(h1, h2, h3, h4, h5, h6):not([data-legacy-view] *)) {
+:where(h1, h2, h3, h4, h5, h6) {
   font-size: inherit;
   font-weight: inherit;
 }
 
-:where([data-ui] :is(code, kbd, samp, pre):not([data-legacy-view] *)) {
+:where(code, kbd, samp, pre) {
   font-family: var(--font-code);
 }
 
-:where([data-ui] :is(code, kbd, samp):not([data-legacy-view] *)) {
+:where(code, kbd, samp) {
   font-size: var(--font-size-code);
 }
 
-:where([data-ui] pre :is(code, kbd, samp):not([data-legacy-view] *)) {
+:where(pre :is(code, kbd, samp)) {
   font-size: inherit;
 }
 
-:where([data-ui] a:not([data-legacy-view] *)) {
+:where(a) {
   color: var(--color-vein-bright);
   text-decoration-line: underline;
   text-decoration-color: var(--color-vein-line);
@@ -61,55 +71,54 @@
   transition: text-decoration-color var(--duration-fast) var(--ease-out);
 }
 
-:where([data-ui] a:hover:not([data-legacy-view] *)) {
+:where(a:hover) {
   text-decoration-color: currentcolor;
 }
 
 /* ── Controls ──────────────────────────────────────────────────────── */
 
-:where([data-ui] :is(button, input, select, textarea):not([data-legacy-view] *)) {
+:where(button, input, select, textarea) {
   font: inherit;
   color: inherit;
   letter-spacing: inherit;
 }
 
-:where([data-ui] button:not([data-legacy-view] *)) {
+:where(button) {
   background: none;
   border: 0;
   text-align: inherit;
   cursor: pointer;
 }
 
-:where([data-ui] button:disabled:not([data-legacy-view] *)) {
+:where(button:disabled) {
   cursor: not-allowed;
 }
 
 /* Firefox dims placeholders by default, which would drop text-3 below AA. */
-:where([data-ui] :is(input, textarea):not([data-legacy-view] *))::placeholder {
+:where(input, textarea)::placeholder {
   color: var(--color-text-3);
   opacity: 1;
 }
 
-:where([data-ui] :focus-visible:not([data-legacy-view] *)) {
+:where(:focus-visible) {
   outline: var(--focus-outline-width) solid var(--color-vein-bright);
   outline-offset: var(--focus-outline-offset);
 }
 
 /* Overlays bring their own surface and spacing. */
-:where([data-ui] :is(dialog, [popover]):not([data-legacy-view] *)) {
+:where(dialog, [popover]) {
   color: inherit;
   background: none;
   border: 0;
 }
 
-:where([data-ui] :is(img, picture, video, canvas):not([data-legacy-view] *)) {
+:where(img, picture, video, canvas) {
   display: block;
   max-width: 100%;
 }
 
 /* ── Reduced motion ────────────────────────────────────────────────── */
-/* For the whole app, legacy views included: every animation and transition
-   finishes at once. */
+/* Every animation and transition finishes at once. */
 
 @media (prefers-reduced-motion: reduce) {
   *,

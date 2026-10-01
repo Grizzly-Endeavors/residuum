@@ -104,6 +104,37 @@ test("Jump to latest names where the reader is, and takes them back", async ({ p
   await expect(feed.getByText("Back to the routing doc.")).toBeInViewport();
 });
 
+test("the keyboard scrolls a conversation that overflows, and follows it again at the end", async ({
+  page,
+}) => {
+  await page.goto("/agent/atlas");
+  const feed = conversation(page);
+  const greeting = feed.getByText(GREETING);
+  await expect(greeting).toBeInViewport();
+  const jump = page.getByRole("button", { name: "Jump to latest" });
+
+  // It scrolls, so it is a tab stop.
+  await expect(feed).toHaveAttribute("tabindex", "0");
+  await feed.focus();
+  await expect(feed).toBeFocused();
+
+  await page.keyboard.press("Home");
+  await expect(greeting).not.toBeInViewport();
+  await expect(jump).toBeVisible();
+
+  await page.keyboard.press("End");
+  await expect(greeting).toBeInViewport();
+  await expect(jump).toHaveCount(0);
+  await expect(feed).toBeFocused();
+});
+
+test("a conversation with nothing to scroll is no tab stop", async ({ page }) => {
+  await page.goto("/agent/drifter");
+  const feed = conversation(page, "drifter");
+  await expect(feed).toBeVisible();
+  await expect(feed).not.toHaveAttribute("tabindex");
+});
+
 test.describe("after the connection drops", () => {
   test.beforeEach(async ({ mock }) => {
     // Losing and regaining the connection takes real time.

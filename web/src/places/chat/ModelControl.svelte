@@ -8,7 +8,7 @@
   import { PHONE_QUERY } from "../../styles/breakpoints";
   import { COMPOSER_THINKING, MainModel, modelControlLabel } from "./main-model.svelte";
 
-  // The composer's model and thinking control (design §4): the agent's main
+  // The composer's model and thinking control: the agent's main
   // model and how hard it thinks, opened beside the message box in a popover,
   // or in a sheet on phones. A change is written through the config write
   // coordinator, and the agent reloads to take it up from its next reply.
@@ -51,10 +51,13 @@
   }
 
   // Up and Down move along the models; choosing one is a press.
+  /** Up and Down move between the models, from the one with focus. */
   function moveAlong(event: KeyboardEvent & { currentTarget: HTMLElement }): void {
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-    const options = [...event.currentTarget.querySelectorAll<HTMLElement>("button")];
-    const at = options.indexOf(document.activeElement as HTMLElement);
+    const list = event.currentTarget.parentElement;
+    if (list === null) return;
+    const options = [...list.querySelectorAll<HTMLElement>(":scope > button")];
+    const at = options.indexOf(event.currentTarget);
     if (at < 0) return;
     event.preventDefault();
     const step = event.key === "ArrowDown" ? 1 : -1;
@@ -85,8 +88,7 @@
     {:else if main.loaded}
       <div class="model-group" role="group" aria-labelledby="{uid}-models">
         <p class="model-heading" id="{uid}-models">Model, from {main.providerLabel}</p>
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="model-list" onkeydown={moveAlong}>
+        <div class="model-list">
           {#each shownModels as entry (entry.id)}
             {@const chosen = entry.id === main.model}
             <button
@@ -95,6 +97,7 @@
               aria-pressed={chosen}
               data-autofocus={chosen ? "" : undefined}
               onclick={() => void main.choose(entry.id)}
+              onkeydown={moveAlong}
             >
               <span class="model-option-name">{entry.name || entry.id}</span>
               {#if chosen}<Icon name="check" size={15} />{/if}

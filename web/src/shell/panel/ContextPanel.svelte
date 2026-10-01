@@ -16,7 +16,7 @@
     savePanelWidth,
   } from "./panel-width";
 
-  // The context panel's frame (design §2): a resizable column beside the main
+  // The context panel's frame: a resizable column beside the main
   // region at wide widths, floating over its right edge at medium widths, and
   // a full-screen sheet on phones. The URL's `panel` parameter is its history
   // entry, so closing goes through the router, and Back closes it. What it
@@ -53,8 +53,6 @@
 
   function closeOnEscape(event: KeyboardEvent): void {
     if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
-    // A legacy dialog drawn inside the panel takes Esc for itself.
-    if (event.target instanceof Element && event.target.closest('[aria-modal="true"]')) return;
     event.preventDefault();
     close();
   }
@@ -137,9 +135,8 @@
     {@attach holdFocus}
   >
     {#if layout === "wide"}
-      <!-- A focusable separator is ARIA's window splitter, a widget; Svelte counts every separator as structure. -->
-      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <!-- A focusable separator is ARIA's window splitter: WAI-ARIA 1.2 makes it a widget, which takes focus and keys. Svelte reads roles from aria-query, which lists separator as structure only, so it flags the tabindex and the handlers. -->
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
       <div
         class="context-panel-grip"
         role="separator"

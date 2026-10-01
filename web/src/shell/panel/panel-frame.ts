@@ -19,7 +19,7 @@ export interface PanelFrame {
   readonly layout: PanelLayout;
   /** The id of the panel's title. The panel is labelled by it. */
   readonly titleId: string;
-  /** Close the panel, the way closing through the UI does (design §3). */
+  /** Close the panel, the way closing through the UI does. */
   close: () => void;
 }
 

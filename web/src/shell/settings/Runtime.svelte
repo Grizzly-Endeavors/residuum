@@ -6,7 +6,7 @@
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
 
-  // The Runtime section (design §8): limits on a reply, retries, what the
+  // The Runtime section: limits on a reply, retries, what the
   // agent may change about itself, the caps on a turn, and what happens when
   // you go quiet. The default temperature and thinking level are in Model.
   // Everything is in the agent's `config.toml`, so it stays editable while the

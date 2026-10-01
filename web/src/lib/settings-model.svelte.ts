@@ -1,6 +1,6 @@
 // ── The settings model (Svelte 5 runes) ──────────────────────────────
 //
-// What the settings modal edits (design §8), as logic with no UI. One scope
+// What the settings modal edits, as logic with no UI. One scope
 // holds the files one page of settings edits: an agent's `config.toml`,
 // `providers.toml` and `mcp.json`, or the hub's `config.toml` for All agents.
 // A scope never writes another scope's files.
@@ -40,6 +40,7 @@ import {
   type ConfigFile,
 } from "./config-coordinator";
 import { userErrorMessage, userErrorReason } from "./errors";
+import { hub } from "./hub.svelte";
 import {
   fieldRefKey,
   keyPathOf,
@@ -1032,3 +1033,9 @@ export class SettingsModel {
 }
 
 export const settingsModel = new SettingsModel();
+
+// A deleted agent's staged settings go with it, whoever deleted it. The model
+// loads with Settings, so before then there is nothing to drop.
+hub.onFrame((msg) => {
+  if (msg.type === "agent_deleted") settingsModel.drop(msg.name);
+});

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { hub } from "../../lib/hub.svelte";
   import { router } from "../../lib/router.svelte";
   import { EmptyState, Skeleton } from "../../lib/ui";
@@ -14,8 +14,7 @@
   let { source }: { source: FileSource } = $props();
 
   // The shell keys this place by its source, so the tree is made for one.
-  // svelte-ignore state_referenced_locally
-  const tree = new FileTree(source);
+  const tree = untrack(() => new FileTree(source));
   let historyPath = $state<string | null>(null);
 
   const shown = $derived(router.panel?.kind === "file" ? router.panel.path : null);

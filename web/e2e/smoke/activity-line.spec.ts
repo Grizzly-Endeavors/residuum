@@ -3,7 +3,7 @@ import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 
 /**
- * The activity line (design §4): a live turn's steps, timer and Stop, Esc,
+ * The activity line: a live turn's steps, timer and Stop, Esc,
  * the line collapsing to its summary, a turn from history opened to a
  * step's details, joining a turn already running, and a session's
  * transcript.

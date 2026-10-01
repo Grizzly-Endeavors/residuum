@@ -29,6 +29,8 @@ export interface ChatActionContext {
   showConversationSize: (agent: string) => void;
   /** Ask for the text of an inbox note. */
   askForInboxNote: (agent: string) => void;
+  /** Open the connection status dialog. */
+  showConnectionStatus: () => void;
 }
 
 /** Why an action that goes over the agent's connection can't run, or undefined when it can. */
@@ -38,21 +40,6 @@ export function needsRunningAgent(ctx: ChatActionContext): string | undefined {
   if (ctx.state === "starting") return `${ctx.agent} is still starting`;
   if (ctx.state !== "running") return `Start ${ctx.agent} first`;
   return undefined;
-}
-
-/** The hub's and the bound agent's connections, in plain words. */
-export function connectionStatusMessage(ctx: ChatActionContext): string {
-  const hub =
-    ctx.hubConnection === "connected"
-      ? "Connected to Residuum."
-      : "Can't reach Residuum right now. Trying again.";
-  if (ctx.agent === null) return hub;
-  let agent: string;
-  if (ctx.state !== "running" && ctx.state !== "stopping")
-    agent = `${ctx.agent} isn't running, so there's no connection to it.`;
-  else if (ctx.agentConnection === "connected") agent = `${ctx.agent} is connected.`;
-  else agent = `Reconnecting to ${ctx.agent}. Messages you send will go out once it's back.`;
-  return `${hub} ${agent}`;
 }
 
 export function chatActions(ctx: ChatActionContext): AppAction[] {
@@ -146,7 +133,7 @@ export function chatActions(ctx: ChatActionContext): AppAction[] {
       command: "status",
       terms: ["online", "offline"],
       run: () => {
-        ctx.surface("system", connectionStatusMessage(ctx));
+        ctx.showConnectionStatus();
       },
     },
   ];

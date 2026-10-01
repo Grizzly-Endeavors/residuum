@@ -37,7 +37,10 @@ export default tseslint.config(
       "no-alert": "error",
       "no-warning-comments": [
         "error",
-        { terms: ["todo", "fixme", "hack", "xxx"], location: "start" },
+        {
+          terms: ["todo", "fixme", "hack", "xxx", "design §", "web-overhaul"],
+          location: "anywhere",
+        },
       ],
       "prefer-const": "error",
       "no-var": "error",
@@ -62,20 +65,11 @@ export default tseslint.config(
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
       ],
       "@typescript-eslint/no-shadow": "error",
-      "@typescript-eslint/consistent-type-imports": [
-        "error",
-        { prefer: "type-imports" },
-      ],
-      "@typescript-eslint/restrict-template-expressions": [
-        "error",
-        { allowNumber: true },
-      ],
+      "@typescript-eslint/consistent-type-imports": ["error", { prefer: "type-imports" }],
+      "@typescript-eslint/restrict-template-expressions": ["error", { allowNumber: true }],
 
       // ── Pedantic: stricter discipline ─────────────────────────────
-      "@typescript-eslint/explicit-function-return-type": [
-        "error",
-        { allowExpressions: true },
-      ],
+      "@typescript-eslint/explicit-function-return-type": ["error", { allowExpressions: true }],
       "@typescript-eslint/strict-boolean-expressions": [
         "error",
         {
@@ -144,15 +138,11 @@ export default tseslint.config(
 
   // ── Stores do not navigate ──────────────────────────────────────────
   // Stores and services in `src/lib/` expose data and commands, and views
-  // navigate (design §12). Only the router and the helper that opens a
+  // navigate. Only the router and the helper that opens a
   // session from a view import it.
   {
     files: ["src/lib/**/*.ts"],
-    ignores: [
-      "src/lib/router.svelte.ts",
-      "src/lib/session-address.ts",
-      "src/lib/**/*.test.ts",
-    ],
+    ignores: ["src/lib/router.svelte.ts", "src/lib/session-address.ts", "src/lib/**/*.test.ts"],
     rules: {
       "no-restricted-imports": [
         "error",
@@ -160,7 +150,8 @@ export default tseslint.config(
           patterns: [
             {
               group: ["**/router.svelte"],
-              message: "Stores expose data and commands; views navigate. Import the router from a view.",
+              message:
+                "Stores expose data and commands; views navigate. Import the router from a view.",
             },
           ],
         },
@@ -188,7 +179,10 @@ export default tseslint.config(
       "no-alert": "error",
       "no-warning-comments": [
         "error",
-        { terms: ["todo", "fixme", "hack", "xxx"], location: "start" },
+        {
+          terms: ["todo", "fixme", "hack", "xxx", "design §", "web-overhaul"],
+          location: "anywhere",
+        },
       ],
       "no-var": "error",
       eqeqeq: ["error", "always", { null: "ignore" }],
@@ -210,14 +204,8 @@ export default tseslint.config(
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
       ],
       "@typescript-eslint/no-shadow": "error",
-      "@typescript-eslint/consistent-type-imports": [
-        "error",
-        { prefer: "type-imports" },
-      ],
-      "@typescript-eslint/restrict-template-expressions": [
-        "error",
-        { allowNumber: true },
-      ],
+      "@typescript-eslint/consistent-type-imports": ["error", { prefer: "type-imports" }],
+      "@typescript-eslint/restrict-template-expressions": ["error", { allowNumber: true }],
 
       // ── Pedantic (subset — skip rules that fight runes) ──────────
       "@typescript-eslint/switch-exhaustiveness-check": "error",
@@ -259,10 +247,7 @@ export default tseslint.config(
       // ── Svelte plugin rules ──────────────────────────────────────
       "svelte/no-at-html-tags": "error",
       "svelte/require-each-key": "error",
-      "svelte/valid-compile": [
-        "error",
-        { ignoreWarnings: true },
-      ],
+      "svelte/valid-compile": ["error", { ignoreWarnings: true }],
       "svelte/no-dom-manipulating": "warn",
       "svelte/no-reactive-reassign": "warn",
     },

@@ -11,12 +11,11 @@ import type { Attachment } from "svelte/attachments";
 
 let host: HTMLElement | null = null;
 
-/** The overlay host, created on first use. It carries `data-ui`, so the base styles apply inside it. */
+/** The overlay host, created on first use. */
 export function overlayHost(): HTMLElement {
   if (host?.isConnected) return host;
   host = document.createElement("div");
   host.setAttribute("data-overlay-host", "");
-  host.setAttribute("data-ui", "");
   // Its layers position themselves against the viewport; the host adds no box of its own.
   host.style.display = "contents";
   document.body.append(host);

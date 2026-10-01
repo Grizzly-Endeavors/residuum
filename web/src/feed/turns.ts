@@ -1,4 +1,4 @@
-// A conversation's items grouped by turn (design §4): each turn's output
+// A conversation's items grouped by turn: each turn's output
 // shows as one block, with every tool call of the turn at its head and then
 // what the agent said, in order. Shared by the main chat and session
 // transcripts, which tag their items with turn ids the same way.

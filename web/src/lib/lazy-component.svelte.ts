@@ -1,7 +1,7 @@
 // A component whose code loads the first time something needs it: the
 // Settings modal, the command palette, the file editor and the setup wizard
 // are built into chunks of their own, so the shell, Home and Chat start
-// without them (design §11).
+// without them.
 
 import { untrack, type Component } from "svelte";
 import { userErrorMessage } from "./errors";

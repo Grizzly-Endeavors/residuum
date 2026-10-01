@@ -195,10 +195,13 @@
     }, 500);
   }
 
+  // The cleanup also runs when the wizard goes away, so a save still waiting
+  // can't write a draft the wizard has finished with.
   $effect(() => {
     $state.snapshot(wizardState);
     step;
     schedulePersist();
+    return () => clearTimeout(persistTimer);
   });
 
   function clearPersisted() {
@@ -234,7 +237,7 @@
   const current = $derived(STEPS[step] ?? STEPS[0]);
 </script>
 
-<div class="setup-wizard" data-ui>
+<div class="setup-wizard">
   <header class="setup-bar">
     <span class="setup-wordmark"><Icon name="mark" size={18} />Residuum</span>
   </header>

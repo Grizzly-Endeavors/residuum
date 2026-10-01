@@ -355,7 +355,7 @@
   }
 
   .kind {
-    width: 15rem;
+    width: 255px;
     max-width: 55%;
   }
 

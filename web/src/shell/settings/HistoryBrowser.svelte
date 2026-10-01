@@ -21,8 +21,7 @@
   const uid = $props.id();
   const repos = $derived(historyRepos(agent));
 
-  // svelte-ignore state_referenced_locally
-  let repo = $state<RepoKind>(historyRepos(agent)[0] ?? "workspace");
+  let repo = $state<RepoKind>(untrack(() => historyRepos(agent)[0] ?? "workspace"));
   let filterText = $state("");
   let filter = $state("");
   let items = $state.raw<CheckpointSummary[]>([]);

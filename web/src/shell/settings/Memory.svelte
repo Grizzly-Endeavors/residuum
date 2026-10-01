@@ -7,7 +7,7 @@
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
 
-  // The Memory section (design §8): when the agent writes conversation down
+  // The Memory section: when the agent writes conversation down
   // as memories and tidies them, what it learns and how it reviews its own
   // replies, and how it searches what it kept. All of it lives in the agent's
   // `config.toml`, so it stays editable while the agent is stopped.

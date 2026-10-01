@@ -21,7 +21,6 @@
 // hub's config have a change feed. Other agents' files have none, so for them
 // the re-read before a save is the only protection.
 
-import { parse as parseToml } from "smol-toml";
 import {
   CACHE_KEY_HUB_CONFIG_RAW,
   cacheKeyConfigRaw,
@@ -156,12 +155,32 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+type ConfigParser = (text: string) => unknown;
+
+/**
+ * The TOML parser, loaded the first time a save finds its file changed on
+ * disk, which is the only time keys are compared. A load that fails is tried
+ * again by the next save.
+ */
+let tomlParser: Promise<ConfigParser> | null = null;
+
+function parserFor(file: ConfigFile): Promise<ConfigParser> {
+  if (file.kind === "agent" && file.name === "mcp") return Promise.resolve(JSON.parse);
+  tomlParser ??= import("smol-toml").then(
+    (toml) => toml.parse,
+    (err: unknown) => {
+      tomlParser = null;
+      throw err;
+    },
+  );
+  return tomlParser;
+}
+
 /** The file's content as nested objects, or `null` when it isn't valid TOML or JSON. */
-function parseConfigText(file: ConfigFile, text: string): Record<string, unknown> | null {
+function parseConfigText(parse: ConfigParser, text: string): Record<string, unknown> | null {
   if (text.trim() === "") return {};
   try {
-    const parsed: unknown =
-      file.kind === "agent" && file.name === "mcp" ? JSON.parse(text) : parseToml(text);
+    const parsed = parse(text);
     return isRecord(parsed) ? parsed : null;
   } catch {
     return null;
@@ -219,17 +238,18 @@ function keysOverlap(a: KeyPath, b: KeyPath): boolean {
  *
  * `pending` is the keys of a patch, or `null` for a write of the whole text.
  */
-function conflictingKeys(
+async function conflictingKeys(
   file: ConfigFile,
   seen: string,
   disk: string,
   pending: readonly KeyPath[] | null,
-): string[] | null {
+): Promise<string[] | null> {
   if (disk === seen) return null;
-  const after = parseConfigText(file, disk);
+  const parse = await parserFor(file);
+  const after = parseConfigText(parse, disk);
   // The server reports a file it can't read when the write is refused.
   if (after === null) return null;
-  const before = parseConfigText(file, seen);
+  const before = parseConfigText(parse, seen);
   if (before === null) return [];
   const changed = changedKeyPaths(before, after);
   if (pending === null) return changed.length === 0 ? [] : keyNames(changed);
@@ -426,7 +446,7 @@ export class ConfigCoordinator {
     for (;;) {
       const step = await this.locked<SaveStep>(file, async () => {
         const disk = await this.io.read(file);
-        const keys = conflictingKeys(file, seen, disk, pending);
+        const keys = await conflictingKeys(file, seen, disk, pending);
         if (keys === null) {
           return { saved: await this.write(file, edit, request.source ?? null, disk) };
         }

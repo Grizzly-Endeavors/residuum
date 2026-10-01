@@ -6,7 +6,6 @@
   import { notifications } from "./lib/notifications.svelte";
   import { userErrorMessage } from "./lib/errors";
   import { router } from "./lib/router.svelte";
-  import { settingsModel } from "./lib/settings-model.svelte";
   import { Icon } from "./lib/icons";
   import { LazyComponent } from "./lib/lazy-component.svelte";
   import {
@@ -49,10 +48,6 @@
   onMount(() => {
     // The overview follows the hub socket from its first frame, which says what to fetch.
     const stopOverview = overview.start();
-    // A deleted agent's staged settings go with it, whoever deleted it.
-    const stopDropping = hub.onFrame((msg) => {
-      if (msg.type === "agent_deleted") settingsModel.drop(msg.name);
-    });
     hub.connect();
     void (async () => {
       try {
@@ -68,7 +63,6 @@
     })();
     return () => {
       stopOverview();
-      stopDropping();
       hub.disconnect();
       ws.disconnect();
     };
@@ -102,13 +96,13 @@
   {@const Setup = setupWizard.component}
   <Setup onComplete={() => void finishSetup()} />
 {:else if mode === "setup" && setupWizard.failed}
-  <div class="app-loading" data-ui role="alert">
+  <div class="app-loading" role="alert">
     <span class="app-loading-mark"><Icon name="mark" size={18} />Residuum</span>
     <p>Couldn't load the setup wizard. Check your connection, then try again.</p>
     <Button onclick={() => setupWizard.ensure()}>Try again</Button>
   </div>
 {:else}
-  <div class="app-loading" data-ui role="status">
+  <div class="app-loading" role="status">
     <span class="app-loading-mark"><Icon name="mark" size={18} />Residuum</span>
     <Spinner size={16} />
     <VisuallyHidden>{mode === "loading" ? "Loading your agents" : "Loading setup"}</VisuallyHidden>
