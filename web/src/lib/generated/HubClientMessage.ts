@@ -3,4 +3,4 @@
 /**
  * What a client sends on the hub WebSocket.
  */
-export type HubClientMessage = { "type": "watch_team", prefixes: Array<string>, } | { "type": "presence", device_id: string, active: boolean, };
+export type HubClientMessage = { "type": "watch_team", prefixes: Array<string>, } | { "type": "presence", device_id: string, active: boolean, } | { "type": "subscribe_session", agent: string, address: string, } | { "type": "unsubscribe_session", agent: string, address: string, } | { "type": "subscribe_artifact_sessions", artifact: string, } | { "type": "unsubscribe_artifact_sessions", artifact: string, };

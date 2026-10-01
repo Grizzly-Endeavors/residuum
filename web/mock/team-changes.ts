@@ -23,7 +23,7 @@ export interface TeamChangeRefusal {
  * sends once its change feed sees it: `workspace_changed` to the pages that
  * watch the path, on the hub socket and on every agent's, and for a change to
  * an artifact's page or folder `artifact_updated` or `artifact_removed` on
- * every agent's socket. `content: null` removes the file, or the folder and
+ * the hub socket and on every agent's socket. `content: null` removes the file, or the folder and
  * everything in it. As in the feed, a new folder is reported alone (it stands
  * for what it holds), and a rewrite that leaves an artifact's files as they
  * were sends no artifact frame.
@@ -74,6 +74,9 @@ export function changeTeamFile(
 
   const changes = [change];
   hub.broadcast({ type: "workspace_changed", changes });
+  // The hub watches the workbench itself, so its artifact frames don't depend on an agent running.
+  for (const name of updated) hub.broadcast({ type: "artifact_updated", name });
+  for (const name of removed) hub.broadcast({ type: "artifact_removed", name });
   const frames: ServerMessage[] = [
     { type: "workspace_changed", changes },
     ...updated.map((name): ServerMessage => ({ type: "artifact_updated", name })),

@@ -67,6 +67,8 @@ The handle follows the session through the live frames the artifact already rece
 - `send(text)` messages the session through `POST /api/agents/{name}/sessions/{address}/messages`; the session sees it as a message from this artifact, and its reply arrives as a `session_response`. It resolves to the delivery outcome (`live`, `queued`, or `resumed`: a message to a finished session starts a new run at the same address).
 - `stop()` stops the session through `POST /api/agents/{name}/sessions/{address}/stop`.
 
+A page that opens the hub WebSocket on its own origin (see [API forwarding](#api-forwarding)) needs no agent connection for any of this. It subscribes with `subscribe_artifact_sessions` and waits for the `subscribed` answer, then starts the session over HTTP, and receives every event of the artifact's sessions as `session_frame`s, whichever agent the session runs on and including sessions on agents it never opened a socket to. The frames are the same `session_*` frames, tool calls and results included. After `session_relay_lagged` it reads its sessions again over HTTP, because events were lost. See [Session relay](hub-http.md#session-relay).
+
 Failures reject with an `Error` carrying the gateway's plain-language message, plus `code` and `status` where the gateway gave them. `GET /api/agents/{name}/sessions?artifact=<name>` lists the sessions an artifact started, live and finished. Closing the artifact does not stop its sessions.
 
 ## Visibility and stop controls
@@ -118,7 +120,12 @@ The web UI shows one artifact at a time, so its connection's watch set is the op
 
 ## Live reload
 
-Artifact reloads come from the same change feed. When a batch touches `team/workbench/`, or the feed asks for a resync, the gateway rescans the team workbench; a file named `workbench/...` in an agent's own workspace does not count; an artifact counts as changed when its page, or any file in its folder, changed. Web UI clients receive `artifact_updated` and `artifact_removed` frames, whatever they watch. An open artifact reloads in place, keeping full view. Saved data files sit beside artifacts and are not part of them, so an artifact saving its own state never reloads itself.
+Artifact reloads come from the same change feed. When a batch touches `team/workbench/`, or the feed asks for a resync, the team workbench is rescanned and compared with the last scan; a file named `workbench/...` in an agent's own workspace does not count; an artifact counts as changed when its page, or any file in its folder, changed. Two watchers do this, and both send `artifact_updated` and `artifact_removed` frames, whatever the client watches:
+
+- **The hub's own watcher** serves the hub WebSocket (see [Artifact events](hub-http.md#artifact-events)). It runs for as long as the hub does, so every connection hears about an artifact being written, changed or deleted with no agent running.
+- **Each running agent's watcher** serves that agent's WebSocket, the connection the web UI keeps to the agent it has open.
+
+An open artifact reloads in place, keeping full view. Saved data files sit beside artifacts and are not part of them, so an artifact saving its own state never reloads itself.
 
 When a page loads in the artifact's frame, the bridge forgets what the previous page subscribed to and watched: a page with the SDK announces itself before its own scripts run, so what it sets up while loading is kept, and a page without the SDK starts with nothing.
 

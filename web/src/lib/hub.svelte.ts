@@ -347,6 +347,11 @@ export class HubStore {
       case "hub_config_reloaded":
       case "team_event":
       case "agent_overview":
+      case "artifact_updated":
+      case "artifact_removed":
+      case "subscribed":
+      case "session_frame":
+      case "session_relay_lagged":
       case "workspace_resync":
         break;
     }

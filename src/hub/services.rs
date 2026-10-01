@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::sync::{Mutex, Semaphore, mpsc, watch};
+use tracing::Instrument as _;
 
 use crate::a2a::SharedA2aKeys;
 use crate::agent_keys::SharedAgentKeys;
@@ -45,6 +46,11 @@ pub(crate) struct HubControl {
 /// WebSocket (for clients watching `team/...`), and every agent's artifact
 /// reload watcher read it, so a change to a team file is watched once no
 /// matter how many agents are running.
+///
+/// The hub also watches the team workbench itself, from this feed, and
+/// publishes a `WorkbenchEvent` on `topics::Workbench` of the same bus for
+/// every artifact added, changed or removed. The hub WebSocket sends them as
+/// artifact events, which therefore reach clients with no agent running.
 pub(crate) struct TeamChangeFeed {
     /// The bus the feed publishes on.
     pub bus: BusHandle,
@@ -52,12 +58,15 @@ pub(crate) struct TeamChangeFeed {
     /// told when live updates are off.
     pub health: watch::Receiver<WatchHealth>,
     task: tokio::task::JoinHandle<()>,
+    /// The hub's artifact watcher; `None` when it couldn't subscribe to the
+    /// feed, which was logged.
+    workbench_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl TeamChangeFeed {
     /// Start the feed over `team_root`, creating the directory if it is
     /// missing so the watcher has something to watch.
-    async fn start(team_root: PathBuf) -> Self {
+    pub(crate) async fn start(team_root: PathBuf) -> Self {
         if let Err(e) = tokio::fs::create_dir_all(&team_root).await {
             tracing::warn!(error = %e, path = %team_root.display(), "failed to create the team directory; changes to team files may not appear live");
         }
@@ -66,6 +75,18 @@ impl TeamChangeFeed {
         let span = tracing::info_span!("team_feed");
         let bus = span.in_scope(crate::bus::spawn_broker);
         let (health_tx, health) = watch::channel(WatchHealth::Starting);
+        // Subscribed before the feed starts, so no batch goes unseen.
+        let workbench_task = crate::workbench::watcher::spawn_workbench_watcher(
+            TeamPaths::new(team_root.clone()).workbench_dir(),
+            &bus,
+            bus.publisher(),
+        )
+        .instrument(span.clone())
+        .await
+        .inspect_err(|e| {
+            tracing::warn!(error = %e, "failed to subscribe the hub's artifact watcher to the team change feed; artifact lists won't update on their own");
+        })
+        .ok();
         let task = span.in_scope(|| {
             crate::workspace::watch::spawn_change_feed(
                 team_root,
@@ -74,7 +95,12 @@ impl TeamChangeFeed {
                 health_tx,
             )
         });
-        Self { bus, health, task }
+        Self {
+            bus,
+            health,
+            task,
+            workbench_task,
+        }
     }
 
     /// A feed that watches nothing, for tests.
@@ -84,6 +110,7 @@ impl TeamChangeFeed {
             bus: crate::bus::spawn_broker(),
             health: watch::channel(WatchHealth::Native).1,
             task: tokio::spawn(std::future::ready(())),
+            workbench_task: None,
         }
     }
 }
@@ -91,6 +118,9 @@ impl TeamChangeFeed {
 impl Drop for TeamChangeFeed {
     fn drop(&mut self) {
         self.task.abort();
+        if let Some(task) = &self.workbench_task {
+            task.abort();
+        }
     }
 }
 

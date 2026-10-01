@@ -18,6 +18,7 @@ import { createMockEnv, type MockEnv } from "./env";
 import type { MockPushDevice } from "./push";
 import { createScheduled, type MockScheduled } from "./scheduled";
 import type { MockOverview } from "./overview";
+import type { SessionEventFrame } from "./session-relay";
 import type { MockTeamEvents } from "./team-events";
 import type { MockUpdateStatus } from "./update";
 
@@ -157,6 +158,18 @@ export interface MockHub {
   listing: () => AgentListResponse;
   /** Send a frame to every hub WebSocket client. */
   broadcast: (frame: HubServerMessage) => void;
+  /**
+   * Send an event of one of an agent's sessions to the hub WebSocket clients
+   * that follow it, as the hub's session relay does. The agent's socket calls
+   * this for every session frame it broadcasts.
+   */
+  relaySession: (agent: MockAgent, frame: SessionEventFrame) => void;
+  /**
+   * Tell the hub WebSocket clients that follow sessions that they lost
+   * frames, as a connection that fell behind the relay is told. Returns how
+   * many clients were told.
+   */
+  lagSessionRelay: () => number;
   /**
    * The push devices whose page is connected to the hub socket and reported
    * `presence` active within the last minute: the ones the hub sends no push.

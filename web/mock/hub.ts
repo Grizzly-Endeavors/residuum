@@ -7,8 +7,9 @@ import { createMockEnv, type MockEnv } from "./env";
 import { createHubConfigReloader } from "./hub-config-reload";
 import { openHubSocket } from "./hub-socket";
 import { createOverview } from "./overview";
+import { sessionAddressOf, type SessionEventFrame } from "./session-relay";
 import type { UpgradeHost } from "./sockets";
-import { createState, seedAgentData, type MockAgent, type MockHub } from "./state";
+import { createState, seedAgentData, type MockAgent, type MockHub, type MockState } from "./state";
 import { createTeamEvents } from "./team-events";
 import { byName } from "./util";
 
@@ -62,6 +63,20 @@ function startConversation(agent: MockAgent): void {
   }
 }
 
+/**
+ * The source label of the session a frame is about: the one on its start
+ * frame, or the one its run was registered with, which is how the backend's
+ * watcher knows a later event's label.
+ */
+function sourceLabelOf(state: MockState, frame: SessionEventFrame): string | null {
+  if (frame.type === "session_started") return frame.session.source_label;
+  const address = sessionAddressOf(frame);
+  const { live, completed } = state.sessions;
+  const run =
+    live.find((s) => s.address === address) ?? completed.find((s) => s.address === address);
+  return run?.source_label ?? null;
+}
+
 export interface HubOptions {
   /** The clock, delays and timers the hub and its agents share. Live ones by default. */
   env?: MockEnv;
@@ -84,9 +99,11 @@ export function createHub(
   const bootId = env.deterministic ? MOCK_DETERMINISTIC_BOOT_ID : randomUUID();
   const {
     broadcast: sendToPages,
+    relaySession,
+    lagSessionRelay,
     dropClients,
     presentDevices,
-  } = openHubSocket(host, bootId, listing, env.clock);
+  } = openHubSocket(host, bootId, listing, env.clock, (name) => agents.has(name));
   const teamEvents = createTeamEvents(env, bootId, sendToPages);
   const overview = createOverview(env, bootId, agents, sendToPages);
   // Every frame the hub sends is also read by the log and the overview, as
@@ -110,6 +127,10 @@ export function createHub(
     deleted: new Map(),
     hubState,
     broadcast,
+    relaySession: (agent, frame) => {
+      relaySession(agent.name, frame, sourceLabelOf(agent.state, frame));
+    },
+    lagSessionRelay,
     presentPushDevices: presentDevices,
     teamEvents,
     overview,
