@@ -183,7 +183,13 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     hub.setBusy(agent, true);
     later(300, () => {
       live({ type: "broadcast_response", content: "Looking through recent notes first." });
-      live({ type: "tool_call", id: toolCallId, name: "memory_search", arguments: toolArgs });
+      live({
+        type: "tool_call",
+        id: toolCallId,
+        name: "memory_search",
+        arguments: toolArgs,
+        server: null,
+      });
     });
 
     if (drop) {

@@ -300,6 +300,9 @@ pub struct ToolCallEvent {
     pub name: String,
     /// Tool arguments.
     pub arguments: serde_json::Value,
+    /// The MCP server (its name in `mcp.json`) that owns this tool, or
+    /// `None` for a built-in.
+    pub server: Option<String>,
 }
 
 /// Result of a tool execution.

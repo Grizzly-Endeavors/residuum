@@ -481,6 +481,20 @@ impl McpRegistry {
             .map(|s| s.name.as_str())
     }
 
+    /// Name of the MCP server that owns `tool_name`, for attaching to a
+    /// tool call so the web UI's activity line can say "Used `<server>`:
+    /// `<tool>`". `None` when `tool_name` is reserved by a built-in (the
+    /// built-in always wins the name, per the precedence in
+    /// [`tool_definitions`](Self::tool_definitions)) or no running server
+    /// exposes it.
+    #[must_use]
+    pub fn server_name_for_tool(&self, tool_name: &str) -> Option<String> {
+        if self.reserved_tool_names.contains(tool_name) {
+            return None;
+        }
+        self.running_owner_of_tool(tool_name).map(str::to_string)
+    }
+
     /// Get tool definitions from all running servers.
     ///
     /// The result is de-duplicated so the model is offered each name exactly

@@ -731,6 +731,7 @@ fn task_update_call(id: &str, state: &str, message: &str) -> ToolCall {
         id: id.to_string(),
         name: "a2a_task_update".to_string(),
         arguments: serde_json::json!({ "state": state, "message": message }),
+        server: None,
     }
 }
 
@@ -744,6 +745,7 @@ fn task_update_call_with_artifacts(
         id: id.to_string(),
         name: "a2a_task_update".to_string(),
         arguments: serde_json::json!({ "state": state, "message": message, "artifacts": artifacts }),
+        server: None,
     }
 }
 

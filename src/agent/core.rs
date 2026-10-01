@@ -717,6 +717,7 @@ mod tests {
                     id: "call_1".to_string(),
                     name: "exec".to_string(),
                     arguments: serde_json::json!({"command": "echo test"}),
+                    server: None,
                 }],
             ),
             InferenceResponse::new("the result was: test".to_string(), vec![]),
@@ -778,6 +779,7 @@ mod tests {
                     id: "call_1".to_string(),
                     name: "exec".to_string(),
                     arguments: serde_json::json!({"command": "echo test"}),
+                    server: None,
                 }],
             ),
             InferenceResponse::new("Done! The output was: test".to_string(), vec![]),
@@ -837,6 +839,7 @@ mod tests {
                         id: format!("call_{i}"),
                         name: "exec".to_string(),
                         arguments: serde_json::json!({"command": format!("echo loop {i}")}),
+                        server: None,
                     }],
                 )
             })
@@ -902,6 +905,7 @@ mod tests {
                         id: format!("call_{i}"),
                         name: "exec".to_string(),
                         arguments: serde_json::json!({"command": "echo loop"}),
+                        server: None,
                     }],
                 )
             })
@@ -1241,6 +1245,7 @@ mod tests {
                         id: "call_1".to_string(),
                         name: "exec".to_string(),
                         arguments: serde_json::json!({"command": "echo test"}),
+                        server: None,
                     }],
                 ),
                 // Call 1: final text
@@ -1321,6 +1326,7 @@ mod tests {
                         id: "call_1".to_string(),
                         name: "exec".to_string(),
                         arguments: serde_json::json!({"command": "echo test"}),
+                        server: None,
                     }],
                 ),
                 InferenceResponse::new("done".to_string(), vec![]),
@@ -1531,6 +1537,7 @@ mod tests {
                         id: "call_1".to_string(),
                         name: "exec".to_string(),
                         arguments: serde_json::json!({"command": "echo test"}),
+                        server: None,
                     }],
                 ),
                 // A second response exists only to fail the test loudly if

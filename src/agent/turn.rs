@@ -618,7 +618,10 @@ async fn handle_tool_call_response(
         ctx.events.publish_intermediate(&response.content).await;
     }
 
-    let msg = Message::assistant(response.content.clone(), Some(response.tool_calls.clone()));
+    let tool_calls =
+        annotate_tool_call_servers(&response.tool_calls, ctx.resources.mcp_registry).await;
+
+    let msg = Message::assistant(response.content.clone(), Some(tool_calls.clone()));
     push_and_record(recent_messages, ctx.resources.transcript_sink, msg).await;
 
     // Classification runs concurrently with tool execution; a correction
@@ -631,7 +634,7 @@ async fn handle_tool_call_response(
     }
 
     let (executed, stopped) = run_tool_call_batch(
-        &response.tool_calls,
+        &tool_calls,
         ctx.resources,
         recent_messages,
         ctx.events,
@@ -781,6 +784,28 @@ impl RepeatCallGuard {
         }
         self.consecutive
     }
+}
+
+/// Attach each call's owning MCP server name (`None` for a built-in) before
+/// the batch is recorded or dispatched, so the assistant message, the
+/// `tool_call` event, and the repeat-call guard all see the same value
+/// without re-querying the registry per call.
+async fn annotate_tool_call_servers(
+    tool_calls: &[ToolCall],
+    mcp_registry: &SharedMcpRegistry,
+) -> Vec<ToolCall> {
+    if tool_calls.is_empty() {
+        return Vec::new();
+    }
+    let registry = mcp_registry.read().await;
+    tool_calls
+        .iter()
+        .cloned()
+        .map(|tc| ToolCall {
+            server: registry.server_name_for_tool(&tc.name),
+            ..tc
+        })
+        .collect()
 }
 
 /// Run every tool call a model response carries, in order.
@@ -949,6 +974,7 @@ async fn execute_tool(
                 tool_call_id: tool_call.id.clone(),
                 name: tool_call.name.clone(),
                 arguments: tool_call.arguments.clone(),
+                server: tool_call.server.clone(),
             }),
             &tool_call.name,
         )
@@ -1050,6 +1076,7 @@ async fn record_cancelled_tool_call(
                 tool_call_id: tool_call.id.clone(),
                 name: tool_call.name.clone(),
                 arguments: tool_call.arguments.clone(),
+                server: tool_call.server.clone(),
             }),
             &tool_call.name,
         )
@@ -1433,6 +1460,7 @@ mod tests {
             id: "call-1".to_string(),
             name: "write_file\tcontent</arg_key><arg_value># Hello".to_string(),
             arguments: serde_json::json!({}),
+            server: None,
         };
 
         let provider = crate::inference::providers::null::NullProvider;
@@ -1524,6 +1552,7 @@ mod tests {
                 "command": "echo \"Authorization: Bearer $API_KEY\"",
                 "keys": ["api_key"]
             }),
+            server: None,
         };
 
         let provider = crate::inference::providers::null::NullProvider;
@@ -1611,6 +1640,7 @@ mod tests {
             id: "call-1".to_string(),
             name: "blocking_tool".to_string(),
             arguments: serde_json::json!({}),
+            server: None,
         };
 
         let provider = crate::inference::providers::null::NullProvider;
@@ -1681,6 +1711,7 @@ mod tests {
             id: "call-2".to_string(),
             name: "whatever".to_string(),
             arguments: serde_json::json!({}),
+            server: None,
         };
 
         let provider = crate::inference::providers::null::NullProvider;
@@ -1751,11 +1782,13 @@ mod tests {
                         id: "call-1".to_string(),
                         name: "blocking_tool".to_string(),
                         arguments: serde_json::json!({}),
+                        server: None,
                     },
                     ToolCall {
                         id: "call-2".to_string(),
                         name: "blocking_tool".to_string(),
                         arguments: serde_json::json!({}),
+                        server: None,
                     },
                 ],
             ))
@@ -2016,6 +2049,7 @@ mod tests {
             id: id.to_string(),
             name: "counting_tool".to_string(),
             arguments: serde_json::json!({"x": 1}),
+            server: None,
         }
     }
 
@@ -2428,16 +2462,19 @@ mod tests {
                         id: "call-1".to_string(),
                         name: "counting_tool".to_string(),
                         arguments: serde_json::json!({"x": 1}),
+                        server: None,
                     },
                     ToolCall {
                         id: "call-2".to_string(),
                         name: "counting_tool".to_string(),
                         arguments: serde_json::json!({"x": 2}),
+                        server: None,
                     },
                     ToolCall {
                         id: "call-3".to_string(),
                         name: "counting_tool".to_string(),
                         arguments: serde_json::json!({"x": 3}),
+                        server: None,
                     },
                 ],
             );

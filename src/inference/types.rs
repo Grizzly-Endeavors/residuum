@@ -245,6 +245,12 @@ pub struct ToolCall {
     pub name: String,
     /// Arguments as a JSON value.
     pub arguments: serde_json::Value,
+    /// The MCP server (its name in `mcp.json`) that owns this tool, or
+    /// `None` for a built-in. Unknown when the model's response is first
+    /// parsed; filled in from the MCP registry before the call is recorded
+    /// or dispatched (see `agent::turn::annotate_tool_call_servers`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
 }
 
 /// Definition of an available tool sent to the model.
@@ -480,6 +486,7 @@ mod tests {
                 id: "1".to_string(),
                 name: "test".to_string(),
                 arguments: serde_json::Value::Null,
+                server: None,
             }],
         );
         assert!(
@@ -523,6 +530,7 @@ mod tests {
                 id: "c1".to_string(),
                 name: "exec".to_string(),
                 arguments: serde_json::Value::Null,
+                server: None,
             }]),
         );
         assert!(

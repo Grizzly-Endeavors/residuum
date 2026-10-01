@@ -87,6 +87,7 @@ impl GeminiClient {
                         id: format!("call_{idx}"),
                         name: function_call.name,
                         arguments: function_call.args,
+                        server: None,
                     });
                 }
                 GeminiPart::FunctionResponse { .. } => {
@@ -897,6 +898,7 @@ mod tests {
                 id: "call_0".to_string(),
                 name: "bash".to_string(),
                 arguments: serde_json::json!({"command": "ls"}),
+                server: None,
             }]),
         )];
         let (_, contents) = GeminiClient::convert_messages(&messages);

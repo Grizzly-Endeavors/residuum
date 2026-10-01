@@ -54,7 +54,12 @@ name: string,
 /**
  * Tool arguments as JSON.
  */
-arguments: JsonValue, } | { "type": "tool_result", 
+arguments: JsonValue, 
+/**
+ * The MCP server (its name in `mcp.json`) that owns this tool, or
+ * `None` for a built-in.
+ */
+server: string | null, } | { "type": "tool_result", 
 /**
  * Correlation ID matching the original tool call.
  */
@@ -216,7 +221,12 @@ name: string,
 /**
  * Tool arguments as JSON.
  */
-arguments: JsonValue, } | { "type": "session_tool_result", 
+arguments: JsonValue, 
+/**
+ * The MCP server (its name in `mcp.json`) that owns this tool, or
+ * `None` for a built-in.
+ */
+server: string | null, } | { "type": "session_tool_result", 
 /**
  * Session address.
  */

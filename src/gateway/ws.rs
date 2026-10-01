@@ -697,6 +697,7 @@ mod tests {
             id: "tc".into(),
             name: "exec".into(),
             arguments: serde_json::json!({}),
+            server: None,
         };
         let tool_result = ServerMessage::SessionToolResult {
             address: "spawned-a-0001".into(),
@@ -710,6 +711,7 @@ mod tests {
             id: "tc".into(),
             name: "exec".into(),
             arguments: serde_json::json!({}),
+            server: None,
         };
         assert!(is_verbose_only(&tool_call));
         assert!(is_verbose_only(&tool_result));
