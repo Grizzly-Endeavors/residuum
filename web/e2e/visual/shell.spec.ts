@@ -49,6 +49,52 @@ test.describe("shell", { tag: "@visual" }, () => {
     else await shellScreenshot(page, "shell-help-menu");
   });
 
+  // An overlay's shot is unmasked: a mask paints over everything in its box,
+  // the overlay included, and the scrim dims the place behind it. The place is
+  // the Schedule, whose legacy view lays out the same on every run; the chat's
+  // doesn't.
+
+  test("the command palette", async ({ page, isMobile }) => {
+    await page.goto("/agent/atlas/schedule");
+    await expect(page.getByText("Pulses", { exact: true })).toBeVisible();
+    if (isMobile) {
+      await page
+        .getByRole("navigation", { name: "Main" })
+        .getByRole("button", { name: "Search" })
+        .click();
+    } else {
+      await page.keyboard.press("ControlOrMeta+k");
+    }
+    await expect(page.getByRole("dialog", { name: "Search and commands" })).toBeVisible();
+    await expectScreenshot(page, "shell-palette");
+  });
+
+  test("the keyboard shortcuts", async ({ page }) => {
+    await page.goto("/agent/atlas/schedule");
+    await expect(page.getByText("Pulses", { exact: true })).toBeVisible();
+    await page.locator("body").press("?");
+    await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeVisible();
+    await expectScreenshot(page, "shell-shortcuts");
+  });
+
+  test("the bug report", async ({ page, isMobile }) => {
+    await page.goto("/agent/atlas/schedule");
+    await expect(page.getByText("Pulses", { exact: true })).toBeVisible();
+    if (isMobile) {
+      await page
+        .getByRole("navigation", { name: "Main" })
+        .getByRole("button", { name: "Menu" })
+        .click();
+    }
+    await page
+      .getByRole("navigation", { name: "Places and agents" })
+      .getByRole("button", { name: "Help" })
+      .click();
+    await page.getByRole("menuitem", { name: "Report a bug" }).click();
+    await expect(page.getByRole("dialog", { name: "Report a bug" })).toBeVisible();
+    await expectScreenshot(page, "shell-bug-report");
+  });
+
   test("at medium width", async ({ page, isMobile }) => {
     test.skip(isMobile, "Medium width is a desktop window narrowed.");
     await page.setViewportSize({ width: 1000, height: 760 });

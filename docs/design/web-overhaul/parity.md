@@ -30,18 +30,18 @@ Every capability the current web UI offers, grouped by the surface that has it t
 ## Composer → Agent Chat composer (design §4; W25, with the action registry from W21)
 
 - [ ] Auto-growing input; Enter sends, Shift+Enter new line
-- [ ] Slash autocomplete when `/` is the first character: arrow keys, Tab completes, Enter runs, Esc closes; toolbar button toggles the full list; click outside closes — **Changed:** draws from the action registry
-- [ ] `/help` — **Changed:** Keyboard shortcuts dialog / palette
+- [x] Slash autocomplete when `/` is the first character: arrow keys, Tab completes, Enter runs, Esc closes; toolbar button toggles the full list; click outside closes — **Changed:** draws from the action registry
+- [x] `/help` — **Changed:** Keyboard shortcuts dialog / palette
 - [ ] `/verbose` — **Dropped:** tool activity is always shown, collapsed by default
-- [ ] `/status` — **Changed:** palette action "Show connection status"
-- [ ] `/observe`, `/reflect`, `/reload`, `/stop` — **Changed:** registry actions with plain labels ("Summarize older messages now", "Condense memories now", "Reload settings", "Stop reply"), still reachable from `/`
-- [ ] `/context` — **Changed:** "Show conversation size" opens the context panel
-- [ ] `/inbox <text>` — **Changed:** action "Add a note to <agent>'s inbox" with a text prompt
-- [ ] Unknown-command error
+- [x] `/status` — **Changed:** palette action "Show connection status"
+- [x] `/observe`, `/reflect`, `/reload`, `/stop` — **Changed:** registry actions with plain labels ("Summarize older messages now", "Condense memories now", "Reload settings", "Stop reply"), still reachable from `/`
+- [x] `/context` — **Changed:** "Show conversation size" opens the context panel
+- [x] `/inbox <text>` — **Changed:** action "Add a note to <agent>'s inbox" with a text prompt
+- [x] Unknown-command error
 - [ ] Image attach by button, paste, drag-and-drop with highlight; JPEG/PNG/GIF/WebP ≤ 5 MB; rejection message; removable thumbnails; image-only sends
 - [ ] Send becomes Stop while running and empty; typing restores Send for mid-turn steering
 - [ ] Esc stops a running turn while the composer has focus
-- [ ] Feedback entry point — **Changed:** help menu and palette
+- [x] Feedback entry point — **Changed:** help menu and palette
 - [ ] Model control: current main model, choose from the main provider's models, writes `models.main` keeping overrides, then reloads — **Fix:** refreshes after settings changes; goes through the config write coordinator
 - [ ] Thinking control: Off / Low / Med / High; clicking the active level clears it — **Fix:** refreshes after settings changes
 - [ ] Offline composing: messages queue with "Reconnecting — N messages will send once back online" (running agents only)
@@ -129,15 +129,15 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [x] Menu destinations (Chat, Workspace, Workbench, Scheduled, Agent settings, Team, Team files, Hub settings) — **Changed:** rail and bottom bar
 - [x] Connection status text — **Changed:** shown only when degraded
 - [x] Inbox button with unread badge — **Changed:** rail and bottom bar, across agents
-- [ ] Bug report entry — **Changed:** help menu and palette
+- [x] Bug report entry — **Changed:** help menu and palette
 - [x] Agent chips: state, busy dots, unread (99+), failed-agent error tooltip, current highlight, arrow-key movement — **Changed:** rail agent rows (accordion) with a working indicator and a 99+ chat-unread badge; Up/Down move between rows; the error shows on Home and in the state card; an unknown agent in the URL redirects to Home with a toast
 - [x] Switching agents keeps the kind of page — **Changed:** agent places are explicit routes; the rail accordion links to them
 - [x] Hub offline note — **Changed:** hub banner
 - [x] Toasts: info/success auto-dismiss (4 s, 10 s with action), errors sticky, dismiss, action button
-- [ ] Recent notifications history with details, clear and Undo — **Changed:** a Recent notifications dialog from the help menu and palette
+- [x] Recent notifications history with details, clear and Undo — **Changed:** a Recent notifications dialog from the help menu and palette
 - [x] User inbox: unread count, tabs, read on open, body and attachment downloads, archive, restore, empty states — **Changed:** one cross-agent Inbox place with live counts from the overview (no polling); bodies render as Markdown; load errors are shown, not swallowed
-- [ ] Feedback dialog: bug and feedback tabs with drafts kept, required fields, severity, receipt with public id and Copy, friendly errors
-- [ ] Help overlay with shortcuts and commands — **Fix:** lists "Esc stops a running reply" and describes `/` accurately
+- [x] Feedback dialog: bug and feedback tabs with drafts kept, required fields, severity, receipt with public id and Copy, friendly errors
+- [x] Help overlay with shortcuts and commands — **Fix:** lists "Esc stops a running reply" and describes `/` accurately
 
 ## Settings → Settings modal (design §8; W33–W41)
 
@@ -189,7 +189,7 @@ Agent scope:
 
 ## Global (W15b toasts, W17 routing, W19 connection and errors, W21 keyboard)
 
-- [ ] Keyboard: `?` help, Enter/Shift+Enter, slash-menu keys, Esc (stop reply, close overlays), rail keyboard navigation, focus trapping in overlays, Enter/Space on disclosures — **Dropped:** F for artifact full view (artifacts open in their own tab)
+- [x] Keyboard: `?` help, Enter/Shift+Enter, slash-menu keys, Esc (stop reply, close overlays), rail keyboard navigation, focus trapping in overlays, Enter/Space on disclosures — **Dropped:** F for artifact full view (artifacts open in their own tab)
 - [ ] Agent socket reconnect with backoff, ping, queued sends; resync of sessions, history, usage, workspace watch and workbench on reconnect
 - [x] Hub socket offline handling
 - [ ] Gateway reloading toast and cache invalidation

@@ -58,7 +58,7 @@
     {#if isAgentPlace(place)}
       {#key place.agent}
         {#if place.kind === "chat"}
-          <Chat onOpenFeedback={() => actions.openFeedback("feedback")} />
+          <Chat />
         {:else if place.kind === "activity"}
           <SessionsSidebar onSelect={openRun} />
         {:else if place.kind === "schedule"}

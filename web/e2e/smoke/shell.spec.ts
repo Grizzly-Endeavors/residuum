@@ -146,7 +146,7 @@ test("the drawer opens on the current place, and Esc and Back close it", async (
 });
 
 test.describe("the phone's bottom bar", () => {
-  test("opens Inbox, Home and Settings", async ({ page, isMobile }) => {
+  test("opens Inbox, Home, Search and Settings", async ({ page, isMobile }) => {
     const bar = page.getByRole("navigation", { name: "Main" });
     await page.goto("/agent/atlas");
     if (!isMobile) {
@@ -160,6 +160,11 @@ test.describe("the phone's bottom bar", () => {
 
     await bar.getByRole("link", { name: "Home" }).click();
     await expect.poll(() => address(page)).toBe("/home");
+
+    await bar.getByRole("button", { name: "Search" }).click();
+    await expect(page.getByRole("dialog", { name: "Search and commands" })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog", { name: "Search and commands" })).toBeHidden();
 
     await bar.getByRole("button", { name: "Settings" }).click();
     await expect.poll(() => address(page)).toBe("/home?settings=_all");
@@ -349,19 +354,23 @@ test("the help menu opens Recent notifications and the keyboard shortcuts", asyn
   await page.keyboard.press("Escape");
   await expect(recent).toBeHidden();
 
-  if (isMobile) await page.keyboard.press("Escape");
   rail = await openRail(page, isMobile);
   await rail.getByRole("button", { name: "Help" }).click();
   await page.getByRole("menuitem", { name: "Keyboard shortcuts" }).click();
-  await expect(page.getByRole("dialog", { name: "Help" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeVisible();
 });
 
-test("setup mode has no shell, and ? doesn't open the shortcuts there", async ({ page, mock }) => {
+test("setup mode has no shell, and neither ? nor the palette's keys open anything", async ({
+  page,
+  mock,
+}) => {
   await mock.post("/api/mock/reset", { data: { setup: true } });
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Welcome to Residuum", level: 1 })).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Places and agents" })).toHaveCount(0);
 
   await page.locator("body").press("?");
-  await expect(page.getByRole("dialog", { name: "Help" })).toHaveCount(0);
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: "Search and commands" })).toHaveCount(0);
 });

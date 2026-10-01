@@ -3,6 +3,7 @@
   import { hub } from "../lib/hub.svelte";
   import { router } from "../lib/router.svelte";
   import { agentNameProblem } from "../lib/agent-name";
+  import { lifecycleApplies, type LifecycleAction } from "../lib/agent-lifecycle";
   import { relativeTime } from "../lib/time";
   import type { A2aVisibility, AgentSummary } from "../lib/hub-types";
   import Modal from "./Modal.svelte";
@@ -44,28 +45,17 @@
     }
   }
 
-  function canStart(agent: AgentSummary): boolean {
-    return agent.state === "stopped" || agent.state === "failed";
-  }
-  function canStop(agent: AgentSummary): boolean {
-    return agent.state === "running" || agent.state === "starting";
-  }
-  function canRestart(agent: AgentSummary): boolean {
-    return agent.state === "running" || agent.state === "failed";
-  }
-
   /** Why a lifecycle button is unavailable, or undefined when it is available. */
-  function unavailableReason(
-    agent: AgentSummary,
-    action: "start" | "stop" | "restart",
-  ): string | undefined {
-    if (action === "start" && !canStart(agent)) {
+  function unavailableReason(agent: AgentSummary, action: LifecycleAction): string | undefined {
+    if (action === "start" && !lifecycleApplies("start", agent.state)) {
       return agent.state === "starting"
         ? `${agent.name} is starting`
         : `${agent.name} is already running`;
     }
-    if (action === "stop" && !canStop(agent)) return `${agent.name} is not running`;
-    if (action === "restart" && !canRestart(agent)) {
+    if (action === "stop" && !lifecycleApplies("stop", agent.state)) {
+      return `${agent.name} is not running`;
+    }
+    if (action === "restart" && !lifecycleApplies("restart", agent.state)) {
       return agent.state === "starting"
         ? `${agent.name} is still starting`
         : `${agent.name} is not running`;

@@ -65,6 +65,12 @@
     }
   }
 
+  /* On a stone-3 card (a dialog, a sheet, the palette), the key takes the hover fill to stand out. */
+  :global(.ui-modal-layer:not([data-frame="left"]) .ui-modal) .ui-kbd {
+    background: var(--color-stone-4);
+    color: var(--color-text-2);
+  }
+
   /* Symbols sit together, as printed on the keys: ⌘K. */
   .ui-kbd[data-platform="apple"] {
     gap: var(--space-2);

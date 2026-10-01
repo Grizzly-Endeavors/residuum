@@ -7,8 +7,8 @@
   import type { ShellActions } from "./shell-actions";
 
   // The phone's bottom bar, on every place: the menu that opens the rail as a
-  // drawer, Inbox, Home in the middle, and Settings. The drawer and every
-  // modal layer cover it.
+  // drawer, Inbox, Home in the middle, Search, and Settings. The drawer and
+  // every modal layer cover it.
 
   interface Props {
     drawerOpen: boolean;
@@ -57,6 +57,10 @@
   </button>
   {@render placeTab(INBOX, "Inbox", "inbox", overview.inboxUnread)}
   {@render placeTab(HOME, "Home", "home")}
+  <button type="button" class="bar-tab" aria-haspopup="dialog" onclick={actions.openSearch}>
+    <span class="bar-icon"><Icon name="search" size={21} /></span>
+    Search
+  </button>
   <button
     type="button"
     class="bar-tab"
@@ -76,7 +80,7 @@
     left: 0;
     z-index: var(--z-sticky);
     display: none;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     height: var(--layout-bottom-bar-offset);
     padding-bottom: env(safe-area-inset-bottom, 0px);
     border-top: 1px solid var(--color-line-soft);
