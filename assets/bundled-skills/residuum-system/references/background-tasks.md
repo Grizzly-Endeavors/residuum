@@ -64,7 +64,7 @@ A workbench artifact can start a session with `residuum.sessions.start` (see the
 - Your turn output goes to the artifact that started you, and nowhere else: it is never relayed to main, and your completion is not filed to the inbox or pushed to notification channels.
 - `message_agent` to `main` fails with a tool error. To bring something to the user's attention, file it with `user_inbox_add`.
 - Sessions you spawn relay their results to you, as usual.
-- The owner sees you in the artifact's own activity panel (the sessions it started) as well as in your Activity, and can stop you from either place; stopping the artifact's page never stops you.
+- The owner sees you on the artifact's row in the Workbench (the sessions it started, on any agent) as well as in your Activity, and can stop you from either place; closing the artifact's page never stops you.
 
 ## Conversation Routing
 

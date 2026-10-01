@@ -2,9 +2,8 @@ import { artifactIdentity, json, readJsonObject, type JsonObject } from "./http"
 import type { Route, RouteContext } from "./routes";
 
 /**
- * Model calls are slowed down so they're visibly "in flight" in an
- * artifact's activity panel for a moment, long enough to exercise Cancel
- * calls and Stop page by hand.
+ * Model calls are slowed down so an artifact's calls stay in flight for a
+ * moment, long enough to see a burst of them queue in the SDK's model lane.
  */
 const MODEL_CALL_DELAY_MS = 3000;
 
@@ -109,8 +108,7 @@ function completeHandler(delayMs: number): (ctx: RouteContext) => Promise<void> 
       sample === undefined
         ? `Mock model reply to: ${request.prompt.slice(0, 200)}`
         : JSON.stringify(sample);
-    // A brief artificial delay, so a call is visibly "in flight" in the
-    // artifact activity panel long enough to see and, if wanted, cancel.
+    // A brief artificial delay, so a call stays in flight long enough to see.
     await state.env.sleep(delayMs);
     json(res, 200, {
       content,

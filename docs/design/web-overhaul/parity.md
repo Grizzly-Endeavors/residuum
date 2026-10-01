@@ -88,14 +88,14 @@ Every capability the current web UI offers, grouped by the surface that has it t
 
 ## Workbench → Workbench launcher and standalone artifacts (design §5, §9.8–§9.10; W12b–W12d, W32a, W32b)
 
-- [ ] List with loading, error with Try again, empty explanation; title, path, edited time (refreshes every 30 s); agent-edit glow "updating now" — **Fix:** one path format (`/team/workbench/<name>`); **Changed:** refreshes on hub artifact events, so it works with no agent running
-- [ ] Open an artifact — **Changed:** opens on the artifacts origin in its own tab, never inside the app; Copy link added
-- [ ] Delete with Undo (page and data files)
-- [ ] Artifacts-unavailable warning — **Fix:** shows even when the list is empty, and covers the HTTPS-without-relay case (#308)
-- [ ] Artifact bar (back, title, path), Stop page, Restart, Full view (button and F), Reload, deleted notice — **Dropped:** the page owns its own window; closing the tab unloads it, and the browser's reload and full screen apply
-- [ ] Activity panel: the artifact's live sessions (open, stop) — **Changed:** in the Workbench row and detail, for sessions on any agent (#292); opening one shows it in the context panel
-- [ ] In-flight model call count and Cancel calls — **Dropped:** a page manages its own calls
-- [ ] Live reload on agent edits — **Changed:** the SDK reloads the page itself, unless the page handles `artifact_updated`
+- [x] List with loading, error with Try again, empty explanation; title, path, edited time (refreshes every 30 s); agent-edit glow "updating now" — **Fix:** one path format (`/team/workbench/<name>`); **Changed:** refreshes on hub artifact events, so it works with no agent running
+- [x] Open an artifact — **Changed:** opens on the artifacts origin in its own tab, never inside the app; Copy link added
+- [x] Delete with Undo (page and data files)
+- [x] Artifacts-unavailable warning — **Fix:** shows even when the list is empty, and covers the HTTPS-without-relay case (#308)
+- [x] Artifact bar (back, title, path), Stop page, Restart, Full view (button and F), Reload, deleted notice — **Dropped:** the page owns its own window; closing the tab unloads it, and the browser's reload and full screen apply
+- [x] Activity panel: the artifact's live sessions (open, stop) — **Changed:** in the Workbench row and detail, for sessions on any agent (#292); opening one shows it in the context panel
+- [x] In-flight model call count and Cancel calls — **Dropped:** a page manages its own calls
+- [x] Live reload on agent edits — **Changed:** the SDK reloads the page itself, unless the page handles `artifact_updated`
 - [x] Unknown artifact — **Fix:** the route redirects to the list with a toast
 - [ ] SDK: `fetch`, `ask`, `on`, `watch`, `state.get`/`set`, `sessions.start` with handle `on`/`send`/`stop`, connection events, `features`, `artifact`, `version` — **Changed:** direct access from the page's own origin; no implicit agent (agent-specific calls name their agent, with `agent(name)` added); `embedded`, `ready` and Esc forwarding removed; **Fix:** session frames arrive for sessions on any agent (#292); no reply crosses documents, because the bridge is gone (#307). Artifacts never shipped in a release, so no migration applies.
 - [ ] Unscoped fetch paths: hub prefixes to the hub, `/api/workbench/` to team — **Changed:** agent paths must name the agent; one that doesn't gets a 400 with a clear error

@@ -168,7 +168,7 @@ export class SessionsStore {
   errors = new SvelteMap<string, string>();
   /**
    * Addresses with a stop requested but not yet resolved, for a row's stop
-   * button (in Activity or an artifact's activity panel) to show it.
+   * button in Activity to show it.
    */
   stopping = new SvelteSet<string>();
   /** Open tasks the agent sent to remote agents, newest first. */

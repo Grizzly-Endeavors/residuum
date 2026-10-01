@@ -27,7 +27,6 @@ const LEGACY_FILES = [
   "src/styles/forms.css",
   "src/styles/settings.css",
   "src/styles/setup.css",
-  "src/styles/workbench.css",
   "src/components/ChatFooter.svelte",
   "src/components/Modal.svelte",
   "src/components/settings/A2a.svelte",

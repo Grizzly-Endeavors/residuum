@@ -6,7 +6,6 @@ import {
   runKind,
   runStatus,
   sessionArtifact,
-  sessionsStartedByArtifact,
 } from "./session-format";
 import type {
   OutboundA2aTaskSummary,
@@ -106,39 +105,6 @@ describe("artifact sessions", () => {
 
     const spawned = session("s1", "spawned", "agent:researcher");
     expect(sessionArtifact(spawned)).toBeNull();
-  });
-
-  it("are picked out of a mixed list for one artifact's activity panel, in list order", () => {
-    const sessions = [
-      session("a1", "artifact", "artifact:wiki-graph"),
-      session("s1", "spawned", "agent:researcher"),
-      session("a2", "artifact", "artifact:chart"),
-      session("a3", "artifact", "artifact:wiki-graph"),
-    ];
-    expect(sessionsStartedByArtifact(sessions, "wiki-graph").map((s) => s.run_id)).toEqual([
-      "a1",
-      "a3",
-    ]);
-    expect(sessionsStartedByArtifact(sessions, "chart").map((s) => s.run_id)).toEqual(["a2"]);
-    expect(sessionsStartedByArtifact(sessions, "no-such-artifact")).toEqual([]);
-  });
-
-  it("stopping one session leaves the artifact's other sessions in the panel's list", () => {
-    const sessions = [
-      session("a1", "artifact", "artifact:wiki-graph", "running"),
-      session("a2", "artifact", "artifact:wiki-graph", "idle"),
-    ];
-    // A frame moving a1 toward completing (as a stop does) mutates only that
-    // entry; a2 is untouched and still shows in the filtered list.
-    const stopped: SessionSummary[] = sessions.map((s) =>
-      s.run_id === "a1" ? { ...s, state: "completing" as const } : s,
-    );
-    const stillListed = sessionsStartedByArtifact(
-      stopped.filter((s) => s.state !== "completed"),
-      "wiki-graph",
-    );
-    expect(stillListed.map((s) => s.run_id)).toEqual(["a1", "a2"]);
-    expect(stillListed.find((s) => s.run_id === "a2")?.state).toBe("idle");
   });
 });
 

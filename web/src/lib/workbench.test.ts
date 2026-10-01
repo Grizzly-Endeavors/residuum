@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveArtifactsOrigin, artifactUrl } from "./workbench";
+import { artifactUrl, NO_SECURE_ORIGIN_REASON, resolveArtifactsOrigin } from "./workbench";
 import type { WorkbenchInfo } from "./types";
 
 const local = { origin: "http://localhost:7700", protocol: "http:", hostname: "localhost" };
@@ -63,11 +63,7 @@ describe("resolveArtifactsOrigin", () => {
       hostname: "bear.agent-residuum.com",
     };
     const result = resolveArtifactsOrigin(info({ relay: null }), cloud);
-    expect(result).toEqual({
-      ok: false,
-      reason:
-        "This page is loaded over HTTPS, but no secure artifacts origin is available yet. If you're using Residuum Cloud, wait for the tunnel to finish connecting. If you're behind your own HTTPS proxy, make sure it also serves the workbench artifacts origin.",
-    });
+    expect(result).toEqual({ ok: false, reason: NO_SECURE_ORIGIN_REASON });
   });
 
   it("does not point an HTTPS reverse proxy at the plain-HTTP artifacts port", () => {
@@ -76,8 +72,15 @@ describe("resolveArtifactsOrigin", () => {
       protocol: "https:",
       hostname: "workbench.example.com",
     };
-    const result = resolveArtifactsOrigin(info({ relay: null }), proxied);
-    expect(result.ok).toBe(false);
+    expect(resolveArtifactsOrigin(info({ relay: null }), proxied)).toEqual({
+      ok: false,
+      reason: NO_SECURE_ORIGIN_REASON,
+    });
+    // A relay announcing another UI origin doesn't make this one its UI.
+    expect(resolveArtifactsOrigin(info(), proxied)).toEqual({
+      ok: false,
+      reason: NO_SECURE_ORIGIN_REASON,
+    });
   });
 
   it("still surfaces the listener's own unavailable reason over HTTPS", () => {
