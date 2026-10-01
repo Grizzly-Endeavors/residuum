@@ -26,7 +26,7 @@ use super::hub::{A2aClientHub, HubError, task_state_str};
 
 /// How long an agent must stay unreachable before the sender gets a single
 /// notice; retries continue either way.
-const UNREACHABLE_NOTICE_AFTER: chrono::Duration = chrono::Duration::minutes(10);
+pub const UNREACHABLE_NOTICE_AFTER: chrono::Duration = chrono::Duration::minutes(10);
 /// How long a completed task's record is kept before being pruned on load.
 const PRUNE_TERMINAL_AFTER: chrono::Duration = chrono::Duration::days(30);
 /// Poll/reconnect backoff bounds, matching the plan's 5s→60s.
@@ -95,6 +95,18 @@ impl TrackedTask {
     pub fn awaits_reply(&self) -> bool {
         matches!(self.state.as_str(), "input_required" | "auth_required")
     }
+
+    /// When the task's unreachable streak passes [`UNREACHABLE_NOTICE_AFTER`]
+    /// and becomes one the sender and the user are told about. `None` for a
+    /// task that isn't in a streak, is closed, or was stopped by the user.
+    #[must_use]
+    pub fn notice_due_at(&self) -> Option<DateTime<Utc>> {
+        if !self.is_open() || self.stopped_by_user {
+            return None;
+        }
+        self.first_unreachable_at
+            .map(|since| since + UNREACHABLE_NOTICE_AFTER)
+    }
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -106,6 +118,35 @@ struct OutboundStore {
     /// agent continues across tasks.
     #[serde(default)]
     contexts: HashMap<String, HashMap<String, String>>,
+}
+
+/// The open tasks recorded in the `outbound.json` at `path`, newest first,
+/// read without changing anything, for a reader that isn't the tracker (the
+/// hub's overview). A missing file has none.
+///
+/// # Errors
+/// Returns an error if the file exists but cannot be read or parsed.
+pub async fn read_open_tasks(path: &std::path::Path) -> anyhow::Result<Vec<TrackedTask>> {
+    use anyhow::Context as _;
+
+    let raw = match tokio::fs::read_to_string(path).await {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            return Err(e).with_context(|| {
+                format!("failed to read a2a outbound tasks at {}", path.display())
+            });
+        }
+    };
+    let store: OutboundStore = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse a2a outbound tasks at {}", path.display()))?;
+    let mut tasks: Vec<TrackedTask> = store
+        .tasks
+        .into_values()
+        .filter(TrackedTask::is_open)
+        .collect();
+    tasks.sort_by_key(|task| std::cmp::Reverse(task.created_at));
+    Ok(tasks)
 }
 
 /// Watches and reports on outbound A2A tasks, persisting state at
@@ -1446,6 +1487,74 @@ mod tests {
             )
             .await;
         tracker
+    }
+
+    #[tokio::test]
+    async fn a_reader_outside_the_tracker_sees_the_open_tasks_it_persisted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("outbound.json");
+        assert!(
+            read_open_tasks(&path).await.unwrap().is_empty(),
+            "a missing file has no tasks"
+        );
+
+        let (messenger, _bus) = messenger();
+        let tracker = tracker_with_task(dir.path(), A2aClientHub::new_shared(), messenger).await;
+        tracker
+            .track(
+                &SessionAddress::from("main"),
+                "desktop",
+                "t2".to_string(),
+                "c2".to_string(),
+                "working",
+                0,
+            )
+            .await;
+        tracker
+            .update_state("t2", "completed", Some("done".to_string()), true)
+            .await;
+
+        let tasks = read_open_tasks(&path).await.unwrap();
+        assert_eq!(
+            tasks.iter().map(|t| t.task_id.as_str()).collect::<Vec<_>>(),
+            ["t1"],
+            "only the open task, and nothing was pruned or rewritten"
+        );
+
+        std::fs::write(&path, "{ not json").unwrap();
+        let err = read_open_tasks(&path).await.unwrap_err();
+        assert!(format!("{err:#}").contains("outbound.json"), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn a_task_in_an_unreachable_streak_knows_when_the_streak_passes_the_notice_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let (messenger, _bus) = messenger();
+        let tracker = tracker_with_task(dir.path(), A2aClientHub::new_shared(), messenger).await;
+        let task = tracker.get("t1").await.unwrap();
+        assert_eq!(task.notice_due_at(), None, "reachable");
+
+        tracker.note_unreachable("t1", "connection refused").await;
+        let in_streak = tracker.get("t1").await.unwrap();
+        assert_eq!(
+            in_streak.notice_due_at(),
+            Some(in_streak.first_unreachable_at.unwrap() + UNREACHABLE_NOTICE_AFTER)
+        );
+
+        let mut stopped = in_streak.clone();
+        stopped.stopped_by_user = true;
+        assert_eq!(
+            stopped.notice_due_at(),
+            None,
+            "the user stopped watching it"
+        );
+        let mut closed = in_streak;
+        closed.state = "completed".to_string();
+        assert_eq!(
+            closed.notice_due_at(),
+            None,
+            "a closed task isn't a problem"
+        );
     }
 
     #[tokio::test]

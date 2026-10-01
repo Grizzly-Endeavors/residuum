@@ -1,13 +1,13 @@
 //! Hub-level config resolution: timezone, gateway, cloud, the A2A listener,
-//! tracing, and the shared background limits — everything that lives in
-//! `hub/config.toml` rather than an agent's own config.
+//! tracing, Web Push, and the shared background limits — everything that
+//! lives in `hub/config.toml` rather than an agent's own config.
 
 use std::path::Path;
 
 use crate::util::FatalError;
 
-use super::super::deserialize::{HubBackgroundConfigFile, HubConfigFile};
-use super::super::hub_types::{HubA2aConfig, HubBackgroundConfig, HubConfig};
+use super::super::deserialize::{HubBackgroundConfigFile, HubConfigFile, HubPushConfigFile};
+use super::super::hub_types::{HubA2aConfig, HubBackgroundConfig, HubConfig, HubPushConfig};
 use super::gateway;
 use super::load_secrets_degraded;
 use super::tracing_config;
@@ -38,6 +38,7 @@ pub(crate) fn from_file_and_env(
         public_url: a2a_public_url,
     };
     let background = resolve_hub_background_config(file.and_then(|f| f.background.as_ref()));
+    let push = resolve_hub_push_config(file.and_then(|f| f.push.as_ref()), &mut notices);
 
     Ok(HubConfig {
         timezone,
@@ -46,9 +47,65 @@ pub(crate) fn from_file_and_env(
         a2a,
         tracing,
         background,
+        push,
         config_dir: hub_dir.to_path_buf(),
         load_notices: notices,
     })
+}
+
+/// Resolve the hub's `[push]` section.
+///
+/// A `contact` that isn't a `mailto:` address or an `https:` URL is dropped
+/// with a notice, so push keeps working under the default contact until the
+/// user fixes the value (the same degradation an invalid A2A visibility gets).
+fn resolve_hub_push_config(
+    section: Option<&HubPushConfigFile>,
+    notices: &mut Vec<String>,
+) -> HubPushConfig {
+    let contact = section
+        .and_then(|s| s.contact.as_deref())
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    let Some(contact) = contact else {
+        return HubPushConfig::default();
+    };
+    match validate_push_contact(contact) {
+        Ok(()) => HubPushConfig {
+            contact: Some(contact.to_string()),
+        },
+        Err(reason) => {
+            tracing::warn!(value = contact, %reason, "[push] contact is invalid, using the default");
+            notices.push(format!(
+                "[push] contact {reason} — push services will see the default contact until you fix it."
+            ));
+            HubPushConfig::default()
+        }
+    }
+}
+
+/// Check that `contact` is what a push service accepts in the VAPID `sub`
+/// claim: a `mailto:` address or an `https:` URL. The error completes the
+/// sentence "[push] contact ...".
+fn validate_push_contact(contact: &str) -> Result<(), String> {
+    if let Some(address) = contact.strip_prefix("mailto:") {
+        let well_formed = address
+            .split_once('@')
+            .is_some_and(|(user, host)| !user.is_empty() && host.contains('.'))
+            && !address.contains(char::is_whitespace);
+        return if well_formed {
+            Ok(())
+        } else {
+            Err(format!(
+                "must be a mailto: link with an email address, such as mailto:you@example.com, got \"{contact}\""
+            ))
+        };
+    }
+    match url::Url::parse(contact) {
+        Ok(url) if url.scheme() == "https" && url.host_str().is_some() => Ok(()),
+        _ => Err(format!(
+            "must be a mailto: link or an https:// address, got \"{contact}\""
+        )),
+    }
 }
 
 /// Resolve the hub's shared background limits (session budget, hop limits).
@@ -139,6 +196,61 @@ hop_hard_limit = 16
         assert_eq!(cfg.background.max_concurrent, 10);
         assert_eq!(cfg.background.hop_soft_limit, 4);
         assert_eq!(cfg.background.hop_hard_limit, 16);
+    }
+
+    #[test]
+    fn push_contact_is_unset_by_default() {
+        let file = parse("timezone = \"UTC\"\n");
+        let cfg = from_file_and_env(Some(&file), &test_dir()).unwrap();
+        assert_eq!(cfg.push, HubPushConfig::default());
+        assert!(cfg.load_notices.is_empty());
+    }
+
+    #[test]
+    fn push_contact_accepts_mailto_and_https() {
+        for contact in ["mailto:bear@example.com", "https://example.com/contact"] {
+            let file = parse(&format!(
+                "timezone = \"UTC\"\n\n[push]\ncontact = \"{contact}\"\n"
+            ));
+            let cfg = from_file_and_env(Some(&file), &test_dir()).unwrap();
+            assert_eq!(cfg.push.contact.as_deref(), Some(contact));
+            assert!(cfg.load_notices.is_empty(), "{contact}");
+        }
+    }
+
+    #[test]
+    fn empty_push_contact_counts_as_unset() {
+        let file = parse("timezone = \"UTC\"\n\n[push]\ncontact = \"  \"\n");
+        let cfg = from_file_and_env(Some(&file), &test_dir()).unwrap();
+        assert_eq!(cfg.push.contact, None);
+        assert!(cfg.load_notices.is_empty());
+    }
+
+    #[test]
+    fn invalid_push_contact_is_dropped_with_a_notice() {
+        for contact in [
+            "bear@example.com",
+            "http://example.com",
+            "mailto:",
+            "mailto:no-at-sign",
+            "mailto:bear@localhost",
+            "mailto:a b@example.com",
+            "https://",
+            "ftp://example.com",
+        ] {
+            let file = parse(&format!(
+                "timezone = \"UTC\"\n\n[push]\ncontact = \"{contact}\"\n"
+            ));
+            let cfg = from_file_and_env(Some(&file), &test_dir()).unwrap();
+            assert_eq!(cfg.push.contact, None, "{contact}");
+            assert!(
+                cfg.load_notices
+                    .iter()
+                    .any(|n| n.contains("[push] contact") && n.contains(contact)),
+                "{contact} should raise a notice naming it: {:?}",
+                cfg.load_notices
+            );
+        }
     }
 
     #[test]

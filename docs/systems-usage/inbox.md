@@ -84,6 +84,7 @@ A user inbox item created with `user_inbox_add`'s `attachments` parameter record
 `GET /api/hub/inbox` and its per-item routes serve the user inboxes of every agent as one list, read straight from each agent's `inbox/user/` and `archive/inbox/user/`, so an agent's items are included whether it is running, stopped, or failed. The routes and shapes are in [Hub HTTP Surface](hub-http.md#cross-agent-inbox).
 
 - Each item is identified by its agent and its ID, since two agents can have items with the same ID.
+- Each agent's unread count is part of its [team overview](hub.md#team-overview). The overview counts again when the hub reads, archives or restores an item through these routes, and when the `user_inbox_add` tool or a change to the inbox's files touches a running agent's inbox.
 - The list is newest first, by the item's time and then its ID, in pages.
 - An item's time is the stored naive local time read in the hub's configured timezone at the moment of the request, so changing the timezone changes the instants reported. A local time that happened twice (a DST fall-back) takes its first occurrence, and one that never happened (a spring-forward gap) moves forward by the length of the gap.
 - Marking an item read, archiving it, and restoring it make the same file changes as the per-agent routes.

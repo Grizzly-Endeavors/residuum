@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::directory::AgentDirectory;
+use super::overview::AgentOverview;
 use super::team_events::TeamEvent;
 
 /// Lifecycle state of a hosted agent.
@@ -335,6 +336,9 @@ pub enum HubSocketFrame {
         boot_id: String,
         event: TeamEvent,
     },
+    /// Something in an agent's overview changed. It replaces the client's
+    /// copy of that agent's overview.
+    AgentOverview { overview: AgentOverview },
 }
 
 /// The one message a client sends on the hub WebSocket.

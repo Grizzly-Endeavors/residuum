@@ -65,6 +65,16 @@ function listItems(ctx: RouteContext, items: readonly UserInboxItem[]): void {
   );
 }
 
+/**
+ * A running agent's file watcher sees a change to its inbox files and the hub
+ * counts them again. Nothing watches a stopped agent's, so its count is read
+ * the next time it is asked for.
+ */
+function noticeInboxChange(ctx: RouteContext): void {
+  const agent = ctx.hub.agents.get(ctx.state.agentName);
+  if (agent?.runState === "running") ctx.hub.overview.changed(agent);
+}
+
 function markRead(ctx: RouteContext): void {
   const id = itemId(ctx);
   const item = ctx.state.inboxItems.find((candidate) => candidate.id === id);
@@ -77,6 +87,7 @@ function markRead(ctx: RouteContext): void {
     return;
   }
   item.read = true;
+  noticeInboxChange(ctx);
   json(ctx.res, 200, toApiInboxItem(ctx.state, item));
 }
 
@@ -95,6 +106,7 @@ function moveItem(
     return;
   }
   to.push(item);
+  noticeInboxChange(ctx);
   json(ctx.res, 200, null);
 }
 

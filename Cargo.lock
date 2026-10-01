@@ -4600,6 +4600,7 @@ dependencies = [
  "opentelemetry_sdk",
  "owo-colors",
  "prost",
+ "pulldown-cmark",
  "rand 0.8.6",
  "regex",
  "reqwest 0.13.3",

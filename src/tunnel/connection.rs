@@ -37,6 +37,14 @@ struct A2aStreamTracker<'a> {
     done_tx: &'a mpsc::Sender<String>,
 }
 
+/// The fields of a `WsOpen` frame.
+struct WsOpenRequest {
+    channel_id: String,
+    path: String,
+    headers: HashMap<String, String>,
+    surface: Option<Surface>,
+}
+
 /// Minimum backoff duration between reconnection attempts.
 const MIN_BACKOFF: Duration = Duration::from_secs(1);
 
@@ -58,10 +66,10 @@ fn next_backoff(current: Duration) -> Duration {
 ///
 /// The tunnel forwards HTTP requests and WebSocket connections from the relay
 /// to the local residuum instance: the main listener on `cfg.local_port`,
-/// workbench artifact requests to `workbench_port` when that listener is
-/// running, and A2A requests to `a2a_port` when the hub's A2A listener is
-/// enabled. The `a2a` capability is advertised on the upgrade exactly when
-/// `a2a_port` is `Some`.
+/// workbench artifact requests and sockets to `workbench_port` when that
+/// listener is running, and A2A requests to `a2a_port` when the hub's A2A
+/// listener is enabled. The `a2a` capability is advertised on the upgrade
+/// exactly when `a2a_port` is `Some`.
 ///
 /// `agents_rx` carries the hub's full agent list. It is sent to the relay
 /// after every (re)connect and again on every change; a failed send is
@@ -633,22 +641,47 @@ fn spawn_buffered_forward(
     });
 }
 
-/// Connect to the local main listener for a `WsOpen` frame and register the
-/// resulting channel with the frame loop once it's ready.
+/// The local port a `WsOpen` connects to, or why it can't be served.
+///
+/// Like [`forward_port`], a socket open for the workbench surface never falls
+/// back to the main listener. The A2A listener serves no sockets, so an open
+/// on that surface is refused rather than sent anywhere.
+fn ws_open_port(targets: ForwardTargets, surface: Option<Surface>) -> Result<u16, &'static str> {
+    match surface {
+        None | Some(Surface::Workbench) => forward_port(targets, surface),
+        Some(Surface::A2a) => Err("The A2A endpoint doesn't serve WebSockets."),
+    }
+}
+
+/// Connect to the local listener a `WsOpen` frame names and register the
+/// resulting channel with the frame loop once it's ready. When that listener
+/// isn't available the open is answered with a failed `WsOpenResult` carrying
+/// the reason, and nothing is connected.
 fn spawn_ws_open(
     targets: ForwardTargets,
     write: &Arc<Mutex<TunnelSink>>,
     ws_open_tx: &mpsc::Sender<(String, mpsc::Sender<String>)>,
-    channel_id: String,
-    path: String,
-    headers: HashMap<String, String>,
+    request: WsOpenRequest,
 ) {
     let write = Arc::clone(write);
     let ws_open_tx = ws_open_tx.clone();
     crate::util::spawn_in_span(async move {
+        let WsOpenRequest {
+            channel_id,
+            path,
+            headers,
+            surface,
+        } = request;
+        let port = match ws_open_port(targets, surface) {
+            Ok(port) => port,
+            Err(reason) => {
+                warn!(channel_id = %channel_id, ?surface, reason, "refused a socket open from the relay");
+                forward_ws::refuse_ws_open(&write, &channel_id, reason).await;
+                return;
+            }
+        };
         let ch_id = channel_id.clone();
-        let sender =
-            forward_ws::handle_ws_open(targets.main, channel_id, path, headers, write).await;
+        let sender = forward_ws::handle_ws_open(port, channel_id, path, headers, write).await;
         if let Some(tx) = sender {
             // Send back to the frame loop; if the loop has exited the channel
             // will be dropped and this is harmless.
@@ -723,8 +756,15 @@ async fn handle_frame(
             channel_id,
             path,
             headers,
+            surface,
         } => {
-            spawn_ws_open(targets, write, ws_open_tx, channel_id, path, headers);
+            let request = WsOpenRequest {
+                channel_id,
+                path,
+                headers,
+                surface,
+            };
+            spawn_ws_open(targets, write, ws_open_tx, request);
         }
         TunnelFrame::WsMessage { channel_id, data } => {
             if let Some(tx) = local_ws_channels.get(&channel_id) {
@@ -957,7 +997,7 @@ mod tests {
             req.headers()
                 .get("x-residuum-capabilities")
                 .and_then(|v| v.to_str().ok()),
-            Some("workbench-surface,http-streaming,agents")
+            Some("workbench-surface,workbench-sockets,http-streaming,agents")
         );
     }
 
@@ -973,7 +1013,7 @@ mod tests {
             req.headers()
                 .get("x-residuum-capabilities")
                 .and_then(|v| v.to_str().ok()),
-            Some("workbench-surface,http-streaming,agents,a2a")
+            Some("workbench-surface,workbench-sockets,http-streaming,agents,a2a")
         );
     }
 
@@ -1709,4 +1749,6 @@ mod tests {
         }
         assert!(rest.contains("vault-two"), "{rest}");
     }
+
+    mod ws_open;
 }

@@ -321,6 +321,7 @@ export class HubStore {
       case "agent_stopping":
       case "hub_config_reloaded":
       case "team_event":
+      case "agent_overview":
         // Frame listeners act on these, below.
         break;
       case "workspace_changed":

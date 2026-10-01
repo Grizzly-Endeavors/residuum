@@ -68,6 +68,16 @@ const CAPABILITIES_HEADER: &str = "x-residuum-capabilities";
 /// rather than the relay's generic "update Residuum" page.
 const WORKBENCH_SURFACE_CAPABILITY: &str = "workbench-surface";
 
+/// Capability: a [`protocol::TunnelFrame::WsOpen`] tagged
+/// [`protocol::Surface::Workbench`] connects to the workbench artifacts
+/// listener, which forwards `/api` sockets to the hub. Advertised even while
+/// that listener is down, like [`WORKBENCH_SURFACE_CAPABILITY`], so the open
+/// is answered with a failed `WsOpenResult` carrying the reason. The relay
+/// sends no workbench-surface socket open to a hub without it: a hub that
+/// predates the capability ignores the surface and would connect the socket to
+/// its main listener.
+const WORKBENCH_SOCKETS_CAPABILITY: &str = "workbench-sockets";
+
 /// Capability: this tunnel client answers A2A-surface (and future streamed)
 /// requests with `HttpResponseStart`/`HttpResponseChunk`/`HttpResponseEnd`
 /// instead of a single buffered `HttpResponse`. Always advertised.
@@ -85,13 +95,14 @@ const A2A_CAPABILITY: &str = "a2a";
 const AGENTS_CAPABILITY: &str = "agents";
 
 /// Build the `x-residuum-capabilities` header value: always
-/// `workbench-surface,http-streaming,agents`, plus `a2a` when the hub's A2A
-/// listener is enabled. Each agent's visibility travels in its
-/// [`protocol::AgentInfo`], not in a capability.
+/// `workbench-surface,workbench-sockets,http-streaming,agents`, plus `a2a`
+/// when the hub's A2A listener is enabled. Each agent's visibility travels in
+/// its [`protocol::AgentInfo`], not in a capability.
 #[must_use]
 fn build_capabilities_header(a2a_enabled: bool) -> String {
     let mut capabilities = vec![
         WORKBENCH_SURFACE_CAPABILITY,
+        WORKBENCH_SOCKETS_CAPABILITY,
         HTTP_STREAMING_CAPABILITY,
         AGENTS_CAPABILITY,
     ];
@@ -101,8 +112,8 @@ fn build_capabilities_header(a2a_enabled: bool) -> String {
     capabilities.join(",")
 }
 
-/// Header the tunnel adds to every request it forwards to a local listener,
-/// carrying [`tunnel_nonce`]. Two things rely on it to tell a genuinely
+/// Header the tunnel adds to every request and socket open it forwards to a
+/// local listener, carrying [`tunnel_nonce`]. Two things rely on it to tell a genuinely
 /// tunnel-forwarded request apart from anyone who connects to a local port
 /// directly and forges the header themselves: the A2A listener's auth layer
 /// (sibling attestation), and the gateway's guard against remote shutdown or
@@ -114,8 +125,8 @@ const TUNNEL_NONCE_LEN: usize = 32;
 
 static TUNNEL_NONCE: OnceLock<String> = OnceLock::new();
 
-/// The per-process nonce sent as [`TUNNEL_NONCE_HEADER`] on every request the
-/// tunnel forwards to a local listener.
+/// The per-process nonce sent as [`TUNNEL_NONCE_HEADER`] on every request and
+/// socket open the tunnel forwards to a local listener.
 ///
 /// Generated once per process with a CSPRNG and never persisted, so it changes
 /// on every restart. That's fine because both sides of the comparison — this
@@ -224,7 +235,7 @@ mod tests {
     fn capabilities_header_without_a2a() {
         assert_eq!(
             build_capabilities_header(false),
-            "workbench-surface,http-streaming,agents"
+            "workbench-surface,workbench-sockets,http-streaming,agents"
         );
     }
 
@@ -232,8 +243,19 @@ mod tests {
     fn capabilities_header_with_a2a() {
         assert_eq!(
             build_capabilities_header(true),
-            "workbench-surface,http-streaming,agents,a2a"
+            "workbench-surface,workbench-sockets,http-streaming,agents,a2a"
         );
+    }
+
+    #[test]
+    fn workbench_sockets_is_advertised_with_and_without_a2a() {
+        for a2a_enabled in [false, true] {
+            let header = build_capabilities_header(a2a_enabled);
+            assert!(
+                header.split(',').any(|c| c == "workbench-sockets"),
+                "the relay gates workbench socket opens on this exact string: {header}"
+            );
+        }
     }
 
     #[test]

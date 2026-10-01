@@ -7,5 +7,6 @@
 
 pub mod edit;
 pub mod executor;
+pub mod next_run;
 pub mod scheduler;
 pub mod types;

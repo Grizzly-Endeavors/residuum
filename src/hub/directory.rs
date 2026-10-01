@@ -14,6 +14,7 @@ use super::types::{
     Actor, AgentActivity, AgentPatch, AgentSummary, CreateAgentRequest, DeleteOutcome,
     DeletedAgent, HubEvent, LifecycleError, RestoreAgentRequest,
 };
+use crate::background::registry::SessionInfo;
 
 /// Where one agent's files are, and the timezone the hub reads the naive local
 /// times stored in them in.
@@ -91,6 +92,13 @@ pub trait AgentDirectory: Send + Sync {
     /// [`HubEvent::AgentStopping`]). Defaults to none, for directories with
     /// no such window.
     fn stopping(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// The session runs going on in the running agent `name`, oldest first.
+    /// Empty when the agent isn't running, or the directory has no sessions
+    /// to report.
+    fn live_sessions(&self, _name: &str) -> Vec<SessionInfo> {
         Vec::new()
     }
 

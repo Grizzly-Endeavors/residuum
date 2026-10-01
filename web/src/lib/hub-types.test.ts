@@ -15,6 +15,7 @@ import type {
   AgentErrorKind,
   AgentLastError,
   AgentListResponse,
+  AgentOverview,
   AgentPatch,
   AgentState,
   AgentSummary,
@@ -22,11 +23,16 @@ import type {
   DeleteOutcome,
   HubClientMessage,
   HubServerMessage,
+  LastMessage,
+  LiveSession,
+  OverviewResponse,
   TeamEvent,
   TeamEventKind,
   TeamEventLevel,
   TeamEventPage,
   TeamEventTarget,
+  TimePrecision,
+  UpcomingKind,
 } from "./hub-types";
 
 // The agent shapes are the backend's ts-rs exports, not copies of them: these
@@ -66,6 +72,7 @@ describe("hub types", () => {
       | "notice"
       | "hub_config_reloaded"
       | "team_event"
+      | "agent_overview"
       | "workspace_changed"
       | "workspace_resync"
       | "workspace_watch_unavailable"
@@ -112,6 +119,21 @@ describe("hub types", () => {
     type Frame = Extract<HubServerMessage, { type: "team_event" }>;
     expectTypeOf<Frame["boot_id"]>().toEqualTypeOf<string>();
     expectTypeOf<Frame["event"]>().toEqualTypeOf<TeamEvent>();
+  });
+
+  it("describes an agent's overview by its last message, live sessions and inbox count", () => {
+    expectTypeOf<OverviewResponse["agents"]>().toEqualTypeOf<AgentOverview[]>();
+    expectTypeOf<AgentOverview["last_message"]>().toEqualTypeOf<LastMessage | null>();
+    expectTypeOf<AgentOverview["inbox_unread"]>().toEqualTypeOf<number>();
+    expectTypeOf<LastMessage["role"]>().toEqualTypeOf<"user" | "assistant">();
+    expectTypeOf<TimePrecision>().toEqualTypeOf<"minute" | "day">();
+    expectTypeOf<UpcomingKind>().toEqualTypeOf<"pulse" | "action">();
+    expectTypeOf<LiveSession["source_label"]>().toEqualTypeOf<string>();
+  });
+
+  it("carries the whole overview in the agent overview frame", () => {
+    type Frame = Extract<HubServerMessage, { type: "agent_overview" }>;
+    expectTypeOf<Frame["overview"]>().toEqualTypeOf<AgentOverview>();
   });
 
   it("includes every state the backend can report, starting among them", () => {

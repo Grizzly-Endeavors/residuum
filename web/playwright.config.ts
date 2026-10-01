@@ -14,6 +14,8 @@ import { devServer, previewServer } from "./e2e/support/servers";
  * A project never picks up another kind's specs, so a tag changes where a spec
  * runs and nothing else. Tags go on a test or a describe block:
  * `test("...", { tag: "@preview" }, async ({ page }) => { ... })`.
+ *
+ * Which browser a project drives is a separate question: see `containerBrowser` below.
  */
 
 const desktop = {
@@ -38,13 +40,30 @@ const webkitPhone = {
  * `scripts/with-playwright-container.sh` starts the Playwright container with
  * a browser server and sets this to its address. The `visual-*` projects and
  * `webkit-phone` drive that browser, and reach the mock on this machine through
- * `exposeNetwork`.
+ * `exposeNetwork`. `E2E_ALL_IN_CONTAINER` (below) adds the other projects.
  */
 const containerBrowser = process.env.E2E_CONTAINER_WS ?? "";
 const inContainer =
   containerBrowser === ""
     ? {}
     : { connectOptions: { wsEndpoint: containerBrowser, exposeNetwork: "<loopback>" } };
+
+/**
+ * `E2E_ALL_IN_CONTAINER=1` sends `desktop`, `phone` and the `preview-*` projects
+ * to the container's browser too, so a machine with no Chromium of its own (the
+ * CI runners) needs none. Without it they launch this machine's Chromium. The
+ * variable only works under the container wrapper; with no container browser it
+ * is an error, because a quiet fall-back to a host browser would hide that the
+ * run isn't the one that was asked for.
+ */
+const allInContainer = process.env.E2E_ALL_IN_CONTAINER === "1";
+if (allInContainer && containerBrowser === "") {
+  throw new Error(
+    "E2E_ALL_IN_CONTAINER=1 needs the Playwright container's browser, and E2E_CONTAINER_WS is not set. " +
+      "Run through scripts/with-playwright-container.sh, or unset E2E_ALL_IN_CONTAINER to use this machine's Chromium.",
+  );
+}
+const chromiumBrowser = allInContainer ? inContainer : {};
 
 /** What makes a screenshot repeatable: the container's browser, the mock's time and no motion. */
 const visualUse = {
@@ -91,12 +110,12 @@ export default defineConfig<E2EOptions>({
   projects: [
     {
       name: "desktop",
-      use: desktop,
+      use: { ...desktop, ...chromiumBrowser },
       grepInvert: eitherTag,
     },
     {
       name: "phone",
-      use: phone,
+      use: { ...phone, ...chromiumBrowser },
       grepInvert: eitherTag,
     },
     {
@@ -108,13 +127,13 @@ export default defineConfig<E2EOptions>({
     },
     {
       name: "preview-desktop",
-      use: { ...desktop, baseURL: previewServer.url },
+      use: { ...desktop, ...chromiumBrowser, baseURL: previewServer.url },
       grep: previewTag,
       grepInvert: visualTag,
     },
     {
       name: "preview-phone",
-      use: { ...phone, baseURL: previewServer.url },
+      use: { ...phone, ...chromiumBrowser, baseURL: previewServer.url },
       grep: previewTag,
       grepInvert: visualTag,
     },
