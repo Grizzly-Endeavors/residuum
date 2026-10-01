@@ -944,36 +944,34 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn connect_spawns_stdio_server_in_the_configured_workspace_root() {
-        use std::os::unix::fs::PermissionsExt;
-
-        // Not a real MCP server: it exits immediately (so `connect` reports
-        // a failed handshake), but by then it has already written its own
-        // cwd to a file, which is what this test checks — proving the
+        // Not a real MCP server: a shell that writes its own cwd to a file
+        // and exits (so `connect` reports a failed handshake), but by then it
+        // has already written the file this test checks — proving the
         // registry threads its configured workspace root through to the
-        // spawned process rather than leaving it on the process cwd.
+        // spawned process rather than leaving it on the process cwd. It is
+        // the shell itself, not a script written here: executing a file this
+        // process just wrote fails with "Text file busy" when a test on
+        // another thread forks while the file is still open for writing,
+        // because the forked child holds a copy of the descriptor until it
+        // execs.
         let dir =
             std::env::temp_dir().join(format!("residuum-mcp-registry-cwd-{}", std::process::id()));
         let workspace = dir.join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
         let pwd_file = dir.join("pwd.txt");
 
-        let script = dir.join("residuum_fake_mcp_registry_cwd");
-        std::fs::write(
-            &script,
-            format!("#!/bin/sh\npwd > {}\nexit 0\n", pwd_file.display()),
-        )
-        .unwrap();
-        let mut perms = std::fs::metadata(&script).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&script, perms).unwrap();
-
         let mut registry = McpRegistry {
             workspace_root: Some(workspace.clone()),
             ..McpRegistry::new()
         };
-        let report = registry
-            .connect_servers(&[entry("fake", script.to_str().unwrap())])
-            .await;
+        let mut fake = entry("fake", "/bin/sh");
+        fake.args = vec![
+            "-c".to_string(),
+            "pwd > \"$1\"".to_string(),
+            "sh".to_string(),
+            pwd_file.to_str().unwrap().to_string(),
+        ];
+        let report = registry.connect_servers(&[fake]).await;
         assert_eq!(
             report.failures.len(),
             1,

@@ -822,20 +822,21 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn exec_resolves_binary_from_tools_path() {
-        use std::os::unix::fs::PermissionsExt;
-
-        // A uniquely-named script in a temp dir that is NOT on the base PATH.
+        // A uniquely-named link to `echo` in a temp dir that is NOT on the
+        // base PATH. It is a link, not a script written here: executing a file
+        // this process just wrote fails with "Text file busy" when a test on
+        // another thread forks while the file is still open for writing,
+        // because the forked child holds a copy of the descriptor until it
+        // execs.
         let dir = std::env::temp_dir().join(format!(
             "residuum-exec-tools-{}-{}",
             std::process::id(),
             "toolbox"
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let script = dir.join("residuum_only_in_tools_dir");
-        std::fs::write(&script, "#!/bin/sh\necho tool-ran\n").unwrap();
-        let mut perms = std::fs::metadata(&script).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&script, perms).unwrap();
+        let link = dir.join("residuum_only_in_tools_dir");
+        std::fs::remove_file(&link).ok();
+        std::os::unix::fs::symlink("/bin/echo", &link).unwrap();
 
         // Effective PATH = tools dir prepended to the inherited PATH.
         let mut parts = vec![dir.clone()];
@@ -848,7 +849,7 @@ mod tests {
         // With the handle, the bare binary name resolves.
         let tool = ExecTool::new(Some(handle), None, None, workspace_root());
         let result = tool
-            .execute(serde_json::json!({ "command": "residuum_only_in_tools_dir" }))
+            .execute(serde_json::json!({ "command": "residuum_only_in_tools_dir tool-ran" }))
             .await
             .unwrap();
         assert!(
@@ -865,7 +866,7 @@ mod tests {
         // Without the handle, the same bare name is not on PATH → fails.
         let bare = ExecTool::new(None, None, None, workspace_root());
         let missing = bare
-            .execute(serde_json::json!({ "command": "residuum_only_in_tools_dir" }))
+            .execute(serde_json::json!({ "command": "residuum_only_in_tools_dir tool-ran" }))
             .await
             .unwrap();
         assert!(

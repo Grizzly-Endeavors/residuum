@@ -401,18 +401,19 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn connect_stdio_resolves_binary_from_tools_path() {
-        use std::os::unix::fs::PermissionsExt;
-
         // An executable that exists only in a tools dir (not on the base PATH).
         // It is not a real MCP server: spawning it succeeds, the handshake then
         // fails — which lets us distinguish "PATH resolved" from "spawn failed".
+        // It is a link to the shell, not a script written here: executing a
+        // file this process just wrote fails with "Text file busy" when a test
+        // on another thread forks while the file is still open for writing,
+        // because the forked child holds a copy of the descriptor until it
+        // execs.
         let dir = std::env::temp_dir().join(format!("residuum-mcp-tools-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let script = dir.join("residuum_fake_mcp");
-        std::fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
-        let mut perms = std::fs::metadata(&script).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&script, perms).unwrap();
+        let link = dir.join("residuum_fake_mcp");
+        std::fs::remove_file(&link).ok();
+        std::os::unix::fs::symlink("/bin/sh", &link).unwrap();
 
         let mut parts = vec![dir.clone()];
         if let Some(inherited) = std::env::var_os("PATH") {
@@ -423,7 +424,7 @@ mod tests {
         let entry = McpServerEntry {
             name: "fake-mcp".to_string(),
             command: "residuum_fake_mcp".to_string(),
-            args: vec![],
+            args: vec!["-c".to_string(), "exit 0".to_string()],
             env: HashMap::new(),
             transport: McpTransport::Stdio,
             headers: HashMap::new(),
@@ -460,30 +461,27 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn connect_stdio_spawns_in_the_workspace_root_not_the_process_cwd() {
-        use std::os::unix::fs::PermissionsExt;
-
-        // Not a real MCP server: it exits immediately, so the handshake
-        // fails — but by then it has already written its own cwd to a
-        // file, which is what this test checks.
+        // Not a real MCP server: a shell that writes its own cwd to a file and
+        // exits, so the handshake fails — but by then it has written the file
+        // this test checks. It is the shell itself, not a script written here:
+        // executing a file this process just wrote fails with "Text file busy"
+        // when a test on another thread forks while the file is still open for
+        // writing, because the forked child holds a copy of the descriptor
+        // until it execs.
         let dir = std::env::temp_dir().join(format!("residuum-mcp-cwd-{}", std::process::id()));
         let workspace = dir.join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
         let pwd_file = dir.join("pwd.txt");
 
-        let script = dir.join("residuum_fake_mcp_cwd");
-        std::fs::write(
-            &script,
-            format!("#!/bin/sh\npwd > {}\nexit 0\n", pwd_file.display()),
-        )
-        .unwrap();
-        let mut perms = std::fs::metadata(&script).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&script, perms).unwrap();
-
         let entry = McpServerEntry {
             name: "fake-mcp-cwd".to_string(),
-            command: script.to_str().unwrap().to_string(),
-            args: vec![],
+            command: "/bin/sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "pwd > \"$1\"".to_string(),
+                "sh".to_string(),
+                pwd_file.to_str().unwrap().to_string(),
+            ],
             env: HashMap::new(),
             transport: McpTransport::Stdio,
             headers: HashMap::new(),
@@ -500,9 +498,10 @@ mod tests {
         )
         .await
         .unwrap();
+        let err = result.unwrap_err().to_string();
         assert!(
-            result.is_err(),
-            "the fake process isn't a real mcp server, so the handshake should fail"
+            err.contains("handshake failed"),
+            "the fake process isn't a real mcp server, so it should spawn and the handshake should fail: {err}"
         );
 
         let printed = std::fs::canonicalize(std::fs::read_to_string(&pwd_file).unwrap().trim())
