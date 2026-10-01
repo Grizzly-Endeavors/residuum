@@ -14,7 +14,7 @@ on:
         type: boolean
         default: true
       visual:
-        description: Also run the web visual comparisons, which render in the Playwright container and need Docker on the runner
+        description: Also run the web visual comparisons, which compare screenshots against the committed baselines
         type: boolean
         default: false
   workflow_dispatch:
@@ -28,7 +28,7 @@ on:
         type: boolean
         default: true
       visual:
-        description: Also run the web visual comparisons, which render in the Playwright container and need Docker on the runner
+        description: Also run the web visual comparisons, which compare screenshots against the committed baselines
         type: boolean
         default: false
 
@@ -66,23 +66,26 @@ jobs:
         id: web_build
         run: cd web && npm run build
 
-      # The end-to-end and accessibility specs drive Chromium against the mock
-      # (web/CONTRIBUTING.md, "Testing"). The runner image has no browser, so
-      # install Chromium and the system libraries it needs.
-      - name: Install Playwright Chromium
-        run: cd web && npx playwright install --with-deps chromium
-
-      # Visual comparisons render in the official Playwright container, so they
-      # need Docker on the runner. They run when the `visual` input is on;
-      # releases leave it off, and the summary says so.
+      # The end-to-end and accessibility specs drive a browser against the mock
+      # (web/CONTRIBUTING.md, "Testing"). The runner installs no browser: the
+      # download from cdn.playwright.dev stalls on the cluster's missing IPv6
+      # route. Instead every project drives the browser in the official
+      # Playwright container, which the Docker daemon beside the runner starts
+      # and the wrapper script stops. E2E_ALL_IN_CONTAINER sends the Chromium
+      # projects there, as the visual ones always go. The visual comparisons
+      # run when the `visual` input is on; otherwise the summary says so.
       - name: Web end-to-end tests
         id: web_e2e
         if: ${{ !inputs.visual }}
-        run: cd web && npm run e2e:fast
+        env:
+          E2E_ALL_IN_CONTAINER: '1'
+        run: scripts/with-playwright-container.sh npm --prefix web run e2e:fast
 
       - name: Web end-to-end and visual tests
         id: web_e2e_visual
         if: ${{ inputs.visual }}
+        env:
+          E2E_ALL_IN_CONTAINER: '1'
         run: scripts/with-playwright-container.sh npm --prefix web run e2e
 
       - name: Upload Playwright report and traces
@@ -112,7 +115,7 @@ jobs:
             if [ "${{ inputs.visual }}" = "true" ]; then
               echo "| Visual comparisons | ${{ steps.web_e2e_visual.outcome }} |"
             else
-              echo '| Visual comparisons | skipped: the `visual` input is off (they render in the Playwright container, which needs Docker on the runner) |'
+              echo '| Visual comparisons | skipped: the `visual` input is off |'
             fi
             if [ -f web/coverage/summary.txt ]; then
               echo ''
