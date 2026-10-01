@@ -133,7 +133,7 @@
     <div class="chat-composer" bind:this={composerEl} {@attach stopOnEscape}>
       <Composer
         {agent}
-        replying={store.isProcessing}
+        replying={store.activeTurnId !== null}
         reconnecting={ws.transport.lost}
         queued={ws.queuedMessages}
         onsend={handleSend}

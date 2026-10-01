@@ -196,7 +196,8 @@
     line-height: var(--line-height-ui);
   }
 
-  .model-heading {
+  .model-heading,
+  .model-note {
     padding: 0 var(--space-6);
   }
 
@@ -255,6 +256,7 @@
 
   .thinking-level {
     height: 28px;
+    text-align: center;
     border-radius: var(--corner-sm);
     color: var(--color-text-2);
     font-size: var(--font-size-sm);
