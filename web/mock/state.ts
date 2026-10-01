@@ -20,6 +20,7 @@ import { createScheduled, type MockScheduled } from "./scheduled";
 import type { MockOverview } from "./overview";
 import type { SessionEventFrame } from "./session-relay";
 import type { MockTeamEvents } from "./team-events";
+import type { MockCloud } from "./cloud";
 import type { MockUpdateStatus } from "./update";
 
 /** An agent key as the mock stores it, value included. */
@@ -71,6 +72,8 @@ export interface MockState {
   scheduled: MockScheduled;
   /** What the hub knows about updates, for the update routes. */
   update: MockUpdateStatus;
+  /** What a test holds about the Residuum Cloud tunnel, for the cloud routes. Only the hub's state is read. */
+  cloud: MockCloud;
   /** The devices registered for Web Push, oldest first. Only the hub's state holds any. */
   pushDevices: MockPushDevice[];
   /** The checkpoint histories this state holds: an agent's own, or the hub's. */
@@ -317,6 +320,7 @@ export function createState(
     agentInbox: [],
     scheduled: { pulses: [], actions: [] },
     update: { latest: null, lastChecked: null },
+    cloud: { tunnel: null, viaTunnel: false },
     pushDevices: [],
     checkpoints: {},
     hasConversation: false,
