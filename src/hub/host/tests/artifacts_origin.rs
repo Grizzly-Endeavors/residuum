@@ -247,3 +247,145 @@ async fn an_agent_socket_through_the_artifacts_port_is_not_a_connected_client() 
     let ui_turn = next_turn(&mut changes).await;
     assert!(ui_turn.client_connected);
 }
+
+/// Write a user-inbox item with one attached file into the agent's workspace.
+fn add_inbox_item_with_attachment(hub: &Fixture, name: &str, id: &str, file: &str, content: &str) {
+    let inbox = hub.root.path().join(name).join("inbox/user");
+    let attachments = inbox.join("attachments").join(id);
+    std::fs::create_dir_all(&attachments).unwrap();
+    std::fs::write(attachments.join(file), content).unwrap();
+    std::fs::write(
+        inbox.join(format!("{id}.json")),
+        json!({
+            "title": "Heron",
+            "body": "with a photo",
+            "source": "agent",
+            "timestamp": "2026-09-30T08:15",
+            "read": false,
+            "attachments": [format!("inbox/user/attachments/{id}/{file}")],
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn hub_routes_with_path_parameters_answer_on_the_artifacts_port() {
+    let hub = Fixture::new(&["scout", "quiet"], "").await;
+    hub.host.start("scout").await.unwrap();
+    hub.add_inbox_item("scout", "20260930_pelican");
+    hub.add_inbox_item("quiet", "20260930_heron");
+    let artifacts = artifacts_port(&hub).await;
+    let http = reqwest::Client::new();
+    let url = |path: &str| format!("http://{artifacts}{path}");
+
+    // Two parameters: the agent and the item.
+    let read = http
+        .put(url("/api/hub/inbox/scout/20260930_pelican/read"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        read.status().as_u16(),
+        200,
+        "{}",
+        read.text().await.unwrap()
+    );
+    let unread: Value = http
+        .get(url("/api/hub/inbox/unread"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        unread,
+        json!({ "total": 1, "by_agent": { "quiet": 1, "scout": 0 } })
+    );
+
+    let archived = http
+        .post(url("/api/hub/inbox/quiet/20260930_heron/archive"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(archived.status().as_u16(), 200);
+    let in_archive = http
+        .get(url("/api/hub/inbox?status=archived"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(in_archive.contains("20260930_heron"), "{in_archive}");
+    let restored = http
+        .post(url("/api/hub/inbox/quiet/20260930_heron/restore"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(restored.status().as_u16(), 200);
+
+    // One parameter: the agent, on routes that change its state.
+    for (action, state) in [
+        ("stop", AgentState::Stopped),
+        ("start", AgentState::Running),
+        ("restart", AgentState::Running),
+    ] {
+        let response = http
+            .post(url(&format!("/api/hub/agents/scout/{action}")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status().as_u16(),
+            200,
+            "{action}: {}",
+            response.text().await.unwrap()
+        );
+        assert_eq!(hub.state_of("scout"), state, "after {action}");
+    }
+}
+
+#[tokio::test]
+async fn agent_routes_with_path_parameters_answer_on_the_artifacts_port() {
+    let hub = Fixture::new(&["scout"], "").await;
+    hub.host.start("scout").await.unwrap();
+    add_inbox_item_with_attachment(&hub, "scout", "20260930_heron", "note.txt", "hello");
+    let artifacts = artifacts_port(&hub).await;
+    let http = reqwest::Client::new();
+    let url = |path: &str| format!("http://{artifacts}{path}");
+
+    // The item and the attachment's position.
+    let attachment = http
+        .get(url("/api/agents/scout/inbox/20260930_heron/attachments/0"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(attachment.status().as_u16(), 200);
+    assert_eq!(attachment.text().await.unwrap(), "hello");
+
+    // The session's address, which is how an artifact's `session.send()` and
+    // `session.stop()` reach it. No session lives at the address, so each
+    // route answers with its own reason for refusing.
+    for (action, code) in [("messages", "unknown_address"), ("stop", "not_live")] {
+        let response = http
+            .post(url(&format!(
+                "/api/agents/scout/sessions/ghost-0001/{action}"
+            )))
+            .json(&json!({ "content": "hello" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 404, "{action}");
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(str_at(&body, "code"), code, "{action}: {body}");
+    }
+
+    // A socket still upgrades on the same listener afterwards.
+    let mut hub_socket = connect(&artifacts, "/api/hub/ws").await;
+    next_frame_of(&mut hub_socket, "hub_boot").await;
+    let mut agent_socket = connect(&artifacts, "/api/agents/scout/ws").await;
+    send_frame(&mut agent_socket, &json!({ "type": "ping" })).await;
+    next_frame_of(&mut agent_socket, "pong").await;
+}

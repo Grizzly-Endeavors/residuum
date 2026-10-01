@@ -139,17 +139,16 @@ pub(crate) async fn bind_listener(
 /// Router for the artifacts listener, serving artifacts from `dir` and
 /// forwarding `/api` to the hub router bound to `api`.
 pub(crate) fn router(dir: PathBuf, api: HubApi) -> Router {
-    Router::new()
+    let artifacts = Router::new()
         .route("/", get(home))
         .route("/{name}", get(artifact_root))
         .route("/{name}/", get(artifact_index))
         .route("/{name}/{*rest}", get(artifact_file))
         .with_state(dir)
-        .merge(forward::routes(api))
-        .fallback(|| async { not_found("Nothing here.") })
-        .layer(axum::middleware::from_fn(
-            crate::gateway::cross_site::reject_cross_site_requests,
-        ))
+        .fallback(|| async { not_found("Nothing here.") });
+    forward::forwarding(artifacts, api).layer(axum::middleware::from_fn(
+        crate::gateway::cross_site::reject_cross_site_requests,
+    ))
 }
 
 async fn home() -> Response {
