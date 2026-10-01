@@ -267,9 +267,11 @@ pub struct PulseInfo {
     pub schedule: Option<String>,
     pub active_hours: Option<String>,
     pub agent: Option<String>,
-    /// Estimated from the schedule and `pulse_state.json`'s last run time;
-    /// does not account for an `active_hours` window that would delay the
-    /// actual fire.
+    /// When the pulse next fires, from `pulse::next_run`: the schedule since
+    /// `pulse_state.json`'s last run, moved into `active_hours`. `None` for a
+    /// disabled pulse, one whose schedule or active hours can't be read or
+    /// never open, and every pulse when the agent's `[pulse]` is off or its
+    /// `config.toml` can't be read.
     #[ts(type = "string | null")]
     pub next_fire_at: Option<DateTime<Utc>>,
     pub last_outcome: Option<ScheduledRunOutcome>,

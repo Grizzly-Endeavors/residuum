@@ -4,19 +4,20 @@
   import { isAgentPlace } from "../lib/routes";
   import { ws } from "../lib/ws.svelte";
   import Chat from "../Chat.svelte";
-  import Scheduled from "../Scheduled.svelte";
   import SessionsSidebar from "../components/SessionsSidebar.svelte";
   import Workbench from "../components/Workbench.svelte";
   import Workspace from "../components/Workspace.svelte";
   import Home from "../places/home/Home.svelte";
   import Inbox from "../places/inbox/Inbox.svelte";
+  import Schedule from "../places/schedule/Schedule.svelte";
   import PlaceHeader from "./PlaceHeader.svelte";
   import { agentPlaceLabel } from "./rail-model";
   import type { ShellActions } from "./shell-actions";
 
-  // The main region's place: Home or Inbox, or a place that hasn't been rebuilt,
-  // which hosts its legacy view inside a `data-legacy-view` element, where
-  // the legacy global styles still apply and the new base styles don't.
+  // The main region's place: Home, Inbox or the Schedule, or a place that
+  // hasn't been rebuilt, which hosts its legacy view inside a
+  // `data-legacy-view` element, where the legacy global styles still apply
+  // and the new base styles don't.
 
   let { actions }: { actions: ShellActions } = $props();
 
@@ -43,6 +44,10 @@
   <Home {actions} />
 {:else if place.kind === "inbox"}
   <Inbox {place} />
+{:else if place.kind === "schedule"}
+  {#key place.agent}
+    <Schedule agent={place.agent} />
+  {/key}
 {:else}
   {#if isAgentPlace(place)}
     <PlaceHeader
@@ -61,8 +66,6 @@
           <Chat />
         {:else if place.kind === "activity"}
           <SessionsSidebar onSelect={openRun} />
-        {:else if place.kind === "schedule"}
-          <Scheduled />
         {:else}
           <Workspace agent={place.agent} />
         {/if}

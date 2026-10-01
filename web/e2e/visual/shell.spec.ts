@@ -51,12 +51,11 @@ test.describe("shell", { tag: "@visual" }, () => {
 
   // An overlay's shot is unmasked: a mask paints over everything in its box,
   // the overlay included, and the scrim dims the place behind it. The place is
-  // the Schedule, whose legacy view lays out the same on every run; the chat's
-  // doesn't.
+  // the Schedule, which lays out the same on every run; the chat doesn't.
 
   test("the command palette", async ({ page, isMobile }) => {
     await page.goto("/agent/atlas/schedule");
-    await expect(page.getByText("Pulses", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Pulses" })).toBeVisible();
     if (isMobile) {
       await page
         .getByRole("navigation", { name: "Main" })
@@ -71,7 +70,7 @@ test.describe("shell", { tag: "@visual" }, () => {
 
   test("the keyboard shortcuts", async ({ page }) => {
     await page.goto("/agent/atlas/schedule");
-    await expect(page.getByText("Pulses", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Pulses" })).toBeVisible();
     await page.locator("body").press("?");
     await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeVisible();
     await expectScreenshot(page, "shell-shortcuts");
@@ -79,7 +78,7 @@ test.describe("shell", { tag: "@visual" }, () => {
 
   test("the bug report", async ({ page, isMobile }) => {
     await page.goto("/agent/atlas/schedule");
-    await expect(page.getByText("Pulses", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Pulses" })).toBeVisible();
     if (isMobile) {
       await page
         .getByRole("navigation", { name: "Main" })
@@ -99,7 +98,7 @@ test.describe("shell", { tag: "@visual" }, () => {
     test.skip(isMobile, "Medium width is a desktop window narrowed.");
     await page.setViewportSize({ width: 1000, height: 760 });
     await page.goto("/agent/scout/schedule");
-    await expect(page.getByText("Pulses", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Pulses" })).toBeVisible();
     await shellScreenshot(page, "shell-medium");
   });
 });
