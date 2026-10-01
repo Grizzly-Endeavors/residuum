@@ -18,6 +18,7 @@ mod ts_export {
         WorkbenchInfo,
     };
     use residuum::hub::inbox::{HubInboxItem, HubInboxPage, HubInboxUnread, InboxStatus};
+    use residuum::hub::overview::{AgentOverview, OverviewResponse};
     use residuum::hub::team_events::{
         TeamEvent, TeamEventKind, TeamEventLevel, TeamEventPage, TeamEventPlace, TeamEventTarget,
     };
@@ -124,6 +125,13 @@ mod ts_export {
         TeamEventLevel::export_all(&cfg).unwrap();
         TeamEventTarget::export_all(&cfg).unwrap();
         TeamEventPlace::export_all(&cfg).unwrap();
+
+        // The team overview: `OverviewResponse` (with its `AgentOverview`
+        // items and what they hold) answers `GET /api/hub/overview`, and
+        // `AgentOverview` is the `overview` of the hub WebSocket's
+        // `agent_overview` frame.
+        OverviewResponse::export_all(&cfg).unwrap();
+        AgentOverview::export_all(&cfg).unwrap();
 
         // Verify the generated files exist
         assert!(

@@ -20,6 +20,7 @@ use tokio_tungstenite::tungstenite::Message as ClientMessage;
 use tower::ServiceExt;
 
 use super::{HubHttpState, agent_repair_router, hub_router};
+use crate::background::registry::SessionInfo;
 use crate::bus::{WorkspaceEvent, topics};
 use crate::checkpoints::CheckpointError;
 use crate::config::paths::TeamPaths;
@@ -28,6 +29,8 @@ use crate::gateway::web::{
     AgentFilesState, CheckpointAccess, ConfigApiState, WorkspaceScope,
     agent_files_api_router as agent_files_router,
 };
+use crate::hub::agent_watch::AgentChangeFeed;
+use crate::hub::overview::{OverviewTracker, TeamOverview};
 use crate::hub::team_events::TeamEventLog;
 use crate::hub::{
     A2aVisibility, Actor, AgentActivity, AgentDirectory, AgentFiles, AgentPatch, AgentState,
@@ -41,9 +44,13 @@ use crate::workspace::watch::{WatchHealth, WorkspaceChange, WorkspaceChangeKind}
 
 mod events;
 mod inbox;
+mod overview;
 
 /// The boot id every harness hub reports.
 const TEST_BOOT_ID: &str = "boot-under-test";
+
+/// How long the harness overview gathers an agent's changes into a frame.
+const OVERVIEW_WINDOW: Duration = Duration::from_millis(200);
 
 fn summary(name: &str, state: AgentState) -> AgentSummary {
     AgentSummary {
@@ -81,6 +88,8 @@ struct FakeDirectory {
     activity: Mutex<Vec<(String, AgentActivity)>>,
     /// What `stopping()` reports.
     stopping: Mutex<Vec<String>>,
+    /// What `live_sessions()` reports, by agent.
+    sessions: Mutex<Vec<(String, SessionInfo)>>,
 }
 
 impl FakeDirectory {
@@ -99,6 +108,7 @@ impl FakeDirectory {
             timezone: Mutex::new(chrono_tz::UTC),
             activity: Mutex::new(Vec::new()),
             stopping: Mutex::new(Vec::new()),
+            sessions: Mutex::new(Vec::new()),
         })
     }
 
@@ -299,6 +309,16 @@ impl AgentDirectory for FakeDirectory {
         self.activity.lock().unwrap().clone()
     }
 
+    fn live_sessions(&self, name: &str) -> Vec<SessionInfo> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(agent, _)| agent == name)
+            .map(|(_, info)| info.clone())
+            .collect()
+    }
+
     fn stopping(&self) -> Vec<String> {
         self.stopping.lock().unwrap().clone()
     }
@@ -410,6 +430,11 @@ struct Harness {
     team_bus: crate::bus::BusHandle,
     /// The log the hub serves; a test records into it the way the recorder does.
     team_events: Arc<TeamEventLog>,
+    /// The overview the hub serves, gathering an agent's changes for
+    /// `OVERVIEW_WINDOW`.
+    overview: Arc<TeamOverview>,
+    /// Where the agents' changes are published, for a tracker to read.
+    changes: Arc<AgentChangeFeed>,
     _tunnel_tx: watch::Sender<TunnelStatus>,
     health_tx: watch::Sender<WatchHealth>,
     _restart_rx: mpsc::Receiver<()>,
@@ -440,6 +465,9 @@ impl Harness {
         let (_layer, span_buffer) = crate::util::telemetry::SpanBufferLayer::new(
             &crate::util::telemetry::SpanBufferConfig::default(),
         );
+        let shared: Arc<dyn AgentDirectory> = Arc::<FakeDirectory>::clone(&directory);
+        let overview =
+            TeamOverview::with_window(TEST_BOOT_ID, Arc::clone(&shared), OVERVIEW_WINDOW);
         let hub = HubHttpState {
             hub_dir: hub_dir.clone(),
             reload_tx,
@@ -474,8 +502,8 @@ impl Harness {
             team_watch_health: health_rx,
             started_at: std::time::Instant::now(),
             team_events: Arc::clone(&team_events),
+            overview: Arc::clone(&overview),
         };
-        let shared: Arc<dyn AgentDirectory> = Arc::<FakeDirectory>::clone(&directory);
         let app = hub_router(shared, hub);
         Self {
             app,
@@ -485,6 +513,8 @@ impl Harness {
             shutdown_rx,
             team_bus,
             team_events,
+            overview,
+            changes: AgentChangeFeed::new(),
             _tunnel_tx: tunnel_tx,
             health_tx,
             _restart_rx: restart_rx,
@@ -583,6 +613,16 @@ impl Harness {
             .lock()
             .unwrap()
             .push(summary("broken", AgentState::Failed));
+    }
+
+    /// Start keeping the overview current from the directory's events and the
+    /// harness's feed of agent changes. It stops when the result is dropped.
+    fn track_overview(&self) -> OverviewTracker {
+        OverviewTracker::spawn(
+            Arc::clone(&self.overview),
+            self.directory.subscribe(),
+            self.changes.subscribe(),
+        )
     }
 
     /// Serve the app on a local port, for the WebSocket tests.

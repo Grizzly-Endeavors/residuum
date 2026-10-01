@@ -9,6 +9,7 @@ use tokio::sync::{mpsc, watch};
 use crate::bus::BusHandle;
 use crate::checkpoints::CheckpointEngine;
 use crate::gateway::types::ReloadSender;
+use crate::hub::overview::TeamOverview;
 use crate::hub::team_events::TeamEventLog;
 use crate::tracing_service::{ClientContext, Subagent, TracingService};
 use crate::tunnel::TunnelStatus;
@@ -83,4 +84,8 @@ pub struct HubHttpState {
     /// events route serves the log, and the hub WebSocket sends each new
     /// entry as it is recorded.
     pub team_events: Arc<TeamEventLog>,
+    /// What Home shows about each agent. The overview route serves it, the
+    /// hub WebSocket sends an agent's overview as it changes, and the inbox
+    /// routes tell it when the hub changed an inbox.
+    pub overview: Arc<TeamOverview>,
 }
