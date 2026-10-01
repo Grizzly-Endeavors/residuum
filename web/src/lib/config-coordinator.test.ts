@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agentConfigFile,
+  checkpointRepoOf,
   ConfigCoordinator,
   configFileKey,
   HUB_CONFIG_FILE,
@@ -857,6 +858,39 @@ describe("external changes", () => {
     expect(ofConfig.causes()).toEqual(["external"]);
     expect(ofMcp.changes).toEqual([]);
     expect(server.log.sort()).toEqual(["read config", "read providers"]);
+  });
+});
+
+describe("reading a file", () => {
+  it("waits for the writes queued before it, and tells no one", async () => {
+    const server = fakeServer([[providers, "a = 1\n"]]);
+    const coordinator = new ConfigCoordinator(server.io);
+    const heard = hear(coordinator, providers);
+    const gate = deferred();
+    server.patch.mockImplementationOnce(async (file, diff) => {
+      await gate.promise;
+      server.disk.set(configFileKey(file), patchText(file, "a = 1\n", diff));
+      return { valid: true };
+    });
+
+    const writing = coordinator.edit(providers, () => ({ a: 2 }));
+    const reading = coordinator.read(providers);
+    await flush();
+    gate.release();
+    await writing;
+
+    await expect(reading).resolves.toBe("a = 2\n");
+    // Only the write is announced.
+    expect(heard.causes()).toEqual(["write"]);
+  });
+});
+
+describe("where a file's checkpoints are", () => {
+  it("names the repository that holds each config file", () => {
+    expect(checkpointRepoOf(HUB_CONFIG_FILE)).toBe("hub");
+    expect(checkpointRepoOf(config)).toBe("agent_config");
+    expect(checkpointRepoOf(providers)).toBe("agent_config");
+    expect(checkpointRepoOf(mcp)).toBe("workspace");
   });
 });
 
