@@ -83,10 +83,8 @@
     margin-bottom: var(--space-16);
   }
 
+  /* It only disables what it holds; the content lays out as if it weren't there. */
   .section-fields {
-    min-width: 0;
-    margin: 0;
-    padding: 0;
-    border: 0;
+    display: contents;
   }
 </style>

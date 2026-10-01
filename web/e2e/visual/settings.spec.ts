@@ -28,6 +28,7 @@ test.describe("settings modal", { tag: "@visual" }, () => {
   test("the install-wide Raw config", async ({ page }) => {
     await page.goto("/home?settings=_all/raw");
     await expect(page.getByRole("textbox", { name: "Contents of config.toml" })).toHaveValue(/\S/);
+    await expect(page.getByText("No problems found.")).toBeVisible();
     await frameScreenshot(page, "settings-raw");
   });
 
@@ -37,6 +38,7 @@ test.describe("settings modal", { tag: "@visual" }, () => {
     await text.fill(`${await text.inputValue()}\nbroken = \n`);
     await page.getByRole("button", { name: /^line \d+/ }).click();
     await text.blur();
+    await page.mouse.move(0, 0);
     await frameScreenshot(page, "settings-raw-problem");
   });
 
@@ -46,6 +48,7 @@ test.describe("settings modal", { tag: "@visual" }, () => {
     await page.getByRole("button", { name: "Changes to SOUL.md" }).click();
     await expect(page.getByRole("region", { name: "Changes to SOUL.md" })).toBeVisible();
     await page.getByRole("button", { name: "Changes to SOUL.md" }).blur();
+    await page.mouse.move(0, 0);
     await frameScreenshot(page, "settings-history");
   });
 

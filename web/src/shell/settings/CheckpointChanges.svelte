@@ -248,6 +248,11 @@
     display: flex;
     gap: var(--space-4);
     margin-left: auto;
+
+    /* The view shown below the row reads as chosen. */
+    & :global(.ui-button[aria-pressed="true"]) {
+      background: var(--color-stone-3);
+    }
   }
 
   .path-note {

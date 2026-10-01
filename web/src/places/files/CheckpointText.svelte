@@ -22,7 +22,7 @@
 {:else}
   <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
   <div class="checkpoint-text" role="region" tabindex="0" aria-label={label}>
-    {#each text.split("\n") as line, index (index)}
+    {#each text.replace(/\n$/, "").split("\n") as line, index (index)}
       <span class="checkpoint-line" data-kind={diffLineKind(line)}>{line}</span>
     {/each}
   </div>
