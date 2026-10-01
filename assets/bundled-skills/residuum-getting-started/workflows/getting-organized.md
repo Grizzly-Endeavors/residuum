@@ -10,7 +10,7 @@ Explain: "The inbox is a place to capture things quickly without losing them. Yo
 
 Show them the inbox with `inbox_list`. Explain that items show as `[unread]` until they are reviewed, and can be archived with `inbox_archive` when done. Items arrive from background tasks and heartbeats via the notification router — the agent doesn't add items directly.
 
-Mention that background tasks and heartbeats can also deliver results to the inbox, so it becomes a central place for things that need attention.
+Mention that background tasks and heartbeats can also deliver results to the inbox, so it becomes a central place for things that need attention. This is your own inbox, the one `inbox_list` reads; the user can browse it in your Files (`inbox/agent/`). The Inbox in the left-hand rail of the web app is the other one: it shows what you choose to leave for them with `user_inbox_add`.
 
 ## Step 2: Explain How Memory Works
 
