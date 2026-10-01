@@ -7,9 +7,10 @@
 //! records, an `agent_overview` whenever something in an agent's overview
 //! changes, `artifact_updated` and `artifact_removed` for the workbench (see
 //! [`super::artifact_events`]), and `workspace_changed` frames for the team
-//! paths the client watches. Client to server: `watch_team`, and the session
-//! subscriptions of [`super::session_relay`], which answer `subscribed` and
-//! deliver `session_frame`s.
+//! paths the client watches. Client to server: `watch_team`, `presence`
+//! reports for Web Push, and the session subscriptions of
+//! [`super::session_relay`], which answer `subscribed` and deliver
+//! `session_frame`s.
 //!
 //! A connection that falls behind the hub's event stream, the team event
 //! log or the overview frames can't know what it missed, so it gets a fresh
@@ -36,6 +37,7 @@ use crate::bus::{BusHandle, Subscriber, WorkspaceEvent, topics};
 use crate::gateway::protocol::ServerMessage;
 use crate::hub::agent_watch::AgentChangeFeed;
 use crate::hub::overview::{AgentOverview, TeamOverview};
+use crate::hub::push::{Presence, PresenceConnection};
 use crate::hub::team_events::{TeamEvent, TeamEventLog};
 use crate::hub::types::{AgentListResponse, HubClientMessage, HubSocketFrame};
 use crate::hub::{AgentDirectory, HubEvent};
@@ -54,6 +56,8 @@ pub(super) struct HubWsState {
     pub team_events: Arc<TeamEventLog>,
     pub overview: Arc<TeamOverview>,
     pub agent_changes: Arc<AgentChangeFeed>,
+    /// Where clients report whether their push device is in front of the user.
+    pub presence: Arc<Presence>,
 }
 
 /// The route that upgrades to the hub WebSocket.
@@ -83,6 +87,8 @@ async fn serve(socket: WebSocket, state: HubWsState) {
     let mut artifacts = ArtifactEvents::subscribe(&state.team_bus).await;
     let mut sessions = SessionRelay::new(&state.agent_changes);
     let mut watch_set = WatchSet::default();
+    // What this connection reports about its push device ends when it closes.
+    let presence = state.presence.connect();
 
     let boot = HubSocketFrame::HubBoot {
         boot_id: state.team_events.boot_id().to_string(),
@@ -118,8 +124,15 @@ async fn serve(socket: WebSocket, state: HubWsState) {
                 sessions.forward(&mut outbound, relayed).await
             }
             frame = inbound.next() => {
-                handle_client_frame(&mut outbound, &state, &mut watch_set, &mut sessions, frame)
-                    .await
+                handle_client_frame(
+                    &mut outbound,
+                    &state,
+                    &mut watch_set,
+                    &mut sessions,
+                    &presence,
+                    frame,
+                )
+                .await
             }
         };
         if !alive {
@@ -265,6 +278,7 @@ async fn handle_client_frame(
     state: &HubWsState,
     watch_set: &mut WatchSet,
     sessions: &mut SessionRelay,
+    presence: &PresenceConnection,
     frame: Option<Result<Message, axum::Error>>,
 ) -> bool {
     let text = match frame {
@@ -290,6 +304,10 @@ async fn handle_client_frame(
     match request {
         HubClientMessage::WatchTeam { prefixes } => {
             watch_team(outbound, state, watch_set, prefixes).await
+        }
+        HubClientMessage::Presence { device_id, active } => {
+            presence.report(&device_id, active);
+            true
         }
         HubClientMessage::SubscribeSession { agent, address } => {
             sessions

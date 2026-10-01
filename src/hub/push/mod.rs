@@ -4,7 +4,9 @@
 //! the hub to push services, the devices file ([`devices`]) holds each
 //! registered browser's subscription and preferences, [`encrypt`] seals a
 //! payload the way RFC 8291 requires, and [`deliver`] sends it and sorts the
-//! answer. Triggers call [`PushService::notify`], which returns at once; the
+//! answer. [`triggers`] decides what is worth a push and calls
+//! [`PushService::notify`], which returns at once; [`presence`] records which
+//! devices have a window in front of the user, so triggers skip them. The
 //! HTTP routes that manage devices are in `hub::http::push`. See
 //! `docs/systems-usage/notifications.md` and `docs/systems-usage/hub-http.md`.
 
@@ -13,11 +15,17 @@ mod devices;
 mod encrypt;
 mod error;
 mod keys;
+pub mod presence;
 mod service;
+mod triggers;
 pub mod types;
 
+#[cfg(test)]
+pub(in crate::hub) use encrypt::browser::Browser;
 pub use error::PushError;
+pub use presence::{Presence, PresenceConnection};
 pub use service::{DEFAULT_CONTACT, PushService, validate_subscription};
+pub(crate) use triggers::{PushTriggers, TriggerInputs};
 pub use types::{
     MAX_BODY_CHARS, PatchPushDeviceRequest, PushDevice, PushDeviceList, PushDeviceResponse,
     PushEvent, PushFailure, PushKeyResponse, PushMessage, PushPayload, PushPreferences,

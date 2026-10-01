@@ -332,6 +332,17 @@ pub struct PushDevice {
     pub preferences: PushPreferences,
 }
 
+impl PushDevice {
+    /// Whether the device's latest delivery attempt failed: it has a failure
+    /// that no success has followed.
+    #[must_use]
+    pub fn is_failing(&self) -> bool {
+        self.last_failure
+            .as_ref()
+            .is_some_and(|failure| self.last_success_at.is_none_or(|ok| failure.at > ok))
+    }
+}
+
 /// The keys of a browser's push subscription.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -539,5 +550,31 @@ mod tests {
         let text = "é".repeat(200);
         let cut = truncate_chars(&text, MAX_BODY_CHARS);
         assert_eq!(cut.chars().count(), MAX_BODY_CHARS);
+    }
+
+    #[test]
+    fn a_device_is_failing_while_its_latest_failure_has_no_success_after_it() {
+        let at = |secs: i64| DateTime::from_timestamp(1_790_000_000 + secs, 0).unwrap();
+        let device = |last_success_at: Option<i64>, failed_at: Option<i64>| PushDevice {
+            id: "d".to_string(),
+            label: "Laptop".to_string(),
+            created_at: at(0),
+            last_success_at: last_success_at.map(at),
+            last_failure: failed_at.map(|secs| PushFailure {
+                at: at(secs),
+                status: Some(400),
+                message: "no".to_string(),
+            }),
+            preferences: PushPreferences::default(),
+        };
+
+        assert!(!device(None, None).is_failing(), "never tried");
+        assert!(!device(Some(10), None).is_failing(), "only successes");
+        assert!(device(None, Some(10)).is_failing(), "only failures");
+        assert!(device(Some(10), Some(20)).is_failing(), "failed since");
+        assert!(
+            !device(Some(30), Some(20)).is_failing(),
+            "delivery recovered after the failure"
+        );
     }
 }

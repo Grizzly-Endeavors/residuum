@@ -116,6 +116,15 @@ async function changeTeamFileControl({ req, res, hub }: RouteContext): Promise<v
 }
 
 /**
+ * `{ devices }`: the push devices the hub would send no push right now,
+ * because a connected page reported them in front of the user (`presence`,
+ * kept on the mock clock) within the last minute.
+ */
+function presentPushDevices({ res, hub }: RouteContext): void {
+  json(res, 200, { devices: hub.presentPushDevices() });
+}
+
+/**
  * The hub's session relay loses frames: every hub socket page that follows a
  * session is sent `session_relay_lagged`, as a connection that fell behind
  * the relay is. The answer says how many pages were told.
@@ -126,6 +135,7 @@ function lagSessionRelay({ res, hub }: RouteContext): void {
 
 /** The test control routes. */
 export const controlRoutes: readonly Route[] = [
+  { method: "GET", pattern: "/api/mock/push/presence", handler: presentPushDevices },
   { method: "POST", pattern: "/api/mock/team-file", handler: changeTeamFileControl },
   { method: "POST", pattern: "/api/mock/session-relay-lag", handler: lagSessionRelay },
   { method: "POST", pattern: "/api/mock/missed-relay", handler: missedRelay },

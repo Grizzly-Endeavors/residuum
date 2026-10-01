@@ -230,14 +230,14 @@ pub(super) mod browser {
     use crate::hub::push::types::WebPushSubscriptionKeys;
 
     /// A subscription's key pair and authentication secret.
-    pub(in crate::hub::push) struct Browser {
+    pub(in crate::hub) struct Browser {
         private: agreement::EphemeralPrivateKey,
         public_key: [u8; PUBLIC_KEY_LEN],
         auth_secret: [u8; AUTH_SECRET_LEN],
     }
 
     impl Browser {
-        pub(in crate::hub::push) fn new() -> Self {
+        pub(in crate::hub) fn new() -> Self {
             let rng = SystemRandom::new();
             let private =
                 agreement::EphemeralPrivateKey::generate(&agreement::ECDH_P256, &rng).unwrap();
@@ -254,7 +254,7 @@ pub(super) mod browser {
         }
 
         /// The keys the browser's `PushSubscription` reports.
-        pub(in crate::hub::push) fn keys(&self) -> WebPushSubscriptionKeys {
+        pub(in crate::hub) fn keys(&self) -> WebPushSubscriptionKeys {
             WebPushSubscriptionKeys {
                 p256dh: base64url_encode(&self.public_key),
                 auth: base64url_encode(&self.auth_secret),
@@ -270,7 +270,7 @@ pub(super) mod browser {
 
         /// Open a push message the way a browser does: agree the same secret
         /// from its side, derive the same keys, and decrypt the one record.
-        pub(in crate::hub::push) fn decrypt(self, body: &[u8]) -> Vec<u8> {
+        pub(in crate::hub) fn decrypt(self, body: &[u8]) -> Vec<u8> {
             let recipient = self.recipient();
             let (salt, rest) = body.split_first_chunk::<SALT_LEN>().unwrap();
             let (record_size, rest) = rest.split_first_chunk::<4>().unwrap();

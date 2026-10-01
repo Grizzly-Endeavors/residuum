@@ -282,6 +282,30 @@ pub async fn unread(directory: &dyn AgentDirectory) -> Result<HubInboxUnread, Hu
     Ok(HubInboxUnread { total, by_agent })
 }
 
+/// The title and body of an agent's active item, for the words of a push.
+/// `None` when the active inbox no longer holds it: the user already moved it.
+///
+/// # Errors
+/// [`HubInboxError::UnknownAgent`], [`HubInboxError::BadRequest`] for an id
+/// that is not a bare item id, [`HubInboxError::Failed`] when the item's file
+/// can't be read.
+pub(crate) async fn active_text(
+    directory: &dyn AgentDirectory,
+    agent: &str,
+    id: &str,
+) -> Result<Option<(String, String)>, HubInboxError> {
+    let files = files_of(directory, agent)?;
+    validate_id(id)?;
+    let (dir, _) = InboxStatus::Active.dirs(&WorkspaceLayout::new(&files.dir));
+    if !item_exists(&dir, id).await? {
+        return Ok(None);
+    }
+    let item = crate::inbox::load_item(&dir.join(file_name(id)))
+        .await
+        .map_err(|e| failed(agent, id, "read the item", &e))?;
+    Ok(Some((item.title, item.body)))
+}
+
 /// Mark an item read, wherever it is: the active inbox, else the archive.
 ///
 /// # Errors

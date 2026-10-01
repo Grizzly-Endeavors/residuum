@@ -395,6 +395,10 @@ pub enum HubClientMessage {
     /// Replace the set of team paths this connection watches. A prefix is
     /// `team` or a path under `team/`, the spelling the change feed uses.
     WatchTeam { prefixes: Vec<String> },
+    /// The window for the push device `device_id` is now in front of the
+    /// user (`active`) or not. The client repeats `active: true` every 30
+    /// seconds while it stays so; the hub sends no push to such a device.
+    Presence { device_id: String, active: bool },
     /// Follow every event of one session on one agent.
     SubscribeSession { agent: String, address: String },
     /// Stop following a session.
@@ -673,16 +677,23 @@ mod tests {
     }
 
     #[test]
-    fn the_client_messages_are_tagged() {
-        let read = |value: serde_json::Value| -> HubClientMessage {
-            serde_json::from_value(value).unwrap()
-        };
+    fn a_client_can_watch_team_paths() {
+        let message: HubClientMessage =
+            serde_json::from_value(json!({ "type": "watch_team", "prefixes": ["team/wiki"] }))
+                .unwrap();
         assert_eq!(
-            read(json!({ "type": "watch_team", "prefixes": ["team/wiki"] })),
+            message,
             HubClientMessage::WatchTeam {
                 prefixes: vec!["team/wiki".to_string()]
             }
         );
+    }
+
+    #[test]
+    fn a_client_subscribes_to_sessions_by_agent_or_artifact() {
+        let read = |value: serde_json::Value| -> HubClientMessage {
+            serde_json::from_value(value).unwrap()
+        };
         assert_eq!(
             read(json!({ "type": "subscribe_session", "agent": "scout", "address": "spawned-x" })),
             HubClientMessage::SubscribeSession {
@@ -711,6 +722,31 @@ mod tests {
                 artifact: "chart".to_string()
             }
         );
+    }
+
+    #[test]
+    fn a_client_reports_its_push_device_present_or_not() {
+        let message: HubClientMessage = serde_json::from_value(
+            json!({ "type": "presence", "device_id": "phone-1", "active": true }),
+        )
+        .unwrap();
+        assert_eq!(
+            message,
+            HubClientMessage::Presence {
+                device_id: "phone-1".to_string(),
+                active: true
+            }
+        );
+        for incomplete in [
+            json!({ "type": "presence", "device_id": "phone-1" }),
+            json!({ "type": "presence", "active": true }),
+            json!({ "type": "presence", "device_id": "phone-1", "active": "yes" }),
+        ] {
+            assert!(
+                serde_json::from_value::<HubClientMessage>(incomplete.clone()).is_err(),
+                "{incomplete} is not a presence report"
+            );
+        }
     }
 
     #[test]

@@ -104,6 +104,7 @@ describe("hub types", () => {
   it("sends the session subscriptions as client messages", () => {
     expectTypeOf<HubClientMessage["type"]>().toEqualTypeOf<
       | "watch_team"
+      | "presence"
       | "subscribe_session"
       | "unsubscribe_session"
       | "subscribe_artifact_sessions"

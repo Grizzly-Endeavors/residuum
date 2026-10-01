@@ -102,7 +102,8 @@ export function createHub(
     relaySession,
     lagSessionRelay,
     dropClients,
-  } = openHubSocket(host, bootId, listing, (name) => agents.has(name));
+    presentDevices,
+  } = openHubSocket(host, bootId, listing, env.clock, (name) => agents.has(name));
   const teamEvents = createTeamEvents(env, bootId, sendToPages);
   const overview = createOverview(env, bootId, agents, sendToPages);
   // Every frame the hub sends is also read by the log and the overview, as
@@ -130,6 +131,7 @@ export function createHub(
       relaySession(agent.name, frame, sourceLabelOf(agent.state, frame));
     },
     lagSessionRelay,
+    presentPushDevices: presentDevices,
     teamEvents,
     overview,
     summary: mockAgentSummary,
