@@ -89,6 +89,23 @@ describe("ModelSelector", () => {
     });
   });
 
+  it("keeps the failover models after the main one when it switches the model", async () => {
+    server.files.providers = PROVIDERS.replace(
+      'main = "anthropic/claude-a"',
+      'main = ["anthropic/claude-a", "openai/gpt-x"]',
+    );
+    render(ModelSelector);
+    await screen.findByText("claude-a");
+
+    await pick("Claude B");
+
+    await vi.waitFor(() => {
+      expect(patches().map((p) => p.body)).toEqual([
+        { models: { main: ["anthropic/claude-b", "openai/gpt-x"] } },
+      ]);
+    });
+  });
+
   it("reads the file again before it writes, so it builds on what is there now", async () => {
     render(ModelSelector);
     await screen.findByText("claude-a");

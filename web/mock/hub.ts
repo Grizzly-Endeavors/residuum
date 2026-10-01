@@ -8,6 +8,7 @@ import { createHubConfigReloader } from "./hub-config-reload";
 import { openHubSocket } from "./hub-socket";
 import type { UpgradeHost } from "./sockets";
 import { createState, seedAgentData, type MockAgent, type MockHub } from "./state";
+import { createTeamEvents } from "./team-events";
 import { byName } from "./util";
 
 export function mockAgentSummary(agent: MockAgent): AgentSummary {
@@ -80,7 +81,20 @@ export function createHub(
 
   const listing = (): AgentListResponse => mockListing(agents.values());
   const bootId = env.deterministic ? MOCK_DETERMINISTIC_BOOT_ID : randomUUID();
-  const { broadcast, dropClients } = openHubSocket(host, bootId, listing);
+  const { broadcast: sendToPages, dropClients } = openHubSocket(host, bootId, listing);
+  const teamEvents = createTeamEvents(env, bootId, sendToPages);
+  // Every frame the hub sends is also read by the log, as the backend's
+  // recorder reads the hub bus.
+  const broadcast = (frame: HubServerMessage): void => {
+    sendToPages(frame);
+    teamEvents.observeHub(frame);
+  };
+  /** The log of a hub that has just started the agents the scenario created. */
+  const beginLog = (): void => {
+    teamEvents.begin(
+      [...agents.values()].sort((a, b) => byName(a.name, b.name)).map(mockAgentSummary),
+    );
+  };
 
   const hub: MockHub = {
     env,
@@ -88,6 +102,7 @@ export function createHub(
     deleted: new Map(),
     hubState,
     broadcast,
+    teamEvents,
     summary: mockAgentSummary,
     listing,
     reloadHubConfig: createHubConfigReloader(hubState, broadcast),
@@ -111,6 +126,7 @@ export function createHub(
       if (runState === "running") startConversation(agent);
       agents.set(name, agent);
       openAgentSocket(host, hub, agent);
+      teamEvents.watchAgent(agent);
       return agent;
     },
     setBusy(agent, busy) {
@@ -144,7 +160,7 @@ export function createHub(
       }
       broadcast({ type: "agent_state", agent: mockAgentSummary(agent) });
     },
-    reset() {
+    reset({ setup = false } = {}) {
       env.reset();
       dropClients();
       const gone = [...hub.deleted.values()].map((deleted) => deleted.agent);
@@ -157,10 +173,13 @@ export function createHub(
       Object.assign(hubState, createState(HUB_STATE_NAME, true, env));
       hubState.workbenchPort = workbenchPort;
       hub.reloadHubConfig = createHubConfigReloader(hubState, broadcast);
-      seed?.(hub);
+      if (setup) hubState.mode = "setup";
+      else seed?.(hub);
+      beginLog();
     },
   };
 
   seed?.(hub);
+  beginLog();
   return hub;
 }

@@ -1,4 +1,4 @@
-import { json, readJsonObject } from "./http";
+import { json, parseJsonObject, readBody, readJsonObject } from "./http";
 import type { Route, RouteContext } from "./routes";
 import { changeTeamFile } from "./team-changes";
 
@@ -59,6 +59,7 @@ function teammateMessage({ res, hub, query }: RouteContext): void {
     { role: "assistant", content: reply, timestamp: now, visibility: "user" },
   );
   agent.state.broadcast({ type: "response", reply_to: "teammate", content: reply });
+  hub.teamEvents.agentReplied(agent);
   if (agent.connectedClients() === 0) hub.addUnread(agent);
   json(res, 200, { ok: true });
 }
@@ -66,10 +67,17 @@ function teammateMessage({ res, hub, query }: RouteContext): void {
 /**
  * Put the mock back as it started (see `MockHub.reset`). Whatever a test did
  * is gone, and every connected page is dropped and reconnects to the initial
- * scenario.
+ * scenario. With `{ "setup": true }` the hub starts over with no agents, so
+ * the web UI opens the setup wizard.
  */
-function reset({ res, hub }: RouteContext): void {
-  hub.reset();
+async function reset({ req, res, hub }: RouteContext): Promise<void> {
+  const raw = await readBody(req);
+  const { setup = false } = raw.trim() === "" ? {} : parseJsonObject(raw);
+  if (typeof setup !== "boolean") {
+    json(res, 422, { error: "mock: `setup` must be true or false" });
+    return;
+  }
+  hub.reset({ setup });
   json(res, 200, { ok: true });
 }
 

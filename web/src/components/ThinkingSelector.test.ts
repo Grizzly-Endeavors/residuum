@@ -62,6 +62,28 @@ describe("ThinkingSelector", () => {
     });
   });
 
+  it("keeps the failover models when it sets a level", async () => {
+    server.files.providers = `[models]
+main = ["anthropic/claude-a", "openai/gpt-x"]
+`;
+    render(ThinkingSelector);
+    await fireEvent.mouseDown(level("high"));
+
+    await vi.waitFor(() => {
+      expect(patches()).toEqual([
+        {
+          models: {
+            main: {
+              model: ["anthropic/claude-a", "openai/gpt-x"],
+              temperature: null,
+              thinking: "high",
+            },
+          },
+        },
+      ]);
+    });
+  });
+
   it("clears the level when the active one is clicked", async () => {
     render(ThinkingSelector);
     await vi.waitFor(() => {

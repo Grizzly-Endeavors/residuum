@@ -111,4 +111,33 @@ describe("test controls", () => {
       expect(await control("teammate-message?agent=ghost")).toEqual(expected);
     });
   });
+
+  describe("reset", () => {
+    const agentNames = async (): Promise<string[]> => {
+      const res = await fetchJson(`${harness.baseUrl}/api/hub/agents`);
+      return (res.body as { agents: { name: string }[] }).agents.map((agent) => agent.name);
+    };
+
+    const resetWith = (body: unknown): Promise<{ status: number; body: unknown }> =>
+      fetchJson(`${harness.baseUrl}/api/mock/reset`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    it("starts over with no agents when asked for setup, and with the scenario's otherwise", async () => {
+      expect(await resetWith({ setup: true })).toEqual({ status: 200, body: { ok: true } });
+      expect(await agentNames()).toEqual([]);
+
+      expect(await control("reset")).toEqual({ status: 200, body: { ok: true } });
+      expect(await agentNames()).toEqual(["atlas", "brittle", "drifter", "scout"]);
+    });
+
+    it("answers 422 when setup isn't a boolean", async () => {
+      expect(await resetWith({ setup: "yes" })).toEqual({
+        status: 422,
+        body: { error: "mock: `setup` must be true or false" },
+      });
+    });
+  });
 });

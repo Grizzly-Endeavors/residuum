@@ -89,8 +89,9 @@
       // The model is chosen from the main provider's list, so it goes with
       // that provider; the thinking level and temperature stay as they are.
       const saved = await configCoordinator.edit(agentConfigFile(agent, "providers"), (raw) => {
-        const overrides = parseProvidersToml(raw).models.overrides.main;
-        return { models: { main: modelRoleJson(provider + "/" + modelId, overrides) } };
+        const { overrides, fallbacks } = parseProvidersToml(raw).models;
+        const role = modelRoleJson(provider + "/" + modelId, overrides.main, fallbacks.main);
+        return { models: { main: role } };
       });
       if (!saved.result.valid) throw new Error(saved.result.error ?? "unknown error");
       ws.send({ type: "reload" });

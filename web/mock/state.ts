@@ -16,6 +16,7 @@ import { createSessions, type MockSessions } from "./data/sessions";
 import { createWorkspaceFileContents, createWorkspaceFiles } from "./data/workspace";
 import { createMockEnv, type MockEnv } from "./env";
 import { createScheduled, type MockScheduled } from "./scheduled";
+import type { MockTeamEvents } from "./team-events";
 import type { MockUpdateStatus } from "./update";
 
 /** An agent key as the mock stores it, value included. */
@@ -152,6 +153,8 @@ export interface MockHub {
   listing: () => AgentListResponse;
   /** Send a frame to every hub WebSocket client. */
   broadcast: (frame: HubServerMessage) => void;
+  /** What has happened across the team since the hub started: `GET /api/hub/events` and the `team_event` frames. */
+  teamEvents: MockTeamEvents;
   setBusy: (agent: MockAgent, busy: boolean) => void;
   /** Tell hub clients the agent's stop has begun. Its state changes when `transition` moves it on. */
   markStopping: (agent: MockAgent) => void;
@@ -167,9 +170,10 @@ export interface MockHub {
   /**
    * Put the mock back as it started: the clock, the timers and delays, the
    * hub's own state, and the agents the scenario creates. Every socket is
-   * closed, so pages reconnect to the new state.
+   * closed, so pages reconnect to the new state. With `setup`, it starts with
+   * no agents instead, as a hub that hasn't been set up.
    */
-  reset: () => void;
+  reset: (options?: { setup?: boolean }) => void;
 }
 
 /** The remote agents an agent that has run has listed in its A2A client settings. */
