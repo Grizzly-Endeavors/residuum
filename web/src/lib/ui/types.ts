@@ -50,3 +50,12 @@ export interface FieldControl {
   readonly describedBy: string | undefined;
   readonly invalid: boolean;
 }
+
+/** Where a modal layer sits: hung below the top edge, a bottom sheet, or a left drawer. */
+export type ModalFrame = "center" | "bottom" | "left";
+
+/** Dialog widths: 400, 480 and 640px. */
+export type DialogSize = "sm" | "md" | "lg";
+
+/** A confirm dialog's go-ahead button: primary, or danger when it loses or removes something. */
+export type ConfirmTone = "default" | "danger";
