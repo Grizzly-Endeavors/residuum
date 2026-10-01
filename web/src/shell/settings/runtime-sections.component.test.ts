@@ -322,3 +322,23 @@ describe("Schedule", () => {
     expect(open).toHaveBeenCalledWith({ kind: "schedule", agent });
   });
 });
+
+describe("while Raw config holds unsaved edits to config.toml", () => {
+  it.each([
+    ["Memory", Memory, "memory", "Start summarizing at"],
+    ["Schedule", Schedule, "schedule", "Helper sessions"],
+    ["Runtime", Runtime, "runtime", "Reply time limit"],
+  ] as const)("keeps %s read-only and says why", async (_name, Section, section, label) => {
+    const scope = await loaded("");
+    scope.file("config")?.setRawDraft("timeout_secs = 5\n");
+    render(Section, { scope, section });
+
+    expect(screen.getByText(/You have unsaved edits to config\.toml in Raw config/)).toBeTruthy();
+    expect(box(label)).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Open Raw config" })).toBeEnabled();
+
+    scope.file("config")?.setRawDraft(null);
+    await settle();
+    expect(box(label)).toBeEnabled();
+  });
+});
