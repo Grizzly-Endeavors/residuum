@@ -46,7 +46,8 @@ test("Undo after saving a removal puts the server back on disk", async ({ page }
   await page.goto("/agent/atlas?settings=atlas/servers");
   await servers(page).getByRole("button", { name: "Remove filesystem" }).click();
   await saveBar(page).getByRole("button", { name: "Save changes" }).click();
-  const saved = page.getByRole("status").filter({ hasText: "Saved mcp.json." });
+  // Toasts share one status region, and the removal's own toast has an Undo too.
+  const saved = page.getByText("Saved mcp.json.", { exact: true }).locator("..");
   await expect(saved).toBeVisible();
   expect(Object.keys(await serversOnDisk(page))).not.toContain("filesystem");
 
