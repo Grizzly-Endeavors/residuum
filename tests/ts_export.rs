@@ -19,6 +19,11 @@ mod ts_export {
     };
     use residuum::hub::inbox::{HubInboxItem, HubInboxPage, HubInboxUnread, InboxStatus};
     use residuum::hub::overview::{AgentOverview, OverviewResponse};
+    use residuum::hub::push::{
+        PatchPushDeviceRequest, PushDevice, PushDeviceList, PushDeviceResponse, PushEvent,
+        PushFailure, PushKeyResponse, PushPayload, PushPreferences, PushPreferencesPatch,
+        PushTestResult, PutPushDeviceRequest, WebPushSubscription, WebPushSubscriptionKeys,
+    };
     use residuum::hub::team_events::{
         TeamEvent, TeamEventKind, TeamEventLevel, TeamEventPage, TeamEventPlace, TeamEventTarget,
     };
@@ -113,6 +118,31 @@ mod ts_export {
         InboxAttachment::export_all(&cfg).unwrap();
         HubInboxUnread::export_all(&cfg).unwrap();
         InboxStatus::export_all(&cfg).unwrap();
+
+        // Web Push: `PushKeyResponse` answers `GET /api/hub/push/key`,
+        // `PushDeviceList` answers `GET /api/hub/push/devices` (with its
+        // `PushDevice` items, their `PushPreferences` and `PushFailure`),
+        // `PutPushDeviceRequest` is the body of `PUT /api/hub/push/devices`
+        // (with the browser's `WebPushSubscription` and its keys, and a
+        // `PushPreferencesPatch`), `PatchPushDeviceRequest` the body of
+        // `PATCH /api/hub/push/devices/{id}`, `PushDeviceResponse` the answer
+        // of both, and `PushTestResult` the answer of `POST
+        // /api/hub/push/devices/{id}/test`. `PushPayload` (with `PushEvent`)
+        // is the JSON the service worker decrypts from a push message.
+        PushKeyResponse::export_all(&cfg).unwrap();
+        PushDeviceList::export_all(&cfg).unwrap();
+        PushDevice::export_all(&cfg).unwrap();
+        PushPreferences::export_all(&cfg).unwrap();
+        PushPreferencesPatch::export_all(&cfg).unwrap();
+        PushFailure::export_all(&cfg).unwrap();
+        PutPushDeviceRequest::export_all(&cfg).unwrap();
+        PatchPushDeviceRequest::export_all(&cfg).unwrap();
+        WebPushSubscription::export_all(&cfg).unwrap();
+        WebPushSubscriptionKeys::export_all(&cfg).unwrap();
+        PushDeviceResponse::export_all(&cfg).unwrap();
+        PushTestResult::export_all(&cfg).unwrap();
+        PushPayload::export_all(&cfg).unwrap();
+        PushEvent::export_all(&cfg).unwrap();
 
         // The team event log: `TeamEventPage` (with its `TeamEvent` items and
         // their `TeamEventKind`, `TeamEventLevel` and `TeamEventTarget`)

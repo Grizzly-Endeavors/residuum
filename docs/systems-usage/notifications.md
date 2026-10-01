@@ -82,6 +82,59 @@ On macOS, an urgent result is posted at the `time_sensitive` interruption level 
 
 Input-only. Items arrive from the notification router, webhook routing, and the HTTP API/UI.
 
+## Web Push
+
+Web Push delivers notifications to the user's browsers and installed apps through their push services (Google, Apple, Mozilla), whether or not a Residuum window is open. It belongs to the hub, not to an agent: one signing key and one list of devices serve every agent, and the routes that manage them are under `/api/hub/push/` (see [hub-http.md](hub-http.md#web-push-devices)).
+
+### Devices
+
+A **device** is one browser or installed app registered for notifications. The web UI registers it with its browser push subscription, a label, and its preferences; registering the same subscription again updates that device instead of adding another. A device has an `id`, its `label`, when it was created, when a notification last reached its push service (`last_success_at`), its most recent failure (`last_failure`: when, the push service's HTTP status or `null`, and a plain-language message), and four preferences, one per event it can be told about:
+
+| Preference | Event | New device |
+|------------|-------|------------|
+| `inbox_item` | an agent filed an item in the user inbox | on |
+| `agent_failed` | an agent failed to start or crashed | on |
+| `outbound_unreachable` | a task sent to a remote agent can't reach it | off |
+| `reply_while_away` | an agent replied while no Residuum window was open | off |
+
+A message is sent only to devices whose preference for its event is on. The test notification is the exception: it goes to the device that asked, whatever its preferences say.
+
+The device list is `hub/push-devices.json`, readable only by its owner because a subscription's address and secret let anyone who holds them send to that device. The API never returns the address or the keys. A file that can't be read is left alone and reported (an error from the routes and a log line) instead of being treated as empty, so a fault never turns into the loss of every registration.
+
+### The signing key
+
+Push services identify the hub by a VAPID key pair (RFC 8292), kept in `hub/push-vapid.key` (readable only by its owner). It is created the first time it is needed and is never regenerated automatically: each subscription is bound to the public key it was created with, so replacing the key would end notifications on every device. A key file that can't be read is reported and left alone; to start over, move it away, and every device then has to turn notifications on again.
+
+Each push carries a short-lived token signed with this key, naming a contact the push service can reach about misbehaving traffic: the hub config's `[push] contact` (a `mailto:` address or an `https:` URL), or `https://github.com/Grizzly-Endeavors/residuum` when it is unset. A contact that is neither is dropped with a notice and the default is used until it is fixed. A changed contact applies to the next push without a restart.
+
+Neither file is in the hub checkpoint allowlist, so a restore never rolls them back, and the file tools refuse every agent write to both.
+
+### Delivery
+
+A payload is encrypted for the device (RFC 8291, `aes128gcm`) before it leaves the hub, so the push service carries it without being able to read it. The decrypted JSON is `{ v: 1, event, agent, title, body, target, tag, badge }`:
+
+- `event` is one of `inbox_item`, `agent_failed`, `outbound_unreachable`, `reply_while_away`, or `test`.
+- `agent` is the agent the notification is about, empty for the test.
+- `body` is plain text of at most 120 characters, cut with an ellipsis when longer.
+- `target` is the app path a click opens, `tag` makes notifications with the same tag replace each other, and `badge` is the user's total unread inbox count.
+
+Each message also carries a `TTL` and an `Urgency` for the push service: `agent_failed` is urgent and kept for 24 hours; `inbox_item` is normal and kept for 24 hours; `outbound_unreachable` is normal and kept for 6 hours; `reply_while_away` and `test` are normal and kept for 1 hour.
+
+What the push service answers decides what the hub does:
+
+| Answer | The hub |
+|--------|---------|
+| any 2xx | sets the device's `last_success_at` |
+| 404 or 410 | removes the device: the browser revoked the subscription or it expired |
+| 429, any 5xx, or no answer | waits 30 seconds and tries once more, then records the outcome |
+| anything else | records a failure without retrying |
+
+Recording a failure sets the device's `last_failure` and logs at warn level with the device's label. `last_failure` stays until the next failure replaces it, so compare its `at` with `last_success_at` to tell whether delivery has recovered. A redirect is never followed.
+
+Delivery never blocks or fails what triggered it: a background send returns at once and each device's delivery runs on its own. A device removed or re-registered while its retry waits is not retried. Only an `https:` subscription address is accepted when a device registers.
+
+`POST /api/hub/push/devices/{id}/test` sends the test notification (`event: "test"`, title "Residuum test notification", target `/home`) to one device and waits for the answer. It tries once, without the 30-second retry, since a person is waiting. The answer is `{ delivered, error }`, with `error` in plain words when the push service refused it, and a device the push service no longer knows is removed.
+
 ## Tools
 
 | Tool | Purpose |
