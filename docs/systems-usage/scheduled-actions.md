@@ -42,7 +42,7 @@ See [notifications.md](notifications.md) for the full routing model.
 
 ## Scheduled View
 
-The web UI's Scheduled view (opened from the hamburger menu, and at `/scheduled`; see [heartbeats.md](heartbeats.md#scheduled-view)) lists every pending action — what it does, when it's due, its agent/skill, and whether it's currently running — with a cancel button for each, backed by `GET /api/agents/{name}/scheduled/actions` and `DELETE /api/agents/{name}/scheduled/actions/{id}`.
+The web UI's Schedule place (under each agent in the rail, at `/agent/<name>/schedule`; see [heartbeats.md](heartbeats.md#scheduled-view)) lists every pending action — what it does, when it's due, its agent/skill, and whether it's currently running — with a cancel button for each, backed by `GET /api/agents/{name}/scheduled/actions` and `DELETE /api/agents/{name}/scheduled/actions/{id}`.
 
 ## Persistence
 
