@@ -2,7 +2,6 @@
   import A2a from "../../components/settings/A2a.svelte";
   import AgentKeys from "../../components/settings/AgentKeys.svelte";
   import History from "../../components/settings/History.svelte";
-  import Integrations from "../../components/settings/Integrations.svelte";
   import Providers from "../../components/settings/Providers.svelte";
   import Secrets from "../../components/settings/Secrets.svelte";
   import { sectionsOf, type SectionId } from "../../lib/settings-sections";
@@ -55,11 +54,6 @@
           bind:models={agentScope.providersFile.form.models}
           {agent}
         />
-      {:else if section === "connections"}
-        <Integrations bind:fields={agentScope.configFile.form} part="channels" {agent} />
-        <Integrations bind:fields={agentScope.configFile.form} part="webhooks" {agent} />
-      {:else if section === "tools"}
-        <Integrations bind:fields={agentScope.configFile.form} part="tools" {agent} />
       {/if}
     {/if}
   </div>
