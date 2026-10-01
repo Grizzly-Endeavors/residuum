@@ -210,6 +210,51 @@ describe("live turns", () => {
     ]);
   });
 
+  it("shows the turn in flight after its message before it has output, under one key", () => {
+    const store = new FeedStore();
+    store.pushUserMessage("Plan the week");
+    store.handleMessage({ type: "turn_started", reply_to: "m1" });
+    let entries = groupTurns(store.feed, store.activeTurnId);
+    expect(describeEntries(entries)).toEqual(["user:Plan the week", "turn[]()"]);
+    expect(entries[1]).toMatchObject({ key: "turn:m1", live: true });
+
+    store.handleMessage({ type: "tool_call", id: "c1", name: "read_file", arguments: "{}" });
+    entries = groupTurns(store.feed, store.activeTurnId);
+    expect(entries[1]).toMatchObject({ key: "turn:m1", live: true });
+  });
+
+  it("keeps a block for a turn that ended with nothing to show only when asked", () => {
+    const store = new FeedStore();
+    store.pushUserMessage("Never mind");
+    store.handleMessage({ type: "turn_started", reply_to: "m1" });
+    store.askStop();
+    store.handleMessage({ type: "turn_ended", reply_to: "m1" });
+    store.pushUserMessage("Something else");
+
+    expect(describeEntries(groupTurns(store.feed, null))).toEqual([
+      "user:Never mind",
+      "user:Something else",
+    ]);
+    const stopped = (id: string): boolean => store.observed.get(id)?.ending === "stopped";
+    expect(describeEntries(groupTurns(store.feed, null, stopped))).toEqual([
+      "user:Never mind",
+      "turn[]()",
+      "user:Something else",
+    ]);
+  });
+
+  it("marks only the latest block of the turn in flight live", () => {
+    const store = new FeedStore();
+    store.pushUserMessage("Go");
+    store.handleMessage({ type: "turn_started", reply_to: "m1" });
+    store.handleMessage({ type: "broadcast_response", content: "First part." });
+    store.pushLocalSystem("A note in between.");
+    store.handleMessage({ type: "broadcast_response", content: "Second part." });
+
+    const blocks = groupTurns(store.feed, store.activeTurnId).filter((e) => e.kind === "turn");
+    expect(blocks.map((b) => b.live)).toEqual([false, true]);
+  });
+
   it("ends a turn the agent stopped in the middle of", () => {
     const store = new FeedStore();
     store.pushUserMessage("Long job");

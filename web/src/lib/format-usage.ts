@@ -1,6 +1,6 @@
 // ── Elapsed time / token count formatting ────────────────────────────
 //
-// Shared by the running-turn indicator and the chat footer. Kept
+// Shared by the activity line and the chat footer. Kept
 // deliberately quiet: short, muted strings, never a raw number dump.
 
 /**

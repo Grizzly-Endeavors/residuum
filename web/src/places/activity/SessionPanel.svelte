@@ -6,7 +6,6 @@
   import { router } from "../../lib/router.svelte";
   import { openSessionByAddress } from "../../lib/session-address";
   import {
-    formatDuration,
     formatLocalDateTime,
     isStoppableState,
     runIcon,
@@ -16,7 +15,6 @@
   } from "../../lib/session-format";
   import type { SessionRun } from "../../lib/session-run.svelte";
   import { Banner, Button, Disclosure, IconButton, Skeleton } from "../../lib/ui";
-  import { ws } from "../../lib/ws.svelte";
   import PanelHeader from "../../shell/panel/PanelHeader.svelte";
   import RunStatus from "./RunStatus.svelte";
 
@@ -178,26 +176,20 @@
   <Feed
     agent={run.agent}
     items={run.items}
-    verbose={ws.verbose}
     label="Transcript"
     loading={!run.loaded}
     live={working}
+    liveTurnId={run.activeTurnId}
+    observed={run.observed.get}
   >
     {#snippet empty()}
       <p class="session-empty">No messages in this run yet.</p>
     {/snippet}
     {#snippet tail()}
-      {#if working}
+      <!-- Between turns, or before the panel has seen a turn's frames, the run's own state says it is working. -->
+      {#if working && run.activeTurnId === null}
         <p class="session-working">
-          <RunStatus
-            status={{
-              tone: "working",
-              text:
-                run.turnStartedAt === null
-                  ? "Working"
-                  : `Working for ${formatDuration(now - run.turnStartedAt)}`,
-            }}
-          />
+          <RunStatus status={{ tone: "working", text: "Working" }} />
         </p>
       {/if}
     {/snippet}

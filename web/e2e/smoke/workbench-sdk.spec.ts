@@ -323,6 +323,10 @@ test.describe("residuum.on and residuum.watch", () => {
         "broadcast_response",
         "tool_call",
         "tool_result",
+        "tool_call",
+        "tool_call",
+        "tool_result",
+        "tool_result",
         "response",
         "turn_ended",
       ]);

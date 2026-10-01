@@ -66,7 +66,6 @@ describe("Feed", () => {
     render(Feed, {
       agent: "atlas",
       items: [],
-      verbose: false,
       label: "Conversation with atlas",
       empty: htmlSnippet("<p>No messages yet</p>"),
     });
@@ -78,7 +77,6 @@ describe("Feed", () => {
     render(Feed, {
       agent: "atlas",
       items: [],
-      verbose: false,
       label: "Conversation with atlas",
       loading: true,
       empty: htmlSnippet("<p>No messages yet</p>"),
@@ -86,21 +84,7 @@ describe("Feed", () => {
     expect(screen.queryByText("No messages yet")).toBeNull();
   });
 
-  it("shows tool calls only while they're asked for", async () => {
-    const view = render(Feed, {
-      agent: "atlas",
-      items: [reply, tools],
-      verbose: false,
-      label: "Conversation with atlas",
-    });
-    expect(screen.getByText("Here is the plan.")).toBeInTheDocument();
-    expect(screen.queryByText("memory_search")).toBeNull();
-
-    await view.rerender({ verbose: true });
-    expect(screen.getByText("memory_search")).toBeInTheDocument();
-  });
-
-  it("puts a turn's tool calls at the head of its block, before what it said", () => {
+  it("puts a turn's activity line at the head of its block, before what it said", () => {
     const { container } = render(Feed, {
       agent: "atlas",
       items: [
@@ -109,7 +93,6 @@ describe("Feed", () => {
         { ...tools, id: 12, turnId: "t1" },
         { id: 13, kind: "assistant", content: "Here is the plan.", turnId: "t1" },
       ],
-      verbose: true,
       label: "Conversation with atlas",
     });
     const kinds = Array.from(container.querySelectorAll<HTMLElement>("[data-feed-item]"), (el) => [
@@ -118,27 +101,43 @@ describe("Feed", () => {
     ]);
     expect(kinds).toEqual([
       ["user", false],
-      ["tool-group", true],
       ["assistant", true],
       ["assistant", true],
     ]);
+    const block = container.querySelector(".feed-turn");
+    expect(block?.firstElementChild).toHaveTextContent("Searched memory");
   });
 
-  it("leaves out a turn that has only made tool calls until they're asked for", () => {
-    const { container } = render(Feed, {
+  it("shows a turn that has only made tool calls as its line", () => {
+    render(Feed, {
       agent: "atlas",
       items: [{ ...tools, turnId: "t1" }],
-      verbose: false,
       label: "Conversation with atlas",
     });
-    expect(container.querySelector(".feed-turn")).toBeNull();
+    expect(screen.getByRole("button", { name: "Searched memory" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+  });
+
+  it("shows the turn in flight from its start, with Stop, before it has any output", () => {
+    const onStop = vi.fn();
+    render(Feed, {
+      agent: "atlas",
+      items: [{ id: 10, kind: "user", content: "Plan the week", turnId: "t1" }],
+      label: "Conversation with atlas",
+      liveTurnId: "t1",
+      onStop,
+    });
+    expect(screen.getByText("Working")).toBeInTheDocument();
+    screen.getByRole("button", { name: "Stop the reply" }).click();
+    expect(onStop).toHaveBeenCalledOnce();
   });
 
   it("puts the live tail after the items", () => {
     const { container } = render(Feed, {
       agent: "atlas",
       items: [reply],
-      verbose: false,
       label: "Conversation with atlas",
       tail: htmlSnippet('<p data-testid="live">Thinking…</p>'),
     });
@@ -155,7 +154,6 @@ describe("Feed", () => {
     render(Feed, {
       agent: "atlas",
       items: [reply],
-      verbose: false,
       label: "Conversation with atlas",
       history,
     });
@@ -171,7 +169,6 @@ describe("Feed", () => {
     render(Feed, {
       agent: "atlas",
       items: [reply],
-      verbose: false,
       label: "Conversation with atlas",
       history: { hasMore: true, loadingOlder: false, generation: 0, loadOlder },
     });

@@ -44,8 +44,8 @@ export function sampleRecentMessages(clock: MockClock): RecentMessage[] {
       tool_calls: [
         {
           id: "tc_mock_stats",
-          name: "server_command",
-          arguments: { name: "context" },
+          name: "exec",
+          arguments: { command: "residuum memory stats" },
         },
       ],
       timestamp: daysAgoAt(1, 14, 20),
