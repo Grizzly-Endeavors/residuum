@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { hub } from "../../lib/hub.svelte";
   import type { A2aVisibility } from "../../lib/hub-types";
   import { router } from "../../lib/router.svelte";
@@ -35,12 +36,18 @@
   /** The visibility being applied, shown until the hub answers. */
   let pending = $state<A2aVisibility | null>(null);
   const visibility = $derived(pending ?? hub.agent(agent)?.a2a_visibility ?? "private");
+  let choices = $state<HTMLElement>();
 
   async function changeVisibility(next: A2aVisibility): Promise<void> {
     const name = agent;
     pending = next;
     const applied = await hub.setVisibility(name, next);
     pending = null;
+    // The choices were disabled while the hub answered, which took focus from the one pressed.
+    if (document.activeElement === document.body) {
+      await tick();
+      choices?.querySelector<HTMLElement>('[aria-checked="true"]')?.focus();
+    }
     if (!applied) return;
     toast.success(
       next === "public"
@@ -72,22 +79,24 @@
   <div class="groups">
     <section class="group" aria-labelledby="a2a-find">
       <h3 class="group-title" id="a2a-find">Who can find {agent}</h3>
-      <SegmentedControl
-        label="Who can find {agent}"
-        labelHidden
-        value={visibility}
-        options={VISIBILITY}
-        disabled={pending !== null}
-        hint={VISIBILITY_HINTS[visibility]}
-        error={fieldError(scope, { kind: "config", field: "a2a_visibility" })}
-        onchange={(next) => void changeVisibility(next)}
-      />
+      <div bind:this={choices}>
+        <SegmentedControl
+          label="Who can find {agent}"
+          labelHidden
+          value={visibility}
+          options={VISIBILITY}
+          disabled={pending !== null}
+          hint={VISIBILITY_HINTS[visibility]}
+          error={fieldError(scope, { kind: "config", field: "a2a_visibility" })}
+          onchange={(next) => void changeVisibility(next)}
+        />
+      </div>
       <div class="listener">
         <p class="note">
           {#if scope.install.a2a_enabled}
-            This install's listener is on, so agents elsewhere can reach the agents they can find.
+            This install's listener is on.
           {:else}
-            This install's listener is off, so nothing outside this install can reach {agent}.
+            This install's listener is off, so nothing outside it can reach {agent}.
           {/if}
         </p>
         <Button size="sm" variant="quiet" onclick={openListener}>Change for all agents</Button>
@@ -155,6 +164,9 @@
     flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
+    padding: var(--space-8) var(--space-12);
+    border-radius: var(--corner-md);
+    background: var(--color-stone-2);
     gap: var(--space-4) var(--space-12);
   }
 </style>

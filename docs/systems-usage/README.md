@@ -38,7 +38,7 @@ Every agent's file tools and the web file API see the team layer under a `team/`
 | `config/config.example.toml`, `config/providers.example.toml`, `hub/config.example.toml` | Reference templates, regenerated from Residuum's compiled-in defaults on every startup. Write-blocked by `PathPolicy` — an edit would be silently overwritten at the next restart, so the refusal points at `config.toml`/`providers.toml` instead. |
 | `hub/config.last-known-good.toml`, `hub/<agent>.config.last-known-good.toml`, `hub/<agent>.providers.last-known-good.toml` | Gateway-owned, kept in `hub/` so the copies (which may hold plaintext provider keys) never enter an agent's workspace. Not user-edited — the gateway copies the live files here after a successful start or reload, and falls back to these copies if the live files later fail to load or start the gateway. See [Config Loading & Startup Fallback](config-loading.md). |
 | `agent-keys.toml.enc` | Encrypted agent key store in `hub/`, outside the workspace directory. Managed with `residuum agent-keys` or Settings → Agent keys; the agent adds only keys it mints. Write-blocked by `PathPolicy`, like `secrets.toml.enc`. See [Agent keys](agent-keys.md). |
-| `a2a-keys.toml` | A2A caller-key store (hashes only) in `hub/`, outside the workspace directory. Managed with `residuum a2a keys` or Settings → A2A. Write-blocked by `PathPolicy`. See [A2A](a2a.md). |
+| `a2a-keys.toml` | A2A caller-key store (hashes only) in `hub/`, outside the workspace directory. Managed with `residuum a2a keys` or the install-wide Agent-to-agent section of Settings. Write-blocked by `PathPolicy`. See [A2A](a2a.md). |
 
 ### Key principle
 

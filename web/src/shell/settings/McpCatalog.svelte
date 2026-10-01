@@ -26,11 +26,12 @@
   let tried = $state(false);
   let list = $state<HTMLElement>();
 
+  /** Read the catalog. A failed read stays on screen while Try again reads it once more. */
   async function load(): Promise<void> {
     loading = true;
-    loadError = null;
     try {
       catalog = await fetchMcpCatalog();
+      loadError = null;
     } catch (err) {
       loadError = userErrorMessage(err, { action: "Couldn't read the tool server catalog." });
     } finally {
