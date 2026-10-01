@@ -183,9 +183,9 @@ Agent scope:
 
 ## Setup wizard → restyled, same flow (W42)
 
-- [ ] Six steps with draft autosave (without secrets), restore on reload, cleared on completion
-- [ ] Welcome, Providers, Assign models, MCP servers, Integrations, Save & Start — contents unchanged
-- [ ] Back and Next on every step
+- [x] Six steps with draft autosave (without secrets), restore on reload, cleared on completion
+- [x] Welcome, Providers, Assign models, MCP servers, Integrations, Save & Start — contents unchanged
+- [x] Back and Next on every step
 
 ## Global (W15b toasts, W17 routing, W19 connection and errors, W21 keyboard)
 

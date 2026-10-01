@@ -1,5 +1,5 @@
 import { within } from "@testing-library/svelte";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch, render, screen, settle } from "../../test/component";
 import Roles from "./Roles.svelte";
 import type { ProviderKey, SetupWizardState } from "../../lib/types";
@@ -100,7 +100,7 @@ describe("Assign models step", () => {
     render(Roles, { wizardState: state, onNext: () => {}, onBack: () => {} });
     await settle();
 
-    expect(roleField("Pulse", "Model")).toHaveValue("claude-sonnet-4-6");
+    await vi.waitFor(() => expect(roleField("Pulse", "Model")).toHaveValue("claude-sonnet-4-6"));
     expect(state.roles.pulse?.model).toBe("claude-sonnet-4-6");
   });
 
@@ -116,7 +116,7 @@ describe("Assign models step", () => {
     await settle();
 
     const observer = within(screen.getByRole("group", { name: "Observer" }));
-    expect(observer.getByLabelText("Model")).toHaveValue("__other__");
+    await vi.waitFor(() => expect(observer.getByLabelText("Model")).toHaveValue("__other__"));
     expect(observer.getByLabelText("Model ID")).toHaveValue("my-local-model");
     expect(state.roles.observer?.model).toBe("my-local-model");
   });
