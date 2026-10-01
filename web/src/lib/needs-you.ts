@@ -66,10 +66,16 @@ export interface NeedsYouInput {
 
 const SEVERITY_RANK: Readonly<Record<NeedsYouSeverity, number>> = { error: 0, warn: 1, info: 2 };
 
+/** An item's time for ordering; one with no readable time goes after the dated ones. */
+function timeOf(item: NeedsYouItem): number {
+  const ms = Date.parse(item.at);
+  return Number.isNaN(ms) ? -Infinity : ms;
+}
+
 function byNeed(a: NeedsYouItem, b: NeedsYouItem): number {
   const severity = SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity];
   if (severity !== 0) return severity;
-  const newer = Date.parse(b.at) - Date.parse(a.at);
+  const newer = timeOf(b) - timeOf(a);
   if (newer !== 0 && !Number.isNaN(newer)) return newer;
   if (a.key === b.key) return 0;
   return a.key < b.key ? -1 : 1;
