@@ -109,6 +109,34 @@ Each push carries a short-lived token signed with this key, naming a contact the
 
 Neither file is in the hub checkpoint allowlist, so a restore never rolls them back, and the file tools refuse every agent write to both.
 
+### What sends a push
+
+Four things send a push, each once by its own rule. A message goes to the devices whose preference for its event is on, except the ones in front of the user (see Presence below).
+
+| Event | Sent when | Title | Body | A click opens | Tag |
+|-------|-----------|-------|------|---------------|-----|
+| `inbox_item` | an agent files an item with `user_inbox_add` | the item's title | "From <agent>: " and the start of the item's body | the item in the inbox, `/inbox?item=<agent>:<id>` | `inbox:<agent>:<id>` |
+| `agent_failed` | an agent enters the `failed` state, whether starting or running | "<agent> couldn't start", or "<agent> stopped unexpectedly" when it was running | a line chosen by the kind of error: its settings need fixing, another agent is using its Teams port, an internal error, or a pointer to Residuum for anything else | the agent's chat, `/agent/<agent>` | `failed:<agent>` |
+| `outbound_unreachable` | a task the agent sent to a remote agent has been unreachable past the tracker's 10-minute threshold, once per streak, when the tracker's notice for it goes out | "<agent> can't reach <remote>" | "A task has been waiting since <time>.", the time the streak began in the hub's timezone, with the date when it isn't today | the agent's Activity, `/agent/<agent>/activity` | `outbound:<agent>:<task id>` |
+| `reply_while_away` | a main turn the user was part of ends with a reply while no client had that agent's WebSocket open, once per turn | "<agent> replied" | the reply as a one-line plain preview | the agent's chat, `/agent/<agent>` | `reply:<agent>` (a later reply replaces an earlier one) |
+
+- A body is the item's or reply's Markdown as plain text on one line (links keep their text), cut to 120 characters. An item with no title is pushed as "New inbox item", and one with no body as "From <agent>.".
+- `badge` is the total of unread items across every agent's user inbox, counted from disk when the push is made, whether the agent is running or not.
+- An item the hub itself files when an agent fails is not an item an agent filed, so it sends no `inbox_item` push beside the `agent_failed` one. An item that left the active inbox before its push was worded (the user archived it) sends none, and one that can't be read is pushed with the generic title and the sender only, with a warning in the log.
+- A reply from a background turn (a teammate's message, a pulse) never sends `reply_while_away`, and neither does a reply a connected client could see.
+- A failed agent started again that fails again sends another `agent_failed`, and a task whose streak ended and began again sends another `outbound_unreachable`.
+- When no device wants an event, nothing is worded or counted; the push is skipped with a debug log line.
+
+### Presence
+
+A Residuum window tells the hub when it is in front of the user, so the hub doesn't push what the user is already looking at. Over the hub WebSocket (see [hub-http.md](hub-http.md#hub-websocket)), a client sends `{ "type": "presence", "device_id": "<the device's id>", "active": true }` while a window is visible and focused on a device with push turned on, and again every 30 seconds while it stays so. It sends `active: false` when the window hides or loses focus.
+
+- A device is skipped, whatever the event, while it has a report of `active: true` from the last 60 seconds that came from a connection that is still open.
+- A report ends early when its connection closes, so a closed tab or a lost network never silences a phone for the rest of the minute, and one that isn't repeated goes stale after 60 seconds.
+- Several windows of one browser are one device: it is present while any of them is active.
+- Presence is kept in memory only, and never changes what a device is registered for. The test notification ignores it.
+- A report with no `device_id` or `active`, or one that isn't JSON, is refused with a warning `notice` on that connection and changes nothing.
+
 ### Delivery
 
 A payload is encrypted for the device (RFC 8291, `aes128gcm`) before it leaves the hub, so the push service carries it without being able to read it. The decrypted JSON is `{ v: 1, event, agent, title, body, target, tag, badge }`:
@@ -130,6 +158,8 @@ What the push service answers decides what the hub does:
 | anything else | records a failure without retrying |
 
 Recording a failure sets the device's `last_failure` and logs at warn level with the device's label. `last_failure` stays until the next failure replaces it, so compare its `at` with `last_success_at` to tell whether delivery has recovered. A redirect is never followed.
+
+The user is told when a push sent in the background shows that a device has stopped working, as a warning hub notice (a toast in the web UI, and an entry in the team event log): once when the push service says the device is gone and the hub removes it, naming the device and saying to turn notifications on again on it; and once when a device that was working starts failing, with the plain-language reason. Further failures of a device that is already failing add nothing until a success ends the streak. A test notification tells only the person who asked.
 
 Delivery never blocks or fails what triggered it: a background send returns at once and each device's delivery runs on its own. A device removed or re-registered while its retry waits is not retried. Only an `https:` subscription address is accepted when a device registers.
 

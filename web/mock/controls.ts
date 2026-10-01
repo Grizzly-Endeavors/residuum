@@ -1,6 +1,6 @@
 import { json, parseJsonObject, readBody, readJsonObject } from "./http";
 import type { Route, RouteContext } from "./routes";
-import { changeTeamFile } from "./team-changes";
+import { changeAgentFile, changeTeamFile } from "./workspace-changes";
 
 /**
  * Test controls: `POST /api/mock/...` endpoints that stage a situation for the
@@ -110,16 +110,63 @@ async function setDelays({ req, res, hub }: RouteContext): Promise<void> {
  * send what the real system would (see `changeTeamFile`); the answer says what was sent.
  */
 async function changeTeamFileControl({ req, res, hub }: RouteContext): Promise<void> {
+  const change = await readFileChange(req, res);
+  if (change === null) return;
+  const outcome = changeTeamFile(hub, change.path, change.content);
+  if ("status" in outcome) json(res, outcome.status, { error: outcome.error });
+  else json(res, 200, outcome);
+}
+
+/**
+ * `{ path, content }` with `?agent=atlas`: that agent writes the file at `path`
+ * in its own workspace (`notes/today.md`), or removes it, folders included,
+ * when `content` is `null`. Its socket sends `workspace_changed` to the pages
+ * watching the path (see `changeAgentFile`); the answer says what was sent.
+ */
+async function changeAgentFileControl({ req, res, hub, query }: RouteContext): Promise<void> {
+  const agent = hub.agents.get(query.get("agent") ?? "");
+  if (!agent) {
+    json(res, 404, { error: "mock: name an agent with ?agent=" });
+    return;
+  }
+  const change = await readFileChange(req, res);
+  if (change === null) return;
+  const outcome = changeAgentFile(agent, change.path, change.content);
+  if ("status" in outcome) json(res, outcome.status, { error: outcome.error });
+  else json(res, 200, outcome);
+}
+
+/** A file change control's body, or `null` once it has answered `422` for one it can't use. */
+async function readFileChange(
+  req: RouteContext["req"],
+  res: RouteContext["res"],
+): Promise<{ path: string; content: string | null } | null> {
   const { path, content } = await readJsonObject(req);
   if (typeof path !== "string" || (typeof content !== "string" && content !== null)) {
     json(res, 422, {
       error: "mock: `path` must be a string, and `content` a string, or null to remove the file",
     });
-    return;
+    return null;
   }
-  const outcome = changeTeamFile(hub, path, content);
-  if ("status" in outcome) json(res, outcome.status, { error: outcome.error });
-  else json(res, 200, outcome);
+  return { path, content };
+}
+
+/**
+ * `{ devices }`: the push devices the hub would send no push right now,
+ * because a connected page reported them in front of the user (`presence`,
+ * kept on the mock clock) within the last minute.
+ */
+function presentPushDevices({ res, hub }: RouteContext): void {
+  json(res, 200, { devices: hub.presentPushDevices() });
+}
+
+/**
+ * The hub's session relay loses frames: every hub socket page that follows a
+ * session is sent `session_relay_lagged`, as a connection that fell behind
+ * the relay is. The answer says how many pages were told.
+ */
+function lagSessionRelay({ res, hub }: RouteContext): void {
+  json(res, 200, { notified: hub.lagSessionRelay() });
 }
 
 /**
@@ -139,8 +186,11 @@ async function hubSocketControl({ req, res, hub }: RouteContext): Promise<void> 
 
 /** The test control routes. */
 export const controlRoutes: readonly Route[] = [
+  { method: "GET", pattern: "/api/mock/push/presence", handler: presentPushDevices },
   { method: "POST", pattern: "/api/mock/hub-socket", handler: hubSocketControl },
   { method: "POST", pattern: "/api/mock/team-file", handler: changeTeamFileControl },
+  { method: "POST", pattern: "/api/mock/agent-file", handler: changeAgentFileControl },
+  { method: "POST", pattern: "/api/mock/session-relay-lag", handler: lagSessionRelay },
   { method: "POST", pattern: "/api/mock/missed-relay", handler: missedRelay },
   { method: "POST", pattern: "/api/mock/teammate-message", handler: teammateMessage },
   { method: "POST", pattern: "/api/mock/reset", handler: reset },

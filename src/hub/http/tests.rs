@@ -48,6 +48,7 @@ mod inbox;
 mod overview;
 mod overview_schedule;
 mod push;
+mod session_relay;
 
 /// The boot id every harness hub reports.
 const TEST_BOOT_ID: &str = "boot-under-test";
@@ -446,6 +447,11 @@ struct Harness {
 
 impl Harness {
     fn new() -> Self {
+        Self::over_team_bus(crate::bus::spawn_broker())
+    }
+
+    /// A harness whose hub reads the team change feed from `team_bus`.
+    fn over_team_bus(team_bus: crate::bus::BusHandle) -> Self {
         let root = tempfile::tempdir().unwrap();
         let hub_dir = root.path().join("hub");
         std::fs::create_dir_all(&hub_dir).unwrap();
@@ -464,7 +470,7 @@ impl Harness {
         let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
         let (tunnel_tx, tunnel_rx) = watch::channel(TunnelStatus::Disconnected);
         let (health_tx, health_rx) = watch::channel(WatchHealth::Native);
-        let team_bus = crate::bus::spawn_broker();
+        let changes = AgentChangeFeed::new();
         let team_events = TeamEventLog::new(TEST_BOOT_ID);
         let (_layer, span_buffer) = crate::util::telemetry::SpanBufferLayer::new(
             &crate::util::telemetry::SpanBufferConfig::default(),
@@ -509,6 +515,7 @@ impl Harness {
             push: Arc::clone(&push),
             team_events: Arc::clone(&team_events),
             overview: Arc::clone(&overview),
+            agent_changes: Arc::clone(&changes),
         };
         let app = hub_router(shared, hub);
         Self {
@@ -521,7 +528,7 @@ impl Harness {
             team_bus,
             team_events,
             overview,
-            changes: AgentChangeFeed::new(),
+            changes,
             _tunnel_tx: tunnel_tx,
             health_tx,
             _restart_rx: restart_rx,

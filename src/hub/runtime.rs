@@ -26,6 +26,7 @@ use super::directory::AgentDirectory;
 use super::host::AgentHost;
 use super::http::{HubHttpState, hub_router};
 use super::overview::{OverviewTracker, TeamOverview};
+use super::push::{PushService, PushTriggers, TriggerInputs};
 use super::relay_agents::RelayAgents;
 use super::services::{HubControl, HubServices};
 use super::team_embedding::EmbeddingSource;
@@ -236,8 +237,9 @@ async fn stop_task(name: &str, shutdown_tx: &watch::Sender<bool>, handle: JoinHa
 }
 
 /// What the hub tells its clients about the team, and what keeps it current:
-/// the event log and the overview, each fed from the host's events and from
-/// the feed of agent changes for as long as this lives.
+/// the event log, the overview and the Web Push notifications, each fed from
+/// the host's events and from the feed of agent changes for as long as this
+/// lives.
 struct TeamTracking {
     /// What has happened across the team since this process started.
     events: Arc<TeamEventLog>,
@@ -245,12 +247,14 @@ struct TeamTracking {
     overview: Arc<TeamOverview>,
     _recorder: TeamEventRecorder,
     _tracker: OverviewTracker,
+    _push_triggers: PushTriggers,
 }
 
 impl TeamTracking {
     /// Start tracking `host`. The log is the process's: its boot id is the
-    /// one the hub socket announces, and the overview names it too.
-    fn start(host: &Arc<AgentHost>) -> Self {
+    /// one the hub socket announces, and the overview names it too. `push`
+    /// sends the notifications that what the host reports calls for.
+    fn start(host: &Arc<AgentHost>, push: &Arc<PushService>) -> Self {
         let events = TeamEventLog::new(uuid::Uuid::new_v4().to_string());
         record_hub_started(&events);
         let recorder = TeamEventRecorder::spawn(
@@ -267,11 +271,20 @@ impl TeamTracking {
             host.subscribe(),
             host.agent_changes().subscribe(),
         );
+        let notices = Arc::clone(host);
+        let push_triggers = PushTriggers::spawn(TriggerInputs {
+            push: Arc::clone(push),
+            directory: Arc::clone(host) as Arc<dyn AgentDirectory>,
+            hub_events: host.subscribe(),
+            changes: host.agent_changes().subscribe(),
+            notice: Box::new(move |message| notices.notice(NoticeLevel::Warn, message, None)),
+        });
         Self {
             events,
             overview,
             _recorder: recorder,
             _tracker: tracker,
+            _push_triggers: push_triggers,
         }
     }
 }
@@ -335,9 +348,9 @@ impl HubRuntime {
 
         let host = AgentHost::new(services.clone(), hub_cfg.clone());
         // Tracking comes first, so the hub's startup notices and every
-        // agent's start reach the log and the overview: nothing they listen
-        // to is replayed.
-        let team = TeamTracking::start(&host);
+        // agent's start reach the log, the overview and the push triggers:
+        // nothing they listen to is replayed.
+        let team = TeamTracking::start(&host, &services.push);
         host.note_team_embedding(scan.team_embedding).await;
         let agents = host.discover()?;
         tracing::info!(agents = agents.len(), names = %agents.join(", "), "found agents");
@@ -790,6 +803,7 @@ pub(super) fn build_app(
         push: Arc::clone(&services.push),
         team_events: Arc::clone(team_events),
         overview: Arc::clone(overview),
+        agent_changes: Arc::clone(host.agent_changes()),
     };
     Ok(hub_router(
         Arc::clone(host) as Arc<dyn AgentDirectory>,

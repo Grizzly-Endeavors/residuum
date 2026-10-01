@@ -35,6 +35,7 @@ export type { NoticeLevel } from "./generated/NoticeLevel";
 export type { OutboundProblem } from "./generated/OutboundProblem";
 export type { OverviewResponse } from "./generated/OverviewResponse";
 export type { RestoreAgentRequest } from "./generated/RestoreAgentRequest";
+export type { SessionSubscriptionKind } from "./generated/SessionSubscriptionKind";
 export type { TeamEvent } from "./generated/TeamEvent";
 export type { TeamEventKind } from "./generated/TeamEventKind";
 export type { TeamEventLevel } from "./generated/TeamEventLevel";

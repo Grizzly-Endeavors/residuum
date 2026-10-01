@@ -9,6 +9,7 @@ use tokio::sync::{mpsc, watch};
 use crate::bus::BusHandle;
 use crate::checkpoints::CheckpointEngine;
 use crate::gateway::types::ReloadSender;
+use crate::hub::agent_watch::AgentChangeFeed;
 use crate::hub::overview::TeamOverview;
 use crate::hub::push::PushService;
 use crate::hub::team_events::TeamEventLog;
@@ -91,4 +92,8 @@ pub struct HubHttpState {
     /// hub WebSocket sends an agent's overview as it changes, and the inbox
     /// routes tell it when the hub changed an inbox.
     pub overview: Arc<TeamOverview>,
+    /// What the hub learns about its running agents as it happens. The hub
+    /// WebSocket relays the session events on it to the clients that
+    /// subscribed to a session.
+    pub agent_changes: Arc<AgentChangeFeed>,
 }
