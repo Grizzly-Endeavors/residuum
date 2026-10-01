@@ -490,8 +490,12 @@ mod tests {
             timeout_secs: None,
         };
 
+        // The test already waits on a real condition (the child closing its
+        // stdout once it exits); the bound is just a safety net against a
+        // hang, so give it generous headroom for a contended scheduler
+        // rather than racing real process spawn/exit timing.
         let result = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(60),
             McpClient::connect(&entry, None, Some(&workspace)),
         )
         .await

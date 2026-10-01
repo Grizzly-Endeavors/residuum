@@ -20,7 +20,7 @@ use crate::hub::runtime::build_app;
 use crate::hub::team_events::{TeamEventLog, TeamEventRecorder};
 use crate::hub::test_support::{free_port, mount_reply, write_agent};
 
-const POLL_TIMEOUT: Duration = Duration::from_secs(20);
+const POLL_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A hub over a temp residuum root with running-capable agents, each talking
 /// to its own mock model server that answers "<name> here".

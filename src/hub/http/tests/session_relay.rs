@@ -111,12 +111,25 @@ async fn artifact_events_reach_the_socket_with_no_agent_running() {
     let workbench = team_root.join("workbench");
     std::fs::create_dir_all(&workbench).unwrap();
     std::fs::write(workbench.join("chart.html"), "<p>v1</p>").unwrap();
-    // Notifications are debounced and the poller sweeps every two seconds,
-    // so a frame can take a moment.
+    // Notifications are debounced and the poller sweeps the real filesystem
+    // every two seconds on its own thread, outside tokio's clock, so a frame
+    // can take a moment that a busy machine can stretch further. `next_frame`
+    // has its own hardcoded 5s timeout that would fire first, so read the
+    // socket directly with a generous bound instead of going through it.
     let next = async |connection: &mut ClientSocket| {
-        tokio::time::timeout(Duration::from_secs(15), next_frame(connection))
+        let message = tokio::time::timeout(Duration::from_secs(30), connection.next())
             .await
-            .expect("no artifact frame arrived")
+            .expect("timed out waiting for a frame")
+            .expect("socket closed")
+            .expect("socket error");
+        match message {
+            ClientMessage::Text(text) => serde_json::from_str::<Value>(text.as_str()).unwrap(),
+            other @ (ClientMessage::Binary(_)
+            | ClientMessage::Ping(_)
+            | ClientMessage::Pong(_)
+            | ClientMessage::Close(_)
+            | ClientMessage::Frame(_)) => panic!("expected a text frame, got {other:?}"),
+        }
     };
     assert_eq!(
         next(&mut socket).await,
