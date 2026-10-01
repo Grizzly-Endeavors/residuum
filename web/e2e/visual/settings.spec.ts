@@ -31,6 +31,24 @@ test.describe("settings modal", { tag: "@visual" }, () => {
     await frameScreenshot(page, "settings-raw");
   });
 
+  test("an agent's Raw config with a problem", async ({ page }) => {
+    await page.goto("/agent/atlas?settings=atlas/raw");
+    const text = page.getByRole("textbox", { name: "Contents of config.toml" });
+    await text.fill(`${await text.inputValue()}\nbroken = \n`);
+    await page.getByRole("button", { name: /^Go to line/ }).click();
+    await text.blur();
+    await frameScreenshot(page, "settings-raw-problem");
+  });
+
+  test("History with a checkpoint open", async ({ page }) => {
+    await page.goto("/agent/atlas?settings=atlas/history");
+    await page.getByRole("button", { name: /^updated SOUL\.md/ }).click();
+    await page.getByRole("button", { name: "Changes to SOUL.md" }).click();
+    await expect(page.getByRole("region", { name: "Changes to SOUL.md" })).toBeVisible();
+    await page.getByRole("button", { name: "Changes to SOUL.md" }).blur();
+    await frameScreenshot(page, "settings-history");
+  });
+
   test("the phone's section list", async ({ page, isMobile }) => {
     test.skip(!isMobile, "Wider screens show the list beside a section.");
     await page.goto("/agent/atlas?settings=atlas");

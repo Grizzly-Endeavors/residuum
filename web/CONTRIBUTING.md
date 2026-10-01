@@ -117,7 +117,7 @@ web/
 │   ├── App.svelte            # The root: the setup wizard, or the shell; draws toasts and tooltips in both
 │   ├── shell/                # The shell: the rail, the phone's bottom bar and drawer, the hub banner, place routing, the Settings modal, the command palette, the app's actions, the shortcuts, feedback and Create agent dialogs
 │   │   ├── panel/                # The context panel: its frame and header, its width, and what each kind shows
-│   │   └── settings/             # The Settings modal's parts: scope picker and section list, save bar, the section API, hosted legacy sections, Raw config
+│   │   └── settings/             # The Settings modal's parts: scope picker and section list, save bar, the section API, hosted legacy sections, Raw config and its editor, the History browser
 │   ├── places/               # Rebuilt places, one folder each
 │   │   ├── home/             # Home: needs-you, the agents board and its row menus, Recently deleted, Across the team, Coming up, and the words and times they show
 │   │   ├── inbox/            # Inbox: the list, the filter and tabs, an item opened in place, and the words for sources and sizes
@@ -362,7 +362,7 @@ Each file has a baseline (its text as the model last loaded or saved it) and a f
 | `undo()` | Puts each file the last save wrote back from the checkpoint taken just before its write, in reverse order. A file that changed again since is skipped, and one that can't be restored is named. |
 | `fieldDiagnostics(ref)` and `sectionDiagnostics(section)` | The problems from a save. A diagnostic whose key path names a form field is on that field; the rest are for the top of a section. |
 
-`dirty`, `saving`, `lastResult` and `undoable` drive the save bar. `file(name)` gives a file's `lockedBy` (`"form"` keeps its raw editor read-only, `"raw"` keeps its form read-only while the raw editor holds a draft set with `setRawDraft`), `changedOnDisk`, `unreadable` and `loadError`. A change to a file that has staged changes leaves them alone, so the coordinator's re-read before Save finds the clash. A typed credential is stored under its name (`discord`, `webhook_<name>`, a provider's name) and the reference goes in the file. Immediate actions have no state here.
+`dirty`, `saving`, `lastResult` and `undoable` drive the save bar, and `unsaved` (staged changes or a raw draft) the reload guard and the scope picker's "(unsaved)". `file(name)` gives a file's `lockedBy` (`"form"` keeps its raw editor read-only, `"raw"` keeps its form read-only while the raw editor holds a draft set with `setRawDraft`), `rawDraftBase` (the text the draft started from, which a raw save checks the file against), `changedOnDisk`, `unreadable` and `loadError`. A change to a file that has staged changes leaves them alone, so the coordinator's re-read before Save finds the clash. A typed credential is stored under its name (`discord`, `webhook_<name>`, a provider's name) and the reference goes in the file. Immediate actions have no state here.
 
 `lib/settings-fields.ts` is the one map from a form field to its key (`keyPathOf`), which diffing and diagnostic placement (`locateField`) share, so a field that saves to a key is the field that shows that key's error. A form field the map doesn't cover fails `settings-fields.test.ts`. Failover lists ride along with a role (`models.fallbacks`) so a save never shortens one.
 
@@ -382,6 +382,11 @@ The save bar (`settings/SaveBar.svelte`) shows while the scope has staged change
 - A part that needs the agent running goes inside `RunningOnly` (`<RunningOnly agent={scope.agent} subject="its status">…</RunningOnly>`), which says "Start atlas to see its status." with Start until it runs.
 - Actions of the section's own register with `actionRegistry.register(key, source)` inside `untrack` in an `$effect` that returns the remover.
 - Immediate actions (secrets, keys, Cloud, updates) call their endpoints and report their own result; they have no part in the save bar.
+- While Raw config holds unsaved edits to a file the section edits (`sectionFiles` in `lib/settings-sections.ts`), `SettingsSection` says why and disables everything inside it.
+
+**Raw config** (`settings/RawConfig.svelte`) edits each of the scope's files as text in `RawEditor.svelte`: line numbers, the lines with problems marked, and the problems listed under it, each with a position moving the cursor there. The text is checked through the file's validate route half a second after typing stops. Save writes the whole file through the coordinator, even with problems, checking the file against the text the draft started from.
+
+**History** (`settings/HistorySection.svelte`) is `HistoryBrowser.svelte` for the scope: `<HistoryBrowser agent={name} />` shows an agent's workspace and config repositories, and `agent={null}` the team's and the hub's. A row opens in place (`CheckpointChanges.svelte`) to its paths, their diff and content, Restore, and Undo these changes, through `configCoordinator.restore` and `undo`.
 
 ## Code Quality
 
