@@ -240,17 +240,17 @@ web/
 
 The URL is the source of truth for where the user is. A location is a place, an optional context panel, and an optional Settings modal:
 
-| URL                           | Place                                                                                                 |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `/`                           | Redirects to `/home`                                                                                  |
-| `/home`                       | Home                                                                                                  |
-| `/inbox`                      | Inbox. `?agent=<name>` filters, `?tab=archived` shows the archive, `?item=<agent>:<id>` opens an item |
-| `/agent/:name`                | That agent's Chat                                                                                     |
-| `/agent/:name/activity`       | Its Activity                                                                                          |
-| `/agent/:name/schedule`       | Its Schedule                                                                                          |
-| `/agent/:name/files`          | Its Files                                                                                             |
-| `/team/workbench[/:artifact]` | The Workbench list, with an artifact's row selected                                                   |
-| `/team/files`                 | Shared files                                                                                          |
+| URL | Place |
+|-----|-------|
+| `/` | Redirects to `/home` |
+| `/home` | Home |
+| `/inbox` | Inbox. `?agent=<name>` filters, `?tab=archived` shows the archive, `?item=<agent>:<id>` opens an item |
+| `/agent/:name` | That agent's Chat |
+| `/agent/:name/activity` | Its Activity |
+| `/agent/:name/schedule` | Its Schedule |
+| `/agent/:name/files` | Its Files |
+| `/team/workbench[/:artifact]` | The Workbench list, with an artifact's row selected |
+| `/team/files` | Shared files |
 
 Any place takes two more parameters:
 
@@ -293,13 +293,13 @@ Run actions with `actionRegistry.run(action, text?)`. It tells the registry's ru
 
 `lib/overview.svelte.ts` (`overview`) holds what Home and the rail's Home count show beyond the hub store's agent list, activity and stopping set, which it reads from there: each agent's overview (`overviews`, `overviewOf(name)`), the newest 50 team events (`events`), the newest five unread user-inbox items across agents (`unreadItems`), and `needsYou`, worked out by `lib/needs-you.ts`: its `items` worst first (an agent that couldn't start, a running agent's task to a remote agent it can't reach, an unread inbox item), `moreInInbox`, and `count`, the rail's number. `App.svelte` starts it before the hub socket connects, and it follows the socket through `hub.onFrame`:
 
-| Frame             | The store                                                                                                                                                                    |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `hub_boot`        | Fetches the overview and the team events. When the boot id differs from the last one, it first drops everything it holds, since that came from another hub process           |
+| Frame | The store |
+|---|---|
+| `hub_boot` | Fetches the overview and the team events. When the boot id differs from the last one, it first drops everything it holds, since that came from another hub process |
 | `agents_snapshot` | The first after `hub_boot` is the connection's own; any later one replaces frames the connection lost, so it fetches the overview and the events newer than its newest again |
-| `agent_overview`  | Replaces that agent's overview. One that arrives while the overview request is out wins over the request's answer                                                            |
-| `agent_deleted`   | Forgets that agent's overview                                                                                                                                                |
-| `team_event`      | Adds the event once; one from another boot id starts the events over                                                                                                         |
+| `agent_overview` | Replaces that agent's overview. One that arrives while the overview request is out wins over the request's answer |
+| `agent_deleted` | Forgets that agent's overview |
+| `team_event` | Adds the event once; one from another boot id starts the events over |
 
 An overview answered by a different hub process than `hub_boot` announced is dropped. The inbox items are fetched again whenever an agent's unread count changes. A failed fetch lands in `loadError`, `eventsError` or `unreadItemsError` for the section that shows it, with Try again. `stopTask` and `stopWatching` act on a running agent's outbound task and drop its problem at once, ahead of the hub's frame; when the remote agent can't be reached, `taskNotes` says so on the item.
 
@@ -325,13 +325,13 @@ Calls that serve more than one scope take `agent: string | null`: the workspace 
 
 Every write to a config file goes through `configCoordinator` in `lib/config-coordinator.ts`: an agent's `config.toml`, `providers.toml` and `mcp.json`, and the hub's `config.toml`. Name a file with `agentConfigFile(agent, "providers")` or `HUB_CONFIG_FILE`. Never call a `patch…`, `put…` or checkpoint restore function from `lib/api.ts` for one of these files directly.
 
-| Call                                                         | Does                                                                                                                                                                                                                                                                                                                                    |
-| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `save(file, { baseline, edit, choose, source? })`            | Writes `edit`, either `{ patch }` (merged into the file) or `{ text }` (the whole file). `baseline` is the file's text as the caller's view last loaded or saved it. Resolves to `{ kind: "saved", result, written, raw }`, where `raw` is the file's text now and becomes the caller's next baseline, or `{ kind: "used-disk", raw }`. |
-| `edit(file, build, source?)`                                 | Reads the file, builds a patch from its text and writes it with no other write to that file in between. For a control that changes one key from the current text, like the composer's model and thinking controls.                                                                                                                      |
-| `reload(file, source?)`                                      | Reads the file from disk and tells subscribers to do the same.                                                                                                                                                                                                                                                                          |
-| `restore(agent, id, repo, path)` and `undo(agent, id, repo)` | Restore or undo a checkpoint and tell subscribers about any config file it wrote. Every caller that restores from a checkpoint uses these, whatever it restores.                                                                                                                                                                        |
-| `subscribe(file, listener)`                                  | Hears every change to `file`: `{ file, cause, source }`, with `cause` one of `write`, `reload`, `restore` or `external`. A view that shows a config value subscribes and reads the file again. Pass `source` to a write and skip notifications that carry it to ignore your own.                                                        |
+| Call | Does |
+|------|------|
+| `save(file, { baseline, edit, choose, source? })` | Writes `edit`, either `{ patch }` (merged into the file) or `{ text }` (the whole file). `baseline` is the file's text as the caller's view last loaded or saved it. Resolves to `{ kind: "saved", result, written, raw }`, where `raw` is the file's text now and becomes the caller's next baseline, or `{ kind: "used-disk", raw }`. |
+| `edit(file, build, source?)` | Reads the file, builds a patch from its text and writes it with no other write to that file in between. For a control that changes one key from the current text, like the composer's model and thinking controls. |
+| `reload(file, source?)` | Reads the file from disk and tells subscribers to do the same. |
+| `restore(agent, id, repo, path)` and `undo(agent, id, repo)` | Restore or undo a checkpoint and tell subscribers about any config file it wrote. Every caller that restores from a checkpoint uses these, whatever it restores. |
+| `subscribe(file, listener)` | Hears every change to `file`: `{ file, cause, source }`, with `cause` one of `write`, `reload`, `restore` or `external`. A view that shows a config value subscribes and reads the file again. Pass `source` to a write and skip notifications that carry it to ignore your own. |
 
 Writes to one file are serialized. Before a save the coordinator reads the file again. When it differs from `baseline` and the keys that changed overlap the keys the edit sets (a raw `{ text }` save overlaps every change), it calls `choose` with `{ file, keys, disk }`. `choose` answers `"keep-mine"` ("Keep my changes"), which goes on with the write, or `"use-disk"` ("Use what's on disk"), which writes nothing and resolves `used-disk`. No lock is held while `choose` waits, so it can ask the user. When the changes don't overlap, a patch goes ahead and the other keys' changes survive.
 
@@ -343,14 +343,14 @@ Changes made outside the coordinator reach its subscribers through `lib/config-s
 
 Each file has a baseline (its text as the model last loaded or saved it) and a form (a copy parsed into the shapes the sections bind to). What the user changed is the difference between them, so every edit is staged, removals included, and the scope keeps it while the modal is closed or another scope is open. Read the form through the scope each time (`scope.config.timeout_secs`, `scope.providers`, `scope.models`, `scope.mcpServers`): a reload gives it new objects.
 
-| Call                                                      | Does                                                                                                                                                                                                                                                                                                                |
-| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `load()`                                                  | Reads each file, keeping the staged changes of a file that has some, and follows changes made elsewhere.                                                                                                                                                                                                            |
-| `reload()`                                                | Discards the staged changes and reads every file again.                                                                                                                                                                                                                                                             |
-| `discard()`                                               | Drops the staged changes.                                                                                                                                                                                                                                                                                           |
-| `save(choose)`                                            | Stores typed secrets, then writes each changed file's diff through the coordinator, providers then config then MCP servers. A file that fails keeps its changes, and `config.toml` waits on `providers.toml`. Resolves to a `SaveResult`: what each file did, every checkpoint taken, and a plain-language message. |
-| `undo()`                                                  | Restores the last save's checkpoints in reverse order and reports each file's reverted and skipped paths, naming any file it couldn't restore.                                                                                                                                                                      |
-| `fieldDiagnostics(ref)` and `sectionDiagnostics(section)` | The problems from a save. A diagnostic whose key path names a form field is on that field; the rest are for the top of a section.                                                                                                                                                                                   |
+| Call | Does |
+|------|------|
+| `load()` | Reads each file, keeping the staged changes of a file that has some, and follows changes made elsewhere. |
+| `reload()` | Discards the staged changes and reads every file again. |
+| `discard()` | Drops the staged changes. |
+| `save(choose)` | Stores typed secrets, then writes each changed file's diff through the coordinator, providers then config then MCP servers. A file that fails keeps its changes, and `config.toml` waits on `providers.toml`. Resolves to a `SaveResult`: what each file did, every checkpoint taken, and a plain-language message. |
+| `undo()` | Restores the last save's checkpoints in reverse order and reports each file's reverted and skipped paths, naming any file it couldn't restore. |
+| `fieldDiagnostics(ref)` and `sectionDiagnostics(section)` | The problems from a save. A diagnostic whose key path names a form field is on that field; the rest are for the top of a section. |
 
 `dirty`, `saving`, `lastResult` and `undoable` drive the save bar. `file(name)` gives a file's `lockedBy` (`"form"` keeps its raw editor read-only, `"raw"` keeps its form read-only while the raw editor holds a draft set with `setRawDraft`), `changedOnDisk`, `unreadable` and `loadError`. A change to a file that has staged changes leaves them alone, so the coordinator's re-read before Save finds the clash. A typed credential is stored under its name (`discord`, `webhook_<name>`, a provider's name) and the reference goes in the file. Immediate actions have no state here.
 
@@ -387,36 +387,36 @@ Component tests live next to the component as `src/components/**/*.test.ts` (or 
 
 Tests sit in five layers. Use the lowest one that can show the behavior: a lower layer is faster and breaks for fewer unrelated reasons.
 
-| Layer         | Runs in                                             | Use it for                                                                                                           | Lives in                                                    |
-| ------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| Unit          | Node, Vitest                                        | Stores, routing, formatters, parsers, the mock's own logic                                                           | `src/**/*.test.ts`, `mock/**/*.test.ts`                     |
-| Component     | jsdom and Testing Library, in Vitest                | One component's empty, loading, error, populated and live states, with fixtures in place of a socket                 | `src/components/**/*.test.ts`, `src/**/*.component.test.ts` |
-| End-to-end    | Playwright in real Chromium, against the mock       | A user flow across components: navigation, sockets, focus, touch, anything that needs a real browser and real layout | `e2e/**/*.spec.ts`                                          |
-| Accessibility | axe-core, inside an end-to-end spec                 | Every place and overlay a change touches                                                                             | `expectNoAxeViolations` in `e2e/support/axe.ts`             |
-| Visual        | Playwright screenshots, in the Playwright container | How a surface looks: a few baselines per surface, at desktop and phone size                                          | `e2e/visual/`                                               |
+| Layer | Runs in | Use it for | Lives in |
+|---|---|---|---|
+| Unit | Node, Vitest | Stores, routing, formatters, parsers, the mock's own logic | `src/**/*.test.ts`, `mock/**/*.test.ts` |
+| Component | jsdom and Testing Library, in Vitest | One component's empty, loading, error, populated and live states, with fixtures in place of a socket | `src/components/**/*.test.ts`, `src/**/*.component.test.ts` |
+| End-to-end | Playwright in real Chromium, against the mock | A user flow across components: navigation, sockets, focus, touch, anything that needs a real browser and real layout | `e2e/**/*.spec.ts` |
+| Accessibility | axe-core, inside an end-to-end spec | Every place and overlay a change touches | `expectNoAxeViolations` in `e2e/support/axe.ts` |
+| Visual | Playwright screenshots, in the Playwright container | How a surface looks: a few baselines per surface, at desktop and phone size | `e2e/visual/` |
 
 The unit and component layers run in `npm test`, and the pre-commit hook runs them. The other three run through Playwright and are not part of the hook. Pull requests don't run CI, so a frontend change runs `just web-e2e` before it is reported, and the release workflow runs the end-to-end suite too.
 
 ### Running the end-to-end suite
 
-| Recipe                | Runs                                                                                      | Needs                            |
-| --------------------- | ----------------------------------------------------------------------------------------- | -------------------------------- |
-| `just web-e2e`        | Everything: the specs on this machine, the visual comparisons in the Playwright container | Docker                           |
-| `just web-e2e-fast`   | Everything but the visual comparisons                                                     | Chromium, installed on first use |
-| `just web-e2e-update` | Regenerates the visual baselines in the container                                         | Docker                           |
-| `just web-e2e-webkit` | The same specs in a WebKit phone, in the container                                        | Docker                           |
+| Recipe | Runs | Needs |
+|---|---|---|
+| `just web-e2e` | Everything: the specs on this machine, the visual comparisons in the Playwright container | Docker |
+| `just web-e2e-fast` | Everything but the visual comparisons | Chromium, installed on first use |
+| `just web-e2e-update` | Regenerates the visual baselines in the container | Docker |
+| `just web-e2e-webkit` | The same specs in a WebKit phone, in the container | Docker |
 
 Extra arguments go to Playwright's test command, so `just web-e2e-fast e2e/smoke/chat.spec.ts` runs one file and `--grep`, `--headed` and `--debug` work. The recipes name their projects, so `--project` adds to them instead of narrowing; to run one project, call Playwright directly: `cd web && npx playwright test --project=phone e2e/smoke`. `npm run e2e:report` opens the last HTML report. The first Docker run pulls the Playwright image, about a gigabyte. A fresh Linux machine also needs Chromium's system libraries: `cd web && npx playwright install --with-deps chromium`.
 
 The projects:
 
-| Project                            | Browser and size                                                                 | Runs specs                                                                                 |
-| ---------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `desktop`                          | Chromium, 1440×900                                                               | without a tag, against the Vite dev server                                                 |
-| `phone`                            | Chromium, 390×844, touch, mobile user agent                                      | without a tag, against the Vite dev server                                                 |
-| `preview-desktop`, `preview-phone` | The same two                                                                     | tagged `@preview`, against the production build                                            |
-| `visual-desktop`, `visual-phone`   | The same two, rendered in the Playwright container, with the page's clock frozen | tagged `@visual`                                                                           |
-| `webkit-phone`                     | WebKit as an iPhone 13, 390×844                                                  | without a tag, against the Vite dev server; local only, the release workflow leaves it out |
+| Project | Browser and size | Runs specs |
+|---|---|---|
+| `desktop` | Chromium, 1440×900 | without a tag, against the Vite dev server |
+| `phone` | Chromium, 390×844, touch, mobile user agent | without a tag, against the Vite dev server |
+| `preview-desktop`, `preview-phone` | The same two | tagged `@preview`, against the production build |
+| `visual-desktop`, `visual-phone` | The same two, rendered in the Playwright container, with the page's clock frozen | tagged `@visual` |
+| `webkit-phone` | WebKit as an iPhone 13, 390×844 | without a tag, against the Vite dev server; local only, the release workflow leaves it out |
 
 A spec runs in every project that matches its tag, so one spec covers both sizes. Branch on the size only when behavior differs, with Playwright's `isMobile` fixture. Tags go on a test or a describe block: `test("installs", { tag: "@preview" }, async ({ page }) => { ... })`. Use `@preview` for what the dev server can't show (the service worker, installability, the bundle as shipped) and `@visual` for screenshot comparisons. Give a spec one of them: a spec tagged with both matches no project and never runs.
 
