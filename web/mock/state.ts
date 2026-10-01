@@ -146,6 +146,12 @@ export interface MockHub {
   agents: Map<string, MockAgent>;
   /** Deleted agents that can be restored, by name. */
   deleted: Map<string, MockDeletedAgent>;
+  /**
+   * How many times a test rebuilt the app (`POST /api/mock/rebuild`). A
+   * preview server then serves a service worker of another version, as a
+   * rebuilt app would. A reset puts it back to zero.
+   */
+  appRebuilds: number;
   /** Hub-level and team-level state: secrets, hub config, team files, the workbench. */
   hubState: MockState;
   /** Register an agent and open its WebSocket route. */

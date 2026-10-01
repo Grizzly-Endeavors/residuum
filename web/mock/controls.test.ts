@@ -200,4 +200,13 @@ describe("test controls", () => {
       });
     });
   });
+
+  describe("rebuild", () => {
+    it("counts rebuilds of the app, and a reset starts over from the build as it is", async () => {
+      expect(await control("rebuild")).toEqual({ status: 200, body: { rebuilds: 1 } });
+      expect(await control("rebuild")).toEqual({ status: 200, body: { rebuilds: 2 } });
+      expect((await control("reset")).status).toBe(200);
+      expect(await control("rebuild")).toEqual({ status: 200, body: { rebuilds: 1 } });
+    });
+  });
 });

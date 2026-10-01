@@ -33,6 +33,8 @@ function startPlugin(kind: ServerKind = "configureServer"): Promise<DevServer> {
       },
     },
     config: {
+      root: "/unused",
+      build: { outDir: "dist" },
       logger: {
         info: (message: string) => {
           logged.push(message);
