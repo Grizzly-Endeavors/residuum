@@ -84,8 +84,6 @@ export const cacheKeyConfigRaw = (agent: string): string => agentCacheKey(agent,
 export const cacheKeyProvidersRaw = (agent: string): string =>
   agentCacheKey(agent, "/providers/raw");
 export const cacheKeyMcpRaw = (agent: string): string => agentCacheKey(agent, "/mcp/raw");
-export const cacheKeyA2aAgentsRaw = (agent: string): string =>
-  agentCacheKey(agent, "/a2a/agents/raw");
 
 // ── Error class + fetch helpers ─────────────────────────────────────
 
@@ -163,7 +161,7 @@ async function putValidated(
   path: string,
   contentType: string,
   body: string,
-  cacheKey: string,
+  cacheKey: string | null,
 ): Promise<ValidateResponse> {
   try {
     return await apiFetch<ValidateResponse>(path, {
@@ -176,7 +174,7 @@ async function putValidated(
     if (validation) return validation;
     throw err;
   } finally {
-    invalidate(cacheKey);
+    if (cacheKey !== null) invalidate(cacheKey);
   }
 }
 
@@ -357,20 +355,11 @@ export async function fetchProviderModels(
   });
 }
 
-/** Fetches the MCP catalog, rejecting on failure — for callers that show their own error + retry UI. */
-export async function fetchMcpCatalogOrThrow(): Promise<McpCatalogEntry[]> {
+/** The MCP catalog. Throws `ApiError`; a failed read isn't cached, so the caller can offer Try again. */
+export async function fetchMcpCatalog(): Promise<McpCatalogEntry[]> {
   return cachedFetch(CACHE_KEY_MCP_CATALOG, () =>
     apiFetch<McpCatalogEntry[]>(hubPath("/mcp-catalog")),
   );
-}
-
-/** Graceful fallback: catalog is optional — returns empty on failure. */
-export async function fetchMcpCatalog(): Promise<McpCatalogEntry[]> {
-  try {
-    return await fetchMcpCatalogOrThrow();
-  } catch {
-    return [];
-  }
 }
 
 export async function storeSecret(name: string, value: string): Promise<SecretResponse> {
@@ -649,10 +638,12 @@ export async function stopWatchingOutboundA2aTask(
   );
 }
 
+/**
+ * `config/a2a.json` as it is now. Never cached: the agent edits it too, and
+ * an editor opened on an old copy would save over the agent's change.
+ */
 export async function fetchA2aAgentsRaw(agent: string): Promise<string> {
-  return cachedFetch(cacheKeyA2aAgentsRaw(agent), () =>
-    apiFetchText(agentPath(agent, "/a2a/agents/raw")),
-  );
+  return apiFetchText(agentPath(agent, "/a2a/agents/raw"));
 }
 
 /**
@@ -662,12 +653,7 @@ export async function fetchA2aAgentsRaw(agent: string): Promise<string> {
  * rejected. Same shape as `putConfigRaw`/`putProvidersRaw`/`putMcpRaw`.
  */
 export async function putA2aAgentsRaw(agent: string, content: string): Promise<ValidateResponse> {
-  return putValidated(
-    agentPath(agent, "/a2a/agents/raw"),
-    "application/json",
-    content,
-    cacheKeyA2aAgentsRaw(agent),
-  );
+  return putValidated(agentPath(agent, "/a2a/agents/raw"), "application/json", content, null);
 }
 
 // ── Agent sessions API wrappers ─────────────────────────────────────

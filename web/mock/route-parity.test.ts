@@ -35,7 +35,6 @@ const MAKES_NO_REQUESTS = [
   "cacheKeyConfigRaw",
   "cacheKeyProvidersRaw",
   "cacheKeyMcpRaw",
-  "cacheKeyA2aAgentsRaw",
 ] as const;
 
 type RequestFunction = Exclude<
@@ -79,7 +78,6 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
     // Onboarding lists models before any agent exists.
     (a) => a.fetchProviderModels(null, "openai"),
   ],
-  fetchMcpCatalogOrThrow: [(a) => a.fetchMcpCatalogOrThrow()],
   fetchMcpCatalog: [(a) => a.fetchMcpCatalog()],
   storeSecret: [(a) => a.storeSecret("name", "value")],
   completeSetup: [

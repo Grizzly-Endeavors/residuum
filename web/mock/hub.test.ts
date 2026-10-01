@@ -165,6 +165,12 @@ describe("hub", () => {
       });
     });
 
+    it("writes the change to the agent's config.toml, as the hub does", async () => {
+      await request("PATCH", "/agents/scout", { a2a_visibility: "public" });
+      const raw = await fetch(`${harness.baseUrl}/api/agents/scout/config/raw`);
+      expect(await raw.text()).toMatch(/\[a2a\]\s*\nvisibility = "public"/);
+    });
+
     it("needs something to change, and an agent that exists", async () => {
       const empty = await request("PATCH", "/agents/scout", {});
       expect(empty.status).toBe(400);

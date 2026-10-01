@@ -416,7 +416,7 @@ The save bar (`settings/SaveBar.svelte`) shows while the scope has staged change
 - Flag a value that is unreasonable, such as a limit of zero that blocks work, with a note beside the field. Never block the save.
 - A part that needs the agent running goes inside `RunningOnly` (`<RunningOnly agent={scope.agent} subject="its status">…</RunningOnly>`), which says "Start atlas to see its status." with Start until it runs.
 - Actions of the section's own register with `actionRegistry.register(key, source)` inside `untrack` in an `$effect` that returns the remover.
-- Immediate actions (secrets, keys, Cloud, updates) call their endpoints and report their own result; they have no part in the save bar.
+- Immediate actions (secrets, keys, Cloud, updates, an agent's visibility, its `a2a.json`) call their endpoints and report their own result; they have no part in the save bar. One that writes a file the scope holds, as visibility writes `config.toml` through the hub, calls `scope.load()` afterwards so the scope's other views read it again.
 - While Raw config holds unsaved edits to a file the section edits (`sectionFiles` in `lib/settings-sections.ts`), `SettingsSection` says why and disables everything inside it.
 
 **Raw config** (`settings/RawConfig.svelte`) edits each of the scope's files as text in the Files editor (`places/files/TextEditor.svelte`) as a field: line numbers, the lines with problems marked, and the problems listed under it, each with a position moving the cursor there. The text is checked through the file's validate route half a second after typing stops. Save writes the whole file through the coordinator, even with problems, checking the file against the text the draft started from.

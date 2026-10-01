@@ -11,6 +11,7 @@ import type { Component } from "svelte";
 import type { FieldRef } from "../../lib/settings-fields";
 import type { AgentScopeModel, AllScopeModel } from "../../lib/settings-model.svelte";
 import type { AgentSectionId, AllSectionId } from "../../lib/settings-sections";
+import AgentToAgent from "./AgentToAgent.svelte";
 import CloudSection from "./CloudSection.svelte";
 import DiagnosticsSection from "./DiagnosticsSection.svelte";
 import GeneralSection from "./GeneralSection.svelte";
@@ -20,6 +21,7 @@ import Memory from "./Memory.svelte";
 import RawConfig from "./RawConfig.svelte";
 import Runtime from "./Runtime.svelte";
 import Schedule from "./Schedule.svelte";
+import ToolServers from "./ToolServers.svelte";
 import UpdatesSection from "./UpdatesSection.svelte";
 
 export type SettingsScope = AgentScopeModel | AllScopeModel;
@@ -37,6 +39,8 @@ export interface AllSectionProps {
 }
 
 export const AGENT_SECTION_VIEWS: Partial<Record<AgentSectionId, Component<AgentSectionProps>>> = {
+  servers: ToolServers,
+  a2a: AgentToAgent,
   memory: Memory,
   schedule: Schedule,
   runtime: Runtime,
