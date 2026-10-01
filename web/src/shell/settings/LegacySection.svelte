@@ -52,7 +52,7 @@
       {#if section === "general"}
         <HubGeneral bind:fields={allScope.configFile.form} />
       {:else if section === "cloud"}
-        <Integrations bind:fields={allScope.configFile.form} part="cloud" agent={null} />
+        <Integrations bind:fields={allScope.configFile.form} />
       {:else if section === "notifications"}
         <p class="settings-placeholder">
           Push notifications aren't available in this version of Residuum.
@@ -79,11 +79,6 @@
           bind:models={agentScope.providersFile.form.models}
           {agent}
         />
-      {:else if section === "connections"}
-        <Integrations bind:fields={agentScope.configFile.form} part="channels" {agent} />
-        <Integrations bind:fields={agentScope.configFile.form} part="webhooks" {agent} />
-      {:else if section === "tools"}
-        <Integrations bind:fields={agentScope.configFile.form} part="tools" {agent} />
       {:else if section === "memory"}
         <Memory bind:fields={agentScope.configFile.form} />
       {:else if section === "schedule"}
