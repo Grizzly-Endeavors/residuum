@@ -96,4 +96,4 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 
 - Not API documentation. Tool parameter schemas live in the code.
 - Not onboarding content. The `residuum-getting-started` skill handles first-run UX.
-- Not a design rationale. The `docs/*.md` design docs explain *why* decisions were made. This directory explains *how things are meant to work*.
+- Not a design rationale. [Design philosophy](../design-philosophy.md) explains the principles behind decisions. This directory explains *how things are meant to work*.
