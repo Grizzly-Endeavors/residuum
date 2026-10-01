@@ -100,6 +100,40 @@ describe("Feed", () => {
     expect(screen.getByText("memory_search")).toBeInTheDocument();
   });
 
+  it("puts a turn's tool calls at the head of its block, before what it said", () => {
+    const { container } = render(Feed, {
+      agent: "atlas",
+      items: [
+        { id: 10, kind: "user", content: "Plan the week", turnId: "t1" },
+        { id: 11, kind: "assistant", content: "Checking first.", turnId: "t1" },
+        { ...tools, id: 12, turnId: "t1" },
+        { id: 13, kind: "assistant", content: "Here is the plan.", turnId: "t1" },
+      ],
+      verbose: true,
+      label: "Conversation with atlas",
+    });
+    const kinds = Array.from(container.querySelectorAll<HTMLElement>("[data-feed-item]"), (el) => [
+      el.dataset.kind,
+      el.parentElement?.classList.contains("feed-turn") ?? false,
+    ]);
+    expect(kinds).toEqual([
+      ["user", false],
+      ["tool-group", true],
+      ["assistant", true],
+      ["assistant", true],
+    ]);
+  });
+
+  it("leaves out a turn that has only made tool calls until they're asked for", () => {
+    const { container } = render(Feed, {
+      agent: "atlas",
+      items: [{ ...tools, turnId: "t1" }],
+      verbose: false,
+      label: "Conversation with atlas",
+    });
+    expect(container.querySelector(".feed-turn")).toBeNull();
+  });
+
   it("puts the live tail after the items", () => {
     const { container } = render(Feed, {
       agent: "atlas",
