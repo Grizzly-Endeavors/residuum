@@ -89,6 +89,43 @@ test.describe("settings modal", { tag: "@visual" }, () => {
   });
 });
 
+/** The agent's Model section, compared whole: it holds nothing legacy. */
+test.describe("settings modal: Model", { tag: "@visual" }, () => {
+  test("Model as Fix settings opens it, with brittle's model flagged", async ({ page }) => {
+    await page.goto("/agent/brittle");
+    await page.getByRole("button", { name: "Fix settings" }).click();
+    const model = page
+      .getByRole("region", { name: "Main model" })
+      .getByRole("combobox", { name: "Model" });
+    await expect(model).toBeFocused();
+    await expect(model.locator("option", { hasText: "gpt-9 (not in the list)" })).toHaveCount(1);
+    await expectScreenshot(page, "settings-model-fix");
+  });
+
+  test("Model with a job's own model and a provider open", async ({ page }) => {
+    await page.goto("/agent/atlas?settings=atlas/model");
+    // The scope picker names each agent's state once the hub socket has said it.
+    await expect(
+      page.locator("[data-scope-picker] option", { hasText: "brittle (couldn't start)" }),
+    ).toHaveCount(1);
+    await page.getByRole("button", { name: "Add a provider" }).click();
+    const form = page.getByRole("form", { name: "Add a provider" });
+    await form.getByLabel("Name").fill("work");
+    await form.getByLabel("Type").selectOption("openai");
+    await form.getByRole("button", { name: "Add provider" }).click();
+    await page.getByRole("button", { name: "Edit work" }).click();
+    await page.getByRole("button", { name: "Use different models for specific jobs" }).click();
+    const summarizing = page.getByRole("group", { name: "Summarizing older messages" });
+    await summarizing.getByRole("combobox", { name: "Provider" }).selectOption("work");
+    await expect(
+      summarizing.getByRole("combobox", { name: "Model" }).locator("option", { hasText: "o3" }),
+    ).toHaveCount(1);
+    await summarizing.getByRole("combobox", { name: "Provider" }).scrollIntoViewIfNeeded();
+    await summarizing.getByRole("combobox", { name: "Provider" }).blur();
+    await expectScreenshot(page, "settings-model-jobs");
+  });
+});
+
 /** The rebuilt All agents sections hold nothing legacy, so the whole modal is compared. */
 test.describe("settings modal: All agents sections", { tag: "@visual" }, () => {
   test("General, with the timezone and the gateway options open", async ({ page }) => {

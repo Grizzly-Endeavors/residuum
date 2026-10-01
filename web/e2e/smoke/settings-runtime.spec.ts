@@ -58,10 +58,18 @@ test("Memory: a threshold is saved, read back from disk, and the reviewing setti
   expect(text).toMatch(/\[subconscious\][^[]*enabled = true/);
 });
 
-test("Memory: Choose the model goes to the Model section", async ({ page }) => {
+test("Memory: Choose the model goes to the reviewing role in the Model section", async ({
+  page,
+}) => {
   await page.goto("/agent/atlas?settings=atlas/memory");
   await page.getByRole("button", { name: "Choose the model that reviews replies" }).click();
   await expect(page.getByRole("heading", { name: "Model", level: 2 })).toBeVisible();
+  await expect(
+    page
+      .getByRole("group", { name: "Reviewing replies" })
+      .getByRole("combobox", { name: "Provider" }),
+  ).toBeFocused();
+  await expectNoAxeViolations(page, overlay);
 });
 
 test("Schedule: pulses are switched off, saved and read back from disk", async ({ page }) => {
