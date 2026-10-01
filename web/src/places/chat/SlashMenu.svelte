@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { AppAction } from "../lib/action-registry.svelte";
-  import ActionOption from "../shell/ActionOption.svelte";
+  import type { AppAction } from "../../lib/action-registry.svelte";
+  import ActionOption from "../../shell/ActionOption.svelte";
 
   // The composer's `/` menu: the chat actions from the registry, above the
   // message box, which keeps focus and points at the active one. Option ids
@@ -53,6 +53,5 @@
     border-radius: var(--corner-lg);
     background: var(--color-stone-3);
     box-shadow: var(--shadow-float);
-    font-family: var(--font-ui);
   }
 </style>

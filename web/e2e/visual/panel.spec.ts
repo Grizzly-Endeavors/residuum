@@ -5,18 +5,18 @@ import { expectScreenshot } from "../support/screenshot";
 
 /**
  * The context panel's baselines: beside the chat at wide width, floating at
- * medium width, and a full-screen sheet on phones. Hosted legacy views are
- * left out, since their own units give them baselines when they are rebuilt:
- * the panel's is painted over, and the place's is hidden rather than painted
- * over, because a mask paints over everything in its box, and the panel
- * floats over the place at medium width and covers it on phones.
+ * medium width, and a full-screen sheet on phones, with a file, a session run
+ * and the conversation size in it.
  */
 
-async function panelScreenshot(page: Page, name: string): Promise<void> {
-  await page.addStyleTag({ content: "main [data-legacy-view] { visibility: hidden; }" });
-  await expectScreenshot(page, name, {
-    mask: [page.locator("aside [data-legacy-view], [data-overlay-host] [data-legacy-view]")],
-  });
+/**
+ * The composer beside the panel has read its model. On a phone the sheet
+ * makes it inert, which hides it from role queries.
+ */
+async function composerSettled(page: Page): Promise<void> {
+  await expect(
+    page.getByRole("button", { name: /^Model: Claude Sonnet 4\.6/, includeHidden: true }),
+  ).toBeAttached();
 }
 
 test.describe("context panel", { tag: "@visual" }, () => {
@@ -24,14 +24,24 @@ test.describe("context panel", { tag: "@visual" }, () => {
     await page.goto("/agent/atlas?panel=file:team/wiki/index.md");
     await expect(page.getByRole("heading", { name: "index.md" })).toBeVisible();
     await expect(await expectFileOpen(page, "index.md")).toHaveValue(/# Wiki Index/);
-    await panelScreenshot(page, "panel-file");
+    await composerSettled(page);
+    await expectScreenshot(page, "panel-file");
   });
 
   test("a session run beside Activity, or over it on a phone", async ({ page }) => {
     await page.goto("/agent/atlas/activity?panel=session:atlas:run-live-research");
     await expect(page.getByText("Starting with what's already in the wiki.")).toBeVisible();
     await expect(page.getByRole("heading", { name: /^Running now/ })).toBeAttached();
-    await panelScreenshot(page, "panel-session");
+    await expectScreenshot(page, "panel-session");
+  });
+
+  test("the conversation size beside the chat, or over it on a phone", async ({ page }) => {
+    await page.goto("/agent/atlas?panel=size");
+    await expect(page.getByText("Tools used", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Token counts" }).click();
+    await expect(page.getByText("412,880")).toBeVisible();
+    await composerSettled(page);
+    await expectScreenshot(page, "panel-size");
   });
 
   test("at medium width", async ({ page, isMobile }) => {
@@ -40,6 +50,6 @@ test.describe("context panel", { tag: "@visual" }, () => {
     await page.goto("/agent/scout/schedule?panel=file:SOUL.md");
     await expect(page.getByRole("heading", { name: "Pulses" })).toBeVisible();
     await expect(await expectFileOpen(page, "SOUL.md")).toHaveValue(/# Soul/);
-    await panelScreenshot(page, "panel-medium");
+    await expectScreenshot(page, "panel-medium");
   });
 });

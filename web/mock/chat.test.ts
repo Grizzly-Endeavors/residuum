@@ -116,10 +116,10 @@ describe("chat routes", () => {
     });
   });
 
-  it("reports usage as zero totals", async () => {
+  it("reports the conversation's usage totals", async () => {
     expect(await fetchJson(`${harness.baseUrl}/api/usage`)).toEqual({
       status: 200,
-      body: { input_tokens: 0, output_tokens: 0, context_tokens: null, tool_calls: 0 },
+      body: { input_tokens: 412_880, output_tokens: 9_214, context_tokens: 18_402, tool_calls: 37 },
     });
   });
 });
@@ -196,10 +196,12 @@ describe("chat turns", () => {
       "broadcast_response",
       "tool_call",
       "tool_result",
+      "turn_usage",
       "tool_call",
       "tool_call",
       "tool_result",
       "tool_result",
+      "turn_usage",
       "response",
       "turn_ended",
     ]);
@@ -268,6 +270,37 @@ describe("chat turns", () => {
     expect(new Set(recorded().map((m) => m.turn_id))).toEqual(new Set(["m1"]));
   });
 
+  it("adds each turn's usage to the conversation's totals, and reports them", () => {
+    const before = { ...state.usage };
+    chat.send(message("hello"));
+    vi.advanceTimersByTime(TURN_MS);
+    expect(state.usage.input_tokens).toBeGreaterThan(before.input_tokens);
+    expect(state.usage.output_tokens).toBeGreaterThan(before.output_tokens);
+    expect(state.usage.tool_calls).toBe(before.tool_calls + 3);
+    expect(frames.filter((f) => f.type === "turn_usage").at(-1)).toMatchObject({
+      reply_to: "m1",
+      has_usage: true,
+      tool_calls: 3,
+      session_totals: state.usage,
+    });
+  });
+
+  it("follows a message starting with remember with memory work, then ends it", () => {
+    const work = (): unknown[] => frames.filter((f) => f.type === "post_turn_activity");
+    chat.send(message("hello"));
+    vi.advanceTimersByTime(TURN_MS);
+    expect(work()).toEqual([]);
+
+    chat.send(message("remember the plants", "m2"));
+    vi.advanceTimersByTime(TURN_MS);
+    expect(work()).toEqual([{ type: "post_turn_activity", kind: "memory", active: true }]);
+    vi.advanceTimersByTime(2000);
+    expect(work()).toEqual([
+      { type: "post_turn_activity", kind: "memory", active: true },
+      { type: "post_turn_activity", kind: "memory", active: false },
+    ]);
+  });
+
   it("marks the agent busy for the length of the turn", () => {
     chat.send(message("hello"));
     expect(busy).toEqual([true]);
@@ -296,16 +329,17 @@ describe("chat turns", () => {
         "broadcast_response",
         "tool_call",
         "tool_result",
+        "turn_usage",
         "tool_call",
         "tool_call",
       ]);
 
       // Frames sent while the connection is down go nowhere.
       vi.advanceTimersByTime(RECONNECT_MS - DROP_MS);
-      expect(types()).toHaveLength(6);
+      expect(types()).toHaveLength(7);
 
       vi.advanceTimersByTime(DROP_TURN_MS - RECONNECT_MS);
-      expect(types().slice(6)).toEqual(["response", "turn_ended"]);
+      expect(types().slice(7)).toEqual(["turn_usage", "response", "turn_ended"]);
       expect(busy).toEqual([true, false]);
       expect(recorded()).toHaveLength(7);
     });
@@ -319,6 +353,7 @@ describe("chat turns", () => {
         "broadcast_response",
         "tool_call",
         "tool_result",
+        "turn_usage",
         "tool_call",
         "tool_call",
       ]);
@@ -335,7 +370,7 @@ describe("chat turns", () => {
 
       // The page never comes back in the simulation's timeline: nothing more is sent.
       vi.advanceTimersByTime(DROP_TURN_MS);
-      expect(types()).toHaveLength(6);
+      expect(types()).toHaveLength(7);
     });
 
     it("drop compress: history is compressed into ep-004 while the page is away", () => {

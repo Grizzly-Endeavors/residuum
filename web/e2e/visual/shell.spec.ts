@@ -4,13 +4,12 @@ import { expectPaletteOpen } from "../support/lazy";
 import { expectScreenshot } from "../support/screenshot";
 
 /**
- * The shell's baselines. A hosted legacy view is painted over: its own unit
- * gives it baselines when it is rebuilt. Home's baselines, with every agent
- * closed in the rail, are in `home.spec.ts`.
+ * The shell's baselines. Home's baselines, with every agent closed in the
+ * rail, are in `home.spec.ts`.
  */
 
 async function shellScreenshot(page: Page, name: string): Promise<void> {
-  await expectScreenshot(page, name, { mask: [page.locator("[data-legacy-view]")] });
+  await expectScreenshot(page, name);
 }
 
 test.describe("shell", { tag: "@visual" }, () => {
@@ -19,6 +18,8 @@ test.describe("shell", { tag: "@visual" }, () => {
     await expect(
       page.getByText("Hi, this is atlas. You are in my conversation, not scout's."),
     ).toBeVisible();
+    // The composer has read the model.
+    await expect(page.getByRole("button", { name: /^Model: Claude Sonnet 4\.6/ })).toBeAttached();
     await shellScreenshot(page, "shell-chat");
   });
 
@@ -49,15 +50,11 @@ test.describe("shell", { tag: "@visual" }, () => {
       .getByRole("button", { name: "Help" })
       .click();
     await expect(page.getByRole("menu", { name: "Help" })).toBeVisible();
-    // A mask paints over everything in its box, the drawer included, so the
-    // phone's drawer shot leaves the dimmed place behind it unmasked.
-    if (isMobile) await expectScreenshot(page, "shell-help-menu");
-    else await shellScreenshot(page, "shell-help-menu");
+    await shellScreenshot(page, "shell-help-menu");
   });
 
-  // An overlay's shot is unmasked: a mask paints over everything in its box,
-  // the overlay included, and the scrim dims the place behind it. The place is
-  // the Schedule, which lays out the same on every run; the chat doesn't.
+  // An overlay sits over the Schedule, which lays out the same on every run;
+  // the chat doesn't.
 
   test("the command palette", async ({ page, isMobile }) => {
     await page.goto("/agent/atlas/schedule");

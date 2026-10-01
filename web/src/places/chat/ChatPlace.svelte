@@ -10,19 +10,18 @@
   import type { ImageAttachment } from "../../lib/types";
   import { EmptyState, overlayOpen } from "../../lib/ui";
   import { ws } from "../../lib/ws.svelte";
-  import ChatFooter from "../../components/ChatFooter.svelte";
-  import ChatInput from "../../components/ChatInput.svelte";
   import Feed from "../../feed/Feed.svelte";
   import type { FeedHistory } from "../../feed/feed-history";
   import type { ShellActions } from "../../shell/shell-actions";
   import ChatHeader from "./ChatHeader.svelte";
+  import Composer from "./Composer.svelte";
+  import PostTurnStatus from "./PostTurnStatus.svelte";
   import StateCard from "./StateCard.svelte";
 
   // An agent's Chat: its header, the conversation, and under it the composer.
   // The agent is the bound one, so the conversation is the coordinator's
   // feed. While the agent isn't running, its state card takes the
-  // composer's place at the end of the conversation. The composer and its
-  // footer are the legacy ones until their unit rebuilds them.
+  // composer's place at the end of the conversation.
 
   let { agent, actions }: { agent: string; actions: ShellActions } = $props();
 
@@ -121,7 +120,9 @@
       {/if}
     {/snippet}
     {#snippet tail()}
-      {#if summary && shownState !== null && shownState !== "running"}
+      {#if running}
+        <PostTurnStatus memory={store.memoryWorking} review={store.subconsciousWorking} />
+      {:else if summary && shownState !== null && shownState !== "running"}
         <div bind:this={cardEl}>
           <StateCard agent={summary} shown={shownState} alone={store.feed.length === 0} {actions} />
         </div>
@@ -129,18 +130,14 @@
     {/snippet}
   </Feed>
   {#if running}
-    <div class="chat-composer" data-legacy-view bind:this={composerEl} {@attach stopOnEscape}>
-      <ChatInput
-        onSend={handleSend}
-        onStop={() => ws.stop()}
-        isProcessing={store.isProcessing}
-        reconnecting={ws.transport.status !== "connected"}
-        pendingCount={ws.transport.pendingCount}
-      />
-      <ChatFooter
-        usage={store.sessionUsage}
-        memoryWorking={store.memoryWorking}
-        subconsciousWorking={store.subconsciousWorking}
+    <div class="chat-composer" bind:this={composerEl} {@attach stopOnEscape}>
+      <Composer
+        {agent}
+        replying={store.activeTurnId !== null}
+        reconnecting={ws.transport.lost}
+        queued={ws.queuedMessages}
+        onsend={handleSend}
+        onstop={() => ws.stop()}
       />
     </div>
   {/if}
@@ -160,28 +157,14 @@
     justify-content: center;
   }
 
-  /* The legacy composer floats over its feed; here it sits under the conversation. */
   .chat-composer {
     flex: none;
-    padding: 0 var(--space-24) var(--space-8);
-
-    & :global(.chat-input-area) {
-      position: static;
-      width: auto;
-      max-width: var(--layout-reading-width);
-      margin: 0 auto;
-      transform: none;
-    }
-
-    & :global(.chat-footer) {
-      max-width: var(--layout-reading-width);
-      margin: 0 auto;
-    }
+    padding: 0 var(--space-24) var(--space-18);
   }
 
   @media (max-width: 760px) {
     .chat-composer {
-      padding: 0 var(--space-10) var(--space-4);
+      padding: 0 var(--space-10) var(--space-10);
     }
   }
 </style>

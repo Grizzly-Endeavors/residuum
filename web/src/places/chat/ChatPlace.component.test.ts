@@ -65,6 +65,13 @@ let shell: ShellActions;
 beforeEach(() => {
   vi.stubGlobal("IntersectionObserver", NoObserver);
   vi.stubGlobal("ResizeObserver", NoObserver);
+  // The composer's model control is a popover, not the phone's sheet.
+  vi.stubGlobal("matchMedia", (media: string) => ({
+    matches: false,
+    media,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }));
   stubWebSocket();
   mockFetch(() => jsonResponse({}, 404));
   hub.handleFrame(
@@ -201,7 +208,7 @@ describe("the conversation", () => {
     expect(screen.getByRole("textbox")).toBeInTheDocument();
   });
 
-  it("shows the live turn and counters of the agent that is open, not the one that was", async () => {
+  it("shows the live turn of the agent that is open, not the one that was", async () => {
     setViewedAgent("scout");
     ws.store.handleMessage({ type: "turn_started", reply_to: "t1" });
     ws.store.handleMessage({
@@ -210,24 +217,36 @@ describe("the conversation", () => {
       name: "memory_search",
       arguments: { query: "release notes" },
     });
-    ws.store.sessionUsage = {
-      input_tokens: 900,
-      output_tokens: 300,
-      tool_calls: 7,
-      context_tokens: null,
-    };
     render(ChatPlace, { agent: "scout", actions: shell });
     await settle();
     expect(screen.getByText("Working")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /^Searching memory for “release notes”/ }),
     ).toBeVisible();
-    expect(screen.getByText(/7 tool calls/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop reply" })).toBeInTheDocument();
 
     setViewedAgent("atlas");
     await settle();
     expect(screen.queryByText("Working")).toBeNull();
-    expect(screen.queryByText(/7 tool calls/)).toBeNull();
+  });
+
+  it("says what the agent is doing with its memory after a reply, until it's done", async () => {
+    setViewedAgent("atlas");
+    render(ChatPlace, { agent: "atlas", actions: shell });
+    ws.store.handleMessage({ type: "post_turn_activity", kind: "memory", active: true });
+    await settle();
+    const status = screen.getByText("Noting what matters from this conversation");
+    expect(status.closest("[role=status]")).not.toBeNull();
+
+    ws.store.handleMessage({ type: "post_turn_activity", kind: "subconscious", active: true });
+    await settle();
+    expect(
+      screen.getByText("Noting what matters from this conversation and reviewing the last reply"),
+    ).toBeInTheDocument();
+
+    ws.store.clearPostTurnActivity();
+    await settle();
+    expect(screen.queryByText(/Noting what matters/)).toBeNull();
   });
 });
 

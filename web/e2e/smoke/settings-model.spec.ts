@@ -52,7 +52,7 @@ test("Fix settings flags brittle's model, and after Save a restart from its card
   await page.getByRole("button", { name: "Close settings" }).click();
   await failed.getByRole("button", { name: "Restart brittle" }).click();
   await expect(failed).toHaveCount(0);
-  await expect(page.getByRole("textbox", { name: "Send a message..." })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Message brittle" })).toBeVisible();
 });
 
 test("a provider is added with its key stored, then removed", async ({ page }) => {

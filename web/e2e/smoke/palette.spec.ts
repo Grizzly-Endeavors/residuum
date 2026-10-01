@@ -89,7 +89,8 @@ test("the palette runs Summarize older messages now", async ({ page, isMobile })
   ).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("Enter");
   await expect(dialog).toBeHidden();
-  await expect(page.getByText("Asked atlas to summarize older messages.")).toBeVisible();
+  // That it started, then the agent's own word that it's done.
+  await expect(page.getByText("atlas is summarizing older messages…")).toBeVisible();
   await expect(page.getByText("Command 'observe' executed. (mock)")).toBeVisible();
 });
 
@@ -131,59 +132,6 @@ test("an agent's own palette lists its places and sessions, and opens a session 
   await expect.poll(() => address(page)).toMatch(/^\/agent\/atlas\/activity\?panel=session:atlas:/);
 });
 
-test.describe("the composer's / menu", () => {
-  test("lists the chat actions, narrows as you type, and Enter runs one", async ({
-    page,
-    isMobile,
-  }) => {
-    await page.goto("/agent/atlas");
-    const box = page.locator(".chat-input");
-    await box.click();
-    await page.keyboard.type("/");
-    const menu = page.getByRole("listbox", { name: "Chat actions" });
-    await expect(menu).toBeVisible();
-    await expect(menu.getByRole("option", { name: /Stop reply/ })).toContainText(
-      "atlas isn't replying right now",
-    );
-    // Only the phone's menu is tall enough to scroll.
-    await expectNoAxeViolations(page, {
-      within: "[role=listbox]",
-      allow: isMobile
-        ? [
-            {
-              rule: "scrollable-region-focusable",
-              reason:
-                "the arrow keys in the message box scroll the menu, but axe only sees that when a combobox controls it, and the legacy message box is a textarea, which can't be one; the composer's rebuild (W25) settles its field",
-            },
-          ]
-        : [],
-    });
-
-    await page.keyboard.type("refl");
-    await expect(menu.getByRole("option")).toHaveCount(1);
-    await page.keyboard.press("Enter");
-    await expect(menu).toBeHidden();
-    await expect(page.getByText("Asked atlas to condense its memories.")).toBeVisible();
-    await expect(box).toHaveValue("");
-  });
-
-  test("Tab fills in a command, and a typed command runs with its text", async ({ page }) => {
-    await page.goto("/agent/atlas");
-    const box = page.locator(".chat-input");
-    await box.click();
-    await page.keyboard.type("/inb");
-    await page.keyboard.press("Tab");
-    await expect(box).toHaveValue("/inbox ");
-    await page.keyboard.type("water the plants");
-    await page.keyboard.press("Enter");
-    await expect(page.getByText("Added a note to atlas's inbox.")).toBeVisible();
-
-    await page.keyboard.type("/nope");
-    await page.keyboard.press("Enter");
-    await expect(page.getByText(/There's no \/nope\./)).toBeVisible();
-  });
-});
-
 test("Add a note asks for its text when run from the palette", async ({ page, isMobile }) => {
   await page.goto("/agent/atlas");
   await openPalette(page, isMobile);
@@ -195,7 +143,8 @@ test("Add a note asks for its text when run from the palette", async ({ page, is
   await prompt.getByRole("textbox", { name: "Note" }).fill("Check the wiki index");
   await prompt.getByRole("button", { name: "Add note" }).click();
   await expect(prompt).toBeHidden();
-  await expect(page.getByText("Added a note to atlas's inbox.")).toBeVisible();
+  // One message: the agent's own, once the note is in its inbox.
+  await expect(page.getByText("[inbox] item added")).toBeVisible();
 });
 
 test.describe("on a phone", () => {

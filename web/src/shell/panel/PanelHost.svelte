@@ -7,16 +7,15 @@
   import { Skeleton } from "../../lib/ui";
   import { ws } from "../../lib/ws.svelte";
   import ContextPanel from "./ContextPanel.svelte";
-  import LegacySizePanel from "./LegacySizePanel.svelte";
+  import ConversationSize from "../../places/chat/ConversationSize.svelte";
   import SessionPanel from "../../places/activity/SessionPanel.svelte";
   import { FileBuffer } from "../../places/files/file-buffer.svelte";
   import { fileSourceFor } from "../../places/files/file-source";
 
   // The context panel, open while the URL names a `panel` its place can show
   // (the router removes any other). Each kind's content renders inside the
-  // frame and starts with a `PanelHeader`; a kind that hasn't been rebuilt
-  // hosts its legacy view. The file view, with its editor, loads the first
-  // time a file opens.
+  // frame and starts with a `PanelHeader`. The file view, with its editor,
+  // loads the first time a file opens.
 
   const filePanel = new LazyComponent<{ buffer: FileBuffer; path: string }>(
     () => import("../../places/files/FilePanel.svelte"),
@@ -98,7 +97,7 @@
         {/if}
       {/if}
     {:else}
-      <LegacySizePanel />
+      <ConversationSize />
     {/if}
   </ContextPanel>
 {/if}

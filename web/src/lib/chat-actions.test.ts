@@ -52,7 +52,13 @@ describe("the former slash commands", () => {
       { type: "inbox_add", body: "water the plants" },
     ]);
     expect(ctx.stopReply).toHaveBeenCalledOnce();
-    expect(ctx.surface).toHaveBeenCalledWith("notice", "Added a note to atlas's inbox.");
+    // One message each: Summarize and Condense say they started, and the
+    // agent's own notice says when they're done, or that it reloaded or added the note.
+    expect(vi.mocked(ctx.surface).mock.calls).toEqual([
+      ["system", "atlas is summarizing older messages…"],
+      ["system", "atlas is condensing its memories…"],
+      ["system", "Stopping atlas's reply."],
+    ]);
   });
 
   it("leave /verbose out: tool activity always shows", () => {

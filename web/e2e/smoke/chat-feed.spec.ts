@@ -6,11 +6,9 @@ import { expectFileOpen } from "../support/lazy";
 /**
  * The chat feed: older history loading near the top, Jump to latest, catching
  * up after the connection drops, path links into the context panel, and the
- * header. The composer and the running-turn line are legacy views until their
- * units rebuild them, so the scans leave them out.
+ * header.
  */
 
-const LEGACY = "[data-legacy-view]";
 const GREETING = "Hi, this is atlas. You are in my conversation, not scout's.";
 const FIRST_REPLY = "I've looked into that and here's what I found:";
 const FALLBACKS = "team/wiki/notification-fallbacks.md";
@@ -20,7 +18,7 @@ function conversation(page: Page, agent = "atlas"): Locator {
 }
 
 function composer(page: Page): Locator {
-  return page.getByRole("textbox", { name: "Send a message..." });
+  return page.getByRole("textbox", { name: "Message atlas" });
 }
 
 async function send(page: Page, text: string): Promise<void> {
@@ -50,7 +48,7 @@ test("the conversation reads as replies, bubbles and cards", async ({ page }) =>
   await expect(
     feed.getByRole("article", { name: "Background session: spawned-research-3f9a" }),
   ).toContainText("Found three fallback strategies worth comparing");
-  await expectNoAxeViolations(page, { exclude: LEGACY });
+  await expectNoAxeViolations(page);
 });
 
 test("older episodes load as the reader nears the top, and what they read stays put", async ({
@@ -93,7 +91,7 @@ test("Jump to latest names where the reader is, and takes them back", async ({ p
   await scrollToTop(feed);
   await expect(jump).toBeVisible();
   await expect(jump).toHaveAccessibleDescription(/^ep-00\d · \d{4}-\d{2}-\d{2}$/);
-  await expectNoAxeViolations(page, { exclude: LEGACY });
+  await expectNoAxeViolations(page);
 
   await jump.click();
   await expect(greeting).toBeInViewport();
@@ -221,7 +219,7 @@ test("Open session is offered for a session's message, not a teammate's", async 
   const teammate = feed.getByRole("article", { name: "Teammate: scout" });
   await expect(teammate).toContainText("Can you look over the wiki index");
   await expect(teammate.getByRole("button", { name: "Open session" })).toHaveCount(0);
-  await expectNoAxeViolations(page, { exclude: LEGACY });
+  await expectNoAxeViolations(page);
 
   await feed
     .getByRole("article", { name: "Background session: spawned-research-3f9a" })
@@ -256,7 +254,7 @@ test.describe("the header", () => {
     const menu = page.getByRole("menu", { name: "More for atlas" });
     await expect(menu.getByRole("menuitem", { name: /^Restart atlas/ })).toBeVisible();
     await expect(menu.getByRole("menuitem", { name: /^Stop atlas/ })).toBeVisible();
-    await expectNoAxeViolations(page, { exclude: LEGACY });
+    await expectNoAxeViolations(page);
 
     await menu.getByRole("menuitem", { name: /^Show conversation size/ }).click();
     await expect(page).toHaveURL(/\/agent\/atlas\?panel=size$/);

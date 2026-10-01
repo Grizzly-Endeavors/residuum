@@ -200,15 +200,6 @@
     }
   }
 
-  /* A hosted legacy view fills the panel under its header. */
-  .context-panel > :global([data-legacy-view]),
-  :global(.context-panel-sheet > [data-legacy-view]) {
-    display: flex;
-    flex: 1;
-    flex-direction: column;
-    min-height: 0;
-  }
-
   /* The left edge: a hairline that lights up in the vein while held or focused. */
   .context-panel-grip {
     position: absolute;

@@ -21,11 +21,7 @@ const TOKEN_FILES = ["src/styles/tokens.css", "src/styles/variables.css"];
  * rules below. Remove an entry when its file is rewritten or deleted. Do not
  * add new files here: give new styles tokens instead.
  */
-const LEGACY_FILES = [
-  "src/styles/base.css",
-  "src/styles/chat.css",
-  "src/components/ChatFooter.svelte",
-];
+const LEGACY_FILES = ["src/styles/base.css"];
 
 /** A single token reference such as `var(--font-size-ui)`, with no literal fallback. */
 const TOKEN_REFERENCE = /^var\(--[\w-]+\)$/;

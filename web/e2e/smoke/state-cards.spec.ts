@@ -7,12 +7,9 @@ import { expectSettingsOpen } from "../support/lazy";
  * The state card an agent's Chat shows in place of the composer while the
  * agent isn't running: brittle couldn't start, drifter is stopped, and atlas
  * runs until it is stopped. The conversation above stays readable, and
- * nothing says it is reconnecting to an agent that isn't running. The
- * composer is a legacy view until its unit rebuilds it, so the scans leave
- * it out.
+ * nothing says it is reconnecting to an agent that isn't running.
  */
 
-const LEGACY = "[data-legacy-view]";
 const ATLAS_GREETING = "Hi, this is atlas. You are in my conversation, not scout's.";
 
 function card(page: Page, title: string): Locator {
@@ -20,7 +17,7 @@ function card(page: Page, title: string): Locator {
 }
 
 function composer(page: Page): Locator {
-  return page.getByRole("textbox", { name: "Send a message..." });
+  return page.getByRole("textbox", { name: /^Message (atlas|brittle|drifter)$/ });
 }
 
 async function expectNoReconnecting(page: Page): Promise<void> {
@@ -44,7 +41,7 @@ test("a failed agent says why, with its fix, in place of the composer", async ({
   await expect(reason).toBeHidden();
   await failed.getByRole("button", { name: "Details" }).click();
   await expect(reason).toBeVisible();
-  await expectNoAxeViolations(page, { exclude: LEGACY });
+  await expectNoAxeViolations(page);
 });
 
 test("a restart that fails again says so, and one after the fix brings the composer back", async ({
@@ -92,7 +89,7 @@ test("a stopped agent offers Start and Start automatically", async ({ page }) =>
   await expect(composer(page)).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "No messages yet" })).toHaveCount(0);
   await expectNoReconnecting(page);
-  await expectNoAxeViolations(page, { exclude: LEGACY });
+  await expectNoAxeViolations(page);
 
   const autostart = stopped.getByRole("switch", { name: "Start automatically" });
   await expect(autostart).toHaveAttribute("aria-checked", "false");
@@ -126,7 +123,7 @@ test("stopping a running agent keeps its conversation readable", async ({ page, 
   await expect(stopped).toBeVisible();
   await expect(conversation.getByText(ATLAS_GREETING)).toBeVisible();
   await expectNoReconnecting(page);
-  await expectNoAxeViolations(page, { exclude: LEGACY });
+  await expectNoAxeViolations(page);
 
   await stopped.getByRole("button", { name: "Start atlas" }).click();
   await expect(card(page, "Starting atlas")).toBeVisible();

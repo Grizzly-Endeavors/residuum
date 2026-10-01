@@ -3,20 +3,29 @@ import { expect, test } from "../support/fixtures";
 import { expectScreenshot } from "../support/screenshot";
 
 /**
- * The chat feed's baselines: the latest messages, the summarized past with
- * Jump to latest, the state cards of a stopped and a failed agent, and the
- * header's menu. The composer and the running-turn line are legacy views,
- * painted over until their units give them baselines.
+ * The chat's baselines: the latest messages, the summarized past with Jump to
+ * latest, the state cards of a stopped and a failed agent, the header's menu,
+ * a running turn, and the composer with its `/` menu, an attached image, and
+ * the model and thinking control open.
  */
 
 const GREETING = "Hi, this is atlas. You are in my conversation, not scout's.";
+/** A 1×1 PNG. */
+const PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  "base64",
+);
 
 function conversation(page: Page, agent = "atlas"): Locator {
   return page.getByRole("region", { name: `Conversation with ${agent}` });
 }
 
-async function chatScreenshot(page: Page, name: string): Promise<void> {
-  await expectScreenshot(page, name, { mask: [page.locator("[data-legacy-view]")] });
+/** A running agent's composer has read its model. */
+async function chatScreenshot(page: Page, name: string, running = true): Promise<void> {
+  if (running) {
+    await expect(page.getByRole("button", { name: /^Model: Claude Sonnet 4\.6/ })).toBeAttached();
+  }
+  await expectScreenshot(page, name);
 }
 
 test.describe("chat feed", { tag: "@visual" }, () => {
@@ -51,7 +60,7 @@ test.describe("chat feed", { tag: "@visual" }, () => {
   test("a stopped agent with no conversation", async ({ page }) => {
     await page.goto("/agent/drifter");
     await expect(page.getByRole("region", { name: "drifter is stopped" })).toBeVisible();
-    await chatScreenshot(page, "chat-stopped");
+    await chatScreenshot(page, "chat-stopped", false);
   });
 
   test("an agent that couldn't start, with its details open", async ({ page }) => {
@@ -59,7 +68,7 @@ test.describe("chat feed", { tag: "@visual" }, () => {
     const failed = page.getByRole("region", { name: "brittle couldn't start" });
     await failed.getByRole("button", { name: "Details" }).click();
     await expect(failed.getByText(/is not offered by provider/)).toBeVisible();
-    await chatScreenshot(page, "chat-failed");
+    await chatScreenshot(page, "chat-failed", false);
   });
 
   test("a stopped agent under its conversation", async ({ page }) => {
@@ -67,7 +76,7 @@ test.describe("chat feed", { tag: "@visual" }, () => {
     await page.goto("/agent/atlas");
     await expect(page.getByRole("region", { name: "atlas is stopped" })).toBeInViewport();
     await expect(conversation(page).getByText(GREETING)).toBeVisible();
-    await chatScreenshot(page, "chat-stopped-below");
+    await chatScreenshot(page, "chat-stopped-below", false);
   });
 
   test("a turn's activity line, open to a step's details", async ({ page }) => {
@@ -94,8 +103,8 @@ test.describe("chat feed", { tag: "@visual" }, () => {
     await page.goto("/agent/atlas");
     const feed = conversation(page);
     await expect(feed.getByText(GREETING)).toBeInViewport();
-    await page.getByRole("textbox", { name: "Send a message..." }).fill("Check the wiki index");
-    await page.getByRole("textbox", { name: "Send a message..." }).press("Enter");
+    await page.getByRole("textbox", { name: "Message atlas" }).fill("Check the wiki index");
+    await page.getByRole("textbox", { name: "Message atlas" }).press("Enter");
     await expect(feed.getByRole("button", { name: "Read team/wiki/index.md" })).toBeVisible({
       timeout: 30_000,
     });
@@ -113,5 +122,46 @@ test.describe("chat feed", { tag: "@visual" }, () => {
     await page.getByRole("button", { name: "More for atlas" }).click();
     await expect(page.getByRole("menu", { name: "More for atlas" })).toBeVisible();
     await chatScreenshot(page, "chat-menu");
+  });
+});
+
+test.describe("composer", { tag: "@visual" }, () => {
+  test("a draft with an image attached, and the / menu open", async ({ page }) => {
+    await page.goto("/agent/atlas");
+    await expect(conversation(page).getByText(GREETING)).toBeInViewport();
+    await page
+      .locator('input[type="file"]')
+      .setInputFiles({ name: "shot.png", mimeType: "image/png", buffer: PNG });
+    await expect(page.getByRole("img", { name: "Image 1" })).toBeVisible();
+    const box = page.getByRole("textbox", { name: "Message atlas" });
+    await box.click();
+    await page.keyboard.type("/");
+    await expect(page.getByRole("listbox", { name: "Chat actions" })).toBeVisible();
+    await chatScreenshot(page, "composer-menu");
+  });
+
+  test("the model and thinking control, a popover or a sheet on a phone", async ({ page }) => {
+    await page.goto("/agent/atlas");
+    await expect(conversation(page).getByText(GREETING)).toBeInViewport();
+    await page.getByRole("button", { name: /^Model: Claude Sonnet 4\.6/ }).click();
+    const chooser = page.getByRole("dialog", { name: "Model for atlas" });
+    await expect(chooser.getByRole("button", { name: "Claude Haiku 4.5" })).toBeVisible();
+    await page.mouse.move(0, 0);
+    await expectScreenshot(page, "composer-model");
+  });
+
+  test("waiting for the connection", async ({ page }) => {
+    await page.routeWebSocket(/\/api\/agents\/atlas\/ws$/, (socket) => {
+      void socket.close();
+    });
+    await page.goto("/agent/atlas");
+    await expect(conversation(page).getByText(GREETING)).toBeInViewport();
+    const box = page.getByRole("textbox", { name: "Message atlas" });
+    await box.fill("Are you there?");
+    await box.press("Enter");
+    await expect(
+      page.getByText("Reconnecting — 1 message will send once back online."),
+    ).toBeVisible();
+    await chatScreenshot(page, "composer-offline");
   });
 });

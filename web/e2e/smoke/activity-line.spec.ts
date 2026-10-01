@@ -6,11 +6,9 @@ import { expect, test } from "../support/fixtures";
  * The activity line (design §4): a live turn's steps, timer and Stop, Esc,
  * the line collapsing to its summary, a turn from history opened to a
  * step's details, joining a turn already running, and a session's
- * transcript. The composer is a legacy view until its unit rebuilds it, so
- * the scans leave it out.
+ * transcript.
  */
 
-const LEGACY = "[data-legacy-view]";
 const GREETING = "Hi, this is atlas. You are in my conversation, not scout's.";
 const RESEARCH = "Compare fallback strategies for notification delivery";
 
@@ -19,7 +17,7 @@ function conversation(page: Page): Locator {
 }
 
 function composer(page: Page): Locator {
-  return page.getByRole("textbox", { name: "Send a message..." });
+  return page.getByRole("textbox", { name: "Message atlas" });
 }
 
 async function send(page: Page, text: string): Promise<void> {
@@ -57,7 +55,7 @@ test.describe("a live turn", () => {
       feed.getByRole("button", { name: /^Read(ing)? team\/wiki\/index\.md/ }),
     ).toBeVisible();
     await expect(feed.getByText("Looking through recent notes first.")).toBeVisible();
-    await expectNoAxeViolations(page, { exclude: LEGACY });
+    await expectNoAxeViolations(page);
 
     const line = summary(feed, /^Searched memory, read 2 files · \d+s · 1 step failed$/);
     await expect(line).toBeVisible({ timeout: 20_000 });
@@ -120,7 +118,7 @@ test("a turn from history opens to its steps, and a step to its details", async 
   const details = page.locator(`#${(await step.getAttribute("aria-controls")) ?? ""}`);
   await expect(details).toContainText("$ residuum memory stats");
   await expect(details).toContainText("Context window: 12,847 / 200,000 tokens (6.4%)");
-  await expectNoAxeViolations(page, { exclude: LEGACY });
+  await expectNoAxeViolations(page);
 
   await line.click();
   await expect(step).toHaveCount(0);
@@ -155,7 +153,7 @@ test.describe("connecting while a turn runs", () => {
       timeout: 15_000,
     });
     await expect(feed.getByText("Working")).toBeVisible();
-    await expectNoAxeViolations(other, { exclude: LEGACY });
+    await expectNoAxeViolations(other);
 
     // It saw no step start, so its line says only that the turn worked before it connected.
     await expect(summary(feed, /^Worked before this page connected/)).toBeVisible({
@@ -200,7 +198,7 @@ test("a session's transcript shows its live line too", async ({ page, isMobile, 
     timeout: 15_000,
   });
   if (isMobile) await expectNoAxeViolations(page, { within: "[data-overlay-host]" });
-  else await expectNoAxeViolations(page, { exclude: LEGACY });
+  else await expectNoAxeViolations(page);
 
   await expect(summary(panel, /^Searched memory · \d+s$/)).toBeVisible({ timeout: 15_000 });
   await expect(panel.getByText('Understood: "Weigh safety over speed".')).toBeVisible();
