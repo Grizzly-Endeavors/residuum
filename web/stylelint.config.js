@@ -31,7 +31,6 @@ const LEGACY_FILES = [
   "src/styles/settings.css",
   "src/styles/setup.css",
   "src/styles/workbench.css",
-  "src/components/AgentStateGlyph.svelte",
   "src/components/ChatFooter.svelte",
   "src/components/FileHistoryModal.svelte",
   "src/components/Modal.svelte",

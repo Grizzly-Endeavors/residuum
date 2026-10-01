@@ -8,6 +8,7 @@
   import { ALL_SCOPE } from "../lib/settings-sections";
   import { ConfirmHost, confirmLeave, Drawer, RecentNotifications } from "../lib/ui";
   import { PHONE_QUERY } from "../styles/breakpoints";
+  import { focusAgentCreation } from "../places/home/agent-management.svelte";
   import { RailAccordion } from "./accordion.svelte";
   import { registerAppActions } from "./app-actions.svelte";
   import BottomBar from "./BottomBar.svelte";
@@ -66,17 +67,13 @@
       feedbackTab = tab;
       feedbackOpen = true;
     },
-    // Agents are created on Home, from the form under the agents.
+    // Agents are created on Home, from the form in its agent management.
     createAgent: () => {
       drawerOpen = false;
       void router
         .openPlace(HOME)
         .then(() => tick())
-        .then(() => {
-          const name = document.getElementById("create-name");
-          name?.scrollIntoView({ block: "center" });
-          name?.focus({ preventScroll: true });
-        });
+        .then(focusAgentCreation);
     },
     addInboxNote: (agent) => {
       inboxNoteAgent = agent;
@@ -151,7 +148,7 @@
   </div>
   <main class="shell-main">
     <HubBanner />
-    <PlaceHost />
+    <PlaceHost {actions} />
   </main>
   <PanelHost />
   <BottomBar {drawerOpen} onmenu={() => (drawerOpen = !drawerOpen)} {actions} />

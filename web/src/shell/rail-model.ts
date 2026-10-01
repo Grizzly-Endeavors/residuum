@@ -1,5 +1,5 @@
-// What the rail and the phone bar show, worked out from the hub's agent list:
-// each agent row's mark, word and badge, and the counts beside Home and Inbox.
+// What the rail shows about each agent, worked out from the hub's agent list:
+// its row's mark, word and badge, and the places listed under it.
 
 import type { AgentActivity, AgentSummary } from "../lib/hub-types";
 import type { IconName } from "../lib/icons";
@@ -81,9 +81,4 @@ export function agentRowStatus(agent: AgentSummary, context: AgentRowContext): A
   if (working) spoken.push("working");
   if (unread > 0) spoken.push(`${String(unread)} unread`);
   return { dot, working, tail, spoken: spoken.join(", ") };
-}
-
-/** The count beside Home: the agents that couldn't start. */
-export function homeAttentionCount(agents: readonly AgentSummary[]): number {
-  return agents.filter((agent) => agent.state === "failed").length;
 }

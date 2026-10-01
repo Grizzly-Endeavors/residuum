@@ -100,13 +100,13 @@ const PLACES: readonly PlaceCase[] = [
     name: "Home",
     link: /^Home/,
     path: "/home",
-    shows: (page) => page.getByRole("region", { name: "Team" }),
+    shows: (page) => page.getByRole("heading", { name: "Home", level: 1 }),
   },
 ];
 
 test("every place opens from the rail, or the drawer on a phone", async ({ page, isMobile }) => {
   await page.goto("/home");
-  await expect(page.getByRole("region", { name: "Team" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Home", level: 1 })).toBeVisible();
 
   for (const place of PLACES) {
     const rail = await openRail(page, isMobile);
@@ -247,7 +247,7 @@ test("Back and Forward move between places", async ({ page, isMobile }) => {
   ).toBeVisible();
   await page.goBack();
   await expect.poll(() => address(page)).toBe("/home");
-  await expect(page.getByRole("region", { name: "Team" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Home", level: 1 })).toBeVisible();
   await page.goForward();
   await expect.poll(() => address(page)).toBe("/agent/atlas");
 });

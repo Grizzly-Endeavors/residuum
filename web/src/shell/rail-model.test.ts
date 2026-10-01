@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentActivity, AgentSummary } from "../lib/hub-types";
-import { agentRowStatus, homeAttentionCount, type AgentRowContext } from "./rail-model";
+import { agentRowStatus, type AgentRowContext } from "./rail-model";
 
 function agent(name: string, overrides: Partial<AgentSummary> = {}): AgentSummary {
   return {
@@ -89,19 +89,5 @@ describe("agentRowStatus", () => {
     );
     expect(status.tail).toEqual({ kind: "none" });
     expect(status.spoken).toBe("running");
-  });
-});
-
-describe("homeAttentionCount", () => {
-  it("counts the agents that couldn't start", () => {
-    expect(
-      homeAttentionCount([
-        agent("atlas"),
-        agent("brittle", { state: "failed" }),
-        agent("drifter", { state: "stopped" }),
-        agent("nova", { state: "failed" }),
-      ]),
-    ).toBe(2);
-    expect(homeAttentionCount([])).toBe(0);
   });
 });

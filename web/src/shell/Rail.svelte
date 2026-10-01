@@ -4,6 +4,7 @@
   import { Icon, type IconName } from "../lib/icons";
   import { hub } from "../lib/hub.svelte";
   import { userInbox } from "../lib/inbox.svelte";
+  import { overview } from "../lib/overview.svelte";
   import { ws } from "../lib/ws.svelte";
   import { router } from "../lib/router.svelte";
   import { formatLocation, HOME, locationAt, placesEqual, type Place } from "../lib/routes";
@@ -19,7 +20,7 @@
     VisuallyHidden,
   } from "../lib/ui";
   import type { RailAccordion } from "./accordion.svelte";
-  import { AGENT_PLACES, agentRowStatus, homeAttentionCount } from "./rail-model";
+  import { AGENT_PLACES, agentRowStatus } from "./rail-model";
   import type { ShellActions } from "./shell-actions";
 
   // The rail: the search row, Home and Inbox, every agent with its places in
@@ -42,7 +43,7 @@
   const ROW_KEYS = new Set(["ArrowDown", "ArrowUp", "Home", "End"]);
 
   const place = $derived(router.place);
-  const homeCount = $derived(homeAttentionCount(hub.agents));
+  const homeCount = $derived(overview.needsYou.count);
   const helpActions = $derived(actionRegistry.all.filter((action) => action.group === HELP_GROUP));
 
   /** The Inbox and the Workbench stay current whatever filter or artifact they show. */

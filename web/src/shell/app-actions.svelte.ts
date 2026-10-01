@@ -5,7 +5,7 @@
 // typed, so the unsearched palette stays about the agent at hand.
 
 import { actionRegistry, HELP_GROUP, type AppAction } from "../lib/action-registry.svelte";
-import { lifecycleApplies, type LifecycleAction } from "../lib/agent-state";
+import { lifecycleApplies, type LifecycleAction } from "../lib/agent-lifecycle";
 import { CHAT_GROUP, chatActions } from "../lib/chat-actions";
 import { hub } from "../lib/hub.svelte";
 import type { IconName } from "../lib/icons";

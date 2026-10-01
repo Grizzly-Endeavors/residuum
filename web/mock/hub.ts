@@ -145,6 +145,7 @@ export function createHub(
         runState,
         lastError:
           options.lastError === undefined ? null : { ...options.lastError, at: env.clock.iso() },
+        startFailure: options.startFailure ?? null,
         autostart: options.runState !== "stopped",
         role: options.role ?? null,
         visibility: "private",
