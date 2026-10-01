@@ -45,6 +45,8 @@ afterAll(() => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Nor media queries: the palette asks one for its placeholder.
+  vi.stubGlobal("matchMedia", (media: string) => ({ media, matches: false }));
   unregister = actionRegistry.register("test", () => ACTIONS);
 });
 

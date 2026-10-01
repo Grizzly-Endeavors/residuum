@@ -8,6 +8,7 @@
   } from "../lib/action-registry.svelte";
   import { Icon } from "../lib/icons";
   import { IconButton, Kbd, ModalLayer, VisuallyHidden } from "../lib/ui";
+  import { PHONE_QUERY } from "../styles/breakpoints";
   import ActionOption from "./ActionOption.svelte";
 
   // The command palette: everything in the action registry, found by typing.
@@ -17,8 +18,11 @@
   let { open = $bindable(false) }: { open?: boolean } = $props();
 
   const uid = $props.id();
+  const DESCRIPTION = "Search agents, places, sessions, settings and actions";
   let query = $state("");
   let active = $state(0);
+  /** A phone's field is too narrow for the whole description. */
+  let placeholder = $state(DESCRIPTION);
 
   const results = $derived(matchActions(actionRegistry.all, query));
   const runs = $derived(groupRuns(results));
@@ -30,6 +34,7 @@
     untrack(() => {
       query = "";
       active = 0;
+      placeholder = window.matchMedia(PHONE_QUERY).matches ? "Search or jump to" : DESCRIPTION;
     });
   });
 
@@ -73,7 +78,6 @@
   fullscreenOnPhone
   label="Search and commands"
   initialFocus="[data-palette-field]"
-  class="shell-palette"
   onclose={close}
 >
   <div class="palette-search">
@@ -87,8 +91,8 @@
       aria-autocomplete="list"
       aria-controls="{uid}-results"
       aria-activedescendant={results.length > 0 ? optionId(active) : undefined}
-      aria-label="Search agents, places, sessions, settings and actions"
-      placeholder="Search agents, places, sessions, settings and actions"
+      aria-label={DESCRIPTION}
+      {placeholder}
       autocomplete="off"
       spellcheck="false"
       bind:value={query}

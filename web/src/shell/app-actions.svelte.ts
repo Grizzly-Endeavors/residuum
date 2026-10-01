@@ -93,11 +93,14 @@ function agentPlaces(): AppAction[] {
   );
 }
 
-function sessionKind(run: SessionSummary): string {
+/** How a session started, in plain words. A spawner of `main` is the agent's own conversation. */
+function sessionKind(agent: string, run: SessionSummary): string {
   if (run.category === "external") return "From another app";
   if (run.category === "scheduled") return "Scheduled";
   if (run.category === "artifact") return "From a workbench page";
-  return run.spawner === null ? "Started by the agent" : `Started by ${run.spawner}`;
+  return run.spawner === null || run.spawner === "main"
+    ? `Started by ${agent}`
+    : `Started by ${run.spawner}`;
 }
 
 /** The bound agent's live sessions, which open in the context panel. */
@@ -108,7 +111,7 @@ function sessions(): AppAction[] {
     id: `session:${agent}:${run.run_id}`,
     group: "Running now",
     label: run.purpose === "" ? "A session" : run.purpose,
-    hint: sessionKind(run),
+    hint: sessionKind(agent, run),
     icon: "layers",
     terms: [run.source_label, agent],
     run: () => {
