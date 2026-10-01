@@ -24,6 +24,12 @@ export interface HubSocket {
   broadcast: (frame: HubServerMessage) => void;
   /** Drop every connected page, as a restart of the hub would. */
   dropClients: () => void;
+  /**
+   * Take the socket down (`false`): connected pages are dropped and new
+   * connections refused, as when the hub can't be reached. `true` lets pages
+   * connect again.
+   */
+  setOnline: (online: boolean) => void;
 }
 
 /**
@@ -67,7 +73,10 @@ export function openHubSocket(
   listing: () => AgentListResponse,
 ): HubSocket {
   const wss = new WebSocketServer({ noServer: true });
-  routeUpgrades(host, wss, HUB_SOCKET_PATH);
+  let online = true;
+  routeUpgrades(host, wss, HUB_SOCKET_PATH, () =>
+    online ? null : { error: "mock: the hub socket is offline" },
+  );
   /** What each page watches (`watch_team`); a page that never asked watches nothing. */
   const watching = new WeakMap<WebSocket, WatchSet>();
 
@@ -99,6 +108,10 @@ export function openHubSocket(
     },
     dropClients: () => {
       for (const client of wss.clients) client.terminate();
+    },
+    setOnline: (next) => {
+      online = next;
+      if (!online) for (const client of wss.clients) client.terminate();
     },
   };
 }

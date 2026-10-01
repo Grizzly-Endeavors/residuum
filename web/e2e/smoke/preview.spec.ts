@@ -13,7 +13,10 @@ test(
     });
 
     await page.goto("/agent/atlas");
-    await expect(page.getByText("Residuum connected")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "atlas", level: 1 })).toBeVisible();
+    await expect(
+      page.getByText("Hi, this is atlas. You are in my conversation, not scout's."),
+    ).toBeVisible();
 
     expect(requested.some((path) => /^\/assets\/index-.+\.js$/.test(path))).toBe(true);
     expect(

@@ -58,6 +58,7 @@ export function createStubHub(env: MockEnv = createMockEnv()): MockHub {
     addUnread: () => {},
     clearUnread: () => {},
     transition: () => {},
+    setHubSocketOnline: () => {},
     reset: () => {
       env.reset();
     },
