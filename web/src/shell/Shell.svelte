@@ -7,6 +7,7 @@
   import { notifications } from "../lib/notifications.svelte";
   import { overview } from "../lib/overview.svelte";
   import { router } from "../lib/router.svelte";
+  import { ws } from "../lib/ws.svelte";
   import { ALL_SCOPE } from "../lib/settings-sections";
   import {
     ConfirmHost,
@@ -18,8 +19,9 @@
   } from "../lib/ui";
   import { PHONE_QUERY } from "../styles/breakpoints";
   import { RailAccordion } from "./accordion.svelte";
-  import { installHelp, registerAppActions } from "./app-actions.svelte";
+  import { connectionStatusDialog, installHelp, registerAppActions } from "./app-actions.svelte";
   import BottomBar from "./BottomBar.svelte";
+  import ConnectionStatusDialog from "./ConnectionStatusDialog.svelte";
   import CreateAgentDialog from "./CreateAgentDialog.svelte";
   import FeedbackDialog from "./FeedbackDialog.svelte";
   import HubBanner from "./HubBanner.svelte";
@@ -220,6 +222,13 @@
 <CreateAgentDialog bind:open={createOpen} oncreated={(name) => void focusCreatedAgent(name)} />
 <RecentNotifications bind:open={notificationsOpen} />
 <ShortcutsDialog bind:open={shortcutsOpen} />
+<ConnectionStatusDialog
+  bind:open={connectionStatusDialog.open}
+  agent={ws.agent}
+  agentState={ws.agent === null ? null : hub.displayStateOf(ws.agent)}
+  hubConnection={hub.transport.status}
+  agentConnection={ws.transport.status}
+/>
 <InstallHelpDialog bind:open={installHelp.open} />
 <FeedbackDialog bind:open={feedbackOpen} bind:tab={feedbackTab} />
 <InboxNoteDialog

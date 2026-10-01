@@ -175,3 +175,15 @@ export class MainModel {
     }
   }
 }
+
+/** The agent's main model, in the same words as the composer's control. */
+export async function readMainModelLabel(agent: string): Promise<string> {
+  const raw = await configCoordinator.read(agentConfigFile(agent, "providers"));
+  const toml = await loadSettingsToml();
+  const parsed = toml.parseProvidersToml(raw);
+  const value = parsed.models.main;
+  if (value === "") return "No main model set";
+  const thinking = parsed.models.overrides.main?.thinking ?? "";
+  const { model } = splitModel(value);
+  return modelControlLabel(model === "" ? value : model, thinking);
+}

@@ -94,6 +94,21 @@ test("the palette runs Summarize older messages now", async ({ page, isMobile })
   await expect(page.getByText("Command 'observe' executed. (mock)")).toBeVisible();
 });
 
+test("Show connection status opens a dialog with the agent and its model", async ({
+  page,
+  isMobile,
+}) => {
+  await page.goto("/agent/atlas");
+  await openPalette(page, isMobile);
+  await page.keyboard.type("connection status");
+  await page.keyboard.press("Enter");
+  const dialog = page.getByRole("dialog", { name: "Connection status" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText("atlas", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("claude-sonnet-4-6")).toBeVisible();
+  await expectNoAxeViolations(page, { within: OVERLAYS });
+});
+
 test("Show conversation size opens the agent's chat with the size in the panel", async ({
   page,
   isMobile,
