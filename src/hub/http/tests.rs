@@ -46,6 +46,7 @@ mod artifacts_origin;
 mod events;
 mod inbox;
 mod overview;
+mod overview_schedule;
 mod push;
 
 /// The boot id every harness hub reports.

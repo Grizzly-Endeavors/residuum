@@ -2,24 +2,29 @@
 //! clients as it changes.
 //!
 //! The overview is read from the places that hold the truth: an agent's files
-//! (its inbox, its history), its session registry, and what the activity
-//! tracker's turn hook reported. A change that arrives says which **part** of
-//! an agent's overview to read again ([`Part`]); the new value is read when
-//! the agent's frame goes out, so a burst of changes costs one read and one
-//! frame.
+//! (its inbox, its history, its schedule, its outbound tasks), its session
+//! registry, and what the activity tracker's turn hook reported. A change that
+//! arrives says which **part** of an agent's overview to read again
+//! ([`Part`]); the new value is read when the agent's frame goes out, so a
+//! burst of changes costs one read and one frame.
+//!
+//! One change arrives from no one: a task's unreachable streak passing the
+//! notice threshold makes it an outbound problem at that moment, and the
+//! service waits for the moment itself ([`Tracked::notice_at`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use tokio::sync::{Mutex, Notify, broadcast};
 use tokio::time::Instant;
 
-use super::disk;
 use super::preview::plain_preview;
 use super::types::{
     AgentOverview, LastMessage, LastMessageRole, LiveSession, OverviewResponse, TimePrecision,
 };
+use super::{disk, outbound, upcoming};
 use crate::hub::AgentDirectory;
 use crate::hub::agent_watch::MainTurnEnded;
 use crate::hub::inbox::count_unread;
@@ -47,16 +52,33 @@ pub(super) enum Part {
     Sessions,
     /// `inbox_unread`: the agent's user inbox files.
     Inbox,
+    /// `upcoming`: the agent's pulses and scheduled actions, read from its
+    /// files whatever state it is in.
+    Upcoming,
+    /// `outbound_problems`: the agent's outbound task file. Empty unless the
+    /// agent runs, since nothing watches the tasks of one that doesn't.
+    OutboundProblems,
 }
 
 impl Part {
     /// Every part.
-    pub(super) const ALL: [Self; 3] = [Self::LastMessage, Self::Sessions, Self::Inbox];
+    pub(super) const ALL: [Self; 5] = [
+        Self::LastMessage,
+        Self::Sessions,
+        Self::Inbox,
+        Self::Upcoming,
+        Self::OutboundProblems,
+    ];
 
     /// The parts that are read again whenever an overview is requested of a
-    /// running agent. The turn hook keeps the rest current.
+    /// running agent. The turn hook and the agent's watcher keep the rest
+    /// current.
     const WHEN_REQUESTED_RUNNING: [Self; 2] = [Self::Sessions, Self::Inbox];
 }
+
+/// Added to the wait for a task to pass the notice threshold, so that the
+/// wall clock has passed it when the wait ends.
+const NOTICE_SLACK: Duration = Duration::from_millis(5);
 
 /// What the service keeps about one agent.
 struct Tracked {
@@ -72,6 +94,13 @@ struct Tracked {
     sent: Option<AgentOverview>,
     /// When the next frame goes out, while there is a change to send.
     due: Option<Instant>,
+    /// When the next task in an unreachable streak passes the notice
+    /// threshold, which makes it an outbound problem. Nothing announces that
+    /// moment, so the service waits for it.
+    notice_at: Option<Instant>,
+    /// What could not be read for each part, as last reported, so that a part
+    /// that stays unreadable is reported once.
+    unreadable: BTreeMap<Part, Vec<String>>,
 }
 
 impl Tracked {
@@ -82,6 +111,27 @@ impl Tracked {
             reported: None,
             sent: None,
             due: None,
+            notice_at: None,
+            unreadable: BTreeMap::new(),
+        }
+    }
+
+    /// Log what could not be read for `part` of `agent`'s overview. A problem
+    /// is a warning when it first appears. One that is still there the next
+    /// time is not repeated, and a part that reads again is noted.
+    fn report_unreadable(&mut self, agent: &str, part: Part, problems: Vec<String>) {
+        let before = self.unreadable.get(&part).map_or(&[][..], Vec::as_slice);
+        if before == problems.as_slice() {
+            return;
+        }
+        for problem in problems.iter().filter(|problem| !before.contains(problem)) {
+            tracing::warn!(agent = %agent, part = ?part, "{problem}");
+        }
+        if problems.is_empty() {
+            tracing::info!(agent = %agent, part = ?part, "an agent's overview can read what it couldn't before");
+            self.unreadable.remove(&part);
+        } else {
+            self.unreadable.insert(part, problems);
         }
     }
 }
@@ -271,13 +321,17 @@ impl TeamOverview {
         self.agents.lock().await.remove(agent);
     }
 
-    /// When the soonest frame is due, if any is.
+    /// When the soonest frame is due, or the soonest task passes the notice
+    /// threshold, if either is waited for.
     pub(super) async fn next_due(&self) -> Option<Instant> {
         self.agents
             .lock()
             .await
             .values()
-            .filter_map(|tracked| tracked.due)
+            .filter_map(|tracked| match (tracked.due, tracked.notice_at) {
+                (Some(due), Some(notice)) => Some(due.min(notice)),
+                (due, notice) => due.or(notice),
+            })
             .min()
     }
 
@@ -287,9 +341,20 @@ impl TeamOverview {
     }
 
     /// Send the frame of every agent whose window has ended.
+    ///
+    /// A task that has just passed the notice threshold is a change like any
+    /// other: its agent's outbound problems are read again, and its frame
+    /// goes out when the window that starts here ends.
     pub(super) async fn send_due(&self) {
         let mut agents = self.agents.lock().await;
         let now = Instant::now();
+        for tracked in agents.values_mut() {
+            if tracked.notice_at.is_some_and(|at| at <= now) {
+                tracked.notice_at = None;
+                tracked.stale.insert(Part::OutboundProblems);
+                tracked.due.get_or_insert(now + self.window);
+            }
+        }
         let due: Vec<String> = agents
             .iter()
             .filter(|(_, tracked)| tracked.due.is_some_and(|at| at <= now))
@@ -363,10 +428,37 @@ impl TeamOverview {
                 Part::Inbox => {
                     tracked.overview.inbox_unread = count_unread(agent, &files.dir).await;
                 }
+                Part::Upcoming => {
+                    let read = upcoming::read(agent, &files, Utc::now()).await;
+                    tracked.overview.upcoming = read.runs;
+                    tracked.report_unreadable(agent, part, read.problems);
+                }
+                Part::OutboundProblems => {
+                    let now = Utc::now();
+                    let read = if running {
+                        outbound::read(&files, now).await
+                    } else {
+                        outbound::OutboundRead::none()
+                    };
+                    tracked.overview.outbound_problems = read.problems;
+                    tracked.notice_at = read.next_notice_at.map(|at| instant_at(at, now));
+                    if tracked.notice_at.is_some() {
+                        // The tracker is waiting for the frame that is due,
+                        // or for nothing, and must wait for this too.
+                        self.due_changed.notify_one();
+                    }
+                    tracked.report_unreadable(agent, part, read.problem.into_iter().collect());
+                }
             }
         }
         true
     }
+}
+
+/// The monotonic instant of the wall-clock time `at`, given that it is `now`.
+/// An `at` that has passed is now.
+fn instant_at(at: DateTime<Utc>, now: DateTime<Utc>) -> Instant {
+    Instant::now() + (at - now).to_std().unwrap_or(Duration::ZERO) + NOTICE_SLACK
 }
 
 /// The last message `turn` leaves the user: the reply, or when the reply has

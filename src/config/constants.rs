@@ -31,6 +31,9 @@ pub(super) const DEFAULT_FEEDBACK_ENDPOINT: &str = "https://agent-residuum.com";
 /// Default max tokens for model responses.
 pub(super) const DEFAULT_MAX_TOKENS: u32 = 8192;
 
+/// Whether an agent's pulse system runs when its `config.toml` doesn't say.
+pub(crate) const DEFAULT_PULSE_ENABLED: bool = true;
+
 /// Default observer token threshold before firing.
 pub(crate) const DEFAULT_OBSERVER_THRESHOLD: usize = 30_000;
 

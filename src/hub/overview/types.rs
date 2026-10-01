@@ -81,7 +81,8 @@ impl LiveSession {
 }
 
 /// What an upcoming run is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+// The order of the variants is the order of runs at the same moment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum UpcomingKind {

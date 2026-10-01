@@ -104,13 +104,13 @@ Errors are `{ "error": message }`: `400` for a `before` or `after` that is not a
   name,
   last_message: { role: "user" | "assistant", preview, at, at_precision: "minute" | "day" } | null,
   live_sessions: [{ address, run_id, category, source_label, purpose, state, started_at }],
-  upcoming: [],
+  upcoming: [{ kind: "pulse" | "action", name, at }],
   inbox_unread: number,
-  outbound_problems: []
+  outbound_problems: [{ task_id, remote_agent, status_text, unreachable_since }]
 }
 ```
 
-`preview` is plain text on one line of at most 200 characters. `at` is RFC 3339 with the hub timezone's offset. `source_label` is what started the session (`pulse:email_check`, `artifact:notes`). The request always answers `200`: a part that can't be read is logged and shown as empty. It counts every agent's user inbox again and reads a stopped agent's parts from its files. A client fetches it when it connects to the hub WebSocket, and again after an `agents_snapshot` that was sent because the connection fell behind, and replaces its copy of an agent's overview with each `agent_overview` frame.
+`preview` is plain text on one line of at most 200 characters. `at` is RFC 3339 with the hub timezone's offset. `upcoming` is at most three runs, soonest first. `status_text` is a string or `null`, and `unreachable_since` is RFC 3339 in UTC. `source_label` is what started the session (`pulse:email_check`, `artifact:notes`). The request always answers `200`: a part that can't be read is logged and shown as empty. It counts every agent's user inbox again and reads a stopped agent's parts from its files. A client fetches it when it connects to the hub WebSocket, and again after an `agents_snapshot` that was sent because the connection fell behind, and replaces its copy of an agent's overview with each `agent_overview` frame.
 
 ### Team routes
 
