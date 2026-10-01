@@ -582,7 +582,7 @@ describe("hub socket", () => {
         type: "notice",
         level: "warn",
         message:
-          "Residuum couldn't read a message from this page. Reload the page if team files stop updating.",
+          "Residuum couldn't read a message from this page. Reload the page if team files or sessions stop updating.",
       });
     });
   });

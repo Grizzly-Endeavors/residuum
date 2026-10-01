@@ -236,7 +236,7 @@ describe("changing a team file from outside", () => {
         .map((frame) => String(frame.type))
         .filter((type) => type === "workspace_changed" || type.startsWith("artifact_"));
 
-    it("include the hub's team watch, which gets no artifact frames", async () => {
+    it("include the hub's team watch, and every hub socket gets the artifact frame whatever it watches", async () => {
       const watching = await hubSocket(["team/workbench"]);
       const other = await hubSocket(["team/wiki"]);
       const idle = await hubSocket();
@@ -246,10 +246,29 @@ describe("changing a team file from outside", () => {
       expect(await watching.nextOfType("workspace_changed")).toEqual(
         changed({ path: PAGE, kind: "modified" }),
       );
-      await other.quietFrames();
-      expect(feedFrames(watching)).toEqual(["workspace_changed"]);
-      expect(feedFrames(other)).toEqual([]);
-      expect(feedFrames(idle)).toEqual([]);
+      const updated = { type: "artifact_updated", name: "tip-splitter" };
+      for (const socket of [watching, other, idle]) {
+        expect(await socket.nextOfType("artifact_updated")).toEqual(updated);
+      }
+      expect(feedFrames(watching)).toEqual(["workspace_changed", "artifact_updated"]);
+      expect(feedFrames(other)).toEqual(["artifact_updated"]);
+      expect(feedFrames(idle)).toEqual(["artifact_updated"]);
+    });
+
+    it("send artifact frames to the hub socket with no agent running", async () => {
+      for (const agent of mock.hub.agents.values()) mock.hub.transition(agent, "stopped");
+      const hub = await hubSocket();
+
+      await change({ path: PAGE, content: "<title>Edited</title>" });
+      expect(await hub.nextOfType("artifact_updated")).toEqual({
+        type: "artifact_updated",
+        name: "tip-splitter",
+      });
+      await change({ path: PAGE, content: null });
+      expect(await hub.nextOfType("artifact_removed")).toEqual({
+        type: "artifact_removed",
+        name: "tip-splitter",
+      });
     });
 
     it("are told when the hub refuses a team watch, and keep the old one", async () => {

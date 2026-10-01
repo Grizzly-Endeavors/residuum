@@ -53,6 +53,8 @@ export function createStubHub(env: MockEnv = createMockEnv()): MockHub {
     }),
     listing: () => mockListing(agents.values()),
     broadcast: () => {},
+    relaySession: () => {},
+    lagSessionRelay: () => 0,
     teamEvents: createTeamEvents(env, "stub-boot", () => {}),
     overview: createOverview(env, "stub-boot", agents, () => {}),
     setBusy: () => {},
