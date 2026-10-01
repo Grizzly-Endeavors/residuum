@@ -1,20 +1,27 @@
 <script lang="ts">
   import { untrack } from "svelte";
+  import { LazyComponent } from "../../lib/lazy-component.svelte";
   import { overview } from "../../lib/overview.svelte";
   import { router } from "../../lib/router.svelte";
   import { SessionRun } from "../../lib/session-run.svelte";
+  import { Skeleton } from "../../lib/ui";
   import { ws } from "../../lib/ws.svelte";
   import ContextPanel from "./ContextPanel.svelte";
   import LegacySizePanel from "./LegacySizePanel.svelte";
   import SessionPanel from "../../places/activity/SessionPanel.svelte";
-  import FilePanel from "../../places/files/FilePanel.svelte";
   import { FileBuffer } from "../../places/files/file-buffer.svelte";
   import { fileSourceFor } from "../../places/files/file-source";
 
   // The context panel, open while the URL names a `panel` its place can show
   // (the router removes any other). Each kind's content renders inside the
   // frame and starts with a `PanelHeader`; a kind that hasn't been rebuilt
-  // hosts its legacy view.
+  // hosts its legacy view. The file view, with its editor, loads the first
+  // time a file opens.
+
+  const filePanel = new LazyComponent<{ buffer: FileBuffer; path: string }>(
+    () => import("../../places/files/FilePanel.svelte"),
+    "the file",
+  );
 
   const panel = $derived(router.panel);
   const fileSource = $derived(fileSourceFor(router.place));
@@ -49,6 +56,11 @@
     });
   });
 
+  // If the file view's code can't load, the panel closes so the file can be asked for again.
+  $effect(() => {
+    if (panel?.kind === "file") filePanel.ensure(() => void router.closePanel());
+  });
+
   $effect(() => {
     const run = sessionRun;
     if (run === null) return;
@@ -76,12 +88,23 @@
       {/if}
     {:else if panel.kind === "file"}
       {#if fileBuffer !== null}
-        {#key fileBuffer}
-          <FilePanel buffer={fileBuffer} path={panel.path} />
-        {/key}
+        {#if filePanel.component !== null}
+          {@const FilePanel = filePanel.component}
+          {#key fileBuffer}
+            <FilePanel buffer={fileBuffer} path={panel.path} />
+          {/key}
+        {:else}
+          <div class="panel-loading"><Skeleton lines={8} label="Loading the file" /></div>
+        {/if}
       {/if}
     {:else}
       <LegacySizePanel />
     {/if}
   </ContextPanel>
 {/if}
+
+<style>
+  .panel-loading {
+    padding: var(--space-16) var(--space-18);
+  }
+</style>

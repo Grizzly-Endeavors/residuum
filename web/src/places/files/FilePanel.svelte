@@ -222,7 +222,6 @@
 
   @media (max-width: 760px) {
     .file-panel-save {
-      padding-bottom: calc(var(--space-10) + env(safe-area-inset-bottom, 0px));
       padding-left: var(--space-16);
     }
   }
