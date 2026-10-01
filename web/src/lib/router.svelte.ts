@@ -100,6 +100,8 @@ class Router {
   viewedAgent = $derived(viewedAgentOf(this.location.place));
 
   private started = false;
+  /** Started for overlay entries only, on a page outside the app's routes: the URL is left alone. */
+  private overlaysOnly = false;
   /** The marks of the history entry being shown. */
   private entry: EntryState = { idx: 0 };
   /** The agent most recently viewed, for places that view none. */
@@ -130,10 +132,25 @@ class Router {
     this.applyUrl(this.readUrl(), this.entry);
   }
 
+  /**
+   * Follow the history for overlay entries only, on a page outside the app's
+   * routes (the primitives gallery): Back closes its overlays, and the address
+   * is left as it is instead of being read as a place.
+   */
+  startForOverlays(): void {
+    if (this.started) return;
+    this.started = true;
+    this.overlaysOnly = true;
+    window.addEventListener("popstate", this.onPopState);
+    this.entry = { idx: 0 };
+    window.history.replaceState(this.entry, "", currentUrl());
+  }
+
   /** Stop following the browser's history. */
   stop(): void {
     if (!this.started) return;
     this.started = false;
+    this.overlaysOnly = false;
     window.removeEventListener("popstate", this.onPopState);
     window.removeEventListener("beforeunload", this.guard.onBeforeUnload);
   }
@@ -317,10 +334,22 @@ class Router {
       this.commit(target, mode);
       return Promise.resolve(true);
     }
-    return this.guard.ask(losses).then((allowed) => {
-      if (allowed) this.commit(target, mode);
-      return allowed;
+    return this.guard.ask(losses).then(async (allowed) => {
+      if (!allowed) return false;
+      await this.afterAsking();
+      this.commit(target, mode);
+      return true;
     });
+  }
+
+  /**
+   * Asking opens the confirm dialog, an overlay with its own history entry,
+   * and closing it goes back over that entry. Go on from where that leaves
+   * the history, or the navigation would land on the dialog's entry and be
+   * undone when the browser reports going back.
+   */
+  private afterAsking(): Promise<void> {
+    return this.traversals;
   }
 
   /** Write `target` into the history and show it. */
@@ -361,8 +390,9 @@ class Router {
     if (this.queued > 0) return Promise.resolve(false);
     const target: AppLocation =
       param === "panel" ? { ...current, panel: null } : { ...current, settings: null };
-    const steps = stepsToClose(this.entry, this.entry[param]);
     const leave = (): Promise<boolean> => {
+      // Worked out when leaving, since asking pushes and pops the confirm dialog's entry.
+      const steps = stepsToClose(this.entry, this.entry[param]);
       if (steps === null) {
         this.commit(target, "replace");
         return Promise.resolve(true);
@@ -371,7 +401,11 @@ class Router {
     };
     const losses = this.guard.losses(target);
     if (losses.length === 0) return leave();
-    return this.guard.ask(losses).then((allowed) => (allowed ? leave() : false));
+    return this.guard.ask(losses).then(async (allowed) => {
+      if (!allowed) return false;
+      await this.afterAsking();
+      return leave();
+    });
   }
 
   private closeOverlay(record: OverlayRecord): void {
@@ -440,6 +474,10 @@ class Router {
       window.history.replaceState(landed, "", currentUrl());
     }
     this.dismissOverlaysAbove(landed?.idx ?? null);
+    if (this.overlaysOnly) {
+      this.entry = landed ?? { idx: this.entry.idx - 1 };
+      return;
+    }
 
     const arrived = landed ?? { idx: this.entry.idx - 1 };
     const leaving =

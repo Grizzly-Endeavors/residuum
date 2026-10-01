@@ -64,7 +64,7 @@
           temperature: models.overrides.main?.temperature ?? "",
           thinking: newLevel,
         };
-        return { models: { main: modelRoleJson(models.main, overrides) } };
+        return { models: { main: modelRoleJson(models.main, overrides, models.fallbacks.main) } };
       });
       if (!saved.result.valid) throw new Error(saved.result.error ?? "unknown error");
       ws.send({ type: "reload" });

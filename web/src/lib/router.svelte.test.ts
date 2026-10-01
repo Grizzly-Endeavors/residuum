@@ -100,6 +100,23 @@ function locationUrl(location: AppLocation): string {
   return `${JSON.stringify(location.place)}${panel}${settings}`;
 }
 
+/**
+ * Asks the way the confirm dialog does: it is an overlay with its own history
+ * entry, and the answer comes once the dialog has closed through its handle.
+ */
+function confirmOnOverlay(router: Router, answer: boolean) {
+  return (_losses: readonly string[]): Promise<boolean> =>
+    new Promise((resolve) => {
+      const handle = router.openOverlay(() => {
+        resolve(false);
+      });
+      setTimeout(() => {
+        handle.close();
+        resolve(answer);
+      }, 0);
+    });
+}
+
 afterEach(() => {
   for (const router of started.splice(0)) router.stop();
   vi.restoreAllMocks();
@@ -865,6 +882,103 @@ describe("the unsaved-edit guard", () => {
     const stop = page.router.guard.register(() => "unsaved changes");
     stop();
     await expect(page.router.openPlace(files("scout"))).resolves.toBe(true);
+  });
+
+  it("navigates from where the confirm dialog's own entry leaves the history", async () => {
+    const page = await boot("/agent/scout");
+    page.router.guard.setConfirm(confirmOnOverlay(page.router, true));
+    page.router.guard.register(() => "unsaved changes");
+    await expect(page.router.openPlace(files("scout"))).resolves.toBe(true);
+    await settle();
+    expect(page.url()).toBe("/agent/scout/files");
+    expect(page.router.place).toEqual(files("scout"));
+    expect(page.entry()).toEqual({ idx: 1 });
+    window.history.back();
+    await vi.waitFor(() => {
+      expect(page.router.place).toEqual(chat("scout"));
+    });
+  });
+
+  it("closes the modal from where the confirm dialog's entry leaves the history", async () => {
+    const page = await boot("/agent/scout");
+    await page.router.openSettings({ scope: "scout", section: "model" });
+    page.router.guard.setConfirm(confirmOnOverlay(page.router, true));
+    page.router.guard.register((target) => (target?.settings === null ? "staged changes" : null));
+    await expect(page.router.closeSettings()).resolves.toBe(true);
+    await settle();
+    expect(page.url()).toBe("/agent/scout");
+    expect(page.router.settings).toBeNull();
+    expect(page.entry().idx).toBe(0);
+  });
+
+  it("closes a deep-linked modal by replace once the confirm dialog's entry is gone", async () => {
+    const page = await boot("/agent/scout?settings=scout/model");
+    page.router.guard.setConfirm(confirmOnOverlay(page.router, true));
+    page.router.guard.register((target) => (target?.settings === null ? "staged changes" : null));
+    await expect(page.router.closeSettings()).resolves.toBe(true);
+    await settle();
+    expect(page.url()).toBe("/agent/scout");
+    expect(page.router.settings).toBeNull();
+    expect(page.entry()).toEqual({ idx: 0 });
+  });
+
+  it("goes where Back was headed after a confirm dialog with its own entry", async () => {
+    const page = await boot("/agent/scout");
+    await page.router.openPlace(files("scout"));
+    page.router.guard.setConfirm(confirmOnOverlay(page.router, true));
+    page.router.guard.register(() => "unsaved changes");
+    window.history.back();
+    await vi.waitFor(() => {
+      expect(page.router.place).toEqual(chat("scout"));
+      expect(page.url()).toBe("/agent/scout");
+      expect(page.entry().idx).toBe(0);
+    });
+  });
+});
+
+describe("following overlay entries only", () => {
+  async function bootOutsideRoutes(url: string): Promise<Router> {
+    vi.resetModules();
+    window.history.replaceState(null, "", url);
+    const { router } = await import("./router.svelte");
+    router.startForOverlays();
+    started.push(router);
+    return router;
+  }
+  const url = (): string => `${window.location.pathname}${window.location.search}`;
+
+  it("leaves the address alone and marks the entry it starts on", async () => {
+    await bootOutsideRoutes("/dev/gallery");
+    expect(url()).toBe("/dev/gallery");
+    expect(window.history.state).toEqual({ idx: 0 });
+  });
+
+  it("closes the topmost overlay on Back, then the next, without leaving the page", async () => {
+    const router = await bootOutsideRoutes("/dev/gallery");
+    const first = vi.fn();
+    const second = vi.fn();
+    router.openOverlay(first);
+    router.openOverlay(second);
+    window.history.back();
+    await vi.waitFor(() => {
+      expect(second).toHaveBeenCalledTimes(1);
+    });
+    expect(first).not.toHaveBeenCalled();
+    window.history.back();
+    await vi.waitFor(() => {
+      expect(first).toHaveBeenCalledTimes(1);
+    });
+    expect(url()).toBe("/dev/gallery");
+    expect(window.history.state).toEqual({ idx: 0 });
+  });
+
+  it("pops an overlay's entry when the UI closes it", async () => {
+    const router = await bootOutsideRoutes("/dev/gallery");
+    const dismissed = vi.fn();
+    router.openOverlay(dismissed).close();
+    await settle();
+    expect(dismissed).not.toHaveBeenCalled();
+    expect(window.history.state).toEqual({ idx: 0 });
   });
 });
 

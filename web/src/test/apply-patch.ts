@@ -9,7 +9,12 @@ function applyDiff(doc: Record<string, unknown>, diff: Record<string, unknown>):
         doc[key] = value.$inline;
         continue;
       }
-      const child = (doc[key] ?? {}) as Record<string, unknown>;
+      // Whatever is there that isn't a table (a model list, a string) becomes one.
+      const existing = doc[key];
+      const child =
+        typeof existing === "object" && existing !== null && !Array.isArray(existing)
+          ? (existing as Record<string, unknown>)
+          : {};
       applyDiff(child, value as Record<string, unknown>);
       doc[key] = child;
     } else {

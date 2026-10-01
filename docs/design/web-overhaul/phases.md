@@ -389,7 +389,7 @@ Each unit implements its part of design §9, and updates the mock, the generated
 
 ## Phase 3 — Foundations (target: integration)
 
-W13 and W16 together. W14 after W13. W17 and W17b after W16. W15 after W13 and W17. W18 after W17b, once W05 is merged.
+W13 and W16 together. W14 after W13. W17 and W17b after W16. W15a after W14 and W17, then W15b. W18 after W17b, once W05 is merged.
 
 ### W13 — Tokens, fonts, base styles and icons (M)
 
@@ -420,19 +420,41 @@ W13 and W16 together. W14 after W13. W17 and W17b after W16. W15 after W13 and W
   - An axe scan of the gallery.
   - Gallery baselines.
 
-### W15 — Primitives: overlays, toasts and notification history (L)
+### W15a — Primitives: overlay stack, modal layers and confirm (L)
 
-- **Modules:** Menu, Popover, Tooltip, Dialog, Sheet, Drawer; the overlay stack (focus, `inert`, scroll lock, stacking, overlay entries through the router); toast region; Recent notifications dialog.
-- **Preconditions:** W13, W17.
+- **Modules:**
+  - the overlay stack: focus trap and restore, Esc, outside pointer and scrim, `inert`, scroll lock, nested stacking
+  - the body-level overlay host that layers render into
+  - swipe to dismiss
+  - the modal layer that Dialog, Sheet, Drawer, the palette and the Settings modal are drawn on
+  - Dialog, Sheet, Drawer
+  - a confirm dialog, with a queue and host, and the confirm function for the unsaved-edit guard
+  - the router's overlay entries: waiting for an overlay's entry to leave the history after the guard asks, and following overlay entries on a page outside the app's routes (the gallery)
+- **Preconditions:** W13, W14, W17.
 - **Shape when done:**
-  - Overlays follow design §1's model, and modal ones use overlay entries (§3).
-  - A Dialog can go full-screen at phone width. Sheets and Drawers dismiss by swipe.
-  - The toast region renders the existing toast store with today's timings and actions, and is announced to assistive technology.
-  - The Recent notifications dialog shows the existing history, with details, clear and Undo.
-  - The gallery gains overlay demos.
+  - Modal overlays follow design §1's model and use overlay entries (§3).
+  - A Dialog can go full-screen at phone width. Sheets and Drawers dismiss by swipe, respecting reduced motion.
+  - The confirm function is ready for the shell to give `router.guard.setConfirm`. Confirming a navigation or a close lands where the user was headed.
+  - The gallery gains demos of each modal overlay and the confirm dialog.
 - **Verification:**
-  - Component tests: focus trap and restore, Esc, nested stacking, toast timing.
-  - End-to-end: each overlay opens, and Back closes it.
+  - Component tests: focus trap and restore, Esc, scrim, nested stacking, scroll lock and `inert`, swipe.
+  - Router tests: confirm, then navigate; confirm, then close.
+  - End-to-end: each modal overlay opens, and Back closes it.
+  - axe scans and baselines.
+
+### W15b — Primitives: floating layers, toasts and notification history (M)
+
+- **Modules:** Menu, Popover, Tooltip (the provider W14's IconButton asks for) and their placement; toast region; Recent notifications dialog.
+- **Preconditions:** W15a.
+- **Shape when done:**
+  - Menus, popovers and tooltips close through W15a's overlay stack: Esc and an outside pointer close the topmost first.
+  - A Menu has a menu button, arrow-key navigation and typeahead.
+  - The toast region renders the existing toast store with today's timings and actions. It is announced to assistive technology: errors assertively, the rest politely.
+  - The Recent notifications dialog shows the existing history, with details, relative times, clear and Undo.
+  - The gallery gains demos of each floating layer, toasts and the Recent notifications dialog.
+- **Verification:**
+  - Component tests: Menu keyboard navigation and typeahead, outside pointer and Esc, toast timing, live regions.
+  - End-to-end: each floating layer opens and closes, and the Recent notifications dialog clears and undoes.
   - axe scans and baselines.
 
 ### W16 — API client agent scoping (M)
@@ -512,7 +534,7 @@ W19, then W20 and W21 together.
 ### W19 — Shell frame (L)
 
 - **Modules:** application root and layout; rail (new); phone bottom bar and drawer (new); overlay host; hub banner; place routing with legacy views hosted; legacy layout rules adjusted for hosting. The header, hamburger menu, agent chip row, sessions-sidebar toggle and notification corner are deleted.
-- **Preconditions:** W14, W15, W17; W05 merged.
+- **Preconditions:** W14, W15a, W15b, W17; W05 merged.
 - **Shape when done:**
   - The shell matches design §2 and the mockup at all three widths, except the context panel (W20):
     - the rail with the accordion rules and the footer (gear, help menu with Recent notifications)
@@ -589,7 +611,7 @@ W19, then W20 and W21 together.
 - W29 once W06, W07 and W10 are merged.
 - W33 after W18. W34 after W33.
 - W35–W40 together after W34, where W35 also needs W23. W41 after W38, W39 and W40.
-- W42 at any point after W14 and W15.
+- W42 at any point after W14, W15a and W15b.
 
 ### W22 — Chat feed rendering (L)
 
@@ -953,7 +975,7 @@ W19, then W20 and W21 together.
 ### W42 — Setup wizard restyle (M)
 
 - **Modules:** setup wizard and its steps.
-- **Preconditions:** W14, W15.
+- **Preconditions:** W14, W15a, W15b.
 - **Shape when done:** the six-step flow, validation, draft and completion are unchanged, rendered with the new primitives and tokens, and working at phone width.
 - **Verification:**
   - End-to-end in setup mode on both projects: complete the wizard; reload mid-way and the draft restores.

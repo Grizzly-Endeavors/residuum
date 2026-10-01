@@ -343,6 +343,12 @@ export interface SettingsModelAssignments {
   bgMedium: string;
   bgLarge: string;
   overrides: Record<string, RoleOverrides>;
+  /**
+   * The rest of each role's failover list, after the model above. A role has
+   * an entry only when its list is longer than one. The form shows and edits
+   * the first model; the rest ride along so a save never shortens the list.
+   */
+  fallbacks: Record<string, string[]>;
 }
 
 /** One agent key as the API describes it. Values are never sent. */
