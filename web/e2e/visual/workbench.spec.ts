@@ -29,7 +29,10 @@ test.describe("workbench", { tag: "@visual" }, () => {
     await openConnected(page, "/team/workbench/wiki-graph");
     await expect(page.getByText("2 sessions running")).toBeVisible();
     await expect(page.getByText("On scout", { exact: true })).toBeVisible();
-    await expectScreenshot(page, "workbench");
+    // The page's address names the artifacts port, which follows E2E_DEV_PORT.
+    const address = page.getByText(/^http:\/\/localhost:\d+\/wiki-graph\/$/);
+    await expect(address).toBeVisible();
+    await expectScreenshot(page, "workbench", { mask: [address] });
   });
 
   test("pages can't open, over an empty bench", async ({ page, mock }) => {
