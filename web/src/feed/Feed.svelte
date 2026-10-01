@@ -52,7 +52,13 @@
     tail,
   }: Props = $props();
 
-  const shown = $derived(groupTurns(items, liveTurnId));
+  // A turn that ended before it did anything still shows how it ended.
+  const shown = $derived(
+    groupTurns(items, liveTurnId, (turnId) => {
+      const ending = observed?.(turnId)?.ending;
+      return ending === "stopped" || ending === "interrupted";
+    }),
+  );
   const isEmpty = $derived(items.length === 0 && !loading && liveTurnId === null);
 
   let scrollEl = $state<HTMLDivElement>();

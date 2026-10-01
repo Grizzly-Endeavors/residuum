@@ -15,6 +15,11 @@ function conversation(page: Page, agent = "atlas"): Locator {
   return page.getByRole("region", { name: `Conversation with ${agent}` });
 }
 
+/** The hub socket is up: the inbox count comes from the overview it brings. */
+async function hubConnected(page: Page): Promise<void> {
+  await expect(page.getByRole("link", { name: /^Inbox.*\d+ unread/ }).first()).toBeAttached();
+}
+
 async function chatScreenshot(page: Page, name: string): Promise<void> {
   await expectScreenshot(page, name, { mask: [page.locator("[data-legacy-view]")] });
 }
@@ -68,6 +73,43 @@ test.describe("chat feed", { tag: "@visual" }, () => {
     await expect(page.getByRole("region", { name: "atlas is stopped" })).toBeInViewport();
     await expect(conversation(page).getByText(GREETING)).toBeVisible();
     await chatScreenshot(page, "chat-stopped-below");
+  });
+
+  test("a turn's activity line, open to a step's details", async ({ page }) => {
+    await page.goto("/agent/atlas");
+    const feed = conversation(page);
+    await expect(feed.getByText(GREETING)).toBeInViewport();
+    await hubConnected(page);
+    await feed.getByRole("button", { name: "Ran 1 command" }).click();
+    const step = feed.getByRole("button", { name: "Ran residuum memory stats" });
+    await step.click();
+    await expect(feed.getByText("Context window: 12,847 / 200,000 tokens (6.4%)")).toBeVisible();
+    await step.evaluate((el) => {
+      el.scrollIntoView({ block: "start" });
+    });
+    await chatScreenshot(page, "chat-activity");
+  });
+
+  test("a turn running, with its steps", async ({ page, mock }) => {
+    test.setTimeout(90_000);
+    // Seconds between steps, so the line holds still for the shot: one read
+    // done and the other running, from 13.5s into the turn to 18s.
+    await mock.post("/api/mock/delays", { data: { scale: 15 } });
+    await page.goto("/agent/atlas");
+    const feed = conversation(page);
+    await expect(feed.getByText(GREETING)).toBeInViewport();
+    await hubConnected(page);
+    await page.getByRole("textbox", { name: "Send a message..." }).fill("Check the wiki index");
+    await page.getByRole("textbox", { name: "Send a message..." }).press("Enter");
+    await expect(feed.getByRole("button", { name: "Read team/wiki/index.md" })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(
+      feed.getByRole("button", { name: "Reading team/wiki/projects/residuum.md, running" }),
+    ).toBeVisible();
+    // The hub has heard the agent is busy: the header's mark is working.
+    await expect(page.getByRole("main").locator("[data-working]").first()).toBeAttached();
+    await chatScreenshot(page, "chat-live-turn");
   });
 
   test("the header's menu", async ({ page }) => {
