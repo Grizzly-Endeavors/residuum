@@ -248,23 +248,6 @@ describe("switching agents leaves nothing of the old agent behind", () => {
     expect(ws.store.sessionUsage).toBeNull();
   });
 
-  it("does not send a session command from the old agent's store to the new agent", async () => {
-    installServer();
-    setViewedAgent("scout");
-    FakeWebSocket.last.simulateOpen();
-    await flush();
-    const oldSessions = ws.sessions;
-
-    setViewedAgent("atlas");
-    FakeWebSocket.last.simulateOpen();
-    await flush();
-    const sentBefore = FakeWebSocket.last.sent.length;
-
-    oldSessions.sendMessage("main", "stale command");
-
-    expect(FakeWebSocket.last.sent).toHaveLength(sentBefore);
-  });
-
   it("starts the new agent's connection state fresh", async () => {
     installServer();
     setViewedAgent("scout");

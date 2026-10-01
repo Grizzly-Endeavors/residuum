@@ -57,20 +57,20 @@ Every capability the current web UI offers, grouped by the surface that has it t
 
 ## Sessions sidebar and session view → Activity + context panel (design §5; W26)
 
-- [ ] Live count badge — **Changed:** running-sessions pill in the chat header and the Activity place
-- [ ] Narrow-screen drawer behaviors (focus trap, inert page, Esc) — **Changed:** Activity is a place; the panel is a sheet on phones
-- [ ] Categories external / scheduled / spawned / artifact with descriptions — **Changed:** plain-language kinds in one Running list and a filtered Finished list
-- [ ] Finished paging with "N+" counts and Show older
-- [ ] Row: kind, source, duration, purpose, state, outcome, start time, last error, artifact link, Stop (forking / queued / running / idle), selection
-- [ ] Outbound tasks: agent, time since sent, status text, state (sent / working / waiting on reply / waiting on sign-in / can't reach for N, still retrying), Stop, Stop watching fallback
-- [ ] Load errors with Try again; loading state
-- [ ] Session view: back to chat, Stop session, heading focus on open, tags, purpose, details (kind, started by with links, depth > 1, remembered as, run id), notes (interrupted, failed with details, overlap)
-- [ ] Transcript with loading, error with Try again, empty state, live frames (buffered and deduplicated during load), follow and Jump to latest
-- [ ] Transcript status lines: outcome, stopping, delivery result, send/stop failures
-- [ ] Message a session; resume a finished one ("Message this session to start it again…"); follow a resumed session into its new run
-- [ ] Undo this turn in session transcripts
-- [ ] Results as toasts when the session isn't open
-- [ ] Open session from an agent message by address (live first, else looked up)
+- [x] Live count badge — **Changed:** running-sessions pill in the chat header, the rail's Activity count, and the Running now heading
+- [x] Narrow-screen drawer behaviors (focus trap, inert page, Esc) — **Changed:** Activity is a place; the panel is a sheet on phones
+- [x] Categories external / scheduled / spawned / artifact with descriptions — **Changed:** plain-language kinds in one Running list and a filtered Finished list
+- [x] Finished paging with "N+" counts and Show older — **Changed:** one count on the Finished heading, for the kind shown
+- [x] Row: kind, source, duration, purpose, state, outcome, start time, last error, artifact link, Stop (forking / queued / running / idle), selection — **Changed:** the artifact link is in the session panel's details
+- [x] Outbound tasks: agent, time since sent, status text, state (sent / working / waiting on reply / waiting on sign-in / can't reach for N, still retrying), Stop, Stop watching fallback — **Changed:** Stop task and Stop watching are Home's commands (the overview store's), and Stop watching shows for any task whose agent can't be reached
+- [x] Load errors with Try again; loading state
+- [x] Session view: back to chat, Stop session, heading focus on open, tags, purpose, details (kind, started by with links, depth > 1, remembered as, run id), notes (interrupted, failed with details, overlap) — **Changed:** the context panel's header (Close, or Back on a phone; the panel takes focus as it opens) and a Details disclosure, which also lists what the run spent in place of the session footer
+- [x] Transcript with loading, error with Try again, empty state, live frames (buffered and deduplicated during load), follow and Jump to latest — **Fix:** live frames come through the hub's session relay, so a run on any agent streams; the transcript is read again after a lag, and the panel keeps its state across breakpoints
+- [x] Transcript status lines: outcome, stopping, delivery result, send/stop failures
+- [x] Message a session; resume a finished one ("Message this session to start it again…"); follow a resumed session into its new run — **Changed:** through the agent's session routes; a failed send keeps the text in the box
+- [x] Undo this turn in session transcripts
+- [x] Results as toasts when the session isn't open
+- [x] Open session from an agent message by address (live first, else looked up)
 
 ## Workspace → Files, Shared files, context panel (design §5; W31)
 

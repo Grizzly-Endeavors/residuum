@@ -1,4 +1,4 @@
-// ── Feed item building shared by the main chat and session views ─────
+// ── Feed item building shared by the main chat and session transcripts
 
 import { nextFeedId } from "./feed-id";
 import { historyAgentMessage, parseArtifactMessage, parseOwnerMessage } from "./relay";

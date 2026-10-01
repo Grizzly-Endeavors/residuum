@@ -3,6 +3,32 @@
 /* its left edge. The seam flares once when the agent writes to the        */
 /* artifact: the only motion here, and it means "this just changed".        */
 
+.session-back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-height: 40px;
+  padding: 0 var(--s-3);
+  font-family: var(--font-body);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    color var(--dur-quick),
+    background-color var(--dur-quick),
+    border-color var(--dur-quick);
+}
+
+.session-back:hover {
+  color: var(--text);
+  background: var(--bg-raised);
+  border-color: var(--border);
+}
+
 .workbench-view {
   display: flex;
   flex-direction: column;

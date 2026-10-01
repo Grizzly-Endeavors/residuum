@@ -39,7 +39,7 @@ Every caller needs a key. Keys belong to the whole hub, so a key reaches every a
 
 The key is shown once. Give it to the other agent's operator, who configures their agent to send it as `Authorization: Bearer <key>`. Revoke it from the same page, or with `residuum a2a keys revoke <name>`.
 
-Each caller's conversations with your agent run as their own sessions, which you can follow in the sessions sidebar. They never reach your main chat.
+Each caller's conversations with your agent run as their own sessions, which you can follow in your agent's Activity. They never reach your main chat.
 
 ### Public or private
 

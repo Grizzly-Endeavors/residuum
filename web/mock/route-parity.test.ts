@@ -137,6 +137,8 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
       }),
   ],
   fetchSessionTranscript: [(a) => a.fetchSessionTranscript(AGENT, "run-1")],
+  messageSession: [(a) => a.messageSession(AGENT, "spawned-research-3f9a", "hello")],
+  stopSession: [(a) => a.stopSession(AGENT, "spawned-research-3f9a")],
   fetchScheduledPulses: [(a) => a.fetchScheduledPulses(AGENT)],
   setPulseEnabled: [(a) => a.setPulseEnabled(AGENT, "inbox_check", false)],
   fetchScheduledActions: [(a) => a.fetchScheduledActions(AGENT)],
