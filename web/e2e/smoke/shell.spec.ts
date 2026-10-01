@@ -335,7 +335,7 @@ test("Settings opens on the viewed agent's scope, or All agents, and closes back
   rail = await openRail(page, isMobile);
   await rail.getByRole("button", { name: "Settings" }).click();
   await expect.poll(() => address(page)).toBe("/home?settings=_all");
-  await expect(page.getByRole("heading", { name: "All agents" })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Settings for" })).toHaveValue("_all");
 });
 
 test("the help menu opens Recent notifications and the keyboard shortcuts", async ({
