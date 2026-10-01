@@ -13,7 +13,10 @@
 
   const agent = $derived(ws.agent ?? "");
   const store = $derived(ws.store);
-  const usage = $derived(store.sessionUsage);
+  // Totals of nothing, as an agent that has never replied has, are no figures yet.
+  const usage = $derived(
+    store.sessionUsage !== null && store.sessionUsage.input_tokens > 0 ? store.sessionUsage : null,
+  );
   const running = $derived(hub.displayStateOf(agent) === "running");
   const summarize = $derived(actionRegistry.all.find((action) => action.id === "chat:observe"));
   const numbers = new Intl.NumberFormat("en-US");

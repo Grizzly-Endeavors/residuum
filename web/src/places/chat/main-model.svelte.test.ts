@@ -114,6 +114,13 @@ describe("the composer's model control", () => {
     ]);
   });
 
+  it("writes a change made while another is still being written", async () => {
+    const main = await loaded();
+    await Promise.all([main.choose("claude-haiku-4-5"), main.toggleThinking("low")]);
+    expect(patches).toHaveLength(2);
+    expect(main.saving).toBe(false);
+  });
+
   it("says why when the change isn't accepted, and doesn't reload the agent", async () => {
     disk.valid = false;
     const written = vi.fn();

@@ -7,12 +7,10 @@ import { expect, test } from "../support/fixtures";
  * width, floating at medium width, a full-screen sheet on phones, and an
  * invalid `panel` corrected.
  *
- * The conversation size still shows a hosted legacy view, which the unit that
- * replaces it scans, so the scans here leave it out. The file editor is
- * scanned here and in `files.spec.ts`, and a session run in `activity.spec.ts`.
+ * The file editor is scanned here and in `files.spec.ts`, a session run in
+ * `activity.spec.ts`, and the conversation size in `composer.spec.ts`.
  */
 
-const LEGACY = "[data-legacy-view]";
 const RUN = "Compare fallback strategies for notification delivery";
 const RUN_ROW = new RegExp(`^${RUN}`);
 
@@ -50,9 +48,8 @@ function address(page: Page): string {
 }
 
 async function scanPanel(page: Page, isMobile: boolean): Promise<void> {
-  if (isMobile)
-    await expectNoAxeViolations(page, { within: "[data-overlay-host]", exclude: LEGACY });
-  else await expectNoAxeViolations(page, { exclude: LEGACY });
+  if (isMobile) await expectNoAxeViolations(page, { within: "[data-overlay-host]" });
+  else await expectNoAxeViolations(page);
 }
 
 test("a run opens in the panel from Activity, and closing it goes back", async ({
@@ -172,7 +169,7 @@ test.describe("at wide width", () => {
     const panel = contextPanel(page, false, "Conversation size");
     const grip = panel.getByRole("separator", { name: "Resize panel" });
     await expect(grip).toHaveAttribute("aria-valuenow", "440");
-    await expectNoAxeViolations(page, { exclude: LEGACY });
+    await expectNoAxeViolations(page);
 
     // Drag the edge 120px to the left, from where the panel starts.
     const before = await settledBox(panel);
@@ -234,7 +231,7 @@ test.describe("at medium width", () => {
     const main = await page.getByRole("main").boundingBox();
     // The main region keeps its width under the panel.
     expect(main === null ? null : main.x + main.width).toBe(1000);
-    await expectNoAxeViolations(page, { exclude: LEGACY });
+    await expectNoAxeViolations(page);
 
     await panel.getByRole("button", { name: "Close panel" }).focus();
     await page.keyboard.press("Escape");

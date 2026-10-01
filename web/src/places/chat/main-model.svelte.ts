@@ -35,7 +35,8 @@ export class MainModel {
   models = $state<ModelEntry[]>([]);
   listError = $state<string | null>(null);
   providerLabel = $state("");
-  saving = $state(false);
+  /** Writes under way. The coordinator runs them one at a time, each on the file as the last left it. */
+  private writes = $state(0);
 
   private readonly source = Symbol("composer model control");
   /** Sequences reads, so a slow one can't overwrite what a later one found. */
@@ -52,6 +53,10 @@ export class MainModel {
 
   get model(): string {
     return splitModel(this.value).model;
+  }
+
+  get saving(): boolean {
+    return this.writes > 0;
   }
 
   /** The model's name as its provider lists it, or its id. */
@@ -133,8 +138,7 @@ export class MainModel {
     buildMain: (models: SettingsModelAssignments) => unknown,
     failure: string,
   ): Promise<void> {
-    if (this.saving) return;
-    this.saving = true;
+    this.writes += 1;
     try {
       const saved = await configCoordinator.edit(
         this.file,
@@ -152,12 +156,12 @@ export class MainModel {
         );
         return;
       }
-      if (saved.raw !== null) await this.show(saved.raw, ++this.reads);
       if (saved.written) this.onWritten();
+      if (saved.raw !== null) await this.show(saved.raw, ++this.reads);
     } catch (err) {
       notifications.surface("error", userErrorMessage(err, { action: failure }));
     } finally {
-      this.saving = false;
+      this.writes -= 1;
     }
   }
 }

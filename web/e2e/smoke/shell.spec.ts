@@ -6,12 +6,7 @@ import { expect, test } from "../support/fixtures";
  * The shell: every place from the rail (the drawer on phones) and the phone's
  * bottom bar, the agent accordion, history, the redirects from old URLs, and
  * the hub banner.
- *
- * Places that haven't been rebuilt host their legacy views, which the units
- * that replace them scan, so the scans here leave them out.
  */
-
-const LEGACY = "[data-legacy-view]";
 
 /** The rail, opened in its drawer on a phone. */
 async function openRail(page: Page, isMobile: boolean): Promise<Locator> {
@@ -122,7 +117,7 @@ test("every place opens from the rail, or the drawer on a phone", async ({ page,
         "page",
       );
     }
-    await expectNoAxeViolations(page, { exclude: LEGACY });
+    await expectNoAxeViolations(page);
   }
 });
 
@@ -204,7 +199,7 @@ test.describe("the agent accordion", () => {
     // Collapsed, the viewed agent keeps its highlight, and the page stays.
     await expect(agentRow(rail, "atlas")).toHaveAttribute("data-viewed");
     expect(address(page)).toBe("/agent/atlas");
-    await expectNoAxeViolations(page, { exclude: LEGACY });
+    await expectNoAxeViolations(page);
   });
 
   test("Enter and Space toggle a row, and Up and Down move between rows", async ({
@@ -305,7 +300,7 @@ test("the hub banner shows while the hub can't be reached, and Retry reconnects"
 
   await mock.post("/api/mock/hub-socket", { data: { online: false } });
   await expect(banner).toBeVisible();
-  await expectNoAxeViolations(page, { exclude: LEGACY });
+  await expectNoAxeViolations(page);
 
   // Hold the socket's own reconnect timer, which would otherwise race the
   // click below once the hub is back, so only Retry can reconnect it.
@@ -346,7 +341,7 @@ test("the help menu opens Recent notifications and the keyboard shortcuts", asyn
   let rail = await openRail(page, isMobile);
   await rail.getByRole("button", { name: "Help" }).click();
   await expect(page.getByRole("menu", { name: "Help" })).toBeVisible();
-  await expectNoAxeViolations(page, { exclude: LEGACY });
+  await expectNoAxeViolations(page);
   await page.getByRole("menuitem", { name: "Recent notifications" }).click();
   const recent = page.getByRole("dialog", { name: "Recent notifications" });
   await expect(recent).toBeVisible();

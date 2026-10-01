@@ -29,7 +29,7 @@ Every capability the current web UI offers, grouped by the surface that has it t
 
 ## Composer → Agent Chat composer (design §4; W25, with the action registry from W21)
 
-- [ ] Auto-growing input; Enter sends, Shift+Enter new line
+- [x] Auto-growing input; Enter sends, Shift+Enter new line
 - [x] Slash autocomplete when `/` is the first character: arrow keys, Tab completes, Enter runs, Esc closes; toolbar button toggles the full list; click outside closes — **Changed:** draws from the action registry
 - [x] `/help` — **Changed:** Keyboard shortcuts dialog / palette
 - [x] `/verbose` — **Dropped:** tool activity is always shown, collapsed by default
@@ -38,22 +38,22 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [x] `/context` — **Changed:** "Show conversation size" opens the context panel
 - [x] `/inbox <text>` — **Changed:** action "Add a note to <agent>'s inbox" with a text prompt
 - [x] Unknown-command error
-- [ ] Image attach by button, paste, drag-and-drop with highlight; JPEG/PNG/GIF/WebP ≤ 5 MB; rejection message; removable thumbnails; image-only sends
-- [ ] Send becomes Stop while running and empty; typing restores Send for mid-turn steering
+- [x] Image attach by button, paste, drag-and-drop with highlight; JPEG/PNG/GIF/WebP ≤ 5 MB; rejection message; removable thumbnails; image-only sends — **Changed:** the rejection names the file and stays until the next attach or send
+- [x] Send becomes Stop while running and empty; typing restores Send for mid-turn steering
 - [x] Esc stops a running turn while the composer has focus — **Fix:** an open overlay takes that Esc instead
 - [x] Feedback entry point — **Changed:** help menu and palette
-- [ ] Model control: current main model, choose from the main provider's models, writes `models.main` keeping overrides, then reloads — **Fix:** refreshes after settings changes; goes through the config write coordinator
-- [ ] Thinking control: Off / Low / Med / High; clicking the active level clears it — **Fix:** refreshes after settings changes
-- [ ] Offline composing: messages queue with "Reconnecting — N messages will send once back online" (running agents only)
-- [ ] Drafts — **Fix:** kept per agent across navigation and reload
+- [x] Model control: current main model, choose from the main provider's models, writes `models.main` keeping overrides, then reloads — **Fix:** refreshes after settings changes; goes through the config write coordinator; keeps the failover list. **Changed:** a popover with the thinking control, a sheet on phones
+- [x] Thinking control: Off / Low / Med / High; clicking the active level clears it — **Fix:** refreshes after settings changes. **Changed:** Medium in full
+- [x] Offline composing: messages queue with "Reconnecting — N messages will send once back online" (running agents only)
+- [x] Drafts — **Fix:** kept per agent across navigation and reload. **Changed:** attached images are kept for the page's life only, not across a reload
 
 ## Chat footer and thinking indicator → Agent Chat (design §4; W24, W25)
 
-- [ ] Main model label — **Changed:** shown in the composer's model control
-- [ ] Session input/output tokens, tool calls, context size — **Changed:** conversation-size view in the context panel
-- [ ] Post-turn activity ("updating memory…", "reviewing turn…") — **Changed:** quiet status line under the last reply
-- [ ] Usage seeded on connect and updated per turn
-- [ ] Live elapsed timer, output tokens, tool calls, stop hint (main chat only)
+- [x] Main model label — **Changed:** shown in the composer's model control
+- [x] Session input/output tokens, tool calls, context size — **Changed:** conversation-size view in the context panel, in words with the token counts under Details
+- [x] Post-turn activity ("updating memory…", "reviewing turn…") — **Changed:** quiet status line under the last reply
+- [x] Usage seeded on connect and updated per turn — **Changed:** also read when the agent is opened, so a stopped agent shows its last figures
+- [x] Live elapsed timer, output tokens, tool calls, stop hint (main chat only) — **Changed:** the elapsed time and Stop are on the activity line; the reply's output and tool calls so far are in the conversation-size view
 
 ## Sessions sidebar and session view → Activity + context panel (design §5; W26)
 
