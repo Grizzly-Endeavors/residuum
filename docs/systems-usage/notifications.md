@@ -122,7 +122,7 @@ Four things send a push, each once by its own rule. A message goes to the device
 
 - A body is the item's or reply's Markdown as plain text on one line (links keep their text), cut to 120 characters. An item with no title is pushed as "New inbox item", and one with no body as "From <agent>.".
 - `badge` is the total of unread items across every agent's user inbox, counted from disk when the push is made, whether the agent is running or not.
-- An item the hub itself files when an agent fails is not an item an agent filed, so it sends no `inbox_item` push beside the `agent_failed` one. An item that left the active inbox before its push was worded (the user archived it) sends none, and one that can't be read is pushed with the generic title and the sender only, with a warning in the log.
+- A failed agent sends the `agent_failed` push alone: the hub files no item in the user inbox for it, so no `inbox_item` push comes beside it. An item that left the active inbox before its push was worded (the user archived it) sends none, and one that can't be read is pushed with the generic title and the sender only, with a warning in the log.
 - A reply from a background turn (a teammate's message, a pulse) never sends `reply_while_away`, and neither does a reply a connected client could see.
 - A failed agent started again that fails again sends another `agent_failed`, and a task whose streak ended and began again sends another `outbound_unreachable`.
 - When no device wants an event, nothing is worded or counted; the push is skipped with a debug log line.
