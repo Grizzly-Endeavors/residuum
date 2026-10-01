@@ -259,8 +259,8 @@ function agentFile(agent: string | null, name: AgentConfigFileName): ConfigFile 
   return agent === null ? null : agentConfigFile(agent, name);
 }
 
-/** The checkpoint repository that holds `file`, which an Undo of a save to it names. */
-export function checkpointRepoOf(file: ConfigFile): RepoKind {
+/** Where `file` lives in its checkpoint repository, which an Undo of a save to it restores from. */
+export function checkpointLocationOf(file: ConfigFile): { repo: RepoKind; path: string } {
   const agent = file.kind === "agent" ? file.agent : null;
   const key = configFileKey(file);
   const location = CHECKPOINT_LOCATIONS.find((candidate) => {
@@ -268,7 +268,7 @@ export function checkpointRepoOf(file: ConfigFile): RepoKind {
     return candidateFile !== null && configFileKey(candidateFile) === key;
   });
   // Every file `ConfigFile` can name has a location above.
-  return location?.repo ?? "agent_config";
+  return { repo: location?.repo ?? "agent_config", path: location?.path ?? "config.toml" };
 }
 
 /** Whether restoring `requested` (a file, a folder, or `""` for the whole repo) reaches `location`. */

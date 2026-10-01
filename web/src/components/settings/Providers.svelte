@@ -16,22 +16,17 @@
     type ModelEntry,
   } from "../../lib/models";
   import { isSecretReference, isEnvReference, envReferenceName } from "../../lib/secrets";
-  import { notifyFormUndo } from "../../lib/form-undo";
-  import type { PendingSaveTracker } from "../../lib/pending-save";
+  import { notifyStagedRemoval } from "../../lib/form-undo";
 
   let {
     providers = $bindable(),
     models = $bindable(),
     agent,
-    pendingSave,
-    onReload,
   }: {
     providers: SettingsProviderEntry[];
     models: SettingsModelAssignments;
     /** The agent whose providers these are. */
     agent: string | null;
-    pendingSave: PendingSaveTracker;
-    onReload: () => Promise<void>;
   } = $props();
 
   const providerTypes: Record<string, string> = {
@@ -168,17 +163,9 @@
   function removeProvider(idx: number) {
     const [removed] = providers.splice(idx, 1);
     if (!removed) return;
-    notifyFormUndo(
-      agent,
-      `Removed ${removed.name || "provider"}.`,
-      pendingSave,
-      () => {
-        providers.splice(idx, 0, removed);
-      },
-      "agent_config",
-      "providers.toml",
-      onReload,
-    );
+    notifyStagedRemoval(`Removed ${removed.name || "provider"}.`, () => {
+      providers.splice(idx, 0, removed);
+    });
   }
 
   function providerNameOptions(): string[] {

@@ -21,7 +21,7 @@ import type {
 } from "../src/lib/types";
 import { agentNameProblem } from "./agent-name";
 import { WEB_ROOT } from "./assets";
-import { repoStats } from "./checkpoints";
+import { checkpointBeforeAction, repoStats } from "./checkpoints";
 import { MOCK_CLOUD_STATUS, MOCK_FEATURES, MOCK_RESIDUUM_VERSION } from "./constants";
 import {
   json,
@@ -179,6 +179,18 @@ const systemRoutes: readonly Route[] = [
 
 type TomlDocument = "configToml" | "hubConfigToml" | "providersToml";
 
+/** Why the backend would refuse a patched document, as its validation words it; null when it wouldn't. */
+function patchProblem(field: TomlDocument, doc: JsonObject): string | null {
+  const agent = field === "configToml" ? doc.agent : undefined;
+  const limit =
+    typeof agent === "object" && agent !== null
+      ? (agent as JsonObject).max_tool_iterations
+      : undefined;
+  return limit === 0
+    ? "agent.max_tool_iterations must be at least 1 (leave it unset for unlimited)"
+    : null;
+}
+
 /**
  * Read, replace, patch and validate one TOML document kept in the state.
  * `afterWrite` runs once a write has been answered, as the hub reloads after
@@ -214,8 +226,21 @@ function tomlDocumentRoutes(
         const diff = await readJsonObject(ctx.req);
         const doc = state[field].trim() ? parseToml(state[field]) : {};
         applyJsonPatch(doc, diff);
+        const problem = patchProblem(field, doc);
+        if (problem !== null) {
+          json(ctx.res, 400, {
+            valid: false,
+            error: problem,
+            diagnostics: [],
+          } satisfies ValidateResponse);
+          return;
+        }
+        // The backend checkpoints the file before it writes, and answers with the checkpoint for Undo.
+        const repo = field === "hubConfigToml" ? "hub" : "agent_config";
+        const name = field === "providersToml" ? "providers.toml" : "config.toml";
+        const checkpoint = checkpointBeforeAction(state, repo, `patch ${name}`);
         state[field] = stringifyToml(doc);
-        json(ctx.res, 200, VALID);
+        json(ctx.res, 200, { ...VALID, checkpoint_id: checkpoint } satisfies ValidateResponse);
         afterWrite(ctx);
       },
     },

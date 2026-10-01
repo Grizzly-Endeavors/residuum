@@ -9,8 +9,8 @@ import {
   type ConfigFile,
   type ConfigIo,
 } from "./config-coordinator";
-import { SettingsModel, type SettingsDeps } from "./settings-model.svelte";
-import type { Diagnostic, RepoKind, UndoOutcome, ValidateResponse } from "./types";
+import { ConflictUnanswered, SettingsModel, type SettingsDeps } from "./settings-model.svelte";
+import type { Diagnostic, RepoKind, ValidateResponse } from "./types";
 
 // ── A fake server ─────────────────────────────────────────────────────
 
@@ -59,12 +59,12 @@ interface Fake {
   coordinator: ConfigCoordinator;
   model: SettingsModel;
   disk: Map<string, string>;
-  /** Writes and undos, in order: `patch scout/providers`, `undo agent_config cp-1`. */
+  /** Writes and restores, in order: `patch scout/providers`, `restore agent_config cp-1 providers.toml`. */
   log: string[];
   /** Refuse the next patch to a file with this verdict. */
   refuse: (file: ConfigFile, verdict: ValidateResponse) => void;
-  /** What an undo of each checkpoint reports. */
-  undoes: Map<string, UndoOutcome | Error>;
+  /** Restores of these checkpoints fail. */
+  failedRestores: Map<string, Error>;
   storeSecret: ReturnType<typeof vi.fn<SettingsDeps["storeSecret"]>>;
   /** Change a file the way something outside the page would, and tell the coordinator. */
   outside: (file: ConfigFile, text: string) => Promise<void>;
@@ -82,7 +82,9 @@ function fake(extra: [ConfigFile, string][] = []): Fake {
   );
   const log: string[] = [];
   const refusals = new Map<string, ValidateResponse>();
-  const undoes = new Map<string, UndoOutcome | Error>();
+  const failedRestores = new Map<string, Error>();
+  /** Each checkpoint's file and its text before the write. */
+  const before = new Map<string, { key: string; text: string }>();
   let checkpoints = 0;
   const io: ConfigIo = {
     read: async (file) => {
@@ -98,8 +100,9 @@ function fake(extra: [ConfigFile, string][] = []): Fake {
         return refusal;
       }
       const key = configFileKey(file);
-      disk.set(key, applyPatch(disk.get(key) ?? "", diff, format(file)));
       checkpoints += 1;
+      before.set(`cp-${checkpoints}`, { key, text: disk.get(key) ?? "" });
+      disk.set(key, applyPatch(disk.get(key) ?? "", diff, format(file)));
       return { valid: true, checkpoint_id: `cp-${checkpoints}` };
     },
     put: async (file, text) => {
@@ -108,14 +111,16 @@ function fake(extra: [ConfigFile, string][] = []): Fake {
       disk.set(configFileKey(file), text);
       return { valid: true };
     },
-    restore: () => Promise.resolve({ checkpoint_id: "restored", restored_paths: [] }),
-    undo: async (_agent, id, repo: RepoKind) => {
-      log.push(`undo ${repo} ${id}`);
+    restore: async (_agent, id, repo: RepoKind, path) => {
+      log.push(`restore ${repo} ${id} ${path}`);
       await Promise.resolve();
-      const outcome = undoes.get(id);
-      if (outcome instanceof Error) throw outcome;
-      return outcome ?? { checkpoint_id: "undone", reverted_paths: [], skipped_paths: [] };
+      const failure = failedRestores.get(id);
+      if (failure) throw failure;
+      const was = before.get(id);
+      if (was) disk.set(was.key, was.text);
+      return { checkpoint_id: `restored-${id}`, restored_paths: [path] };
     },
+    undo: () => Promise.resolve({ checkpoint_id: "undone", reverted_paths: [], skipped_paths: [] }),
   };
   const coordinator = new ConfigCoordinator(io);
   const storeSecret = vi.fn<SettingsDeps["storeSecret"]>((name) =>
@@ -127,7 +132,7 @@ function fake(extra: [ConfigFile, string][] = []): Fake {
     model: new SettingsModel({ coordinator, storeSecret }),
     disk,
     log,
-    undoes,
+    failedRestores,
     storeSecret,
     refuse: (file, verdict) => {
       refusals.set(configFileKey(file), verdict);
@@ -417,10 +422,23 @@ describe("Save", () => {
 
     const result = await scope.save(keepMine);
 
+    const now = (file: ConfigFile): string | undefined => f.disk.get(configFileKey(file));
     expect(result.checkpoints).toEqual([
-      { file: "providers", repo: "agent_config", id: "cp-1" },
-      { file: "config", repo: "agent_config", id: "cp-2" },
-      { file: "mcp", repo: "workspace", id: "cp-3" },
+      {
+        file: "providers",
+        repo: "agent_config",
+        path: "providers.toml",
+        id: "cp-1",
+        text: now(scoutProviders),
+      },
+      {
+        file: "config",
+        repo: "agent_config",
+        path: "config.toml",
+        id: "cp-2",
+        text: now(scoutConfig),
+      },
+      { file: "mcp", repo: "workspace", path: "config/mcp.json", id: "cp-3", text: now(scoutMcp) },
     ]);
     expect(scope.undoable).toBe(true);
   });
@@ -474,8 +492,23 @@ describe("Save", () => {
 
     expect(choose).toHaveBeenCalledWith(expect.objectContaining({ keys: ["timeout_secs"] }));
     expect(result.files[0]?.status).toBe("used-disk");
+    expect(result.message).toBe("Kept config.toml as on disk, without your changes.");
     expect(scope.config.timeout_secs).toBe("150");
     expect(scope.dirty).toBe(false);
+  });
+
+  it("leaves a file unsaved, with its changes staged, when the question about it is closed", async () => {
+    const f = fake();
+    const scope = await loadedScout(f);
+    scope.config.timeout_secs = "90";
+    f.disk.set(configFileKey(scoutConfig), AGENT_CONFIG.replace("120", "150"));
+
+    const result = await scope.save(() => Promise.reject(new ConflictUnanswered("closed")));
+
+    expect(result.outcome).toBe("failed");
+    expect(result.message).toContain("you closed the question about it");
+    expect(scope.config.timeout_secs).toBe("90");
+    expect(f.log).toEqual([]);
   });
 });
 
@@ -734,33 +767,22 @@ describe("Undo", () => {
     return scope;
   }
 
-  it("restores every checkpoint in reverse save order, with one path skipped", async () => {
+  it("restores each file from the checkpoint taken before its write, in reverse save order, skipping one changed since", async () => {
     const f = fake();
     const scope = await savedThreeFiles(f);
     f.log.length = 0;
-    f.undoes.set("cp-3", {
-      checkpoint_id: "u3",
-      reverted_paths: ["config/mcp.json"],
-      skipped_paths: [],
-    });
-    f.undoes.set("cp-2", {
-      checkpoint_id: "u2",
-      reverted_paths: ["config.toml"],
-      skipped_paths: [],
-    });
-    f.undoes.set("cp-1", {
-      checkpoint_id: "u1",
-      reverted_paths: [],
-      skipped_paths: ["providers.toml"],
-    });
+    f.disk.set(
+      configFileKey(scoutProviders),
+      `${f.disk.get(configFileKey(scoutProviders)) ?? ""}\n# edited\n`,
+    );
 
     const result = await scope.undo();
 
     expect(f.log).toEqual([
-      "undo workspace cp-3",
-      "undo agent_config cp-2",
-      "undo agent_config cp-1",
+      "restore workspace cp-3 config/mcp.json",
+      "restore agent_config cp-2 config.toml",
     ]);
+    expect(f.disk.get(configFileKey(scoutConfig))).toBe(AGENT_CONFIG);
     expect(result.files).toEqual([
       { file: "mcp", label: "mcp.json", reverted: ["config/mcp.json"], skipped: [], error: null },
       { file: "config", label: "config.toml", reverted: ["config.toml"], skipped: [], error: null },
@@ -782,7 +804,7 @@ describe("Undo", () => {
   it("names a file it couldn't restore, restores the others, and keeps that checkpoint for another try", async () => {
     const f = fake();
     const scope = await savedThreeFiles(f);
-    f.undoes.set("cp-2", new TypeError("down"));
+    f.failedRestores.set("cp-2", new TypeError("down"));
 
     const result = await scope.undo();
 
@@ -791,7 +813,13 @@ describe("Undo", () => {
     expect(result.files[1]?.error).toContain("Residuum isn't reachable");
     expect(result.message).toContain("Couldn't restore config.toml.");
     expect(scope.lastResult?.checkpoints).toEqual([
-      { file: "config", repo: "agent_config", id: "cp-2" },
+      {
+        file: "config",
+        repo: "agent_config",
+        path: "config.toml",
+        id: "cp-2",
+        text: f.disk.get(configFileKey(scoutConfig)),
+      },
     ]);
     expect(scope.undoable).toBe(true);
   });
@@ -799,15 +827,6 @@ describe("Undo", () => {
   it("refreshes the forms of the files it restored", async () => {
     const f = fake();
     const scope = await savedThreeFiles(f);
-    f.io.undo = async () => {
-      f.disk.set(configFileKey(scoutConfig), AGENT_CONFIG);
-      await Promise.resolve();
-      return {
-        checkpoint_id: "u",
-        reverted_paths: ["config.toml"],
-        skipped_paths: [],
-      } satisfies UndoOutcome;
-    };
 
     await scope.undo();
     await flush();

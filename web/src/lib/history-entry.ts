@@ -11,6 +11,8 @@ export interface EntryState {
   idx: number;
   /** The `idx` of the entry this page pushed to open the Settings modal, while the modal is open. */
   settings?: number;
+  /** The same, for a settings section opened from the phone's section list, while it is open. */
+  section?: number;
   /** The same, for the context panel. */
   panel?: number;
   /** The same, for the item open in the Inbox. */
@@ -32,9 +34,11 @@ export function readEntry(state: unknown): EntryState | null {
   if (!isRecord(state) || typeof state.idx !== "number") return null;
   const entry: EntryState = { idx: state.idx };
   const settings = optionalNumber(state.settings);
+  const section = optionalNumber(state.section);
   const panel = optionalNumber(state.panel);
   const item = optionalNumber(state.item);
   if (settings !== undefined) entry.settings = settings;
+  if (section !== undefined) entry.section = section;
   if (panel !== undefined) entry.panel = panel;
   if (item !== undefined) entry.item = item;
   if (typeof state.overlay === "string") entry.overlay = state.overlay;
@@ -71,6 +75,11 @@ export function entryAfterPush(entry: EntryState, from: AppLocation, to: AppLoca
     if (from.settings === null) next.settings = idx;
     else if (entry.settings !== undefined) next.settings = entry.settings;
   }
+  // A section's opener is the scope's section list, so it holds while the scope does.
+  if (to.settings?.section != null && from.settings?.scope === to.settings.scope) {
+    if (from.settings.section === null) next.section = idx;
+    else if (entry.section !== undefined) next.section = entry.section;
+  }
   if (to.panel !== null) {
     if (from.panel === null) next.panel = idx;
     else if (entry.panel !== undefined) next.panel = entry.panel;
@@ -98,6 +107,10 @@ export function entryAfterReplace(
   if (to.settings !== null && from.settings !== null && entry.settings !== undefined) {
     next.settings = entry.settings;
   }
+  const sameScope = from.settings?.scope === to.settings?.scope;
+  if (to.settings?.section != null && from.settings?.section != null && sameScope) {
+    if (entry.section !== undefined) next.section = entry.section;
+  }
   if (to.panel !== null && from.panel !== null && entry.panel !== undefined) {
     next.panel = entry.panel;
   }
@@ -110,6 +123,7 @@ export function sameEntry(a: EntryState | null, b: EntryState): boolean {
     a !== null &&
     a.idx === b.idx &&
     a.settings === b.settings &&
+    a.section === b.section &&
     a.panel === b.panel &&
     a.item === b.item &&
     a.overlay === b.overlay

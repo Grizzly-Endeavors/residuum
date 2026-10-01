@@ -31,7 +31,7 @@ import { SvelteMap } from "svelte/reactivity";
 import { storeSecret as storeSecretViaApi } from "./api";
 import {
   agentConfigFile,
-  checkpointRepoOf,
+  checkpointLocationOf,
   configCoordinator,
   configFileName,
   HUB_CONFIG_FILE,
@@ -316,11 +316,15 @@ export interface FileSaveResult {
   checkpointId: string | null;
 }
 
-/** A checkpoint a save took, which Undo restores. */
+/** The checkpoint a save took of a file just before writing it, which Undo restores the file from. */
 export interface SavedCheckpoint {
   file: FieldFile;
   repo: RepoKind;
+  /** The file's path in `repo`. */
+  path: string;
   id: string;
+  /** The file's text as the save left it. Undo skips a file that reads otherwise now. */
+  text: string;
 }
 
 export interface SaveResult {
@@ -356,6 +360,13 @@ export interface UndoResult {
   message: string;
 }
 
+/**
+ * What a chooser throws when the user closes the question about a file that
+ * changed on disk without answering it. That file isn't saved and keeps its
+ * staged changes.
+ */
+export class ConflictUnanswered extends Error {}
+
 // ── Messages ──────────────────────────────────────────────────────────
 
 /** A file's name in a message. */
@@ -377,10 +388,12 @@ function summarizeSave(
   storedSecrets: readonly string[],
 ): Pick<SaveResult, "outcome" | "message"> {
   const saved = files.filter((f) => f.status === "saved").map((f) => f.label);
+  const onDisk = files.filter((f) => f.status === "used-disk").map((f) => f.label);
   const problems = files.filter((f) => f.status === "failed" || f.status === "skipped");
   const parts: string[] = [];
   if (saved.length > 0) parts.push(`Saved ${joinNames(saved)}.`);
-  else if (problems.length === 0)
+  if (onDisk.length > 0) parts.push(`Kept ${joinNames(onDisk)} as on disk, without your changes.`);
+  else if (saved.length === 0 && problems.length === 0)
     parts.push(storedSecrets.length > 0 ? "Saved the key." : "Saved.");
   for (const problem of problems) parts.push(problem.message ?? `${problem.label} wasn't saved.`);
   if (problems.length > 0) parts.push("Changes that weren't saved are still staged.");
@@ -506,6 +519,11 @@ export abstract class ScopeModel {
   /** Why a file couldn't be read, if one couldn't. */
   get loadError(): string | null {
     return this.files.find((state) => state.loadError !== null)?.loadError ?? null;
+  }
+
+  /** Every file has been read, or failed to be. Until then the forms are empty, so nothing should show or edit them. */
+  get loaded(): boolean {
+    return this.files.every((state) => state.raw !== null || state.loadError !== null);
   }
 
   private running: Promise<SaveResult> | null = null;
@@ -676,8 +694,9 @@ export abstract class ScopeModel {
         if (result.checkpointId !== null) {
           checkpoints.push({
             file: state.name,
-            repo: checkpointRepoOf(state.file),
+            ...checkpointLocationOf(state.file),
             id: result.checkpointId,
+            text: state.raw ?? "",
           });
         }
         if (state.name === "providers" && result.status === "failed") providersFailed = true;
@@ -743,6 +762,12 @@ export abstract class ScopeModel {
       await this.adopt(state, done, saved.raw);
       return outcome("saved", null, saved.result.checkpoint_id ?? null);
     } catch (err) {
+      if (err instanceof ConflictUnanswered) {
+        return outcome(
+          "failed",
+          `${label} wasn't saved, because it changed on disk and you closed the question about it.`,
+        );
+      }
       return outcome("failed", userErrorMessage(err, { action: `Couldn't save ${label}.` }));
     }
   }
@@ -763,9 +788,10 @@ export abstract class ScopeModel {
   // ── Undo ────────────────────────────────────────────────────────────
 
   /**
-   * Restore every checkpoint the last save took, newest first, and report each
-   * file's reverted and skipped paths. A file that can't be restored is named,
-   * and its checkpoint stays for another try.
+   * Put each file the last save wrote back as it was, newest first, from the
+   * checkpoint the save took just before writing it. A file that changed again
+   * since is skipped, so that change isn't lost. A file that can't be restored
+   * is named, and its checkpoint stays for another try.
    */
   async undo(): Promise<UndoResult> {
     const checkpoints = this.lastResult?.checkpoints ?? [];
@@ -774,17 +800,16 @@ export abstract class ScopeModel {
     for (const checkpoint of [...checkpoints].reverse()) {
       const state = this.file(checkpoint.file);
       const label = state === undefined ? checkpoint.file : fileLabel(state.file);
+      const { id, repo, path } = checkpoint;
       try {
-        const outcome = await this.deps.coordinator.undo(
-          this.agent,
-          checkpoint.id,
-          checkpoint.repo,
-        );
+        const now = state === undefined ? null : await this.deps.coordinator.read(state.file);
+        const changed = now !== checkpoint.text;
+        if (!changed) await this.deps.coordinator.restore(this.agent, id, repo, path);
         files.push({
           file: checkpoint.file,
           label,
-          reverted: outcome.reverted_paths,
-          skipped: outcome.skipped_paths,
+          reverted: changed ? [] : [path],
+          skipped: changed ? [path] : [],
           error: null,
         });
       } catch (err) {

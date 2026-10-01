@@ -69,6 +69,22 @@ describe("marks on a push", () => {
     });
   });
 
+  it("marks the section's opener when the push opens one from the phone's list", () => {
+    const list: AppLocation = { ...plain, settings: { scope: "scout", section: null } };
+    expect(entryAfterPush({ idx: 1, settings: 1 }, list, withSettings)).toEqual({
+      idx: 2,
+      settings: 1,
+      section: 2,
+    });
+    expect(
+      entryAfterReplace({ idx: 2, settings: 1, section: 2 }, withSettings, withSettings),
+    ).toEqual({ idx: 2, settings: 1, section: 2 });
+    expect(entryAfterReplace({ idx: 2, settings: 1, section: 2 }, withSettings, list)).toEqual({
+      idx: 2,
+      settings: 1,
+    });
+  });
+
   it("carries no mark for what the new location doesn't have", () => {
     expect(entryAfterPush({ idx: 3, settings: 3, panel: 2 }, withBoth, plain)).toEqual({ idx: 4 });
   });
