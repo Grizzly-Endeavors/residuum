@@ -37,7 +37,7 @@ When a command prints a new credential (an OAuth exchange, a short-lived token),
 - Write a description that says what the key grants and where it came from; the user sees it too.
 - Delete keys you no longer need with `agent_key_delete` — this too works on a key the user created, checkpointed and reported to them.
 
-Never ask the user to paste a credential into chat. Anything typed into the conversation is already in the transcript and has already reached the model provider. Point them to `residuum agent-keys set <name>` or Settings → Agent keys in the web UI instead. If they already pasted one, tell them to revoke or rotate it and store the new value that way.
+Never ask the user to paste a credential into chat. Anything typed into the conversation is already in the transcript and has already reached the model provider. Point them to `residuum agent-keys set <name>` or Settings → All agents → Saved keys in the web UI instead. If they already pasted one, tell them to revoke or rotate it and store the new value that way.
 
 ## MCP servers
 
