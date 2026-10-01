@@ -76,7 +76,35 @@ interface Loaded {
   /** Fire a fetch event for `request`; the answer the worker gave it, or null when it left the request alone. */
   fetchEvent: (request: Partial<Request> & { url: string }) => Promise<Response | null>;
   /** Fire `type` with `event`; settles when the worker's `waitUntil` work has. */
-  fire: (type: "install" | "activate" | "message", event?: object) => Promise<void>;
+  fire: (
+    type: "install" | "activate" | "message" | "push" | "notificationclick",
+    event?: object,
+  ) => Promise<void>;
+  /** The notifications the worker showed, in order. */
+  shown: { title: string; options: NotificationOptions }[];
+  /** What the app badge was set to, in order: a count, or `null` when cleared. */
+  badges: (number | null)[];
+  /** The addresses the worker opened windows at. */
+  opened: string[];
+}
+
+/** An open window of the app, as `clients.matchAll` gives it, recording what the worker does to it. */
+class FakeWindow {
+  readonly posted: unknown[] = [];
+  focusCalls = 0;
+  constructor(
+    readonly focused: boolean,
+    readonly visibilityState: "visible" | "hidden",
+  ) {}
+
+  focus(): Promise<this> {
+    this.focusCalls += 1;
+    return Promise.resolve(this);
+  }
+
+  postMessage(message: unknown): void {
+    this.posted.push(message);
+  }
 }
 
 async function loadWorker(options: {
@@ -84,17 +112,42 @@ async function loadWorker(options: {
   files?: string[];
   version?: string;
   caches?: FakeCacheStorage;
+  windows?: FakeWindow[];
 }): Promise<Loaded> {
   const listeners = new Map<string, Handler>();
   const storage = options.caches ?? new FakeCacheStorage();
   let claimed = false;
   let skipped = false;
+  const shown: Loaded["shown"] = [];
+  const badges: Loaded["badges"] = [];
+  const opened: string[] = [];
   vi.stubGlobal("self", {
     location: { origin: ORIGIN },
     addEventListener: (type: string, handler: Handler) => listeners.set(type, handler),
     clients: {
       claim: () => {
         claimed = true;
+        return Promise.resolve();
+      },
+      matchAll: () => Promise.resolve(options.windows ?? []),
+      openWindow: (url: string) => {
+        opened.push(url);
+        return Promise.resolve(null);
+      },
+    },
+    registration: {
+      showNotification: (title: string, notificationOptions: NotificationOptions) => {
+        shown.push({ title, options: notificationOptions });
+        return Promise.resolve();
+      },
+    },
+    navigator: {
+      setAppBadge: (count: number) => {
+        badges.push(count);
+        return Promise.resolve();
+      },
+      clearAppBadge: () => {
+        badges.push(null);
         return Promise.resolve();
       },
     },
@@ -134,6 +187,9 @@ async function loadWorker(options: {
       listener(type)({ ...event, waitUntil: (promise: Promise<unknown>) => work.push(promise) });
       await Promise.all(work);
     },
+    shown,
+    badges,
+    opened,
   };
 }
 
@@ -415,5 +471,104 @@ describe("taking over", () => {
     await worker.fire("message", { data: { type: "something-else" } });
     await worker.fire("message", { data: "skip-waiting" });
     expect(worker.skipped()).toBe(false);
+  });
+});
+
+describe("push", () => {
+  /** A push carrying `payload` as its decrypted JSON. */
+  const pushOf = (payload: unknown): object => ({
+    data: {
+      json: () => {
+        if (typeof payload !== "string") return payload;
+        throw new SyntaxError("not JSON");
+      },
+    },
+  });
+
+  it("shows the payload's notification and sets the badge to its unread count", async () => {
+    const worker = await loadWorker({ network: serving() });
+    await worker.fire(
+      "push",
+      pushOf({
+        v: 1,
+        event: "inbox_item",
+        agent: "atlas",
+        title: "Deploy tomorrow",
+        body: "From atlas: the pipeline",
+        target: "/inbox?item=atlas:note-1",
+        tag: "inbox:atlas:note-1",
+        badge: 3,
+      }),
+    );
+    expect(worker.shown).toEqual([
+      {
+        title: "Deploy tomorrow",
+        options: expect.objectContaining({
+          body: "From atlas: the pipeline",
+          tag: "inbox:atlas:note-1",
+          data: { target: "/inbox?item=atlas:note-1" },
+        }) as NotificationOptions,
+      },
+    ]);
+    expect(worker.badges).toEqual([3]);
+  });
+
+  it("clears the badge when nothing is unread", async () => {
+    const worker = await loadWorker({ network: serving() });
+    await worker.fire("push", pushOf({ title: "Residuum test notification", badge: 0 }));
+    expect(worker.badges).toEqual([null]);
+  });
+
+  it("still shows a notification for a push it can't read, or one with no data", async () => {
+    const worker = await loadWorker({ network: serving() });
+    await worker.fire("push", pushOf("garbled"));
+    await worker.fire("push", { data: null });
+    expect(worker.shown.map((shown) => shown.title)).toEqual(["Residuum", "Residuum"]);
+    expect(worker.badges).toEqual([]);
+  });
+});
+
+describe("a notification click", () => {
+  const clickOn = (target: unknown): object => ({
+    notification: { data: { target }, close: vi.fn() },
+  });
+
+  it("brings the focused window forward and tells it to show the target", async () => {
+    const hidden = new FakeWindow(false, "hidden");
+    const focused = new FakeWindow(true, "visible");
+    const worker = await loadWorker({ network: serving(), windows: [hidden, focused] });
+    await worker.fire("notificationclick", clickOn("/agent/atlas/activity"));
+    expect(focused.focusCalls).toBe(1);
+    expect(focused.posted).toEqual([{ type: "open-target", target: "/agent/atlas/activity" }]);
+    expect(hidden.posted).toEqual([]);
+    expect(worker.opened).toEqual([]);
+  });
+
+  it("prefers a visible window, then any window", async () => {
+    const back = new FakeWindow(false, "hidden");
+    const visible = new FakeWindow(false, "visible");
+    const worker = await loadWorker({ network: serving(), windows: [back, visible] });
+    await worker.fire("notificationclick", clickOn("/home"));
+    expect(visible.posted).toHaveLength(1);
+
+    const only = new FakeWindow(false, "hidden");
+    const second = await loadWorker({ network: serving(), windows: [only] });
+    await second.fire("notificationclick", clickOn("/home"));
+    expect(only.posted).toHaveLength(1);
+  });
+
+  it("opens a window at the target when none is open, and never another site", async () => {
+    const worker = await loadWorker({ network: serving() });
+    await worker.fire("notificationclick", clickOn("/inbox?item=scout:note-2"));
+    await worker.fire("notificationclick", clickOn("//elsewhere.example/phish"));
+    await worker.fire("notificationclick", clickOn(42));
+    expect(worker.opened).toEqual(["/inbox?item=scout:note-2", "/home", "/home"]);
+  });
+
+  it("closes the notification it was", async () => {
+    const worker = await loadWorker({ network: serving() });
+    const click = clickOn("/home") as { notification: { close: () => void } };
+    await worker.fire("notificationclick", click);
+    expect(click.notification.close).toHaveBeenCalledOnce();
   });
 });

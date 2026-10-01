@@ -1,4 +1,5 @@
 import type { Locator, Page } from "@playwright/test";
+import { MOCK_VAPID_PUBLIC_KEY } from "../../mock/push";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 import { expectSettingsOpen } from "../support/lazy";
@@ -223,11 +224,69 @@ test.describe("Agent-to-agent listener", () => {
 });
 
 test.describe("Notifications", () => {
-  test("holds its place with nothing to set", async ({ page }) => {
+  // Turning push on needs the service worker, which the dev server doesn't run:
+  // `push.spec.ts` covers it on the production build.
+  const thisDevice = (page: Page): Locator => page.getByRole("region", { name: "This device" });
+
+  test("lists other devices, removes one, and stages the contact for push services", async ({
+    page,
+  }) => {
+    await page.request.put("/api/hub/push/devices", {
+      data: {
+        subscription: {
+          endpoint: "https://push.example.test/send/tablet",
+          keys: { p256dh: MOCK_VAPID_PUBLIC_KEY, auth: "AAAAAAAAAAAAAAAAAAAAAA" },
+        },
+        label: "Old tablet",
+      },
+    });
     await openSection(page, "notifications");
-    await expect(page.getByRole("heading", { name: "Notifications", level: 2 })).toBeVisible();
-    await expect(page.getByText(/aren't available in this version/)).toBeVisible();
+    await expect(thisDevice(page)).toContainText("background worker isn't running");
+    const others = page.getByRole("list", { name: "Other devices" });
+    await expect(others).toContainText("Old tablet");
+    await expect(others).toContainText("No notifications sent yet.");
     await expectNoAxeViolations(page, { within: OVERLAY });
+
+    await others.getByRole("button", { name: "Remove Old tablet" }).click();
+    await expect(toastWith(page, "Old tablet no longer gets notifications.")).toBeVisible();
+    await expect(page.getByText("No other devices get notifications.")).toBeVisible();
+    expect(await names(page, "/api/hub/push/devices", "devices")).toEqual([]);
+
+    await page.getByRole("button", { name: "More options" }).click();
+    const contact = page.getByLabel("Contact", { exact: true });
+    await contact.fill("me@example.com");
+    await expect(page.getByText(/uses only a mailto: or https:\/\/ contact/)).toBeVisible();
+    await contact.fill("mailto:me@example.com");
+    await saveBar(page).getByRole("button", { name: "Save changes" }).click();
+    await expect(saveBar(page)).toBeHidden();
+    const written = await (await page.request.get(HUB_CONFIG)).text();
+    expect(written).toMatch(/\[push\]\s+contact = "mailto:me@example\.com"/);
+  });
+
+  test("says why there are no notifications without a secure connection", async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(window, "isSecureContext", { value: false });
+    });
+    await openSection(page, "notifications");
+    await expect(thisDevice(page)).toContainText("only over a secure connection");
+    await expect(page.getByRole("button", { name: "Turn on notifications" })).toHaveCount(0);
+  });
+
+  test.describe("on an iPhone", () => {
+    test.use({
+      userAgent:
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+    });
+
+    test("points to the Home Screen app, with the steps to add it", async ({ page }) => {
+      await openSection(page, "notifications");
+      await expect(thisDevice(page)).toContainText("only in the app on your Home Screen");
+      await expectNoAxeViolations(page, { within: OVERLAY });
+      await thisDevice(page).getByRole("button", { name: "Show me how" }).click();
+      await expect(
+        page.getByRole("dialog", { name: "Add Residuum to your Home Screen" }),
+      ).toBeVisible();
+    });
   });
 });
 

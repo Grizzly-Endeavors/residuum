@@ -117,6 +117,8 @@ export interface ConfigFields {
   cloud_token: string;
   cloud_relay_url: string;
   cloud_local_port: string;
+  // push
+  push_contact: string;
   // tracing
   tracing_log_level: string;
   tracing_auto_error_reporting: boolean;
@@ -207,6 +209,7 @@ export function defaultConfigFields(): ConfigFields {
     cloud_token: "",
     cloud_relay_url: "",
     cloud_local_port: "",
+    push_contact: "",
     tracing_log_level: "",
     tracing_auto_error_reporting: false,
     tracing_sanitize_content: true,
@@ -422,6 +425,9 @@ export function parseConfigToml(raw: string, hubRaw = ""): ConfigFields {
     fields.cloud_relay_url = str(cloud.relay_url);
     fields.cloud_local_port = str(cloud.local_port);
   }
+
+  const push = doc.push as Record<string, unknown> | undefined;
+  if (push) fields.push_contact = str(push.contact);
 
   const tracing = doc.tracing as Record<string, unknown> | undefined;
   if (tracing) {
@@ -917,6 +923,8 @@ export const CONFIG_FIELD_MAP: readonly FieldSpec[] = [
   { key: "cloud_relay_url", path: ["cloud", "relay_url"], kind: "string" },
   { key: "cloud_local_port", path: ["cloud", "local_port"], kind: "number" },
 
+  { key: "push_contact", path: ["push", "contact"], kind: "string" },
+
   { key: "tracing_log_level", path: ["tracing", "log_level"], kind: "string" },
   {
     key: "tracing_auto_error_reporting",
@@ -1078,7 +1086,13 @@ export function diffConfigFields(
 // ── Hub / agent ownership of config fields ──────────────────────────
 
 /** Top-level sections that live in the hub's `config.toml`. */
-const HUB_SECTIONS: ReadonlySet<string> = new Set(["timezone", "gateway", "cloud", "tracing"]);
+const HUB_SECTIONS: ReadonlySet<string> = new Set([
+  "timezone",
+  "gateway",
+  "cloud",
+  "push",
+  "tracing",
+]);
 
 /** Keys of shared sections (`[a2a]`, `[background]`) that live in the hub's `config.toml`. */
 const HUB_SECTION_KEYS: Readonly<Record<string, ReadonlySet<string>>> = {

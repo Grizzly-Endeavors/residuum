@@ -86,6 +86,8 @@ Input-only. Items arrive from the notification router, webhook routing, and the 
 
 Web Push delivers notifications to the user's browsers and installed apps through their push services (Google, Apple, Mozilla), whether or not a Residuum window is open. It belongs to the hub, not to an agent: one signing key and one list of devices serve every agent, and the routes that manage them are under `/api/hub/push/` (see [hub-http.md](hub-http.md#web-push-devices)).
 
+In the web UI, Settings → All agents → Notifications turns push on for the browser it runs in (the browser asks for permission, and the subscription is registered under a name), sets that device's name and preferences, sends the test notification, shows how delivery to each device is going, removes other devices, and edits `[push] contact` under More options. Push needs a secure connection (HTTPS, Residuum Cloud, or localhost), and on iPhone and iPad the app added to the Home Screen. The app's service worker shows every push as a notification and sets the app icon's badge to `badge`; a click brings a Residuum window to the notification's `target`, or opens one there.
+
 ### Devices
 
 A **device** is one browser or installed app registered for notifications. The web UI registers it with its browser push subscription, a label, and its preferences; registering the same subscription again updates that device instead of adding another. A device has an `id`, its `label`, when it was created, when a notification last reached its push service (`last_success_at`), its most recent failure (`last_failure`: when, the push service's HTTP status or `null`, and a plain-language message), and four preferences, one per event it can be told about:

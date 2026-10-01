@@ -18,3 +18,31 @@ export function isPageMessage(data: unknown): data is PageMessage {
     data.type === SKIP_WAITING_MESSAGE.type
   );
 }
+
+/**
+ * A message the worker posts to a window of the app: a notification was
+ * clicked, and the window it brought forward should show `target`, an app
+ * path such as `/inbox?item=atlas:note-1`. The page routes there itself, so
+ * nothing reloads and unsaved work is asked about first.
+ */
+export interface OpenTargetMessage {
+  type: "open-target";
+  target: string;
+}
+
+export type WorkerMessage = OpenTargetMessage;
+
+export function openTargetMessage(target: string): OpenTargetMessage {
+  return { type: "open-target", target };
+}
+
+export function isWorkerMessage(data: unknown): data is WorkerMessage {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    "type" in data &&
+    data.type === "open-target" &&
+    "target" in data &&
+    typeof data.target === "string"
+  );
+}
