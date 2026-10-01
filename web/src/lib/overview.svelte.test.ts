@@ -378,8 +378,12 @@ describe("OverviewStore outbound tasks", () => {
     });
   });
 
-  it("drops the problem as soon as Stop watching succeeds", async () => {
-    await store.stopWatching("atlas", "task-1");
+  it("drops the problem as soon as Stop watching succeeds, and answers with the task", async () => {
+    answers.task = () => json({ task_id: "task-1", open: false });
+    await expect(store.stopWatching("atlas", "task-1")).resolves.toMatchObject({
+      task_id: "task-1",
+      open: false,
+    });
     expect(requests).toContain("POST /api/agents/atlas/a2a/outbound/task-1/stop-watching");
     expect(store.needsYou.items).toEqual([]);
   });
@@ -387,7 +391,7 @@ describe("OverviewStore outbound tasks", () => {
   it("keeps the problem and notes why when Stop task can't reach the agent", async () => {
     answers.task = () =>
       json({ error: "laptop can't be reached right now.", code: "unreachable" }, 502);
-    await store.stopTask("atlas", "task-1");
+    await expect(store.stopTask("atlas", "task-1")).resolves.toBeNull();
     expect(store.needsYou.items).toHaveLength(1);
     expect(store.taskNotes["atlas:task-1"]).toBe("laptop can't be reached right now.");
 

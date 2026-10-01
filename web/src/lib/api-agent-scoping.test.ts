@@ -3,7 +3,8 @@ import * as api from "./api";
 import { invalidate } from "./cache";
 import { NoAgentSelectedError } from "./paths";
 import { scheduled } from "./scheduled.svelte";
-import { SessionsStore, SessionView } from "./sessions.svelte";
+import { SessionRun } from "./session-run.svelte";
+import { SessionsStore } from "./sessions.svelte";
 import { fetchModels } from "./models";
 
 /** A working `localStorage`, which the Node test environment lacks. */
@@ -443,7 +444,7 @@ describe("stores address the agent they hold", () => {
   it("lists sessions and outbound tasks for the agent it was made for", async () => {
     for (const agent of AGENTS) {
       const seen = recordRequests();
-      const store = new SessionsStore({ agent, send: () => {}, pushToMain: () => {} });
+      const store = new SessionsStore({ agent, pushToMain: () => {} });
       await store.refresh();
       expect(seen.length).toBeGreaterThan(0);
       for (const request of seen) {
@@ -452,12 +453,29 @@ describe("stores address the agent they hold", () => {
     }
   });
 
-  it("loads a run's transcript from the agent the view was made for", async () => {
+  it("stops a session from the list on the agent the list was made for", async () => {
     for (const agent of AGENTS) {
       const seen = recordRequests();
-      const view = new SessionView("run-1", null, agent);
-      await view.load();
-      expect(seen).toEqual([`GET /api/agents/${agent}/sessions/runs/run-1/transcript`]);
+      const store = new SessionsStore({ agent, pushToMain: () => {} });
+      await store.stop("spawned-x");
+      expect(seen).toEqual([`POST /api/agents/${agent}/sessions/spawned-x/stop`]);
+    }
+  });
+
+  it("loads, messages and stops a run on the agent the run was made for", async () => {
+    const relay = { connected: false, send: () => {}, onFrame: () => () => {} };
+    for (const agent of AGENTS) {
+      const seen = recordRequests();
+      const run = new SessionRun(agent, "run-1", { address: "spawned-x" }, relay);
+      await run.load();
+      run.draft = "hello";
+      await run.send();
+      await run.stop();
+      expect(seen).toEqual([
+        `GET /api/agents/${agent}/sessions/runs/run-1/transcript`,
+        `POST /api/agents/${agent}/sessions/spawned-x/messages`,
+        `POST /api/agents/${agent}/sessions/spawned-x/stop`,
+      ]);
     }
   });
 });

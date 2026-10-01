@@ -28,6 +28,7 @@ import type {
   CloudStatusResponse,
   UpdateStatusResponse,
   SessionCategory,
+  SessionDeliveryOutcome,
   SessionListResponse,
   SessionTranscriptResponse,
   SessionUsageTotals,
@@ -700,6 +701,40 @@ export async function fetchSessionTranscript(
   return apiFetch<SessionTranscriptResponse>(
     agentPath(agent, `/sessions/runs/${encodeURIComponent(runId)}/transcript`),
   );
+}
+
+/**
+ * Send the session at `address` a message as the owner: delivered to a live
+ * run, or starting a new run of a finished one. Resolves to where it landed.
+ *
+ * Throws `ApiError` with `{ error, code }`: `404` for an unknown address,
+ * `409` when the session is busy, `502` when delivery failed.
+ */
+export async function messageSession(
+  agent: string,
+  address: string,
+  content: string,
+): Promise<SessionDeliveryOutcome> {
+  const reply = await apiFetch<{ outcome: SessionDeliveryOutcome }>(
+    agentPath(agent, `/sessions/${encodeURIComponent(address)}/messages`),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    },
+  );
+  return reply.outcome;
+}
+
+/**
+ * Stop the live session at `address`. The run's `completing` and
+ * `session_completed` frames follow. Throws `ApiError` (`404` when nothing
+ * there can still be stopped).
+ */
+export async function stopSession(agent: string, address: string): Promise<void> {
+  await apiFetch<unknown>(agentPath(agent, `/sessions/${encodeURIComponent(address)}/stop`), {
+    method: "POST",
+  });
 }
 
 // ── Scheduled view API wrappers ──────────────────────────────────────

@@ -18,7 +18,7 @@ import {
   ALL_SECTIONS,
   type SectionEntry,
 } from "../lib/settings-sections";
-import type { SessionSummary } from "../lib/types";
+import { runIcon, runKind } from "../lib/session-format";
 import { ws } from "../lib/ws.svelte";
 import { AGENT_PLACES, stateWord } from "./rail-model";
 import type { ShellActions } from "./shell-actions";
@@ -93,16 +93,6 @@ function agentPlaces(): AppAction[] {
   );
 }
 
-/** How a session started, in plain words. A spawner of `main` is the agent's own conversation. */
-function sessionKind(agent: string, run: SessionSummary): string {
-  if (run.category === "external") return "From another app";
-  if (run.category === "scheduled") return "Scheduled";
-  if (run.category === "artifact") return "From a workbench page";
-  return run.spawner === null || run.spawner === "main"
-    ? `Started by ${agent}`
-    : `Started by ${run.spawner}`;
-}
-
 /** The bound agent's live sessions, which open in the context panel. */
 function sessions(): AppAction[] {
   const agent = ws.agent;
@@ -111,8 +101,8 @@ function sessions(): AppAction[] {
     id: `session:${agent}:${run.run_id}`,
     group: "Running now",
     label: run.purpose === "" ? "A session" : run.purpose,
-    hint: sessionKind(agent, run),
-    icon: "layers",
+    hint: runKind(agent, run),
+    icon: runIcon(run.category),
     terms: [run.source_label, agent],
     run: () => {
       const panel = { kind: "session", agent, runId: run.run_id } as const;

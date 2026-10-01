@@ -31,7 +31,7 @@ function summary(
 }
 
 function store(agent: string | null = "scout"): SessionsStore {
-  return new SessionsStore({ agent, send: () => {}, pushToMain: () => {} });
+  return new SessionsStore({ agent, pushToMain: () => {} });
 }
 
 function respond(status: number, body: unknown): ReturnType<typeof vi.fn> {
@@ -94,25 +94,89 @@ describe("finding the run to show for a session address", () => {
   });
 });
 
-describe("a session that continues in a new run", () => {
-  it("moves the open view to the new run, leaving the location to the view that shows it", () => {
-    const s = store();
-    s.showRun("run-1");
-    const view = s.view;
-    expect(view?.runId).toBe("run-1");
-    if (view === null) return;
-    view.loading = false;
-    view.followAddress = "spawned-x-1";
-    s.handleFrame({ type: "session_started", session: summary("run-2", "spawned-x-1") });
-    expect(s.view?.runId).toBe("run-2");
+describe("the finished list", () => {
+  it("loads every kind with the listing, and a kind's own first page when it is chosen", async () => {
+    const fetchMock = respond(200, {
+      live: [summary("run-live", "spawned-x-1")],
+      completed: [summary("run-done", "scheduled-y-1", { category: "scheduled" })],
+      next_cursor: "run-done",
+    });
+    const s = store("atlas");
+    await s.refresh();
+    expect(s.live.map((run) => run.run_id)).toEqual(["run-live"]);
+    expect(s.finished.all.runs.map((run) => run.run_id)).toEqual(["run-done"]);
+    expect(s.finished.all.nextCursor).toBe("run-done");
+    expect(s.finished.scheduled.loaded).toBe(false);
+
+    s.showFinished("scheduled");
+    await vi.waitFor(() => {
+      expect(s.finished.scheduled.loaded).toBe(true);
+    });
+    expect(s.finishedKind).toBe("scheduled");
+    const urls = fetchMock.mock.calls.map((call) => (call as unknown as [string])[0]);
+    expect(urls).toContain("/api/agents/atlas/sessions?category=scheduled&limit=25");
   });
 
-  it("doesn't touch a view of another session", () => {
+  it("puts a run that just finished at the top, with how it ended", () => {
     const s = store();
-    s.showRun("run-1");
-    if (s.view !== null) s.view.followAddress = "spawned-x-1";
-    s.handleFrame({ type: "session_started", session: summary("run-3", "spawned-other-1") });
-    expect(s.view?.runId).toBe("run-1");
+    s.handleFrame({ type: "session_started", session: summary("run-1", "spawned-x-1") });
+    s.handleFrame({
+      type: "session_completed",
+      address: "spawned-x-1",
+      run_id: "run-1",
+      status: "failed",
+      error: "the site timed out",
+      error_details: null,
+      episode_id: null,
+    });
+    expect(s.live).toEqual([]);
+    const [finished] = s.finished.all.runs;
+    expect(finished?.run_id).toBe("run-1");
+    expect(finished?.state).toBe("completed");
+    expect(finished?.outcome).toBe("failed");
+    expect(finished?.error).toBe("the site timed out");
+    // A kind not loaded yet takes it with its first page.
+    expect(s.finished.spawned.runs).toEqual([]);
+  });
+
+  it("says when a kind's finished runs couldn't load", async () => {
+    respond(500, { error: "boom" });
+    const s = store();
+    await s.finished.artifact.loadFirst();
+    expect(s.finished.artifact.error).toMatch(/^Couldn't load the finished runs\./);
+    expect(s.finished.artifact.loaded).toBe(false);
+  });
+});
+
+describe("stopping from the list", () => {
+  it("shows the stop until the run finishes", async () => {
+    respond(202, { address: "spawned-x-1" });
+    const s = store();
+    s.handleFrame({ type: "session_started", session: summary("run-1", "spawned-x-1") });
+    await s.stop("spawned-x-1");
+    expect(s.stopping.has("spawned-x-1")).toBe(true);
+    s.handleFrame({
+      type: "session_completed",
+      address: "spawned-x-1",
+      run_id: "run-1",
+      status: "cancelled",
+      error: null,
+      error_details: null,
+      episode_id: null,
+    });
+    expect(s.stopping.has("spawned-x-1")).toBe(false);
+  });
+
+  it("tells the user when the stop failed, and offers it again", async () => {
+    respond(404, { error: "not running", code: "not_live" });
+    const surface = vi.spyOn(notifications, "surface").mockImplementation(() => {});
+    const s = store();
+    await s.stop("spawned-x-1");
+    expect(s.stopping.has("spawned-x-1")).toBe(false);
+    expect(surface).toHaveBeenCalledWith(
+      "error",
+      "Couldn't stop spawned-x-1. It had already finished.",
+    );
   });
 
   it("exposes the agent it belongs to", () => {
