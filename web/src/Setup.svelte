@@ -237,7 +237,7 @@
   const current = $derived(STEPS[step] ?? STEPS[0]);
 </script>
 
-<div class="setup-wizard" data-ui>
+<div class="setup-wizard">
   <header class="setup-bar">
     <span class="setup-wordmark"><Icon name="mark" size={18} />Residuum</span>
   </header>

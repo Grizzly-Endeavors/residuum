@@ -53,8 +53,6 @@
 
   function closeOnEscape(event: KeyboardEvent): void {
     if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
-    // A legacy dialog drawn inside the panel takes Esc for itself.
-    if (event.target instanceof Element && event.target.closest('[aria-modal="true"]')) return;
     event.preventDefault();
     close();
   }

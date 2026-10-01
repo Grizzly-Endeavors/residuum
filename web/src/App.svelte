@@ -102,13 +102,13 @@
   {@const Setup = setupWizard.component}
   <Setup onComplete={() => void finishSetup()} />
 {:else if mode === "setup" && setupWizard.failed}
-  <div class="app-loading" data-ui role="alert">
+  <div class="app-loading" role="alert">
     <span class="app-loading-mark"><Icon name="mark" size={18} />Residuum</span>
     <p>Couldn't load the setup wizard. Check your connection, then try again.</p>
     <Button onclick={() => setupWizard.ensure()}>Try again</Button>
   </div>
 {:else}
-  <div class="app-loading" data-ui role="status">
+  <div class="app-loading" role="status">
     <span class="app-loading-mark"><Icon name="mark" size={18} />Residuum</span>
     <Spinner size={16} />
     <VisuallyHidden>{mode === "loading" ? "Loading your agents" : "Loading setup"}</VisuallyHidden>

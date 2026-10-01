@@ -191,7 +191,7 @@
 
   .setup-summary-row {
     display: grid;
-    grid-template-columns: 9rem minmax(0, 1fr);
+    grid-template-columns: 153px minmax(0, 1fr);
     gap: var(--space-4) var(--space-16);
     padding: var(--space-10) 0;
 

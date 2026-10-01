@@ -10,18 +10,8 @@ import { readFileSync } from "node:fs";
 // in one place. Viewport media queries use only the shell breakpoints; a
 // component that needs its own responsive rule uses a container query.
 
-/**
- * The files that may declare literal values: the design token set, and the
- * legacy variables that legacy styles still read.
- */
-const TOKEN_FILES = ["src/styles/tokens.css", "src/styles/variables.css"];
-
-/**
- * Stylesheets and components that still carry literal values, exempt from the
- * rules below. Remove an entry when its file is rewritten or deleted. Do not
- * add new files here: give new styles tokens instead.
- */
-const LEGACY_FILES = ["src/styles/base.css"];
+/** The one file that may declare literal values: the design token set. */
+const TOKEN_FILE = "src/styles/tokens.css";
 
 /** A single token reference such as `var(--font-size-ui)`, with no literal fallback. */
 const TOKEN_REFERENCE = /^var\(--[\w-]+\)$/;
@@ -49,10 +39,10 @@ const TRANSITION_ALL = /(^|[\s,])all($|[\s,])/;
  * @returns {number}
  */
 function readBreakpoint(name) {
-  const tokens = readFileSync(new URL("./src/styles/tokens.css", import.meta.url), "utf8");
+  const tokens = readFileSync(new URL(`./${TOKEN_FILE}`, import.meta.url), "utf8");
   const width = new RegExp(`--breakpoint-${name}:\\s*(\\d+)px;`).exec(tokens)?.[1];
   if (width === undefined) {
-    throw new Error(`stylelint config: --breakpoint-${name} is missing from src/styles/tokens.css`);
+    throw new Error(`stylelint config: --breakpoint-${name} is missing from ${TOKEN_FILE}`);
   }
   return Number(width);
 }
@@ -62,7 +52,7 @@ const WIDE_MIN = readBreakpoint("wide-min");
 
 /** @type {import("stylelint").Config} */
 export default {
-  ignoreFiles: [...TOKEN_FILES, ...LEGACY_FILES],
+  ignoreFiles: [TOKEN_FILE],
   overrides: [{ files: ["**/*.svelte"], customSyntax: "postcss-html" }],
   rules: {
     // Literal colors: hex, named, and the functional notations.

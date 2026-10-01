@@ -1,5 +1,5 @@
-// The primitive controls every surface is built from. They render inside the
-// `data-ui` root and style themselves with tokens only.
+// The primitive controls every surface is built from. They style themselves
+// with tokens only.
 
 export { default as Badge } from "./Badge.svelte";
 export { default as Banner } from "./Banner.svelte";

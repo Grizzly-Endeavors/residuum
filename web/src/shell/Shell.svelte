@@ -184,7 +184,6 @@
 <!-- data-hub and data-overview say how far the hub's state has arrived (the socket, then the counts it brings), for the end-to-end suite, which waits for "connected" and "loaded" before it acts. -->
 <div
   class="shell"
-  data-ui
   data-hub={hub.transport.lost ? "lost" : hub.transport.status}
   data-overview={overview.loaded ? "loaded" : "loading"}
 >
@@ -205,7 +204,7 @@
 </Drawer>
 {#if settingsModal.loading || commandPalette.loading}
   <!-- Fades in after a moment, so a chunk that arrives quickly never flashes it. -->
-  <div class="shell-opening" role="status" data-ui>
+  <div class="shell-opening" role="status">
     <Spinner size={20} />
     <VisuallyHidden>Opening</VisuallyHidden>
   </div>
