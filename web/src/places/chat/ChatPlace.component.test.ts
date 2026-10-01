@@ -201,13 +201,15 @@ describe("the conversation", () => {
     expect(screen.getByRole("textbox")).toBeInTheDocument();
   });
 
-  it("shows the counters of the agent that is open, not the one that was", async () => {
+  it("shows the live turn and counters of the agent that is open, not the one that was", async () => {
     setViewedAgent("scout");
-    ws.store.isProcessing = true;
-    ws.store.turnStartedAt = Date.now();
-    ws.store.turnHasUsage = true;
-    ws.store.turnOutputTokens = 120;
-    ws.store.turnToolCalls = 4;
+    ws.store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    ws.store.handleMessage({
+      type: "tool_call",
+      id: "c1",
+      name: "memory_search",
+      arguments: { query: "release notes" },
+    });
     ws.store.sessionUsage = {
       input_tokens: 900,
       output_tokens: 300,
@@ -216,12 +218,63 @@ describe("the conversation", () => {
     };
     render(ChatPlace, { agent: "scout", actions: shell });
     await settle();
-    expect(screen.getByText(/4 tool calls/)).toBeInTheDocument();
+    expect(screen.getByText("Working")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /^Searching memory for “release notes”/ }),
+    ).toBeVisible();
     expect(screen.getByText(/7 tool calls/)).toBeInTheDocument();
 
     setViewedAgent("atlas");
     await settle();
-    expect(screen.queryByText(/4 tool calls/)).toBeNull();
+    expect(screen.queryByText("Working")).toBeNull();
     expect(screen.queryByText(/7 tool calls/)).toBeNull();
+  });
+});
+
+describe("stopping the reply", () => {
+  function startTurn(): void {
+    setViewedAgent("atlas");
+    ws.store.handleMessage({ type: "turn_started", reply_to: "t1" });
+  }
+
+  it("stops it from the activity line, which says it is stopping", async () => {
+    startTurn();
+    const stop = vi.spyOn(ws, "stop");
+    render(ChatPlace, { agent: "atlas", actions: shell });
+    await settle();
+
+    await userEvent.click(screen.getByRole("button", { name: "Stop the reply" }));
+    expect(stop).toHaveBeenCalledOnce();
+    expect(ws.store.observed.get("t1")?.stopAsked).toBe(true);
+    expect(screen.getByRole("button", { name: "Stop the reply" })).toHaveTextContent("Stopping…");
+  });
+
+  it("stops it with Esc while the composer has focus", async () => {
+    startTurn();
+    const stop = vi.spyOn(ws, "stop");
+    render(ChatPlace, { agent: "atlas", actions: shell });
+    await settle();
+
+    screen.getByRole("textbox").focus();
+    await userEvent.keyboard("{Escape}");
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it("leaves Esc to an open overlay, and does nothing between turns", async () => {
+    setViewedAgent("atlas");
+    const stop = vi.spyOn(ws, "stop");
+    render(ChatPlace, { agent: "atlas", actions: shell });
+    await settle();
+    screen.getByRole("textbox").focus();
+    await userEvent.keyboard("{Escape}");
+    expect(stop).not.toHaveBeenCalled();
+
+    ws.store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    await userEvent.click(screen.getByRole("button", { name: "More for atlas" }));
+    expect(screen.getByRole("menu", { name: "More for atlas" })).toBeInTheDocument();
+    screen.getByRole("textbox").focus();
+    await userEvent.keyboard("{Escape}");
+    expect(stop).not.toHaveBeenCalled();
+    expect(screen.queryByRole("menu", { name: "More for atlas" })).toBeNull();
   });
 });

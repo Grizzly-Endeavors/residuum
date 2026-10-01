@@ -17,13 +17,10 @@ export interface ChatActionContext {
   state: AgentDisplayState | null;
   /** A reply is under way in its chat. */
   replying: boolean;
-  /** Tool calls show in its chat. */
-  verbose: boolean;
   hubConnection: ConnectionStatus;
   agentConnection: ConnectionStatus;
   send: (msg: ClientMessage) => void;
   stopReply: () => void;
-  setVerbose: (enabled: boolean) => void;
   surface: (kind: NotificationKind, message: string) => void;
   /** Show the agent's conversation size in the context panel. */
   showConversationSize: (agent: string) => void;
@@ -138,18 +135,6 @@ export function chatActions(ctx: ChatActionContext): AppAction[] {
         }
         ctx.send({ type: "inbox_add", body });
         ctx.surface("notice", `Added a note to ${agent}'s inbox.`);
-      },
-    },
-    {
-      ...base,
-      id: "chat:verbose",
-      label: ctx.verbose ? "Hide tool calls" : "Show tool calls",
-      icon: ctx.verbose ? "eye-off" : "eye",
-      command: "verbose",
-      terms: ["tools"],
-      run: () => {
-        ctx.setVerbose(!ctx.verbose);
-        ctx.surface("system", ctx.verbose ? "Tool calls are hidden." : "Tool calls show in chat.");
       },
     },
     {

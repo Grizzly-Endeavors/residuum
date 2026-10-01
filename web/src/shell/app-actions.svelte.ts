@@ -188,7 +188,6 @@ function chat(shell: ShellActions): AppAction[] {
     agent,
     state: agent === null ? null : hub.displayStateOf(agent),
     replying: ws.store.activeTurnId !== null,
-    verbose: ws.verbose,
     hubConnection: hub.transport.status,
     agentConnection: ws.transport.status,
     send: (msg) => {
@@ -196,9 +195,6 @@ function chat(shell: ShellActions): AppAction[] {
     },
     stopReply: () => {
       ws.stop();
-    },
-    setVerbose: (enabled) => {
-      ws.setVerbose(enabled);
     },
     surface: (kind, message) => {
       notifications.surface(kind, message);

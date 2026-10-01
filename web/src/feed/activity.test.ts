@@ -1,0 +1,206 @@
+import { describe, expect, it } from "vitest";
+import type { ObservedTurn } from "../lib/observed-turns.svelte";
+import {
+  activitySteps,
+  gapNote,
+  stepText,
+  stepsPhrase,
+  summarizeActivity,
+  type StepCall,
+} from "./activity";
+
+let ids = 0;
+function call(
+  name: string,
+  args: Record<string, unknown> = {},
+  more: Partial<StepCall> = {},
+): StepCall {
+  ids++;
+  return { id: `c${String(ids)}`, name, arguments: args, status: "done", ...more };
+}
+
+function watched(more: Partial<ObservedTurn> = {}): ObservedTurn {
+  return {
+    startedAt: 1_000,
+    endedAt: 15_000,
+    ending: "finished",
+    stopAsked: false,
+    gaps: [],
+    ...more,
+  };
+}
+
+describe("step labels", () => {
+  it("say what a built-in tool did, and to what", () => {
+    const steps = activitySteps([
+      call("memory_search", { query: "notification routing" }),
+      call("read_file", { path: "team/wiki/channels.md" }),
+      call("exec", { command: "git status" }),
+      call("web_fetch", { url: "https://svelte.dev/blog" }),
+    ]);
+    expect(steps.map(stepText)).toEqual([
+      "Searched memory for “notification routing”",
+      "Read team/wiki/channels.md",
+      "Ran git status",
+      "Read https://svelte.dev/blog",
+    ]);
+    expect(steps.map((s) => s.target?.kind)).toEqual(["query", "path", "code", "code"]);
+  });
+
+  it("read as ongoing while the call runs", () => {
+    const [step] = activitySteps([
+      call("read_file", { path: "team/wiki/index.md" }, { status: "running" }),
+    ]);
+    expect(step?.status).toBe("running");
+    expect(step && stepText(step)).toBe("Reading team/wiki/index.md");
+  });
+
+  it("read whole when the call names no target", () => {
+    expect(activitySteps([call("read_file"), call("memory_search")]).map(stepText)).toEqual([
+      "Read a file",
+      "Searched memory",
+    ]);
+  });
+
+  it("link a workspace path, and leave a path outside the workspace plain", () => {
+    const [inside, outside] = activitySteps([
+      call("write_file", { path: "notes/plan.md" }),
+      call("write_file", { path: "/etc/hosts" }),
+    ]);
+    expect(inside?.target).toEqual({ kind: "path", text: "notes/plan.md" });
+    expect(outside?.target).toEqual({ kind: "code", text: "/etc/hosts" });
+  });
+
+  it("name the session a spawn started once its result says which", () => {
+    const pending = call("subagent_spawn", { task: "Compare fallbacks" }, { status: "running" });
+    const started = call(
+      "subagent_spawn",
+      { task: "Compare fallbacks" },
+      { result: "─── result ───\nSession spawned-research-3f9a spawned." },
+    );
+    const [before, after] = activitySteps([pending, started]);
+    expect(before && stepText(before)).toBe("Starting a session");
+    expect(after?.target).toEqual({ kind: "session", text: "spawned-research-3f9a" });
+  });
+
+  it("cut a long target, which the details hold whole", () => {
+    const [step] = activitySteps([call("exec", { command: `echo ${"x".repeat(300)}` })]);
+    expect(step?.target?.text).toHaveLength(120);
+    expect(step?.target?.text.endsWith("…")).toBe(true);
+  });
+
+  it("fall back to the tool's name, and a tool server's tool to its server and name", () => {
+    const steps = activitySteps([
+      call("lookup_weather", { city: "Oslo" }),
+      call("create_issue", {}, { server: "github" }),
+      call("constructor"),
+    ]);
+    expect(steps.map(stepText)).toEqual([
+      "Used lookup_weather",
+      "Used github: create_issue",
+      "Used constructor",
+    ]);
+    expect(
+      activitySteps([call("create_issue", {}, { server: "github", status: "running" })]).map(
+        stepText,
+      ),
+    ).toEqual(["Using github: create_issue"]);
+  });
+
+  it("carry each call's status: failed and stopped as well as running and done", () => {
+    const steps = activitySteps([
+      call("read_file", { path: "a/b.md" }, { status: "error" }),
+      call("exec", { command: "sleep 60" }, { status: "stopped" }),
+    ]);
+    expect(steps.map((s) => s.status)).toEqual(["failed", "stopped"]);
+  });
+});
+
+describe("the summary", () => {
+  it("merges repeats and counts them, in the order they first ran", () => {
+    expect(
+      stepsPhrase([
+        call("memory_search", { query: "a" }),
+        call("read_file", { path: "a/b.md" }),
+        call("read_file", { path: "a/c.md" }),
+        call("subagent_spawn", { task: "t" }),
+        call("memory_search", { query: "b" }),
+      ]),
+    ).toBe("Searched memory 2 times, read 2 files, started 1 session");
+    expect(stepsPhrase([call("write_file", { path: "a/b.md" })])).toBe("Wrote 1 file");
+  });
+
+  it("merges a tool server's repeats by server and tool", () => {
+    expect(
+      stepsPhrase([
+        call("create_issue", {}, { server: "github" }),
+        call("create_issue", {}, { server: "github" }),
+        call("create_issue", {}, { server: "linear" }),
+      ]),
+    ).toBe("Used github: create_issue 2 times, used linear: create_issue");
+  });
+
+  it("folds the rest into a count once there are many kinds of step", () => {
+    expect(
+      stepsPhrase([
+        call("memory_search"),
+        call("read_file"),
+        call("exec"),
+        call("web_fetch"),
+        call("web_fetch"),
+        call("inbox_list"),
+      ]),
+    ).toBe("Searched memory, read 1 file, ran 1 command and 3 more steps");
+  });
+
+  it("adds how long a watched turn took, and flags a failed step", () => {
+    const calls = [
+      call("memory_search", { query: "x" }),
+      call("read_file", { path: "a/b.md" }, { status: "error" }),
+    ];
+    expect(summarizeActivity(calls, watched())).toEqual({
+      text: "Searched memory, read 1 file",
+      duration: "14s",
+      failures: "1 step failed",
+      ending: null,
+    });
+  });
+
+  it("shows neither timing nor failures for a turn from history", () => {
+    expect(summarizeActivity([call("read_file", { path: "a/b.md" })], undefined)).toEqual({
+      text: "Read 1 file",
+      duration: null,
+      failures: null,
+      ending: null,
+    });
+  });
+
+  it("leaves out the time of a turn the page joined partway", () => {
+    expect(
+      summarizeActivity([call("exec")], watched({ startedAt: null, gaps: [0] }))?.duration,
+    ).toBeNull();
+  });
+
+  it("says the user stopped it, even before any step ran", () => {
+    expect(
+      summarizeActivity([call("exec", {}, { status: "stopped" })], watched({ ending: "stopped" })),
+    ).toMatchObject({ text: "Ran 1 command", ending: "stopped by you" });
+    expect(summarizeActivity([], watched({ ending: "stopped" }))).toMatchObject({
+      text: "Stopped by you",
+      ending: null,
+    });
+    expect(summarizeActivity([], watched({ ending: "interrupted" }))?.text).toBe("Didn't finish");
+  });
+
+  it("has nothing to show for a turn without steps that ended on its own", () => {
+    expect(summarizeActivity([], watched())).toBeNull();
+    expect(summarizeActivity([], undefined)).toBeNull();
+  });
+});
+
+describe("gap notes", () => {
+  it("say steps came before the page connected, or while it reconnected", () => {
+    expect(gapNote(0)).toBe("Earlier steps happened before this page connected");
+    expect(gapNote(3)).toBe("Steps taken while this page was reconnecting may be missing");
+  });
+});

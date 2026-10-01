@@ -11,9 +11,15 @@ import { SvelteMap } from "svelte/reactivity";
 import { fetchSessionTranscript, messageSession, stopSession } from "./api";
 import { userErrorMessage } from "./errors";
 import { nextFeedId } from "./feed-id";
-import { appendToolCall, applyToolResult, convertHistoryMessages } from "./feed-items";
+import {
+  appendToolCall,
+  applyToolResult,
+  convertHistoryMessages,
+  settlePendingCalls,
+} from "./feed-items";
 import { hub } from "./hub.svelte";
 import type { HubClientMessage, HubServerMessage } from "./hub-types";
+import { ObservedTurns, type TurnEnding } from "./observed-turns.svelte";
 import { deliveryOutcomeText, runOutcomeText } from "./session-format";
 import { isSessionFrame, type RunFrame, type SessionFrame } from "./sessions.svelte";
 import { isoNow } from "./time";
@@ -54,8 +60,10 @@ export class SessionRun {
   /** The transcript has arrived at least once. */
   loaded = $state(false);
   loadError = $state<string | null>(null);
-  /** When the turn in flight started, for the working line; null between turns. */
-  turnStartedAt = $state<number | null>(null);
+  /** The turn in flight, whose items are tagged with it; null between turns. */
+  activeTurnId = $state<string | null>(null);
+  /** What the panel saw of each turn while it ran, for the activity line. */
+  readonly observed = new ObservedTurns();
   /** The message box's text, kept here so it survives the panel drawing again. */
   draft = $state("");
   sending = $state(false);
@@ -136,6 +144,11 @@ export class SessionRun {
     this.turnStart = null;
     this.items = convertHistoryMessages(transcript.messages, { mode: "session" });
     this.items.push(...this.notes.splice(0));
+    // The transcript renders every finished turn again, without timing. A
+    // turn still running goes on from here; what it did so far is in the
+    // transcript.
+    this.observed.clear(this.activeTurnId);
+    if (this.activeTurnId !== null) this.turnStart = this.items.length;
     this.loading = false;
     this.loaded = true;
     const raced = this.buffered;
@@ -184,6 +197,7 @@ export class SessionRun {
     const address = this.address;
     if (address === null || this.stopping) return;
     this.stopping = true;
+    if (this.activeTurnId !== null) this.observed.askStop(this.activeTurnId);
     try {
       await stopSession(this.agent, address);
       // Its completion may have arrived first.
@@ -252,9 +266,11 @@ export class SessionRun {
         break;
       case "session_tool_call":
         if (dedupe && this.findToolCall(frame.id)) return;
-        appendToolCall(this.items, this.pendingTools, frame);
+        this.joinTurn();
+        appendToolCall(this.items, this.pendingTools, frame, this.activeTurnId ?? undefined);
         break;
       case "session_tool_result": {
+        this.joinTurn();
         if (!this.pendingTools.has(frame.tool_call_id)) {
           const existing = this.findToolCall(frame.tool_call_id);
           if (existing && existing.result === undefined) {
@@ -266,10 +282,16 @@ export class SessionRun {
       }
       case "session_broadcast_response":
       case "session_response":
+        this.joinTurn(frame.type === "session_response" ? frame.turn_id : undefined);
         if (!frame.content) return;
         if (dedupe && this.items.some((i) => i.kind === "assistant" && i.content === frame.content))
           return;
-        this.items.push({ id: nextFeedId(), kind: "assistant", content: frame.content });
+        this.items.push({
+          id: nextFeedId(),
+          kind: "assistant",
+          content: frame.content,
+          ...(this.activeTurnId === null ? {} : { turnId: this.activeTurnId }),
+        });
         break;
       case "session_error":
         this.pushStatus("error", frame.message, frame.details ?? undefined);
@@ -283,8 +305,13 @@ export class SessionRun {
           summary.error_details = frame.error_details;
           summary.episode_id = frame.episode_id;
         }
+        // A run that ends mid-turn ends the turn with it: stopped when the
+        // user asked, cut off otherwise.
+        if (this.activeTurnId !== null) {
+          const asked = this.observed.get(this.activeTurnId)?.stopAsked === true;
+          this.closeTurn(this.activeTurnId, asked ? "stopped" : "interrupted");
+        }
         this.stopping = false;
-        this.turnStartedAt = null;
         this.pushStatus(
           frame.status === "failed" ? "error" : "info",
           runOutcomeText(frame.status, frame.error),
@@ -292,14 +319,19 @@ export class SessionRun {
         break;
       case "session_turn_started":
         this.turnStart ??= this.items.length;
-        this.turnStartedAt = Date.now();
+        // The message that started it went out from here first.
+        for (const item of this.items.slice(this.turnStart)) item.turnId = frame.turn_id;
+        this.activeTurnId = frame.turn_id;
+        this.observed.start(frame.turn_id);
         break;
       case "session_turn_ended":
+        this.nameJoinedTurn(frame.turn_id);
         this.tagTurnStart(frame.turn_id);
+        this.closeTurn(frame.turn_id);
         this.turnStart = null;
-        this.turnStartedAt = null;
         break;
       case "session_turn_usage":
+        this.joinTurn();
         if (summary && frame.session_totals) summary.usage = frame.session_totals;
         break;
       case "session_message_to_main":
@@ -311,6 +343,37 @@ export class SessionRun {
     const note: FeedItem = { id: nextFeedId(), kind: "status", tone, content, details };
     if (this.loading) this.notes.push(note);
     else this.items.push(note);
+  }
+
+  /**
+   * A frame of a turn arrived with no turn in flight: the panel opened, or
+   * its transcript loaded, while the turn ran. It becomes the turn in flight,
+   * joined partway, under a stand-in id until a frame names it.
+   */
+  private joinTurn(turnId?: string): void {
+    if (this.activeTurnId !== null) {
+      if (turnId !== undefined) this.nameJoinedTurn(turnId);
+      return;
+    }
+    if (turnId !== undefined && this.observed.get(turnId)?.endedAt != null) return;
+    this.activeTurnId = this.observed.join(turnId ?? null, null);
+    this.turnStart = this.items.length;
+  }
+
+  /** A frame named the turn joined under a stand-in id: tag its items with the real one. */
+  private nameJoinedTurn(turnId: string): void {
+    const current = this.activeTurnId;
+    if (current === null || current === turnId || !this.observed.isUnnamed(current)) return;
+    for (const item of this.items) if (item.turnId === current) item.turnId = turnId;
+    this.observed.rename(current, turnId);
+    this.activeTurnId = turnId;
+  }
+
+  /** The turn ended: settle calls still waiting on results, and record how. */
+  private closeTurn(turnId: string, ending?: TurnEnding): void {
+    const how = this.observed.end(turnId, ending);
+    settlePendingCalls(this.pendingTools, how === "finished" ? "done" : "stopped");
+    if (this.activeTurnId === turnId) this.activeTurnId = null;
   }
 
   /** Tag the message that started the turn now ending, so it can offer Undo this turn. */
@@ -329,7 +392,7 @@ export class SessionRun {
     this.runId = next.run_id;
     this.summary = next;
     this.stopping = false;
-    this.turnStartedAt = null;
+    this.activeTurnId = null;
     this.pendingTools.clear();
     if (this.loading) {
       void this.load();

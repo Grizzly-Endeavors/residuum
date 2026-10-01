@@ -1,23 +1,26 @@
 <script lang="ts">
-  import ToolGroup from "../components/ToolGroup.svelte";
+  import type { ObservedTurn } from "../lib/observed-turns.svelte";
+  import ActivityLine from "./ActivityLine.svelte";
   import FeedItemView from "./FeedItemView.svelte";
   import type { FeedTurn } from "./turns";
 
-  // One turn's output as one block: its tool calls first, then what the agent
-  // said, in order. The tool calls are the legacy tool rows, shown only while
-  // "Show tool calls" is on.
+  // One turn's output as one block: its activity line, built from every tool
+  // call of the turn, then what the agent said, in order.
 
-  let { turn, agent, verbose }: { turn: FeedTurn; agent: string; verbose: boolean } = $props();
+  interface Props {
+    turn: FeedTurn;
+    agent: string;
+    /** What the page saw of this turn while it ran, if it watched it. */
+    observed?: ObservedTurn;
+    /** Stops the turn, while it runs. */
+    onStop?: () => void;
+  }
+
+  let { turn, agent, observed, onStop }: Props = $props();
 </script>
 
 <div class="feed-turn">
-  {#if verbose && turn.calls.length > 0}
-    <div class="feed-item" data-feed-item data-kind="tool-group">
-      <div data-legacy-view>
-        <ToolGroup calls={turn.calls} verbose />
-      </div>
-    </div>
-  {/if}
+  <ActivityLine {agent} calls={turn.calls} live={turn.live} {observed} {onStop} />
   {#each turn.items as item (item.id)}
     <div class="feed-item" data-feed-item data-kind={item.kind}>
       <FeedItemView {item} {agent} />

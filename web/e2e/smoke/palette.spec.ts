@@ -131,7 +131,10 @@ test("an agent's own palette lists its places and sessions, and opens a session 
 });
 
 test.describe("the composer's / menu", () => {
-  test("lists the chat actions, narrows as you type, and Enter runs one", async ({ page }) => {
+  test("lists the chat actions, narrows as you type, and Enter runs one", async ({
+    page,
+    isMobile,
+  }) => {
     await page.goto("/agent/atlas");
     const box = page.locator(".chat-input");
     await box.click();
@@ -141,15 +144,18 @@ test.describe("the composer's / menu", () => {
     await expect(menu.getByRole("option", { name: /Stop reply/ })).toContainText(
       "atlas isn't replying right now",
     );
+    // Only the phone's menu is tall enough to scroll.
     await expectNoAxeViolations(page, {
       within: "[role=listbox]",
-      allow: [
-        {
-          rule: "scrollable-region-focusable",
-          reason:
-            "the arrow keys in the message box scroll the menu, but axe only sees that when a combobox controls it, and the legacy message box is a textarea, which can't be one; the composer's rebuild (W25) settles its field",
-        },
-      ],
+      allow: isMobile
+        ? [
+            {
+              rule: "scrollable-region-focusable",
+              reason:
+                "the arrow keys in the message box scroll the menu, but axe only sees that when a combobox controls it, and the legacy message box is a textarea, which can't be one; the composer's rebuild (W25) settles its field",
+            },
+          ]
+        : [],
     });
 
     await page.keyboard.type("refl");

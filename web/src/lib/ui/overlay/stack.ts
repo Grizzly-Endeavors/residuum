@@ -93,6 +93,11 @@ class OverlayStack {
     };
   }
 
+  /** Whether any layer is open, which would take an Esc pressed now. */
+  get anyOpen(): boolean {
+    return this.layers.length > 0;
+  }
+
   /** Whether `event`, a pointer press, already closed a float; a scrim under it then stays put. */
   caughtBy(event: Event): boolean {
     return this.caught === event;
@@ -240,3 +245,12 @@ class OverlayStack {
 
 /** The overlay stack. Layer components join it; nothing else needs to. */
 export const stack = new OverlayStack();
+
+/**
+ * Whether an overlay is open. A control outside the overlays that answers
+ * Esc itself checks this first, so an Esc that closes an overlay does
+ * nothing else.
+ */
+export function overlayOpen(): boolean {
+  return stack.anyOpen;
+}

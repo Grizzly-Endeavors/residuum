@@ -8,11 +8,10 @@
   import { hub } from "../../lib/hub.svelte";
   import { notifications } from "../../lib/notifications.svelte";
   import type { ImageAttachment } from "../../lib/types";
-  import { EmptyState } from "../../lib/ui";
+  import { EmptyState, overlayOpen } from "../../lib/ui";
   import { ws } from "../../lib/ws.svelte";
   import ChatFooter from "../../components/ChatFooter.svelte";
   import ChatInput from "../../components/ChatInput.svelte";
-  import ThinkingIndicator from "../../components/ThinkingIndicator.svelte";
   import Feed from "../../feed/Feed.svelte";
   import type { FeedHistory } from "../../feed/feed-history";
   import type { ShellActions } from "../../shell/shell-actions";
@@ -22,9 +21,8 @@
   // An agent's Chat: its header, the conversation, and under it the composer.
   // The agent is the bound one, so the conversation is the coordinator's
   // feed. While the agent isn't running, its state card takes the
-  // composer's place at the end of the conversation. The composer, its
-  // footer and the running-turn line are the legacy ones until their units
-  // rebuild them.
+  // composer's place at the end of the conversation. The composer and its
+  // footer are the legacy ones until their unit rebuilds them.
 
   let { agent, actions }: { agent: string; actions: ShellActions } = $props();
 
@@ -65,6 +63,20 @@
     });
   });
 
+  // Esc in the composer stops the reply. A control in the composer that uses
+  // Esc itself (the `/` menu) claims it first, and an open overlay takes it
+  // instead: closing the overlay is all that press does.
+  function stopOnEscape(node: HTMLElement): () => void {
+    const onKeydown = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+      if (store.activeTurnId === null || overlayOpen()) return;
+      event.preventDefault();
+      ws.stop();
+    };
+    node.addEventListener("keydown", onKeydown);
+    return () => node.removeEventListener("keydown", onKeydown);
+  }
+
   // A line that starts with `/` runs the chat action it names, with the rest
   // of the line as its text; anything else is a message.
   function handleSend(text: string, images?: ImageAttachment[]): void {
@@ -91,12 +103,13 @@
   <Feed
     {agent}
     items={store.feed}
-    verbose={ws.verbose}
     label="Conversation with {agent}"
     {history}
     loading={!store.historyLoaded}
     live={store.isProcessing}
     liveTurnId={store.activeTurnId}
+    observed={store.observed.get}
+    onStop={() => ws.stop()}
   >
     {#snippet empty()}
       {#if running}
@@ -108,17 +121,6 @@
       {/if}
     {/snippet}
     {#snippet tail()}
-      {#if running && store.isProcessing}
-        <div data-legacy-view>
-          <ThinkingIndicator
-            since={store.turnStartedAt}
-            outputTokens={store.turnOutputTokens}
-            hasUsage={store.turnHasUsage}
-            toolCalls={store.turnToolCalls}
-            stopHint="Esc to stop"
-          />
-        </div>
-      {/if}
       {#if summary && shownState !== null && shownState !== "running"}
         <div bind:this={cardEl}>
           <StateCard agent={summary} shown={shownState} alone={store.feed.length === 0} {actions} />
@@ -127,7 +129,7 @@
     {/snippet}
   </Feed>
   {#if running}
-    <div class="chat-composer" data-legacy-view bind:this={composerEl}>
+    <div class="chat-composer" data-legacy-view bind:this={composerEl} {@attach stopOnEscape}>
       <ChatInput
         onSend={handleSend}
         onStop={() => ws.stop()}
