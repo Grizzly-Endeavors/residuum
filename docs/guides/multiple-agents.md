@@ -14,7 +14,7 @@ Pick a short name of 1 to 24 lowercase letters, digits and hyphens, such as `res
 
 The description is optional but useful. The new agent receives it as its first message and turns it into notes in its own `SOUL.md` and a role page in the shared wiki, so it starts knowing what it is for. A new agent skips the first-run interview.
 
-If the new agent can't start (a bad model setting, say), it is still created. Home lists it under **Needs you** with the reason, and its **Chat** shows a card saying it couldn't start, with **Restart** and, for a settings problem, **Fix settings**, which opens the setting at fault in **Settings → (agent)**. Change it there, choose **Save changes**, then restart the agent.
+If the new agent can't start (a bad model setting, say), it is still created. Home lists it under **Needs you** with the reason, and its **Chat** shows a card saying it couldn't start, with **Restart** and, for a settings problem, **Fix settings**, which opens the setting at fault in **Settings** for that agent (the gear at the bottom of the rail, or **Settings** in the phone's bottom bar; **Settings for** at the top picks the agent, written **Settings → (agent)** in this guide). Change it there, choose **Save changes**, then restart the agent.
 
 ## Switch between agents
 
