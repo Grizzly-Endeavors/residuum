@@ -17,21 +17,6 @@
   flex-shrink: 0;
 }
 
-.settings-heading {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.settings-scope {
-  font-size: var(--fs-xs);
-  line-height: 1.4;
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .settings-title {
   font-family: var(--font-display);
   font-size: var(--fs-base);
@@ -93,128 +78,9 @@
   background: var(--vein-glow);
 }
 
-.settings-body {
-  display: flex;
-  flex: 1;
-  overflow: hidden;
-}
-
-.settings-sidebar {
-  width: 160px;
-  flex-shrink: 0;
-  border-right: 1px solid var(--border-subtle);
-  background: var(--bg-surface);
-  padding: 12px 0;
-  overflow-y: auto;
-}
-
-.settings-nav-toggle {
-  display: none;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  padding: 10px 16px;
-  font-family: var(--font-body);
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--vein);
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  transition: background var(--dur-default) var(--ease-out-stone);
-}
-
-.settings-nav-toggle:hover {
-  background: var(--bg-raised);
-}
-
-.settings-nav-toggle .nav-chevron {
-  font-size: 10px;
-  transition: transform var(--dur-default) var(--ease-out-expo);
-}
-
-.settings-nav-toggle .nav-chevron.open {
-  transform: rotate(180deg);
-}
-
-.settings-sidebar-btn {
-  display: block;
-  width: 100%;
-  padding: 8px 20px;
-  font-family: var(--font-body);
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-muted);
-  background: transparent;
-  border: none;
-  text-align: left;
-  cursor: pointer;
-  transition:
-    background-color var(--dur-quick),
-    color var(--dur-quick),
-    border-color var(--dur-quick),
-    box-shadow var(--dur-default) var(--ease-out-stone);
-  border-left: 3px solid transparent;
-}
-
-.settings-sidebar-btn:hover {
-  color: var(--text);
-  background: var(--bg-raised);
-}
-
-.settings-sidebar-btn.active {
-  color: var(--vein);
-  border-left-color: var(--vein);
-  background: var(--vein-glow);
-}
-
-.settings-nav-group {
-  display: block;
-  margin-top: 12px;
-  padding: 12px 20px 4px;
-  border-top: 1px solid var(--border-subtle);
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  color: var(--text-dim);
-  cursor: default;
-  user-select: none;
-}
-
-.settings-content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 20px 24px;
-}
-
 .settings-placeholder {
   font-size: 14px;
   color: var(--text-muted);
-}
-
-/* ── Settings status indicator ──────────────────────────────────────── */
-
-.settings-status {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: var(--radius);
-  white-space: nowrap;
-  transition: opacity var(--dur-default) var(--ease-out-stone);
-}
-
-.settings-status.success {
-  color: var(--success);
-  border: 1px solid rgba(46, 204, 113, 0.3);
-}
-
-.settings-status.error {
-  color: #e8a0a0;
-  background: var(--error-bg);
-  border: 1px solid rgba(192, 57, 43, 0.3);
-}
-
-.settings-status.saving {
-  color: var(--text-dim);
-  border: 1px solid var(--border-subtle);
 }
 
 /* ── Settings sections & groups ──────────────────────────────────────── */
@@ -236,41 +102,6 @@
   margin-bottom: 12px;
   padding-bottom: 6px;
   border-bottom: 1px solid var(--border-subtle);
-}
-
-/* ── Advanced mode tabs ──────────────────────────────────────────────── */
-
-.advanced-tabs {
-  display: flex;
-  gap: 0;
-  margin-bottom: 12px;
-  border-bottom: 1px solid var(--border);
-}
-
-.advanced-tab {
-  padding: 8px 16px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-muted);
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  cursor: pointer;
-  transition:
-    background-color var(--dur-quick),
-    color var(--dur-quick),
-    border-color var(--dur-quick),
-    box-shadow var(--dur-default) var(--ease-out-stone);
-}
-
-.advanced-tab:hover {
-  color: var(--text);
-}
-
-.advanced-tab.active {
-  color: var(--vein);
-  border-bottom-color: var(--vein);
 }
 
 /* ── Provider entry ──────────────────────────────────────────────────── */
@@ -472,9 +303,6 @@
     gap: 8px;
     padding: 10px 12px;
   }
-  .settings-heading {
-    flex: 1 1 100%;
-  }
   .settings-header-actions {
     flex: 1 1 100%;
     justify-content: space-between;
@@ -486,56 +314,6 @@
   }
   .settings-mode-btn {
     padding: 6px 8px;
-  }
-
-  /* Settings sidebar → collapsible overlay on mobile */
-  .settings-body {
-    flex-direction: column;
-    position: relative;
-  }
-  .settings-sidebar {
-    width: 100%;
-    border-right: none;
-    border-bottom: 1px solid var(--border-subtle);
-    padding: 0;
-    overflow: visible;
-    position: relative;
-    z-index: 5;
-  }
-  .settings-sidebar.collapsed {
-    border-bottom: none;
-  }
-  .settings-nav-toggle {
-    display: flex;
-  }
-  .settings-nav-items {
-    display: none;
-    flex-direction: column;
-    padding: 4px 0 8px;
-    position: absolute;
-    top: 100%;
-    left: 0;
-    right: 0;
-    background: var(--bg-surface);
-    border-bottom: 1px solid var(--border-subtle);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-    z-index: 10;
-  }
-  .settings-sidebar:not(.collapsed) .settings-nav-items {
-    display: flex;
-  }
-  .settings-sidebar-btn {
-    border-left: none;
-    padding: 10px 20px;
-  }
-  .settings-sidebar-btn.active {
-    border-left: none;
-    background: var(--vein-glow);
-  }
-
-  .settings-content {
-    /* Bottom room so the fixed notification corner never covers the last control. */
-    padding: 16px 16px 64px;
   }
   .provider-entry-fields {
     grid-template-columns: 1fr;

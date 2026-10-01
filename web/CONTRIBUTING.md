@@ -48,7 +48,7 @@ With [`just`](https://github.com/casey/just), `just web-mock` from the repo root
 - The team overview: `GET /api/hub/overview` and an `agent_overview` frame on the hub socket whenever an agent's overview changes. Each agent's last message, live sessions and unread inbox count are read from the data the mock's other routes serve (its conversation, sessions and inbox), `upcoming` lists its three soonest runs (its pulses by their next fire time, and its pending scheduled actions) and `outbound_problems` its open tasks to other agents that have been unreachable for ten minutes, and changes are gathered so an agent gets at most one frame per simulated second (the next tick when delays are off). A created agent is sent at once. It starts over on reset
 - Push presence: the hub socket accepts `{ "type": "presence", "device_id", "active" }` and keeps what each connected page reported on the mock clock, as the hub does. A device is present for 60 seconds after an `active: true` report from a page that is still connected, and `active: false` or the page disconnecting ends it; a frame without a `device_id` string and an `active` boolean is refused with the warning `notice` any unreadable frame gets, and a valid one gets no answer. `GET /api/mock/push/presence` answers `{ "devices": [...] }`, the devices the real hub would send no push right now. The mock sends no pushes.
 - Workspace files, for an agent (`/api/agents/{name}/workspace/...`) and for the shared team tree (`/api/team/workspace/...`): directory listings with size, modification time and version, reads with the version as the `ETag`, writes that answer `412` when the client's `If-Match` no longer matches, and delete, move, validate, `dir`, `raw` reads and writes, the recursive `tree` (with `glob`, `depth` and `content`) and the batch `read` with the backend's size budgets. Edits change the listings, and the team tree is the same one under an agent's `team/`
-- The Scheduled view (`/api/agents/{name}/scheduled/...`): the pulses, with their next fire, last outcome and current run worked out from the agent's sessions the way the backend reads them, toggling a pulse, and the pending actions with cancel. One pulse is disabled and one failed to load
+- The Schedule place's routes (`/api/agents/{name}/scheduled/...`): the pulses, with their next fire, last outcome and current run worked out from the agent's sessions the way the backend reads them, toggling a pulse, and the pending actions with cancel. One pulse is disabled and one failed to load. Like the backend, they answer `409` for an agent that isn't running
 - Checkpoints, for an agent (`workspace` and `agent_config` repositories) and for the hub (`hub` and `team`): list with `path`, `turn_id` and paging, stats, a checkpoint's detail, diff and file, restore and undo. Each repository keeps the whole tree of each checkpoint, so a restore writes the files back (Settings, the workspace and the team tree show it) and an undo skips a path that changed again since. A route answers `400` for a repository of the other scope, like the backend. The sample histories end at the live files, and `status` reports their stats
 - `POST /api/agents/{name}/agent-inbox` (what an artifact adds to the agent's own inbox, with the backend's ids, title default and `artifact:<name>` source), and the update routes (`/api/hub/update/status`, `check` and `apply`; the mock is always on the latest version) with `cloud/disconnect`
 - The user inbox: a listing, an archive, mark read, archive, restore and attachments (`/api/agents/{name}/inbox/...`), with the backend's response shapes, including its `500` for an item that isn't there. No sample item carries an attachment, but `POST /api/mock/user-inbox-add` can give a new one some; an attachment serves a stand-in file of its type
@@ -58,7 +58,7 @@ With [`just`](https://github.com/casey/just), `just web-mock` from the repo root
 - Live updates for team files, through a test control: `POST /api/mock/team-file` simulates an agent editing or deleting a team file. The body is `{ "path": "team/workbench/tip-splitter.html", "content": "<title>…" }`: `path` is in the file API's namespace (under `team/`), and `content` is the file's new text, or `null` to remove it (a folder goes with everything in it). The mock's files change, then its sockets send what the real change feed does: `workspace_changed` (one change, `created`, `modified` or `removed`; a new folder is reported alone, standing for what it holds) to the hub socket and to every agent socket whose `watch_team` or `watch_workspace` prefixes match (by whole path segments; a prefix above or at the path matches, and so does one below a removed folder), and, when the change touches an artifact's page or folder, `artifact_updated` or `artifact_removed` to every hub socket and every agent socket, whatever they watch, and with no agent running. The answer is `{ "changes": [...], "artifacts": { "updated": [...], "removed": [...] } }`, what was sent. An artifact's saved data doesn't count as the artifact, and a rewrite that leaves its files as they were sends no artifact frame. A path outside `team/`, or a folder to write to, answers `422`, and removing what isn't there `404`
 - Live updates for an agent's own files, the same way: `POST /api/mock/agent-file?agent=atlas` with `{ "path": "notes/plan.md", "content": "…" }` (a path in the agent's own workspace, `content: null` to remove it) changes the file and sends `workspace_changed` to that agent's sockets whose `watch_workspace` prefixes match, and answers `{ "changes": [...] }`. A `team/` path or `""` answers `422`, an unknown agent and removing what isn't there `404`
 - Main chat turns are recorded in history when they end, each message tagged with the turn's id (`turn_id`, the `reply_to` of its frames) as the backend does. A chat message starting with `drop` loses the connection mid-turn: `drop finish …` ends the turn while disconnected, `drop compress …` also compresses history into a new episode (forcing a history reload), and any other `drop …` finishes the turn live after the page reconnects
-- Config files are loaded from `../assets/*.example.*` and can be edited in the UI
+- Config files are loaded from `../assets/*.example.*` and can be edited in the UI. A `config.toml` or `providers.toml` patch checkpoints the file first and answers with the checkpoint, as the backend does, and an agent's `config.toml` patch that sets `agent.max_tool_iterations` to 0 is refused with the backend's message
 - Secrets can be added and removed (stored in memory)
 - Agent keys list with one user key and one agent-saved key, and can be added and removed (stored in memory)
 
@@ -68,7 +68,7 @@ With [`just`](https://github.com/casey/just), `just web-mock` from the repo root
 - Config saves don't persist across server restarts
 - Some edge cases (rate limits, network errors) aren't simulated
 - The workspace routes don't block paths the backend blocks, and a delete, move or raw write records no checkpoint (deleting a workbench artifact does). Only `POST /api/mock/team-file` and `POST /api/mock/agent-file` send `workspace_changed`, and only the first the artifact frames: a write through the workspace routes, or an Undo, changes the files without announcing it, and the mock has no batches, resyncs or lag. A raw write stores its body as text, so bytes that aren't valid UTF-8 don't round-trip
-- The Scheduled view's pulses and actions are kept apart from `HEARTBEAT.yml` in the workspace: toggling a pulse doesn't edit that file
+- The Schedule place's pulses and actions are kept apart from `HEARTBEAT.yml` in the workspace: toggling a pulse doesn't edit that file or send `workspace_changed`
 - `POST /api/secrets` doesn't validate the value like the real server does — it accepts anything, including a `secret:` or `${ENV_VAR}` reference the real server would reject with a 400. The frontend already avoids sending those (see `lib/secrets.ts`), so this only matters if you're testing the rejection path itself
 
 ### Setup Wizard Mode
@@ -116,14 +116,15 @@ web/
 │   ├── main.ts               # App entry point
 │   ├── App.svelte            # The root: the setup wizard, or the shell; draws toasts and tooltips in both
 │   ├── shell/                # The shell: the rail, the phone's bottom bar and drawer, the hub banner, place routing, the Settings modal, the command palette, the app's actions, the shortcuts, feedback and Create agent dialogs
-│   │   └── panel/                # The context panel: its frame and header, its width, and what each kind shows
+│   │   ├── panel/                # The context panel: its frame and header, its width, and what each kind shows
+│   │   └── settings/             # The Settings modal's parts: scope picker and section list, save bar, the section API, hosted legacy sections, Raw config
 │   ├── places/               # Rebuilt places, one folder each
 │   │   ├── home/             # Home: needs-you, the agents board and its row menus, Recently deleted, Across the team, Coming up, and the words and times they show
-│   │   ├── inbox/            # Inbox: the list, the filter and tabs, an item opened in place, and the words for sources and sizes
-│   │   └── chat/             # An agent's Chat: its header, and the feed with the legacy composer under it
+│   │   ├── inbox/            # Inbox: the list, the filter and tabs, an item opened in place, and the words for sources
+│   │   ├── chat/             # An agent's Chat: its header, and the feed with the legacy composer under it
+│   │   └── schedule/         # An agent's Schedule: its pulses and scheduled actions, and the words they show
 │   ├── feed/                 # A conversation: the feed and each kind of message in it, shared by Chat and session transcripts; path links
 │   ├── Setup.svelte          # Setup wizard
-│   ├── Settings.svelte       # Settings panel
 │   ├── styles/               # Design tokens, bundled fonts, base styles, legacy global styles
 │   ├── components/
 │   │   ├── ChatInput.svelte        # Input box with the `/` menu of chat actions (SlashMenu.svelte)
@@ -150,6 +151,7 @@ web/
 │       ├── feed.svelte.ts        # Main chat feed state
 │       ├── feed-items.ts         # History-to-feed conversion shared by chat and session views
 │       ├── sessions.svelte.ts    # Agent sessions: listing, live frames, session view, commands
+│       ├── scheduled.svelte.ts   # The bound agent's pulses and scheduled actions, for the Schedule place
 │       ├── overview.svelte.ts    # The team overview: each agent's overview, team events, the newest unread inbox items, what needs the user
 │       ├── inbox.svelte.ts       # The Inbox's list across agents: filter and tab, paging, read, archive, restore
 │       ├── app-badge.ts          # The app icon's badge (the Badging API): the inbox unread total
@@ -207,7 +209,7 @@ web/
 │   ├── workspace-bulk.ts     # The recursive tree listing and the batch read, with their budgets
 │   ├── inbox.ts              # The user inbox: listing, archive, read, restore, attachments
 │   ├── agent-inbox.ts        # The agent's own inbox: what an artifact adds to it
-│   ├── scheduled.ts          # The Scheduled view: pulses and actions
+│   ├── scheduled.ts          # The Schedule place's routes: pulses and actions
 │   ├── checkpoints.ts        # Checkpoint histories: list, stats, detail, diff, file, restore, undo
 │   ├── update.ts             # The update routes
 │   ├── workbench.ts          # Workbench artifact list, info and delete (with its checkpoint)
@@ -261,7 +263,7 @@ Old URLs redirect by replace: `/team`, `/agent/:name/sessions/:runId`, `/agent/:
 
 `routes.ts` reads and formats URLs and knows nothing of the browser. `router.svelte.ts` holds the location. Stores never import it: they expose data and commands, and views navigate (ESLint enforces this under `src/lib/`).
 
-**Navigation.** `openPlace`, `openPanel`, `openSettings` and `openSettingsSection` (a section opened from the phone's section list) push. `replacePlace`, `replacePanel`, `switchSettingsSection` and `switchSettingsScope` replace, and so does every correction and redirect. Each returns whether the navigation happened.
+**Navigation.** `openPlace`, `openPanel`, `openSettings` and `openSettingsSection` (a section opened from the phone's section list) push. `replacePlace`, `replacePanel`, `switchSettingsSection` and `switchSettingsScope` replace, and so does every correction and redirect. `closeSettingsSection` is a phone section's Back: it goes back to the list when this page pushed the section from it, and replaces the section away otherwise. Each returns whether the navigation happened.
 
 **The Inbox's parameters.** Design §3 leaves them open, so the Inbox decides: opening an item from the list pushes (`openPlace` with `item`), and opening another while one is open replaces it, the way the panel switches files. Changing the agent filter or the tab replaces and closes the open item, so Back leaves the Inbox instead of stepping through filters. A link to an item that's gone is corrected by replace, with a toast.
 
@@ -283,7 +285,7 @@ The rail's agents are an accordion (`accordion.svelte.ts`): one agent's places a
 
 `ShellActions.createAgent` is the one way to create an agent: Home's New agent, the rail's "+" and the palette's Create an agent call it, and it opens the Create agent dialog (`CreateAgentDialog.svelte`, a sheet on phones) over the current place. The name is checked against the backend's rules and the agent list as it is typed (`newAgentNameProblem` in `lib/agent-name.ts`), and a name a deleted agent had points at Recently deleted. Under More options are the agent to copy model settings from (the first by name until another is chosen) and who can find it (private by default). What was typed stays when the dialog closes without creating. Once the agent exists the dialog closes, the hub's `agent_created` frame raises the "You created …" toast, and beside the main region the new agent's rail row takes focus.
 
-Home, Inbox and Chat are rebuilt (see [Home and the overview](#home-and-the-overview), [The Inbox](#the-inbox) and [The chat feed](#the-chat-feed)). Places not rebuilt yet host their legacy view inside a `data-legacy-view` element, so the legacy global styles apply there and the new base styles don't: Activity the sessions list, Schedule the Scheduled page, Files and Shared files the workspace, and the Workbench itself. The Settings modal (`SettingsModal.svelte`) hosts the current Settings page, which lists the registry's sections and shows each with the panels that hold its settings; the Raw config section is its raw editors. The workbench's full view is a mode of that page and isn't in the URL. The palette and the help dialogs aren't in the URL either; each holds an overlay entry, so Back closes it.
+Home, Inbox, Chat and the Schedule are rebuilt (see [Home and the overview](#home-and-the-overview), [The Inbox](#the-inbox), [The chat feed](#the-chat-feed) and [The Schedule](#the-schedule)). Places not rebuilt yet host their legacy view inside a `data-legacy-view` element, so the legacy global styles apply there and the new base styles don't: Activity the sessions list, Files and Shared files the workspace, and the Workbench itself. The Workbench's full view is a mode of the Workbench page and isn't in the URL. The Settings modal is described in [The Settings modal](#the-settings-modal). The palette and the help dialogs aren't in the URL either; each holds an overlay entry, so Back closes it.
 
 ### Actions
 
@@ -338,6 +340,10 @@ The feed follows new content while the reader is within 120px of the bottom; fur
 
 `feed/FeedItemView.svelte` draws one item, and takes the same `agent`. A user message is a moss bubble with its sender line, images and Undo this turn; an agent's reply is unboxed prose; a message from a session or teammate is a card with its kind and sender (`feed/feed-words.ts`), a clamped body with Show all, and Open session for session senders; then day and episode dividers, the compressed-history note naming the agent, file attachments, and a session transcript's status lines. Message text goes through `feed/Prose.svelte`: sanitized Markdown, a Copy button on each code block, and inline code that is a whole workspace path (`isWorkspacePath` in `lib/markdown.ts`) as a link that opens the file in the context panel beside that agent's places, or beside its chat from anywhere else (`feed/feed-links.ts`). Open session finds the run on its agent (`lib/session-address.ts`).
 
+### The Schedule
+
+`places/schedule/Schedule.svelte` shows the bound agent's pulses and scheduled actions from `lib/scheduled.svelte.ts` (`scheduled`), and `schedule-model.ts` holds its words, taking run names and next-run times from Home's `home-model.ts` so both read the same. The store is reset by the socket coordinator on an agent switch, so it can't import `ws`: the place passes it the socket's frames and watch registry with `startWatching({ onFrame, watches })`. While a place is open the store owns a watch on `HEARTBEAT.yml` and `scheduled_actions.json`, tied to the bound agent, and refetches when either changes, on a resync, and on a scheduled run's session frames. A failed load lands in `loadError`, which the place shows with Try again. The schedule routes answer only while the agent runs, so the place loads when the agent is running and otherwise shows that it is stopped, with Start.
+
 ### Agents in API calls
 
 No request reads the viewed agent. Every agent-scoped function in `lib/api.ts` takes the agent name as its first argument, and its cache key includes that agent. Components take the agent from their props (`Settings`, `Workspace`), stores hold the agent they were bound to (`ws.sessions`, `scheduled`), and the chat's controls use `ws.agent`, the agent the WebSocket is bound to. The workbench bridge maps an artifact's unscoped paths onto `ws.agent` per request.
@@ -372,7 +378,7 @@ Each file has a baseline (its text as the model last loaded or saved it) and a f
 | `reload()` | Discards the staged changes and reads every file again. |
 | `discard()` | Drops the staged changes. |
 | `save(choose)` | Stores typed secrets, then writes each changed file's diff through the coordinator, providers then config then MCP servers. A file that fails keeps its changes, and `config.toml` waits on `providers.toml`. Resolves to a `SaveResult`: what each file did, every checkpoint taken, and a plain-language message. |
-| `undo()` | Restores the last save's checkpoints in reverse order and reports each file's reverted and skipped paths, naming any file it couldn't restore. |
+| `undo()` | Puts each file the last save wrote back from the checkpoint taken just before its write, in reverse order. A file that changed again since is skipped, and one that can't be restored is named. |
 | `fieldDiagnostics(ref)` and `sectionDiagnostics(section)` | The problems from a save. A diagnostic whose key path names a form field is on that field; the rest are for the top of a section. |
 
 `dirty`, `saving`, `lastResult` and `undoable` drive the save bar. `file(name)` gives a file's `lockedBy` (`"form"` keeps its raw editor read-only, `"raw"` keeps its form read-only while the raw editor holds a draft set with `setRawDraft`), `changedOnDisk`, `unreadable` and `loadError`. A change to a file that has staged changes leaves them alone, so the coordinator's re-read before Save finds the clash. A typed credential is stored under its name (`discord`, `webhook_<name>`, a provider's name) and the reference goes in the file. Immediate actions have no state here.
@@ -380,6 +386,21 @@ Each file has a baseline (its text as the model last loaded or saved it) and a f
 `lib/settings-fields.ts` is the one map from a form field to its key (`keyPathOf`), which diffing and diagnostic placement (`locateField`) share, so a field that saves to a key is the field that shows that key's error. A form field the map doesn't cover fails `settings-fields.test.ts`. Failover lists ride along with a role (`models.fallbacks`) so a save never shortens one.
 
 The model's tests are `settings-model.component.test.ts`, so they run with live runes in jsdom.
+
+### The Settings modal
+
+`shell/SettingsModal.svelte` is open while the URL has a `settings` parameter. Its side (`settings/SettingsNav.svelte`) is the scope picker, "All agents" first and then each agent with its state, the line saying what the scope affects, and the scope's sections with the Advanced group under a heading; on a phone it is the screen a URL without a section shows, and a section opens over it with Back. The modal is never remounted while the scope or section changes: the content pane swaps, with a `--duration-swap` fade, once the new scope has loaded, and keeps the last section on screen until then. On a phone it stops above the bottom bar, which stays pressable. The frame's top bar has Reload from disk (which asks first when the scope has staged changes) and Close.
+
+The save bar (`settings/SaveBar.svelte`) shows while the scope has staged changes. Save changes writes them; a save that wrote everything says so in a toast with Undo, and one that left files unsaved names them on the bar until those changes are saved or discarded. When a file changed on disk under the keys being saved, `ChangedOnDiskDialog` asks "Keep my changes" or "Use what's on disk"; closing it leaves that file unsaved with its changes staged. While the modal is open the palette lists Save changes, Discard changes and Reload settings from disk for its scope. Reloading the page with staged changes in any scope asks first.
+
+**Writing a section.** A section is a component taking `{ scope, section }` (`AgentSectionProps` or `AllSectionProps` in `settings/sections.ts`), listed in `AGENT_SECTION_VIEWS` or `ALL_SECTION_VIEWS`; a section not listed shows its legacy panels (`LegacySection.svelte`), bound to the same forms.
+
+- Start with `SettingsSection` (title, a line on what it holds, and the save's problems no field shows), then the fields.
+- Bind fields to the scope's forms (`scope.config.timeout_secs`, `scope.providers`, …); the frame loads the scope before the section renders, and the save bar follows the staged changes by itself.
+- Give a field its problems with `error={fieldError(scope, { kind: "config", field: "timeout_secs" })}`.
+- A part that needs the agent running goes inside `RunningOnly` (`<RunningOnly agent={scope.agent} subject="its status">…</RunningOnly>`), which says "Start atlas to see its status." with Start until it runs.
+- Actions of the section's own register with `actionRegistry.register(key, source)` inside `untrack` in an `$effect` that returns the remover.
+- Immediate actions (secrets, keys, Cloud, updates) call their endpoints and report their own result; they have no part in the save bar.
 
 ## Code Quality
 

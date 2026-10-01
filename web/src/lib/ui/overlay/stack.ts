@@ -31,6 +31,11 @@ export interface LayerOptions {
    * tooltip): closing it leaves focus where it is.
    */
   returnFocus?: HTMLElement | null | false;
+  /**
+   * For a modal: something on the page that stays live while the modal is on
+   * top, such as the phone's bottom bar beside a layer that stops above it.
+   */
+  spare?: Element | null;
 }
 
 export interface LayerHandle {
@@ -44,6 +49,13 @@ interface Layer extends LayerOptions {
   returnTo: HTMLElement | null;
   /** The layer `returnTo` is in, if any: when both close at once, focus goes on to where that one returns. */
   returnLayer: Layer | undefined;
+}
+
+/** The elements to make inert so `root` is covered except for `spared`: inside `root`, everything off the path down to it. */
+function coverAround(root: Element, spared: Element | null): Element[] {
+  if (spared === null || !root.contains(spared)) return [root];
+  if (root === spared) return [];
+  return [...root.children].flatMap((child) => coverAround(child, spared));
 }
 
 function focusedElement(): HTMLElement | null {
@@ -137,7 +149,10 @@ class OverlayStack {
   /** What the modal at `index` covers: the page outside the host, and the layers below it. */
   private coveredBy(index: number): Element[] {
     const host = overlayHost();
-    const covered = [...document.body.children].filter((child) => child !== host);
+    const spared = this.layers[index]?.spare ?? null;
+    const covered = [...document.body.children]
+      .filter((child) => child !== host)
+      .flatMap((child) => coverAround(child, spared));
     return covered.concat(this.layers.slice(0, index).map((layer) => layer.element));
   }
 

@@ -40,9 +40,9 @@ Scheduled action results flow through the pub/sub bus to the notification router
 
 See [notifications.md](notifications.md) for the full routing model.
 
-## Scheduled View
+## Schedule Place
 
-The web UI's Schedule place (under each agent in the rail, at `/agent/<name>/schedule`; see [heartbeats.md](heartbeats.md#scheduled-view)) lists every pending action — what it does, when it's due, its agent/skill, and whether it's currently running — with a cancel button for each, backed by `GET /api/agents/{name}/scheduled/actions` and `DELETE /api/agents/{name}/scheduled/actions/{id}`.
+The web UI's Schedule place (under each agent in the rail, at `/agent/<name>/schedule`; see [heartbeats.md](heartbeats.md#schedule-place)) lists every pending action — its name in words, when it's due in Home's words, its skill, and whether it's running now — with Cancel for each, backed by `GET /api/agents/{name}/scheduled/actions` and `DELETE /api/agents/{name}/scheduled/actions/{id}`.
 
 ## Persistence
 

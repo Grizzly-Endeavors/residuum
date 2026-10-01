@@ -5,16 +5,13 @@
   import { fetchCloudStatus, disconnectCloud, storeSecret } from "../../lib/api";
   import { isSecretReference, isEnvReference, envReferenceName } from "../../lib/secrets";
   import { toast } from "../../lib/toast.svelte";
-  import { notifyFormUndo } from "../../lib/form-undo";
-  import type { PendingSaveTracker } from "../../lib/pending-save";
+  import { notifyStagedRemoval } from "../../lib/form-undo";
 
   let {
     fields = $bindable(),
     simple = false,
     part,
     agent,
-    pendingSave,
-    onReload,
   }: {
     fields: ConfigFields;
     simple?: boolean;
@@ -22,8 +19,6 @@
     part: "channels" | "cloud" | "webhooks" | "tools";
     /** The agent whose config holds the webhooks. */
     agent: string | null;
-    pendingSave: PendingSaveTracker;
-    onReload: () => Promise<void>;
   } = $props();
 
   // ── Skills ─────────────────────────────────────────────────────────
@@ -95,21 +90,9 @@
     const removed = fields.webhooks[idx];
     if (!removed) return;
     fields.webhooks = fields.webhooks.filter((_, i) => i !== idx);
-    notifyFormUndo(
-      agent,
-      `Removed ${removed.name || "webhook"}.`,
-      pendingSave,
-      () => {
-        fields.webhooks = [
-          ...fields.webhooks.slice(0, idx),
-          removed,
-          ...fields.webhooks.slice(idx),
-        ];
-      },
-      "agent_config",
-      "config.toml",
-      onReload,
-    );
+    notifyStagedRemoval(`Removed ${removed.name || "webhook"}.`, () => {
+      fields.webhooks = [...fields.webhooks.slice(0, idx), removed, ...fields.webhooks.slice(idx)];
+    });
   }
 
   // ── Cloud ──────────────────────────────────────────────────────────

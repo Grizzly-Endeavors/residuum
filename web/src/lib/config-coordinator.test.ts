@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agentConfigFile,
-  checkpointRepoOf,
+  checkpointLocationOf,
   ConfigCoordinator,
   configFileKey,
   HUB_CONFIG_FILE,
@@ -886,11 +886,14 @@ describe("reading a file", () => {
 });
 
 describe("where a file's checkpoints are", () => {
-  it("names the repository that holds each config file", () => {
-    expect(checkpointRepoOf(HUB_CONFIG_FILE)).toBe("hub");
-    expect(checkpointRepoOf(config)).toBe("agent_config");
-    expect(checkpointRepoOf(providers)).toBe("agent_config");
-    expect(checkpointRepoOf(mcp)).toBe("workspace");
+  it("names the repository that holds each config file, and its path there", () => {
+    expect(checkpointLocationOf(HUB_CONFIG_FILE)).toEqual({ repo: "hub", path: "config.toml" });
+    expect(checkpointLocationOf(config)).toEqual({ repo: "agent_config", path: "config.toml" });
+    expect(checkpointLocationOf(providers)).toEqual({
+      repo: "agent_config",
+      path: "providers.toml",
+    });
+    expect(checkpointLocationOf(mcp)).toEqual({ repo: "workspace", path: "config/mcp.json" });
   });
 });
 
