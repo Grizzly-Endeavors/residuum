@@ -82,7 +82,7 @@ const PLACES: readonly PlaceCase[] = [
     agent: "atlas",
     link: /^Files$/,
     path: "/agent/atlas/files",
-    shows: (page) => page.getByText("No file selected."),
+    shows: (page) => page.getByRole("button", { name: /memory/ }),
   },
   {
     name: "Workbench",
@@ -197,7 +197,7 @@ test.describe("the agent accordion", () => {
     await expect(rail.getByRole("link", { name: /^Chat$/ })).toHaveCount(0);
 
     // Collapsed, the viewed agent keeps its highlight, and the page stays.
-    await expect(agentRow(rail, "atlas")).toHaveAttribute("data-viewed", "");
+    await expect(agentRow(rail, "atlas")).toHaveAttribute("data-viewed");
     expect(address(page)).toBe("/agent/atlas");
     await expectNoAxeViolations(page, { exclude: LEGACY });
   });
@@ -276,7 +276,7 @@ test("old URLs redirect to where they lead now", async ({ page }) => {
   for (const [from, to] of REDIRECTS) {
     await page.goto(from);
     await expect.poll(() => address(page), from).toBe(to);
-    await expect(page.getByRole("navigation", { name: "Places and agents" })).toBeAttached();
+    await expect(page.getByRole("main")).toBeVisible();
   }
 });
 

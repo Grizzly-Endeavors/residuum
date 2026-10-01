@@ -133,6 +133,12 @@
     display: none;
   }
 
+  /* The team page scrolls across the whole region, its column centered in it. */
+  .shell-legacy > :global(.team-view) {
+    max-width: none;
+    padding-inline: max(var(--space-16), calc((100% - 960px) / 2));
+  }
+
   /* The sessions list was a sidebar; as the Activity place it takes the region. */
   .shell-legacy-place > :global(.sessions-sidebar) {
     flex: 1;

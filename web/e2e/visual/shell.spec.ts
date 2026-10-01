@@ -36,7 +36,7 @@ test.describe("shell", { tag: "@visual" }, () => {
 
   test("the help menu", async ({ page, isMobile }) => {
     await page.goto("/agent/atlas/files");
-    await expect(page.getByText("No file selected.")).toBeVisible();
+    await expect(page.getByRole("button", { name: /memory/ })).toBeVisible();
     if (isMobile) {
       await page
         .getByRole("navigation", { name: "Main" })
@@ -48,7 +48,10 @@ test.describe("shell", { tag: "@visual" }, () => {
       .getByRole("button", { name: "Help" })
       .click();
     await expect(page.getByRole("menu", { name: "Help" })).toBeVisible();
-    await shellScreenshot(page, "shell-help-menu");
+    // A mask paints over everything in its box, the drawer included, so the
+    // phone's drawer shot leaves the dimmed place behind it unmasked.
+    if (isMobile) await expectScreenshot(page, "shell-help-menu");
+    else await shellScreenshot(page, "shell-help-menu");
   });
 
   test("at medium width", async ({ page, isMobile }) => {

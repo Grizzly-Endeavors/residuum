@@ -56,7 +56,10 @@ test("completes the wizard and opens the app on the new agent", async ({ page })
   const teams = page.getByRole("region", { name: "Microsoft Teams" });
   await teams.getByLabel("App ID").fill("app-1");
   await page.getByRole("button", { name: "Next" }).click();
-  await expect(page.getByRole("alert")).toHaveText(/Fill in all three Teams fields/);
+  // The toast region's alert group is on the page too, empty until an error toast comes.
+  await expect(
+    page.getByRole("alert").filter({ hasText: /Fill in all three Teams fields/ }),
+  ).toBeVisible();
   await expectNoAxeViolations(page);
   await teams.getByLabel("App ID").fill("");
   await next(page, "Save and start");

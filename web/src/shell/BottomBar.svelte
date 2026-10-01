@@ -38,11 +38,9 @@
       : undefined}
     onclick={(event) => open(event, target)}
   >
-    <span class="bar-icon">
-      <Icon name={icon} size={21} />
-      <span class="bar-count"><Badge {count} label="unread" solid /></span>
-    </span>
+    <span class="bar-icon"><Icon name={icon} size={21} /></span>
     {label}
+    <span class="bar-count"><Badge {count} label="unread" solid /></span>
   </a>
 {/snippet}
 
@@ -92,6 +90,7 @@
   }
 
   .bar-tab {
+    position: relative;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -114,13 +113,13 @@
   }
 
   .bar-icon {
-    position: relative;
     display: grid;
   }
 
+  /* The count sits on the icon's top corner. */
   .bar-count {
     position: absolute;
-    top: calc(-1 * var(--space-6));
-    left: calc(100% - var(--space-6));
+    top: var(--space-4);
+    left: calc(50% + var(--space-4));
   }
 </style>
