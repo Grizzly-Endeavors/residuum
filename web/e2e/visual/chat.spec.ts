@@ -83,10 +83,12 @@ test.describe("chat feed", { tag: "@visual" }, () => {
     await feed.getByRole("button", { name: "Ran 1 command" }).click();
     const step = feed.getByRole("button", { name: "Ran residuum memory stats" });
     await step.click();
-    await expect(feed.getByText("Context window: 12,847 / 200,000 tokens (6.4%)")).toBeVisible();
+    const details = page.locator(`#${(await step.getAttribute("aria-controls")) ?? ""}`);
+    await expect(details).toContainText("Last observer run: 3 minutes ago");
     await step.evaluate((el) => {
-      el.scrollIntoView({ block: "start" });
+      el.scrollIntoView({ block: "center" });
     });
+    await page.mouse.move(0, 0);
     await chatScreenshot(page, "chat-activity");
   });
 
