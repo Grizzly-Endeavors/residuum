@@ -1,4 +1,4 @@
-// The words the Inbox shows for an item's source and its attachments' sizes.
+// The words the Inbox shows for an item's source.
 
 /** What a source's kind (the part before `:`) means to the user. */
 const SOURCE_KINDS: Readonly<Record<string, string>> = {
@@ -23,11 +23,4 @@ export function sourceLabel(source: string): string | null {
   if (kind === "agent") return detail === "" ? null : detail;
   const word = SOURCE_KINDS[kind] ?? kind;
   return detail === "" ? word : `${word}: ${detail}`;
-}
-
-/** A file size as people read it: "812 B", "4.2 KB", "1.3 MB". */
-export function fileSize(bytes: number): string {
-  if (bytes < 1024) return `${String(bytes)} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
