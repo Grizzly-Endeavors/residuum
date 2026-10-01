@@ -200,6 +200,8 @@ export class FeedStore {
         this.isProcessing = true;
         this.activeTurnId = msg.reply_to;
         this.turnStart ??= this.feed.length;
+        // The user message that started it arrived first.
+        for (const item of this.feed.slice(this.turnStart)) item.turnId = msg.reply_to;
         this.turnStartedAt = Date.now();
         this.turnOutputTokens = 0;
         this.turnHasUsage = false;
@@ -230,7 +232,7 @@ export class FeedStore {
         break;
 
       case "tool_call":
-        appendToolCall(this.feed, this.pendingToolCalls, msg);
+        appendToolCall(this.feed, this.pendingToolCalls, msg, this.activeTurnId ?? undefined);
         break;
 
       case "tool_result":
@@ -244,6 +246,7 @@ export class FeedStore {
             id: nextFeedId(),
             kind: "assistant",
             content: msg.content,
+            ...this.ofLiveTurn(),
           });
         }
         break;
@@ -254,6 +257,7 @@ export class FeedStore {
             id: nextFeedId(),
             kind: "assistant",
             content: msg.content,
+            ...this.ofLiveTurn(),
           });
         }
         break;
@@ -282,6 +286,7 @@ export class FeedStore {
           size: msg.size,
           url: msg.url,
           caption: msg.caption,
+          ...this.ofLiveTurn(),
         };
         this.feed.push(item);
         this.isProcessing = false;
@@ -477,7 +482,15 @@ export class FeedStore {
    * `message_agent` call), as it arrives live.
    */
   pushAgentMessage(from: string, runId: string, content: string, category: string | null): void {
-    this.feed.push({ id: nextFeedId(), kind: "agent-message", from, category, content, runId });
+    this.feed.push({
+      id: nextFeedId(),
+      kind: "agent-message",
+      from,
+      category,
+      content,
+      runId,
+      ...this.ofLiveTurn(),
+    });
   }
 
   /**
@@ -497,11 +510,28 @@ export class FeedStore {
     const nowIso = new Date().toISOString();
     this.maybePushDayDivider(nowIso);
     this.turnStart ??= this.feed.length;
-    this.feed.push({ id: nextFeedId(), kind: "user", content, images });
+    this.feed.push({ id: nextFeedId(), kind: "user", content, images, ...this.ofLiveTurn() });
     this.isProcessing = true;
   }
 
+  /**
+   * The agent stopped with a turn in flight. What the turn showed stays, but
+   * no more of it will arrive, and history never records it.
+   */
+  abandonLiveTurn(): void {
+    this.endLiveTurn();
+    this.turnStartedAt = null;
+  }
+
   // ── Private ──────────────────────────────────────────────────────────
+
+  /**
+   * The turn in flight, for an item that arrives during it. A message sent
+   * mid-turn joins the turn, as the agent takes it into the turn it is running.
+   */
+  private ofLiveTurn(): { turnId?: string } {
+    return this.activeTurnId === null ? {} : { turnId: this.activeTurnId };
+  }
 
   /**
    * Tag the user message that started the turn just ending with its turn

@@ -490,6 +490,12 @@ export interface ToolCallState {
 
 interface FeedItemBase {
   id: number;
+  /**
+   * The correlation id of the turn the item belongs to, which groups a turn's
+   * output (`feed/turns.ts`): from history where messages carry one, or from
+   * the live turn it arrived in. Episodes carry none.
+   */
+  turnId?: string;
 }
 
 /**

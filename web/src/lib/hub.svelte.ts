@@ -5,6 +5,7 @@
 // team change feed. The hub connection is independent of the agent
 // connection (`ws.svelte.ts`) and stays up across agent switches.
 
+import { displayState, type AgentDisplayState } from "./agent-display-state";
 import { WsTransport } from "./transport.svelte";
 import { hubWsUrl } from "./paths";
 import { notifications } from "./notifications.svelte";
@@ -179,6 +180,12 @@ export class HubStore {
 
   isStopping(name: string): boolean {
     return this.stopping.includes(name);
+  }
+
+  /** How to show the agent's state, or null while the list doesn't name it. */
+  displayStateOf(name: string): AgentDisplayState | null {
+    const agent = this.agent(name);
+    return agent === undefined ? null : displayState(agent.state, this.isStopping(name));
   }
 
   // ── Hub frames ─────────────────────────────────────────────────────

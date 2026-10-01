@@ -120,13 +120,13 @@ web/
 │   │   ├── panel/                # The context panel: its frame and header, its width, and what each kind shows
 │   │   └── settings/             # The Settings modal's parts: scope picker and section list, save bar, the section API and its shared group card and field components, hosted legacy sections, Raw config, the History browser, the All agents sections (General, Residuum Cloud, Updates, Session limits, Diagnostics) and the agent's Memory, Schedule and Runtime
 │   ├── places/               # Rebuilt places, one folder each
-│   │   ├── home/             # Home: needs-you, the agents board and its row menus, Recently deleted, Across the team, Coming up, and the words and times they show
+│   │   ├── home/             # Home: needs-you, the agents board and its row menus, Recently deleted, Across the team, Coming up, and the words and times they show; the agent actions and failure fixes the Chat's state card shares
 │   │   ├── files/            # Files and Shared files: the tree, the file editor the context panel shows (Raw config shares it), a file's history
 │   │   ├── inbox/            # Inbox: the list, the filter and tabs, an item opened in place, and the words for sources
 │   │   ├── activity/         # An agent's Activity: what it is running and has finished, and the session panel a run opens in
-│   │   ├── chat/             # An agent's Chat: its header, and the feed with the legacy composer under it
+│   │   ├── chat/             # An agent's Chat: its header, the feed, and under it the legacy composer, or the state card while the agent isn't running
 │   │   └── schedule/         # An agent's Schedule: its pulses and scheduled actions, and the words they show
-│   ├── feed/                 # A conversation: the feed and each kind of message in it, shared by Chat and session transcripts; path links
+│   ├── feed/                 # A conversation: the feed, its turns and each kind of message in it, shared by Chat and session transcripts; path links
 │   ├── Setup.svelte          # Setup wizard
 │   ├── styles/               # Design tokens, bundled fonts, base styles, legacy global styles
 │   ├── components/
@@ -146,7 +146,7 @@ web/
 │       ├── api.ts                # REST API client (typed fetch wrappers); every agent-scoped call takes the agent name first
 │       ├── paths.ts              # API and WebSocket URL builders for the agent, hub and team scopes
 │       ├── viewed-agent.ts       # The bound agent: the router publishes it, the WebSocket coordinator binds to it
-│       ├── ws.svelte.ts          # WebSocket coordinator: routes frames to the feed and sessions stores
+│       ├── ws.svelte.ts          # WebSocket coordinator: routes frames to the feed and sessions stores; open while the bound agent runs
 │       ├── feed.svelte.ts        # Main chat feed state
 │       ├── feed-items.ts         # History-to-feed conversion shared by chat and session transcripts
 │       ├── sessions.svelte.ts    # The bound agent's sessions for Activity: live and finished runs, outbound tasks, Stop
@@ -158,6 +158,8 @@ web/
 │       ├── app-badge.ts          # The app icon's badge (the Badging API): the inbox unread total
 │       ├── needs-you.ts          # What needs the user and in what order, and the rail's Home count
 │       ├── agent-failure.ts      # Plain words for why an agent couldn't start, and the Settings section that fixes it
+│       ├── agent-display-state.ts # The state an agent is shown in: the hub's, or stopping while its stop is under way
+│       ├── agent-lifecycle.ts    # Which of Start, Stop and Restart apply to an agent in a state
 │       ├── routes.ts             # URL <-> location: places, the panel and settings parameters, redirects from old URLs, corrections
 │       ├── router.svelte.ts      # Current location; push/replace, closing by going back, overlay entries, the unsaved-edit guard
 │       ├── history-entry.ts      # The marks the router keeps in history.state
@@ -313,9 +315,9 @@ Run actions with `actionRegistry.run(action, text?)`. It tells the registry's ru
 
 An overview answered by a different hub process than `hub_boot` announced is dropped. The inbox items are fetched again whenever an agent's unread count changes. A failed fetch lands in `loadError`, `eventsError` or `unreadItemsError` for the section that shows it, with Try again. `stopTask` and `stopWatching` act on a running agent's outbound task and drop its problem at once, ahead of the hub's frame; when the remote agent can't be reached, `taskNotes` says so on the item.
 
-Home's sections (`places/home/`) read the store and the hub store directly; `home-model.ts` holds their words and times. Restart and the kind-specific fixes on a failed agent go through the hub store and `lib/agent-failure.ts`, which finds the Settings section for Fix settings from the agent's validate endpoints, or Raw config.
+Home's sections (`places/home/`) read the store and the hub store directly; `home-model.ts` holds their words and times. An agent's state everywhere it is named or marked (Home, the rail, place headers, Settings, the palette, the Chat) is `hub.displayStateOf(name)`, or `displayState` in `lib/agent-display-state.ts` with the summary in hand: the hub's state, or `stopping` while a running or starting agent is in the hub's stopping set. A failed agent's fixes are `FailedAgentActions.svelte`, shared by the needs-you item and the Chat's state card: Restart, and by `last_error.kind`, Fix settings (`config`), Open Connections (`port_conflict`) or Report a bug (`crash`, `other`), the matching fix leading. Restart and Fix settings run through `agent-actions.svelte.ts`; Fix settings finds the Settings section from the agent's validate endpoints (`fixSettingsSection` in `lib/agent-failure.ts`), or Raw config when no diagnostic names a setting a form holds.
 
-Each board row ends in a "…" menu (`AgentMenu.svelte`), headed by the agent's state: Open chat; Start, Stop and Restart, each offered where `lifecycleApplies` (`lib/agent-lifecycle.ts`, which the palette's lifecycle actions use too) says it applies, and none while the agent stops; Start automatically; Settings; and Delete. `agent-actions.svelte.ts` runs them through the hub store, which surfaces any failure, one action per agent at a time. Start automatically shows the value being saved until the hub answers, then the hub's. Delete asks first (`confirmations.ask`), then drops the agent's staged settings (`settingsModel.drop`, which `App.svelte` also does for a deletion made elsewhere), and the hub's `agent_deleted` frame raises the "You deleted …" toast with Undo; a deletion that took no checkpoint says so in an error. Recently deleted (`RecentlyDeleted.svelte`), collapsed under the board, lists `hub.deleted` with Restore once there is something to list, or a failed load with Try again; restoring uses the checkpoint the deletion took. An agent's A2A card visibility is set in its Settings.
+Each board row ends in a "…" menu (`AgentMenu.svelte`), headed by the agent's state: Open chat; Start, Stop and Restart, each offered where `lifecycleApplies` (`lib/agent-lifecycle.ts`, which the palette's lifecycle actions use too) says it applies, and none while the agent stops; Start automatically; Settings; and Delete. `agent-actions.svelte.ts` runs them through the hub store, which surfaces any failure, one action per agent at a time, whether they start from Home or from the Chat's state card. Start automatically shows the value being saved until the hub answers, then the hub's. Delete asks first (`confirmations.ask`), then drops the agent's staged settings (`settingsModel.drop`, which `App.svelte` also does for a deletion made elsewhere), and the hub's `agent_deleted` frame raises the "You deleted …" toast with Undo; a deletion that took no checkpoint says so in an error. Recently deleted (`RecentlyDeleted.svelte`), collapsed under the board, lists `hub.deleted` with Restore once there is something to list, or a failed load with Try again; restoring uses the checkpoint the deletion took. An agent's A2A card visibility is set in its Settings.
 
 ### Files
 
@@ -337,18 +339,31 @@ The item in the URL (`?item=<agent>:<id>`) is open in place. `inbox.open(ref)` m
 
 An agent's Chat (`places/chat/ChatPlace.svelte`) is its header (`ChatHeader.svelte`: the agent and its role, a pill counting its running sessions that opens Activity, its settings, and a menu with Show conversation size, Restart and Stop, taken from the action registry with their reasons when they can't run), the conversation, and under it the legacy composer and footer in a `data-legacy-view` element. While a turn runs, the legacy running-turn line follows the conversation.
 
+While the agent isn't running (its shown state is `failed`, `stopped`, `starting` or `stopping`), the composer is gone and the conversation ends in its state card (`StateCard.svelte`, a region named by its title), alone in the middle when there is no conversation:
+
+| State | Card |
+|---|---|
+| Failed | "<agent> couldn't start", the plain-language line for `last_error.kind` (`failureLine`), the fixes (`FailedAgentActions`, see [Home and the overview](#home-and-the-overview)), and `last_error.reason` behind Details. A restart from the card that ends failed again says so on the card |
+| Stopped | "<agent> is stopped", Start <agent>, and the Start automatically switch |
+| Starting, Stopping | A progress line, nothing to press |
+
+The card's title is a status region, so a change of state is announced. Start and Restart move focus to the title, which stays through the state changes, and once the agent runs the composer that replaces the card takes focus. The past conversation stays readable: the coordinator (`lib/ws.svelte.ts`) loads history through the file-only routes whatever the agent's state, and opens the agent's socket only while the hub lists the agent running (or hasn't listed the agents yet). It closes the socket and ends any turn left in flight when the agent stops, so nothing reconnects to an agent that isn't running, and when the agent starts it connects and catches the chat up on what the start added.
+
 The conversation is `feed/Feed.svelte`, made for any agent's conversation, the main chat or a session's transcript:
 
 | Prop | Is |
 |---|---|
 | `agent` | The agent the conversation belongs to. Its links, Undo this turn and Open session act on this agent, never on the bound one by assumption |
 | `items` | The `FeedItem`s to show |
-| `verbose` | Tool calls show (the legacy tool rows, while "Show tool calls" is on) |
+| `verbose` | Tool calls show (the legacy tool rows at the head of each turn, while "Show tool calls" is on) |
 | `label` | The scrolling region's name, such as "Conversation with atlas" |
 | `history` | Optional `FeedHistory` (`feed/feed-history.ts`): older parts to load as the reader nears the top, and a `generation` bumped when the whole feed is replaced |
 | `loading` | The items haven't arrived, so the empty state waits |
 | `live` | Something at the tail is growing, such as a turn in progress |
+| `liveTurnId` | The correlation id of the turn in flight, whose block is live |
 | `empty`, `tail` | Snippets: the one empty state, and live content after the items |
+
+**Turns.** The feed groups each turn's output into one block (`groupTurns` in `feed/turns.ts`, drawn by `feed/FeedTurn.svelte`): every tool call of the turn first, then the agent's intermediate texts, attachments and final reply in order. A `FeedItem` carries the `turnId` of its turn: from history where messages carry `turn_id`, and from the turn in flight for live items (`turn_started` tags the user message that began it, and a message sent mid-turn joins it, as the agent takes it into the turn it runs). A change of `turnId` ends a turn; where items carry none (episodes, older records), the next user message or agent message does. A message carrying the id of the turn whose output came before it stays inside that block, and a divider or note ends one. Each block is a `FeedTurn` entry with the turn's `turnId`, its `calls`, its other `items`, and `live` when it is `liveTurnId`'s; everything else is a single entry.
 
 The feed follows new content while the reader is within 120px of the bottom; further up, a Jump to latest pill names the divider at the top of the view (its button's description) and takes them back, and their own message brings them down. Older parts load one at a time near the top, keeping the item the reader was at in place, until the view is filled or there are none; a reload under a reader who scrolled up finds the item they were at by its kind and text and puts it back, once the part holding it has loaded.
 

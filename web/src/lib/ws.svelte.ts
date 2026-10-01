@@ -4,7 +4,12 @@
 // the agent sessions store. It is bound to one agent at a time: switching
 // agents tears the connection down, replaces every agent-scoped store, and
 // opens a new connection, so nothing from one agent shows under another.
+// The connection is open only while the hub says the agent runs: a stopped
+// or failed agent's chat shows its history, read from its files, and nothing
+// tries to reach it until it starts.
 
+import { untrack } from "svelte";
+import { hub } from "./hub.svelte";
 import { WsTransport } from "./transport.svelte";
 import { agentWsUrl } from "./paths";
 import { onViewedAgentChange } from "./viewed-agent";
@@ -42,6 +47,8 @@ class WsCoordinator {
   sessions = $state<SessionsStore>(this.createSessions(null, this.store));
   private msgCounter = 0;
   private hasConnected = false;
+  /** The agent started while bound, so its chat may be behind once the connection opens. */
+  private catchUpOnConnect = false;
   private frameListeners = new Set<(msg: ServerMessage, agent: string | null) => void>();
   private connectionListeners = new Set<(connected: boolean) => void>();
   /**
@@ -126,10 +133,11 @@ class WsCoordinator {
       // Load the sessions listing, or catch up on frames missed while
       // disconnected.
       this.sessions.resync();
-      // After a reconnect, the main chat may have missed messages too (a
-      // session's relayed result, main's reply).
-      if (this.hasConnected) void this.reconcileMainHistory();
+      // After a reconnect, or once the agent has started, the main chat may
+      // have missed messages too (a session's relayed result, main's reply).
+      if (this.hasConnected || this.catchUpOnConnect) void this.reconcileMainHistory();
       this.hasConnected = true;
+      this.catchUpOnConnect = false;
       // Seed the chat footer so it renders correctly before the next model
       // call, rather than starting blank on every connect.
       void this.loadUsageTotals();
@@ -142,10 +150,51 @@ class WsCoordinator {
     };
 
     this.transport.onDisconnected = () => {
-      this.watches.disconnected();
-      this.store.clearPostTurnActivity();
-      this.notifyConnection(false);
+      this.connectionClosed();
     };
+
+    $effect.root(() => {
+      $effect(() => {
+        const wanted = this.connectionWanted();
+        untrack(() => {
+          this.followAgentState(wanted);
+        });
+      });
+    });
+  }
+
+  // ── Following the agent's state ───────────────────────────────────
+
+  /**
+   * Whether the bound agent's connection should be open: the hub lists it
+   * running, or hasn't listed the agents yet.
+   */
+  private connectionWanted(): boolean {
+    if (this.agent === null) return false;
+    const state = hub.agent(this.agent)?.state;
+    return state === undefined ? !hub.loaded : state === "running";
+  }
+
+  /** Open the connection once the agent runs, and close it once it doesn't. */
+  private followAgentState(wanted: boolean): void {
+    if (this.agent === null) return;
+    if (wanted) {
+      if (this.transport.status !== "disconnected") return;
+      this.catchUpOnConnect = this.store.historyLoaded;
+      this.transport.reconnectNow();
+      return;
+    }
+    const wasOpen = this.transport.status === "connected";
+    // Also cancels a reconnect that the agent's own shutdown scheduled.
+    this.transport.disconnect();
+    if (wasOpen) this.connectionClosed();
+    this.store.abandonLiveTurn();
+  }
+
+  private connectionClosed(): void {
+    this.watches.disconnected();
+    this.store.clearPostTurnActivity();
+    this.notifyConnection(false);
   }
 
   // ── Agent binding ─────────────────────────────────────────────────
@@ -176,12 +225,13 @@ class WsCoordinator {
     this.store = store;
     this.sessions = this.createSessions(name, store);
     this.hasConnected = false;
+    this.catchUpOnConnect = false;
     this.liveUpdatesOffShown = false;
     this.watches.bind(name);
     scheduled.reset(name);
     this.agent = name;
     if (name === null) return;
-    this.transport.connect();
+    if (this.connectionWanted()) this.transport.connect();
     void this.loadMainHistory();
   }
 

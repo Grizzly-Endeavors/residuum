@@ -19,8 +19,9 @@
 
   /** Why Restart or Stop isn't offered, when the registry doesn't list it. */
   const lifecycleReason = $derived.by(() => {
-    if (hub.isStopping(agent)) return `${agent} is stopping`;
-    if (summary?.state === "starting") return `${agent} is still starting`;
+    const state = hub.displayStateOf(agent);
+    if (state === "stopping") return `${agent} is stopping`;
+    if (state === "starting") return `${agent} is still starting`;
     return `${agent} isn't running`;
   });
 

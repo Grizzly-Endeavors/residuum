@@ -11,6 +11,7 @@ import type {
   TeamEventTarget,
   UpcomingRun,
 } from "../../lib/hub-types";
+import { displayState } from "../../lib/agent-display-state";
 import type { AppLocation } from "../../lib/routes";
 import type { StatusDotState } from "../../lib/ui";
 
@@ -142,17 +143,10 @@ export interface RowInput {
   now: number;
 }
 
-export function rowState({
-  agent,
-  stopping,
-}: Pick<RowInput, "agent" | "stopping">): StatusDotState {
-  return stopping ? "stopping" : agent.state;
-}
-
 /** What the agent is doing now. */
 export function nowLine(input: RowInput): NowLine {
   const { agent, activity, overview, now } = input;
-  switch (rowState(input)) {
+  switch (displayState(agent.state, input.stopping)) {
     case "failed":
       return {
         text: FAILURE_SHORT[agent.last_error?.kind ?? "other"],
