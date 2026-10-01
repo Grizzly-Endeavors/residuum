@@ -12,6 +12,7 @@ import type {
   CreateA2aKeyResponse,
   DeleteSecretResponse,
   ModelsResponse,
+  RepoKind,
   SecretResponse,
   SecretsListResponse,
   SetAgentKeyResponse,
@@ -22,6 +23,7 @@ import type {
 import { agentNameProblem } from "./agent-name";
 import { WEB_ROOT } from "./assets";
 import { checkpointBeforeAction, repoStats } from "./checkpoints";
+import { validation } from "./diagnostics";
 import { MOCK_CLOUD_STATUS, MOCK_FEATURES, MOCK_RESIDUUM_VERSION } from "./constants";
 import {
   json,
@@ -191,6 +193,11 @@ function patchProblem(field: TomlDocument, doc: JsonObject): string | null {
     : null;
 }
 
+const repoOf = (field: TomlDocument): RepoKind =>
+  field === "hubConfigToml" ? "hub" : "agent_config";
+const fileOf = (field: TomlDocument): string =>
+  field === "providersToml" ? "providers.toml" : "config.toml";
+
 /**
  * Read, replace, patch and validate one TOML document kept in the state.
  * `afterWrite` runs once a write has been answered, as the hub reloads after
@@ -213,8 +220,11 @@ function tomlDocumentRoutes(
       method: "PUT",
       pattern: `${prefix}/raw`,
       handler: async (ctx) => {
-        ctx.state[field] = await readBody(ctx.req);
-        json(ctx.res, 200, VALID);
+        const body = await readBody(ctx.req);
+        // A raw save is checkpointed and always written, with its problems reported.
+        checkpointBeforeAction(ctx.state, repoOf(field), `raw write ${fileOf(field)}`);
+        ctx.state[field] = body;
+        json(ctx.res, 200, validation("toml", body));
         afterWrite(ctx);
       },
     },
@@ -236,9 +246,7 @@ function tomlDocumentRoutes(
           return;
         }
         // The backend checkpoints the file before it writes, and answers with the checkpoint for Undo.
-        const repo = field === "hubConfigToml" ? "hub" : "agent_config";
-        const name = field === "providersToml" ? "providers.toml" : "config.toml";
-        const checkpoint = checkpointBeforeAction(state, repo, `patch ${name}`);
+        const checkpoint = checkpointBeforeAction(state, repoOf(field), `patch ${fileOf(field)}`);
         state[field] = stringifyToml(doc);
         json(ctx.res, 200, { ...VALID, checkpoint_id: checkpoint } satisfies ValidateResponse);
         afterWrite(ctx);
@@ -247,8 +255,8 @@ function tomlDocumentRoutes(
     {
       method: "POST",
       pattern: `${prefix}/validate`,
-      handler: ({ res }) => {
-        json(res, 200, VALID);
+      handler: async ({ req, res }) => {
+        json(res, 200, validation("toml", await readBody(req)));
       },
     },
   ];
@@ -267,7 +275,7 @@ const mcpRoutes: readonly Route[] = [
     pattern: "/api/mcp/raw",
     handler: async ({ req, res, state }) => {
       state.mcpJson = await readBody(req);
-      json(res, 200, VALID);
+      json(res, 200, validation("json", state.mcpJson));
     },
   },
   {

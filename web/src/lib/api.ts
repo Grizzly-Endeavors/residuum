@@ -505,6 +505,19 @@ export async function putMcpRaw(agent: string, json: string): Promise<ValidateRe
   );
 }
 
+/** Problems in `json` as the agent's `mcp.json`, without writing it. Throws when the check can't be made. */
+export async function validateMcp(agent: string, json: string): Promise<Diagnostic[]> {
+  const result = await apiFetch<WorkspaceValidateResponse>(
+    agentPath(agent, "/workspace/validate"),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: "config/mcp.json", content: json }),
+    },
+  );
+  return result.diagnostics;
+}
+
 /** Merge a diff (from `diffMcpServers`) into `mcp.json` on the server. */
 export async function patchMcp(
   agent: string,

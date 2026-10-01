@@ -4,6 +4,7 @@ import type {
   WorkspaceValidateResponse,
   WorkspaceWriteResponse,
 } from "../src/lib/types";
+import { configFormatOf, diagnoseConfigText } from "./diagnostics";
 import { json, readBody, readJsonObject, stringField, text, type JsonObject } from "./http";
 import type { Route, RouteContext } from "./routes";
 import type { MockState } from "./state";
@@ -363,9 +364,12 @@ async function moveFile(ctx: RouteContext, scope: WorkspaceScope): Promise<void>
 }
 
 async function validateFile(ctx: RouteContext): Promise<void> {
-  if (requireStrings(ctx, await readJsonObject(ctx.req), ["path", "content"]) === undefined) return;
-  // The mock has no parsers for the strictly-parsed files, so it finds nothing to report.
-  json(ctx.res, 200, { diagnostics: [] } satisfies WorkspaceValidateResponse);
+  const fields = requireStrings(ctx, await readJsonObject(ctx.req), ["path", "content"]);
+  if (fields === undefined) return;
+  const [path = "", content = ""] = fields;
+  const format = configFormatOf(path);
+  const diagnostics = format === null ? [] : diagnoseConfigText(format, content);
+  json(ctx.res, 200, { diagnostics } satisfies WorkspaceValidateResponse);
 }
 
 function routesFor(scope: WorkspaceScope, prefix: string): readonly Route[] {
