@@ -18,6 +18,11 @@ mod ts_export {
         WorkbenchInfo,
     };
     use residuum::hub::inbox::{HubInboxItem, HubInboxPage, HubInboxUnread, InboxStatus};
+    use residuum::hub::push::{
+        PatchPushDeviceRequest, PushDevice, PushDeviceList, PushDeviceResponse, PushEvent,
+        PushFailure, PushKeyResponse, PushPayload, PushPreferences, PushPreferencesPatch,
+        PushTestResult, PutPushDeviceRequest, WebPushSubscription, WebPushSubscriptionKeys,
+    };
     use residuum::hub::types::{
         A2aVisibility, Actor, AgentActivity, AgentErrorKind, AgentLastError, AgentListResponse,
         AgentPatch, AgentState, AgentSummary, CreateAgentRequest, DeleteOutcome, DeletedAgent,
@@ -109,6 +114,31 @@ mod ts_export {
         InboxAttachment::export_all(&cfg).unwrap();
         HubInboxUnread::export_all(&cfg).unwrap();
         InboxStatus::export_all(&cfg).unwrap();
+
+        // Web Push: `PushKeyResponse` answers `GET /api/hub/push/key`,
+        // `PushDeviceList` answers `GET /api/hub/push/devices` (with its
+        // `PushDevice` items, their `PushPreferences` and `PushFailure`),
+        // `PutPushDeviceRequest` is the body of `PUT /api/hub/push/devices`
+        // (with the browser's `WebPushSubscription` and its keys, and a
+        // `PushPreferencesPatch`), `PatchPushDeviceRequest` the body of
+        // `PATCH /api/hub/push/devices/{id}`, `PushDeviceResponse` the answer
+        // of both, and `PushTestResult` the answer of `POST
+        // /api/hub/push/devices/{id}/test`. `PushPayload` (with `PushEvent`)
+        // is the JSON the service worker decrypts from a push message.
+        PushKeyResponse::export_all(&cfg).unwrap();
+        PushDeviceList::export_all(&cfg).unwrap();
+        PushDevice::export_all(&cfg).unwrap();
+        PushPreferences::export_all(&cfg).unwrap();
+        PushPreferencesPatch::export_all(&cfg).unwrap();
+        PushFailure::export_all(&cfg).unwrap();
+        PutPushDeviceRequest::export_all(&cfg).unwrap();
+        PatchPushDeviceRequest::export_all(&cfg).unwrap();
+        WebPushSubscription::export_all(&cfg).unwrap();
+        WebPushSubscriptionKeys::export_all(&cfg).unwrap();
+        PushDeviceResponse::export_all(&cfg).unwrap();
+        PushTestResult::export_all(&cfg).unwrap();
+        PushPayload::export_all(&cfg).unwrap();
+        PushEvent::export_all(&cfg).unwrap();
 
         // Verify the generated files exist
         assert!(

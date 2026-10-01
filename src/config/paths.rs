@@ -248,6 +248,20 @@ impl HubPaths {
         self.root.join("a2a-keys.lock")
     }
 
+    /// `hub/push-vapid.key` — the Web Push signing key pair (a PKCS#8 P-256
+    /// key, mode 0600). Never checkpointed.
+    #[must_use]
+    pub fn push_vapid_key(&self) -> PathBuf {
+        self.root.join("push-vapid.key")
+    }
+
+    /// `hub/push-devices.json` — Web Push subscriptions and their
+    /// preferences (mode 0600). Never checkpointed.
+    #[must_use]
+    pub fn push_devices_json(&self) -> PathBuf {
+        self.root.join("push-devices.json")
+    }
+
     /// `hub/logs/` — daemon log files.
     #[must_use]
     pub fn logs_dir(&self) -> PathBuf {
