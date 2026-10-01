@@ -2,9 +2,6 @@ import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 
-/** Legacy panels hosted in sections not rebuilt yet; their own units scan them. */
-const LEGACY = "[data-legacy-view]";
-
 function address(page: Page): string {
   const url = new URL(page.url());
   return decodeURIComponent(`${url.pathname}${url.search}`);
@@ -45,7 +42,7 @@ test("a deep link opens its section in the frame: the scope picker, the list and
   await expect(modal(page)).toBeVisible();
   await expect(page.getByRole("heading", { name: "Runtime", level: 2 })).toBeVisible();
   await expect(timeout(page)).toHaveValue("120");
-  await expectNoAxeViolations(page, { within: "[data-overlay-host]", exclude: LEGACY });
+  await expectNoAxeViolations(page, { within: "[data-overlay-host]" });
 
   await page.goto("/home?settings=_all");
   await expect(sections(page).getByRole("combobox", { name: "Settings for" })).toHaveValue("_all");
@@ -53,7 +50,7 @@ test("a deep link opens its section in the frame: the scope picker, the list and
   const advanced = sections(page).getByRole("group", { name: "Advanced" });
   await expect(advanced.getByRole("button")).toHaveCount(4);
   await expect(advanced.getByRole("button", { name: /^Diagnostics/ })).toBeVisible();
-  await expectNoAxeViolations(page, { within: "[data-overlay-host]", exclude: LEGACY });
+  await expectNoAxeViolations(page, { within: "[data-overlay-host]" });
 });
 
 test("staged changes stay with their scope through a switch and back", async ({
@@ -109,7 +106,7 @@ test("a save the server refuses shows why in the section and keeps the change st
   await expect(saveBar(page)).toContainText(`Couldn't save config.toml: ${why}.`);
   await expect(modal(page).getByRole("alert").filter({ hasText: why }).first()).toBeVisible();
   await expect(page.getByLabel("Tool calls per turn")).toHaveValue("0");
-  await expectNoAxeViolations(page, { within: "[data-overlay-host]", exclude: LEGACY });
+  await expectNoAxeViolations(page, { within: "[data-overlay-host]" });
 });
 
 test("the frame stays mounted while sections and scopes switch", async ({ page, isMobile }) => {
@@ -172,7 +169,7 @@ test("a file changed on disk under the change asks which to keep", async ({ page
   const question = page.getByRole("dialog", { name: "atlas's config.toml changed" });
   await expect(question).toBeVisible();
   await expect(question).toContainText("timeout_secs changed on disk after you started editing.");
-  await expectNoAxeViolations(page, { within: "[data-overlay-host]", exclude: LEGACY });
+  await expectNoAxeViolations(page, { within: "[data-overlay-host]" });
   await question.getByRole("button", { name: "Keep my changes" }).click();
   await expect(page.getByRole("status").filter({ hasText: "Saved config.toml." })).toBeVisible();
   expect(await (await page.request.get("/api/agents/atlas/config/raw")).text()).toContain(

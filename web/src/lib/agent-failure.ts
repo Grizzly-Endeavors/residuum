@@ -11,8 +11,9 @@ import {
 } from "./api";
 import { invalidate } from "./cache";
 import type { AgentErrorKind } from "./hub-types";
-import { placeDiagnostic } from "./settings-fields";
+import { placeDiagnostic, type FieldFile, type FieldRef } from "./settings-fields";
 import { RAW_SECTION, type SectionId } from "./settings-sections";
+import type { Diagnostic } from "./types";
 
 const FAILURE_LINES: Readonly<Record<AgentErrorKind, string>> = {
   config: "Something in its settings needs fixing before it can run.",
@@ -26,13 +27,20 @@ export function failureLine(kind: AgentErrorKind | undefined): string {
   return FAILURE_LINES[kind ?? "other"];
 }
 
+/** Where an agent's failing setting is fixed. */
+export interface SettingsFix {
+  section: SectionId;
+  /** The field to flag, and the file whose problems flag it. Null when no problem names a field, which leaves Raw config to show them. */
+  field: { ref: FieldRef; file: FieldFile; problems: Diagnostic[] } | null;
+}
+
 /**
- * The Settings section that fixes an agent whose settings stop it starting:
- * the section of the first problem the validate endpoints report on a setting
- * a form holds, checking `providers.toml` and then `config.toml`. Raw config,
+ * Where an agent whose settings stop it starting is fixed: the section and
+ * field of the first problem the validate endpoints report on a setting a
+ * form holds, checking `providers.toml` and then `config.toml`. Raw config,
  * where every problem shows, when none does or the files can't be read.
  */
-export async function fixSettingsSection(agent: string): Promise<SectionId> {
+export async function findSettingsFix(agent: string): Promise<SettingsFix> {
   const files = [
     {
       file: "providers",
@@ -57,10 +65,13 @@ export async function fixSettingsSection(agent: string): Promise<SectionId> {
       // Raw config shows the file and its problems, whatever stopped this check.
       continue;
     }
-    for (const diagnostic of result.diagnostics ?? []) {
+    const problems = result.diagnostics ?? [];
+    for (const diagnostic of problems) {
       const placed = placeDiagnostic("agent", file, diagnostic);
-      if (placed.field !== null && placed.section !== null) return placed.section;
+      if (placed.field !== null && placed.section !== null) {
+        return { section: placed.section, field: { ref: placed.field, file, problems } };
+      }
     }
   }
-  return RAW_SECTION;
+  return { section: RAW_SECTION, field: null };
 }

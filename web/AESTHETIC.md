@@ -125,4 +125,4 @@ The gallery at `/dev/gallery` shows every primitive in every state, live. It is 
 
 `src/styles/ui-base.css` holds the reset and base styles for components: box sizing, zeroed margins and padding, controls that inherit type, headings that take their size from the component, code in JetBrains Mono, vein-bright links, the `vein-bright` focus outline, the placeholder color, and bare dialogs and popovers. It applies inside the element marked `data-ui` (the shell root) and skips anything inside a `data-legacy-view` wrapper, where a hosted legacy view keeps the legacy global styles. Every base rule has zero specificity, so a component's own rule always wins.
 
-The legacy global stylesheets still define generic classes such as `.btn`, `.select`, `.icon-btn` and `.header`. Those match any element with that class, scoped component or not, so components use class names the legacy stylesheets don't define.
+The legacy global stylesheets still define generic classes such as `.icon-btn`. Those match any element with that class, scoped component or not, so components use class names the legacy stylesheets don't define.

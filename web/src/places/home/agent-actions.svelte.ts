@@ -4,7 +4,7 @@
 // says which is in flight. The hub store surfaces failures, and its frames
 // raise the created, deleted (with Undo) and restored toasts.
 
-import { fixSettingsSection } from "../../lib/agent-failure";
+import { findSettingsFix } from "../../lib/agent-failure";
 import type { AgentSummary } from "../../lib/hub-types";
 import { hub } from "../../lib/hub.svelte";
 import { notifications } from "../../lib/notifications.svelte";
@@ -62,12 +62,20 @@ class AgentActions {
 
   /**
    * The Settings section where the agent's failing setting can be fixed
-   * (`fixSettingsSection`), or undefined while another action runs for it.
+   * (`findSettingsFix`), or undefined while another action runs for it. The
+   * problems are flagged on the agent's settings, and the field they name is
+   * focused when the section shows.
    */
   async fixSection(name: string): Promise<SectionId | undefined> {
     let section: SectionId | undefined;
     await this.run(name, "fix", async () => {
-      section = await fixSettingsSection(name);
+      const fix = await findSettingsFix(name);
+      if (fix.field !== null) {
+        const scope = settingsModel.agent(name);
+        scope.flagProblems(fix.field.file, fix.field.problems);
+        scope.requestFocus(fix.field.ref);
+      }
+      section = fix.section;
     });
     return section;
   }

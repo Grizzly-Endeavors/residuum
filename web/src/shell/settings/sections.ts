@@ -4,8 +4,7 @@
 // binds its fields to the scope's forms (`scope.config`, `scope.providers`,
 // `scope.models`, `scope.mcpServers`) and starts with `SettingsSection`.
 //
-// Every All agents section is drawn by its own component. An agent section
-// not listed here shows its legacy panels (`LegacySection.svelte`).
+// Every section of both scopes is drawn by its own component, listed here.
 
 import type { Component } from "svelte";
 import type { FieldRef } from "../../lib/settings-fields";
@@ -21,6 +20,7 @@ import KeysSection from "./KeysSection.svelte";
 import LimitsSection from "./LimitsSection.svelte";
 import ListenerSection from "./ListenerSection.svelte";
 import Memory from "./Memory.svelte";
+import ModelSection from "./ModelSection.svelte";
 import NotificationsSection from "./NotificationsSection.svelte";
 import RawConfig from "./RawConfig.svelte";
 import Runtime from "./Runtime.svelte";
@@ -43,7 +43,8 @@ export interface AllSectionProps {
   section: AllSectionId;
 }
 
-export const AGENT_SECTION_VIEWS: Partial<Record<AgentSectionId, Component<AgentSectionProps>>> = {
+export const AGENT_SECTION_VIEWS: Record<AgentSectionId, Component<AgentSectionProps>> = {
+  model: ModelSection,
   connections: ConnectionsSection,
   tools: ToolsSection,
   servers: ToolServers,

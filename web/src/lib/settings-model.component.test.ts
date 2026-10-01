@@ -704,6 +704,33 @@ describe("diagnostics from a save", () => {
   });
 });
 
+describe("problems found outside a save, and the field to focus", () => {
+  it("shows a check's problems on their fields until the file's next save replaces them", async () => {
+    const f = fake();
+    const scope = await loadedScout(f);
+    scope.flagProblems("providers", [error("not offered", "models.main"), error("no path")]);
+
+    expect(scope.fieldDiagnostics({ kind: "role", role: "main" }).map((d) => d.message)).toEqual([
+      "not offered",
+    ]);
+    expect(scope.sectionDiagnostics("model").map((d) => d.message)).toEqual(["no path"]);
+    expect(scope.dirty).toBe(false);
+
+    scope.models.main = "anthropic/claude-new";
+    await scope.save(keepMine);
+    expect(scope.diagnostics).toEqual([]);
+  });
+
+  it("answers a focus request once", async () => {
+    const scope = await loadedScout(fake());
+    expect(scope.takeFocus()).toBeNull();
+    scope.requestFocus({ kind: "role", role: "subconscious" });
+    expect(scope.focusRequest).toEqual({ kind: "role", role: "subconscious" });
+    expect(scope.takeFocus()).toEqual({ kind: "role", role: "subconscious" });
+    expect(scope.takeFocus()).toBeNull();
+  });
+});
+
 // ── Scope isolation ───────────────────────────────────────────────────
 
 describe("scope isolation", () => {
