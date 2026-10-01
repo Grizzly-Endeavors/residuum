@@ -9,13 +9,14 @@
   import { ConfirmHost, confirmLeave, Drawer, RecentNotifications } from "../lib/ui";
   import { PHONE_QUERY } from "../styles/breakpoints";
   import { RailAccordion } from "./accordion.svelte";
-  import { registerAppActions } from "./app-actions.svelte";
+  import { installHelp, registerAppActions } from "./app-actions.svelte";
   import BottomBar from "./BottomBar.svelte";
   import CommandPalette from "./CommandPalette.svelte";
   import CreateAgentDialog from "./CreateAgentDialog.svelte";
   import FeedbackDialog from "./FeedbackDialog.svelte";
   import HubBanner from "./HubBanner.svelte";
   import InboxNoteDialog from "./InboxNoteDialog.svelte";
+  import InstallHelpDialog from "./InstallHelpDialog.svelte";
   import PanelHost from "./panel/PanelHost.svelte";
   import PlaceHost from "./PlaceHost.svelte";
   import Rail from "./Rail.svelte";
@@ -172,6 +173,7 @@
 <CreateAgentDialog bind:open={createOpen} oncreated={(name) => void focusCreatedAgent(name)} />
 <RecentNotifications bind:open={notificationsOpen} />
 <ShortcutsDialog bind:open={shortcutsOpen} />
+<InstallHelpDialog bind:open={installHelp.open} />
 <FeedbackDialog bind:open={feedbackOpen} bind:tab={feedbackTab} />
 <InboxNoteDialog
   agent={inboxNoteAgent}
@@ -185,6 +187,8 @@
     display: grid;
     grid-template-columns: var(--layout-rail-width) minmax(0, 1fr) auto;
     height: 100%;
+    /* Under the status bar, a notch and the home indicator the base surface shows, and the content sits inside. */
+    padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
     background: var(--color-stone-0);
   }
 
@@ -205,6 +209,7 @@
   @media (max-width: 760px) {
     .shell {
       grid-template-columns: minmax(0, 1fr);
+      /* The bar covers the bottom inset, so the content only clears the bar. */
       padding-bottom: var(--layout-bottom-bar-offset);
     }
 

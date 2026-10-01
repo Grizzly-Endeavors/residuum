@@ -180,9 +180,9 @@
     /* Medium widths: the panel floats over the main region's right edge. */
     &[data-layout="medium"] {
       position: fixed;
-      top: 0;
-      right: 0;
-      bottom: 0;
+      top: var(--safe-top);
+      right: var(--safe-right);
+      bottom: var(--safe-bottom);
       z-index: var(--z-panel);
       width: var(--layout-panel-width);
       max-width: calc(100vw - var(--space-64));

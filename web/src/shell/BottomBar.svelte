@@ -82,7 +82,7 @@
     display: none;
     grid-template-columns: repeat(5, minmax(0, 1fr));
     height: var(--layout-bottom-bar-offset);
-    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding: 0 var(--safe-right) var(--safe-bottom) var(--safe-left);
     border-top: 1px solid var(--color-line-soft);
     background: var(--color-stone-1);
   }

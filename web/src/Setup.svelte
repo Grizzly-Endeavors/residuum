@@ -285,6 +285,7 @@
     flex: 1;
     flex-direction: column;
     min-height: 0;
+    padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
   }
 
   .setup-bar {
