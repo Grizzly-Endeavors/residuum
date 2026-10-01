@@ -890,6 +890,28 @@
   padding: 2px 8px;
   font-size: 11px;
   height: 28px;
+  font-family: var(--font-body);
+  background: var(--bg-input);
+  color: var(--text-muted);
+  border: none;
+  border-right: 1px solid var(--border);
+  cursor: pointer;
+  transition:
+    background var(--dur-default) var(--ease-out-stone),
+    color var(--dur-default) var(--ease-out-stone);
+}
+
+.thinking-compact .seg-btn:last-child {
+  border-right: none;
+}
+
+.thinking-compact .seg-btn:hover {
+  background: var(--bg-raised);
+}
+
+.thinking-compact .seg-btn.active {
+  background: var(--vein);
+  color: var(--bg-deep);
 }
 
 /* Mobile thinking dropdown */

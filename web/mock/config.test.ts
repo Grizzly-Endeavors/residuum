@@ -257,12 +257,12 @@ describe("config routes", () => {
       ]);
     });
 
-    it("adds a key, and refuses a bad name or a short value", async () => {
+    it("adds a key, and refuses a bad name or an empty value", async () => {
       const rejected = async (body: unknown): Promise<{ status: number; body: string }> =>
         fetchText(url("/api/agent-keys"), { method: "POST", body: JSON.stringify(body) });
       const invalid = { status: 400, body: "key name or value is invalid" };
       expect(await rejected({ name: "Bad", value: "12345678" })).toEqual(invalid);
-      expect(await rejected({ name: "good", value: "123" })).toEqual(invalid);
+      expect(await rejected({ name: "good", value: "" })).toEqual(invalid);
       expect(await rejected({})).toEqual(invalid);
 
       const ok = await request("POST", "/api/agent-keys", {
@@ -278,9 +278,21 @@ describe("config routes", () => {
       });
     });
 
-    it("deletes a key once, then answers 404", async () => {
+    it("stores a short value and says it can't be hidden reliably", async () => {
+      const { status, body } = await request("POST", "/api/agent-keys", {
+        name: "short",
+        value: "123",
+      });
+      expect(status).toBe(200);
+      expect(body.warning).toEqual(expect.stringContaining("short"));
+      expect(harness.state.agentKeys.has("short")).toBe(true);
+    });
+
+    it("deletes a key once with the checkpoint taken before, then answers 404", async () => {
       const first = await request("DELETE", "/api/agent-keys/github_token");
-      expect(first).toEqual({ status: 200, body: { deleted: true, checkpoint_id: null } });
+      expect(first.status).toBe(200);
+      expect(first.body.deleted).toBe(true);
+      expect(typeof first.body.checkpoint_id).toBe("string");
       const second = await fetchText(url("/api/agent-keys/github_token"), { method: "DELETE" });
       expect(second).toEqual({ status: 404, body: "no agent key named 'github_token'" });
     });
@@ -331,10 +343,9 @@ describe("config routes", () => {
       const keys = (await request("GET", "/api/a2a/keys")).body.keys as Body[];
       expect(keys.map((k) => k.name)).toEqual(["laptop", "peer"]);
 
-      expect((await request("DELETE", "/api/a2a/keys/peer")).body).toEqual({
-        revoked: true,
-        checkpoint_id: null,
-      });
+      const revoked = (await request("DELETE", "/api/a2a/keys/peer")).body;
+      expect(revoked.revoked).toBe(true);
+      expect(typeof revoked.checkpoint_id).toBe("string");
       expect((await request("DELETE", "/api/a2a/keys/peer")).status).toBe(404);
     });
 

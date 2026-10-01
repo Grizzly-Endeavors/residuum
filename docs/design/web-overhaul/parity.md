@@ -144,27 +144,27 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [x] Title and scope note — **Changed:** scope picker with "Applies to…" line
 - [x] Saving / saved / saved-with-problems / reloaded status — **Changed:** save bar and results
 - [x] Reload from disk with discard confirmation when there are unsaved changes
-- [ ] Simple / Advanced / Raw — **Dropped:** Advanced sections, "More options" disclosures, and a Raw config section replace it
+- [x] Simple / Advanced / Raw — **Dropped:** Advanced sections, "More options" disclosures, and a Raw config section replace it
 - [x] Section navigation and old-URL redirects — **Changed:** new section ids and mapping
 - [x] Autosave — **Changed:** explicit Save changes / Discard per scope; items with their own endpoints stay immediate (design §8)
 - [x] Partial-failure message naming saved and failed files
-- [ ] Secret fields: store on save; Stored securely with Change; from environment variable with Replace
+- [x] Secret fields: store on save; Stored securely with Change; from environment variable with Replace — **Changed:** provider keys, channel tokens and web search keys share one field; a key typed for a new provider is stored as a secret on Save too, except an Ollama server's
 - [x] Undo after removing providers, webhooks, MCP servers, skills/tools folders, cloud account — **Changed:** removals are staged (Discard brings them back); after Save, Undo restores the returned checkpoint
 - [x] Scope isolation: an agent page never shows editable install-wide fields, and a save writes only its own scope's files (today the agent-page save computes and ignores an install-wide diff, which is empty only because no agent section renders install-wide fields)
 - [x] **Fix:** History restore and undo refresh the open form
-- [ ] **Fix:** field-level validation errors inline where the server gives a path
+- [x] **Fix:** field-level validation errors inline where the server gives a path — every section shows a problem whose key path names one of its fields on that field, and the rest at its top; Fix settings places its check's problems the same way and focuses the field. A patch the backend refuses carries no key path (#370), so its problem shows at the section's top
 
 All-agents scope:
 
 - [x] General: timezone; bind address and port — **Changed:** a flag on a name that is not a timezone, "Use this device's timezone", and the gateway address under More options
 - [x] Cloud: connected (Disconnect, hidden via tunnel with explanation), connecting (Cancel), disconnected with token (Reconnect, Remove account with Undo), not connected (Connect link, token entry); relay URL, local port — **Fix:** correct the "Reconnect then Save" hint, re-poll status after Connect/Reconnect, surface a failed Disconnect; **Changed:** Reconnect and a pasted token act at once, Remove account is staged (Keep account or Discard brings it back), the Connect link follows `[cloud] relay_url`, and the relay URL and local port are always under More options
-- [ ] A2A listener: toggle, port, own address; caller keys list, Revoke with Undo, add with validation, token shown once with Copy
+- [x] A2A listener: toggle, port, own address; caller keys list, Revoke with Undo, add with validation, token shown once with Copy — **Changed:** Advanced → Agent-to-agent; the port and address dim while the listener is off, and a token that can't be copied says so
 - [x] Session budget: concurrent turns, hop soft and hard limits — **Changed:** named Session limits, with a flag on a limit that blocks work
 - [x] Tracing: log detail, redaction, automatic error reports — **Changed:** named Diagnostics; the switches are staged and saved to `[tracing]`
 - [x] Update: status, current, latest, checked time, Check now, Update & restart with progress, outcomes (updated, rolled back, timed out with hint), unverified-update warning
-- [ ] Secrets: list, remove with confirmation, add with replace warning
-- [ ] Agent keys: list with env var and "saved by the agent", remove with Undo, add with name/env preview, replace note, short-value hint, description, warning toast
-- [ ] History: team and hub repos
+- [x] Secrets: list, remove with confirmation, add with replace warning — **Changed:** Saved keys, as Stored secrets under the agent keys; names only, since the hub doesn't say where one is used
+- [x] Agent keys: list with env var and "saved by the agent", remove with Undo, add with name/env preview, replace note, short-value hint, description, warning toast — **Changed:** Saved keys, as Keys agents use
+- [x] History: team and hub repos
 
 Agent scope:
 

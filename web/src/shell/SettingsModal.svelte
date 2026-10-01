@@ -14,7 +14,6 @@
   import { Banner, Button, IconButton, ModalLayer, Skeleton } from "../lib/ui";
   import { PHONE_QUERY } from "../styles/breakpoints";
   import ChangedOnDiskDialog from "./settings/ChangedOnDiskDialog.svelte";
-  import LegacySection from "./settings/LegacySection.svelte";
   import SaveBar from "./settings/SaveBar.svelte";
   import { modalActions, reloadScope } from "./settings/scope-actions";
   import { AGENT_SECTION_VIEWS, ALL_SECTION_VIEWS, type SettingsScope } from "./settings/sections";
@@ -144,18 +143,10 @@
 {#snippet sectionView(open: SettingsScope, id: SectionId)}
   {#if open.kind === "agent"}
     {@const View = AGENT_SECTION_VIEWS[id as AgentSectionId]}
-    {#if View}
-      <View scope={open} section={id as AgentSectionId} />
-    {:else}
-      <LegacySection scope={open} section={id} />
-    {/if}
+    <View scope={open} section={id as AgentSectionId} />
   {:else}
     {@const View = ALL_SECTION_VIEWS[id as AllSectionId]}
-    {#if View}
-      <View scope={open} section={id as AllSectionId} />
-    {:else}
-      <LegacySection scope={open} section={id} />
-    {/if}
+    <View scope={open} section={id as AllSectionId} />
   {/if}
 {/snippet}
 

@@ -35,7 +35,7 @@ residuum agent-keys list
 residuum agent-keys delete github_token
 ```
 
-**Web UI:** Settings → Agent keys lists every key with its environment variable and description, marks the ones the agent saved itself, and adds or removes keys. Values are write-only there too.
+**Web UI:** Settings → All agents → Saved keys lists every key with its environment variable and description, marks the ones the agent saved itself, and adds or removes keys. Values are write-only there too. Adding and removing act at once, and a removal offers Undo from the checkpoint the delete returns. A value under eight characters is saved, with the hint that redacting it from output is unreliable.
 
 **HTTP:** `GET /api/hub/agent-keys` (metadata only), `POST /api/hub/agent-keys` with `{ "name", "value", "description" }`, `DELETE /api/hub/agent-keys/{name}` returning `{ "deleted": true, "checkpoint_id" }`. `checkpoint_id` is the config checkpoint taken just before the delete, or null when that checkpoint could not be recorded. Like the rest of the config API, it is unauthenticated and meant to stay on loopback.
 
