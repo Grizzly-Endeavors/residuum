@@ -16,6 +16,7 @@ use crate::bus::BusHandle;
 use crate::checkpoints::SharedCheckpointRepos;
 use crate::config::paths::TeamPaths;
 use crate::config::{HubConfig, HubPaths};
+use crate::hub::push::PushService;
 use crate::inference::EmbeddingProvider;
 use crate::memory::team_wiki::TeamWikiIndex;
 use crate::tracing_service::TracingService;
@@ -142,6 +143,8 @@ pub(crate) struct HubServices {
     /// The agent host, for agent tools that create or delete teammates. The
     /// host binds itself when it is built.
     pub directory: super::directory::DirectoryHandle,
+    /// Web Push: registered devices and delivery. Triggers send through it.
+    pub push: Arc<PushService>,
 }
 
 impl HubServices {
@@ -187,6 +190,7 @@ impl HubServices {
         Ok(Self {
             root: root.to_path_buf(),
             a2a_keys: crate::a2a::A2aKeys::new_shared(&hub_dir),
+            push: PushService::new(&hub_dir, hub.push.contact.as_deref()),
             hub_dir,
             team,
             team_wiki,

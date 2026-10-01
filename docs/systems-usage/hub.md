@@ -68,7 +68,7 @@ The `autostart` and `a2a_visibility` an agent's summary reports come from the la
 
 ## Hub config reloads
 
-`hub/config.toml` is watched. A change is applied where the hub owns it: a new `[gateway]` address rebinds the HTTP server (a failed bind keeps the current server), `[cloud]` restarts the tunnel (a changed `[a2a] enabled` is passed to the relay's agent list too), `[tracing]` updates the tracing service and the log level, and `[a2a]` restarts the A2A listener. Every running agent then reloads against the new hub config for what it reads from it (the timezone, its A2A card, and the hop limits).
+`hub/config.toml` is watched. A change is applied where the hub owns it: a new `[gateway]` address rebinds the HTTP server (a failed bind keeps the current server), `[cloud]` restarts the tunnel (a changed `[a2a] enabled` is passed to the relay's agent list too), `[tracing]` updates the tracing service and the log level, `[a2a]` restarts the A2A listener, and `[push]` changes the contact the next push is signed with. Every running agent then reloads against the new hub config for what it reads from it (the timezone, its A2A card, and the hop limits).
 
 Every reload attempt ends with a `hub_config_reloaded` event, published beside the `notice` that tells the user how it went. `ok` is false when the file couldn't be loaded, in which case the hub keeps its previous config and the notice gives the reason. `changed` is true when the loaded config differs from the one the hub was running; a reload that found nothing to apply sends `ok: true, changed: false` and no notice. `message` is the text of the notice, or `null` when there is none.
 

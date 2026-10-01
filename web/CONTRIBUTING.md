@@ -161,6 +161,7 @@ web/
 │   ├── http.ts               # Request and response helpers, typed body parsing
 │   ├── hub.ts                # The hub: agents, activity and unread, run state changes, reset
 │   ├── hub-inbox.ts          # The cross-agent inbox: every agent's items in one listing
+│   ├── push.ts               # Web Push: the public key and the registered devices, with a test send that always succeeds
 │   ├── hub-config-reload.ts  # The hub's config reload and its frames
 │   ├── lifecycle.ts          # Agent lifecycle routes and hub status
 │   ├── hub-socket.ts         # The hub WebSocket: hub frames, team watches

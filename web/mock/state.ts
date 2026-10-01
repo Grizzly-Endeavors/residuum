@@ -15,6 +15,7 @@ import { createArchivedInboxItems, createInboxItems } from "./data/inbox";
 import { createSessions, type MockSessions } from "./data/sessions";
 import { createWorkspaceFileContents, createWorkspaceFiles } from "./data/workspace";
 import { createMockEnv, type MockEnv } from "./env";
+import type { MockPushDevice } from "./push";
 import { createScheduled, type MockScheduled } from "./scheduled";
 import type { MockTeamEvents } from "./team-events";
 import type { MockUpdateStatus } from "./update";
@@ -68,6 +69,8 @@ export interface MockState {
   scheduled: MockScheduled;
   /** What the hub knows about updates, for the update routes. */
   update: MockUpdateStatus;
+  /** The devices registered for Web Push, oldest first. Only the hub's state holds any. */
+  pushDevices: MockPushDevice[];
   /** The checkpoint histories this state holds: an agent's own, or the hub's. */
   checkpoints: MockCheckpoints;
   /**
@@ -286,6 +289,7 @@ export function createState(
     agentInbox: [],
     scheduled: { pulses: [], actions: [] },
     update: { latest: null, lastChecked: null },
+    pushDevices: [],
     checkpoints: {},
     hasConversation: false,
   };

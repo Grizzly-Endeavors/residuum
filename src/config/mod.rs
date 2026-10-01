@@ -28,7 +28,7 @@ pub(crate) use constants::{
     DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS, DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
     DEFAULT_TEAMS_PORT,
 };
-pub use hub_types::{HubA2aConfig, HubBackgroundConfig, HubConfig};
+pub use hub_types::{HubA2aConfig, HubBackgroundConfig, HubConfig, HubPushConfig};
 pub use paths::{HubPaths, default_hub_dir, discover_agents, residuum_root, validate_agent_name};
 pub use provider::{ModelSpec, ProviderKind, ProviderSpec};
 pub use secrets::SecretStore;

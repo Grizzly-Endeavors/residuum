@@ -245,6 +245,7 @@ pub(super) mod test_helpers {
             a2a: super::super::HubA2aConfig::default(),
             tracing: super::super::TracingConfig::default(),
             background: super::super::HubBackgroundConfig::default(),
+            push: super::super::HubPushConfig::default(),
             config_dir: std::env::temp_dir().join("residuum-test-hub"),
             load_notices: Vec::new(),
         }
