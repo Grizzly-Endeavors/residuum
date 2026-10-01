@@ -15,6 +15,7 @@ Every value lives in `src/styles/tokens.css`, the only stylesheet allowed to spe
 | Radii | `--corner-` | `--corner-sm`, `--corner-lg`, `--corner-pill` |
 | Spacing | `--space-` + pixels | `--space-8`, `--space-18` |
 | Layout | `--layout-` | `--layout-rail-width`, `--layout-bottom-bar-offset` |
+| Safe areas | `--safe-` + edge | `--safe-top`, `--safe-bottom` |
 | Breakpoints | `--breakpoint-` | `--breakpoint-phone-max` |
 | Stacking | `--z-` | `--z-drawer`, `--z-toast` |
 | Motion | `--duration-`, `--ease-` | `--duration-fast`, `--ease-out` |
@@ -75,6 +76,7 @@ The wordmark is Cinzel 500 in capitals with wide letter spacing, next to the `ma
 - The rail is `--layout-rail-width`. The context panel opens at `--layout-panel-width` and, beside the main region at wide widths, resizes between `--layout-panel-min-width` and `--layout-panel-max-width` from a hairline on its left edge that lights in `vein` while hovered or dragged and in `vein-bright` while focused. At medium widths it floats over the main region at the default width with the floating shadow, and on phones it is a full-screen sheet over the bottom bar. Its header is at least as tall as a place's header, so the two hairlines meet.
 - Conversations cap at `--layout-reading-width`; Home caps at `--layout-home-width`, centered.
 - On phones the bottom bar is `--layout-bottom-bar-height` plus the safe-area inset. Anything pinned to the bottom sits above `--layout-bottom-bar-offset`.
+- The viewport is `viewport-fit=cover`, so the page runs under a notch, a rounded corner, the status bar of an installed app and a home indicator. `--safe-top`, `--safe-right`, `--safe-bottom` and `--safe-left` hold what each edge loses (zero where there is nothing). The shell root and the setup wizard pad by all four, so the base surface shows under the status bar; a surface pinned to an edge of the screen (the bottom bar, a drawer, a sheet, the floating panel, toasts) pads or offsets by the insets on the sides it touches. Read the tokens, never `env()` directly.
 - Shell breakpoints: phone up to 760px, medium 761–1180px (the panel floats over the main region), wide from 1181px (the panel sits beside it). Shell `@media` rules write these widths out as `max-width`/`min-width`, and lint rejects any other width. Scripts use `src/styles/breakpoints.ts`. A component that needs its own responsive rule uses a container query.
 - Stacking, bottom to top: `base`, `sticky`, `panel`, `drawer`, `overlay`, `palette`, `toast`.
 

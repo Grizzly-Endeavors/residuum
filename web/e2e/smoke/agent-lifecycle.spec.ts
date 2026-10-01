@@ -198,6 +198,8 @@ test("a row's menu opens the agent's chat and its settings", async ({ page }) =>
   await page.goto("/home");
   await (await openMenu(page, "scout")).getByRole("menuitem", { name: "Settings" }).click();
   await expect.poll(() => address(page)).toMatch(/^\/home\?settings=scout/);
+  // The modal's code loads the first time it opens, so Esc waits for the modal to be there.
+  await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect.poll(() => address(page)).toBe("/home");
 

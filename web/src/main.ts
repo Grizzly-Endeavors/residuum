@@ -5,6 +5,7 @@ import "./styles/ui-base.css";
 import { mount } from "svelte";
 import App from "./App.svelte";
 import { startConfigSync } from "./lib/config-sync";
+import { startInstallOffer } from "./shell/install-offer";
 
 /** Every primitive control in every state, for development. */
 const UI_GALLERY_PATH = "/dev/gallery";
@@ -21,5 +22,6 @@ if (__UI_GALLERY__ && window.location.pathname === UI_GALLERY_PATH) {
 } else {
   // Config changes made outside this page reach the views that show them.
   startConfigSync();
+  startInstallOffer();
   mount(App, { target });
 }
