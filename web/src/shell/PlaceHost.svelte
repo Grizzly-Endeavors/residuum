@@ -19,8 +19,6 @@
   // legacy view inside a `data-legacy-view` element, where the legacy global
   // styles still apply and the new base styles don't.
 
-  let { onOpenFeedback }: { onOpenFeedback: () => void } = $props();
-
   const place = $derived(router.place);
   const sessions = $derived(ws.sessions);
 
@@ -97,7 +95,7 @@
       <!-- The place stays mounted under a session, so the chat's history, scroll and draft survive it. -->
       <div class="shell-legacy-place" class:is-covered={sessions.view !== null}>
         {#if place.kind === "chat"}
-          <Chat {onOpenFeedback} />
+          <Chat />
         {:else if place.kind === "activity"}
           <SessionsSidebar onSelect={openRun} />
         {:else if place.kind === "schedule"}

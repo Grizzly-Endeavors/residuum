@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Attachment } from "svelte/attachments";
+  import { actionRegistry, HELP_GROUP } from "../lib/action-registry.svelte";
   import { Icon, type IconName } from "../lib/icons";
   import { hub } from "../lib/hub.svelte";
   import { userInbox } from "../lib/inbox.svelte";
@@ -10,6 +11,7 @@
     Badge,
     Button,
     IconButton,
+    Kbd,
     Menu,
     MenuItem,
     MenuSeparator,
@@ -20,9 +22,9 @@
   import { AGENT_PLACES, agentRowStatus, homeAttentionCount } from "./rail-model";
   import type { ShellActions } from "./shell-actions";
 
-  // The rail: Home and Inbox, every agent with its places in an accordion,
-  // the team's places, and a footer with help and Settings. At phone width the
-  // same rail opens in the drawer.
+  // The rail: the search row, Home and Inbox, every agent with its places in
+  // an accordion, the team's places, and a footer with help and Settings. At
+  // phone width the same rail opens in the drawer.
 
   interface Props {
     accordion: RailAccordion;
@@ -41,6 +43,7 @@
 
   const place = $derived(router.place);
   const homeCount = $derived(homeAttentionCount(hub.agents));
+  const helpActions = $derived(actionRegistry.all.filter((action) => action.group === HELP_GROUP));
 
   /** The Inbox and the Workbench stay current whatever filter or artifact they show. */
   function isCurrent(target: Place): boolean {
@@ -110,6 +113,12 @@
       <IconButton icon="close" label="Close menu" data-overlay-close onclick={onclose} />
     {/if}
   </div>
+
+  <button type="button" class="rail-search" aria-haspopup="dialog" onclick={actions.openSearch}>
+    <Icon name="search" size={15} />
+    <span class="rail-label">Search or jump to</span>
+    <Kbd keys={["Mod", "K"]} />
+  </button>
 
   <div class="rail-scroll" {@attach rowKeys}>
     <ul class="rail-list rail-home">
@@ -199,11 +208,10 @@
       {#snippet trigger(props)}
         <Button variant="quiet" size="sm" icon="help" {...props}>Help</Button>
       {/snippet}
-      <MenuItem label="Keyboard shortcuts" onselect={actions.openShortcuts} />
-      <MenuItem label="Recent notifications" onselect={actions.openNotifications} />
-      <MenuSeparator />
-      <MenuItem label="Send feedback" onselect={() => actions.openFeedback("feedback")} />
-      <MenuItem label="Report a bug" onselect={() => actions.openFeedback("bug")} />
+      {#each helpActions as action (action.id)}
+        {#if action.id === "help:feedback"}<MenuSeparator />{/if}
+        <MenuItem label={action.label} onselect={() => void actionRegistry.run(action)} />
+      {/each}
     </Menu>
     <IconButton icon="settings" label="Settings" onclick={actions.openSettings} />
   </div>
@@ -240,6 +248,29 @@
 
     & :global(svg) {
       color: var(--color-vein);
+    }
+  }
+
+  .rail-search {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: var(--space-8);
+    height: 34px;
+    margin: 0 var(--space-10) var(--space-4);
+    padding: 0 var(--space-8) 0 var(--space-10);
+    border-radius: var(--corner-sm);
+    background: var(--color-stone-2);
+    color: var(--color-text-3);
+    font-size: var(--font-size-sm);
+    text-align: start;
+    transition:
+      background-color var(--duration-fast) var(--ease-out),
+      color var(--duration-fast) var(--ease-out);
+
+    &:hover {
+      background: var(--color-stone-3);
+      color: var(--color-text-2);
     }
   }
 
@@ -401,6 +432,15 @@
   }
 
   @media (max-width: 760px) {
+    .rail-search {
+      height: var(--layout-touch-target);
+
+      /* A phone has no keyboard to press it on. */
+      & :global(.ui-kbd) {
+        display: none;
+      }
+    }
+
     .rail-row,
     .rail-agent,
     .rail-place {

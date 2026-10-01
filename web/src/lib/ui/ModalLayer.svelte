@@ -14,7 +14,7 @@
 
   interface Props {
     open: boolean;
-    /** `center` hangs below the top edge (dialogs), `bottom` is a sheet, `left` a drawer. */
+    /** `center` hangs below the top edge (dialogs), `top` hangs higher (the palette), `bottom` is a sheet, `left` a drawer. */
     frame?: ModalFrame;
     /** A centered layer fills the screen at phone width. */
     fullscreenOnPhone?: boolean;
@@ -77,7 +77,7 @@
     });
 
   const swipe = $derived.by((): Attachment<HTMLElement> | undefined => {
-    if (frame === "center") return undefined;
+    if (frame !== "bottom" && frame !== "left") return undefined;
     return swipeToDismiss(frame === "bottom" ? "down" : "left", () => onclose());
   });
 </script>
@@ -169,7 +169,7 @@
 
   /* ── Centered: dialogs ─────────────────────────────────────────────── */
 
-  .ui-modal-layer[data-frame="center"] {
+  .ui-modal-layer:is([data-frame="center"], [data-frame="top"]) {
     padding: 14vh var(--space-16) var(--space-16);
 
     & .ui-modal {
@@ -177,6 +177,15 @@
       max-height: 100%;
       border-radius: var(--corner-lg);
       animation: ui-rise var(--duration-base) var(--ease-out);
+    }
+  }
+
+  /* A search whose results grow downward starts higher and stops short of the bottom. */
+  .ui-modal-layer[data-frame="top"] {
+    padding-top: 12vh;
+
+    & .ui-modal {
+      max-height: min(540px, 72vh);
     }
   }
 
@@ -213,12 +222,13 @@
   }
 
   @media (max-width: 760px) {
-    .ui-modal-layer[data-frame="center"][data-fullscreen] {
+    .ui-modal-layer:is([data-frame="center"], [data-frame="top"])[data-fullscreen] {
       padding: 0;
 
       & .ui-modal {
         width: 100%;
         height: 100%;
+        max-height: 100%;
         padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px);
         border-radius: 0;
         animation-name: ui-sheet-in;

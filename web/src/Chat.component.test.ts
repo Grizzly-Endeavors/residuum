@@ -33,7 +33,7 @@ describe("chat counters across an agent switch", () => {
       output_tokens: 300,
       tool_calls: 7,
     } as never;
-    render(Chat, { onOpenFeedback: () => {} });
+    render(Chat);
     await settle();
     expect(screen.getByText(/4 tool calls/)).toBeTruthy();
     expect(screen.getByText(/7 tool calls/)).toBeTruthy();

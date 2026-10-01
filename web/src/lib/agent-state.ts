@@ -13,6 +13,15 @@ export function stateLabel(state: AgentState): string {
   return STATE_LABELS[state];
 }
 
+export type LifecycleAction = "start" | "stop" | "restart";
+
+/** Whether `action` applies to an agent in `state`. */
+export function lifecycleApplies(action: LifecycleAction, state: AgentState): boolean {
+  if (action === "start") return state === "stopped" || state === "failed";
+  if (action === "stop") return state === "running" || state === "starting";
+  return state === "running" || state === "failed";
+}
+
 /** The largest unread count shown as a number; above it the badge reads "99+". */
 const MAX_UNREAD_SHOWN = 99;
 

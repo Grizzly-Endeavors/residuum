@@ -7,6 +7,7 @@ import { hub } from "../lib/hub.svelte";
 import { router } from "../lib/router.svelte";
 import type { AgentSummary } from "../lib/hub-types";
 import { RailAccordion } from "./accordion.svelte";
+import { registerAppActions } from "./app-actions.svelte";
 import Rail from "./Rail.svelte";
 import type { ShellActions } from "./shell-actions";
 
@@ -24,11 +25,13 @@ function agent(name: string, overrides: Partial<AgentSummary> = {}): AgentSummar
 
 function actions(): ShellActions {
   return {
+    openSearch: vi.fn(),
     openSettings: vi.fn(),
     openShortcuts: vi.fn(),
     openNotifications: vi.fn(),
     openFeedback: vi.fn(),
     createAgent: vi.fn(),
+    addInboxNote: vi.fn(),
   };
 }
 
@@ -114,11 +117,14 @@ describe("Rail", () => {
     expect(row("atlas, stopping, 2 unread")).toBeTruthy();
   });
 
-  it("asks the shell for Settings, the help menu's items and a new agent", async () => {
+  it("asks the shell for search, Settings, the help menu's items and a new agent", async () => {
     const user = userEvent.setup();
     const shell = actions();
+    const unregister = registerAppActions(shell);
     render(Rail, { accordion: new RailAccordion(), actions: shell });
 
+    await user.click(screen.getByRole("button", { name: /^Search or jump to/ }));
+    expect(shell.openSearch).toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Create an agent" }));
     expect(shell.createAgent).toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Settings" }));
@@ -126,9 +132,14 @@ describe("Rail", () => {
 
     await user.click(screen.getByRole("button", { name: "Help" }));
     await user.click(await screen.findByRole("menuitem", { name: "Recent notifications" }));
-    expect(shell.openNotifications).toHaveBeenCalled();
+    await vi.waitFor(() => {
+      expect(shell.openNotifications).toHaveBeenCalled();
+    });
     await user.click(screen.getByRole("button", { name: "Help" }));
     await user.click(await screen.findByRole("menuitem", { name: "Report a bug" }));
-    expect(shell.openFeedback).toHaveBeenCalledWith("bug");
+    await vi.waitFor(() => {
+      expect(shell.openFeedback).toHaveBeenCalledWith("bug");
+    });
+    unregister();
   });
 });
