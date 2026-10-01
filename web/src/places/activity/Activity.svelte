@@ -195,6 +195,7 @@
                       <span class="row-sub">
                         <span>Sent to {task.agent}</span>
                         <span>{outboundDuration(task, now)} ago</span>
+                        {#if task.unreachable_since !== null}<span>Still retrying</span>{/if}
                       </span>
                       {#if note}<span class="row-error" role="status">{note}</span>{/if}
                     </span>

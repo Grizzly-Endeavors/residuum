@@ -71,6 +71,7 @@ describe("the session panel", () => {
     await userEvent.click(screen.getByRole("button", { name: "Details" }));
     expect(screen.getByText("atlas's conversation")).toBeVisible();
     expect(screen.getByText("2 levels below the conversation")).toBeVisible();
+    expect(screen.getByText("0 tokens in, 0 out, 0 tool calls")).toBeVisible();
     expect(screen.getByText("run-1")).toBeVisible();
     expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
   });

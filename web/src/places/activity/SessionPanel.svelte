@@ -1,5 +1,6 @@
 <script lang="ts">
   import Feed from "../../feed/Feed.svelte";
+  import { formatTokenCount } from "../../lib/format-usage";
   import { hub } from "../../lib/hub.svelte";
   import { Icon } from "../../lib/icons";
   import { router } from "../../lib/router.svelte";
@@ -118,6 +119,12 @@
             <dt>Depth</dt>
             <dd>{summary.depth} levels below the conversation</dd>
           {/if}
+          <dt>Spent</dt>
+          <dd>
+            {formatTokenCount(summary.usage.input_tokens)} tokens in, {formatTokenCount(
+              summary.usage.output_tokens,
+            )} out, {summary.usage.tool_calls} tool calls
+          </dd>
           {#if summary.episode_id}
             <dt>Remembered as</dt>
             <dd class="code">{summary.episode_id}</dd>

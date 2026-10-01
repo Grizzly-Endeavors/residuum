@@ -192,6 +192,18 @@ describe("following a run through the hub's session relay", () => {
       "Cascade first.",
     ]);
     expect(run.summary?.state).toBe("idle");
+
+    const totals = { input_tokens: 1200, output_tokens: 300, context_tokens: 1500, tool_calls: 4 };
+    relay.relay("atlas", {
+      type: "session_turn_usage",
+      address: ADDRESS,
+      run_id: "run-1",
+      output_tokens: 300,
+      has_usage: true,
+      tool_calls: 4,
+      session_totals: totals,
+    });
+    expect(run.summary?.usage).toEqual(totals);
   });
 
   it("takes the outcome of a run that finishes", async () => {
