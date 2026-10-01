@@ -11,7 +11,12 @@
     EmptyState,
     IconButton,
     Kbd,
+    Menu,
+    MenuItem,
+    MenuSeparator,
     NumberField,
+    Popover,
+    RecentNotifications,
     SecretField,
     SegmentedControl,
     SelectField,
@@ -20,13 +25,19 @@
     StatusDot,
     Tabs,
     TextField,
+    ToastRegion,
     Toggle,
+    TooltipHost,
     confirmations,
     confirmLeave,
+    provideTooltips,
+    tooltip,
     type ButtonVariant,
     type StatusDotState,
   } from "..";
+  import { notifications } from "../../notifications.svelte";
   import { router } from "../../router.svelte";
+  import { toast } from "../../toast.svelte";
 
   // Every primitive in every state, served at /dev/gallery in development and
   // mock builds. Controls are live, so keyboard behavior can be tried here.
@@ -85,6 +96,7 @@
   // Back closes the overlays opened here, without the router reading this
   // page's address as a place.
   router.startForOverlays();
+  provideTooltips(tooltip);
 
   const AGENTS: readonly { name: string; role: string; state: StatusDotState; working?: true }[] = [
     { name: "scout", role: "Research and reading lists", state: "running" },
@@ -112,6 +124,22 @@
   let chosenAgent = $state("scout");
   let drawerOpen = $state(false);
   let answer = $state("");
+
+  let menuChoice = $state("");
+  let atlasAutostart = $state(true);
+  let popoverModel = $state("claude-9");
+  let popoverThinking = $state<(typeof THINKING)[number]["value"]>("medium");
+  let recentOpen = $state(false);
+
+  function surfaceSamples(): void {
+    notifications.surface("system", "Gateway is reloading…");
+    notifications.surface("notice", "scout finished its weekly review. It's in your inbox.");
+    notifications.surface(
+      "error",
+      "atlas couldn't reach Anthropic. Check the API key in atlas's settings.",
+      "provider anthropic answered 401 Unauthorized\nPOST /v1/messages\nrequest id req_01J8ZK4X",
+    );
+  }
 
   async function askDelete(): Promise<void> {
     const confirmed = await confirmations.ask({
@@ -468,6 +496,129 @@
       </div>
     </section>
 
+    <section aria-labelledby="g-floating">
+      <h2 id="g-floating">Menus, popovers and tooltips</h2>
+      <div class="gallery-surface">
+        <div class="gallery-row">
+          <span class="gallery-caption">menus</span>
+          <Menu label="Manage atlas">
+            {#snippet trigger(props)}
+              <IconButton icon="more" label="Manage atlas" variant="secondary" {...props} />
+            {/snippet}
+            {#snippet heading()}
+              <StatusDot state="running" />
+              atlas, running
+            {/snippet}
+            <MenuItem
+              icon="chat"
+              label="Open chat"
+              onselect={() => (menuChoice = "Opened chat.")}
+            />
+            <MenuItem icon="play" label="Start" disabled onselect={() => {}} />
+            <MenuItem icon="pause" label="Stop" onselect={() => (menuChoice = "Stopped atlas.")} />
+            <MenuItem
+              icon="reload"
+              label="Restart"
+              onselect={() => (menuChoice = "Restarted atlas.")}
+            />
+            <MenuItem
+              icon="clock"
+              label="Start automatically"
+              checked={atlasAutostart}
+              onselect={() => (atlasAutostart = !atlasAutostart)}
+            />
+            <MenuSeparator />
+            <MenuItem
+              icon="settings"
+              label="Settings"
+              onselect={() => (menuChoice = "Opened settings.")}
+            />
+            <MenuItem
+              icon="close"
+              label="Delete atlas"
+              tone="danger"
+              onselect={() => (menuChoice = "Deleted atlas.")}
+            />
+          </Menu>
+          <Menu label="Help">
+            {#snippet trigger(props)}
+              <Button variant="quiet" icon="info" {...props}>Help</Button>
+            {/snippet}
+            <MenuItem
+              label="Keyboard shortcuts"
+              hint="?"
+              onselect={() => (menuChoice = "Opened shortcuts.")}
+            />
+            <MenuItem label="Recent notifications" onselect={() => (recentOpen = true)} />
+            <MenuItem label="Send feedback" onselect={() => (menuChoice = "Opened feedback.")} />
+            <MenuItem label="Report a bug" onselect={() => (menuChoice = "Opened bug report.")} />
+          </Menu>
+          <span class="gallery-note" role="status">{menuChoice}</span>
+        </div>
+        <div class="gallery-row">
+          <span class="gallery-caption">popover</span>
+          <Popover label="Model for atlas">
+            {#snippet trigger(props)}
+              <Button variant="quiet" icon="spark" {...props}>{popoverModel}</Button>
+            {/snippet}
+            <div class="gallery-popover">
+              <SelectField
+                label="Model, from Anthropic"
+                bind:value={popoverModel}
+                options={[
+                  { value: "claude-9", label: "claude-9" },
+                  { value: "claude-9-fast", label: "claude-9-fast" },
+                ]}
+              />
+              <SegmentedControl label="Thinking" bind:value={popoverThinking} options={THINKING} />
+              <p class="gallery-note">Applies to atlas from its next reply.</p>
+            </div>
+          </Popover>
+        </div>
+        <div class="gallery-row">
+          <span class="gallery-caption">tooltips</span>
+          <IconButton icon="settings" label="Settings" />
+          <IconButton icon="copy" label="Copy" tooltip="Copy the agent's address" />
+          <span class="gallery-note">Rest a pointer on an icon button, or reach it with Tab.</span>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="g-toasts">
+      <h2 id="g-toasts">Toasts and recent notifications</h2>
+      <div class="gallery-surface">
+        <div class="gallery-row">
+          <span class="gallery-caption">toasts</span>
+          <Button onclick={() => toast.info("Reloaded settings for every agent.")}>Notice</Button>
+          <Button onclick={() => toast.success("Saved. atlas uses claude-9 from its next reply.")}>
+            Success
+          </Button>
+          <Button
+            onclick={() =>
+              toast.success("Removed the Brave Search key.", {
+                label: "Undo",
+                onClick: () => toast.info("Put the Brave Search key back."),
+              })}
+          >
+            With Undo
+          </Button>
+          <Button
+            onclick={() =>
+              toast.error(
+                "Couldn't save the settings. Check that Residuum is running, then try again.",
+              )}
+          >
+            Error
+          </Button>
+        </div>
+        <div class="gallery-row">
+          <span class="gallery-caption">history</span>
+          <Button onclick={surfaceSamples}>Add sample notifications</Button>
+          <Button onclick={() => (recentOpen = true)}>Recent notifications</Button>
+        </div>
+      </div>
+    </section>
+
     <section aria-labelledby="g-kbd">
       <h2 id="g-kbd">Keys</h2>
       <div class="gallery-surface">
@@ -579,7 +730,11 @@
   </nav>
 </Drawer>
 
+<RecentNotifications bind:open={recentOpen} />
+
 <ConfirmHost />
+<ToastRegion />
+<TooltipHost />
 
 <style>
   .gallery {
@@ -669,6 +824,13 @@
     font-size: var(--font-size-xs);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+  }
+
+  .gallery-popover {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-16);
+    padding: var(--space-4);
   }
 
   .gallery-form-dialog {
