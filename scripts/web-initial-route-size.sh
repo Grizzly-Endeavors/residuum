@@ -4,12 +4,20 @@
 # raw and gzipped. Chunks the app imports later (Settings, the command palette,
 # the file editor, the setup wizard) and the fonts are not counted.
 #
-# The CI web job adds this table to its summary. It only reports: no size makes
-# a build fail. Run `npm run build` in web/ first. The gzip level is zlib's
-# default, the one Vite's build output reports.
+# The gzipped total has a budget, and the script exits 1, saying by how much,
+# when the route outgrows it. `just web-size` and CI's web job run it. When a
+# change needs the room, move what the first screen doesn't use behind a
+# dynamic import, or raise BUDGET_GZIP_BYTES below in a commit that says why.
+# Run `npm run build` in web/ first. The gzip level is zlib's default, the one
+# Vite's build output reports.
 #
 # Usage: scripts/web-initial-route-size.sh [dist-dir]   (default: web/dist)
 set -euo pipefail
+
+# The gzipped initial route may not grow past this many bytes.
+# Measured 193668 bytes (193.7 kB) once the settings model and the TOML parser
+# load on demand. 213100 is about 10% above that measurement.
+BUDGET_GZIP_BYTES=213100
 
 dist="${1:-web/dist}"
 index="$dist/index.html"
@@ -47,3 +55,11 @@ for extension in js css; do
   echo "| $label | $files | $(kilobytes "$raw") | $(kilobytes "$gzipped") |"
 done
 echo "| Total | | $(kilobytes "$total_raw") | $(kilobytes "$total_gzip") |"
+echo "| Budget | | | $(kilobytes "$BUDGET_GZIP_BYTES") |"
+
+if [ "$total_gzip" -gt "$BUDGET_GZIP_BYTES" ]; then
+  echo "" >&2
+  echo "The initial route is $(kilobytes "$total_gzip") gzipped, $(kilobytes $((total_gzip - BUDGET_GZIP_BYTES))) over its budget of $(kilobytes "$BUDGET_GZIP_BYTES")." >&2
+  echo "Load what the first screen doesn't need with a dynamic import, or raise BUDGET_GZIP_BYTES in scripts/web-initial-route-size.sh in a commit that says why the route needs the room." >&2
+  exit 1
+fi
