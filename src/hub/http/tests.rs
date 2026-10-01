@@ -28,6 +28,7 @@ use crate::gateway::web::{
     AgentFilesState, CheckpointAccess, ConfigApiState, WorkspaceScope,
     agent_files_api_router as agent_files_router,
 };
+use crate::hub::team_events::TeamEventLog;
 use crate::hub::{
     A2aVisibility, Actor, AgentActivity, AgentDirectory, AgentFiles, AgentPatch, AgentState,
     AgentSummary, CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError,
@@ -38,6 +39,7 @@ use crate::workspace::layout::WorkspaceLayout;
 use crate::workspace::team_files::TeamWriteCoordinator;
 use crate::workspace::watch::{WatchHealth, WorkspaceChange, WorkspaceChangeKind};
 
+mod events;
 mod inbox;
 
 /// The boot id every harness hub reports.
@@ -406,6 +408,8 @@ struct Harness {
     reload_rx: mpsc::UnboundedReceiver<ReloadSignal>,
     shutdown_rx: mpsc::Receiver<()>,
     team_bus: crate::bus::BusHandle,
+    /// The log the hub serves; a test records into it the way the recorder does.
+    team_events: Arc<TeamEventLog>,
     _tunnel_tx: watch::Sender<TunnelStatus>,
     health_tx: watch::Sender<WatchHealth>,
     _restart_rx: mpsc::Receiver<()>,
@@ -432,6 +436,7 @@ impl Harness {
         let (tunnel_tx, tunnel_rx) = watch::channel(TunnelStatus::Disconnected);
         let (health_tx, health_rx) = watch::channel(WatchHealth::Native);
         let team_bus = crate::bus::spawn_broker();
+        let team_events = TeamEventLog::new(TEST_BOOT_ID);
         let (_layer, span_buffer) = crate::util::telemetry::SpanBufferLayer::new(
             &crate::util::telemetry::SpanBufferConfig::default(),
         );
@@ -468,7 +473,7 @@ impl Harness {
             team_bus: team_bus.clone(),
             team_watch_health: health_rx,
             started_at: std::time::Instant::now(),
-            boot_id: TEST_BOOT_ID.to_string(),
+            team_events: Arc::clone(&team_events),
         };
         let shared: Arc<dyn AgentDirectory> = Arc::<FakeDirectory>::clone(&directory);
         let app = hub_router(shared, hub);
@@ -479,6 +484,7 @@ impl Harness {
             reload_rx,
             shutdown_rx,
             team_bus,
+            team_events,
             _tunnel_tx: tunnel_tx,
             health_tx,
             _restart_rx: restart_rx,

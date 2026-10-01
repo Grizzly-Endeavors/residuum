@@ -11,5 +11,5 @@
     "noFallthroughCasesInSwitch": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/**/*.ts", "src/**/*.svelte", "mock/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.svelte", "mock/**/*.ts", "e2e/**/*.ts", "playwright.config.ts"]
 }

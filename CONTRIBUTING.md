@@ -23,7 +23,7 @@ Thanks for your interest in contributing. This document covers the workflow and 
    .githooks/install.sh
    ```
 
-If you have [`just`](https://github.com/casey/just) installed, `just setup` installs the web dependencies (step 3) and the git hooks (step 5) in one go, and `just` on its own lists everything else: `just check` runs everything CI runs, `just test memory::` runs one module's tests, and `just web-mock` starts the web UI against a mock API with no backend. Every recipe wraps a command documented here, so `just` is optional.
+If you have [`just`](https://github.com/casey/just) installed, `just setup` installs the web dependencies (step 3) and the git hooks (step 5) in one go, and `just` on its own lists everything else: `just check` runs everything CI runs except the web end-to-end suite, `just test memory::` runs one module's tests, and `just web-mock` starts the web UI against a mock API with no backend. Every recipe wraps a command documented here, so `just` is optional.
 
 ## Branch & PR Workflow
 
@@ -70,11 +70,11 @@ Pre-commit hooks run automatically:
 - `cargo clippy` — pedantic linting with strict denials
 - `cargo test` — tests for the modules touched by the commit
 - `cargo deny check` — dependency audit
-- When `web/src/` files are staged: Prettier, ESLint and the style lint (Stylelint), `svelte-check` (warnings fail it), and the web unit tests (Vitest)
+- When any file under `web/` is staged: Prettier, ESLint and the style lint (Stylelint), `svelte-check` (warnings fail it), and the web unit and component tests (Vitest)
 
 Do not bypass hooks. If a hook fails, fix the issue before committing.
 
-CI, which runs on release tags, repeats these checks and adds two. It regenerates the web's TypeScript protocol types from the Rust types and fails when `web/src/lib/generated/` differs from what is committed, so after changing an exported Rust type run `just types` and commit the result (`just types-check` runs the same check as CI). It also reports web test coverage in the job summary, with no threshold.
+CI, which runs on release tags, repeats these checks and adds three. It runs the web end-to-end and accessibility suite in Chromium against the mock (`just web-e2e-fast` runs it locally; `just web-e2e` adds the visual comparisons, which render in the Playwright container, and a frontend change runs it before it is reported, since pull requests don't run CI; see [web/CONTRIBUTING.md](web/CONTRIBUTING.md#testing)). It regenerates the web's TypeScript protocol types from the Rust types and fails when `web/src/lib/generated/` differs from what is committed, so after changing an exported Rust type run `just types` and commit the result (`just types-check` runs the same check as CI). It also reports web test coverage in the job summary, with no threshold.
 
 ### Style
 
