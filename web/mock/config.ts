@@ -442,7 +442,7 @@ const a2aRoutes: readonly Route[] = [
         local_url: `http://127.0.0.1:${A2A_PORT}/agents/${state.agentName}`,
         relay_access: false,
         relay_access_note:
-          "Reachable locally. Connect to the Residuum relay in Cloud settings to make it reachable from other places, or set an address of your own below if you run your own tunnel.",
+          "Reachable locally. Connect to the Residuum relay in Hub settings → Cloud to make it reachable from other places, or set your own address in Hub settings → A2A listener & keys if you run your own tunnel.",
         listener_running: true,
         card_error: null,
       } satisfies A2aStatusResponse);
