@@ -48,7 +48,7 @@ With [`just`](https://github.com/casey/just), `just web-mock` from the repo root
 - The team overview: `GET /api/hub/overview` and an `agent_overview` frame on the hub socket whenever an agent's overview changes. Each agent's last message, live sessions and unread inbox count are read from the data the mock's other routes serve (its conversation, sessions and inbox), `upcoming` lists its three soonest runs (its pulses by their next fire time, and its pending scheduled actions) and `outbound_problems` its open tasks to other agents that have been unreachable for ten minutes, and changes are gathered so an agent gets at most one frame per simulated second (the next tick when delays are off). A created agent is sent at once. It starts over on reset
 - Push presence: the hub socket accepts `{ "type": "presence", "device_id", "active" }` and keeps what each connected page reported on the mock clock, as the hub does. A device is present for 60 seconds after an `active: true` report from a page that is still connected, and `active: false` or the page disconnecting ends it; a frame without a `device_id` string and an `active` boolean is refused with the warning `notice` any unreadable frame gets, and a valid one gets no answer. `GET /api/mock/push/presence` answers `{ "devices": [...] }`, the devices the real hub would send no push right now. The mock sends no pushes.
 - Workspace files, for an agent (`/api/agents/{name}/workspace/...`) and for the shared team tree (`/api/team/workspace/...`): directory listings with size, modification time and version, reads with the version as the `ETag`, writes that answer `412` when the client's `If-Match` no longer matches, and delete, move, validate, `dir`, `raw` reads and writes, the recursive `tree` (with `glob`, `depth` and `content`) and the batch `read` with the backend's size budgets. Edits change the listings, and the team tree is the same one under an agent's `team/`
-- The Scheduled view (`/api/agents/{name}/scheduled/...`): the pulses, with their next fire, last outcome and current run worked out from the agent's sessions the way the backend reads them, toggling a pulse, and the pending actions with cancel. One pulse is disabled and one failed to load
+- The Schedule place's routes (`/api/agents/{name}/scheduled/...`): the pulses, with their next fire, last outcome and current run worked out from the agent's sessions the way the backend reads them, toggling a pulse, and the pending actions with cancel. One pulse is disabled and one failed to load. Like the backend, they answer `409` for an agent that isn't running
 - Checkpoints, for an agent (`workspace` and `agent_config` repositories) and for the hub (`hub` and `team`): list with `path`, `turn_id` and paging, stats, a checkpoint's detail, diff and file, restore and undo. Each repository keeps the whole tree of each checkpoint, so a restore writes the files back (Settings, the workspace and the team tree show it) and an undo skips a path that changed again since. A route answers `400` for a repository of the other scope, like the backend. The sample histories end at the live files, and `status` reports their stats
 - `POST /api/agents/{name}/agent-inbox` (what an artifact adds to the agent's own inbox, with the backend's ids, title default and `artifact:<name>` source), and the update routes (`/api/hub/update/status`, `check` and `apply`; the mock is always on the latest version) with `cloud/disconnect`
 - The user inbox: a listing, an archive, mark read, archive, restore and attachments (`/api/agents/{name}/inbox/...`), with the backend's response shapes, including its `500` for an item that isn't there. No sample item carries an attachment, but `POST /api/mock/user-inbox-add` can give a new one some; an attachment serves a stand-in file of its type
@@ -68,7 +68,7 @@ With [`just`](https://github.com/casey/just), `just web-mock` from the repo root
 - Config saves don't persist across server restarts
 - Some edge cases (rate limits, network errors) aren't simulated
 - The workspace routes don't block paths the backend blocks, and a delete, move or raw write records no checkpoint (deleting a workbench artifact does). Only `POST /api/mock/team-file` and `POST /api/mock/agent-file` send `workspace_changed`, and only the first the artifact frames: a write through the workspace routes, or an Undo, changes the files without announcing it, and the mock has no batches, resyncs or lag. A raw write stores its body as text, so bytes that aren't valid UTF-8 don't round-trip
-- The Scheduled view's pulses and actions are kept apart from `HEARTBEAT.yml` in the workspace: toggling a pulse doesn't edit that file
+- The Schedule place's pulses and actions are kept apart from `HEARTBEAT.yml` in the workspace: toggling a pulse doesn't edit that file or send `workspace_changed`
 - `POST /api/secrets` doesn't validate the value like the real server does — it accepts anything, including a `secret:` or `${ENV_VAR}` reference the real server would reject with a 400. The frontend already avoids sending those (see `lib/secrets.ts`), so this only matters if you're testing the rejection path itself
 
 ### Setup Wizard Mode
@@ -119,7 +119,8 @@ web/
 │   │   └── panel/                # The context panel: its frame and header, its width, and what each kind shows
 │   ├── places/               # Rebuilt places, one folder each
 │   │   ├── home/             # Home: needs-you, the agents board and its row menus, Recently deleted, Across the team, Coming up, and the words and times they show
-│   │   └── inbox/            # Inbox: the list, the filter and tabs, an item opened in place, and the words for sources and sizes
+│   │   ├── inbox/            # Inbox: the list, the filter and tabs, an item opened in place, and the words for sources and sizes
+│   │   └── schedule/         # An agent's Schedule: its pulses and scheduled actions, and the words they show
 │   ├── Chat.svelte           # Main chat view
 │   ├── Setup.svelte          # Setup wizard
 │   ├── Settings.svelte       # Settings panel
@@ -152,6 +153,7 @@ web/
 │       ├── feed.svelte.ts        # Main chat feed state
 │       ├── feed-items.ts         # History-to-feed conversion shared by chat and session views
 │       ├── sessions.svelte.ts    # Agent sessions: listing, live frames, session view, commands
+│       ├── scheduled.svelte.ts   # The bound agent's pulses and scheduled actions, for the Schedule place
 │       ├── overview.svelte.ts    # The team overview: each agent's overview, team events, the newest unread inbox items, what needs the user
 │       ├── inbox.svelte.ts       # The Inbox's list across agents: filter and tab, paging, read, archive, restore
 │       ├── app-badge.ts          # The app icon's badge (the Badging API): the inbox unread total
@@ -209,7 +211,7 @@ web/
 │   ├── workspace-bulk.ts     # The recursive tree listing and the batch read, with their budgets
 │   ├── inbox.ts              # The user inbox: listing, archive, read, restore, attachments
 │   ├── agent-inbox.ts        # The agent's own inbox: what an artifact adds to it
-│   ├── scheduled.ts          # The Scheduled view: pulses and actions
+│   ├── scheduled.ts          # The Schedule place's routes: pulses and actions
 │   ├── checkpoints.ts        # Checkpoint histories: list, stats, detail, diff, file, restore, undo
 │   ├── update.ts             # The update routes
 │   ├── workbench.ts          # Workbench artifact list, info and delete (with its checkpoint)
@@ -285,7 +287,7 @@ The rail's agents are an accordion (`accordion.svelte.ts`): one agent's places a
 
 `ShellActions.createAgent` is the one way to create an agent: Home's New agent, the rail's "+" and the palette's Create an agent call it, and it opens the Create agent dialog (`CreateAgentDialog.svelte`, a sheet on phones) over the current place. The name is checked against the backend's rules and the agent list as it is typed (`newAgentNameProblem` in `lib/agent-name.ts`), and a name a deleted agent had points at Recently deleted. Under More options are the agent to copy model settings from (the first by name until another is chosen) and who can find it (private by default). What was typed stays when the dialog closes without creating. Once the agent exists the dialog closes, the hub's `agent_created` frame raises the "You created …" toast, and beside the main region the new agent's rail row takes focus.
 
-Home and Inbox are rebuilt (see [Home and the overview](#home-and-the-overview) and [The Inbox](#the-inbox)). Places not rebuilt yet host their legacy view inside a `data-legacy-view` element, so the legacy global styles apply there and the new base styles don't: Chat the current chat, Activity the sessions list, Schedule the Scheduled page, Files and Shared files the workspace, and the Workbench itself. The Settings modal (`SettingsModal.svelte`) hosts the current Settings page, which lists the registry's sections and shows each with the panels that hold its settings; the Raw config section is its raw editors. The workbench's full view is a mode of that page and isn't in the URL. The palette and the help dialogs aren't in the URL either; each holds an overlay entry, so Back closes it.
+Home, Inbox and the Schedule are rebuilt (see [Home and the overview](#home-and-the-overview), [The Inbox](#the-inbox) and [The Schedule](#the-schedule)). Places not rebuilt yet host their legacy view inside a `data-legacy-view` element, so the legacy global styles apply there and the new base styles don't: Chat the current chat, Activity the sessions list, Files and Shared files the workspace, and the Workbench itself. The Settings modal (`SettingsModal.svelte`) hosts the current Settings page, which lists the registry's sections and shows each with the panels that hold its settings; the Raw config section is its raw editors. The workbench's full view is a mode of that page and isn't in the URL. The palette and the help dialogs aren't in the URL either; each holds an overlay entry, so Back closes it.
 
 ### Actions
 
@@ -318,6 +320,10 @@ Each board row ends in a "…" menu (`AgentMenu.svelte`), headed by the agent's 
 `places/inbox/` shows every agent's user inbox in one list, from `lib/inbox.svelte.ts` (`inbox`), which reads the hub's inbox routes through the API client. The place's URL is the list it shows: `inbox.show({ agent, tab })` fetches it each time the Inbox opens or the filter or tab changes, keeping what is on screen while the same list is fetched again, and `loadMore` pages older items in. Counts aren't kept here: the rail, the bottom bar, the tab and the filter read them from the overview store, and the place hands `overview.unreadCounts()` to `inbox.followCounts`, which fetches the list again whenever a count changes, so a new item shows up without polling.
 
 The item in the URL (`?item=<agent>:<id>`) is open in place. `inbox.open(ref)` marks it read when it is unread; when the loaded pages don't hold it (a link to an older or archived item), it is fetched on its own through the read route and shown above the list (`openedApart`), and an item that's gone (`missing`) is corrected away. `markRead`, `archive` and `restore` each answer whether they worked, keep one action per item at a time (`pending`), and leave a plain-language reason in `problems` when they don't, which the item shows with Try again. A failed list or older page lands in `loadError` or `moreError`, and a link that couldn't be fetched in `openError`, each with Try again. Archiving offers Undo on its toast.
+
+### The Schedule
+
+`places/schedule/Schedule.svelte` shows the bound agent's pulses and scheduled actions from `lib/scheduled.svelte.ts` (`scheduled`), and `schedule-model.ts` holds its words, taking run names and next-run times from Home's `home-model.ts` so both read the same. The store is reset by the socket coordinator on an agent switch, so it can't import `ws`: the place passes it the socket's frames and watch registry with `startWatching({ onFrame, watches })`. While a place is open the store owns a watch on `HEARTBEAT.yml` and `scheduled_actions.json`, tied to the bound agent, and refetches when either changes, on a resync, and on a scheduled run's session frames. A failed load lands in `loadError`, which the place shows with Try again. The schedule routes answer only while the agent runs, so the place loads when the agent is running and otherwise shows that it is stopped, with Start.
 
 ### Agents in API calls
 

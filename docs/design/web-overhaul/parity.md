@@ -106,12 +106,12 @@ Every capability the current web UI offers, grouped by the surface that has it t
 
 ## Scheduled → Schedule place (design §5; W30)
 
-- [ ] Reload
-- [ ] Pulses: enable toggle (disabled while pending or unscheduled), running and overlap badges, schedule, active hours, skill, next run, last result with error, problems
-- [ ] Actions: running badge, due time, skill, Cancel
-- [ ] Empty states explaining the agent creates these
-- [ ] Refetch on schedule-file changes and scheduled-session frames
-- [ ] **Fix:** a failed load shows the error and Try again, never the empty state
+- [x] Reload
+- [x] Pulses: enable toggle (disabled while pending or unscheduled), running and overlap badges, schedule, active hours, skill, next run, last result with error, problems — **Changed:** names and next-run times read as on Home ("Inbox check", "in 34m", "Due now"); the overlap is a line saying when the overlapped run started; the switch moves at once and back on failure; a notice explains when no enabled pulse will run
+- [x] Actions: running badge, due time, skill, Cancel
+- [x] Empty states explaining the agent creates these
+- [x] Refetch on schedule-file changes and scheduled-session frames — **Fix:** the place owns its watch on the two files instead of relying on another view's
+- [x] **Fix:** a failed load shows the error and Try again, never the empty state; a stopped or failed agent shows that it isn't running, with Start, instead of an error
 
 ## Team page → Home + Settings (design §6, §8; W27, W28, W38)
 
