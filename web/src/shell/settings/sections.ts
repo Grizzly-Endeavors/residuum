@@ -11,10 +11,15 @@ import type { Component } from "svelte";
 import type { FieldRef } from "../../lib/settings-fields";
 import type { AgentScopeModel, AllScopeModel } from "../../lib/settings-model.svelte";
 import type { AgentSectionId, AllSectionId } from "../../lib/settings-sections";
+import CloudSection from "./CloudSection.svelte";
+import DiagnosticsSection from "./DiagnosticsSection.svelte";
+import GeneralSection from "./GeneralSection.svelte";
+import LimitsSection from "./LimitsSection.svelte";
 import Memory from "./Memory.svelte";
 import RawConfig from "./RawConfig.svelte";
 import Runtime from "./Runtime.svelte";
 import Schedule from "./Schedule.svelte";
+import UpdatesSection from "./UpdatesSection.svelte";
 
 export type SettingsScope = AgentScopeModel | AllScopeModel;
 
@@ -38,6 +43,11 @@ export const AGENT_SECTION_VIEWS: Partial<Record<AgentSectionId, Component<Agent
 };
 
 export const ALL_SECTION_VIEWS: Partial<Record<AllSectionId, Component<AllSectionProps>>> = {
+  general: GeneralSection,
+  cloud: CloudSection,
+  updates: UpdatesSection,
+  limits: LimitsSection,
+  diagnostics: DiagnosticsSection,
   raw: RawConfig,
 };
 

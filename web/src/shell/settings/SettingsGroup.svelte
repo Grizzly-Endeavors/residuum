@@ -1,41 +1,46 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
 
-  // A card inside a settings section: a heading, a line on what it holds, and
-  // its fields. Related settings sit in one card, set apart from the next by
-  // surface tone, with no outline. A `foot` is a quiet action under the
-  // fields, such as a link to the place that shows what the group configures.
+  // A card inside a settings section: an optional title with a state mark
+  // beside it, a line on what the group is, its fields, and an optional quiet
+  // action under them, such as a link to the place that shows what the group
+  // configures. Groups sit on stone-2 inside the modal's stone-1 and stack
+  // with a gap between.
 
   interface Props {
     title?: string;
     lede?: string;
+    /** A state mark beside the title, such as a Badge. */
+    status?: Snippet;
+    /** A quiet action under the fields: a small quiet Button. */
     foot?: Snippet;
     children: Snippet;
   }
 
-  let { title, lede, foot, children }: Props = $props();
+  let { title, lede, status, foot, children }: Props = $props();
 
   const uid = $props.id();
   const titleId = `${uid}-title`;
 </script>
 
-<div class="settings-group" role="group" aria-labelledby={title ? titleId : undefined}>
-  {#if title}
-    <div class="settings-group-head">
-      <h3 id={titleId} class="settings-group-title">{title}</h3>
-      {#if lede}
-        <p class="settings-group-lede">{lede}</p>
-      {/if}
-    </div>
+<section class="set-group" aria-labelledby={title === undefined ? undefined : titleId}>
+  {#if title !== undefined}
+    <header class="set-group-head">
+      <h3 id={titleId} class="set-group-title">{title}</h3>
+      {@render status?.()}
+    </header>
+  {/if}
+  {#if lede !== undefined}
+    <p class="set-group-lede">{lede}</p>
   {/if}
   {@render children()}
   {#if foot}
-    <div class="settings-group-foot">{@render foot()}</div>
+    <div class="set-group-foot">{@render foot()}</div>
   {/if}
-</div>
+</section>
 
 <style>
-  .settings-group {
+  .set-group {
     display: flex;
     flex-direction: column;
     gap: var(--space-16);
@@ -46,26 +51,28 @@
     background: var(--color-stone-2);
   }
 
-  .settings-group-head {
+  .set-group-head {
     display: flex;
-    flex-direction: column;
-    gap: var(--space-4);
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-10);
   }
 
-  .settings-group-title {
+  .set-group-title {
     font-size: var(--font-size-message);
     font-weight: var(--font-weight-semibold);
     line-height: var(--line-height-tight);
   }
 
-  .settings-group-foot {
+  .set-group-foot {
     display: flex;
     margin: calc(var(--space-4) * -1) 0 calc(var(--space-4) * -1) calc(var(--space-8) * -1);
   }
 
-  .settings-group-lede {
+  .set-group-lede {
+    margin-top: calc(var(--space-4) * -1);
+    color: var(--color-text-2);
     font-size: var(--font-size-sm);
     line-height: var(--line-height-ui);
-    color: var(--color-text-2);
   }
 </style>
