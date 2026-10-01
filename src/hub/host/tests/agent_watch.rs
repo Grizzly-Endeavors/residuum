@@ -196,6 +196,16 @@ async fn changes_to_the_files_the_hub_follows_reach_the_feed() {
     std::fs::write(dir.join("inbox/user/20260930_hand-placed.json"), "{}").unwrap();
     std::fs::write(dir.join("scheduled_actions.json"), "[]").unwrap();
     std::fs::write(dir.join("HEARTBEAT.yml"), "pulses: {}").unwrap();
+    // The agent wrote HEARTBEAT.yml when it started, probably in this same
+    // second, and the polling watcher the feed falls back to when the OS
+    // watch limit is reached compares whole-second modification times. A
+    // later time makes the rewrite visible however the files are watched.
+    std::fs::File::options()
+        .write(true)
+        .open(dir.join("HEARTBEAT.yml"))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + Duration::from_secs(5))
+        .unwrap();
     std::fs::write(dir.join("pulse_state.json"), "{}").unwrap();
     std::fs::write(dir.join("config/mcp.json"), "{}").unwrap();
 
