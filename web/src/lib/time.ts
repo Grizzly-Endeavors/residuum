@@ -12,3 +12,8 @@ export function relativeTime(then: Date | string, now: number = Date.now()): str
   if (hours < 24) return `${hours}h ago`;
   return `${Math.round(hours / 24)}d ago`;
 }
+
+/** This moment as an RFC 3339 timestamp, for a record the page makes itself. */
+export function isoNow(): string {
+  return new Date().toISOString();
+}

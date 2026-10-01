@@ -1,5 +1,6 @@
-// ── Plain-language labels for agent sessions ─────────────────────────
+// ── Plain-language words for agent sessions and outbound tasks ───────
 
+import type { IconName } from "./icons";
 import type {
   OutboundA2aTaskSummary,
   SessionCategory,
@@ -9,7 +10,7 @@ import type {
   SessionSummary,
 } from "./types";
 
-/** Every session category, in the order the sidebar groups them. */
+/** Every session category, in the order Activity's kind filter lists them. */
 export const SESSION_CATEGORIES: readonly SessionCategory[] = [
   "external",
   "scheduled",
@@ -17,20 +18,31 @@ export const SESSION_CATEGORIES: readonly SessionCategory[] = [
   "artifact",
 ];
 
-/** Sessions split into their categories' sidebar groups, each keeping the list's order. */
-export function groupByCategory(
-  sessions: readonly SessionSummary[],
-): Record<SessionCategory, SessionSummary[]> {
-  const groups = Object.fromEntries(
-    SESSION_CATEGORIES.map((category) => [category, [] as SessionSummary[]]),
-  ) as Record<SessionCategory, SessionSummary[]>;
-  for (const session of sessions) groups[session.category].push(session);
-  return groups;
+/** Each kind of run, as the Finished filter and a run's details name it. */
+export const KIND_NAMES: Readonly<Record<SessionCategory, string>> = {
+  external: "From another app",
+  scheduled: "Scheduled",
+  spawned: "Started by an agent",
+  artifact: "From a workbench page",
+};
+
+const KIND_ICONS: Readonly<Record<SessionCategory, IconName>> = {
+  external: "hash",
+  scheduled: "clock",
+  spawned: "layers",
+  artifact: "page",
+};
+
+export function runIcon(category: SessionCategory): IconName {
+  return KIND_ICONS[category];
 }
 
-/** States in which a run is still live (listed from the registry). */
-export function isLiveState(state: SessionState): boolean {
-  return state !== "completed";
+/** How a run started, in plain words. A spawner of `main` is the agent's own conversation. */
+export function runKind(agent: string, run: Pick<SessionSummary, "category" | "spawner">): string {
+  if (run.category !== "spawned") return KIND_NAMES[run.category];
+  return run.spawner === null || run.spawner === "main"
+    ? `Started by ${agent}`
+    : `Started by ${run.spawner}`;
 }
 
 /** States in which a stop request can still take effect. */
@@ -38,6 +50,7 @@ export function isStoppableState(state: SessionState): boolean {
   return state === "forking" || state === "queued" || state === "running" || state === "idle";
 }
 
+/** A run's state in a word or two, for the Workbench's activity panel. */
 export function stateLabel(state: SessionState): string {
   switch (state) {
     case "forking":
@@ -55,45 +68,41 @@ export function stateLabel(state: SessionState): string {
   }
 }
 
-export function categoryDescription(category: SessionCategory): string {
-  switch (category) {
-    case "scheduled":
-      return "Started on a schedule (a pulse or scheduled action)";
-    case "external":
-      return "Started by someone else or another system (a chat conversation or webhook), or sent by your agent to another agent";
-    case "spawned":
-      return "Started by an agent";
-    case "artifact":
-      return "Started by a workbench artifact";
-  }
+/** How a run or task is doing, for its status mark: a tone and a few words. */
+export interface RunStatus {
+  tone: "working" | "quiet" | "done" | "failed";
+  text: string;
 }
 
-/** A category's name as a sidebar group heading. */
-export function categoryHeading(category: SessionCategory): string {
-  switch (category) {
-    case "scheduled":
-      return "Scheduled";
-    case "external":
-      return "External";
-    case "spawned":
-      return "Spawned";
-    case "artifact":
-      return "Artifacts";
+export function runStatus(run: SessionSummary, now: number): RunStatus {
+  switch (run.state) {
+    case "forking":
+      return { tone: "working", text: "Starting" };
+    case "queued":
+      return { tone: "working", text: "Queued" };
+    case "running":
+      return { tone: "working", text: `Working, ${runDuration(run, now)}` };
+    case "idle":
+      return { tone: "quiet", text: `Idle, ${runDuration(run, now)}` };
+    case "completing":
+      return { tone: "quiet", text: "Finishing" };
+    case "completed":
+      break;
   }
+  if (run.outcome === "failed") return { tone: "failed", text: "Failed" };
+  if (run.outcome === "cancelled") return { tone: "quiet", text: "Stopped" };
+  if (run.interrupted) return { tone: "quiet", text: "Interrupted" };
+  return { tone: "done", text: "Finished" };
 }
 
-/** What a sidebar group says when none of its sessions are running. */
-export function categoryIdleText(category: SessionCategory): string {
-  switch (category) {
-    case "scheduled":
-      return "Nothing running. Pulses and scheduled actions show up here while they run.";
-    case "external":
-      return "Nothing running. Conversations with other people, webhook calls, and tasks your agent sends to other agents show up here while they run.";
-    case "spawned":
-      return "Nothing running. Work your agent hands off shows up here while it runs.";
-    case "artifact":
-      return "Nothing running. Work a workbench artifact starts shows up here while it runs.";
-  }
+/** How a finished run ended, as its row says it. */
+export function finishedOutcome(run: SessionSummary): string {
+  const took =
+    run.completed_at === null ? "" : ` after ${runDuration(run, Date.parse(run.started_at))}`;
+  if (run.outcome === "failed") return run.error ? `Failed: ${run.error}` : "Failed";
+  if (run.outcome === "cancelled") return `Stopped${took}`;
+  if (run.interrupted) return "Cut short when Residuum stopped";
+  return `Finished${took}`;
 }
 
 /** Prefix of an artifact session's source label (`artifact:<name>`). */
@@ -107,11 +116,6 @@ export function sessionArtifact(session: SessionSummary): string | null {
   if (session.category !== "artifact") return null;
   if (!session.source_label.startsWith(ARTIFACT_SOURCE_PREFIX)) return null;
   return session.source_label.slice(ARTIFACT_SOURCE_PREFIX.length) || null;
-}
-
-/** What started a session, for a row or header: the artifact's name, or the source label. */
-export function sessionSourceText(session: SessionSummary): string {
-  return sessionArtifact(session) ?? session.source_label;
 }
 
 /**
@@ -138,7 +142,7 @@ export function runOutcomeText(status: SessionRunStatus, error: string | null): 
   }
 }
 
-/** Where a message sent from the sidebar landed, in plain language. */
+/** Where a message sent to a session landed, in plain language. */
 export function deliveryOutcomeText(outcome: SessionDeliveryOutcome): string {
   switch (outcome) {
     case "live":
@@ -183,29 +187,26 @@ export function formatLocalDateTime(iso: string): string {
   return Number.isNaN(date.getTime()) ? iso : STARTED_FORMATTER.format(date);
 }
 
-/** When a run started, as a short local date and time. */
-export function formatStarted(session: SessionSummary): string {
-  return formatLocalDateTime(session.started_at);
-}
-
-/** Where a task sent to another agent stands, for its sidebar row. */
-export function outboundStateText(task: OutboundA2aTaskSummary, now: number): string {
+/** Where a task sent to another agent stands, for its status mark. */
+export function outboundStatus(task: OutboundA2aTaskSummary, now: number): RunStatus {
   if (task.unreachable_since) {
     const since = Date.parse(task.unreachable_since);
     const gone = Number.isNaN(since) ? "" : ` for ${formatDuration(now - since)}`;
-    return `can't reach ${task.agent}${gone}, still retrying`;
+    return { tone: "failed", text: `Can't reach ${task.agent}${gone}` };
   }
   switch (task.state) {
     case "submitted":
-      return "sent";
+      return { tone: "working", text: "Sent" };
     case "working":
-      return "working";
+      return { tone: "working", text: "Working" };
     case "input_required":
-      return "waiting on your agent's reply";
+      return { tone: "quiet", text: "Waiting on your agent's reply" };
     case "auth_required":
-      return "waiting on sign-in";
-    default:
-      return task.state.replace(/_/g, " ");
+      return { tone: "quiet", text: "Waiting on sign-in" };
+    default: {
+      const words = task.state.replace(/_/g, " ");
+      return { tone: "quiet", text: words.charAt(0).toUpperCase() + words.slice(1) };
+    }
   }
 }
 

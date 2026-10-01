@@ -571,7 +571,7 @@ export interface AgentMessageFeedItem extends FeedItemBase {
 }
 
 /**
- * A one-line status note inside a session view: delivery outcomes, command
+ * A one-line status note in a session transcript: delivery outcomes, command
  * failures, session errors, and the run finishing.
  */
 export interface StatusFeedItem extends FeedItemBase {

@@ -28,10 +28,11 @@ test.describe("context panel", { tag: "@visual" }, () => {
     await panelScreenshot(page, "panel-file");
   });
 
-  test("a run on another agent, from the Workbench", async ({ page }) => {
-    await page.goto("/team/workbench?panel=session:scout:run-live-research");
-    await expect(page.getByRole("heading", { name: "This run is scout's" })).toBeVisible();
-    await panelScreenshot(page, "panel-elsewhere");
+  test("a session run beside Activity, or over it on a phone", async ({ page }) => {
+    await page.goto("/agent/atlas/activity?panel=session:atlas:run-live-research");
+    await expect(page.getByText("Starting with what's already in the wiki.")).toBeVisible();
+    await expect(page.getByRole("heading", { name: /^Running now/ })).toBeAttached();
+    await panelScreenshot(page, "panel-session");
   });
 
   test("at medium width", async ({ page, isMobile }) => {

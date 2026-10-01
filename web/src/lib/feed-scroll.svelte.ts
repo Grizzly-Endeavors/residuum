@@ -1,6 +1,6 @@
 // ── Feed scroll following (Svelte 5 runes) ───────────────────────────
 //
-// Shared by the main chat and session views: a feed follows new content only
+// Shared by the main chat and session transcripts: a feed follows new content only
 // while the reader is at the bottom. Once they scroll up to read, new items
 // leave them where they are and a "Jump to latest" pill offers the way back.
 
@@ -130,7 +130,7 @@ export class FeedScroller {
 
   private measure(): void {
     const el = this.el;
-    // A hidden feed (the chat under a session view) reports no size; keep the
+    // A hidden feed reports no size; keep the
     // reader's state for when it's shown again.
     if (!el || isHidden(el) || this.held) return;
     const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;

@@ -7,13 +7,14 @@ import { expect, test } from "../support/fixtures";
  * width, floating at medium width, a full-screen sheet on phones, and an
  * invalid `panel` corrected.
  *
- * A session and the conversation size still show hosted legacy views, which
- * the units that replace them scan, so the scans here leave them out. The
- * file editor is scanned here and in `files.spec.ts`.
+ * The conversation size still shows a hosted legacy view, which the unit that
+ * replaces it scans, so the scans here leave it out. The file editor is
+ * scanned here and in `files.spec.ts`, and a session run in `activity.spec.ts`.
  */
 
 const LEGACY = "[data-legacy-view]";
-const RUN_ROW = /^agent:researcher\. Compare fallback strategies/;
+const RUN = "Compare fallback strategies for notification delivery";
+const RUN_ROW = new RegExp(`^${RUN}`);
 
 /** The panel named `name`: a column beside the main region, or on a phone a full-screen sheet. */
 function contextPanel(page: Page, isMobile: boolean, name: string): Locator {
@@ -65,9 +66,9 @@ test("a run opens in the panel from Activity, and closing it goes back", async (
   await expect
     .poll(() => address(page))
     .toBe("/agent/atlas/activity?panel=session:atlas:run-live-research");
-  const panel = contextPanel(page, isMobile, "Session");
+  const panel = contextPanel(page, isMobile, RUN);
   await expect(panel).toBeVisible();
-  await expect(panel.getByRole("heading", { name: "spawned-research-3f9a" })).toBeVisible();
+  await expect(panel.getByRole("heading", { name: RUN })).toBeVisible();
   await scanPanel(page, isMobile);
 
   await closeButton(panel, isMobile).click();
@@ -87,13 +88,13 @@ test("Back closes the panel before it leaves the place", async ({ page, isMobile
   await page.goto("/home");
   await page.goto("/agent/atlas/activity");
   await page.getByRole("button", { name: RUN_ROW }).click();
-  const panel = contextPanel(page, isMobile, "Session");
+  const panel = contextPanel(page, isMobile, RUN);
   await expect(panel).toBeVisible();
 
   await page.goBack();
   await expect(panel).toBeHidden();
   await expect.poll(() => address(page)).toBe("/agent/atlas/activity");
-  await expect(page.getByRole("heading", { name: "Sessions" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Running now/ })).toBeVisible();
 
   await page.goBack();
   await expect.poll(() => address(page)).toBe("/home");
@@ -225,7 +226,7 @@ test.describe("at medium width", () => {
   test("floats over the main region, at its default width, and Esc closes it", async ({ page }) => {
     await page.goto("/agent/atlas/activity");
     await page.getByRole("button", { name: RUN_ROW }).click();
-    const panel = contextPanel(page, false, "Session");
+    const panel = contextPanel(page, false, RUN);
     await expect(panel).toBeVisible();
     await expect(panel.getByRole("separator")).toHaveCount(0);
 
@@ -264,16 +265,11 @@ test.describe("on a phone", () => {
   });
 });
 
-test("on the Workbench, a run on another agent opens beside that agent's chat", async ({
-  page,
-  isMobile,
-}) => {
+test("on the Workbench, a run on any agent shows in the panel", async ({ page, isMobile }) => {
   await page.goto("/agent/atlas");
   await page.goto("/team/workbench?panel=session:scout:run-live-research");
-  const panel = contextPanel(page, isMobile, "Session");
-  await expect(panel.getByRole("heading", { name: "This run is scout's" })).toBeVisible();
+  const panel = contextPanel(page, isMobile, RUN);
+  await expect(panel.getByText("On scout", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Starting with what's already in the wiki.")).toBeVisible();
   await scanPanel(page, isMobile);
-
-  await panel.getByRole("button", { name: "Open beside scout's chat" }).click();
-  await expect.poll(() => address(page)).toBe("/agent/scout?panel=session:scout:run-live-research");
 });

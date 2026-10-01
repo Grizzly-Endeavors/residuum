@@ -152,20 +152,16 @@ class WsCoordinator {
 
   /**
    * Build the sessions store for one agent's feed. A store never outlives its
-   * agent: anything still in flight for the old one (a fetch, a queued
-   * command) lands on a store nobody reads, or is dropped.
+   * agent: anything still in flight for the old one (a fetch, a stop) lands
+   * on a store nobody reads.
    */
   private createSessions(agent: string | null, store: FeedStore): SessionsStore {
-    const sessions: SessionsStore = new SessionsStore({
+    return new SessionsStore({
       agent,
-      send: (msg) => {
-        if (this.sessions === sessions) this.transport.send(msg);
-      },
       pushToMain: (from, runId, content, category) => {
         store.pushAgentMessage(from, runId, content, category);
       },
     });
-    return sessions;
   }
 
   /**

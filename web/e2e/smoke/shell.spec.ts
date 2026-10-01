@@ -68,7 +68,7 @@ const PLACES: readonly PlaceCase[] = [
     agent: "atlas",
     link: /^Activity/,
     path: "/agent/atlas/activity",
-    shows: (page) => page.getByRole("heading", { name: "Sessions" }),
+    shows: (page) => page.getByRole("heading", { name: /^Running now/ }),
   },
   {
     name: "Schedule",
