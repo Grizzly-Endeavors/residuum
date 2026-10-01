@@ -108,7 +108,7 @@
   /** Open an item, close it, or switch to it from the one that is open. */
   function toggle(item: HubInboxItem): void {
     const ref: InboxItemRef = { agent: item.agent, id: item.id };
-    if (inboxItemKey(ref) === openKey) void router.closeInboxItem();
+    if (inboxItemKey(ref) === openKey) void router.closeItem();
     else if (place.item === null) void router.openPlace({ ...place, item: ref });
     else void router.replacePlace({ ...place, item: ref });
   }
@@ -235,7 +235,7 @@
     id={rowId(item)}
     open={inboxItemKey(item) === openKey}
     ontoggle={() => toggle(item)}
-    onleave={() => void router.closeInboxItem()}
+    onleave={() => void router.closeItem()}
   />
 {/snippet}
 

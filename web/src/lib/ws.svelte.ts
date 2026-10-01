@@ -50,7 +50,6 @@ class WsCoordinator {
   /** The agent started while bound, so its chat may be behind once the connection opens. */
   private catchUpOnConnect = false;
   private frameListeners = new Set<(msg: ServerMessage, agent: string | null) => void>();
-  private connectionListeners = new Set<(connected: boolean) => void>();
   /**
    * The bound agent's workspace watches. Whatever follows changes on this
    * socket registers here, and the registry keeps the socket's one watch set
@@ -141,12 +140,10 @@ class WsCoordinator {
       // Seed the chat footer so it renders correctly before the next model
       // call, rather than starting blank on every connect.
       void this.loadUsageTotals();
-      // A new connection watches nothing until told. The watch set goes out
-      // before listeners hear of the reconnect, so an artifact that reloads
-      // on it can't miss changes made in between.
+      // A new connection watches nothing until told, so the watch set goes
+      // out again before any owner hears of the reconnect.
       this.liveUpdatesOffShown = false;
       this.watches.connected();
-      this.notifyConnection(true);
     };
 
     this.transport.onDisconnected = () => {
@@ -194,7 +191,6 @@ class WsCoordinator {
   private connectionClosed(): void {
     this.watches.disconnected();
     this.store.clearPostTurnActivity();
-    this.notifyConnection(false);
   }
 
   // ── Agent binding ─────────────────────────────────────────────────
@@ -339,19 +335,6 @@ class WsCoordinator {
   onFrame(listener: (msg: ServerMessage, agent: string | null) => void): () => void {
     this.frameListeners.add(listener);
     return () => this.frameListeners.delete(listener);
-  }
-
-  /**
-   * Observe the socket connecting and disconnecting. Returns a function that
-   * stops observing.
-   */
-  onConnectionChange(listener: (connected: boolean) => void): () => void {
-    this.connectionListeners.add(listener);
-    return () => this.connectionListeners.delete(listener);
-  }
-
-  private notifyConnection(connected: boolean): void {
-    for (const listener of this.connectionListeners) listener(connected);
   }
 
   // ── Delegated methods ─────────────────────────────────────────────

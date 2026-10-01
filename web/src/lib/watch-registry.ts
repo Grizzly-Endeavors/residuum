@@ -1,8 +1,8 @@
 // ── Watch registry ───────────────────────────────────────────────────
 //
 // A socket keeps one watch set: the path prefixes it wants change frames for.
-// Several parts of the app want to watch at once (an open artifact, a file
-// tree, a config watcher), and a set that any of them can replace would let
+// Several parts of the app want to watch at once (a file tree, the Schedule,
+// a config watcher), and a set that any of them can replace would let
 // one wipe out another's. The registry is the only thing that sets it. Each
 // part registers as an owner and sets its own prefixes; the registry sends
 // the union and hands every change to the owners whose prefixes it concerns.
