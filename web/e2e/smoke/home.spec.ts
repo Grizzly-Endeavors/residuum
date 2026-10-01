@@ -9,9 +9,6 @@ import { expect, test } from "../support/fixtures";
  * and an unread item in each of their inboxes.
  */
 
-/** The legacy agent management under the board, which its own unit scans. */
-const LEGACY = "[data-legacy-view]";
-
 function needsYou(page: Page): Locator {
   return page.getByRole("region", { name: /^Needs you/ });
 }
@@ -50,7 +47,7 @@ test("Home shows what needs the user, every agent, and what happened across the 
   }
   await expect(acrossTheTeam(page).getByText("Residuum started")).toBeVisible();
   await expect(page.getByRole("region", { name: "Coming up" })).toBeVisible();
-  await expectNoAxeViolations(page, { exclude: LEGACY });
+  await expectNoAxeViolations(page);
 });
 
 test("the rail's Home count is the number of things that need the user", async ({
@@ -162,15 +159,6 @@ test("Coming up opens the agent's schedule", async ({ page }) => {
   await expect.poll(() => address(page)).toBe("/agent/atlas/schedule");
 });
 
-test("New agent opens agent management on its name field", async ({ page }) => {
-  await page.goto("/home");
-  await page.getByRole("button", { name: "New agent" }).click();
-  await expect(page.getByRole("textbox", { name: "Name" })).toBeFocused();
-  await expect(
-    page.getByRole("button", { name: "Start, stop, delete and add agents" }),
-  ).toHaveAttribute("aria-expanded", "true");
-});
-
 test("needs-you says so when nothing is waiting, and fills in as things arrive", async ({
   page,
   mock,
@@ -191,7 +179,7 @@ test("needs-you says so when nothing is waiting, and fills in as things arrive",
   expect(removed.ok()).toBe(true);
 
   await expect(needsYou(page).getByText("Nothing is waiting on you.")).toBeVisible();
-  await expectNoAxeViolations(page, { exclude: LEGACY });
+  await expectNoAxeViolations(page);
 
   await mock.post("/api/mock/user-inbox-add", {
     params: { agent: "scout" },

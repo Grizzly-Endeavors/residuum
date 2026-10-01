@@ -38,7 +38,6 @@ const LEGACY_FILES = [
   "src/components/settings/History.svelte",
   "src/components/settings/Integrations.svelte",
   "src/components/settings/Update.svelte",
-  "src/components/TeamView.svelte",
 ];
 
 /** A single token reference such as `var(--font-size-ui)`, with no literal fallback. */

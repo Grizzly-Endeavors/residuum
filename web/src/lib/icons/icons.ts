@@ -68,6 +68,12 @@ const DRAWINGS = {
   pause: [{ path: "M9 6v12M15 6v12" }],
   reload: [{ path: "M5 12a7 7 0 1 0 2.2-5.1" }, { path: "M5 4.5V8h3.5" }],
   restore: [{ rect: [4, 13.5, 16, 6.5, 1.5] }, { path: "M12 14V4.5M8 8.5l4-4 4 4" }],
+  trash: [
+    { path: "M4.5 7h15" },
+    { path: "M9.5 7V4.5h5V7" },
+    { path: "M6.5 7l1 12.5h9l1-12.5" },
+    { path: "M10.5 11v5M13.5 11v5" },
+  ],
   archive: [{ rect: [3.5, 5, 17, 4.5, 1.2] }, { path: "M5 9.5V19h14V9.5" }, { path: "M10 13h4" }],
   edit: [{ path: "M5 19h3.5L19 8.5 15.5 5 5 15.5z" }],
   copy: [
