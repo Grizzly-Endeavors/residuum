@@ -922,7 +922,7 @@ impl AgentHost {
             Ok(AgentExit::Stopped) => None,
             Ok(AgentExit::BusClosed) => Some((
                 format!(
-                    "{} stopped unexpectedly. Restart it from the team view; if it keeps happening, send a bug report.",
+                    "{} stopped unexpectedly. Restart it from Home; if it keeps happening, send a bug report.",
                     run.slot.name
                 ),
                 "the event loop ended because its message channel closed".to_string(),
@@ -932,7 +932,7 @@ impl AgentHost {
             Err(ref join_err) if requested && join_err.is_cancelled() => None,
             Err(join_err) => Some((
                 format!(
-                    "{} crashed from an internal error. Restart it from the team view; if it keeps happening, send a bug report.",
+                    "{} crashed from an internal error. Restart it from Home; if it keeps happening, send a bug report.",
                     run.slot.name
                 ),
                 describe_join_error(join_err),
@@ -1773,7 +1773,7 @@ impl AgentDirectory for AgentHost {
             tracing::error!(agent = %name, error = %e, "an agent's request to delete itself failed");
             self.notice(
                 NoticeLevel::Warn,
-                format!("{name} asked to be deleted, but that failed: {e}. It has been stopped; check its state in the team view."),
+                format!("{name} asked to be deleted, but that failed: {e}. It has been stopped; check its state on Home."),
                 Some(name.to_string()),
             );
         }

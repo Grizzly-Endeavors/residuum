@@ -832,7 +832,7 @@ The session runs in the background via the session runtime. Every turn's outcome
 - Remote agent not currently reachable (`is_error = true`): the hub's plain-language reachability error (e.g. its card hasn't resolved, or the last attempt failed).
 - Remote agent rejected the request (`is_error = true`): `"remote agent a2a:{name} couldn't complete the request: {error}"`
 - Delivered to a teammate: `"Message delivered to agent:{name}."` or `"...agent:{name}/{session}."`; a completed or completing teammate session gives the resumed/completing wording above with the `agent:` address.
-- Teammate not running (`is_error = true`): `"teammate '{name}' is {stopped|failed}; nothing was queued. Tell the user if this message matters; they can start it from the team view."`, or `"teammate '{name}' is starting; nothing was queued. Try again shortly."`
+- Teammate not running (`is_error = true`): `"teammate '{name}' is {stopped|failed}; nothing was queued. Tell the user if this message matters; they can start it from Home in the web UI."`, or `"teammate '{name}' is starting; nothing was queued. Try again shortly."`
 - Unknown teammate (`is_error = true`): `"no teammate named '{name}'. Your teammates are: {a, b}. Use list_agents for their state."` (or `"... You have no teammates."`)
 - Teammate has no such session (`is_error = true`): `"teammate '{name}' has no session '{session}'. Use the exact address from a message it sent you."`
 - Malformed teammate address (`is_error = true`): a message naming the problem and the two valid forms (`agent:<name>`, `agent:<name>/<session-address>`).
@@ -888,7 +888,7 @@ Routed through `crate::a2a::client`'s `A2aClientHub` (resolves the agent's card 
 ### Output
 
 - Created and started: `"Created agent '{name}' (running). Reach it with message_agent at agent:{name}."`
-- Created but it failed to start: `"Created agent '{name}', but it failed to start: {reason}"` followed by a line saying it exists on disk, received no first message, and can be fixed and started from the user's team view (`is_error = false`: the agent exists, so a retry would hit "already exists").
+- Created but it failed to start: `"Created agent '{name}', but it failed to start: {reason}"` followed by a line saying it exists on disk, received no first message, and can be fixed and started from Home in the user's web UI (`is_error = false`: the agent exists, so a retry would hit "already exists").
 - Invalid name, name taken, or any other refusal (`is_error = true`): `"can't create the agent: ..."` with the reason. An invalid name adds the naming rules; a taken name suggests messaging the existing agent.
 - The hub is shutting down (`is_error = true`): says agents can't be created right now.
 
@@ -909,7 +909,7 @@ Calls `AgentDirectory::create` as `Actor::Agent(<caller>)` with `models_from` se
 **Source:** `agent_lifecycle.rs` · `AgentDeleteTool`
 
 **Description sent to LLM:**
-> Stop a teammate and remove its directory, role page, and roster entry. Its files are checkpointed first; the result gives the checkpoint id. The user can restore the teammate from the team view's recently deleted list or with `residuum agent restore <name>`; you have no tool to restore one.
+> Stop a teammate and remove its directory, role page, and roster entry. Its files are checkpointed first; the result gives the checkpoint id. The user can restore the teammate from Recently deleted on the web UI's Home or with `residuum agent restore <name>`; you have no tool to restore one.
 >
 > You can delete yourself. That stops your turn the moment this call returns, so send your messages and save your files first, and call it last.
 
@@ -921,7 +921,7 @@ Calls `AgentDirectory::create` as `Actor::Agent(<caller>)` with `models_from` se
 
 ### Output
 
-- Deleted: `"Deleted agent '{name}'. Its files were checkpointed as {id}; the user can restore it from the team view or with `residuum agent restore {name}`."` When no checkpoint could be recorded the second sentence says it can't be restored.
+- Deleted: `"Deleted agent '{name}'. Its files were checkpointed as {id}; the user can restore it from Recently deleted on the web UI's Home or with `residuum agent restore {name}`."` When no checkpoint could be recorded the second sentence says it can't be restored.
 - Unknown agent or failure (`is_error = true`): `"can't delete the agent: ..."` with the reason.
 - Deleting yourself: `"Deleting yourself now. You are stopped as soon as this call returns; ..."`. The checkpoint id is not available yet.
 - The hub is shutting down (`is_error = true`): says agents can't be deleted right now.
