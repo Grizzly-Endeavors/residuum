@@ -16,6 +16,7 @@ import type { SessionSummary } from "../../lib/types";
 import { setViewedAgent } from "../../lib/viewed-agent";
 import { ws } from "../../lib/ws.svelte";
 import { registerAppActions } from "../../shell/app-actions.svelte";
+import type { ShellActions } from "../../shell/shell-actions";
 import ChatPlace from "./ChatPlace.svelte";
 
 class NoObserver {
@@ -59,6 +60,7 @@ function liveRun(runId: string): SessionSummary {
 }
 
 let unregister: () => void = () => {};
+let shell: ShellActions;
 
 beforeEach(() => {
   vi.stubGlobal("IntersectionObserver", NoObserver);
@@ -72,7 +74,7 @@ beforeEach(() => {
       agent("scout"),
     ]),
   );
-  unregister = registerAppActions({
+  shell = {
     openSearch: vi.fn(),
     openSettings: vi.fn(),
     openShortcuts: vi.fn(),
@@ -80,7 +82,8 @@ beforeEach(() => {
     openFeedback: vi.fn(),
     createAgent: vi.fn(),
     addInboxNote: vi.fn(),
-  });
+  };
+  unregister = registerAppActions(shell);
 });
 
 afterEach(() => {
@@ -92,7 +95,7 @@ describe("the chat header", () => {
   it("names the agent with its role, and opens its settings", async () => {
     setViewedAgent("atlas");
     const openSettings = vi.spyOn(router, "openSettings").mockResolvedValue(true);
-    render(ChatPlace, { agent: "atlas" });
+    render(ChatPlace, { agent: "atlas", actions: shell });
 
     expect(screen.getByRole("heading", { level: 1, name: "atlas" })).toBeInTheDocument();
     expect(screen.getByText("Keeps the team wiki tidy")).toBeInTheDocument();
@@ -103,7 +106,7 @@ describe("the chat header", () => {
   it("counts the agent's running sessions, and opens Activity from them", async () => {
     setViewedAgent("atlas");
     const openPlace = vi.spyOn(router, "openPlace").mockResolvedValue(true);
-    render(ChatPlace, { agent: "atlas" });
+    render(ChatPlace, { agent: "atlas", actions: shell });
     expect(screen.queryByRole("button", { name: /running/ })).toBeNull();
 
     ws.sessions.live = [liveRun("run-1"), liveRun("run-2")];
@@ -115,7 +118,7 @@ describe("the chat header", () => {
 
   it("offers the conversation's size, Restart and Stop for a running agent", async () => {
     setViewedAgent("atlas");
-    render(ChatPlace, { agent: "atlas" });
+    render(ChatPlace, { agent: "atlas", actions: shell });
     await userEvent.click(screen.getByRole("button", { name: "More for atlas" }));
 
     for (const name of ["Show conversation size", "Restart atlas", "Stop atlas"]) {
@@ -127,7 +130,7 @@ describe("the chat header", () => {
 
   it("says why a stopped agent can't be restarted or stopped", async () => {
     setViewedAgent("drifter");
-    render(ChatPlace, { agent: "drifter" });
+    render(ChatPlace, { agent: "drifter", actions: shell });
     await userEvent.click(screen.getByRole("button", { name: "More for drifter" }));
 
     for (const name of ["Restart drifter", "Stop drifter"]) {
@@ -144,12 +147,58 @@ describe("the chat header", () => {
 describe("the conversation", () => {
   it("shows one empty state once an empty history has loaded", async () => {
     setViewedAgent("atlas");
-    render(ChatPlace, { agent: "atlas" });
+    render(ChatPlace, { agent: "atlas", actions: shell });
     expect(screen.queryByText("No messages yet")).toBeNull();
 
     ws.store.loadHistory({ kind: "recent", messages: [], next_cursor: null });
     await settle();
     expect(screen.getAllByRole("heading", { name: "No messages yet" })).toHaveLength(1);
+  });
+
+  it("shows a stopped agent's card in place of the composer, and no empty state", async () => {
+    setViewedAgent("drifter");
+    render(ChatPlace, { agent: "drifter", actions: shell });
+    ws.store.loadHistory({ kind: "recent", messages: [], next_cursor: null });
+    await settle();
+
+    expect(screen.getByRole("region", { name: "drifter is stopped" })).toBeInTheDocument();
+    expect(screen.queryByText("No messages yet")).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.queryByText(/Reconnecting/)).toBeNull();
+  });
+
+  it("keeps the past conversation above the card", async () => {
+    setViewedAgent("drifter");
+    render(ChatPlace, { agent: "drifter", actions: shell });
+    ws.store.loadHistory({
+      kind: "recent",
+      messages: [
+        {
+          role: "assistant",
+          content: "The wiki index is tidy.",
+          timestamp: "2026-03-14T11:00",
+          visibility: "user",
+        },
+      ],
+      next_cursor: null,
+    });
+    await settle();
+
+    const conversation = screen.getByRole("region", { name: "Conversation with drifter" });
+    expect(conversation).toHaveTextContent("The wiki index is tidy.");
+    expect(screen.getByRole("region", { name: "drifter is stopped" })).toBeInTheDocument();
+  });
+
+  it("gives the composer back once the agent runs", async () => {
+    setViewedAgent("drifter");
+    render(ChatPlace, { agent: "drifter", actions: shell });
+    await settle();
+    expect(screen.queryByRole("textbox")).toBeNull();
+
+    hub.handleFrame({ type: "agent_state", agent: agent("drifter", { state: "running" }) });
+    await settle();
+    expect(screen.queryByRole("region", { name: "drifter is stopped" })).toBeNull();
+    expect(screen.getByRole("textbox")).toBeInTheDocument();
   });
 
   it("shows the counters of the agent that is open, not the one that was", async () => {
@@ -165,7 +214,7 @@ describe("the conversation", () => {
       tool_calls: 7,
       context_tokens: null,
     };
-    render(ChatPlace, { agent: "scout" });
+    render(ChatPlace, { agent: "scout", actions: shell });
     await settle();
     expect(screen.getByText(/4 tool calls/)).toBeInTheDocument();
     expect(screen.getByText(/7 tool calls/)).toBeInTheDocument();

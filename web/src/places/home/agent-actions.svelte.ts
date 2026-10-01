@@ -1,16 +1,25 @@
-// What Home does to an agent from its row menu and Recently deleted: start,
-// stop, restart, Start automatically, delete after asking, and restore. One
-// action runs per agent at a time, and `pendingOf` says which is in flight.
-// The hub store surfaces failures, and its frames raise the created, deleted
-// (with Undo) and restored toasts.
+// What Home and an agent's state card do to an agent: start, stop, restart,
+// Start automatically, finding where its settings can be fixed, delete after
+// asking, and restore. One action runs per agent at a time, and `pendingOf`
+// says which is in flight. The hub store surfaces failures, and its frames
+// raise the created, deleted (with Undo) and restored toasts.
 
+import { fixSettingsSection } from "../../lib/agent-failure";
 import type { AgentSummary } from "../../lib/hub-types";
 import { hub } from "../../lib/hub.svelte";
 import { notifications } from "../../lib/notifications.svelte";
+import type { SectionId } from "../../lib/settings-sections";
 import { settingsModel } from "../../lib/settings-model.svelte";
 import { confirmations } from "../../lib/ui";
 
-export type PendingAction = "start" | "stop" | "restart" | "autostart" | "delete" | "restore";
+export type PendingAction =
+  | "start"
+  | "stop"
+  | "restart"
+  | "autostart"
+  | "fix"
+  | "delete"
+  | "restore";
 
 class AgentActions {
   private pending = $state<Record<string, PendingAction | undefined>>({});
@@ -49,6 +58,18 @@ class AgentActions {
     } finally {
       this.autostartWanted[agent.name] = undefined;
     }
+  }
+
+  /**
+   * The Settings section where the agent's failing setting can be fixed
+   * (`fixSettingsSection`), or undefined while another action runs for it.
+   */
+  async fixSection(name: string): Promise<SectionId | undefined> {
+    let section: SectionId | undefined;
+    await this.run(name, "fix", async () => {
+      section = await fixSettingsSection(name);
+    });
+    return section;
   }
 
   /** Ask, then delete. The hub's "deleted" toast carries Undo, and Recently deleted keeps Restore. */

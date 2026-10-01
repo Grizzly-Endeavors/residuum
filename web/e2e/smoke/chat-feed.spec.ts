@@ -267,11 +267,3 @@ test.describe("the header", () => {
     await expect(page).toHaveURL(/\/agent\/atlas\/activity$/);
   });
 });
-
-test("an agent with no conversation shows one empty state", async ({ page }) => {
-  await page.goto("/agent/drifter");
-  const feed = conversation(page, "drifter");
-  await expect(feed.getByRole("heading", { name: "No messages yet" })).toHaveCount(1);
-  await expect(feed).toContainText("Tell drifter what you need.");
-  await expectNoAxeViolations(page, { exclude: LEGACY });
-});
