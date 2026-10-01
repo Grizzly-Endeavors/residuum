@@ -34,7 +34,7 @@ The palette is fixed. Tints are the palette colors at an alpha (`color-mix`), ne
 | `input` | Text field fill |
 
 - Borders appear only on controls (`control-border`) and on the hairlines between regions (`line`, `line-soft`). Cards and groups have no outline.
-- Only floating layers carry `--shadow-float`. Modal layers sit on `--color-scrim`.
+- Only floating layers carry `--shadow-float`, and the context panel while it floats at medium widths. Modal layers sit on `--color-scrim`.
 - Tints mark state: `vein-tint` for the selected row, `vein-faint` for informational banners and pills, `moss-tint` for the user's messages, `err-tint` for problem rows and banners.
 
 ## Color and contrast
@@ -72,7 +72,7 @@ The wordmark is Cinzel 500 in capitals with wide letter spacing, next to the `ma
 
 ## Layout
 
-- The rail is `--layout-rail-width`. The context panel opens at `--layout-panel-width` and resizes between `--layout-panel-min-width` and `--layout-panel-max-width`.
+- The rail is `--layout-rail-width`. The context panel opens at `--layout-panel-width` and, beside the main region at wide widths, resizes between `--layout-panel-min-width` and `--layout-panel-max-width` from a hairline on its left edge that lights in `vein` while hovered or dragged and in `vein-bright` while focused. At medium widths it floats over the main region at the default width with the floating shadow, and on phones it is a full-screen sheet over the bottom bar. Its header is at least as tall as a place's header, so the two hairlines meet.
 - Conversations cap at `--layout-reading-width`; Home caps at `--layout-home-width`, centered.
 - On phones the bottom bar is `--layout-bottom-bar-height` plus the safe-area inset. Anything pinned to the bottom sits above `--layout-bottom-bar-offset`.
 - Shell breakpoints: phone up to 760px, medium 761–1180px (the panel floats over the main region), wide from 1181px (the panel sits beside it). Shell `@media` rules write these widths out as `max-width`/`min-width`, and lint rejects any other width. Scripts use `src/styles/breakpoints.ts`. A component that needs its own responsive rule uses a container query.

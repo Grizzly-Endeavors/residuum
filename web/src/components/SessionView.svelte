@@ -18,7 +18,7 @@
   import SessionFeed from "./SessionFeed.svelte";
   import ChatFooter from "./ChatFooter.svelte";
 
-  let { view, onBack }: { view: SessionView; onBack: () => void } = $props();
+  let { view }: { view: SessionView } = $props();
 
   let headingEl: HTMLHeadingElement | undefined = $state();
   let textarea: HTMLTextAreaElement | undefined = $state();
@@ -50,8 +50,8 @@
   let artifact = $derived(summary ? sessionArtifact(summary) : null);
 
   // Move focus to the heading whenever a different session is opened, so
-  // screen reader and keyboard users land at the top of what just replaced
-  // the chat. Following the same session into a new run keeps focus where it
+  // screen reader and keyboard users land at the top of what the panel now
+  // shows. Following the same session into a new run keeps focus where it
   // is (usually the message box).
   $effect(() => {
     void view;
@@ -85,12 +85,8 @@
 </script>
 
 <section class="session-view" aria-labelledby="session-view-title">
-  <header class="session-view-head">
-    <button type="button" class="session-back" onclick={onBack}>
-      <Icon name="back" size={14} />
-      Main chat
-    </button>
-    {#if canStop && summary}
+  {#if canStop && summary}
+    <header class="session-view-head">
       <button
         type="button"
         class="session-stop"
@@ -100,8 +96,8 @@
         <Icon name="stop" size={12} />
         {view.stopRequested ? "Stopping…" : "Stop session"}
       </button>
-    {/if}
-  </header>
+    </header>
+  {/if}
 
   <div class="session-view-intro">
     <h2 id="session-view-title" class="session-view-title" tabindex="-1" bind:this={headingEl}>

@@ -1,12 +1,10 @@
 <script lang="ts">
-  import { tick, untrack } from "svelte";
   import { hub } from "../lib/hub.svelte";
   import { router } from "../lib/router.svelte";
   import { isAgentPlace } from "../lib/routes";
   import { ws } from "../lib/ws.svelte";
   import Chat from "../Chat.svelte";
   import Scheduled from "../Scheduled.svelte";
-  import SessionView from "../components/SessionView.svelte";
   import SessionsSidebar from "../components/SessionsSidebar.svelte";
   import TeamView from "../components/TeamView.svelte";
   import UserInbox from "../components/UserInbox.svelte";
@@ -22,35 +20,6 @@
   const place = $derived(router.place);
   const sessions = $derived(ws.sessions);
 
-  /** The run a session panel names on its agent's place. It shows over the place, in the main region. */
-  const panelRun = $derived.by(() => {
-    const { panel } = router;
-    if (!isAgentPlace(place) || panel?.kind !== "session" || panel.agent !== place.agent) {
-      return null;
-    }
-    return panel.runId;
-  });
-
-  $effect(() => {
-    const runId = panelRun;
-    untrack(() => {
-      if (runId === null) sessions.closeView();
-      else sessions.showRun(runId);
-    });
-  });
-
-  // A session that continues in a new run takes the panel with it.
-  $effect(() => {
-    const followed = sessions.view?.runId;
-    if (followed === undefined) return;
-    untrack(() => {
-      const { panel } = router;
-      if (panel?.kind === "session" && panel.runId !== followed) {
-        void router.replacePanel({ ...panel, runId: followed });
-      }
-    });
-  });
-
   // Tick the clock behind elapsed times only while something is live.
   $effect(() => {
     const live = sessions.live.length + sessions.outbound.length > 0;
@@ -64,13 +33,6 @@
 
   function openRun(runId: string): void {
     if (isAgentPlace(place)) void router.openPanel({ kind: "session", agent: place.agent, runId });
-  }
-
-  function closeRun(): void {
-    void router.closePanel();
-    void tick().then(() =>
-      document.querySelector<HTMLTextAreaElement>(".chat-view .chat-input")?.focus(),
-    );
   }
 </script>
 
@@ -89,21 +51,15 @@
 <div class="shell-legacy" data-legacy-view>
   {#if isAgentPlace(place)}
     {#key place.agent}
-      {#if sessions.view}
-        <SessionView view={sessions.view} onBack={closeRun} />
+      {#if place.kind === "chat"}
+        <Chat />
+      {:else if place.kind === "activity"}
+        <SessionsSidebar onSelect={openRun} />
+      {:else if place.kind === "schedule"}
+        <Scheduled />
+      {:else}
+        <Workspace agent={place.agent} />
       {/if}
-      <!-- The place stays mounted under a session, so the chat's history, scroll and draft survive it. -->
-      <div class="shell-legacy-place" class:is-covered={sessions.view !== null}>
-        {#if place.kind === "chat"}
-          <Chat />
-        {:else if place.kind === "activity"}
-          <SessionsSidebar onSelect={openRun} />
-        {:else if place.kind === "schedule"}
-          <Scheduled />
-        {:else}
-          <Workspace agent={place.agent} />
-        {/if}
-      </div>
     {/key}
   {:else if place.kind === "home"}
     <TeamView />
@@ -117,18 +73,13 @@
 </div>
 
 <style>
-  .shell-legacy,
-  .shell-legacy-place {
+  .shell-legacy {
     position: relative;
     display: flex;
     flex: 1;
     flex-direction: column;
     min-width: 0;
     min-height: 0;
-  }
-
-  .shell-legacy-place.is-covered {
-    display: none;
   }
 
   /* The team page scrolls across the whole region, its column centered in it. */
@@ -138,7 +89,7 @@
   }
 
   /* The sessions list was a sidebar; as the Activity place it takes the region. */
-  .shell-legacy-place > :global(.sessions-sidebar) {
+  .shell-legacy > :global(.sessions-sidebar) {
     flex: 1;
     width: auto;
     border-right: 0;

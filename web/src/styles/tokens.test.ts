@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { PANEL_DEFAULT_WIDTH, PANEL_MAX_SHARE, PANEL_MIN_WIDTH } from "../shell/panel/panel-width";
 import { PHONE_MAX_WIDTH, WIDE_MIN_WIDTH } from "./breakpoints";
 import {
   CONTRAST_PAIRS,
@@ -153,5 +154,13 @@ describe("breakpoints", () => {
   it("match the token file", () => {
     expect(tokenValue("--breakpoint-phone-max")).toBe(`${PHONE_MAX_WIDTH}px`);
     expect(tokenValue("--breakpoint-wide-min")).toBe(`${WIDE_MIN_WIDTH}px`);
+  });
+});
+
+describe("the context panel's widths", () => {
+  it("match the token file", () => {
+    expect(tokenValue("--layout-panel-width")).toBe(`${PANEL_DEFAULT_WIDTH}px`);
+    expect(tokenValue("--layout-panel-min-width")).toBe(`${PANEL_MIN_WIDTH}px`);
+    expect(tokenValue("--layout-panel-max-width")).toBe(`${PANEL_MAX_SHARE * 100}vw`);
   });
 });
