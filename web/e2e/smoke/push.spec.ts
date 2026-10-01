@@ -182,19 +182,25 @@ test.describe("the worker's notifications", { tag: "@preview" }, () => {
     await expect(page.getByRole("region", { name: "brittle couldn't start" })).toBeVisible();
   });
 
-  for (const [target, lands] of [
-    ["/inbox?item=atlas:mock_1", "Reminder to trigger the deployment pipeline"],
-    ["/agent/brittle", "brittle couldn't start"],
-    ["/agent/atlas/activity", "Running now"],
-    ["/home", "Home"],
-  ] as const) {
-    test(`a click with no window open opens ${target}`, async ({ page }) => {
-      // The worker opens a new window at the target: the app starts there, through the worker.
+  const targets: readonly [string, (page: Page) => Locator][] = [
+    ["/inbox?item=atlas:mock_1", (p) => p.getByText("Reminder to trigger the deployment pipeline")],
+    ["/agent/brittle", (p) => p.getByRole("region", { name: "brittle couldn't start" })],
+    ["/agent/atlas/activity", (p) => p.getByRole("heading", { name: "Running now" })],
+    ["/home", (p) => p.getByRole("heading", { name: "Home", level: 1 })],
+  ];
+  for (const [target, landed] of targets) {
+    test(`with no window open, a click's new window starts the app at ${target}`, async ({
+      page,
+      context,
+    }) => {
       await page.goto("/home");
       await page.evaluate(() => navigator.serviceWorker.ready);
-      await page.goto(target);
-      await expect(page.getByText(lands, { exact: false }).first()).toBeVisible();
-      expect(`${new URL(page.url()).pathname}${new URL(page.url()).search}`).toBe(target);
+      await page.close();
+      // What the worker's `openWindow(target)` opens: a new window at the target, through the worker.
+      const opened = await context.newPage();
+      await opened.goto(target);
+      await expect(landed(opened)).toBeVisible();
+      expect(`${new URL(opened.url()).pathname}${new URL(opened.url()).search}`).toBe(target);
     });
   }
 });
