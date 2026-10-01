@@ -55,13 +55,13 @@ test.describe("shell", { tag: "@visual" }, () => {
   });
 
   // An overlay's shot is unmasked: a mask paints over everything in its box,
-  // the overlay included, and the scrim dims the place behind it.
+  // the overlay included, and the scrim dims the place behind it. The place is
+  // the Schedule, whose legacy view lays out the same on every run; the chat's
+  // doesn't.
 
   test("the command palette", async ({ page, isMobile }) => {
-    await page.goto("/agent/atlas");
-    await expect(
-      page.getByText("Hi, this is atlas. You are in my conversation, not scout's."),
-    ).toBeVisible();
+    await page.goto("/agent/atlas/schedule");
+    await expect(page.getByText("Pulses", { exact: true })).toBeVisible();
     if (isMobile) {
       await page
         .getByRole("navigation", { name: "Main" })
