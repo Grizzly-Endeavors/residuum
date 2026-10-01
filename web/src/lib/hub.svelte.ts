@@ -322,6 +322,11 @@ export class HubStore {
       case "hub_config_reloaded":
       case "team_event":
       case "agent_overview":
+      case "artifact_updated":
+      case "artifact_removed":
+      case "subscribed":
+      case "session_frame":
+      case "session_relay_lagged":
         // Frame listeners act on these, below.
         break;
       case "workspace_changed":

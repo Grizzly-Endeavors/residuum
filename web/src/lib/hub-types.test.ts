@@ -9,6 +9,7 @@ import type { HubClientMessage as GeneratedHubClientMessage } from "./generated/
 import type { AgentPatch as GeneratedAgentPatch } from "./generated/AgentPatch";
 import type { CreateAgentRequest as GeneratedCreateAgentRequest } from "./generated/CreateAgentRequest";
 import type { DeleteOutcome as GeneratedDeleteOutcome } from "./generated/DeleteOutcome";
+import type { ServerMessage } from "./generated/ServerMessage";
 import type {
   A2aVisibility,
   AgentActivity,
@@ -26,6 +27,7 @@ import type {
   LastMessage,
   LiveSession,
   OverviewResponse,
+  SessionSubscriptionKind,
   TeamEvent,
   TeamEventKind,
   TeamEventLevel,
@@ -73,9 +75,40 @@ describe("hub types", () => {
       | "hub_config_reloaded"
       | "team_event"
       | "agent_overview"
+      | "artifact_updated"
+      | "artifact_removed"
+      | "subscribed"
+      | "session_frame"
+      | "session_relay_lagged"
       | "workspace_changed"
       | "workspace_resync"
       | "workspace_watch_unavailable"
+    >();
+  });
+
+  it("names the agent and carries the agent socket's frame in a session frame", () => {
+    type Frame = Extract<HubServerMessage, { type: "session_frame" }>;
+    expectTypeOf<Frame["agent"]>().toEqualTypeOf<string>();
+    expectTypeOf<Frame["frame"]>().toEqualTypeOf<ServerMessage>();
+  });
+
+  it("acknowledges a subscription with its kind and the fields that name it", () => {
+    type Ack = Extract<HubServerMessage, { type: "subscribed" }>;
+    expectTypeOf<Ack["kind"]>().toEqualTypeOf<SessionSubscriptionKind>();
+    expectTypeOf<SessionSubscriptionKind>().toEqualTypeOf<"session" | "artifact_sessions">();
+    expectTypeOf<Ack["agent"]>().toEqualTypeOf<string | undefined>();
+    expectTypeOf<Ack["address"]>().toEqualTypeOf<string | undefined>();
+    expectTypeOf<Ack["artifact"]>().toEqualTypeOf<string | undefined>();
+  });
+
+  it("sends the session subscriptions as client messages", () => {
+    expectTypeOf<HubClientMessage["type"]>().toEqualTypeOf<
+      | "watch_team"
+      | "presence"
+      | "subscribe_session"
+      | "unsubscribe_session"
+      | "subscribe_artifact_sessions"
+      | "unsubscribe_artifact_sessions"
     >();
   });
 

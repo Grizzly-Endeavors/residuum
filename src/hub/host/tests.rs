@@ -15,6 +15,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
 use crate::hub::overview::{OverviewTracker, TeamOverview};
+use crate::hub::push::{PushTriggers, TriggerInputs};
 use crate::hub::runtime::build_app;
 use crate::hub::team_events::{TeamEventLog, TeamEventRecorder};
 use crate::hub::test_support::{free_port, mount_reply, write_agent};
@@ -37,6 +38,10 @@ struct Fixture {
     /// `OVERVIEW_WINDOW` so a test needn't wait a second for one.
     overview: Arc<TeamOverview>,
     _overview_tracker: OverviewTracker,
+    /// Web Push notifications for what the agents do, over `services.push`.
+    _push_triggers: PushTriggers,
+    /// The notices about push delivery that the triggers passed on.
+    push_notices: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 /// How long the fixture's overview gathers an agent's changes into a frame.
@@ -90,6 +95,17 @@ impl Fixture {
             host.subscribe(),
             host.agent_changes().subscribe(),
         );
+        let push_notices = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let push_triggers = PushTriggers::spawn(TriggerInputs {
+            push: Arc::clone(&services.push),
+            directory: Arc::clone(&host) as Arc<dyn AgentDirectory>,
+            hub_events: host.subscribe(),
+            changes: host.agent_changes().subscribe(),
+            notice: Box::new({
+                let push_notices = Arc::clone(&push_notices);
+                move |message| push_notices.lock().unwrap().push(message)
+            }),
+        });
         host.discover().unwrap();
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -110,6 +126,8 @@ impl Fixture {
             _recorder: recorder,
             overview,
             _overview_tracker: overview_tracker,
+            _push_triggers: push_triggers,
+            push_notices,
         }
     }
 
@@ -2505,6 +2523,7 @@ mod lifecycle_tools;
     reason = "test code indexes parsed JSON for clarity"
 )]
 mod overview;
+mod push_triggers;
 mod restore;
 mod review_fixes;
 mod team_events;

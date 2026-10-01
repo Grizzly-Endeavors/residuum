@@ -5,6 +5,7 @@ import { arrivedThroughArtifactsOrigin } from "./artifacts-origin";
 import { createChatSimulator } from "./chat";
 import { parseJsonObject, stringField, type JsonObject } from "./http";
 import { sendSessionMessage, spawnSession, stopSession } from "./sessions";
+import { isSessionEventFrame } from "./session-relay";
 import {
   agentSocketPath,
   frameText,
@@ -114,6 +115,8 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
     for (const client of wss.clients) client.terminate();
   };
   state.broadcast = (frame) => {
+    // The hub's relay carries every session event too, to the pages that follow it.
+    if (isSessionEventFrame(frame)) hub.relaySession(agent, frame);
     for (const client of wss.clients) {
       if (VERBOSE_ONLY_FRAMES.has(frame.type) && !verbose.has(client)) continue;
       const sent = isWorkspaceFrame(frame)

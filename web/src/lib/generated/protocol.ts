@@ -51,3 +51,4 @@ export type { NoticeLevel } from "./NoticeLevel";
 export type { HubEvent } from "./HubEvent";
 export type { HubSocketFrame } from "./HubSocketFrame";
 export type { HubClientMessage } from "./HubClientMessage";
+export type { SessionSubscriptionKind } from "./SessionSubscriptionKind";
