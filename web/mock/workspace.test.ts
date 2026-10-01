@@ -232,9 +232,11 @@ describe("workspace routes", () => {
   });
 
   describe("deleting", () => {
-    it("removes a file and its entry, and offers no checkpoint", async () => {
+    it("checkpoints the workspace first, then removes a file and its entry", async () => {
       const res = await fetchJson(agent("/file?path=PRESENCE.toml"), { method: "DELETE" });
-      expect(res).toEqual({ status: 200, body: { deleted: true, checkpoint_id: null } });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ deleted: true, checkpoint_repo: "workspace" });
+      expect(typeof (res.body as { checkpoint_id?: unknown }).checkpoint_id).toBe("string");
       expect((await fetchText(agent("/file?path=PRESENCE.toml"))).status).toBe(404);
       expect((await listing(agent("/files"))).map((e) => e.name)).not.toContain("PRESENCE.toml");
     });
@@ -272,9 +274,11 @@ describe("workspace routes", () => {
       expect(res.status).toBe(412);
     });
 
-    it("deletes from the team tree", async () => {
+    it("deletes from the team tree, checkpointing the team first", async () => {
       const res = await fetchJson(team("/file?path=wiki/log.md"), { method: "DELETE" });
-      expect(res).toEqual({ status: 200, body: { deleted: true, checkpoint_id: null } });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ deleted: true, checkpoint_repo: "team" });
+      expect(typeof (res.body as { checkpoint_id?: unknown }).checkpoint_id).toBe("string");
       expect((await listing(team("/files?path=wiki"))).map((e) => e.name)).not.toContain("log.md");
     });
   });
@@ -372,6 +376,25 @@ describe("workspace routes", () => {
         const res = await send(url, "POST", { path: "HEARTBEAT.yml", content: "not: [valid" });
         expect(res).toEqual({ status: 200, body: { diagnostics: [] } });
       }
+    });
+
+    it("reports a TOML error in an agent's channels.toml, where it is, when checked or saved", async () => {
+      const content = "[web]\nenabled = \n";
+      const checked = await send(agent("/validate"), "POST", {
+        path: "config/channels.toml",
+        content,
+      });
+      const saved = await send(agent("/file"), "PUT", { path: "config/channels.toml", content });
+      for (const res of [checked, saved]) {
+        expect(res.body).toMatchObject({
+          diagnostics: [{ severity: "error", location: { kind: "line_column", line: 2 } }],
+        });
+      }
+      const clean = await send(agent("/validate"), "POST", {
+        path: "config/channels.toml",
+        content: "ok = 1",
+      });
+      expect(clean.body).toEqual({ diagnostics: [] });
     });
 
     it("answers 422 without a path and content", async () => {
