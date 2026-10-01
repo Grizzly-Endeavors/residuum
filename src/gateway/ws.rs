@@ -3,11 +3,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use axum::extract::ws::{Message as WsMessage, WebSocket};
+use axum::extract::ws::{CloseFrame, Message as WsMessage, WebSocket};
 use axum::extract::{Extension, State};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tracing::Instrument;
 
 use crate::bus::EndpointName;
@@ -80,6 +80,10 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
     // Local channel for per-connection messages (pong, errors, inbox responses)
     let (local_tx, mut local_rx) = mpsc::unbounded_channel::<ServerMessage>();
 
+    // The read loop sees a client's Close frame, but the forwarding task
+    // owns the send half that must answer it; this hands the frame across.
+    let (close_tx, mut close_rx) = oneshot::channel::<Option<CloseFrame>>();
+
     // Per-connection verbose flag shared between read loop and forwarding task
     let verbose = Arc::new(AtomicBool::new(false));
     let verbose_fwd = Arc::clone(&verbose);
@@ -99,6 +103,16 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
                         Some(m) => Some(m),
                         None => break,
                     }
+                }
+                frame = &mut close_rx => {
+                    // Answer the client's Close and shut the transport down:
+                    // without both, the client sees code 1006 (abnormal
+                    // closure) instead of its own.
+                    if let Ok(frame) = frame {
+                        ws_tx.send(WsMessage::Close(frame)).await.ok();
+                    }
+                    ws_tx.close().await.ok();
+                    break;
                 }
             };
 
@@ -125,7 +139,11 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
     while let Some(frame) = ws_rx.next().await {
         let raw = match frame {
             Ok(WsMessage::Text(txt)) => txt,
-            Ok(WsMessage::Close(_)) => break,
+            Ok(WsMessage::Close(frame)) => {
+                answer_client_close(close_tx, fwd_handle, frame).await;
+                tracing::debug!("client disconnected");
+                return;
+            }
             Ok(_) => continue, // ignore binary, ping, pong
             Err(e) => {
                 tracing::debug!(error = %e, "websocket read error");
@@ -155,6 +173,21 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
     // Clean up: abort forwarding task when client disconnects
     fwd_handle.abort();
     tracing::debug!("client disconnected");
+}
+
+/// Hand the client's Close frame to the forwarding task, which owns the send
+/// half, and wait for it to answer before the connection tears down. Without
+/// an answer the client sees code 1006 (abnormal closure) instead of its own.
+async fn answer_client_close(
+    close_tx: oneshot::Sender<Option<CloseFrame>>,
+    fwd_handle: tokio::task::JoinHandle<()>,
+    frame: Option<CloseFrame>,
+) {
+    if close_tx.send(frame).is_ok() {
+        fwd_handle.await.ok();
+    } else {
+        fwd_handle.abort();
+    }
 }
 
 /// Dispatch a single client message. Returns `false` to break the read loop.
