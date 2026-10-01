@@ -1,73 +1,47 @@
 <script lang="ts">
   import type { SetupWizardState } from "../../lib/types";
   import { agentNameProblem } from "../../lib/agent-name";
+  import { TextField } from "../../lib/ui";
+  import SetupGroup from "./SetupGroup.svelte";
+  import SetupNav from "./SetupNav.svelte";
 
   interface Props {
     wizardState: SetupWizardState;
     onNext: () => void;
   }
 
-  let { wizardState, onNext }: Props = $props();
+  let { wizardState = $bindable(), onNext }: Props = $props();
 
   let agentNameError = $derived(agentNameProblem(wizardState.agentName));
 </script>
 
-<h2>Welcome to Residuum</h2>
-<p class="subtitle">Let's get your agent configured. This will only take a minute.</p>
-
-<div class="settings-field">
-  <label for="welcome-name">Your Name</label>
-  <input
-    id="welcome-name"
-    type="text"
+<SetupGroup>
+  <TextField
+    label="Your name"
     bind:value={wizardState.userName}
     autocomplete="name"
     placeholder="What should your agent call you?"
-    aria-describedby="welcome-name-hint"
+    hint="Optional. Your agents read it from the team's shared notes about you."
   />
-  <span id="welcome-name-hint" class="field-hint">
-    Optional. Your agents read this from the team's shared notes about you.
-  </span>
-</div>
-
-<div class="settings-field">
-  <label for="welcome-agent-name">Agent Name</label>
-  <input
-    id="welcome-agent-name"
-    type="text"
+  <TextField
+    label="Agent name"
     bind:value={wizardState.agentName}
     placeholder="assistant"
     autocapitalize="off"
     autocomplete="off"
     spellcheck="false"
-    aria-invalid={agentNameError !== null}
-    aria-describedby="welcome-agent-name-hint"
+    hint="Lowercase letters, digits and hyphens. It's your agent's permanent name and folder."
+    error={agentNameError ?? undefined}
   />
-  {#if agentNameError}
-    <div id="welcome-agent-name-hint" class="validation-msg error" role="alert">
-      {agentNameError}
-    </div>
-  {:else}
-    <span id="welcome-agent-name-hint" class="field-hint">
-      Lowercase letters, digits, and hyphens. This is your agent's permanent name and folder.
-    </span>
-  {/if}
-</div>
-
-<div class="settings-field">
-  <label for="welcome-timezone">Timezone (IANA format)</label>
-  <input
-    id="welcome-timezone"
-    type="text"
+  <TextField
+    label="Time zone"
     bind:value={wizardState.timezone}
     placeholder="America/New_York"
     autocapitalize="off"
     autocomplete="off"
     spellcheck="false"
+    hint="An IANA time zone name, like America/New_York."
   />
-</div>
+</SetupGroup>
 
-<div class="setup-nav">
-  <div></div>
-  <button class="btn btn-primary" onclick={onNext} disabled={agentNameError !== null}>Next</button>
-</div>
+<SetupNav {onNext} nextDisabled={agentNameError !== null} />

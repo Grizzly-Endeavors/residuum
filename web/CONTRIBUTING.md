@@ -73,7 +73,7 @@ To test the first-run setup wizard:
 VITE_MOCK_SETUP=1 npm run dev:mock
 ```
 
-This starts the app in "setup" mode so you can walk through the onboarding flow.
+This starts the app in "setup" mode so you can walk through the onboarding flow. A running mock enters it too with `POST /api/mock/reset` and the body `{ "setup": true }`, which is how the end-to-end specs reach the wizard.
 
 ### Deterministic mode
 
@@ -88,7 +88,7 @@ With `MOCK_DETERMINISTIC=1` the mock gives the same responses to the same steps,
 - **The scenario** is the one `dev:mock` starts with: scout and atlas running, drifter stopped, brittle failed, and the sample sessions, outbound tasks, inbox, checkpoints and artifacts. The hub announces the same boot id every time.
 - **A fixed artifacts port**, 5180 (or `MOCK_ARTIFACTS_PORT`), where a live mock takes a free one. A port that can't be bound is logged, and the workbench reports artifacts as unavailable.
 
-`POST /api/mock/reset` puts the mock back as it started: the clock, the delays, the counter, every pending timer (a request waiting on simulated time answers `503`), the hub's own state (secrets, hub config, team files, workbench), and the agents, which are recreated from the scenario with their sessions, inbox and files. Every open socket is closed, so a page reconnects to the initial scenario. The port and the artifacts listener stay.
+`POST /api/mock/reset` puts the mock back as it started: the clock, the delays, the counter, every pending timer (a request waiting on simulated time answers `503`), the hub's own state (secrets, hub config, team files, workbench), and the agents, which are recreated from the scenario with their sessions, inbox and files. Every open socket is closed, so a page reconnects to the initial scenario. The port and the artifacts listener stay. With the body `{ "setup": true }` it starts over with no agents instead, as a hub that hasn't been set up, so the page opens the setup wizard; the next plain reset brings the scenario's agents back.
 
 ### Preview mode
 

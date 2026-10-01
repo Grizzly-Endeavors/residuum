@@ -209,12 +209,6 @@
     </div>
   </div>
 {:else if mode === "setup"}
-  <div class="header">
-    <div class="header-brand">
-      <BrandMark size={26} />
-      <span class="header-title">Residuum</span>
-    </div>
-  </div>
   <Setup onComplete={() => void finishSetup()} />
 {:else}
   <!-- A workbench artifact in full view fills the window on its own. -->

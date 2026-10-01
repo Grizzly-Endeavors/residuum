@@ -8,6 +8,10 @@
   } from "../../lib/toml";
   import { storeSecret, completeSetup } from "../../lib/api";
   import { userErrorMessage } from "../../lib/errors";
+  import { Banner } from "../../lib/ui";
+  import { providerName } from "./providers";
+  import SetupGroup from "./SetupGroup.svelte";
+  import SetupNav from "./SetupNav.svelte";
 
   interface Props {
     wizardState: SetupWizardState;
@@ -15,11 +19,26 @@
     onComplete: () => void;
   }
 
-  let { wizardState, onBack, onComplete }: Props = $props();
+  let { wizardState = $bindable(), onBack, onComplete }: Props = $props();
 
   let saving = $state(false);
-  let validationMsg = $state("");
-  let validationClass = $state("");
+  let outcome = $state<{ tone: "saved" | "error"; message: string } | null>(null);
+
+  const teamsComplete = $derived(
+    Boolean(
+      wizardState.integrations.teamsAppId &&
+      wizardState.integrations.teamsTenantId &&
+      wizardState.integrations.teamsAppPassword,
+    ),
+  );
+
+  const connections = $derived(
+    [
+      wizardState.integrations.discordToken ? "Discord" : "",
+      wizardState.integrations.telegramToken ? "Telegram" : "",
+      teamsComplete ? "Microsoft Teams" : "",
+    ].filter(Boolean),
+  );
 
   async function storeAllSecrets(): Promise<void> {
     wizardState.secretRefs = {};
@@ -52,11 +71,7 @@
         }),
       );
     }
-    if (
-      wizardState.integrations.teamsAppId &&
-      wizardState.integrations.teamsTenantId &&
-      wizardState.integrations.teamsAppPassword
-    ) {
+    if (teamsComplete) {
       promises.push(
         storeSecret("teams", wizardState.integrations.teamsAppPassword).then((res) => {
           wizardState.secretRefs["teams"] = res.reference;
@@ -69,14 +84,15 @@
 
   async function handleSave() {
     saving = true;
-    validationMsg = "";
-    validationClass = "";
+    outcome = null;
 
     try {
       await storeAllSecrets();
     } catch (err: unknown) {
-      validationMsg = userErrorMessage(err, { action: "Couldn't store your API keys." });
-      validationClass = "error";
+      outcome = {
+        tone: "error",
+        message: userErrorMessage(err, { action: "Couldn't store your keys and tokens." }),
+      };
       saving = false;
       return;
     }
@@ -97,80 +113,112 @@
         mcpJson,
       });
       if (result.valid) {
-        validationMsg = "Configuration saved! Starting gateway...";
-        validationClass = "success";
+        outcome = { tone: "saved", message: `Saved. Starting ${wizardState.agentName}…` };
         setTimeout(() => onComplete(), 1500);
       } else {
-        validationMsg = result.error ?? "Validation failed";
-        validationClass = "error";
+        outcome = { tone: "error", message: result.error ?? "The configuration didn't validate." };
         saving = false;
       }
     } catch (err: unknown) {
-      validationMsg = userErrorMessage(err, { action: "Couldn't save the configuration." });
-      validationClass = "error";
+      outcome = {
+        tone: "error",
+        message: userErrorMessage(err, { action: "Couldn't save the configuration." }),
+      };
       saving = false;
     }
   }
 </script>
 
-<h2>Save & Start</h2>
-<p class="subtitle">Your configuration is ready. Click below to save and start Residuum.</p>
+<SetupGroup>
+  <dl class="setup-summary">
+    {#if wizardState.userName.trim() !== ""}
+      <div class="setup-summary-row">
+        <dt>Your name</dt>
+        <dd>{wizardState.userName.trim()}</dd>
+      </div>
+    {/if}
+    <div class="setup-summary-row">
+      <dt>Agent</dt>
+      <dd>{wizardState.agentName}</dd>
+    </div>
+    <div class="setup-summary-row">
+      <dt>Providers</dt>
+      <dd>{wizardState.selectedProviders.map(providerName).join(", ")}</dd>
+    </div>
+    <div class="setup-summary-row">
+      <dt>Main model</dt>
+      <dd>
+        <code
+          >{wizardState.mainProvider}/{wizardState.providerConfigs[wizardState.mainProvider]
+            .model || "default"}</code
+        >
+      </dd>
+    </div>
+    {#if wizardState.mcpServers.length > 0}
+      <div class="setup-summary-row">
+        <dt>Tool servers</dt>
+        <dd>{wizardState.mcpServers.map((s) => s.name).join(", ")}</dd>
+      </div>
+    {/if}
+    {#if connections.length > 0}
+      <div class="setup-summary-row">
+        <dt>Connections</dt>
+        <dd>{connections.join(", ")}</dd>
+      </div>
+    {/if}
+  </dl>
+</SetupGroup>
 
-<div class="review-summary">
-  {#if wizardState.userName.trim() !== ""}
-    <div class="review-item">
-      <span class="review-label">Your name</span>
-      <span class="review-value">{wizardState.userName.trim()}</span>
-    </div>
-  {/if}
-  <div class="review-item">
-    <span class="review-label">Agent</span>
-    <span class="review-value">{wizardState.agentName}</span>
-  </div>
-  <div class="review-item">
-    <span class="review-label">Providers</span>
-    <span class="review-value">{wizardState.selectedProviders.join(", ")}</span>
-  </div>
-  <div class="review-item">
-    <span class="review-label">Main model</span>
-    <span class="review-value"
-      >{wizardState.mainProvider}/{wizardState.providerConfigs[wizardState.mainProvider].model ||
-        "default"}</span
-    >
-  </div>
-  {#if wizardState.mcpServers.length > 0}
-    <div class="review-item">
-      <span class="review-label">MCP servers</span>
-      <span class="review-value">{wizardState.mcpServers.map((s) => s.name).join(", ")}</span>
-    </div>
-  {/if}
-  {#if wizardState.integrations.discordToken || wizardState.integrations.telegramToken || (wizardState.integrations.teamsAppId && wizardState.integrations.teamsTenantId && wizardState.integrations.teamsAppPassword)}
-    <div class="review-item">
-      <span class="review-label">Integrations</span>
-      <span class="review-value">
-        {[
-          wizardState.integrations.discordToken ? "Discord" : "",
-          wizardState.integrations.telegramToken ? "Telegram" : "",
-          wizardState.integrations.teamsAppId &&
-          wizardState.integrations.teamsTenantId &&
-          wizardState.integrations.teamsAppPassword
-            ? "Microsoft Teams"
-            : "",
-        ]
-          .filter(Boolean)
-          .join(", ")}
-      </span>
-    </div>
-  {/if}
-</div>
-
-{#if validationMsg}
-  <div class="validation-msg {validationClass}">{validationMsg}</div>
+{#if outcome?.tone === "saved"}
+  <Banner tone="info" icon="check">{outcome.message}</Banner>
+{:else if outcome?.tone === "error"}
+  <Banner tone="error">{outcome.message}</Banner>
 {/if}
 
-<div class="setup-nav">
-  <button class="btn btn-secondary" onclick={onBack} disabled={saving}>Back</button>
-  <button class="btn btn-primary" onclick={handleSave} disabled={saving}>
-    {saving ? "Saving..." : "Save & Start"}
-  </button>
-</div>
+<SetupNav
+  {onBack}
+  backDisabled={saving}
+  nextLabel="Save and start"
+  onNext={() => void handleSave()}
+  busy={saving}
+/>
+
+<style>
+  .setup-summary {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .setup-summary-row {
+    display: grid;
+    grid-template-columns: 9rem minmax(0, 1fr);
+    gap: var(--space-4) var(--space-16);
+    padding: var(--space-10) 0;
+
+    &:first-child {
+      padding-top: 0;
+    }
+
+    &:last-child {
+      padding-bottom: 0;
+    }
+
+    & + & {
+      border-top: 1px solid var(--color-line-soft);
+    }
+  }
+
+  dt {
+    color: var(--color-text-2);
+  }
+
+  dd {
+    overflow-wrap: anywhere;
+  }
+
+  @container setup-group (max-width: 400px) {
+    .setup-summary-row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

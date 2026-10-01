@@ -170,9 +170,10 @@ export interface MockHub {
   /**
    * Put the mock back as it started: the clock, the timers and delays, the
    * hub's own state, and the agents the scenario creates. Every socket is
-   * closed, so pages reconnect to the new state.
+   * closed, so pages reconnect to the new state. With `setup`, it starts with
+   * no agents instead, as a hub that hasn't been set up.
    */
-  reset: () => void;
+  reset: (options?: { setup?: boolean }) => void;
 }
 
 /** The remote agents an agent that has run has listed in its A2A client settings. */

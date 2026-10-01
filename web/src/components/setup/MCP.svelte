@@ -1,5 +1,8 @@
 <script lang="ts">
   import type { SetupWizardState, McpCatalogEntry } from "../../lib/types";
+  import { Badge, Banner, Button, EmptyState, Skeleton, TextField } from "../../lib/ui";
+  import SetupGroup from "./SetupGroup.svelte";
+  import SetupNav from "./SetupNav.svelte";
 
   interface Props {
     wizardState: SetupWizardState;
@@ -12,7 +15,7 @@
   }
 
   let {
-    wizardState,
+    wizardState = $bindable(),
     catalog,
     catalogLoading,
     catalogError,
@@ -43,7 +46,7 @@
 
     if (srv.requires_input && srv.requires_input.length > 0) {
       pendingIdx = idx;
-      pendingInputs = {};
+      pendingInputs = Object.fromEntries(srv.requires_input.map((req) => [req.field, ""]));
       inputErrors = {};
     } else {
       wizardState.mcpServers.push({
@@ -91,65 +94,138 @@
   }
 </script>
 
-<h2>MCP Servers</h2>
-<p class="subtitle">Optionally add tool servers. You can always add more later in settings.</p>
-
 {#if catalogError}
-  <div class="provider-warning">
-    <span class="provider-warning-icon">&#9888;</span>
-    <span>{catalogError}</span>
-  </div>
-  <button class="btn btn-secondary" onclick={onRetryCatalog} disabled={catalogLoading}>
-    {catalogLoading ? "Retrying..." : "Try again"}
-  </button>
+  <Banner tone="error">
+    {catalogError}
+    {#snippet actions()}
+      <Button size="sm" onclick={onRetryCatalog}>Try again</Button>
+    {/snippet}
+  </Banner>
 {:else if catalogLoading}
-  <p style="color:var(--text-dim)">Loading catalog...</p>
+  <SetupGroup>
+    <Skeleton lines={4} label="Loading the tool server catalog" />
+  </SetupGroup>
 {:else if catalog.length === 0}
-  <p style="color:var(--text-dim)">No catalog entries available.</p>
+  <EmptyState
+    >The catalog has no tool servers to offer. You can add your own in Settings.</EmptyState
+  >
 {:else}
-  {#each catalog as srv, i (srv.name)}
-    {@const added = isAdded(srv.name)}
-    {@const isPending = pendingIdx === i}
-    <div class="mcp-item" class:added class:pending={isPending}>
-      <div class="mcp-info">
-        <div class="mcp-name">{srv.name}</div>
-        <div class="mcp-desc">{srv.description}</div>
-      </div>
-
-      {#if !isPending}
-        <button class="mcp-add-btn" onclick={() => handleAdd(i)}>
-          {added ? "Added" : "Add"}
-        </button>
-      {/if}
-
-      {#if isPending && srv.requires_input.length > 0}
-        <div class="mcp-inline-inputs">
-          {#each srv.requires_input as req (req.field)}
-            <div class="settings-field mcp-input-field">
-              <label for="mcp-setup-{i}-{req.field}">{req.label}</label>
-              <input
-                id="mcp-setup-{i}-{req.field}"
-                type="text"
-                class:input-error={inputErrors[req.field]}
-                bind:value={pendingInputs[req.field]}
-                placeholder={req.label}
-                oninput={() => {
-                  inputErrors[req.field] = false;
-                }}
-              />
+  <SetupGroup>
+    <ul class="setup-servers">
+      {#each catalog as srv, i (srv.name)}
+        {@const added = isAdded(srv.name)}
+        {@const isPending = pendingIdx === i}
+        <li class="setup-server">
+          <div class="setup-server-row">
+            <div class="setup-server-text">
+              <code class="setup-server-name">{srv.name}</code>
+              <span class="setup-server-desc">{srv.description}</span>
             </div>
-          {/each}
-          <div class="mcp-inline-actions">
-            <button class="btn btn-primary btn-sm" onclick={() => handleConfirm(i)}>Add</button>
-            <button class="btn btn-secondary btn-sm" onclick={handleCancel}>Cancel</button>
+            {#if added}
+              <Badge tone="positive" dot>Added</Badge>
+              <Button
+                variant="quiet"
+                size="sm"
+                aria-label="Remove {srv.name}"
+                onclick={() => handleAdd(i)}>Remove</Button
+              >
+            {:else if !isPending}
+              <Button size="sm" aria-label="Add {srv.name}" onclick={() => handleAdd(i)}>Add</Button
+              >
+            {/if}
           </div>
-        </div>
-      {/if}
-    </div>
-  {/each}
+
+          {#if isPending}
+            <div class="setup-server-inputs">
+              {#each srv.requires_input as req (req.field)}
+                <TextField
+                  label={req.label}
+                  bind:value={pendingInputs[req.field]}
+                  autocomplete="off"
+                  spellcheck="false"
+                  error={inputErrors[req.field] ? "Fill this in to add the server." : undefined}
+                  oninput={() => {
+                    inputErrors[req.field] = false;
+                  }}
+                />
+              {/each}
+              <div class="setup-server-actions">
+                <Button variant="primary" size="sm" onclick={() => handleConfirm(i)}>
+                  Add {srv.name}
+                </Button>
+                <Button variant="quiet" size="sm" onclick={handleCancel}>Cancel</Button>
+              </div>
+            </div>
+          {/if}
+        </li>
+      {/each}
+    </ul>
+  </SetupGroup>
 {/if}
 
-<div class="setup-nav">
-  <button class="btn btn-secondary" onclick={onBack}>Back</button>
-  <button class="btn btn-primary" onclick={onNext}>Next</button>
-</div>
+<SetupNav {onBack} {onNext} />
+
+<style>
+  .setup-servers {
+    display: flex;
+    flex-direction: column;
+    list-style: none;
+  }
+
+  .setup-server {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-12);
+    padding: var(--space-12) 0;
+
+    &:first-child {
+      padding-top: 0;
+    }
+
+    &:last-child {
+      padding-bottom: 0;
+    }
+
+    & + & {
+      border-top: 1px solid var(--color-line-soft);
+    }
+  }
+
+  .setup-server-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-10);
+  }
+
+  .setup-server-text {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-width: 0;
+  }
+
+  .setup-server-name {
+    font-size: var(--font-size-sm);
+    overflow-wrap: anywhere;
+  }
+
+  .setup-server-desc {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-2);
+  }
+
+  .setup-server-inputs {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-12);
+    padding: var(--space-14);
+    border-radius: var(--corner-md);
+    background: var(--color-stone-2);
+  }
+
+  .setup-server-actions {
+    display: flex;
+    gap: var(--space-8);
+  }
+</style>

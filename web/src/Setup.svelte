@@ -1,9 +1,12 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import type { SetupWizardState, McpCatalogEntry, ProviderKey } from "./lib/types";
   import { fetchTimezone, fetchMcpCatalogOrThrow } from "./lib/api";
   import { DEFAULT_AGENT_NAME } from "./lib/agent-name";
   import { userErrorMessage } from "./lib/errors";
+  import { Icon } from "./lib/icons";
+  import { Banner } from "./lib/ui";
+  import SetupProgress from "./components/setup/SetupProgress.svelte";
   import Welcome from "./components/setup/Welcome.svelte";
   import Providers from "./components/setup/Providers.svelte";
   import Roles from "./components/setup/Roles.svelte";
@@ -17,8 +20,41 @@
 
   let { onComplete }: Props = $props();
 
-  const TOTAL_STEPS = 6;
-  const stepIndices = Array.from({ length: TOTAL_STEPS }, (_, i) => i);
+  /** Each step's name in the progress line, its heading, and the line under it. */
+  const STEPS = [
+    {
+      label: "Welcome",
+      title: "Welcome to Residuum",
+      lede: "Set up your first agent. It takes about a minute.",
+    },
+    {
+      label: "Providers",
+      title: "Add model providers",
+      lede: "Choose at least one. You can mix providers across roles, and add more later in Settings.",
+    },
+    {
+      label: "Models",
+      title: "Assign models",
+      lede: "Choose the model each role uses, or keep the defaults.",
+    },
+    {
+      label: "Tool servers",
+      title: "Add tool servers",
+      lede: "Tool servers (MCP) give your agent more tools. They're optional, and you can add more later in Settings.",
+    },
+    {
+      label: "Connections",
+      title: "Connect chat apps",
+      lede: "Talk to your agent from Discord, Telegram or Microsoft Teams. These are optional, and you can add them later in Settings.",
+    },
+    {
+      label: "Save",
+      title: "Save and start",
+      lede: "Check your choices, then save to start Residuum.",
+    },
+  ] as const;
+  const TOTAL_STEPS = STEPS.length;
+  const stepLabels = STEPS.map((s) => s.label);
 
   // ── Draft persistence ────────────────────────────────────────────────
   // Setup is the highest-stakes form in the app (hand-typed API keys across
@@ -175,49 +211,58 @@
     onComplete();
   }
 
+  let scroller = $state<HTMLElement>();
+  let heading = $state<HTMLHeadingElement>();
+
+  // A new step replaces the content under the pressed button, so focus and
+  // the scroll position start again at the new step's heading.
+  async function goTo(index: number) {
+    step = index;
+    await tick();
+    if (scroller) scroller.scrollTop = 0;
+    heading?.focus();
+  }
+
   function next() {
-    if (step < TOTAL_STEPS - 1) step++;
+    if (step < TOTAL_STEPS - 1) void goTo(step + 1);
   }
 
   function back() {
-    if (step > 0) step--;
+    if (step > 0) void goTo(step - 1);
   }
+
+  const current = $derived(STEPS[step] ?? STEPS[0]);
 </script>
 
-<div class="setup-view emerges">
-  <div class="setup-body">
-    <div class="setup-card">
-      <div class="setup-step-indicator">
-        {#each stepIndices as i (i)}
-          <div class="step-dot" class:active={i === step} class:done={i < step}></div>
-        {/each}
+<div class="setup-wizard" data-ui>
+  <header class="setup-bar">
+    <span class="setup-wordmark"><Icon name="mark" size={18} />Residuum</span>
+  </header>
+  <main class="setup-scroller" bind:this={scroller}>
+    <div class="setup-column">
+      <SetupProgress labels={stepLabels} current={step} />
+
+      <div class="setup-head">
+        <h1 class="setup-title" tabindex="-1" bind:this={heading}>{current.title}</h1>
+        <p class="setup-lede">{current.lede}</p>
       </div>
 
       {#if showDraftKeyNotice}
-        <div class="provider-warning draft-key-notice">
-          <span class="provider-warning-icon">&#9888;</span>
-          <span
-            >Restored your in-progress setup. API keys aren't saved in the draft, so re-enter them
-            on the Providers step before finishing.</span
-          >
-          <button
-            type="button"
-            class="draft-key-notice-dismiss"
-            aria-label="Dismiss"
-            onclick={() => (showDraftKeyNotice = false)}>&times;</button
-          >
-        </div>
+        <Banner tone="info" ondismiss={() => (showDraftKeyNotice = false)}>
+          Picked up where you left off. Keys and tokens aren't kept in the draft, so enter them
+          again on the Providers and Connections steps before you finish.
+        </Banner>
       {/if}
 
       {#if step === 0}
-        <Welcome {wizardState} onNext={next} />
+        <Welcome bind:wizardState onNext={next} />
       {:else if step === 1}
-        <Providers {wizardState} onNext={next} onBack={back} />
+        <Providers bind:wizardState onNext={next} onBack={back} />
       {:else if step === 2}
-        <Roles {wizardState} onNext={next} onBack={back} />
+        <Roles bind:wizardState onNext={next} onBack={back} />
       {:else if step === 3}
         <MCP
-          {wizardState}
+          bind:wizardState
           {catalog}
           {catalogLoading}
           {catalogError}
@@ -226,10 +271,90 @@
           onBack={back}
         />
       {:else if step === 4}
-        <Integrations {wizardState} onNext={next} onBack={back} />
+        <Integrations bind:wizardState onNext={next} onBack={back} />
       {:else if step === 5}
-        <Review {wizardState} onBack={back} onComplete={handleComplete} />
+        <Review bind:wizardState onBack={back} onComplete={handleComplete} />
       {/if}
     </div>
-  </div>
+  </main>
 </div>
+
+<style>
+  .setup-wizard {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .setup-bar {
+    display: flex;
+    flex: none;
+    align-items: center;
+    height: var(--layout-place-header-height);
+    padding: 0 var(--space-20);
+    border-bottom: 1px solid var(--color-line-soft);
+  }
+
+  .setup-wordmark {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-10);
+    font-family: var(--font-mark);
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-medium);
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+
+    & > :global(svg) {
+      color: var(--color-vein);
+    }
+  }
+
+  .setup-scroller {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .setup-column {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-16);
+    max-width: calc(640px + 2 * var(--space-16));
+    margin: 0 auto;
+    padding: var(--space-32) var(--space-16) var(--space-48);
+  }
+
+  .setup-head {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-6);
+    margin: var(--space-16) 0 var(--space-8);
+  }
+
+  .setup-title {
+    font-size: var(--font-size-title);
+    font-weight: var(--font-weight-semibold);
+    line-height: var(--line-height-tight);
+
+    /* Focus lands here when a step opens; the heading isn't a control. */
+    &:focus {
+      outline: none;
+    }
+  }
+
+  .setup-lede {
+    color: var(--color-text-2);
+  }
+
+  @media (max-width: 760px) {
+    .setup-bar {
+      padding: 0 var(--space-16);
+    }
+
+    .setup-column {
+      padding-top: var(--space-20);
+    }
+  }
+</style>
