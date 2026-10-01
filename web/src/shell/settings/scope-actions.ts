@@ -47,9 +47,9 @@ export function discardScope(scope: SettingsScope): void {
   toast.info("Discarded your changes.");
 }
 
-/** Read the scope's files again, asking first when that drops staged changes. */
+/** Read the scope's files again, asking first when that drops staged changes or raw edits. */
 export async function reloadScope(scope: SettingsScope): Promise<void> {
-  if (scope.dirty) {
+  if (scope.unsaved) {
     const confirmed = await confirmations.ask({
       title: "Discard unsaved changes?",
       message: `Reloading reads ${scopeName(scope)} from disk again and drops the changes you haven't saved.`,
