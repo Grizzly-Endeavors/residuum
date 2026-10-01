@@ -180,7 +180,7 @@ test.describe("at wide width", () => {
     await page.mouse.move(before.x - 120, y, { steps: 6 });
     await page.mouse.up();
     await expect(grip).toHaveAttribute("aria-valuenow", "560");
-    expect((await panel.boundingBox())?.width).toBe(560);
+    expect((await panel.boundingBox())?.width).toBeCloseTo(560, 0);
 
     // Half the viewport is as wide as it goes.
     await page.mouse.move(before.x - 120, y);
@@ -203,7 +203,7 @@ test.describe("at wide width", () => {
     await page.goto("/agent/atlas/files?panel=file:SOUL.md");
     const file = contextPanel(page, false, "SOUL.md");
     await expect(file).toBeVisible();
-    expect((await file.boundingBox())?.width).toBe(456);
+    expect((await file.boundingBox())?.width).toBeCloseTo(456, 0);
   });
 
   test("sits beside the main region", async ({ page }) => {

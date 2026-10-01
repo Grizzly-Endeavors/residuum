@@ -292,6 +292,7 @@ test("the hub banner shows while the hub can't be reached, and Retry reconnects"
   page,
   mock,
 }) => {
+  await page.clock.install();
   await page.goto("/agent/atlas");
   await expect(page.getByRole("heading", { name: "atlas", level: 1 })).toBeVisible();
   const banner = page.getByRole("status").filter({ hasText: "Can't reach Residuum." });
@@ -301,8 +302,13 @@ test("the hub banner shows while the hub can't be reached, and Retry reconnects"
   await expect(banner).toBeVisible();
   await expectNoAxeViolations(page, { exclude: LEGACY });
 
+  // Hold the socket's own reconnect timer, which would otherwise race the
+  // click below once the hub is back, so only Retry can reconnect it.
+  await page.clock.pauseAt(Date.now() + 2_000);
+  const retry = banner.getByRole("button", { name: "Retry" });
+  await expect(retry).not.toHaveAttribute("aria-busy", "true");
   await mock.post("/api/mock/hub-socket", { data: { online: true } });
-  await banner.getByRole("button", { name: "Retry" }).click();
+  await retry.click();
   await expect(banner).toBeHidden();
 });
 

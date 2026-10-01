@@ -147,7 +147,12 @@ export class OverviewStore {
       case "workspace_changed":
       case "workspace_resync":
       case "workspace_watch_unavailable":
-        // The hub store keeps these; an agent's overview changes reach here as its own frame.
+      case "artifact_updated":
+      case "artifact_removed":
+      case "subscribed":
+      case "session_frame":
+      case "session_relay_lagged":
+        // Other owners keep these; an agent's overview changes reach here as its own frame.
         break;
     }
   }
