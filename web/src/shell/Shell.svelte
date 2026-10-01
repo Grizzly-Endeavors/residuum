@@ -12,14 +12,17 @@
   import { RailAccordion } from "./accordion.svelte";
   import BottomBar from "./BottomBar.svelte";
   import HubBanner from "./HubBanner.svelte";
+  import PanelHost from "./panel/PanelHost.svelte";
   import PlaceHost from "./PlaceHost.svelte";
   import Rail from "./Rail.svelte";
   import SettingsModal from "./SettingsModal.svelte";
   import type { FeedbackTab, ShellActions } from "./shell-actions";
 
   // The frame around every place: the rail beside the main region at medium
-  // and wide widths; on phones the bottom bar, with the rail in a drawer. The
-  // shell also owns the overlays its controls open.
+  // and wide widths, and the context panel beside it (wide) or over it
+  // (medium); on phones the bottom bar, with the rail in a drawer and the
+  // panel a full-screen sheet. The shell also owns the overlays its controls
+  // open.
 
   router.guard.setConfirm(confirmLeave);
 
@@ -100,6 +103,7 @@
     <HubBanner />
     <PlaceHost {actions} />
   </main>
+  <PanelHost />
   <BottomBar {drawerOpen} onmenu={() => (drawerOpen = !drawerOpen)} {actions} />
 </div>
 
@@ -121,7 +125,7 @@
 <style>
   .shell {
     display: grid;
-    grid-template-columns: var(--layout-rail-width) minmax(0, 1fr);
+    grid-template-columns: var(--layout-rail-width) minmax(0, 1fr) auto;
     height: 100%;
     background: var(--color-stone-0);
   }
