@@ -126,13 +126,13 @@ Every capability the current web UI offers, grouped by the surface that has it t
 
 ## Header, agent switcher, notifications, inbox, feedback, help → Shell (design §2, §7; W15b, W19, W21, W29)
 
-- [ ] Menu destinations (Chat, Workspace, Workbench, Scheduled, Agent settings, Team, Team files, Hub settings) — **Changed:** rail and bottom bar
-- [ ] Connection status text — **Changed:** shown only when degraded
+- [x] Menu destinations (Chat, Workspace, Workbench, Scheduled, Agent settings, Team, Team files, Hub settings) — **Changed:** rail and bottom bar
+- [x] Connection status text — **Changed:** shown only when degraded
 - [ ] Inbox button with unread badge — **Changed:** rail and bottom bar, across agents
 - [ ] Bug report entry — **Changed:** help menu and palette
-- [ ] Agent chips: state, busy dots, unread (99+), failed-agent error tooltip, current highlight, arrow-key movement — **Changed:** rail agent rows (accordion) with a working indicator and a 99+ chat-unread badge; Up/Down move between rows; the error shows on Home and in the state card; an unknown agent in the URL redirects to Home with a toast
-- [ ] Switching agents keeps the kind of page — **Changed:** agent places are explicit routes; the rail accordion links to them
-- [ ] Hub offline note — **Changed:** hub banner
+- [x] Agent chips: state, busy dots, unread (99+), failed-agent error tooltip, current highlight, arrow-key movement — **Changed:** rail agent rows (accordion) with a working indicator and a 99+ chat-unread badge; Up/Down move between rows; the error shows on Home and in the state card; an unknown agent in the URL redirects to Home with a toast
+- [x] Switching agents keeps the kind of page — **Changed:** agent places are explicit routes; the rail accordion links to them
+- [x] Hub offline note — **Changed:** hub banner
 - [x] Toasts: info/success auto-dismiss (4 s, 10 s with action), errors sticky, dismiss, action button
 - [ ] Recent notifications history with details, clear and Undo — **Changed:** a Recent notifications dialog from the help menu and palette
 - [ ] User inbox: unread count, tabs, read on open, body and attachment downloads, archive, restore, empty states — **Changed:** one cross-agent Inbox place with live counts from the overview (no polling); bodies render as Markdown; load errors are shown, not swallowed
@@ -191,10 +191,10 @@ Agent scope:
 
 - [ ] Keyboard: `?` help, Enter/Shift+Enter, slash-menu keys, Esc (stop reply, close overlays), rail keyboard navigation, focus trapping in overlays, Enter/Space on disclosures — **Dropped:** F for artifact full view (artifacts open in their own tab)
 - [ ] Agent socket reconnect with backoff, ping, queued sends; resync of sessions, history, usage, workspace watch and workbench on reconnect
-- [ ] Hub socket offline handling
+- [x] Hub socket offline handling
 - [ ] Gateway reloading toast and cache invalidation
 - [ ] Plain-language error messages for unreachable, 404, 401/403, 5xx and server messages; error frames as toasts with details; notices as info
-- [ ] Time-of-day vein intensity — **Dropped:** see design §1
+- [x] Time-of-day vein intensity — **Dropped:** see design §1
 - [x] Deep links and back/forward — **Changed:** route model in design §3 with redirects from every current URL
 - [x] macOS notification "Open" link lands on the last-used agent's Files, as today
 - [ ] Persisted preferences: last agent, API cache, setup draft — sidebar open state, settings mode and verbose are **Dropped** with the features they served

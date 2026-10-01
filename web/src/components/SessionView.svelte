@@ -2,7 +2,7 @@
   import { tick } from "svelte";
   import { ws } from "../lib/ws.svelte";
   import { openSessionByAddress } from "../lib/session-address";
-  import { legacyRouter } from "../lib/legacy-router.svelte";
+  import { router } from "../lib/router.svelte";
   import { Icon } from "../lib/icons";
   import type { SessionView } from "../lib/sessions.svelte";
   import {
@@ -135,7 +135,7 @@
               <button
                 type="button"
                 class="session-meta-link"
-                onclick={() => legacyRouter.openWorkbench(artifact)}
+                onclick={() => void router.openPlace({ kind: "workbench", artifact })}
               >
                 {artifact}
               </button>

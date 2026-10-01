@@ -1,121 +1,3 @@
-/* ── Hamburger menu ───────────────────────────────────────────────────── */
-
-.hamburger-wrap {
-  position: relative;
-}
-
-.hamburger-btn {
-  width: 34px;
-  height: 34px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-subtle);
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 18px;
-  transition:
-    background-color var(--dur-quick),
-    color var(--dur-quick),
-    border-color var(--dur-quick),
-    box-shadow var(--dur-default) var(--ease-out-stone);
-}
-
-.hamburger-btn:hover {
-  background: var(--bg-raised);
-  color: var(--text);
-  border-color: var(--border);
-}
-
-.hamburger-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  min-width: 160px;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-  z-index: 50;
-  overflow: hidden;
-}
-
-.hamburger-menu-item {
-  display: block;
-  width: 100%;
-  padding: 10px 16px;
-  font-family: var(--font-body);
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-muted);
-  background: transparent;
-  border: none;
-  text-align: left;
-  cursor: pointer;
-  transition:
-    background-color var(--dur-quick),
-    color var(--dur-quick),
-    border-color var(--dur-quick),
-    box-shadow var(--dur-default) var(--ease-out-stone);
-}
-
-.hamburger-menu-item:hover {
-  background: var(--bg-raised);
-  color: var(--text);
-}
-
-.hamburger-menu-item.active {
-  color: var(--vein);
-  background: var(--vein-glow);
-}
-
-/* ── App layout ───────────────────────────────────────────────────────── */
-
-.app-main {
-  display: grid;
-  grid-template-columns: minmax(0, 0fr) minmax(0, 1fr);
-  transition: grid-template-columns var(--dur-slow) var(--ease-out-stone);
-  flex: 1;
-  overflow: hidden;
-}
-
-.app-main.with-workspace {
-  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
-}
-
-.workspace-slot {
-  min-width: 0;
-  overflow: hidden;
-  display: flex;
-}
-
-.workspace-slot > .workspace-view {
-  opacity: 0;
-  transition: opacity var(--dur-default) var(--ease-out-stone) var(--dur-quick);
-  flex: 1;
-  min-width: 0;
-}
-
-.app-main.with-workspace .workspace-slot > .workspace-view {
-  opacity: 1;
-}
-
-.app-main .chat-view {
-  min-width: 0;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .app-main,
-  .workspace-slot > .workspace-view {
-    transition: none;
-  }
-  .app-main.with-workspace .workspace-slot > .workspace-view {
-    opacity: 1;
-  }
-}
-
 /* ── Workspace ────────────────────────────────────────────────────────── */
 
 .workspace-view {
@@ -161,32 +43,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.workspace-close {
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-subtle);
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 14px;
-  transition:
-    background-color var(--dur-quick),
-    color var(--dur-quick),
-    border-color var(--dur-quick),
-    box-shadow var(--dur-default) var(--ease-out-stone);
-  flex-shrink: 0;
-}
-
-.workspace-close:hover {
-  background: var(--bg-raised);
-  color: var(--text);
-  border-color: var(--border);
 }
 
 .workspace-mobile-back {
@@ -281,12 +137,6 @@
   font-size: var(--fs-base);
   font-style: italic;
   position: relative;
-}
-
-.workspace-close-empty {
-  position: absolute;
-  top: 12px;
-  right: 12px;
 }
 
 .workspace-error {
@@ -505,25 +355,6 @@
 }
 
 @media (max-width: 600px) {
-  /* Workspace mobile: full-screen with drill-down — flex stack, no column animation */
-  .app-main {
-    display: flex;
-    grid-template-columns: none;
-    transition: none;
-  }
-  .workspace-slot {
-    display: contents;
-  }
-  .workspace-slot > .workspace-view {
-    opacity: 1;
-    transition: none;
-  }
-  .app-main.with-workspace {
-    flex-direction: column;
-  }
-  .app-main.with-workspace .chat-view {
-    display: none;
-  }
   .workspace-view {
     position: relative;
     flex-direction: column;
@@ -566,10 +397,5 @@
 
   .workspace-mobile-back {
     display: flex;
-  }
-
-  /* Hamburger full-width on mobile */
-  .hamburger-menu {
-    min-width: calc(100vw - 32px);
   }
 }

@@ -4,7 +4,6 @@ import {
   ALL_SECTIONS,
   defaultSection,
   isSectionOf,
-  legacyHostSection,
   scopeKind,
   sectionAfterScopeSwitch,
   sectionForConfigKey,
@@ -12,7 +11,6 @@ import {
   sectionGroups,
   sectionsOf,
 } from "./settings-sections";
-import { LEGACY_AGENT_SECTIONS, LEGACY_HUB_SECTIONS } from "./legacy-settings-sections";
 
 const ids = (kind: "agent" | "all"): string[] => sectionsOf(kind).map((s) => s.id);
 
@@ -162,63 +160,6 @@ describe("old section names", () => {
   it("doesn't know a made-up name, or one from the object prototype", () => {
     expect(sectionFromOldName("nope", "agent")).toBeNull();
     expect(sectionFromOldName("constructor", "hub")).toBeNull();
-  });
-});
-
-describe("hosting the current Settings page", () => {
-  it("maps every agent section onto an old agent section", () => {
-    const oldIds = LEGACY_AGENT_SECTIONS.map((s) => s.id);
-    for (const { id } of AGENT_SECTIONS) {
-      const host = legacyHostSection("agent", id);
-      expect(host.scope).toBe("agent");
-      expect(oldIds).toContain(host.section);
-    }
-  });
-
-  it("maps every install-wide section onto an old hub section", () => {
-    const oldIds = LEGACY_HUB_SECTIONS.map((s) => s.id);
-    for (const { id } of ALL_SECTIONS) {
-      const host = legacyHostSection("all", id);
-      expect(host.scope).toBe("hub");
-      expect(oldIds).toContain(host.section);
-    }
-  });
-
-  it("reaches the old section each new one came from", () => {
-    expect(legacyHostSection("agent", "model")).toEqual({ scope: "agent", section: "providers" });
-    expect(legacyHostSection("agent", "connections")).toEqual({
-      scope: "agent",
-      section: "channels",
-    });
-    expect(legacyHostSection("agent", "tools")).toEqual({ scope: "agent", section: "skills" });
-    expect(legacyHostSection("agent", "schedule")).toEqual({ scope: "agent", section: "pulses" });
-    expect(legacyHostSection("agent", "servers")).toEqual({ scope: "agent", section: "mcp" });
-    expect(legacyHostSection("all", "keys")).toEqual({ scope: "hub", section: "secrets" });
-    expect(legacyHostSection("all", "limits")).toEqual({ scope: "hub", section: "sessions" });
-    expect(legacyHostSection("all", "listener")).toEqual({ scope: "hub", section: "a2a" });
-    expect(legacyHostSection("all", "diagnostics")).toEqual({ scope: "hub", section: "tracing" });
-    expect(legacyHostSection("all", "updates")).toEqual({ scope: "hub", section: "update" });
-  });
-
-  it("opens the scope's first old section for ones with no equivalent", () => {
-    expect(legacyHostSection("all", "notifications")).toEqual({ scope: "hub", section: "general" });
-    expect(legacyHostSection("agent", "raw")).toEqual({ scope: "agent", section: "runtime" });
-  });
-
-  it("round-trips: an old section's new home is hosted by the old section it came from, when one maps back", () => {
-    for (const [old, expected] of [
-      ["providers", "providers"],
-      ["channels", "channels"],
-      ["pulses", "pulses"],
-      ["skills", "skills"],
-      ["mcp", "mcp"],
-      ["memory", "memory"],
-      ["runtime", "runtime"],
-    ] as const) {
-      const target = sectionFromOldName(old, "agent");
-      expect(target).not.toBeNull();
-      expect(legacyHostSection("agent", target?.section ?? "model").section).toBe(expected);
-    }
   });
 });
 

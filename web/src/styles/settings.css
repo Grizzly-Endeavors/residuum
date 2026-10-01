@@ -168,10 +168,27 @@
   background: var(--vein-glow);
 }
 
+.settings-nav-group {
+  display: block;
+  margin-top: 12px;
+  padding: 12px 20px 4px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  cursor: default;
+  user-select: none;
+}
+
 .settings-content {
   flex: 1;
   overflow-y: auto;
   padding: 20px 24px;
+}
+
+.settings-placeholder {
+  font-size: 14px;
+  color: var(--text-muted);
 }
 
 /* ── Settings status indicator ──────────────────────────────────────── */

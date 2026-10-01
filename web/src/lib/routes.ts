@@ -17,13 +17,13 @@
 // browser: the router applies what this module reads and formats.
 
 import { agentNameProblem } from "./agent-name";
-import type { LegacyScope } from "./legacy-settings-sections";
 import {
   ALL_SCOPE,
   defaultSection,
   isSectionOf,
   scopeKind,
   sectionFromOldName,
+  type OldSettingsScope,
   type ScopeKind,
   type SectionId,
 } from "./settings-sections";
@@ -217,7 +217,7 @@ function workbenchPlace(artifact: string | undefined): Place {
  * agent's and none was given.
  */
 function oldSettingsTarget(
-  urlScope: LegacyScope,
+  urlScope: OldSettingsScope,
   agent: string | null,
   old: string | undefined,
 ): { target: SettingsTarget; needsAgent: boolean } {

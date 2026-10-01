@@ -130,6 +130,19 @@ describe("HubStore frames", () => {
     expect(hub.notices).toEqual([]);
   });
 
+  it("keeps an agent in the stopping set from its stop starting until its state changes", () => {
+    const hub = new HubStore();
+    hub.handleFrame(snapshot([agent("scout"), agent("atlas")], { stopping: ["atlas"] }));
+    expect(hub.isStopping("atlas")).toBe(true);
+
+    hub.handleFrame({ type: "agent_stopping", name: "scout" });
+    hub.handleFrame({ type: "agent_stopping", name: "scout" });
+    expect(hub.stopping).toEqual(["atlas", "scout"]);
+
+    hub.handleFrame({ type: "agent_state", agent: agent("scout", { state: "stopped" }) });
+    expect(hub.stopping).toEqual(["atlas"]);
+  });
+
   it("passes a team event to listeners and never raises a notice or toast for it", () => {
     const hub = new HubStore();
     hub.handleFrame(snapshot([agent("scout")]));
@@ -521,21 +534,34 @@ describe("HubStore team watching", () => {
 });
 
 describe("HubStore list fetch", () => {
-  it("loads the list over HTTP", async () => {
+  it("loads the list over HTTP, with its activity and stopping set", async () => {
+    const busy = { busy: true, busy_since: "2026-03-14T12:00:00Z", unread: 2 };
     vi.stubGlobal(
       "fetch",
-      vi.fn(() => Promise.resolve(jsonResponse({ agents: [agent("scout"), agent("atlas")] }))),
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse({
+            agents: [agent("scout"), agent("atlas")],
+            activity: { scout: busy },
+            stopping: ["atlas"],
+          }),
+        ),
+      ),
     );
     const hub = new HubStore();
     await hub.refresh();
     expect(hub.agents.map((a) => a.name)).toEqual(["atlas", "scout"]);
+    expect(hub.activityOf("scout")).toEqual(busy);
+    expect(hub.isStopping("atlas")).toBe(true);
     expect(hub.loaded).toBe(true);
   });
 
   it("ignores a fetch that lands after the socket's snapshot, unless forced", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(() => Promise.resolve(jsonResponse({ agents: [agent("stale")] }))),
+      vi.fn(() =>
+        Promise.resolve(jsonResponse({ agents: [agent("stale")], activity: {}, stopping: [] })),
+      ),
     );
     const hub = new HubStore();
     hub.handleFrame(snapshot([agent("scout")]));

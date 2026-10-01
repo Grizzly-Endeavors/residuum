@@ -173,6 +173,8 @@ export interface MockHub {
   clearUnread: (agent: MockAgent) => void;
   /** Move an agent to a run state and tell hub clients. */
   transition: (agent: MockAgent, runState: AgentState) => void;
+  /** Take the hub WebSocket down or bring it back (see `HubSocket.setOnline`). A reset brings it back. */
+  setHubSocketOnline: (online: boolean) => void;
   /**
    * Put the mock back as it started: the clock, the timers and delays, the
    * hub's own state, and the agents the scenario creates. Every socket is

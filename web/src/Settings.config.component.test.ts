@@ -11,6 +11,7 @@ import {
 } from "./test/component";
 import { fakeAgentConfig, type FakeAgentConfig } from "./test/fake-config";
 import Settings from "./Settings.svelte";
+import { ALL_SCOPE, type SectionId } from "./lib/settings-sections";
 import { agentConfigFile, configCoordinator } from "./lib/config-coordinator";
 import { toast } from "./lib/toast.svelte";
 
@@ -20,11 +21,13 @@ let agent = "";
 let server: FakeAgentConfig;
 let count = 0;
 
-function mount(scope: "agent" | "hub" = "agent", section = "runtime"): void {
-  render(Settings, {
-    scope,
-    agent: scope === "agent" ? agent : null,
-    section: section as never,
+function mount(
+  scope: "agent" | "hub" = "agent",
+  section: SectionId = "runtime",
+): ReturnType<typeof render<typeof Settings>> {
+  return render(Settings, {
+    scope: scope === "agent" ? agent : ALL_SCOPE,
+    section,
     onSelectSection: () => {},
     onClose: () => {},
   });
@@ -147,7 +150,7 @@ describe("Settings following changes made elsewhere", () => {
   it("shows the main model another view saved", async () => {
     server.files.providers =
       '[providers.anthropic]\ntype = "anthropic"\n\n[models]\nmain = "anthropic/claude-a"\n';
-    mount("agent", "providers");
+    mount("agent", "model");
     await settle();
     const model = (): HTMLSelectElement =>
       screen.getByLabelText("Model", { selector: "#srole-main-model" });
@@ -215,13 +218,7 @@ describe("Settings following changes made elsewhere", () => {
   });
 
   it("stops following when it is closed", async () => {
-    const view = render(Settings, {
-      scope: "agent",
-      agent,
-      section: "runtime",
-      onSelectSection: () => {},
-      onClose: () => {},
-    });
+    const view = mount();
     await settle();
     view.unmount();
     server.requests.length = 0;
@@ -235,9 +232,8 @@ describe("Settings following changes made elsewhere", () => {
 describe("Settings' raw editors", () => {
   it("write only the files that were edited", async () => {
     server.files.providers = '[models]\nmain = "anthropic/claude-a"\n';
-    mount();
+    mount("agent", "raw");
     await settle();
-    await fireEvent.click(screen.getByRole("button", { name: "Raw" }));
     await fireEvent.click(screen.getByRole("button", { name: "providers.toml" }));
     server.requests.length = 0;
 
@@ -251,9 +247,8 @@ describe("Settings' raw editors", () => {
 
   it("keep the edit and say what they replaced when the file changed elsewhere", async () => {
     server.files.providers = '[models]\nmain = "anthropic/claude-a"\n';
-    mount();
+    mount("agent", "raw");
     await settle();
-    await fireEvent.click(screen.getByRole("button", { name: "Raw" }));
     await fireEvent.click(screen.getByRole("button", { name: "providers.toml" }));
 
     server.files.providers = '[models]\nmain = "anthropic/claude-c"\n';
@@ -268,12 +263,13 @@ describe("Settings' raw editors", () => {
   });
 
   it("show the form's saved changes when switching to raw", async () => {
-    mount();
+    const view = mount();
     await settle();
     await type(timeout(), "60");
     await advance(1000);
 
-    await fireEvent.click(screen.getByRole("button", { name: "Raw" }));
+    await view.rerender({ section: "raw" });
+    await settle();
 
     expect(screen.getByRole<HTMLTextAreaElement>("textbox").value).toContain("timeout_secs = 60");
   });

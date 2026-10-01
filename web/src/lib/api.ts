@@ -1103,10 +1103,9 @@ export async function applyUpdate(): Promise<UpdateStatusResponse> {
 
 // ── Hub lifecycle API wrappers ───────────────────────────────────────
 
-/** Every agent with its state, sorted by name. */
-export async function fetchAgents(): Promise<AgentSummary[]> {
-  const data = await apiFetch<AgentListResponse>(hubPath("/agents"));
-  return data.agents;
+/** Every agent with its state, sorted by name, with the activity and stopping set beside the list. */
+export async function fetchAgents(): Promise<AgentListResponse> {
+  return apiFetch<AgentListResponse>(hubPath("/agents"));
 }
 
 /** Hub status: version, uptime, tunnel, and agent counts by state. */

@@ -33,6 +33,11 @@ export interface AxeScanOptions {
   allow?: readonly AllowedViolation[];
   /** Limit the scan to the part of the page under this selector, such as an open dialog. */
   within?: string;
+  /**
+   * Leave out the parts of the page under this selector, such as a legacy
+   * view hosted in the shell, which the unit that replaces it scans.
+   */
+  exclude?: string;
 }
 
 function describeViolation(violation: Violation): string {
@@ -70,10 +75,11 @@ export async function expectNoAxeViolations(
   page: Page,
   options: AxeScanOptions = {},
 ): Promise<void> {
-  const { allow = [], within } = options;
+  const { allow = [], within, exclude } = options;
   await settleAnimations(page);
   const builder = new AxeBuilder({ page });
   if (within !== undefined) builder.include(within);
+  if (exclude !== undefined) builder.exclude(exclude);
   const results = await builder.analyze();
 
   await test.info().attach("axe-violations.json", {

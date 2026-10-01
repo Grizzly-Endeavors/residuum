@@ -13,7 +13,6 @@
     workspaceConflictFromApiError,
   } from "../lib/api";
   import { toast } from "../lib/toast.svelte";
-  import { Icon } from "../lib/icons";
   import { userErrorMessage } from "../lib/errors";
   import { formatDiagnosticLocation } from "../lib/diagnostics";
   import { notifyWithWorkspaceUndo } from "../lib/undo";
@@ -26,11 +25,9 @@
   import Modal from "./Modal.svelte";
 
   let {
-    onClose,
     agent,
     scope = "agent",
   }: {
-    onClose: () => void;
     /** The agent whose tree this shows. The team scope is no agent's, and takes `null`. */
     agent: string | null;
     scope?: WorkspaceScope;
@@ -348,7 +345,6 @@
       <div class="workspace-editor-header">
         <button class="workspace-mobile-back" onclick={handleMobileBack}>&#8592;</button>
         <span class="workspace-filename">{fileName(selectedFile)}</span>
-        <button class="workspace-close" onclick={onClose} title="Close workspace">&#10005;</button>
       </div>
       {#if loading}
         <div class="workspace-empty">Loading...</div>
@@ -392,14 +388,6 @@
     {:else}
       <div class="workspace-empty">
         <div>No file selected.</div>
-        <button
-          class="workspace-close workspace-close-empty"
-          onclick={onClose}
-          title="Close workspace"
-          aria-label="Close workspace"
-        >
-          <Icon name="close" size={14} />
-        </button>
       </div>
     {/if}
   </div>

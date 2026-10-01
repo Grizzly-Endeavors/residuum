@@ -8,7 +8,17 @@
   // overlay host above every layer and never joins the overlay stack, so an
   // Undo stays within reach while a dialog is open. The store sets the
   // timings: info and success leave after 4 seconds, or 10 with an action,
-  // and errors stay until dismissed. The shell mounts one region.
+  // and errors stay until dismissed. The app mounts one region.
+
+  interface Props {
+    /**
+     * What toasts keep clear of at phone width: the bottom bar and a composer
+     * above it, the bottom bar alone, or just the screen's edge (no bar).
+     */
+    clearance?: "composer" | "bar" | "edge";
+  }
+
+  let { clearance = "composer" }: Props = $props();
 
   const ICONS: Readonly<Record<ToastKind, IconName>> = {
     info: "info",
@@ -43,7 +53,7 @@
 
 <!-- The region moves into the overlay host; these hold its place in the block. -->
 <template></template>
-<div class="ui-toasts" {@attach portal}>
+<div class="ui-toasts" data-clearance={clearance} {@attach portal}>
   <!-- Errors interrupt; everything else is read at the next pause. Each new toast is read alone. -->
   <div class="ui-toast-group" role="alert" aria-atomic="false">
     {#each errors as item (item.id)}
@@ -140,10 +150,13 @@
     }
   }
 
-  /* Clear of the bottom bar and the composer above it. */
   @media (max-width: 760px) {
-    .ui-toasts {
+    .ui-toasts[data-clearance="composer"] {
       bottom: calc(var(--layout-bottom-bar-offset) + 96px);
+    }
+
+    .ui-toasts[data-clearance="bar"] {
+      bottom: calc(var(--layout-bottom-bar-offset) + var(--space-16));
     }
 
     .ui-toast-action {

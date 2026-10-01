@@ -19,8 +19,7 @@ async function capture(page: Page, heading: string, name: string): Promise<void>
   await expect(page.getByRole("heading", { level: 1 })).toHaveText(heading);
   const size = page.viewportSize();
   await showWholeStep(page);
-  // The legacy notification corner floats over the page until the new toast region replaces it.
-  await expectScreenshot(page, name, { mask: [page.locator(".notif-corner")] });
+  await expectScreenshot(page, name);
   if (size) await page.setViewportSize(size);
 }
 
