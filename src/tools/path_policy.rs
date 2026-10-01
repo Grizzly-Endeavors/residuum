@@ -392,6 +392,25 @@ mod tests {
     }
 
     #[test]
+    fn writes_to_the_push_signing_key_and_device_list_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub_dir = dir.path().join("hub");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        let policy = PathPolicy::with_blocked_paths(always_blocked_paths(
+            &dir.path().join("config"),
+            &hub_dir,
+        ));
+
+        for name in ["push-vapid.key", "push-devices.json"] {
+            // Refused whether or not the file exists yet.
+            let err = policy.check_write(&hub_dir.join(name)).unwrap_err();
+            assert!(err.contains(name), "{err}");
+            std::fs::write(hub_dir.join(name), "x").unwrap();
+            assert!(policy.check_write(&hub_dir.join(name)).is_err(), "{name}");
+        }
+    }
+
+    #[test]
     fn blocked_write_paths_cover_every_hub_credential_store() {
         let hub_dir = Path::new("/hub");
         let blocked = always_blocked_paths(Path::new("/cfg"), hub_dir);

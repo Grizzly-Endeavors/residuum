@@ -71,6 +71,12 @@ impl PushService {
         self.subject.send_replace(subject_for(contact));
     }
 
+    /// The VAPID `sub` claim pushes are sent with now.
+    #[must_use]
+    pub fn subject(&self) -> String {
+        self.subject.borrow().clone()
+    }
+
     async fn vapid_key(&self) -> Result<&VapidKey, PushError> {
         self.key
             .get_or_try_init(|| VapidKey::load_or_create(&self.key_path))
@@ -316,8 +322,14 @@ impl PushService {
                 });
             }
         };
-        let subject = self.subject.borrow().clone();
-        send_once(subscription, key, &subject, message, Utc::now().timestamp()).await
+        send_once(
+            subscription,
+            key,
+            &self.subject(),
+            message,
+            Utc::now().timestamp(),
+        )
+        .await
     }
 
     /// Record what `attempt` came to on the device, and say how it went.

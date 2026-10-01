@@ -848,6 +848,7 @@ mod tests {
         a2a_port: u16,
         events: tokio::sync::broadcast::Receiver<HubEvent>,
         host: Arc<AgentHost>,
+        push: Arc<crate::hub::push::PushService>,
         exit: JoinHandle<GatewayExit>,
         http: reqwest::Client,
         model: MockServer,
@@ -882,12 +883,14 @@ mod tests {
                     .unwrap();
             let events = runtime.host.subscribe();
             let host = Arc::clone(&runtime.host);
+            let push = Arc::clone(&runtime.services.push);
             Self {
                 root,
                 gateway_port,
                 a2a_port,
                 events,
                 host,
+                push,
                 exit: crate::util::spawn_in_span(runtime.run(false)),
                 http: reqwest::Client::new(),
                 model,
@@ -1081,6 +1084,34 @@ mod tests {
             Some("hub configuration reloaded: timezone")
         );
         assert_eq!(reload.notices, ["hub configuration reloaded: timezone"]);
+        hub.shut_down().await;
+    }
+
+    #[tokio::test]
+    async fn a_hub_config_reload_applies_a_changed_push_contact() {
+        let mut hub = RunningHub::start().await;
+        assert_eq!(hub.push.subject(), crate::hub::push::DEFAULT_CONTACT);
+
+        let config = std::fs::read_to_string(hub.hub_config_path()).unwrap();
+        std::fs::write(
+            hub.hub_config_path(),
+            format!("{config}\n[push]\ncontact = \"mailto:bear@example.com\"\n"),
+        )
+        .unwrap();
+        let set = hub.next_reload().await;
+        assert_eq!(
+            set.message.as_deref(),
+            Some("hub configuration reloaded: push")
+        );
+        assert_eq!(hub.push.subject(), "mailto:bear@example.com");
+
+        std::fs::write(hub.hub_config_path(), config).unwrap();
+        let cleared = hub.next_reload().await;
+        assert_eq!(
+            cleared.message.as_deref(),
+            Some("hub configuration reloaded: push")
+        );
+        assert_eq!(hub.push.subject(), crate::hub::push::DEFAULT_CONTACT);
         hub.shut_down().await;
     }
 
