@@ -6,26 +6,26 @@ Every capability the current web UI offers, grouped by the surface that has it t
 
 ## Chat feed → Agent Chat (design §4; W22, W23, W24)
 
-- [ ] User message text with inline image thumbnails
-- [ ] Sender line for messages from another interface ("name · interface · location") and from a workbench artifact
-- [ ] Agent replies as sanitized Markdown (GFM, line breaks) — **Changed:** unboxed prose; code blocks gain a copy button
-- [ ] Session/teammate message cards: kind, sender, clamped body with Show all / Show less, Open session — **Fix:** Open session appears for session senders only, not teammates (`agent:<name>`)
+- [x] User message text with inline image thumbnails
+- [x] Sender line for messages from another interface ("name · interface · location") and from a workbench artifact
+- [x] Agent replies as sanitized Markdown (GFM, line breaks) — **Changed:** unboxed prose; code blocks gain a copy button
+- [x] Session/teammate message cards: kind, sender, clamped body with Show all / Show less, Open session — **Fix:** Open session appears for session senders only, not teammates (`agent:<name>`)
 - [ ] Inline output for chat-scoped actions (help, status, conversation size) — **Changed:** status and help open as dialogs; conversation size opens in the context panel
-- [ ] Status lines with expandable details (session views)
-- [ ] Day dividers; episode dividers ("ep-NNN · date") above lazily loaded episodes
-- [ ] Compressed-history marker with an explanation — **Changed:** explained in plain words inline
+- [x] Status lines with expandable details (session views)
+- [x] Day dividers; episode dividers ("ep-NNN · date") above lazily loaded episodes
+- [x] Compressed-history marker with an explanation — **Changed:** explained in plain words inline
 - [ ] Tool calls with per-tool argument summaries and shaped results (text, JSON, file with gutter, list; long results collapse) — **Changed:** inside the activity line's step details; always available, no `/verbose`
-- [ ] Agent file attachments: caption, inline image, audio player, download with filename and size
-- [ ] Empty state — **Fix:** exactly one empty state (today two render)
-- [ ] Lazy loading of older episodes near the top, with a loading slot, stable scroll anchor, and fill-until-overflow
-- [ ] Newest episode loads with recent history so the compressed marker shows from the start
-- [ ] Follow new content at the bottom; stop following when scrolled up
-- [ ] Jump-to-latest pill showing the topmost visible divider's label
-- [ ] Sending scrolls to the bottom
-- [ ] Reconnect reconciliation: missed messages merge in; otherwise reload that keeps the in-flight turn and re-anchors a scrolled-up reader
-- [ ] Undo this turn on user messages whose turn changed files; reports reverted and skipped paths
+- [x] Agent file attachments: caption, inline image, audio player, download with filename and size
+- [x] Empty state — **Fix:** exactly one empty state (today two render)
+- [x] Lazy loading of older episodes near the top, with a loading slot, stable scroll anchor, and fill-until-overflow
+- [x] Newest episode loads with recent history so the compressed marker shows from the start
+- [x] Follow new content at the bottom; stop following when scrolled up
+- [x] Jump-to-latest pill showing the topmost visible divider's label
+- [x] Sending scrolls to the bottom
+- [x] Reconnect reconciliation: missed messages merge in; otherwise reload that keeps the in-flight turn and re-anchors a scrolled-up reader
+- [x] Undo this turn on user messages whose turn changed files; reports reverted and skipped paths
 - [ ] Live turn indicator: elapsed, output, tool-call count, stop hint — **Changed:** part of the live activity line; token figures move to the conversation-size view
-- [ ] Main history hides background turns unless they started with an agent message
+- [x] Main history hides background turns unless they started with an agent message
 
 ## Composer → Agent Chat composer (design §4; W25, with the action registry from W21)
 

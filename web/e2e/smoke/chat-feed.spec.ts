@@ -43,6 +43,9 @@ test("the conversation reads as replies, bubbles and cards", async ({ page }) =>
   ).toBeVisible();
   // A header the owner pasted stays their own message, not a card.
   await expect(feed.getByRole("article")).toHaveCount(2);
+  // A background turn that didn't start with an agent's message stays out of the conversation.
+  await expect(feed.getByText("Pulse check: inbox_check.")).toHaveCount(0);
+  await expect(feed.getByText("HEARTBEAT_OK")).toHaveCount(0);
   await expect(
     feed.getByRole("article", { name: "Background session: spawned-research-3f9a" }),
   ).toContainText("Found three fallback strategies worth comparing");
