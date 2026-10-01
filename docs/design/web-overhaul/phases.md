@@ -751,8 +751,9 @@ W19, then W20 and W21 together.
     - a mocked failure
   - axe scans and baselines.
 
-### W30 — Schedule place (S)
+### W30 — Schedule place (M)
 
+- **Size:** M, since the mapped place, its wording model, the store's own watch owner, the stopped-agent state, docs and the `next_fire_at` doc fix come to about 550 lines.
 - **Modules:** Schedule place (new); scheduled store. The legacy Scheduled page is deleted.
 - **Preconditions:** W20, W21.
 - **Shape when done:** Schedule meets design §5 and parity.
