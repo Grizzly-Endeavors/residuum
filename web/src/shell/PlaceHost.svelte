@@ -1,6 +1,5 @@
 <script lang="ts">
   import { router } from "../lib/router.svelte";
-  import Workbench from "../components/Workbench.svelte";
   import Activity from "../places/activity/Activity.svelte";
   import ChatPlace from "../places/chat/ChatPlace.svelte";
   import FilesPlace from "../places/files/FilesPlace.svelte";
@@ -8,14 +7,13 @@
   import Home from "../places/home/Home.svelte";
   import Inbox from "../places/inbox/Inbox.svelte";
   import Schedule from "../places/schedule/Schedule.svelte";
+  import Workbench from "../places/workbench/Workbench.svelte";
   import PlaceHeader from "./PlaceHeader.svelte";
   import { agentPlaceLabel } from "./rail-model";
   import type { ShellActions } from "./shell-actions";
 
   // The main region's place: Home, Inbox, an agent's Chat, Activity, Schedule
-  // or Files, Shared files, or a place that hasn't been rebuilt, which hosts
-  // its legacy view inside a `data-legacy-view` element, where the legacy
-  // global styles still apply and the new base styles don't.
+  // or Files, the Workbench, or Shared files.
 
   let { actions }: { actions: ShellActions } = $props();
 
@@ -49,18 +47,5 @@
     <FilesPlace source={files} />
   {/key}
 {:else if place.kind === "workbench"}
-  <div class="shell-legacy" data-legacy-view>
-    <Workbench artifact={place.artifact} />
-  </div>
+  <Workbench artifact={place.artifact} />
 {/if}
-
-<style>
-  .shell-legacy {
-    position: relative;
-    display: flex;
-    flex: 1;
-    flex-direction: column;
-    min-width: 0;
-    min-height: 0;
-  }
-</style>

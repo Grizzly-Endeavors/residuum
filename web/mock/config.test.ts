@@ -188,19 +188,34 @@ describe("config routes", () => {
   });
 
   describe("MCP", () => {
+    const mcpJson = (): unknown =>
+      JSON.parse(harness.state.workspaceFileContents["config/mcp.json"] ?? "");
+
     it("patches servers in and out, always keeping a `mcpServers` object", async () => {
       await putRaw("/api/mcp/raw", '{"mcpServers":{"a":{"command":"x"}}}');
       await request("PATCH", "/api/mcp/patch", { mcpServers: { b: { command: "y" }, a: null } });
-      expect(JSON.parse(harness.state.mcpJson)).toEqual({ mcpServers: { b: { command: "y" } } });
+      expect(mcpJson()).toEqual({ mcpServers: { b: { command: "y" } } });
 
       await request("PATCH", "/api/mcp/patch", { mcpServers: { b: null } });
-      expect(JSON.parse(harness.state.mcpJson)).toEqual({ mcpServers: {} });
+      expect(mcpJson()).toEqual({ mcpServers: {} });
     });
 
     it("starts an empty document with `mcpServers`", async () => {
       await putRaw("/api/mcp/raw", "");
       await request("PATCH", "/api/mcp/patch", {});
-      expect(JSON.parse(harness.state.mcpJson)).toEqual({ mcpServers: {} });
+      expect(mcpJson()).toEqual({ mcpServers: {} });
+    });
+
+    it("answers a patch with a workspace checkpoint that holds the file as it was", async () => {
+      const before = harness.state.workspaceFileContents["config/mcp.json"];
+      const { body } = await request("PATCH", "/api/mcp/patch", {
+        mcpServers: { b: { command: "y" } },
+      });
+      const taken = harness.state.checkpoints.workspace?.find(
+        (checkpoint) => checkpoint.summary.id === body.checkpoint_id,
+      );
+      expect(taken?.files["config/mcp.json"]).toBe(before);
+      expect(mcpJson()).toMatchObject({ mcpServers: { b: { command: "y" } } });
     });
 
     it("serves the server catalog", async () => {
@@ -278,7 +293,7 @@ describe("config routes", () => {
       expect(body).toEqual({
         enabled: true,
         port: 7702,
-        visibility: "public",
+        visibility: "private",
         public_url: null,
         local_url: "http://127.0.0.1:7702/agents/atlas",
         relay_access: false,
@@ -286,6 +301,12 @@ describe("config routes", () => {
         listener_running: true,
         card_error: null,
       });
+    });
+
+    it("reports the visibility the hub has for the agent", async () => {
+      const atlas = harness.hub.agents.get("atlas");
+      if (atlas) atlas.visibility = "public";
+      expect((await request("GET", "/api/a2a/status")).body.visibility).toBe("public");
     });
 
     it("describes the card from the workspace file", async () => {
@@ -317,9 +338,28 @@ describe("config routes", () => {
       expect((await request("DELETE", "/api/a2a/keys/peer")).status).toBe(404);
     });
 
-    it("lists remote agents and keeps the agents file as written", async () => {
+    it("lists the agents file's remote agents and a sibling, and keeps the file as written", async () => {
       const { body } = await fetchJson(url("/api/a2a/agents"));
-      expect((body as Body[]).map((a) => a.name)).toEqual(["research-buddy", "laptop"]);
+      expect(body).toMatchObject([
+        {
+          name: "research-buddy",
+          source: "config",
+          status: "ok",
+          card: { name: "Research Buddy" },
+        },
+        { name: "laptop", source: "sibling", status: "pending" },
+      ]);
+      await putRaw("/api/a2a/agents/raw", '{"agents":{"desk":{"url":"https://desk.example/a2a"}}}');
+      const listed = (await fetchJson(url("/api/a2a/agents"))).body as Body[];
+      expect(listed[0]).toMatchObject({
+        name: "desk",
+        url: "https://desk.example/a2a",
+        status: "pending",
+      });
+      await putRaw("/api/a2a/agents/raw", "{oops");
+      expect(((await fetchJson(url("/api/a2a/agents"))).body as Body[]).map((a) => a.name)).toEqual(
+        ["laptop"],
+      );
       await putRaw("/api/a2a/agents/raw", '{"agents":{}}');
       const raw = await fetch(url("/api/a2a/agents/raw"));
       expect(raw.headers.get("content-type")).toBe("application/json");
@@ -403,11 +443,8 @@ describe("config routes", () => {
       expect(status).toBe(200);
       expect(body).toEqual({ valid: true, diagnostics: [] });
       const created = harness.hub.agents.get("first");
-      expect(created?.state).toMatchObject({
-        configToml: "a = 1",
-        providersToml: "b = 2",
-        mcpJson: '{"mcpServers":{}}',
-      });
+      expect(created?.state).toMatchObject({ configToml: "a = 1", providersToml: "b = 2" });
+      expect(created?.state.workspaceFileContents["config/mcp.json"]).toBe('{"mcpServers":{}}');
       expect(harness.state.hubConfigToml).toBe("c = 3");
       expect(harness.state.mode).toBe("running");
     });

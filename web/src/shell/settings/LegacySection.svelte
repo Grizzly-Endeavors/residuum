@@ -2,16 +2,14 @@
   import A2a from "../../components/settings/A2a.svelte";
   import AgentKeys from "../../components/settings/AgentKeys.svelte";
   import History from "../../components/settings/History.svelte";
-  import Integrations from "../../components/settings/Integrations.svelte";
-  import MCP from "../../components/settings/MCP.svelte";
   import Secrets from "../../components/settings/Secrets.svelte";
   import { sectionsOf, type SectionId } from "../../lib/settings-sections";
-  import RunningOnly from "./RunningOnly.svelte";
   import type { SettingsScope } from "./sections";
   import SettingsSection from "./SettingsSection.svelte";
 
   // A section that isn't rebuilt yet shows its legacy panels, bound to the
-  // scope's forms, so their edits are staged and saved like any other. These
+  // scope's forms, so their edits are staged and saved like any other. Every
+  // agent section is rebuilt, so only All agents sections reach here. These
   // panels can't show a problem on a field, so every problem the last save
   // found for the section shows at its top.
 
@@ -23,7 +21,6 @@
       .filter((placed) => placed.section === null || placed.section === section)
       .map((placed) => placed.diagnostic),
   );
-  const agentScope = $derived(scope.kind === "agent" ? scope : null);
   const allScope = $derived(scope.kind === "all" ? scope : null);
 </script>
 
@@ -34,11 +31,6 @@
   lede={`${entry?.description ?? ""}.`}
   {problems}
 >
-  {#if agentScope !== null && section === "a2a"}
-    <div class="legacy-notice">
-      <RunningOnly agent={agentScope.agent} subject="its status and card" />
-    </div>
-  {/if}
   <div data-legacy-view>
     {#if allScope !== null}
       {#if section === "notifications"}
@@ -46,32 +38,13 @@
           Push notifications aren't available in this version of Residuum.
         </p>
       {:else if section === "listener"}
-        <A2a bind:fields={allScope.configFile.form} scope="hub" agent={null} />
+        <A2a bind:fields={allScope.configFile.form} />
       {:else if section === "keys"}
         <Secrets />
         <AgentKeys />
       {:else if section === "history"}
         <History scope="hub" agent={null} />
       {/if}
-    {:else if agentScope !== null}
-      {@const agent = agentScope.agent}
-      {#if section === "connections"}
-        <Integrations bind:fields={agentScope.configFile.form} part="channels" {agent} />
-        <Integrations bind:fields={agentScope.configFile.form} part="webhooks" {agent} />
-      {:else if section === "tools"}
-        <Integrations bind:fields={agentScope.configFile.form} part="tools" {agent} />
-      {:else if section === "servers"}
-        <MCP bind:servers={agentScope.mcpFile.form} />
-      {:else if section === "a2a"}
-        <A2a bind:fields={agentScope.configFile.form} scope="agent" {agent} />
-      {/if}
     {/if}
   </div>
 </SettingsSection>
-
-<style>
-  .legacy-notice {
-    max-width: 640px;
-    margin-bottom: var(--space-16);
-  }
-</style>

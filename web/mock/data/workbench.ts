@@ -39,8 +39,7 @@ export const MOCK_WORKBENCH_ARTIFACT = `<!doctype html>
         .then((r) => alert(r.content))
         .catch((e) => alert(e.message)),
     );
-    // For exercising the activity panel's "Cancel calls": three calls in
-    // flight at once, long enough to see and cancel before they resolve.
+    // For trying a burst of model calls: three in flight at once.
     document.getElementById("burst").addEventListener("click", () => {
       for (let i = 0; i < 3; i++) {
         residuum
@@ -48,7 +47,7 @@ export const MOCK_WORKBENCH_ARTIFACT = `<!doctype html>
           .catch(() => {});
       }
     });
-    // For exercising the activity panel's session list and stop buttons.
+    // For trying a page's sessions: they show on its Workbench row, with Stop.
     document.getElementById("spawn").addEventListener("click", () =>
       residuum.sessions
         .start({

@@ -8,7 +8,6 @@ import {
   readLastAgent,
   rememberLastAgent,
   requireAgent,
-  scopeApiPath,
   teamPath,
 } from "./paths";
 import * as api from "./api";
@@ -89,98 +88,6 @@ describe("last-used agent", () => {
       rememberLastAgent("atlas");
     }).not.toThrow();
     expect(readLastAgent()).toBeNull();
-  });
-});
-
-// One row per line of the contract's route placement table.
-describe("scopeApiPath places every contract row", () => {
-  it.each([
-    // Hub-level
-    ["/api/hub/config/raw", "/api/hub/config/raw"],
-    ["/api/hub/config/patch", "/api/hub/config/patch"],
-    ["/api/hub/config/validate", "/api/hub/config/validate"],
-    ["/api/secrets", "/api/hub/secrets"],
-    ["/api/secrets/openai", "/api/hub/secrets/openai"],
-    ["/api/agent-keys", "/api/hub/agent-keys"],
-    ["/api/agent-keys/laptop", "/api/hub/agent-keys/laptop"],
-    ["/api/a2a/keys", "/api/hub/a2a/keys"],
-    ["/api/a2a/keys/peer", "/api/hub/a2a/keys/peer"],
-    ["/api/cloud/status", "/api/hub/cloud/status"],
-    ["/api/cloud/disconnect", "/api/hub/cloud/disconnect"],
-    ["/api/update/check", "/api/hub/update/check"],
-    ["/api/update/status", "/api/hub/update/status"],
-    ["/api/update/apply", "/api/hub/update/apply"],
-    ["/api/update/restart", "/api/hub/update/restart"],
-    ["/api/tracing/status", "/api/hub/tracing/status"],
-    ["/api/tracing/bug-report", "/api/hub/tracing/bug-report"],
-    ["/api/shutdown", "/api/hub/shutdown"],
-    ["/api/system/timezone", "/api/hub/system/timezone"],
-    ["/api/mcp-catalog", "/api/hub/mcp-catalog"],
-    ["/api/checkpoints?repo=hub", "/api/hub/checkpoints?repo=hub"],
-    ["/api/checkpoints?repo=team&limit=5", "/api/hub/checkpoints?repo=team&limit=5"],
-    ["/api/checkpoints/abc/diff?repo=hub&path=x", "/api/hub/checkpoints/abc/diff?repo=hub&path=x"],
-    ["/api/hub/agents", "/api/hub/agents"],
-    ["/api/hub/status", "/api/hub/status"],
-    // Team-level
-    ["/api/workbench/info", "/api/team/workbench/info"],
-    ["/api/workbench/artifacts", "/api/team/workbench/artifacts"],
-    ["/api/workbench/artifacts/chart", "/api/team/workbench/artifacts/chart"],
-    ["/api/team/workspace/files", "/api/team/workspace/files"],
-    // Agent-level
-    ["/api/status", "/api/agents/scout/status"],
-    ["/api/config/raw", "/api/agents/scout/config/raw"],
-    ["/api/config/complete-setup", "/api/agents/scout/config/complete-setup"],
-    ["/api/providers/models", "/api/agents/scout/providers/models"],
-    ["/api/mcp/raw", "/api/agents/scout/mcp/raw"],
-    ["/api/chat/history?episode=ep-1", "/api/agents/scout/chat/history?episode=ep-1"],
-    ["/api/usage", "/api/agents/scout/usage"],
-    ["/api/sessions?category=spawned", "/api/agents/scout/sessions?category=spawned"],
-    ["/api/sessions/runs/r1/transcript", "/api/agents/scout/sessions/runs/r1/transcript"],
-    ["/api/scheduled/pulses", "/api/agents/scout/scheduled/pulses"],
-    ["/api/inbox", "/api/agents/scout/inbox"],
-    ["/api/inbox/archive", "/api/agents/scout/inbox/archive"],
-    ["/api/agent-inbox", "/api/agents/scout/agent-inbox"],
-    ["/api/files/workspace?path=a.png", "/api/agents/scout/files/workspace?path=a.png"],
-    ["/api/memory/search", "/api/agents/scout/memory/search"],
-    ["/api/model/complete", "/api/agents/scout/model/complete"],
-    [
-      "/api/workspace/file?path=team/notes.md",
-      "/api/agents/scout/workspace/file?path=team/notes.md",
-    ],
-    ["/api/checkpoints?repo=workspace", "/api/agents/scout/checkpoints?repo=workspace"],
-    [
-      "/api/checkpoints/abc/restore?repo=agent_config",
-      "/api/agents/scout/checkpoints/abc/restore?repo=agent_config",
-    ],
-    ["/api/a2a/agents", "/api/agents/scout/a2a/agents"],
-    ["/api/a2a/agents/raw", "/api/agents/scout/a2a/agents/raw"],
-    ["/api/a2a/status", "/api/agents/scout/a2a/status"],
-    ["/api/a2a/card", "/api/agents/scout/a2a/card"],
-    ["/api/a2a/outbound", "/api/agents/scout/a2a/outbound"],
-    ["/api/agents/atlas/status", "/api/agents/atlas/status"],
-  ])("%s -> %s", (legacy, scoped) => {
-    expect(scopeApiPath(legacy, "scout")).toBe(scoped);
-  });
-
-  it("does not mistake a longer name for a hub prefix", () => {
-    expect(scopeApiPath("/api/secrets-report", "scout")).toBe("/api/agents/scout/secrets-report");
-  });
-
-  it("resolves an unscoped agent path to whichever agent it is given", () => {
-    expect(scopeApiPath("/api/status", "atlas")).toBe("/api/agents/atlas/status");
-    expect(scopeApiPath("/api/checkpoints?repo=workspace", "atlas")).toBe(
-      "/api/agents/atlas/checkpoints?repo=workspace",
-    );
-  });
-
-  it("leaves hub, team and already-scoped paths alone with no agent", () => {
-    expect(scopeApiPath("/api/secrets", null)).toBe("/api/hub/secrets");
-    expect(scopeApiPath("/api/workbench/info", null)).toBe("/api/team/workbench/info");
-    expect(scopeApiPath("/api/agents/atlas/status", null)).toBe("/api/agents/atlas/status");
-  });
-
-  it("refuses an agent path with no agent", () => {
-    expect(() => scopeApiPath("/api/status", null)).toThrow(NoAgentSelectedError);
   });
 });
 

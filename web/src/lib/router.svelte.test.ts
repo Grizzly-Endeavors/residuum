@@ -408,7 +408,7 @@ describe("the item open in the Inbox", () => {
     const page = await boot("/inbox");
     await page.router.openPlace(opened("a"));
     expect(page.url()).toBe("/inbox?item=atlas:a");
-    await expect(page.router.closeInboxItem()).resolves.toBe(true);
+    await expect(page.router.closeItem()).resolves.toBe(true);
     expect(page.url()).toBe("/inbox");
     expect(page.entry().idx).toBe(0);
     expect(page.replaces).toEqual([]);
@@ -416,7 +416,7 @@ describe("the item open in the Inbox", () => {
 
   it("closes by replace when the page was linked to it", async () => {
     const page = await boot("/inbox?item=atlas:a");
-    await page.router.closeInboxItem();
+    await page.router.closeItem();
     expect(page.url()).toBe("/inbox");
     expect(page.replaces).toEqual(["/inbox"]);
     expect(page.pushes).toEqual([]);
@@ -427,7 +427,7 @@ describe("the item open in the Inbox", () => {
     await page.router.openPlace(opened("a"));
     await page.router.replacePlace(opened("b"));
     expect(page.url()).toBe("/inbox?item=atlas:b");
-    await page.router.closeInboxItem();
+    await page.router.closeItem();
     expect(page.url()).toBe("/inbox");
     expect(page.entry().idx).toBe(0);
   });
@@ -437,16 +437,44 @@ describe("the item open in the Inbox", () => {
     await page.router.openPlace(opened("a"));
     await page.router.replacePlace({ ...opened("a"), tab: "archived" });
     expect(page.entry().item).toBeUndefined();
-    await page.router.closeInboxItem();
+    await page.router.closeItem();
     expect(page.url()).toBe("/inbox?tab=archived");
     expect(page.entry().idx).toBe(1);
   });
 
   it("has nothing to close with no item open", async () => {
     const page = await boot("/inbox");
-    await expect(page.router.closeInboxItem()).resolves.toBe(true);
+    await expect(page.router.closeItem()).resolves.toBe(true);
     expect(page.url()).toBe("/inbox");
     expect(page.pushes).toEqual([]);
+  });
+});
+
+describe("the artifact selected on the Workbench", () => {
+  const selected = (artifact: string): Place => ({ kind: "workbench", artifact });
+
+  it("collapses by going back when this page selected it", async () => {
+    const page = await boot("/team/workbench");
+    await page.router.openPlace(selected("tip-splitter"));
+    expect(page.url()).toBe("/team/workbench/tip-splitter");
+    await page.router.replacePlace(selected("wiki-graph"));
+    await page.router.closeItem();
+    expect(page.url()).toBe("/team/workbench");
+    expect(page.entry().idx).toBe(0);
+    expect(page.replaces).toEqual(["/team/workbench/wiki-graph"]);
+  });
+
+  it("collapses by replace when the page was linked to it", async () => {
+    const page = await boot("/team/workbench/tip-splitter");
+    await page.router.closeItem();
+    expect(page.url()).toBe("/team/workbench");
+    expect(page.replaces).toEqual(["/team/workbench"]);
+  });
+
+  it("is not marked as opened when the Workbench is reached from another place", async () => {
+    const page = await boot("/home");
+    await page.router.openPlace(selected("tip-splitter"));
+    expect(page.entry().item).toBeUndefined();
   });
 });
 
