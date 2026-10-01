@@ -7,6 +7,7 @@
   import { ConfirmHost, confirmLeave, Drawer, RecentNotifications } from "../lib/ui";
   import { PHONE_QUERY } from "../styles/breakpoints";
   import FeedbackModal from "../components/FeedbackModal.svelte";
+  import { focusAgentCreation } from "../places/home/agent-management.svelte";
   import HelpOverlay from "../components/HelpOverlay.svelte";
   import { RailAccordion } from "./accordion.svelte";
   import BottomBar from "./BottomBar.svelte";
@@ -55,17 +56,13 @@
       feedbackTab = tab;
       feedbackOpen = true;
     },
-    // Agents are created on Home, from the form under the agents.
+    // Agents are created on Home, from the form in its agent management.
     createAgent: () => {
       drawerOpen = false;
       void router
         .openPlace(HOME)
         .then(() => tick())
-        .then(() => {
-          const name = document.getElementById("create-name");
-          name?.scrollIntoView({ block: "center" });
-          name?.focus({ preventScroll: true });
-        });
+        .then(focusAgentCreation);
     },
   };
 
@@ -104,7 +101,7 @@
   </div>
   <main class="shell-main">
     <HubBanner />
-    <PlaceHost onOpenFeedback={() => actions.openFeedback("feedback")} />
+    <PlaceHost {actions} />
   </main>
   <PanelHost />
   <BottomBar {drawerOpen} onmenu={() => (drawerOpen = !drawerOpen)} {actions} />

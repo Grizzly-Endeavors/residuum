@@ -30,6 +30,7 @@ export function createStubHub(env: MockEnv = createMockEnv()): MockHub {
         name,
         runState: options.runState ?? "running",
         lastError: null,
+        startFailure: options.startFailure ?? null,
         autostart: true,
         role: options.role ?? null,
         visibility: "private",

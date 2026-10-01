@@ -147,7 +147,8 @@ test("a panel value that is invalid, or that its place can't show, is removed", 
     await page.goto(from);
     await expect.poll(() => address(page), from).toBe(to);
     await expect(page.getByRole("main")).toBeVisible();
-    await expect(page.getByRole("complementary")).toHaveCount(0);
+    // Home has a complementary landmark of its own, so the panel is told apart by its way out.
+    await expect(page.getByRole("button", { name: "Close panel", exact: true })).toHaveCount(0);
     await expect(page.locator("[data-overlay-host] dialog")).toHaveCount(0);
   }
 });

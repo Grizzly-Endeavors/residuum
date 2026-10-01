@@ -2,6 +2,7 @@
   import { onMount, untrack } from "svelte";
   import { ws } from "./lib/ws.svelte";
   import { hub } from "./lib/hub.svelte";
+  import { overview } from "./lib/overview.svelte";
   import { notifications } from "./lib/notifications.svelte";
   import { userErrorMessage } from "./lib/errors";
   import { router } from "./lib/router.svelte";
@@ -38,6 +39,8 @@
   // of the page and feeds the rail; the agent connection follows the router's
   // bound agent (see `ws.svelte.ts`).
   onMount(() => {
+    // The overview follows the hub socket from its first frame, which says what to fetch.
+    const stopOverview = overview.start();
     hub.connect();
     void (async () => {
       try {
@@ -52,6 +55,7 @@
       }
     })();
     return () => {
+      stopOverview();
       hub.disconnect();
       ws.disconnect();
     };

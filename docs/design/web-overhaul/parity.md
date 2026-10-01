@@ -115,14 +115,14 @@ Every capability the current web UI offers, grouped by the surface that has it t
 
 ## Team page → Home + Settings (design §6, §8; W27, W28, W38)
 
-- [ ] Agent state glyph, name link, state label, working chip, unread chip, role line or "No role page yet", last error with time
+- [x] Agent state glyph, name link, state label, working chip, unread chip, role line or "No role page yet", last error with time — **Changed:** Home's agents board (a working agent's dot pulses and its Now line says how long it has been working); the last error is a needs-you item with its time, a plain-language line and the error behind Details
 - [ ] A2A card visibility per agent — **Changed:** set only in Settings → agent → Advanced → Agent-to-agent (today it is in two places with different defaults)
 - [ ] Start automatically toggle, reverting on failure — **Changed:** Home row menu and the stopped state card
 - [ ] Start / Stop / Restart with disabled reasons and pending labels — **Changed:** Home row menu, state cards, needs-you items
 - [ ] Delete with confirmation, then checkpoint note with Undo and Dismiss
 - [ ] Recently deleted with Restore, load error with Try again — **Changed:** collapsed disclosure on Home
 - [ ] Create agent: live-validated name, description, copy model settings from, visibility; "Created X" — **Changed:** Create agent dialog
-- [ ] Hub-wide toasts for created / restored / deleted (with Undo), failures and notices (team events never add toasts)
+- [x] Hub-wide toasts for created / restored / deleted (with Undo), failures and notices (team events never add toasts)
 
 ## Header, agent switcher, notifications, inbox, feedback, help → Shell (design §2, §7; W15b, W19, W21, W29)
 

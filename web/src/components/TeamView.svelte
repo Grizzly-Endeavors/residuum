@@ -3,11 +3,12 @@
   import { hub } from "../lib/hub.svelte";
   import { router } from "../lib/router.svelte";
   import { agentNameProblem } from "../lib/agent-name";
-  import { stateLabel, unreadText } from "../lib/agent-state";
   import { relativeTime } from "../lib/time";
   import type { A2aVisibility, AgentSummary } from "../lib/hub-types";
-  import AgentStateGlyph from "./AgentStateGlyph.svelte";
   import Modal from "./Modal.svelte";
+
+  // Agent management under Home's board: lifecycle, autostart and A2A
+  // visibility per agent, delete and restore, and the create form.
 
   type Action = "start" | "stop" | "restart" | "autostart" | "visibility" | "delete" | "restore";
 
@@ -182,16 +183,7 @@
   }
 </script>
 
-<section class="team-view emerges" aria-labelledby="team-title">
-  <header class="team-head">
-    <div>
-      <h2 id="team-title" class="team-title">Team</h2>
-      <p class="team-sub">
-        Every agent on this install. Start, stop or restart them here, or add a new one.
-      </p>
-    </div>
-  </header>
-
+<section class="team-view" aria-label="Manage agents">
   <p id="team-visibility-hint" class="team-visibility-hint">
     <strong>A2A card.</strong> Public shows only an agent's card to other agents. Everything else, including
     handing it work, still needs a caller key.
@@ -238,34 +230,10 @@
   {:else}
     <ul class="team-list">
       {#each hub.agents as agent (agent.name)}
-        {@const activity = hub.activityOf(agent.name)}
         {@const busyAction = pending[agent.name]}
-        <li class="team-row state-{agent.state}" aria-busy={busyAction !== undefined}>
+        <li class="team-row" aria-busy={busyAction !== undefined}>
           <div class="team-row-main">
-            <div class="team-row-title">
-              <AgentStateGlyph state={agent.state} />
-              <button
-                type="button"
-                class="team-agent-link"
-                onclick={() => {
-                  void router.openPlace({ kind: "chat", agent: agent.name });
-                }}>{agent.name}</button
-              >
-              <span class="team-state">{stateLabel(agent.state)}</span>
-              {#if activity.busy}
-                <span class="team-chip">working</span>
-              {/if}
-              {#if activity.unread > 0}
-                <span class="team-chip team-chip-unread">{unreadText(activity.unread)} unread</span>
-              {/if}
-            </div>
-            <p class="team-role">{agent.role ?? "No role page yet."}</p>
-            {#if agent.state === "failed" && agent.last_error}
-              <p class="team-error">
-                {agent.last_error.message}
-                <span class="team-error-at">{relativeTime(agent.last_error.at)}</span>
-              </p>
-            {/if}
+            <span class="team-row-name">{agent.name}</span>
           </div>
 
           <div class="team-row-controls">
@@ -497,36 +465,14 @@
 
 <style>
   .team-view {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    /* Bottom room so the fixed notification corner never sits on the last controls. */
-    padding: var(--s-5) var(--s-4) var(--s-8);
-    width: 100%;
-    max-width: 960px;
-    margin: 0 auto;
+    padding: var(--s-3) 0 0;
   }
 
-  .team-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: var(--s-3);
-    margin-bottom: var(--s-5);
-  }
-
-  .team-title {
-    font-family: var(--font-display);
-    font-size: var(--fs-xl);
+  .team-row-name {
+    font-family: var(--font-mono);
+    font-size: var(--fs-base);
     font-weight: 500;
-    letter-spacing: 0.1em;
-    margin: 0 0 var(--s-1);
-  }
-
-  .team-sub {
-    margin: 0;
-    color: var(--text-muted);
-    font-size: var(--fs-md);
+    overflow-wrap: anywhere;
   }
 
   .team-empty {
@@ -650,20 +596,9 @@
     transition: border-color var(--dur-default) var(--ease-out-stone);
   }
 
-  .team-row.state-failed {
-    border-color: var(--error);
-  }
-
   .team-row-main {
     min-width: 0;
     flex: 1;
-  }
-
-  .team-row-title {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: var(--s-2);
   }
 
   .team-agent-link {
@@ -689,48 +624,11 @@
     box-shadow: var(--focus-ring);
   }
 
-  .team-state {
-    font-family: var(--font-mono);
-    font-size: var(--fs-xs);
-    color: var(--text-muted);
-    letter-spacing: 0.04em;
-  }
-
-  .team-row.state-failed .team-state {
-    color: var(--error);
-  }
-
-  .team-chip {
-    font-family: var(--font-mono);
-    font-size: var(--fs-xs);
-    padding: 1px var(--s-2);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    color: var(--text-muted);
-  }
-
-  .team-chip-unread {
-    border-color: var(--vein-dim);
-    color: var(--vein-bright);
-  }
-
-  .team-role {
-    margin: var(--s-2) 0 0;
-    color: var(--text-muted);
-    font-size: var(--fs-md);
-    overflow-wrap: anywhere;
-  }
-
   .team-error {
     margin: var(--s-2) 0 0;
     color: var(--error);
     font-size: var(--fs-md);
     overflow-wrap: anywhere;
-  }
-
-  .team-error-at {
-    color: var(--text-dim);
-    margin-left: var(--s-2);
   }
 
   .team-row-controls {
@@ -887,10 +785,6 @@
   }
 
   @media (max-width: 600px) {
-    .team-view {
-      padding: var(--s-4) var(--s-3);
-    }
-
     .team-row {
       flex-direction: column;
     }
