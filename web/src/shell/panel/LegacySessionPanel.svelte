@@ -58,7 +58,7 @@
   </div>
 {:else if sessions.view !== null}
   <div data-legacy-view>
-    <SessionView view={sessions.view} />
+    <SessionView {agent} view={sessions.view} />
   </div>
 {/if}
 

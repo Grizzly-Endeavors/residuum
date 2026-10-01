@@ -238,6 +238,8 @@ describe("chat turns", () => {
     expect(recorded()[0]?.content).toBe("hello there");
     expect(recorded()[1]?.tool_calls?.[0]).toMatchObject({ name: "memory_search" });
     expect(recorded()[3]?.content).toBe(cannedResponses[0]);
+    // Tagged with the turn's correlation id, so a page that saw it live can tell it's recorded.
+    expect(recorded().map((m) => m.turn_id)).toEqual(["m1", "m1", "m1", "m1"]);
   });
 
   it("marks the agent busy for the length of the turn", () => {

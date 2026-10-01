@@ -49,12 +49,18 @@ function teammateMessage({ res, hub, query }: RouteContext): void {
   const now = hub.env.clock.iso();
   const from = query.get("from") ?? "scout";
   const reply = `${from} asked me to check the wiki index. On it.`;
+  const address = `agent:${from}`;
   agent.state.extraRecent.push(
     {
       role: "user",
-      content: `[Message from ${from}]\nCan you look over the wiki index when you get a chance?`,
+      // The header and the structured sender the backend records for a teammate.
+      content:
+        `[Message from teammate ${address}, not the user. Your response in this turn is ` +
+        `not shown to them; to reply, call message_agent with to="${address}".]\n` +
+        "Can you look over the wiki index when you get a chance?",
       timestamp: now,
-      visibility: "user",
+      visibility: "background",
+      agent_sender: { address, category: "teammate" },
     },
     { role: "assistant", content: reply, timestamp: now, visibility: "user" },
   );
