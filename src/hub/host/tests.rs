@@ -1803,12 +1803,10 @@ async fn racing_starts_restarts_and_a_delete_never_resurrect_the_agent() {
         // The delete queues on the agent's lock behind the first restart,
         // and every later operation queues behind the delete already holding
         // the agent's slot.
-        let mut ops = Vec::new();
-        ops.push(spawn_restart(&hub.host));
+        let mut ops = vec![spawn_restart(&hub.host)];
         let deleter = Arc::clone(&hub.host);
-        ops.push(tokio::spawn(async move {
-            deleter.delete("bob", Actor::User).await.map(|_| ())
-        }));
+        let delete =
+            tokio::spawn(async move { deleter.delete("bob", Actor::User).await.map(|_| ()) });
         for _ in 0..4 {
             ops.push(spawn_restart(&hub.host));
         }
@@ -1825,6 +1823,16 @@ async fn racing_starts_restarts_and_a_delete_never_resurrect_the_agent() {
             }
         }
 
+        // The delete is the one operation that has to succeed: it is the first
+        // to ask for the agent's lock after the restart, and nothing else
+        // deletes. Where a program with a file open can make the directory
+        // refuse to move, it waits for the program (a delete that failed would
+        // leave the directory behind and look like a resurrection).
+        let delete_result = delete.await.unwrap();
+        assert!(
+            delete_result.is_ok(),
+            "round {round}: the delete failed: {delete_result:?}"
+        );
         assert!(
             !hub.root.path().join("bob").exists(),
             "round {round}: the deleted agent's directory was recreated"
