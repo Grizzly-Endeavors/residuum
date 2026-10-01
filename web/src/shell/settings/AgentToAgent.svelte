@@ -11,6 +11,7 @@
   import RemoteAgents from "./RemoteAgents.svelte";
   import RunningOnly from "./RunningOnly.svelte";
   import { fieldError, type AgentSectionProps } from "./sections";
+  import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
 
   // Advanced → Agent-to-agent for one agent. Who can find it is set here and
@@ -76,97 +77,70 @@
   title="Agent-to-agent"
   lede={`Whether agents outside this install can find ${agent}, and the agents it can hand work to.`}
 >
-  <div class="groups">
-    <section class="group" aria-labelledby="a2a-find">
-      <h3 class="group-title" id="a2a-find">Who can find {agent}</h3>
-      <div bind:this={choices}>
-        <SegmentedControl
-          label="Who can find {agent}"
-          labelHidden
-          value={visibility}
-          options={VISIBILITY}
-          disabled={pending !== null}
-          hint={VISIBILITY_HINTS[visibility]}
-          error={fieldError(scope, { kind: "config", field: "a2a_visibility" })}
-          onchange={(next) => void changeVisibility(next)}
-        />
-      </div>
-      <div class="listener">
-        <p class="note">
-          {#if scope.install.a2a_enabled}
-            This install's listener is on.
-          {:else}
-            This install's listener is off, so nothing outside it can reach {agent}.
-          {/if}
-        </p>
-        <Button size="sm" variant="quiet" onclick={openListener}>Change for all agents</Button>
-      </div>
-    </section>
-
-    <section class="group" aria-labelledby="a2a-status">
-      <h3 class="group-title" id="a2a-status">Status</h3>
-      <RunningOnly {agent} subject="its status and address">
-        <A2aStatus {agent} />
-      </RunningOnly>
-    </section>
-
-    <section class="group" aria-labelledby="a2a-remote">
-      <h3 class="group-title" id="a2a-remote">Remote agents</h3>
+  <SettingsGroup title={`Who can find ${agent}`}>
+    <div bind:this={choices}>
+      <SegmentedControl
+        label="Who can find {agent}"
+        labelHidden
+        value={visibility}
+        options={VISIBILITY}
+        disabled={pending !== null}
+        hint={VISIBILITY_HINTS[visibility]}
+        error={fieldError(scope, { kind: "config", field: "a2a_visibility" })}
+        onchange={(next) => void changeVisibility(next)}
+      />
+    </div>
+    <div class="listener">
       <p class="note">
-        Agents {agent} can hand work to: the ones listed in a2a.json, and the agents of your other installs,
-        found through Residuum Cloud.
+        {#if scope.install.a2a_enabled}
+          This install's listener is on.
+        {:else}
+          This install's listener is off, so nothing outside it can reach {agent}.
+        {/if}
       </p>
-      <RemoteAgents {agent} />
-    </section>
+      <Button size="sm" variant="quiet" onclick={openListener}>Change for all agents</Button>
+    </div>
+  </SettingsGroup>
 
-    <section class="group" aria-labelledby="a2a-card">
-      <h3 class="group-title" id="a2a-card">Its card</h3>
-      <p class="note">
-        What {agent} shows the agents that reach it. It comes from agent-card.json in its files.
-      </p>
-      <RunningOnly {agent} subject="its card">
-        <A2aCardPreview {agent} />
-      </RunningOnly>
-      <div>
-        <Button icon="edit" onclick={openCardFile}>Edit agent-card.json</Button>
-      </div>
-    </section>
-  </div>
+  <SettingsGroup title="Status">
+    <RunningOnly {agent} subject="its status and address">
+      <A2aStatus {agent} />
+    </RunningOnly>
+  </SettingsGroup>
+
+  <SettingsGroup
+    title="Remote agents"
+    lede={`Agents ${agent} can hand work to: the ones listed in a2a.json, and the agents of your other installs, found through Residuum Cloud.`}
+  >
+    <RemoteAgents {agent} />
+  </SettingsGroup>
+
+  <SettingsGroup
+    title="Its card"
+    lede={`What ${agent} shows the agents that reach it. It comes from agent-card.json in its files.`}
+  >
+    <RunningOnly {agent} subject="its card">
+      <A2aCardPreview {agent} />
+    </RunningOnly>
+    <div>
+      <Button icon="edit" onclick={openCardFile}>Edit agent-card.json</Button>
+    </div>
+  </SettingsGroup>
 </SettingsSection>
 
 <style>
-  .groups {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-32);
-    max-width: 640px;
-  }
-
-  .group {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-12);
-  }
-
-  .group-title {
-    color: var(--color-text-2);
-    font-size: var(--font-size-sm);
-    font-weight: var(--font-weight-semibold);
-  }
-
-  .note {
-    color: var(--color-text-3);
-    font-size: var(--font-size-sm);
-  }
-
   .listener {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    padding: var(--space-8) var(--space-12);
-    border-radius: var(--corner-md);
-    background: var(--color-stone-2);
     gap: var(--space-4) var(--space-12);
+    padding-top: var(--space-12);
+    border-top: 1px solid var(--color-line);
+  }
+
+  .note {
+    color: var(--color-text-3);
+    font-size: var(--font-size-sm);
   }
 </style>

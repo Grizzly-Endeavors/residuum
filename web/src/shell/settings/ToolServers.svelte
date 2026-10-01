@@ -16,6 +16,7 @@
   import McpCatalog from "./McpCatalog.svelte";
   import McpServerFields from "./McpServerFields.svelte";
   import { fieldError, type AgentSectionProps } from "./sections";
+  import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
 
   // Advanced → Tool servers: the agent's MCP servers, from its `mcp.json`.
@@ -129,125 +130,101 @@
   title="Tool servers"
   lede={`Programs that give ${scope.agent} more tools to use. Changes apply when you save them.`}
 >
-  <div class="groups">
-    <section class="group" aria-labelledby="servers-added">
-      <h3 class="group-title" id="servers-added">Servers</h3>
-      {#if scope.mcpServers.length === 0}
-        <EmptyState>No tool servers yet. Add one, or pick one from the catalog.</EmptyState>
-      {:else}
-        <ul class="servers" aria-labelledby="servers-added">
-          {#each scope.mcpServers as server (server)}
-            {@const expanded = open.has(server.name) || hasProblems(server.name)}
-            {@const problem = fieldError(scope, { kind: "mcp", name: server.name })}
-            <li class="server">
-              <div class="server-head">
-                <div class="server-text">
-                  <span class="server-name">
-                    {server.name}
-                    {#if server.transport === "http"}<Badge>HTTP</Badge>{/if}
-                  </span>
-                  <code class="server-line">{summary(server)}</code>
-                </div>
-                <IconButton
-                  icon="edit"
-                  label="Edit {server.name}"
-                  aria-expanded={expanded}
-                  onclick={() => {
-                    if (expanded) open.delete(server.name);
-                    else open.add(server.name);
-                  }}
-                />
-                <IconButton
-                  icon="trash"
-                  label="Remove {server.name}"
-                  onclick={() => remove(server)}
+  <SettingsGroup title="Servers">
+    {#if scope.mcpServers.length === 0}
+      <EmptyState>No tool servers yet. Add one, or pick one from the catalog.</EmptyState>
+    {:else}
+      <ul class="servers" aria-label="Servers">
+        {#each scope.mcpServers as server (server)}
+          {@const expanded = open.has(server.name) || hasProblems(server.name)}
+          {@const problem = fieldError(scope, { kind: "mcp", name: server.name })}
+          <li class="server">
+            <div class="server-head">
+              <div class="server-text">
+                <span class="server-name">
+                  {server.name}
+                  {#if server.transport === "http"}<Badge>HTTP</Badge>{/if}
+                </span>
+                <code class="server-line">{summary(server)}</code>
+              </div>
+              <IconButton
+                icon="edit"
+                label="Edit {server.name}"
+                aria-expanded={expanded}
+                onclick={() => {
+                  if (expanded) open.delete(server.name);
+                  else open.add(server.name);
+                }}
+              />
+              <IconButton
+                icon="trash"
+                label="Remove {server.name}"
+                onclick={() => remove(server)}
+              />
+            </div>
+            {#if problem}<p class="server-problem">{problem}</p>{/if}
+            {#if expanded}
+              <div class="fields">
+                <McpServerFields
+                  {server}
+                  errorOf={(field) => fieldError(scope, { kind: "mcp", name: server.name, field })}
                 />
               </div>
-              {#if problem}<p class="server-problem">{problem}</p>{/if}
-              {#if expanded}
-                <div class="fields">
-                  <McpServerFields
-                    {server}
-                    errorOf={(field) =>
-                      fieldError(scope, { kind: "mcp", name: server.name, field })}
-                  />
-                </div>
-              {/if}
-            </li>
-          {/each}
-        </ul>
-      {/if}
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    {/if}
 
-      {#if adding}
-        <form
-          class="fields add"
-          aria-label="Add a tool server"
-          onsubmit={(event) => {
-            event.preventDefault();
-            addDraft();
-          }}
-        >
-          <TextField
-            label="Name"
-            code
-            autocomplete="off"
-            spellcheck="false"
-            bind:value={draft.name}
-            bind:element={nameField}
-            error={nameProblem ?? undefined}
-          />
-          <SegmentedControl
-            label="How Residuum reaches it"
-            value={draftHttp ? "http" : "stdio"}
-            options={TRANSPORTS}
-            hint={TRANSPORT_HINTS[draftHttp ? "http" : "stdio"]}
-            onchange={(transport) => (draft.transport = transport)}
-          />
-          <McpServerFields server={draft} {missing} />
-          <div class="actions">
-            <Button variant="quiet" onclick={() => void stopAdding()}>Cancel</Button>
-            <Button type="submit" variant="primary">Add server</Button>
-          </div>
-        </form>
-      {:else}
-        <div>
-          <Button icon="plus" bind:element={addButton} onclick={() => void startAdding()}>
-            Add a server
-          </Button>
+    {#if adding}
+      <form
+        class="fields add"
+        aria-label="Add a tool server"
+        onsubmit={(event) => {
+          event.preventDefault();
+          addDraft();
+        }}
+      >
+        <TextField
+          label="Name"
+          code
+          autocomplete="off"
+          spellcheck="false"
+          bind:value={draft.name}
+          bind:element={nameField}
+          error={nameProblem ?? undefined}
+        />
+        <SegmentedControl
+          label="How Residuum reaches it"
+          value={draftHttp ? "http" : "stdio"}
+          options={TRANSPORTS}
+          hint={TRANSPORT_HINTS[draftHttp ? "http" : "stdio"]}
+          onchange={(transport) => (draft.transport = transport)}
+        />
+        <McpServerFields server={draft} {missing} />
+        <div class="actions">
+          <Button variant="quiet" onclick={() => void stopAdding()}>Cancel</Button>
+          <Button type="submit" variant="primary">Add server</Button>
         </div>
-      {/if}
-    </section>
+      </form>
+    {:else}
+      <div>
+        <Button icon="plus" bind:element={addButton} onclick={() => void startAdding()}>
+          Add a server
+        </Button>
+      </div>
+    {/if}
+  </SettingsGroup>
 
-    <section class="group" aria-labelledby="servers-catalog">
-      <h3 class="group-title" id="servers-catalog">Add from the catalog</h3>
-      <McpCatalog
-        isAdded={(name) => scope.mcpServers.some((server) => server.name === name)}
-        onadd={(server) => scope.mcpServers.push(server)}
-      />
-    </section>
-  </div>
+  <SettingsGroup title="Add from the catalog" lede="Common tool servers, ready to add.">
+    <McpCatalog
+      isAdded={(name) => scope.mcpServers.some((server) => server.name === name)}
+      onadd={(server) => scope.mcpServers.push(server)}
+    />
+  </SettingsGroup>
 </SettingsSection>
 
 <style>
-  .groups {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-32);
-    max-width: 640px;
-  }
-
-  .group {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-8);
-  }
-
-  .group-title {
-    color: var(--color-text-2);
-    font-size: var(--font-size-sm);
-    font-weight: var(--font-weight-semibold);
-  }
-
   .servers {
     display: flex;
     flex-direction: column;
@@ -258,7 +235,7 @@
     padding: var(--space-8) 0;
 
     & + & {
-      border-top: 1px solid var(--color-line-soft);
+      border-top: 1px solid var(--color-line);
     }
   }
 
@@ -305,9 +282,8 @@
   }
 
   .add {
-    padding: var(--space-16);
-    border-radius: var(--corner-lg);
-    background: var(--color-stone-2);
+    padding-top: var(--space-16);
+    border-top: 1px solid var(--color-line);
   }
 
   .actions {

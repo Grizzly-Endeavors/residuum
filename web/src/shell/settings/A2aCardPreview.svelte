@@ -59,9 +59,6 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-8);
-    padding: var(--space-16);
-    border-radius: var(--corner-lg);
-    background: var(--color-stone-2);
   }
 
   .card-name {

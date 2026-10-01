@@ -154,7 +154,7 @@
     padding: var(--space-12) 0;
 
     & + & {
-      border-top: 1px solid var(--color-line-soft);
+      border-top: 1px solid var(--color-line);
     }
   }
 
