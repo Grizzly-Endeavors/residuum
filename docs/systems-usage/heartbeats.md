@@ -117,6 +117,8 @@ A load that fails shows the error with Try again, never the empty lists. The sch
 
 A pulse's next fire time is the first moment at or after the later of now and the end of its `schedule` since its last run that falls inside its `active_hours` (a pulse that has never run counts from now; one that is due already is told at the start of the current minute). It is `null` for a pulse that is disabled, whose schedule or active hours can't be read, or whose active hours never open, and for every pulse when the agent's `[pulse] enabled` is `false` or its `config.toml` can't be read. The hub's team overview lists an agent's soonest runs with the same calculation (see [hub.md](hub.md#team-overview)).
 
+The agent's Schedule settings hold `[pulse] enabled` as Run pulses, which pauses every pulse at once, and link to this place ("Open <agent>'s Schedule"). They are in `config.toml`, so they stay editable while the agent is stopped.
+
 Backed by `GET /api/agents/{name}/scheduled/pulses`, `PUT /api/agents/{name}/scheduled/pulses/{pulse}/enabled`, `GET /api/agents/{name}/scheduled/actions`, and `DELETE /api/agents/{name}/scheduled/actions/{id}`. While it is open the place watches `HEARTBEAT.yml` and `scheduled_actions.json` on the agent's socket, through the socket's watch registry, and refetches when either changes, when the change feed reports it lost track, and on any `scheduled`-category session lifecycle frame, rather than polling.
 
 ## Result Routing

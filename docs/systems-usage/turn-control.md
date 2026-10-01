@@ -68,7 +68,7 @@ When a model response is cut off by the provider's own output-token limit rather
 
 ## Tool-Call Limit
 
-There is no built-in cap on how many tool calls a turn may make. A user can bound this themselves with `max_tool_iterations` under `[agent]` in `config.toml` (also editable from the web UI's Settings page); left unset, a turn's tool loop runs unlimited, and the stop mechanisms above are the intended safety valve for a runaway turn. This applies to every turn loop: the main agent's own turns and every background/session/artifact turn.
+There is no built-in cap on how many tool calls a turn may make. A user can bound this themselves with `max_tool_iterations` under `[agent]` in `config.toml` (also editable in the agent's Runtime settings, as Tool calls per turn); left unset, a turn's tool loop runs unlimited, and the stop mechanisms above are the intended safety valve for a runaway turn. This applies to every turn loop: the main agent's own turns and every background/session/artifact turn.
 
 When a configured `max_tool_iterations` is reached, the turn ends the same graceful way a user-initiated stop does — partial assistant output and tool results already produced are kept — except the agent's own final reply explains what happened: that it stopped after that many tool calls because of the configured limit, and how to raise or remove it. This is a normal turn completion, not an error: it produces a response like any other turn and does not surface as a system error notification. A `warn`-level log records the tool-call count whenever this limit is hit.
 
@@ -93,4 +93,4 @@ An observed failure — GLM 5.3 Flash calling a tool with byte-identical argumen
 - At `repeat_call_steer_after` (default `3`) consecutive identical calls, the call still runs, but its own result carries an appended note telling the model the exact call has repeated and to try something different or finish.
 - At `repeat_call_stop_after` (default `6`), the call is not run at all: it gets a cancelled-style result explaining why, every remaining call in that batch is skipped the same way a user stop skips them, and the turn ends with a plain-language reply naming the repeated tool and how many times it repeated, plus which config setting to raise if the repetition was actually expected. A `warn`-level log records the tool name and streak length; the steering note at the lower threshold logs at `debug`.
 
-Both thresholds are configurable under `[agent]` in `config.toml` (also editable from the web UI's Settings page), and the guard can be turned off entirely with `repeat_call_guard_enabled = false`.
+Both thresholds are configurable under `[agent]` in `config.toml` (also editable in the agent's Runtime settings, as Nudge after and Stop after, which dim while Catch repeated tool calls is off), and the guard can be turned off entirely with `repeat_call_guard_enabled = false`.

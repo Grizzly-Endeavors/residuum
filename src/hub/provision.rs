@@ -349,10 +349,15 @@ pub async fn deprovision_agent(
     // slow or failing recursive removal never leaves a half-deleted agent.
     let trash = root.join(format!(".deleting-{name}"));
     remove_dir_logged(&trash).await;
-    if let Err(e) = tokio::fs::rename(&dir, &trash).await {
+    if let Err(e) = crate::util::fs::rename_dir_when_released(&dir, &trash).await {
         tracing::error!(error = %e, dir = %dir.display(), "failed to remove the agent directory");
+        let advice = if crate::util::fs::is_held_open(&e) {
+            " Another program has its files open. Close it, then delete the agent again."
+        } else {
+            ""
+        };
         return Err(LifecycleError::Failed(format!(
-            "Couldn't delete the agent '{name}': its directory couldn't be removed ({e}).{}",
+            "Couldn't delete the agent '{name}': its directory couldn't be removed ({e}).{advice}{}",
             checkpoint_note(checkpoint_id.as_deref())
         )));
     }

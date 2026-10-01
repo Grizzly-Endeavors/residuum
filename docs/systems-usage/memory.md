@@ -130,6 +130,10 @@ Retrieves the full transcript of a specific episode, or of a session run by its 
 
 An unknown run id returns an error pointing at `list_agents` (live sessions) and `memory_search` (merged episodes).
 
+## Settings
+
+The agent's Memory settings in the web UI hold the observer and reflector thresholds and the observer cooldown (`[memory]`, in tokens and seconds, with the default shown in each box while it is blank), the subconscious and learning settings ([subconscious.md](subconscious.md)), and the search tuning under More options (`[memory.search]`). They are all in the agent's `config.toml`, so they stay editable while the agent is stopped.
+
 ## Persistence Across Restarts
 
 - `memory/recent_messages.json` persists unobserved messages across restarts (no watermark system)

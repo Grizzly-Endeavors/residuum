@@ -14,7 +14,7 @@ const modal = (page: Page): Locator => page.getByRole("dialog", { name: "Setting
 const sections = (page: Page): Locator =>
   page.getByRole("navigation", { name: "Settings sections" });
 const saveBar = (page: Page): Locator => page.getByRole("region", { name: "Unsaved changes" });
-const timeout = (page: Page): Locator => page.getByLabel("Timeout (seconds)");
+const timeout = (page: Page): Locator => page.getByLabel("Reply time limit");
 
 /** Pick a section from the list; on a phone that is the list's own screen. */
 async function pickSection(page: Page, name: string): Promise<void> {
@@ -102,13 +102,13 @@ test("a save the server refuses shows why in the section and keeps the change st
   page,
 }) => {
   await page.goto("/agent/atlas?settings=atlas/runtime");
-  await page.getByLabel("Max Tool Calls Per Turn").fill("0");
+  await page.getByLabel("Tool calls per turn").fill("0");
   await saveBar(page).getByRole("button", { name: "Save changes" }).click();
 
   const why = "agent.max_tool_iterations must be at least 1 (leave it unset for unlimited)";
   await expect(saveBar(page)).toContainText(`Couldn't save config.toml: ${why}.`);
   await expect(modal(page).getByRole("alert").filter({ hasText: why }).first()).toBeVisible();
-  await expect(page.getByLabel("Max Tool Calls Per Turn")).toHaveValue("0");
+  await expect(page.getByLabel("Tool calls per turn")).toHaveValue("0");
   await expectNoAxeViolations(page, { within: "[data-overlay-host]", exclude: LEGACY });
 });
 

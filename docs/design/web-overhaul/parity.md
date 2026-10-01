@@ -168,12 +168,14 @@ All-agents scope:
 
 Agent scope:
 
-- [ ] Runtime: timeout, max tokens, default temperature, default thinking; subconscious (enabled, watch mid-turn, cadence, max transcript tokens, learn, cooldown); learning fallback; retry (max, initial delay, max delay, backoff); abilities (allow MCP changes, allow channel changes, max tool calls, repeat-call guard, steer after, stop after); idle (timeout, channel) — **Changed:** split across Model, Memory and Advanced → Runtime per design §8
+- [x] Runtime: timeout, max tokens; retry (max, initial delay, max delay, backoff); abilities (allow MCP changes, allow channel changes, max tool calls, repeat-call guard, steer after, stop after); idle (timeout, channel) — **Changed:** Advanced → Runtime, in plain words with each number's unit and default; the repeat thresholds dim while the guard is off; the idle channel list keeps a channel the file names that the list doesn't know
+- [x] Subconscious (enabled, watch mid-turn, cadence, max transcript tokens, learn, cooldown) and learning fallback — **Changed:** Memory, as Reviewing replies and Learning from conversations; the settings that need Review replies dim while it is off, and Choose the model goes to Model
+- [ ] Default temperature and default thinking — **Changed:** Model (design §8), with W35
 - [ ] Providers: name, type, API key, base URL, keep-alive; remove with Undo; add
 - [ ] Model roles: main, observer, reflector, pulse, subconscious, embedding, background small/medium/large; provider, model (live list or custom id), fallback warning, temperature, thinking — **Fix:** subconscious role's model list loads on open; failover lists are preserved; `models.default` gets a control or is shown read-only
 - [ ] Discord, Telegram, Teams fields and warnings
-- [ ] Pulses & sessions: pulse enabled, idle timeouts per kind, episode floor, depth cap
-- [ ] Memory thresholds and search tuning
+- [x] Pulses & sessions: pulse enabled, idle timeouts per kind, episode floor, depth cap — **Changed:** Schedule, as Pulses (with Open the agent's Schedule), Background sessions and Keeping and nesting; every number shows its unit and default
+- [x] Memory thresholds and search tuning — **Changed:** Memory, as Summarizing and condensing, with search tuning under More options (which opens when a save finds a problem inside it); every number shows its unit and default
 - [ ] Skills folders, tools PATH folders, web search backend and keys, native search overrides
 - [ ] MCP: list, remove with Undo, add stdio/http, catalog with inputs — **Fix:** a failed catalog fetch shows an error, not "Reading catalog." forever
 - [ ] A2A visibility and client: status, URL with Copy, relay note, listener warning, card error, visibility, remote agents with raw editor, card preview, open workspace
