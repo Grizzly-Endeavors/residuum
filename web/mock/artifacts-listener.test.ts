@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startArtifactsListener, workbenchPage } from "./artifacts-listener";
 import { MOCK_FEATURES, MOCK_RESIDUUM_VERSION } from "./constants";
 import { createState, type MockState } from "./state";
+import { NO_FORWARDING } from "./test-support";
 import { removePath, writeFile } from "./workspace-tree";
 
 describe("the page an artifact is served as", () => {
@@ -66,9 +67,14 @@ describe("the artifacts listener", () => {
   beforeEach(async () => {
     state = createState("hub");
     logged = [];
-    server = startArtifactsListener(state, (message) => {
-      logged.push(message);
-    });
+    // Forwarding to the API has its own tests (`artifacts-origin.test.ts`).
+    server = startArtifactsListener(
+      state,
+      (message) => {
+        logged.push(message);
+      },
+      NO_FORWARDING,
+    );
     await once(server, "listening");
   });
 
@@ -256,9 +262,6 @@ describe("the artifacts listener", () => {
       expect(res.status).toBe(404);
       expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
       expect(await res.text()).toContain('<p>There\'s no workbench artifact named "nothing".</p>');
-      expect(await (await get("/api/status")).text()).toContain(
-        'There\'s no workbench artifact named "api".',
-      );
     });
 
     it("escapes what it echoes, since the page lands in the artifact's frame", async () => {
