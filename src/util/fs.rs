@@ -1,8 +1,11 @@
 //! Filesystem utilities.
 
+use std::io;
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::Context as _;
+use tokio::time::Instant;
 
 /// Write `data` to `path` atomically (temp file in the same directory, then rename).
 ///
@@ -101,6 +104,103 @@ const ATOMIC_WRITE_TEMP_SUFFIX: &str = ".residuum-tmp";
 #[must_use]
 pub(crate) fn is_atomic_write_temp(file_name: &str) -> bool {
     file_name.starts_with('.') && file_name.ends_with(ATOMIC_WRITE_TEMP_SUFFIX)
+}
+
+/// How long [`rename_dir_when_released`] waits for programs to let go of the
+/// files under a directory before it gives up.
+const RENAME_RELEASE_WINDOW: Duration = Duration::from_secs(5);
+
+/// How long [`rename_dir_when_released`] waits between attempts.
+const RENAME_RELEASE_INTERVAL: Duration = Duration::from_millis(50);
+
+/// The Windows errors for a file that another program has open:
+/// `ERROR_ACCESS_DENIED` and `ERROR_SHARING_VIOLATION`.
+const WINDOWS_FILE_IN_USE: [i32; 2] = [5, 32];
+
+/// Whether `error` is Windows refusing to move a directory because a program
+/// has a file under it open.
+pub(crate) fn is_held_open(error: &io::Error) -> bool {
+    cfg!(windows)
+        && error
+            .raw_os_error()
+            .is_some_and(|code| WINDOWS_FILE_IN_USE.contains(&code))
+}
+
+/// Rename the directory `from` to `to`, waiting for any program that has a
+/// file under `from` open to let go of it.
+///
+/// Windows refuses to rename a directory while a program holds a file under
+/// it open, and the programs that do are brief about it: the hub's own
+/// readers, a virus scanner looking at a file just written, an indexer, the
+/// last worker of an agent that has stopped. Catching one at that moment
+/// fails a rename that succeeds a few milliseconds later, so the rename is
+/// tried again every 50 milliseconds for up to five seconds. The wait is
+/// logged when it starts and when it ends. Nowhere else does a refusal wait,
+/// and a refusal that outlasts the wait is returned as it came.
+///
+/// # Errors
+/// Returns the error of the last rename attempt.
+pub(crate) async fn rename_dir_when_released(from: &Path, to: &Path) -> io::Result<()> {
+    rename_dir_retrying(
+        from,
+        to,
+        is_held_open,
+        RENAME_RELEASE_WINDOW,
+        RENAME_RELEASE_INTERVAL,
+    )
+    .await
+}
+
+/// [`rename_dir_when_released`] for the refusals `is_held` names, over `window`
+/// and `interval`.
+async fn rename_dir_retrying(
+    from: &Path,
+    to: &Path,
+    is_held: fn(&io::Error) -> bool,
+    window: Duration,
+    interval: Duration,
+) -> io::Result<()> {
+    let started = Instant::now();
+    let mut attempts = 0_u32;
+    loop {
+        attempts += 1;
+        match tokio::fs::rename(from, to).await {
+            Ok(()) => {
+                if attempts > 1 {
+                    tracing::info!(
+                        from = %from.display(),
+                        attempts,
+                        waited_ms = started.elapsed().as_millis(),
+                        "the directory was released and could be renamed"
+                    );
+                }
+                return Ok(());
+            }
+            Err(error) if is_held(&error) && started.elapsed() < window => {
+                if attempts == 1 {
+                    tracing::warn!(
+                        from = %from.display(),
+                        error = %error,
+                        window_ms = window.as_millis(),
+                        "a program has a file under the directory open; waiting for it to let go"
+                    );
+                }
+                tokio::time::sleep(interval).await;
+            }
+            Err(error) => {
+                if attempts > 1 {
+                    tracing::warn!(
+                        from = %from.display(),
+                        error = %error,
+                        attempts,
+                        waited_ms = started.elapsed().as_millis(),
+                        "the directory could not be renamed after waiting"
+                    );
+                }
+                return Err(error);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -206,5 +306,103 @@ mod tests {
 
         let content = tokio::fs::read_to_string(&target).await.unwrap();
         assert_eq!(content, "updated");
+    }
+
+    /// Rename onto a directory that has something in it until `release_after`,
+    /// which a directory can't be renamed onto.
+    async fn rename_onto_occupied_dir(
+        is_held: fn(&io::Error) -> bool,
+        release_after: Duration,
+    ) -> (io::Result<()>, Duration, tempfile::TempDir) {
+        let root = tempfile::tempdir().unwrap();
+        let from = root.path().join("from");
+        let to = root.path().join("to");
+        std::fs::create_dir_all(&from).unwrap();
+        std::fs::write(from.join("kept.txt"), "kept").unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::write(to.join("occupant.txt"), "occupant").unwrap();
+
+        let releaser = {
+            let to = to.clone();
+            crate::util::spawn_in_span(async move {
+                tokio::time::sleep(release_after).await;
+                tokio::fs::remove_dir_all(&to).await.unwrap();
+            })
+        };
+        let started = Instant::now();
+        let renamed = rename_dir_retrying(
+            &from,
+            &to,
+            is_held,
+            Duration::from_secs(5),
+            Duration::from_millis(50),
+        )
+        .await;
+        let waited = started.elapsed();
+        releaser.await.unwrap();
+        (renamed, waited, root)
+    }
+
+    fn occupied(error: &io::Error) -> bool {
+        error.kind() == io::ErrorKind::DirectoryNotEmpty
+            || error.kind() == io::ErrorKind::AlreadyExists
+    }
+
+    fn never_held(_error: &io::Error) -> bool {
+        false
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_directory_that_is_held_for_a_while_is_renamed_once_it_is_released() {
+        let (renamed, waited, root) =
+            rename_onto_occupied_dir(occupied, Duration::from_millis(400)).await;
+
+        renamed.unwrap();
+        assert!(
+            waited >= Duration::from_millis(400) && waited < Duration::from_secs(1),
+            "waited {waited:?} for a hold that lasted 400ms"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("to").join("kept.txt")).unwrap(),
+            "kept"
+        );
+        assert!(!root.path().join("from").exists());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_directory_that_stays_held_fails_with_its_own_error_after_the_window() {
+        let (renamed, waited, root) =
+            rename_onto_occupied_dir(occupied, Duration::from_secs(60)).await;
+
+        let error = renamed.unwrap_err();
+        assert!(occupied(&error), "{error:?}");
+        assert!(
+            waited >= Duration::from_secs(5) && waited < Duration::from_secs(6),
+            "waited {waited:?} for a five second window"
+        );
+        assert!(
+            root.path().join("from").join("kept.txt").exists(),
+            "a rename that never happened leaves the directory where it was"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refusal_that_is_not_a_hold_fails_at_once() {
+        let (renamed, waited, _root) =
+            rename_onto_occupied_dir(never_held, Duration::from_millis(400)).await;
+
+        assert!(occupied(&renamed.unwrap_err()));
+        assert_eq!(waited, Duration::ZERO, "nothing to wait for");
+    }
+
+    #[test]
+    fn only_windows_file_in_use_errors_are_a_hold() {
+        let access_denied = io::Error::from_raw_os_error(5);
+        let sharing_violation = io::Error::from_raw_os_error(32);
+        let missing = io::Error::from(io::ErrorKind::NotFound);
+
+        assert_eq!(is_held_open(&access_denied), cfg!(windows));
+        assert_eq!(is_held_open(&sharing_violation), cfg!(windows));
+        assert!(!is_held_open(&missing));
     }
 }
