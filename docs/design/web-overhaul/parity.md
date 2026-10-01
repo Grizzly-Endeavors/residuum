@@ -156,12 +156,12 @@ Every capability the current web UI offers, grouped by the surface that has it t
 
 All-agents scope:
 
-- [ ] General: timezone; bind address and port
-- [ ] Cloud: connected (Disconnect, hidden via tunnel with explanation), connecting (Cancel), disconnected with token (Reconnect, Remove account with Undo), not connected (Connect link, token entry); relay URL, local port — **Fix:** correct the "Reconnect then Save" hint, re-poll status after Connect/Reconnect, surface a failed Disconnect
+- [x] General: timezone; bind address and port — **Changed:** a flag on a name that is not a timezone, "Use this device's timezone", and the gateway address under More options
+- [x] Cloud: connected (Disconnect, hidden via tunnel with explanation), connecting (Cancel), disconnected with token (Reconnect, Remove account with Undo), not connected (Connect link, token entry); relay URL, local port — **Fix:** correct the "Reconnect then Save" hint, re-poll status after Connect/Reconnect, surface a failed Disconnect; **Changed:** Reconnect and a pasted token act at once, Remove account is staged (Keep account or Discard brings it back), the Connect link follows `[cloud] relay_url`, and the relay URL and local port are always under More options
 - [ ] A2A listener: toggle, port, own address; caller keys list, Revoke with Undo, add with validation, token shown once with Copy
-- [ ] Session budget: concurrent turns, hop soft and hard limits
-- [ ] Tracing: log detail, redaction, automatic error reports
-- [ ] Update: status, current, latest, checked time, Check now, Update & restart with progress, outcomes (updated, rolled back, timed out with hint), unverified-update warning
+- [x] Session budget: concurrent turns, hop soft and hard limits — **Changed:** named Session limits, with a flag on a limit that blocks work
+- [x] Tracing: log detail, redaction, automatic error reports — **Changed:** named Diagnostics; the switches are staged and saved to `[tracing]`
+- [x] Update: status, current, latest, checked time, Check now, Update & restart with progress, outcomes (updated, rolled back, timed out with hint), unverified-update warning
 - [ ] Secrets: list, remove with confirmation, add with replace warning
 - [ ] Agent keys: list with env var and "saved by the agent", remove with Undo, add with name/env preview, replace note, short-value hint, description, warning toast
 - [ ] History: team and hub repos

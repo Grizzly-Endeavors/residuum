@@ -85,7 +85,7 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 | [Turn Control](turn-control.md) | Stop the running main-agent turn from any interface | *(no tools — a protocol/command control, not a tool)* | *(none)* |
 | [Hub HTTP Surface](hub-http.md) | Every route the backend serves: the hub (including Web Push devices), team, and per-agent prefixes, how requests reach a hosted agent, the request guards, the embedded web app's caching and compression, and the hub WebSocket | *(no tools)* | *(none)* |
 | [Self-Update, Rollback, and Startup Health](self-update.md) | Self-update with automatic rollback, and the readiness signal `residuum serve`/the rollback watchdog wait on | `residuum update`, `residuum serve`, `residuum stop` | *(none)* |
-| [Residuum Cloud Tunnel and Remote Control Safety](cloud-tunnel.md) | Remote access via the cloud relay, and the guard that refuses a remote shutdown or cloud-disconnect | *(none — Settings → Residuum Cloud)* | `[cloud]` in `hub/config.toml` |
+| [Residuum Cloud Tunnel and Remote Control Safety](cloud-tunnel.md) | Remote access via the cloud relay, and the guard that refuses a remote shutdown or cloud-disconnect | *(none — Settings → All agents → Residuum Cloud)* | `[cloud]` in `hub/config.toml` |
 | [Microsoft Teams](teams.md) | Chat with the agent in Teams DMs, group chats, and channels | *(interface — no tools)* | `[teams]` in `config.toml`, `teams_state.json` |
 | [Discord](discord.md) | Chat with the agent in Discord DMs and server channels | *(interface — no tools)* | `[discord]` in `config.toml`, `discord_state.json` |
 | [Telegram](telegram.md) | Chat with the agent in Telegram private chats and groups | *(interface — no tools)* | `[telegram]` in `config.toml`, `telegram_state.json` |
