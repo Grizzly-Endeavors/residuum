@@ -21,6 +21,7 @@ export type ConfirmLeave = (losses: readonly string[]) => Promise<boolean>;
 export class NavigationGuard {
   private readonly checks = new Set<LeaveCheck>();
   private confirm: ConfirmLeave | null = null;
+  private reloadConfirmed = false;
 
   /** Register a check. Returns a function that removes it. */
   register(check: LeaveCheck): () => void {
@@ -51,9 +52,22 @@ export class NavigationGuard {
     return this.confirm === null ? Promise.resolve(false) : this.confirm(losses);
   }
 
+  /**
+   * Ask before the app reloads the page itself, when that would lose work:
+   * true to go ahead. A yes also stands in for the browser's prompt, which
+   * would otherwise ask the same question again as the page unloads.
+   */
+  async confirmReload(): Promise<boolean> {
+    const losses = this.losses(null);
+    if (losses.length === 0) return true;
+    if (!(await this.ask(losses))) return false;
+    this.reloadConfirmed = true;
+    return true;
+  }
+
   /** The browser's prompt for reload and tab close, when something would be lost. */
   onBeforeUnload = (event: BeforeUnloadEvent): void => {
-    if (this.losses(null).length === 0) return;
+    if (this.reloadConfirmed || this.losses(null).length === 0) return;
     event.preventDefault();
   };
 }

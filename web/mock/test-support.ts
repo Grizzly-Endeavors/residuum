@@ -23,6 +23,7 @@ export function createStubHub(env: MockEnv = createMockEnv()): MockHub {
   return {
     agents,
     deleted: new Map(),
+    appRebuilds: 0,
     env,
     hubState: createState(HUB_STATE_NAME, true, env),
     createAgent(name, options = {}) {

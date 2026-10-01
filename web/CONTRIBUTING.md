@@ -43,6 +43,7 @@ With [`just`](https://github.com/casey/just), `just web-mock` from the repo root
 - The hub socket's session relay. A page subscribes with `subscribe_session` (`{ agent, address }`) to one session, or with `subscribe_artifact_sessions` (`{ artifact }`) to every session whose source label is `artifact:<artifact>` on any agent, including ones that start later, and stops with the matching `unsubscribe_` message. Each subscribe is acknowledged with `subscribed` before any frame, and one that names an unknown agent gets a warning `notice` and no acknowledgement (a stopped agent is known). Every `session_*` frame an agent's state broadcasts then reaches the pages that follow it as `session_frame` `{ agent, frame }`, where `frame` is exactly what the agent's socket sent, tool frames included, because the hub socket has no verbose flag. Subscriptions end with the connection. `POST /api/mock/session-relay-lag` sends `session_relay_lagged` to every page that follows something, as a connection that fell behind the relay is told, and answers `{ "notified": n }`; the page then reads its sessions again over HTTP
 - Tasks sent to other agents, in Activity's Running now: stopping `research-buddy`'s task succeeds, while `laptop` is unreachable, so its Stop fails and the row says why beside "Stop watching"
 - `POST /api/mock/hub-socket` with `{ "online": false }` takes the hub WebSocket down: every page is dropped and new connections are refused (the HTTP API stays up), so the hub banner shows. `{ "online": true }` lets pages connect again, and a reset does too
+- `POST /api/mock/rebuild` stands in for rebuilding the app, in preview mode only: from then on the preview server serves `/sw.js` as another version of the same worker (its version string changed everywhere it appears), so a page that already runs the first one finds an update. It answers `{ "rebuilds": n }`, and a reset puts the worker back as built
 - `POST /api/mock/missed-relay` records a session result in the main chat's history and drops the WebSocket, to exercise catching up after a reconnect
 - The team event log: `GET /api/hub/events` (with `before`, `after` and `limit`) and a `team_event` frame on the hub socket for each new entry. It records what the mock's own lifecycle, chat turns, sessions and notices do, worded as the backend words it, with ids counting from 1 and times from the mock's clock. It starts with `hub_started` and what starting the scenario's agents did, and starts over on reset. `POST /api/mock/user-inbox-add?agent=atlas` (`{ title?, body?, attachments? }`, each attachment `{ filename, mime_type? }`) saves an item in an agent's user inbox the way its `user_inbox_add` tool does, which adds an `inbox_item_added` entry
 - The team overview: `GET /api/hub/overview` and an `agent_overview` frame on the hub socket whenever an agent's overview changes. Each agent's last message, live sessions and unread inbox count are read from the data the mock's other routes serve (its conversation, sessions and inbox), `upcoming` lists its three soonest runs (its pulses by their next fire time, and its pending scheduled actions) and `outbound_problems` its open tasks to other agents that have been unreachable for ten minutes, and changes are gathered so an agent gets at most one frame per simulated second (the next tick when delays are off). A created agent is sent at once. It starts over on reset
@@ -117,7 +118,7 @@ web/
 ├── src/
 │   ├── main.ts               # App entry point
 │   ├── App.svelte            # The root: the setup wizard (loaded when it is needed), or the shell; draws toasts and tooltips in both
-│   ├── shell/                # The shell: the rail, the phone's bottom bar and drawer, the hub banner, place routing, the Settings modal, the command palette, the app's actions, the install offer and its Add to Home Screen steps, the shortcuts, feedback and Create agent dialogs
+│   ├── shell/                # The shell: the rail, the phone's bottom bar and drawer, the hub banner and the Update ready banner, place routing, the Settings modal, the command palette, the app's actions, the install offer and its Add to Home Screen steps, the shortcuts, feedback and Create agent dialogs
 │   │   ├── panel/                # The context panel: its frame and header, its width, and what each kind shows
 │   │   └── settings/             # The Settings modal's parts: scope picker and section list, save bar, the section API and its shared group card and field components, focus on arrival, Raw config, the History browser, the All agents sections (General, Notifications, Residuum Cloud, Saved keys with its key lists, Updates, Session limits, the install's Agent-to-agent listener with its caller keys, Diagnostics) and the agent's Model (its roles, the settings for every model and the providers), Connections, Tools & skills (with the credential field and folder list they share), Tool servers, Agent-to-agent, Memory, Schedule and Runtime
 │   ├── places/               # Rebuilt places, one folder each
@@ -133,6 +134,7 @@ web/
 │   ├── styles/               # Design tokens, bundled fonts, base styles, legacy global styles
 │   ├── components/
 │   │   └── setup/                  # Setup wizard steps
+│   ├── sw/                   # The service worker, a TypeScript program of its own (the worker's globals): the worker, its rules as pure functions, and the messages the page and the worker share
 │   ├── test/                 # Component-test helpers and harnesses
 │   └── lib/
 │       ├── ui/                   # Primitive controls and overlays (buttons, fields, badges, dialogs, sheets, menus, popovers, tooltips, toasts…); the overlay stack and float placement in ui/overlay/; gallery at /dev/gallery (see AESTHETIC.md)
@@ -150,6 +152,7 @@ web/
 │       ├── overview.svelte.ts    # The team overview: each agent's overview, team events, the newest unread inbox items, what needs the user
 │       ├── inbox.svelte.ts       # The Inbox's list across agents: filter and tab, paging, read, archive, restore
 │       ├── app-badge.ts          # The app icon's badge (the Badging API): the inbox unread total
+│       ├── app-update.svelte.ts  # The service worker as the page sees it: registering it, noticing a rebuilt app (Update ready), and Reload
 │       ├── install.ts            # Installing the app: what this browser can do (secure context, installed, iOS), and keeping the Install app offer current
 │       ├── lazy-component.svelte.ts # A component whose code loads the first time it is needed, with the failure shown and a retry
 │       ├── needs-you.ts          # What needs the user and in what order, and the rail's Home count
@@ -186,6 +189,7 @@ web/
 │       ├── config-coordinator.ts # Config write coordinator: serialized writes, re-read before a save, change notifications, checkpoint restore and undo
 │       ├── config-sync.ts        # Passes config changes made elsewhere (the agent's config/ watch, hub_config_reloaded) to the coordinator
 │       └── secrets.ts            # secret:/${ENV_VAR} reference detection for settings fields
+├── build/                    # The Vite plugin that builds the service worker into `dist/sw.js`, and the choice of which files it precaches; checked like src/
 ├── mock/                     # Typed mock modules, checked like src/ (only used in dev:mock and preview:mock)
 │   ├── routes.ts             # Route tables: each endpoint is a method, a path pattern and a handler
 │   ├── api-routes.ts         # Every route table the mock serves
@@ -229,6 +233,7 @@ web/
 │   ├── artifacts-origin.ts   # What that origin forwards to the API and sockets, its block list, and the marker for requests that came through it
 │   ├── mock.ts               # Starts the mock on a Vite server, from the environment's options
 │   ├── plugin.ts             # The Vite plugin: starts the mock on the dev server and the preview server
+│   ├── rebuilt-worker.ts     # Serves the service worker as another version after `POST /api/mock/rebuild`, which stands in for rebuilding the app
 │   ├── data/                 # Sample data: chat, sessions, workspace files, inbox, the workbench artifact
 │   ├── test-support.ts       # Test harnesses: route tables over HTTP, the whole mock with its sockets
 │   ├── route-parity.test.ts  # Every API client request lands on a mock route
@@ -302,6 +307,24 @@ Every place is rebuilt (see [Home and the overview](#home-and-the-overview), [Th
 `lib/install.ts` decides whether Install app is offered, and `shell/install-offer.ts` starts it before the app mounts, since a Chromium browser fires its `beforeinstallprompt` once, early. Install app is listed (`installOffer.install` in `shell/app-actions.svelte.ts`) only in a secure context and only outside an installed app. In Chromium it runs the stored prompt, which a browser shows once, so the entry goes with it and returns if the browser fires a new prompt. On an iPhone or iPad, which has no prompt, it opens `InstallHelpDialog.svelte`, the Add to Home Screen steps. Without a secure context (plain HTTP on a LAN) nothing is offered. Everything that needs a secure context, push included, asks `installContext().secure`.
 
 Settings (`SettingsModal.svelte` and its sections), the command palette, the file view with its editor (`places/files/FilePanel.svelte`) and the setup wizard are built into chunks of their own, and the shell, Home and Chat are in the initial bundle. `LazyComponent` (`lib/lazy-component.svelte.ts`) starts fetching a chunk the first time something asks for it, keeps the component for the life of the page, and on a failed fetch shows an error toast, runs the caller's `onFailure` (the shell puts the modal, the palette or the panel away so the next press asks again) and tries again on the next ask. A chunk is named after the module it is imported from, which is how the `@preview` specs in `e2e/smoke/installable.spec.ts` find it. Importing a lazy module from the initial bundle statically pulls its chunk back in, so import only its types, or go through the `LazyComponent`.
+
+### The service worker and app updates
+
+The service worker (`src/sw/worker.ts`, served as `/sw.js`) holds the app shell so the app opens with no network, and nothing else: no data is cached for offline reading. It is a TypeScript program of its own (`src/sw/tsconfig.json`, with the worker's globals instead of the window's, checked by `npm run check`), and the page and the worker share only `src/sw/protocol.ts`. Which requests it answers is decided by pure functions in `src/sw/rules.ts`, tested in Node.
+
+**Building it.** `build/service-worker.ts` is a Vite plugin that runs once the bundle and the public folder are in `dist/`. It lists the files the shell needs (`build/precache.ts`: `index.html`, everything under `assets/`, so the lazy chunks and the fonts too, `favicon.svg` and `icons/`), derives a version from those paths and their contents, bundles the worker with the list and the version filled in, and writes `dist/sw.js`, whose first line is `/* residuum-sw <version> */`. A build whose shell differs in any byte has a different worker, which is how a browser sees an update. The manifest, the MCP catalog and the font licenses are not precached.
+
+**What the worker does.**
+
+- It installs by fetching the listed files into the cache `residuum-shell:<version>`, six at a time (Residuum Cloud's relay lets 50 requests through a tunnel at once). A file that is missing or redirects (the relay's sign-in page, say) fails the install, and the active worker keeps serving.
+- A page load (a client route, or `/index.html`) goes to the network first, so a rebuilt app arrives with its new document. When the network fails, or the hub answers 502, 503 or 504 (the relay's answers for an instance that is offline), the cached `index.html` stands in, and the app's hub banner says it can't reach Residuum. The live document is never cached: the relay inserts its instance switcher into it.
+- A file of the app (anything under `/assets/`, the icons, the favicon) comes from the cache first: this version's cache, then another version's, then the network.
+- It never answers anything else, so the browser sends it as it would with no worker: any request that isn't a GET, any other origin (the artifacts origin included), and `/api`, `/ws`, `/webhook` and `/cloud/callback`. Nothing at runtime goes into a cache.
+- A new worker waits. It takes over only when the page posts `skip-waiting`, so the files under an open page never change on their own. On activation the worker keeps this version's cache and the one it replaced, and deletes the rest: a page opened before an update keeps asking for the hashed files it was built with, and they stay available until the update after next.
+
+**What the page does.** `lib/app-update.svelte.ts` registers `/sw.js` after the page loads, in builds only (`vite.config.ts` defines `__SERVICE_WORKER__` as true for a build and false for the dev server, the mock's dev mode and the tests; a preview serves a build, so it registers). A secure context is needed, which the browser enforces. It asks the server whether the app was rebuilt each time the page becomes visible and every ten minutes. When a new worker is installed and waiting, or another window of the app took over and left this page on the old files, `ready` is set and `shell/UpdateBanner.svelte` shows "Update ready" with Reload. Reload asks `router.guard.confirmReload()` first, so unsaved work is asked about (the browser's own prompt is skipped for a reload the person just confirmed), then posts `skip-waiting`, waits for the new worker to take over (five seconds at most) and reloads. A worker that fails to register or update is logged to the console once, since nothing the person does would help.
+
+**Developing with it.** The dev server never registers a worker. A worker that a preview registered on a port stays there: unregister it under Application, Service workers in the browser's tools before running the dev server on the same port. `e2e/smoke/service-worker.spec.ts` (`@preview`) covers registration, the offline reload, `/api` staying out of every cache and the update flow, with `POST /api/mock/rebuild` standing in for rebuilding the app.
 
 ### Actions
 

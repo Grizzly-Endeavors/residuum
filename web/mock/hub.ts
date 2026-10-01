@@ -126,6 +126,7 @@ export function createHub(
     env,
     agents,
     deleted: new Map(),
+    appRebuilds: 0,
     hubState,
     broadcast,
     relaySession: (agent, frame) => {
@@ -202,6 +203,7 @@ export function createHub(
       for (const agent of [...agents.values(), ...gone]) agent.dispose();
       agents.clear();
       hub.deleted.clear();
+      hub.appRebuilds = 0;
       // The state is replaced in place: the artifacts listener holds it, and
       // the port it listens on is not part of the scenario.
       const { workbenchPort } = hubState;
