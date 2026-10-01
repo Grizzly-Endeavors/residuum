@@ -107,8 +107,8 @@ struct WsHarness {
     write: Arc<Mutex<TunnelSink>>,
     relay: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
     targets: ForwardTargets,
-    ws_open_tx: mpsc::Sender<(String, mpsc::Sender<String>)>,
-    ws_open_rx: mpsc::Receiver<(String, mpsc::Sender<String>)>,
+    ws_events_tx: mpsc::Sender<WsChannelEvent>,
+    ws_events_rx: mpsc::Receiver<WsChannelEvent>,
     main_connections: Arc<AtomicUsize>,
     _dir: tempfile::TempDir,
 }
@@ -131,7 +131,7 @@ async fn harness(artifacts_listener_running: bool) -> WsHarness {
         None
     };
     let (write, relay) = loopback_ws().await;
-    let (ws_open_tx, ws_open_rx) = mpsc::channel(16);
+    let (ws_events_tx, ws_events_rx) = mpsc::channel(16);
     WsHarness {
         write,
         relay,
@@ -140,8 +140,8 @@ async fn harness(artifacts_listener_running: bool) -> WsHarness {
             workbench,
             a2a: None,
         },
-        ws_open_tx,
-        ws_open_rx,
+        ws_events_tx,
+        ws_events_rx,
         main_connections,
         _dir: dir,
     }
@@ -180,7 +180,7 @@ impl WsHarness {
             self.targets,
             &self.write,
             &mut local_ws_channels,
-            &self.ws_open_tx,
+            &self.ws_events_tx,
             &mut tracker,
         ))
         .await;
@@ -194,9 +194,15 @@ impl WsHarness {
         };
         if success {
             assert_eq!(reason, None, "a successful open has nothing to explain");
-            let (_, sender) = with_timeout(self.ws_open_rx.recv())
-                .await
-                .expect("a successful open registers its channel");
+            // An earlier open's channel may end first: its sender was dropped.
+            let sender = loop {
+                let event = with_timeout(self.ws_events_rx.recv())
+                    .await
+                    .expect("a successful open registers its channel");
+                if let WsChannelEvent::Opened { sender, .. } = event {
+                    break sender;
+                }
+            };
             Ok(sender)
         } else {
             Err(reason.expect("a failed open must say why"))
@@ -327,7 +333,7 @@ async fn a_workbench_socket_open_with_no_artifacts_listener_fails_with_a_reason(
         "a workbench socket must never fall back to the main listener"
     );
     assert!(
-        h.ws_open_rx.try_recv().is_err(),
+        h.ws_events_rx.try_recv().is_err(),
         "a refused open registers no channel"
     );
 }

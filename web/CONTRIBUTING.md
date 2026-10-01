@@ -118,7 +118,7 @@ web/
 │   ├── App.svelte            # The root: the setup wizard, or the shell; draws toasts and tooltips in both
 │   ├── shell/                # The shell: the rail, the phone's bottom bar and drawer, the hub banner, place routing, the Settings modal, the command palette, the app's actions, the shortcuts, feedback and Create agent dialogs
 │   │   ├── panel/                # The context panel: its frame and header, its width, and what each kind shows
-│   │   └── settings/             # The Settings modal's parts: scope picker and section list, save bar, the section API, the group card, hosted legacy sections, Raw config, the History browser, and the All agents sections (General, Residuum Cloud, Updates, Session limits, Diagnostics)
+│   │   └── settings/             # The Settings modal's parts: scope picker and section list, save bar, the section API and its shared group card and field components, hosted legacy sections, Raw config, the History browser, the All agents sections (General, Residuum Cloud, Updates, Session limits, Diagnostics) and the agent's Memory, Schedule and Runtime
 │   ├── places/               # Rebuilt places, one folder each
 │   │   ├── home/             # Home: needs-you, the agents board and its row menus, Recently deleted, Across the team, Coming up, and the words and times they show; the agent actions and failure fixes the Chat's state card shares
 │   │   ├── files/            # Files and Shared files: the tree, the file editor the context panel shows (Raw config shares it), a file's history
@@ -425,9 +425,10 @@ The save bar (`settings/SaveBar.svelte`) shows while the scope has staged change
 
 - Start with `SettingsSection` (title, a line on what it holds, and the save's problems no field shows), then the fields.
 - Bind fields to the scope's forms (`scope.config.timeout_secs`, `scope.providers`, …); the frame loads the scope before the section renders, and the save bar follows the staged changes by itself.
-- Put fields in `SettingsGroup` cards (an optional title with a state mark, a line on what the group is). The forms keep numbers as text, so a `NumberField` binds through `numberOfText` and `textOfNumber` from `lib/settings-bind.ts`: `bind:value={() => numberOfText(scope.config.gateway_port), (value) => (scope.config.gateway_port = textOfNumber(value))}`.
+- Put fields in `SettingsGroup` cards: an optional title with a state mark (`status`), a line on what the group is, and an optional `foot` action under the fields.
+- A `config.toml` number or switch is `ConfigNumber` or `ConfigToggle` with the scope and the `ConfigFields` key (`settings/config-keys.ts` types it). The forms keep numbers as text, so `ConfigNumber` binds through `numberOfText` and `textOfNumber` from `lib/settings-bind.ts`, and a blank box is an unset key. `fallback` is the value the agent uses when the box is blank: it shows in the box and at the end of the hint with the `unit`; a section that words the default itself passes `placeholder` instead. Both components place the field's problems from the save by themselves. A control that isn't one of these (a text box, a select) takes `error={fieldError(scope, { kind: "config", field: "timeout_secs" })}` itself.
+- A setting that only applies while another is on is `disabled`, not hidden, so a problem on it is never out of sight; a closed `Disclosure` that holds fields opens when one of them has a problem (see `Memory.svelte`).
 - Flag a value that is unreasonable, such as a limit of zero that blocks work, with a note beside the field. Never block the save.
-- Give a field its problems with `error={fieldError(scope, { kind: "config", field: "timeout_secs" })}`.
 - A part that needs the agent running goes inside `RunningOnly` (`<RunningOnly agent={scope.agent} subject="its status">…</RunningOnly>`), which says "Start atlas to see its status." with Start until it runs.
 - Actions of the section's own register with `actionRegistry.register(key, source)` inside `untrack` in an `$effect` that returns the remover.
 - Immediate actions (secrets, keys, Cloud, updates) call their endpoints and report their own result; they have no part in the save bar.

@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { numberOfText, textOfNumber } from "../../lib/settings-bind";
-  import { Button, Disclosure, NumberField, TextField } from "../../lib/ui";
+  import { Button, Disclosure, TextField } from "../../lib/ui";
+  import ConfigNumber from "./ConfigNumber.svelte";
   import { fieldError, type AllSectionProps } from "./sections";
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
@@ -94,16 +94,13 @@
         hint="127.0.0.1 keeps Residuum on this machine. 0.0.0.0 lets other devices on your network reach it."
         error={bindError}
       />
-      <NumberField
+      <ConfigNumber
+        {scope}
+        field="gateway_port"
         label="Port"
-        bind:value={
-          () => numberOfText(scope.config.gateway_port),
-          (value) => (scope.config.gateway_port = textOfNumber(value))
-        }
         placeholder="7700"
         min={1}
         max={65535}
-        error={portError}
       />
     </SettingsGroup>
   </Disclosure>

@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { numberOfText, textOfNumber } from "../../lib/settings-bind";
-  import { Banner, NumberField } from "../../lib/ui";
-  import { fieldError, type AllSectionProps } from "./sections";
+  import { numberOfText } from "../../lib/settings-bind";
+  import { Banner } from "../../lib/ui";
+  import ConfigNumber from "./ConfigNumber.svelte";
+  import type { AllSectionProps } from "./sections";
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
 
@@ -28,16 +29,14 @@
   lede="How much background work can run at once, and how long a chain of messages between agents can grow. A hop is one agent handing a message to another."
 >
   <SettingsGroup title="Background work">
-    <NumberField
+    <ConfigNumber
+      {scope}
+      field="bg_max_concurrent"
       label="Turns at once"
-      bind:value={
-        () => concurrent, (value) => (scope.config.bg_max_concurrent = textOfNumber(value))
-      }
       unit="turns"
       min={0}
       placeholder={String(DEFAULTS.concurrent)}
       hint="How many background sessions, across every agent, can be working through a turn at the same moment. The rest wait their turn. Takes effect when Residuum restarts."
-      error={fieldError(scope, { kind: "config", field: "bg_max_concurrent" })}
     />
     {#if noTurns}
       <Banner tone="warn">With none allowed, background sessions can never run a turn.</Banner>
@@ -45,23 +44,23 @@
   </SettingsGroup>
 
   <SettingsGroup title="Messages between agents">
-    <NumberField
+    <ConfigNumber
+      {scope}
+      field="bg_hop_soft_limit"
       label="Ask for fewer replies after"
-      bind:value={() => soft, (value) => (scope.config.bg_hop_soft_limit = textOfNumber(value))}
       unit="hops"
       min={0}
       placeholder={String(DEFAULTS.soft)}
       hint="From this many hops on, a delivered message carries a note asking the receiver to reply only if a reply is really needed."
-      error={fieldError(scope, { kind: "config", field: "bg_hop_soft_limit" })}
     />
-    <NumberField
+    <ConfigNumber
+      {scope}
+      field="bg_hop_hard_limit"
       label="Stop delivering after"
-      bind:value={() => hard, (value) => (scope.config.bg_hop_hard_limit = textOfNumber(value))}
       unit="hops"
       min={0}
       placeholder={String(DEFAULTS.hard)}
       hint="From this many hops on, a message between agents is refused, which stops messages from looping forever."
-      error={fieldError(scope, { kind: "config", field: "bg_hop_hard_limit" })}
     />
     {#if noticeNeverShows}
       <Banner tone="warn">

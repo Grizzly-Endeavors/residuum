@@ -2,18 +2,22 @@
   import type { Snippet } from "svelte";
 
   // A card inside a settings section: an optional title with a state mark
-  // beside it, a line on what the group is, then its fields. Groups sit on
-  // stone-2 inside the modal's stone-1 and stack with a gap between.
+  // beside it, a line on what the group is, its fields, and an optional quiet
+  // action under them, such as a link to the place that shows what the group
+  // configures. Groups sit on stone-2 inside the modal's stone-1 and stack
+  // with a gap between.
 
   interface Props {
     title?: string;
     lede?: string;
     /** A state mark beside the title, such as a Badge. */
     status?: Snippet;
+    /** A quiet action under the fields: a small quiet Button. */
+    foot?: Snippet;
     children: Snippet;
   }
 
-  let { title, lede, status, children }: Props = $props();
+  let { title, lede, status, foot, children }: Props = $props();
 
   const uid = $props.id();
   const titleId = `${uid}-title`;
@@ -30,6 +34,9 @@
     <p class="set-group-lede">{lede}</p>
   {/if}
   {@render children()}
+  {#if foot}
+    <div class="set-group-foot">{@render foot()}</div>
+  {/if}
 </section>
 
 <style>
@@ -55,6 +62,11 @@
     font-size: var(--font-size-message);
     font-weight: var(--font-weight-semibold);
     line-height: var(--line-height-tight);
+  }
+
+  .set-group-foot {
+    display: flex;
+    margin: calc(var(--space-4) * -1) 0 calc(var(--space-4) * -1) calc(var(--space-8) * -1);
   }
 
   .set-group-lede {
