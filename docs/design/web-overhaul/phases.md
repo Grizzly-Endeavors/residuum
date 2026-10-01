@@ -665,6 +665,7 @@ W19, then W20 and W21 together.
 
 ### W25 — Composer and conversation size (M)
 
+- **Size:** M, kept as one unit at about 1,410 lines, over the M budget: mapped at about 985, with the composer's and the model popover's component styles taking most of the rest.
 - **Modules:** composer (attach, `/` actions, model and thinking popover, send and stop, per-agent drafts); post-turn status line; conversation-size panel view. The legacy chat footer is deleted.
 - **Preconditions:** W24, W18, W21.
 - **Shape when done:**
