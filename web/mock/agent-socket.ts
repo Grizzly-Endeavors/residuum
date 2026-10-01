@@ -1,5 +1,7 @@
+import type { IncomingMessage } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { ClientMessage, ServerMessage } from "../src/lib/generated/protocol";
+import { arrivedThroughArtifactsOrigin } from "./artifacts-origin";
 import { createChatSimulator } from "./chat";
 import { parseJsonObject, stringField, type JsonObject } from "./http";
 import { sendSessionMessage, spawnSession, stopSession } from "./sessions";
@@ -97,6 +99,8 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
   const wss = new WebSocketServer({ noServer: true });
   const chat = createChatSimulator(hub, agent);
   const verbose = new WeakSet<WebSocket>();
+  /** The sockets opened through the artifacts origin. A workbench page isn't the user reading the chat, so they don't count as clients. */
+  const throughArtifactsOrigin = new WeakSet<WebSocket>();
   /** What each page watches (`watch_workspace`); a page that never asked watches nothing. */
   const watching = new WeakMap<WebSocket, WatchSet>();
 
@@ -118,7 +122,8 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
       if (sent !== null) sendFrame(client, sent);
     }
   };
-  agent.connectedClients = () => wss.clients.size;
+  agent.connectedClients = () =>
+    [...wss.clients].filter((client) => !throughArtifactsOrigin.has(client)).length;
   agent.dispose = () => {
     stopRouting();
     state.dropSockets();
@@ -194,9 +199,13 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
     }
   }
 
-  wss.on("connection", (ws: WebSocket) => {
-    // Opening the agent's socket is what shows its messages.
-    hub.clearUnread(agent);
+  wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
+    if (arrivedThroughArtifactsOrigin(req)) {
+      throughArtifactsOrigin.add(ws);
+    } else {
+      // Opening the agent's socket is what shows its messages.
+      hub.clearUnread(agent);
+    }
     ws.on("message", (raw) => {
       let msg: ClientMessage;
       try {

@@ -23,6 +23,9 @@ mod ts_export {
         PushFailure, PushKeyResponse, PushPayload, PushPreferences, PushPreferencesPatch,
         PushTestResult, PutPushDeviceRequest, WebPushSubscription, WebPushSubscriptionKeys,
     };
+    use residuum::hub::team_events::{
+        TeamEvent, TeamEventKind, TeamEventLevel, TeamEventPage, TeamEventPlace, TeamEventTarget,
+    };
     use residuum::hub::types::{
         A2aVisibility, Actor, AgentActivity, AgentErrorKind, AgentLastError, AgentListResponse,
         AgentPatch, AgentState, AgentSummary, CreateAgentRequest, DeleteOutcome, DeletedAgent,
@@ -139,6 +142,18 @@ mod ts_export {
         PushTestResult::export_all(&cfg).unwrap();
         PushPayload::export_all(&cfg).unwrap();
         PushEvent::export_all(&cfg).unwrap();
+
+        // The team event log: `TeamEventPage` (with its `TeamEvent` items and
+        // their `TeamEventKind`, `TeamEventLevel` and `TeamEventTarget`)
+        // answers `GET /api/hub/events`, and `TeamEvent` is the `event` of the
+        // hub WebSocket's `team_event` frame. `TeamEventPlace` is the `place`
+        // of an `agent_place` target.
+        TeamEventPage::export_all(&cfg).unwrap();
+        TeamEvent::export_all(&cfg).unwrap();
+        TeamEventKind::export_all(&cfg).unwrap();
+        TeamEventLevel::export_all(&cfg).unwrap();
+        TeamEventTarget::export_all(&cfg).unwrap();
+        TeamEventPlace::export_all(&cfg).unwrap();
 
         // Verify the generated files exist
         assert!(

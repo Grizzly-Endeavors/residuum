@@ -5,9 +5,9 @@
 //! `docs/systems-usage/hub-http.md` places it:
 //!
 //! - `/api/hub/...`: agent lifecycle and status ([`lifecycle`]), the hub
-//!   WebSocket ([`ws`]), every agent's user inbox ([`inbox`]), Web Push
-//!   devices ([`push`]), and the routes
-//!   that exist once per process: hub config, secrets, keys, cloud, update,
+//!   WebSocket ([`ws`]), every agent's user inbox ([`inbox`]), the team event
+//!   log ([`events`]), Web Push devices ([`push`]), and the routes that
+//!   exist once per process: hub config, secrets, keys, cloud, update,
 //!   shutdown, tracing, and the hub and team checkpoint repositories
 //!   ([`process`]).
 //! - `/api/team/...`: the team's file API and workbench.
@@ -17,10 +17,13 @@
 //! - `/cloud/callback`, and the embedded web app for every other path.
 //!
 //! The cross-site guard covers the whole app. The remote-control guard covers
-//! hub shutdown and cloud disconnect.
+//! hub shutdown and cloud disconnect. Requests the artifacts listener forwards
+//! here are refused on the routes in [`artifacts_origin`].
 
+mod artifacts_origin;
 mod dispatch;
 mod error;
+mod events;
 mod inbox;
 mod lifecycle;
 mod process;
@@ -62,7 +65,7 @@ pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Rout
         directory: Arc::clone(&directory),
         team_bus: hub.team_bus.clone(),
         team_watch_health: hub.team_watch_health.clone(),
-        boot_id: hub.boot_id.clone(),
+        team_events: Arc::clone(&hub.team_events),
     };
 
     let app = Router::new()
@@ -73,6 +76,7 @@ pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Rout
             push: Arc::clone(&hub.push),
             directory: Arc::clone(&directory),
         }))
+        .merge(events::routes(Arc::clone(&hub.team_events)))
         .merge(process::hub_config_routes(&hub))
         .merge(process::cloud_routes(&hub))
         .merge(process::update_routes(&hub))
@@ -82,6 +86,9 @@ pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Rout
         .merge(dispatch::routes(directory))
         .route("/api/sessions", post(sessions_need_an_agent))
         .fallback_service(web::static_assets())
+        .layer(axum::middleware::from_fn(
+            artifacts_origin::refuse_blocked_artifact_calls,
+        ))
         .layer(axum::middleware::from_fn(
             crate::gateway::cross_site::reject_cross_site_requests,
         ));

@@ -3,7 +3,7 @@
 ## Key References
 
 - **[AESTHETIC.md](./AESTHETIC.md)** — Visual design language: dark geological palette, typography (Cinzel/Literata/JetBrains Mono), slow motion language, and overall mood
-- **[CONTRIBUTING.md](./CONTRIBUTING.md)** — Development setup, mock mode, project structure, and code quality commands
+- **[CONTRIBUTING.md](./CONTRIBUTING.md)** — Development setup, mock mode, project structure, code quality commands, and testing (unit, component, end-to-end, accessibility, visual)
 
 ## UI Changes
 

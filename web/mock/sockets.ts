@@ -27,6 +27,14 @@ export function isSocketPath(url: string | undefined, path: string): boolean {
   return target === path || target.startsWith(`${path}?`);
 }
 
+/** The upgrade requests a socket route took, which answered them or accepted them. */
+const claimedUpgrades = new WeakSet<IncomingMessage>();
+
+/** Whether a socket route took the upgrade request, once the server has emitted it. */
+export function isClaimedUpgrade(req: IncomingMessage): boolean {
+  return claimedUpgrades.has(req);
+}
+
 /**
  * Hand upgrade requests for `path` to `wss`, or answer them `409` with the
  * JSON body `conflict` returns when it returns one. Every other upgrade is
@@ -40,6 +48,7 @@ export function routeUpgrades(
 ): () => void {
   const onUpgrade: UpgradeListener = (req, socket, head) => {
     if (!isSocketPath(req.url, path)) return;
+    claimedUpgrades.add(req);
     const refusal = conflict?.() ?? null;
     if (refusal !== null) {
       const body = JSON.stringify(refusal);

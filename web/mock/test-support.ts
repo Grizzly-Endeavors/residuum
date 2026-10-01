@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { WebSocket } from "ws";
 import type { ServerMessage } from "../src/lib/generated/protocol";
 import { apiRoutes } from "./api-routes";
+import type { ArtifactsForwarding } from "./artifacts-origin";
 import { HUB_STATE_NAME } from "./constants";
 import { createMockEnv, type EnvOptions, type MockEnv } from "./env";
 import { createHub, mockListing } from "./hub";
@@ -12,6 +13,7 @@ import { dispatchRoute, type Route } from "./routes";
 import { seedAgents } from "./scenario";
 import { frameText } from "./sockets";
 import { createState, type MockAgent, type MockHub, type MockState } from "./state";
+import { createTeamEvents } from "./team-events";
 import { sleep } from "./util";
 
 /** A hub with no sockets: agents are plain records, and hub frames go nowhere. */
@@ -50,6 +52,7 @@ export function createStubHub(env: MockEnv = createMockEnv()): MockHub {
     }),
     listing: () => mockListing(agents.values()),
     broadcast: () => {},
+    teamEvents: createTeamEvents(env, "stub-boot", () => {}),
     setBusy: () => {},
     markStopping: () => {},
     reloadHubConfig: () => {},
@@ -61,6 +64,12 @@ export function createStubHub(env: MockEnv = createMockEnv()): MockHub {
     },
   };
 }
+
+/** An artifacts listener's forwarding for a test of its pages: there is no API behind it. */
+export const NO_FORWARDING: ArtifactsForwarding = {
+  api: () => Promise.resolve(false),
+  sockets: null,
+};
 
 /** Point a state's broadcast at a list, so a test can read the frames the mock sent. */
 export function captureFrames(state: MockState): ServerMessage[] {

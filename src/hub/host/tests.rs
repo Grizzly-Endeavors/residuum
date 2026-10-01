@@ -15,6 +15,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
 use crate::hub::runtime::build_app;
+use crate::hub::team_events::{TeamEventLog, TeamEventRecorder};
 use crate::hub::test_support::{free_port, mount_reply, write_agent};
 
 const POLL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -28,6 +29,9 @@ struct Fixture {
     addr: String,
     mocks: BTreeMap<String, MockServer>,
     http: reqwest::Client,
+    /// What the hub's recorder has written since the fixture was built.
+    team_events: Arc<TeamEventLog>,
+    _recorder: TeamEventRecorder,
 }
 
 /// The string at `key` of a JSON object.
@@ -62,12 +66,18 @@ impl Fixture {
         let hub = HubConfig::load_at(&hub_dir).unwrap();
         let services = HubServices::for_tests(root.path(), &hub).await;
         let host = AgentHost::new(services.clone(), hub);
+        let team_events = TeamEventLog::new("boot-under-test");
+        let recorder = TeamEventRecorder::spawn(
+            Arc::clone(&team_events),
+            host.subscribe(),
+            host.agent_changes().subscribe(),
+        );
         host.discover().unwrap();
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         let (reload_tx, _reload_rx) = tokio::sync::mpsc::unbounded_channel();
-        let app = build_app(&host, &services, reload_tx, None).unwrap();
+        let app = build_app(&host, &services, &team_events, reload_tx, None).unwrap();
         crate::util::spawn_in_span(async move {
             axum::serve(listener, app).await.unwrap();
         });
@@ -78,6 +88,8 @@ impl Fixture {
             addr,
             mocks,
             http: reqwest::Client::new(),
+            team_events,
+            _recorder: recorder,
         }
     }
 
@@ -2457,10 +2469,12 @@ async fn the_team_block_lists_teammates_and_follows_their_state() {
 }
 
 mod agent_watch;
+mod artifacts_origin;
 mod hub_inbox;
 mod lifecycle_tools;
 mod restore;
 mod review_fixes;
+mod team_events;
 
 #[tokio::test]
 async fn the_team_router_never_reaches_a_stopped_or_deleted_teammate() {

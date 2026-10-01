@@ -2,6 +2,7 @@ import { once } from "node:events";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startArtifactsListener } from "./artifacts-listener";
 import {
+  NO_FORWARDING,
   fetchJson,
   startMockServer,
   type Frame,
@@ -49,7 +50,7 @@ describe("changing a team file from outside", () => {
 
   describe("an edit", () => {
     it("changes the file the workbench lists and the listener serves, and says what it sent", async () => {
-      const listener = startArtifactsListener(mock.hub.hubState, () => undefined);
+      const listener = startArtifactsListener(mock.hub.hubState, () => undefined, NO_FORWARDING);
       await once(listener, "listening");
       try {
         const res = await change({ path: PAGE, content: "<title>Edited</title><p>new</p>" });

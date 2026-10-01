@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::directory::AgentDirectory;
+use super::team_events::TeamEvent;
 
 /// Lifecycle state of a hosted agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -328,6 +329,12 @@ pub enum HubSocketFrame {
     /// The agents with their activity, sent after `hub_boot` and again
     /// whenever the connection fell behind and lost events.
     AgentsSnapshot(AgentListResponse),
+    /// An entry was added to the team event log.
+    TeamEvent {
+        /// The hub process whose log the entry is in.
+        boot_id: String,
+        event: TeamEvent,
+    },
 }
 
 /// The one message a client sends on the hub WebSocket.

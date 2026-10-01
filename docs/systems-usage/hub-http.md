@@ -1,6 +1,6 @@
 # Hub HTTP Surface
 
-The hub serves everything the backend offers from one router over its `AgentDirectory` (`src/hub/http/`, built by `hub_router`). Every API path lives under `/api/`. The only paths outside it are the relay callback (`/cloud/callback`), webhooks (`/webhook/{agent}/{name}`), and the embedded web app (see [Embedded web app](#embedded-web-app)), which answers every other path.
+The hub serves everything the backend offers from one router over its `AgentDirectory` (`src/hub/http/`, built by `hub_router`). Every API path lives under `/api/`. The only paths outside it are the relay callback (`/cloud/callback`), webhooks (`/webhook/{agent}/{name}`), and the embedded web app (see [Embedded web app](#embedded-web-app)), which answers every other path. The gateway's listener serves the whole router. The artifacts listener serves its `/api` paths from the same router (see [Request guards](#request-guards)) and nothing else of it.
 
 ## Route layout
 
@@ -25,6 +25,7 @@ The hub serves everything the backend offers from one router over its `AgentDire
 | `POST /api/hub/stop-all` | Stops every running or starting agent and leaves the hub running. `200` with `{ stopped, failed }` when all stopped, `500` with the same body when some did not. Reachable over the tunnel, since the hub keeps running and agents can be started again. |
 | `GET /api/hub/status` | `{ version, uptime_secs, tunnel, agents }`. `tunnel` has the shape of `GET /api/hub/cloud/status`; `agents` counts `starting`, `running`, `stopped`, and `failed` agents. |
 | `GET /api/hub/ws` | The hub WebSocket, below. |
+| `GET /api/hub/events?before=&after=&limit=` | The team event log, newest first: `{ boot_id, events, next_before }`. See [Team events](#team-events). |
 | `GET /api/hub/inbox`, `GET /api/hub/inbox/unread`, `PUT /api/hub/inbox/{agent}/{id}/read`, `POST /api/hub/inbox/{agent}/{id}/archive`, `POST /api/hub/inbox/{agent}/{id}/restore` | Every agent's user inbox, read from their files, below. |
 | `GET /api/hub/push/key`, `GET`/`PUT /api/hub/push/devices`, `PATCH`/`DELETE /api/hub/push/devices/{id}`, `POST /api/hub/push/devices/{id}/test` | Web Push: the signing key and the devices that receive notifications, below. |
 | `GET`/`PUT /api/hub/config/raw`, `PATCH /api/hub/config/patch`, `POST /api/hub/config/validate` | The hub's `config.toml`. |
@@ -44,7 +45,7 @@ The hub serves everything the backend offers from one router over its `AgentDire
 
 `AgentLastError` is `{ message, kind, reason, at }`. `message` is the plain-language text for the user, which wraps the failure with what to do next. `reason` is the underlying error text alone. `kind` says what sort of failure it was, so a client can offer the matching next step: `config` (start-up rejected the agent's configuration), `port_conflict` (another agent holds its Teams port), `crash` (the agent panicked, or its event loop ended on its own), or `other`. `at` is an RFC 3339 time.
 
-`AgentActivity` is `{ busy, busy_since, unread }`. `busy` is true while a main turn runs and `busy_since` is when that turn began, as an RFC 3339 time, or `null` while none runs. `unread` counts main-conversation replies published while no web client had the agent's WebSocket open.
+`AgentActivity` is `{ busy, busy_since, unread }`. `busy` is true while a main turn runs and `busy_since` is when that turn began, as an RFC 3339 time, or `null` while none runs. `unread` counts main-conversation replies published while no web client had the agent's WebSocket open; a socket a workbench page opens through the artifacts origin doesn't count as a web client.
 
 A lifecycle request is always made on the user's behalf. Errors are `{ "error": message }` with `404` for an unknown agent, `400` for an invalid name or request body, `409` for a name that exists or an agent in the wrong state, `503` for `start`, `restart`, or `create` refused because the hub is shutting down (see [hub.md](hub.md#start-up-and-shutdown)), and `500` for a failure the user can read in the message.
 
@@ -85,6 +86,14 @@ The push routes register browsers and installed apps for notifications and say h
 
 Errors are `{ "error": message }`: `400` for a body that can't be read, a blank `label`, a `PATCH` that sets nothing, or a subscription whose `endpoint` isn't an `https:` address or whose `p256dh` (a 65-byte P-256 public key) or `auth` (16 bytes) key is malformed; `404` for an unknown device; and `500` when the key or devices file can't be read or written, with a message that names the file.
 
+### Team events
+
+`GET /api/hub/events?before=<id>&after=<id>&limit=<n>` serves the hub's in-memory team event log (see [Team event log](hub.md#team-event-log)) as `{ boot_id, events, next_before }`. `events` are entries, newest first, each `{ id, at, agent, kind, level, summary, target }`. `boot_id` is the hub process's id, the one `hub_boot` announces; a client that sees it change holds events from an earlier process and starts over.
+
+All three parameters are optional. `before` returns only entries with a lower id, and `after` only entries with a higher id, so `after` with a client's newest id returns what it has not seen. A page holds `limit` entries, 50 when it isn't given, and a limit above 200 is treated as 200. When more entries match than fit, the page holds the newest ones and `next_before` is the id of its oldest entry: pass it as `before`, with the same `after`, for the page that follows. `next_before` is `null` when nothing older matches.
+
+Errors are `{ "error": message }`: `400` for a `before` or `after` that is not a whole number, and for a `limit` that is not a whole number of at least 1.
+
 ### Team routes
 
 `/api/team/workspace/...` is the workspace file API (`files`, `file`, `raw`, `tree`, `read`, `validate`, `dir`, `move`) over the team folder alone, with every path relative to `team/`. Writes are attributed to the user and coordinated with agent writes (see [team-files.md](team-files.md)). A write that changes the team's `AGENTS.md` or `USER.md` makes every running agent reload its workspace. `/api/team/workbench/info`, `/api/team/workbench/artifacts`, and `DELETE /api/team/workbench/artifacts/{name}` serve the workbench (see [workbench.md](workbench.md)).
@@ -113,8 +122,9 @@ A session runs on one agent, so an artifact names it (`residuum.sessions.start({
 
 ## Request guards
 
-- The **cross-site guard** covers every route: state-changing requests and WebSocket upgrades from another site are refused with `403` (see [workbench.md](workbench.md#security-model)).
+- The **cross-site guard** covers every route on both listeners: state-changing requests and WebSocket upgrades from another site are refused with `403` (see [workbench.md](workbench.md#security-model)).
 - The **remote-control guard** covers `POST /api/hub/shutdown` and `POST /api/hub/cloud/disconnect` (see [cloud-tunnel.md](cloud-tunnel.md)): a request that arrived through the relay tunnel is refused with `403`.
+- The **artifacts-origin block list** covers `/api/hub/shutdown`, `/api/hub/stop-all`, `/api/hub/update/check`, `/api/hub/update/apply`, `/api/hub/update/restart` and `/api/hub/config/complete-setup`. The artifacts listener serves `/api` by handing requests to this router in-process, marked by an internal request extension that a client can't send, and a marked request to one of these routes is refused with `403` and `{ "error" }`. A marked agent socket (`/api/agents/{name}/ws`) doesn't count as a client for the agent's unread count or connected state. The same routes work on the gateway. See [API forwarding](workbench.md#api-forwarding).
 
 ## Embedded web app
 
@@ -138,14 +148,15 @@ Through Residuum Cloud the tunnel's loopback client passes the browser's `Accept
 
 | Frame | Sent when |
 |-------|-----------|
-| `hub_boot` `{ boot_id }` | First on every connection. `boot_id` is a random id the hub generates at startup: every connection to one process sees the same id, and a restarted hub has a new one. |
-| `agents_snapshot` `{ agents, activity, stopping }` | After `hub_boot`, and again whenever the connection fell behind the hub's event stream and events were lost. It has the three fields of `GET /api/hub/agents`. |
+| `hub_boot` `{ boot_id }` | First on every connection. `boot_id` is a random id the hub generates at startup, and the team event log's id too: every connection to one process sees the same id, and a restarted hub has a new one. |
+| `agents_snapshot` `{ agents, activity, stopping }` | After `hub_boot`, and again whenever the connection fell behind the hub's event stream or the team event log and lost frames. It has the three fields of `GET /api/hub/agents`. A client that gets one after its first reads the events it missed from `GET /api/hub/events`. |
 | `agent_state` `{ agent }` | An agent's state, `autostart`, or visibility changed. |
 | `agent_stopping` `{ name }` | A running agent's stop began. Its `state` stays `running` until the stop finishes, which `agent_state` then reports. From this frame on, the team router refuses teammate messages for it and the relay stops listing it. |
 | `agent_created` `{ agent, by }`, `agent_restored` `{ agent, by }`, `agent_deleted` `{ name, by }` | An agent was created, restored from its checkpoint history, or deleted. `by` is `user` or `agent:<name>`. |
 | `agent_activity` `{ name, busy, busy_since, unread }` | An agent's main-conversation activity changed. |
 | `notice` `{ level, message, agent? }` | A hub notice, or a warning about a message this connection sent that could not be used. Created, restored, deleted, and failed events travel only in their own frames. |
 | `hub_config_reloaded` `{ ok, changed, message }` | The hub finished an attempt to reload `hub/config.toml`, beside the notice that tells the user about it. `ok` is false when the file couldn't be loaded and the hub keeps the config it was running. `changed` is true when the loaded config differs from the running one. `message` is the text of that notice, or `null` when nothing changed. |
+| `team_event` `{ boot_id, event }` | The team event log recorded an entry. `event` is the entry, as `GET /api/hub/events` serves it, and `boot_id` the log's id. A connection hears the entries recorded after it connected; what came before is read from the route. |
 | `workspace_changed` `{ changes }`, `workspace_resync` `{ reason }`, `workspace_watch_unavailable` `{ message }` | Team change-feed frames, with the shapes of the agent WebSocket's, for the paths the connection watches. |
 
 `{ "type": "watch_team", "prefixes": [...] }` replaces the set of team paths the connection watches; `[]` stops watching. A prefix names `team` or a path under `team/`, the spelling the change feed uses (`team/wiki`), and matches whole path segments. A prefix outside `team/` or an unreadable message is refused with a warning `notice`, and the current watch stays in force. A connection that starts watching while the team watcher is off gets `workspace_watch_unavailable`.

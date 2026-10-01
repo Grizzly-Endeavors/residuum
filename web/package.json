@@ -16,13 +16,20 @@
     "lint": "eslint . && npm run lint:css",
     "lint:css": "stylelint 'src/**/*.{css,svelte}'",
     "lint:fix": "eslint . --fix",
-    "format": "prettier --write 'src/**/*.{ts,svelte,js,json,css}' 'mock/**/*.ts'",
-    "format:check": "prettier --check 'src/**/*.{ts,svelte,js,json,css}' 'mock/**/*.ts'",
+    "format": "prettier --write 'src/**/*.{ts,svelte,js,json,css}' 'mock/**/*.ts' 'e2e/**/*.ts' playwright.config.ts",
+    "format:check": "prettier --check 'src/**/*.{ts,svelte,js,json,css}' 'mock/**/*.ts' 'e2e/**/*.ts' playwright.config.ts",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "e2e": "playwright test --project=desktop --project=phone --project=preview-desktop --project=preview-phone --project=visual-desktop --project=visual-phone",
+    "e2e:fast": "playwright test --project=desktop --project=phone --project=preview-desktop --project=preview-phone",
+    "e2e:visual": "playwright test --project=visual-desktop --project=visual-phone",
+    "e2e:webkit": "playwright test --project=webkit-phone",
+    "e2e:report": "playwright show-report"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "1.63.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/svelte": "^5.4.2",

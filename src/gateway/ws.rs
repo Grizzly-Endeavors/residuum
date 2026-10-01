@@ -3,8 +3,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use axum::extract::State;
 use axum::extract::ws::{Message as WsMessage, WebSocket};
+use axum::extract::{Extension, State};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
@@ -16,17 +16,22 @@ use crate::gateway::types::GatewayState;
 use crate::inference::ImageData;
 use crate::interfaces::types::MessageOrigin;
 use crate::interfaces::websocket::subscriber::WsSubscribers;
+use crate::workbench::forward::ArtifactsOrigin;
 use crate::workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchHealth, WatchSet};
 
 /// Axum handler that upgrades an HTTP request to a WebSocket connection.
 pub(super) async fn ws_handler(
     ws: axum::extract::WebSocketUpgrade,
     State(state): State<GatewayState>,
+    through_artifacts_origin: Option<Extension<ArtifactsOrigin>>,
 ) -> impl IntoResponse {
     // The upgraded connection runs in a task axum spawns with no span of its
     // own; carrying the request's keeps the agent's `agent` log field on it.
     let span = tracing::Span::current();
-    ws.on_upgrade(move |socket| handle_connection(socket, state).instrument(span))
+    // A workbench page's socket isn't the user looking at the chat, so it
+    // doesn't count as a client (see `handle_connection`).
+    let counts_as_client = through_artifacts_origin.is_none();
+    ws.on_upgrade(move |socket| handle_connection(socket, state, counts_as_client).instrument(span))
 }
 
 /// Handle a single WebSocket connection.
@@ -41,10 +46,14 @@ pub(super) async fn ws_handler(
 /// Verbose filtering is server-side: tool call and result events (the main
 /// agent's and every session's) are dropped in the forwarding task when
 /// verbose mode is off.
-async fn handle_connection(socket: WebSocket, state: GatewayState) {
-    // While this connection is open the agent's unread count stays at zero:
-    // a client is there to show new messages.
-    let _client = state.activity.client_connected();
+///
+/// `counts_as_client` is false for a connection opened through the artifacts
+/// origin: it neither resets the agent's unread count nor counts as someone
+/// being connected.
+async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_client: bool) {
+    // While a client connection is open the agent's unread count stays at
+    // zero: a client is there to show new messages.
+    let _client = counts_as_client.then(|| state.activity.client_connected());
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // The workspace prefixes this connection watches: replaced by the read

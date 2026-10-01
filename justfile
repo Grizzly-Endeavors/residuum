@@ -162,9 +162,29 @@ web-test *args: _web-deps
 web-coverage *args: _web-deps
     cd web && npm run test:coverage -- {{ args }}
 
+# End-to-end and accessibility specs in Chromium, desktop and phone, with no Docker. The visual specs are left out. Args go to playwright, e.g. `just web-e2e-fast e2e/smoke`
+[group('web')]
+web-e2e-fast *args: _web-e2e-browsers
+    cd web && npm run e2e:fast -- {{ args }}
+
+# The whole end-to-end suite: the fast specs on this machine, the visual comparisons in the Playwright container (needs Docker). Run it before reporting a frontend change, since pull requests don't run CI
+[group('web')]
+web-e2e *args: _web-e2e-browsers
+    scripts/with-playwright-container.sh npm --prefix web run e2e -- {{ args }}
+
+# Refresh the visual baselines in the Playwright container (needs Docker). Review the changed images under web/e2e/__screenshots__ before committing them
+[group('web')]
+web-e2e-update *args: _web-deps
+    scripts/with-playwright-container.sh npm --prefix web run e2e:visual -- --update-snapshots=all {{ args }}
+
+# The WebKit phone project, in the Playwright container (needs Docker), so this machine needs no WebKit. Local only: CI doesn't run it
+[group('web')]
+web-e2e-webkit *args: _web-deps
+    scripts/with-playwright-container.sh npm --prefix web run e2e:webkit -- {{ args }}
+
 # --- checks ------------------------------------------------------------------
 
-# Everything CI's web job runs
+# CI's web job except the end-to-end suite, which has its own recipes (web-e2e-fast, web-e2e)
 [group('check')]
 web-check: web-fmt-check web-lint web-typecheck web-test web-build
 
@@ -172,7 +192,7 @@ web-check: web-fmt-check web-lint web-typecheck web-test web-build
 [group('check')]
 rust-check: rust-fmt-check clippy test types-check deny
 
-# Everything CI runs; web goes first because the Rust build embeds web/dist
+# Everything CI runs except the web end-to-end suite (web-e2e-fast, web-e2e); web goes first because the Rust build embeds web/dist
 [group('check')]
 check: web-check rust-check
 
@@ -201,6 +221,11 @@ clean:
 [private]
 _web-deps:
     @[ web/node_modules/.package-lock.json -nt web/package-lock.json ] || (cd web && npm ci)
+
+# Playwright's Chromium, which the end-to-end specs drive. A no-op once installed. A fresh Linux machine also needs its system libraries: `cd web && npx playwright install --with-deps chromium`
+[private]
+_web-e2e-browsers: _web-deps
+    cd web && npx playwright install chromium
 
 # build.rs panics without web/dist. A stale dist is refreshed by `just web-build`.
 [private]

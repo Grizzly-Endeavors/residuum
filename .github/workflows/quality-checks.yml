@@ -1,14 +1,34 @@
 name: Quality Checks
 
+# Also runnable by hand from the Actions tab, to try a change on the runners
+# without cutting a release.
 on:
   workflow_call:
     inputs:
       web:
-        description: Run the web format, lint, type, test, and build checks
+        description: Run the web format, lint, type, test, build, and end-to-end checks
         type: boolean
         default: true
       rust:
         description: Run the Rust format, clippy, test, and dependency checks
+        type: boolean
+        default: true
+      visual:
+        description: Run the web visual comparisons, which compare screenshots against the committed baselines; turn off to run the other end-to-end specs only
+        type: boolean
+        default: true
+  workflow_dispatch:
+    inputs:
+      web:
+        description: Run the web format, lint, type, test, build, and end-to-end checks
+        type: boolean
+        default: true
+      rust:
+        description: Run the Rust format, clippy, test, and dependency checks
+        type: boolean
+        default: true
+      visual:
+        description: Run the web visual comparisons, which compare screenshots against the committed baselines; turn off to run the other end-to-end specs only
         type: boolean
         default: true
 
@@ -46,6 +66,39 @@ jobs:
         id: web_build
         run: cd web && npm run build
 
+      # The end-to-end and accessibility specs drive a browser against the mock
+      # (web/CONTRIBUTING.md, "Testing"). The runner installs no browser: the
+      # download from cdn.playwright.dev stalls on the cluster's missing IPv6
+      # route. Instead every project drives the browser in the official
+      # Playwright container, which the Docker daemon beside the runner starts
+      # and the wrapper script stops. E2E_ALL_IN_CONTAINER sends the Chromium
+      # projects there, as the visual ones always go. The visual comparisons
+      # run unless the `visual` input is turned off, and then the summary says
+      # so.
+      - name: Web end-to-end tests
+        id: web_e2e
+        if: ${{ !inputs.visual }}
+        env:
+          E2E_ALL_IN_CONTAINER: '1'
+        run: scripts/with-playwright-container.sh npm --prefix web run e2e:fast
+
+      - name: Web end-to-end and visual tests
+        id: web_e2e_visual
+        if: ${{ inputs.visual }}
+        env:
+          E2E_ALL_IN_CONTAINER: '1'
+        run: scripts/with-playwright-container.sh npm --prefix web run e2e
+
+      - name: Upload Playwright report and traces
+        if: always() && (steps.web_e2e.outcome == 'failure' || steps.web_e2e_visual.outcome == 'failure')
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: |
+            web/playwright-report
+            web/test-results
+          retention-days: 14
+
       - name: Build summary
         if: always()
         run: |
@@ -59,6 +112,12 @@ jobs:
             echo "| Types | ${{ steps.web_typecheck.outcome }} |"
             echo "| Tests | ${{ steps.web_test.outcome }} |"
             echo "| Build | ${{ steps.web_build.outcome }} |"
+            echo "| End-to-end and accessibility | ${{ inputs.visual && steps.web_e2e_visual.outcome || steps.web_e2e.outcome }} |"
+            if [ "${{ inputs.visual }}" = "true" ]; then
+              echo "| Visual comparisons | ${{ steps.web_e2e_visual.outcome }} |"
+            else
+              echo '| Visual comparisons | skipped: the `visual` input is off |'
+            fi
             if [ -f web/coverage/summary.txt ]; then
               echo ''
               echo '### Web test coverage'

@@ -17,6 +17,7 @@ import { createWorkspaceFileContents, createWorkspaceFiles } from "./data/worksp
 import { createMockEnv, type MockEnv } from "./env";
 import type { MockPushDevice } from "./push";
 import { createScheduled, type MockScheduled } from "./scheduled";
+import type { MockTeamEvents } from "./team-events";
 import type { MockUpdateStatus } from "./update";
 
 /** An agent key as the mock stores it, value included. */
@@ -155,6 +156,8 @@ export interface MockHub {
   listing: () => AgentListResponse;
   /** Send a frame to every hub WebSocket client. */
   broadcast: (frame: HubServerMessage) => void;
+  /** What has happened across the team since the hub started: `GET /api/hub/events` and the `team_event` frames. */
+  teamEvents: MockTeamEvents;
   setBusy: (agent: MockAgent, busy: boolean) => void;
   /** Tell hub clients the agent's stop has begun. Its state changes when `transition` moves it on. */
   markStopping: (agent: MockAgent) => void;

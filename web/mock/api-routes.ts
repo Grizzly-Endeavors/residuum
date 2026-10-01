@@ -11,6 +11,7 @@ import { pushRoutes } from "./push";
 import type { Route } from "./routes";
 import { scheduledRoutes } from "./scheduled";
 import { sessionRoutes } from "./sessions";
+import { teamEventRoutes } from "./team-events";
 import { updateRoutes } from "./update";
 import { workbenchRoutes } from "./workbench";
 import { workspaceRoutes } from "./workspace";
@@ -24,6 +25,7 @@ export const apiRoutes: readonly Route[] = [
   ...inboxRoutes,
   ...hubInboxRoutes,
   ...pushRoutes,
+  ...teamEventRoutes,
   ...agentInboxRoutes,
   ...scheduledRoutes,
   ...updateRoutes,

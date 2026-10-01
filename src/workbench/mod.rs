@@ -9,6 +9,7 @@
 //! `<name>.state.json`) are that artifact's saved data: not part of the artifact, not
 //! watched for reloads, and deleted with it.
 
+pub(crate) mod forward;
 pub(crate) mod server;
 pub(crate) mod watcher;
 
@@ -27,15 +28,21 @@ const TITLE_SCAN_BYTES: usize = 64 * 1024;
 
 const MAX_ARTIFACT_NAME_LEN: usize = 64;
 
+/// The artifacts listener serves the API at `/api`, so no artifact can have
+/// that name.
+const RESERVED_ARTIFACT_NAME: &str = "api";
+
 /// The SDK injected into every served HTML file.
 const SDK_JS: &str = include_str!("../../assets/workbench/sdk.js");
 
 /// Whether `name` is a valid artifact name: lowercase ASCII letters and digits in
-/// hyphen-separated words, at most 64 characters. Names carry no path
-/// separators or dots, so a valid name always resolves inside the workbench.
+/// hyphen-separated words, at most 64 characters, and not `api`, which the
+/// artifacts listener reserves for the API. Names carry no path separators or
+/// dots, so a valid name always resolves inside the workbench.
 #[must_use]
 pub(crate) fn is_valid_artifact_name(name: &str) -> bool {
     !name.is_empty()
+        && name != RESERVED_ARTIFACT_NAME
         && name.len() <= MAX_ARTIFACT_NAME_LEN
         && name.split('-').all(|word| {
             !word.is_empty()
@@ -542,11 +549,20 @@ mod tests {
 
     #[test]
     fn artifact_names() {
-        for good in ["a", "pricing-explorer", "sdlc-pipeline-v2", "x9"] {
+        for good in [
+            "a",
+            "pricing-explorer",
+            "sdlc-pipeline-v2",
+            "x9",
+            "api-explorer",
+            "my-api",
+            "apis",
+        ] {
             assert!(is_valid_artifact_name(good), "{good} should be valid");
         }
         for bad in [
             "",
+            "api",
             "Pricing",
             "-lead",
             "trail-",
@@ -682,6 +698,26 @@ mod tests {
         assert_eq!(names, ["graph", "older"]);
         let titles: Vec<_> = artifacts.iter().map(|t| t.title.as_str()).collect();
         assert_eq!(titles, ["Wiki Graph", "Older"]);
+    }
+
+    #[tokio::test]
+    async fn an_artifact_named_api_is_neither_listed_nor_served() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("api/index.html"), "<title>Folder</title>");
+        write(&dir.path().join("api.html"), "<title>Page</title>");
+        write(&dir.path().join("api-tools.html"), "<title>Tools</title>");
+
+        let names: Vec<_> = list_artifacts(dir.path())
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|artifact| artifact.name)
+            .collect();
+        assert_eq!(names, ["api-tools"]);
+        assert!(matches!(
+            read_artifact_file(dir.path(), "api", "").await,
+            Err(ArtifactFileError::NoSuchArtifact(_))
+        ));
     }
 
     #[tokio::test]
