@@ -104,6 +104,31 @@ describe("config routes", () => {
       });
     });
 
+    it("reports a model its provider doesn't offer on the role's key path, in a check and a raw save", async () => {
+      const text = '[models]\nmain = "openai/gpt-9"\n';
+      const expected = {
+        valid: false,
+        error: "model 'gpt-9' is not offered by provider 'openai'",
+        diagnostics: [
+          {
+            severity: "error",
+            message: "model 'gpt-9' is not offered by provider 'openai'",
+            location: { kind: "path", path: "models.main" },
+          },
+        ],
+      };
+      const checked = await fetchJson(url("/api/providers/validate"), {
+        method: "POST",
+        body: text,
+      });
+      expect(checked.body).toEqual(expected);
+      const saved = await fetchJson(url("/api/providers/raw"), { method: "PUT", body: text });
+      expect(saved.body).toEqual(expected);
+      // config.toml has no models to check.
+      const config = await fetchJson(url("/api/config/validate"), { method: "POST", body: text });
+      expect(config.body).toEqual({ valid: true });
+    });
+
     it("writes a raw save with problems, reports them, and checkpoints the file first", async () => {
       const before = harness.state.checkpoints.agent_config?.length ?? 0;
       const res = await fetchJson(url("/api/config/raw"), { method: "PUT", body: "a = \n" });

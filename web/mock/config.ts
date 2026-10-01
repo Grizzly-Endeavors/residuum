@@ -11,6 +11,7 @@ import type {
   AgentKeysListResponse,
   CreateA2aKeyResponse,
   DeleteSecretResponse,
+  Diagnostic,
   ModelsResponse,
   RepoKind,
   SecretResponse,
@@ -34,42 +35,10 @@ import {
   text,
   type JsonObject,
 } from "./http";
+import { modelProblems, PROVIDER_MODELS } from "./provider-models";
 import { decodedParam, type Route, type RouteContext } from "./routes";
 import { byName } from "./util";
 import { MOCK_TIMEZONE } from "./zone";
-
-const modelsByProvider: Record<string, Array<{ id: string; name: string }>> = {
-  anthropic: [
-    { id: "claude-opus-4-6", name: "Claude Opus 4.6" },
-    { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
-    { id: "claude-haiku-4-5", name: "Claude Haiku 4.5" },
-  ],
-  openai: [
-    { id: "gpt-4o", name: "GPT-4o" },
-    { id: "gpt-4o-mini", name: "GPT-4o Mini" },
-    { id: "o3", name: "o3" },
-    { id: "o4-mini", name: "o4-mini" },
-  ],
-  gemini: [
-    { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" },
-    { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
-    { id: "gemini-3.0-flash", name: "Gemini 3.0 Flash" },
-  ],
-  fireworks: [
-    { id: "accounts/fireworks/models/glm-5p3", name: "accounts/fireworks/models/glm-5p3" },
-    { id: "accounts/fireworks/models/kimi-k3", name: "accounts/fireworks/models/kimi-k3" },
-    {
-      id: "accounts/fireworks/routers/glm-flash-latest",
-      name: "accounts/fireworks/routers/glm-flash-latest",
-    },
-  ],
-  ollama: [
-    { id: "llama3.3:latest", name: "Llama 3.3" },
-    { id: "mistral:latest", name: "Mistral" },
-    { id: "deepseek-r1:latest", name: "DeepSeek R1" },
-    { id: "qwen3:latest", name: "Qwen 3" },
-  ],
-};
 
 /** The shape agent key names and A2A caller key names both take. */
 const KEY_NAME = /^[a-z][a-z0-9_]{0,63}$/;
@@ -186,12 +155,14 @@ const fileOf = (field: TomlDocument): string =>
 /**
  * Read, replace, patch and validate one TOML document kept in the state.
  * `afterWrite` runs once a write has been answered, as the hub reloads after
- * its own config changes.
+ * its own config changes. `check` finds the problems in text that parses,
+ * which a validate and a raw save report besides syntax errors.
  */
 function tomlDocumentRoutes(
   prefix: string,
   field: TomlDocument,
   afterWrite: (ctx: RouteContext) => void = () => {},
+  check: (text: string) => Diagnostic[] = () => [],
 ): readonly Route[] {
   return [
     {
@@ -209,7 +180,7 @@ function tomlDocumentRoutes(
         // A raw save is checkpointed and always written, with its problems reported.
         checkpointBeforeAction(ctx.state, repoOf(field), `raw write ${fileOf(field)}`);
         ctx.state[field] = body;
-        json(ctx.res, 200, validation("toml", body));
+        json(ctx.res, 200, validation("toml", body, check));
         afterWrite(ctx);
       },
     },
@@ -241,7 +212,7 @@ function tomlDocumentRoutes(
       method: "POST",
       pattern: `${prefix}/validate`,
       handler: async ({ req, res }) => {
-        json(res, 200, validation("toml", await readBody(req)));
+        json(res, 200, validation("toml", await readBody(req), check));
       },
     },
   ];
@@ -291,7 +262,7 @@ const mcpRoutes: readonly Route[] = [
 ];
 
 const providerRoutes: readonly Route[] = [
-  ...tomlDocumentRoutes("/api/providers", "providersToml"),
+  ...tomlDocumentRoutes("/api/providers", "providersToml", () => {}, modelProblems),
   {
     method: "POST",
     pattern: "/api/providers/models",
@@ -301,15 +272,17 @@ const providerRoutes: readonly Route[] = [
 
       // Match against known provider types
       let providerType = provider;
-      for (const key of Object.keys(modelsByProvider)) {
+      for (const key of Object.keys(PROVIDER_MODELS)) {
         if (provider.includes(key)) {
           providerType = key;
           break;
         }
       }
 
-      const models = modelsByProvider[providerType] ?? [
-        { id: `${provider}/default-model`, name: "Default Model" },
+      const models = [
+        ...(PROVIDER_MODELS[providerType] ?? [
+          { id: `${provider}/default-model`, name: "Default Model" },
+        ]),
       ];
       json(res, 200, { models } satisfies ModelsResponse);
     },
