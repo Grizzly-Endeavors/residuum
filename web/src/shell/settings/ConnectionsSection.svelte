@@ -1,13 +1,13 @@
 <script lang="ts">
   import { hub } from "../../lib/hub.svelte";
-  import { numberOfText, textOfNumber } from "../../lib/settings-bind";
-  import type { ConfigFields } from "../../lib/settings-toml";
-  import { Banner, NumberField, TextField, Toggle } from "../../lib/ui";
+  import { Banner, TextField } from "../../lib/ui";
   import ChannelGroup from "./ChannelGroup.svelte";
   import type { ChannelState } from "./channel-state";
+  import ConfigNumber from "./ConfigNumber.svelte";
+  import ConfigToggle from "./ConfigToggle.svelte";
   import RunningOnly from "./RunningOnly.svelte";
   import SecretConfigField from "./SecretConfigField.svelte";
-  import { fieldError, type AgentSectionProps } from "./sections";
+  import { configFieldError, type AgentSectionProps } from "./sections";
   import SettingsSection from "./SettingsSection.svelte";
   import WebhooksGroup from "./WebhooksGroup.svelte";
 
@@ -20,7 +20,7 @@
   type Channel = "discord" | "telegram" | "teams";
 
   const agent = $derived(scope.agent);
-  const running = $derived(hub.agent(agent)?.state === "running" && !hub.isStopping(agent));
+  const running = $derived(hub.isRunning(agent));
   const saved = $derived(scope.configFile.baseline);
 
   /** The channel's state as the saved settings give it, with a staged disconnect noted. Nothing is known while the agent isn't running. */
@@ -43,9 +43,6 @@
     ].filter((value) => value !== "").length,
   );
 
-  const problem = (field: keyof ConfigFields): string | undefined =>
-    fieldError(scope, { kind: "config", field });
-
   function disconnectTeams(): void {
     scope.config.teams_app_id = "";
     scope.config.teams_tenant_id = "";
@@ -54,22 +51,19 @@
 </script>
 
 {#snippet reach(channel: Channel, othersHint: string, contextHint: string)}
-  <Toggle
+  <ConfigToggle
+    {scope}
+    field={`${channel}_respond_to_others`}
     label="Let others talk to this agent"
     hint={othersHint}
-    bind:checked={scope.config[`${channel}_respond_to_others`]}
-    error={problem(`${channel}_respond_to_others`)}
   />
-  <NumberField
+  <ConfigNumber
+    {scope}
+    field={`${channel}_context_messages`}
     label="Earlier messages to read"
     hint={contextHint}
-    bind:value={
-      () => numberOfText(scope.config[`${channel}_context_messages`]),
-      (value) => (scope.config[`${channel}_context_messages`] = textOfNumber(value))
-    }
     placeholder="20"
     min={0}
-    error={problem(`${channel}_context_messages`)}
   />
 {/snippet}
 
@@ -104,7 +98,7 @@
       bind:value={scope.config.discord_token}
       saved={saved.discord_token}
       placeholder="Paste the token from the Discord developer portal"
-      error={problem("discord_token")}
+      error={configFieldError(scope, "discord_token")}
     />
     {@render reach(
       "discord",
@@ -129,7 +123,7 @@
       bind:value={scope.config.telegram_token}
       saved={saved.telegram_token}
       placeholder="Paste the token from @BotFather"
-      error={problem("telegram_token")}
+      error={configFieldError(scope, "telegram_token")}
     />
     {@render reach(
       "telegram",
@@ -155,7 +149,7 @@
       autocomplete="off"
       spellcheck={false}
       code
-      error={problem("teams_app_id")}
+      error={configFieldError(scope, "teams_app_id")}
     />
     <TextField
       label="Tenant ID"
@@ -164,14 +158,14 @@
       autocomplete="off"
       spellcheck={false}
       code
-      error={problem("teams_tenant_id")}
+      error={configFieldError(scope, "teams_tenant_id")}
     />
     <SecretConfigField
       label="Client secret"
       bind:value={scope.config.teams_app_password}
       saved={saved.teams_app_password}
       placeholder="Paste the client secret"
-      error={problem("teams_app_password")}
+      error={configFieldError(scope, "teams_app_password")}
     />
     {#if teamsFilled > 0 && teamsFilled < 3}
       <Banner tone="warn">
@@ -184,15 +178,12 @@
       `Off: only you, the first person to message the bot. On: coworkers can mention or message ${agent} too.`,
       `When someone mentions ${agent} in a group chat, it reads this many earlier messages first.`,
     )}
-    <NumberField
+    <ConfigNumber
+      {scope}
+      field="teams_port"
       label="Listener port"
       hint="Expose only this port through your tunnel."
-      bind:value={
-        () => numberOfText(scope.config.teams_port),
-        (value) => (scope.config.teams_port = textOfNumber(value))
-      }
       placeholder="7701"
-      error={problem("teams_port")}
     />
   </ChannelGroup>
 

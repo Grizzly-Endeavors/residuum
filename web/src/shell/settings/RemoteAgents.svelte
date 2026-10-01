@@ -35,7 +35,7 @@
     pending: { label: "Checking", tone: "neutral" },
   };
 
-  const running = $derived(hub.agent(agent)?.state === "running" && !hub.isStopping(agent));
+  const running = $derived(hub.isRunning(agent));
 
   let rows = $state.raw<Row[] | null>(null);
   let loadError = $state<string | null>(null);

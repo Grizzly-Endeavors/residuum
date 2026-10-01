@@ -181,6 +181,11 @@ export class HubStore {
     return this.stopping.includes(name);
   }
 
+  /** Whether the agent is up and not on its way down, the state its live status and checks can be read in. */
+  isRunning(name: string): boolean {
+    return this.agent(name)?.state === "running" && !this.isStopping(name);
+  }
+
   // ── Hub frames ─────────────────────────────────────────────────────
 
   /** Observe every hub frame, after the store has handled it. Returns a function that stops observing. */

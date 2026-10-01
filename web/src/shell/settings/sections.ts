@@ -67,6 +67,14 @@ export function fieldError(scope: SettingsScope, ref: FieldRef): string | undefi
   return found.length === 0 ? undefined : found.map((problem) => problem.message).join(" ");
 }
 
+/** A `config.toml` field's problems from the last save as one line, for a control's `error`; undefined when it has none. */
+export function configFieldError(
+  scope: SettingsScope,
+  field: Extract<FieldRef, { kind: "config" }>["field"],
+): string | undefined {
+  return fieldError(scope, { kind: "config", field });
+}
+
 /** The scope's name in a sentence: "atlas's settings", or the install-wide ones. */
 export function scopeName(scope: SettingsScope): string {
   return scope.agent === null ? "the install-wide settings" : `${scope.agent}'s settings`;

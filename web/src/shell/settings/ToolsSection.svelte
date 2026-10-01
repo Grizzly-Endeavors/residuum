@@ -1,11 +1,10 @@
 <script lang="ts">
   import { Icon } from "../../lib/icons";
-  import { numberOfText, textOfNumber } from "../../lib/settings-bind";
-  import type { ConfigFields } from "../../lib/settings-toml";
-  import { Disclosure, NumberField, SelectField, TextField, VisuallyHidden } from "../../lib/ui";
+  import { Disclosure, SelectField, TextField, VisuallyHidden } from "../../lib/ui";
+  import ConfigNumber from "./ConfigNumber.svelte";
   import PathList from "./PathList.svelte";
   import SecretConfigField from "./SecretConfigField.svelte";
-  import { fieldError, type AgentSectionProps } from "./sections";
+  import { configFieldError, type AgentSectionProps } from "./sections";
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
 
@@ -31,9 +30,6 @@
     { value: "medium", label: "Medium" },
     { value: "high", label: "High" },
   ] as const;
-
-  const problem = (field: keyof ConfigFields): string | undefined =>
-    fieldError(scope, { kind: "config", field });
 </script>
 
 {#snippet keyLink(href: string, label: string)}
@@ -59,7 +55,7 @@
       addLabel="Skill folder to add"
       placeholder="/path/to/skills"
       empty="No extra skill folders."
-      error={problem("skills_dirs")}
+      error={configFieldError(scope, "skills_dirs")}
     />
   </SettingsGroup>
 
@@ -72,7 +68,7 @@
       addLabel="Tool folder to add"
       placeholder="/path/to/tools"
       empty="No extra tool folders."
-      error={problem("tools_path")}
+      error={configFieldError(scope, "tools_path")}
     />
   </SettingsGroup>
 
@@ -84,7 +80,7 @@
       label="Search service"
       bind:value={scope.config.ws_backend}
       options={BACKENDS}
-      error={problem("ws_backend")}
+      error={configFieldError(scope, "ws_backend")}
     />
     {#if backend === "brave"}
       <SecretConfigField
@@ -92,7 +88,7 @@
         bind:value={scope.config.ws_brave_api_key}
         saved={saved.ws_brave_api_key}
         placeholder="Paste your Brave Search API key"
-        error={problem("ws_brave_api_key")}
+        error={configFieldError(scope, "ws_brave_api_key")}
       />
       {@render keyLink("https://brave.com/search/api/", "brave.com/search/api")}
     {:else if backend === "tavily"}
@@ -101,7 +97,7 @@
         bind:value={scope.config.ws_tavily_api_key}
         saved={saved.ws_tavily_api_key}
         placeholder="Paste your Tavily API key"
-        error={problem("ws_tavily_api_key")}
+        error={configFieldError(scope, "ws_tavily_api_key")}
       />
       {@render keyLink("https://tavily.com", "tavily.com")}
     {:else if backend === "ollama"}
@@ -110,7 +106,7 @@
         bind:value={scope.config.ws_ollama_api_key}
         saved={saved.ws_ollama_api_key}
         placeholder="Optional"
-        error={problem("ws_ollama_api_key")}
+        error={configFieldError(scope, "ws_ollama_api_key")}
       />
       <TextField
         label="Ollama Cloud address"
@@ -120,7 +116,7 @@
         spellcheck={false}
         code
         hint="Only needed to use a different endpoint than Ollama Cloud's own."
-        error={problem("ws_ollama_base_url")}
+        error={configFieldError(scope, "ws_ollama_base_url")}
       />
     {/if}
   </SettingsGroup>
@@ -131,16 +127,13 @@
       whichever search service is chosen above.
     </p>
     <SettingsGroup title="Anthropic">
-      <NumberField
+      <ConfigNumber
+        {scope}
+        field="ws_anthropic_max_uses"
         label="Searches per reply"
-        bind:value={
-          () => numberOfText(scope.config.ws_anthropic_max_uses),
-          (value) => (scope.config.ws_anthropic_max_uses = textOfNumber(value))
-        }
         placeholder="5"
         min={1}
         hint="The most web searches Anthropic can make while writing one reply."
-        error={problem("ws_anthropic_max_uses")}
       />
       <TextField
         label="Only search these domains"
@@ -149,7 +142,7 @@
         autocomplete="off"
         spellcheck={false}
         hint="Separate domains with commas."
-        error={problem("ws_anthropic_allowed_domains")}
+        error={configFieldError(scope, "ws_anthropic_allowed_domains")}
       />
       <TextField
         label="Never search these domains"
@@ -158,7 +151,7 @@
         autocomplete="off"
         spellcheck={false}
         hint="Separate domains with commas."
-        error={problem("ws_anthropic_blocked_domains")}
+        error={configFieldError(scope, "ws_anthropic_blocked_domains")}
       />
     </SettingsGroup>
     <SettingsGroup title="OpenAI">
@@ -167,7 +160,7 @@
         bind:value={scope.config.ws_openai_search_context_size}
         options={CONTEXT_SIZES}
         hint="How much of what it finds OpenAI includes with its reply."
-        error={problem("ws_openai_search_context_size")}
+        error={configFieldError(scope, "ws_openai_search_context_size")}
       />
     </SettingsGroup>
     <SettingsGroup title="Gemini">
@@ -178,7 +171,7 @@
         autocomplete="off"
         spellcheck={false}
         hint="Separate domains with commas."
-        error={problem("ws_gemini_exclude_domains")}
+        error={configFieldError(scope, "ws_gemini_exclude_domains")}
       />
     </SettingsGroup>
   </Disclosure>
