@@ -979,8 +979,8 @@ Artifacts have never shipped in a release, so the SDK is shaped for standalone p
 **Service worker (`/sw.js`).**
 - **Build:** a step writes the precache list (`index.html`, hashed assets, fonts, icons) and a version derived from that list into the worker. Every build with changed assets produces a byte-different worker.
 - **Caching:**
-  - It precaches the shell into a versioned cache and deletes other versions on activate.
-  - Navigations are network-first, falling back to the cached `index.html`.
+  - It precaches the shell into a versioned cache, the lazy chunks and fonts included. On activate it keeps that cache and the one it replaced and deletes the rest, since a page opened before an update still asks for the hashed files it was built with.
+  - Navigations are network-first, falling back to the cached `index.html` when the network fails or the hub answers 502, 503 or 504 (the relay answers 503 for an instance that is offline).
   - `/api` and WebSocket traffic are never intercepted.
 - **Offline:** the app launches to the shell, and the hub banner explains that Residuum can't be reached. No data is cached for offline reading.
 - **Updates:** a new worker waits. The app shows "Update ready" with Reload, and Reload activates it.
