@@ -38,6 +38,25 @@ test.describe("the production build", { tag: "@preview" }, () => {
     expect(loaded(requested, "SettingsModal")).toBe(true);
   });
 
+  test("tells the person when the Settings code can't load, and leaves Settings closed", async ({
+    page,
+    isMobile,
+  }) => {
+    await page.goto("/agent/atlas");
+    await expect(page.getByRole("heading", { name: "atlas", level: 1 })).toBeVisible();
+    await page.route(/\/assets\/SettingsModal-[^/]+\.js$/, (route) => route.abort());
+
+    const control = isMobile
+      ? page.getByRole("navigation", { name: "Main" })
+      : page.getByRole("navigation", { name: "Places and agents" });
+    await control.getByRole("button", { name: "Settings" }).click();
+
+    await expect(page.getByText(/Couldn't open Settings\./)).toBeVisible();
+    await expect(page.getByRole("dialog", { name: "Settings" })).toBeHidden();
+    // The URL went back to the place, so the next press asks again.
+    await expect.poll(() => new URL(page.url()).search).toBe("");
+  });
+
   test("loads the palette's code the first time it opens", async ({ page, isMobile }) => {
     const requested = trackChunks(page);
     await page.goto("/agent/atlas");
