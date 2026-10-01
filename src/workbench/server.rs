@@ -154,7 +154,7 @@ pub(crate) fn router(dir: PathBuf, api: HubApi) -> Router {
 async fn home() -> Response {
     page(
         StatusCode::OK,
-        "Workbench artifacts open from the Workbench page in Residuum.",
+        "Workbench artifacts open from the Workbench in Residuum.",
     )
 }
 

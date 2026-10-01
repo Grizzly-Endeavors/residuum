@@ -24,7 +24,8 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<ImageData>,
     },
-    /// Toggle verbose mode (tool call/result events).
+    /// Turn tool call/result events on or off for this connection (verbose mode). The web UI
+    /// turns them on at every connect, since its activity line is built from them.
     SetVerbose {
         /// Whether to receive tool events.
         enabled: bool,
@@ -53,8 +54,8 @@ pub enum ClientMessage {
         /// ended is silently ignored.
         reply_to: String,
     },
-    /// Send the owner's message to an agent session from the sessions
-    /// sidebar. Delivered like any agent message (hop count 0): an interrupt
+    /// Send the owner's message to an agent session from its session
+    /// panel. Delivered like any agent message (hop count 0): an interrupt
     /// if the session's turn is running, a new turn if it is idle, or a new
     /// run if it has completed. Answered with `SessionMessageDelivered` or
     /// `SessionCommandFailed`, both carrying `id`.
@@ -84,7 +85,7 @@ pub enum ClientMessage {
     },
 }
 
-/// One run of an agent session, as listed in the web UI's sessions sidebar
+/// One run of an agent session, as listed in the web UI's Activity place
 /// and carried by `SessionStarted`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -116,8 +117,8 @@ pub struct SessionSummary {
     /// `true` when the run was completed at startup because the process
     /// exited before it finished on its own.
     pub interrupted: bool,
-    /// This run's cumulative token usage, for the `SessionView` footer —
-    /// live for a run still going, final for a completed one. See
+    /// This run's cumulative token usage, for the session panel's spent
+    /// tokens — live for a run still going, final for a completed one. See
     /// `docs/systems-usage/turn-control.md`.
     pub usage: SessionUsageTotals,
     /// How the run ended — completed, cancelled, or failed. `None` while the
@@ -154,7 +155,7 @@ pub struct SessionListResponse {
 }
 
 /// A task this instance sent to a remote agent (`message_agent a2a:<name>`),
-/// as listed in the web sessions sidebar by `GET /api/agents/{name}/a2a/outbound` and
+/// as listed in the web UI's Activity place by `GET /api/agents/{name}/a2a/outbound` and
 /// carried by `SessionOutboundA2aTask`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -235,7 +236,7 @@ impl SessionRunStatus {
 }
 
 /// One run's outcome, for a pulse's or action's "last outcome" in the
-/// Scheduled view.
+/// Schedule place.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ScheduledRunOutcome {
@@ -246,7 +247,7 @@ pub struct ScheduledRunOutcome {
 }
 
 /// A pulse's or action's currently live run, if it has one, in the
-/// Scheduled view.
+/// Schedule place.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ScheduledCurrentRun {
@@ -401,9 +402,9 @@ pub enum ServerMessage {
     },
     /// Token usage and tool-call progress for the main agent's turn still
     /// running: this turn's own output tokens and executed tool calls so
-    /// far (for the running-turn indicator) and, once at least one call
+    /// far (for the activity line) and, once at least one call
     /// has reported usage, the updated cumulative session totals (for the
-    /// chat footer). Never delivered to the agent itself. See
+    /// conversation size). Never delivered to the agent itself. See
     /// `docs/systems-usage/turn-control.md`.
     TurnUsage {
         /// Correlation ID of the message being processed.
@@ -680,7 +681,7 @@ pub enum ServerMessage {
         message: String,
     },
     /// A task sent to a remote agent was recorded, changed state, or was
-    /// stopped. A task no longer `open` leaves the sidebar's list.
+    /// stopped. A task no longer `open` leaves Activity's list.
     SessionOutboundA2aTask { task: OutboundA2aTaskSummary },
     /// A workbench artifact's page was created or modified.
     ArtifactUpdated {

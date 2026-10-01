@@ -183,9 +183,9 @@ impl EventContext<'_> {
     }
 
     /// Publish this turn's live usage progress after a model call: this
-    /// turn's own output tokens so far (for the running-turn indicator)
+    /// turn's own output tokens so far (for the activity line)
     /// and, when the caller tracks cumulative session totals, the updated
-    /// totals (for the chat footer). Never reaches the agent itself — see
+    /// totals (for the conversation size). Never reaches the agent itself — see
     /// `docs/systems-usage/turn-control.md`.
     async fn publish_usage(&self, turn: TurnUsage, session_totals: Option<SessionUsageTotals>) {
         match self.target {
@@ -275,7 +275,7 @@ pub(crate) struct TurnResources<'a> {
     /// persists the transcript some other way (the main agent).
     pub transcript_sink: Option<&'a dyn TranscriptSink>,
     /// Durable session-level usage totals to accumulate this turn's model
-    /// calls into, for the web UI's chat footer. `None` for a turn that
+    /// calls into, for the web UI's conversation size. `None` for a turn that
     /// doesn't track them (tests, and any turn kind that never surfaces to
     /// a web client). The per-turn running-turn indicator publishes
     /// regardless of whether this is set.
@@ -409,8 +409,8 @@ pub(crate) async fn execute_turn(
     let mut empty_retries: u32 = 0;
     // Includes the triggering user message pushed just before this call.
     let turn_start = recent_messages.len().saturating_sub(1);
-    // This turn's own running totals for the web UI's turn-in-progress
-    // indicator. Never exposed to the agent — see `docs/systems-usage/turn-control.md`.
+    // This turn's own running totals for the activity line of the turn in
+    // progress. Never exposed to the agent — see `docs/systems-usage/turn-control.md`.
     let mut turn_usage = TurnUsage::default();
     let mut repeat_guard = RepeatCallGuard::new();
 
@@ -579,7 +579,7 @@ async fn check_tool_iteration_limit(
     let notice = format!(
         "I stopped after {limit} tool calls — the limit set by `max_tool_iterations` \
          in your Residuum config. Raise or remove that setting (under `[agent]` in \
-         config.toml, or in Settings) to allow longer turns."
+         config.toml, or in Settings → Advanced → Runtime) to allow longer turns."
     );
     let final_message = Message::assistant(notice.clone(), None);
     push_and_record(recent_messages, resources.transcript_sink, final_message).await;
@@ -653,7 +653,7 @@ async fn handle_tool_call_response(
         Some(format!(
             "I stopped this turn because I called `{tool_name}` with the exact same arguments \
              {count} times in a row — the result can't change by calling it again. Adjust \
-             `repeat_call_stop_after` under `[agent]` in your Residuum config (or in Settings) if \
+             `repeat_call_stop_after` under `[agent]` in your Residuum config (or in Settings → Advanced → Runtime) if \
              this is expected, or let me know what you'd like me to try instead."
         )),
     )
@@ -1135,7 +1135,7 @@ fn log_usage(response: &InferenceResponse) {
 /// Fold a model call's usage and the tool calls its batch just executed
 /// into this turn's running totals, into the durable session totals when
 /// the turn tracks them, and publish the result for the web UI's
-/// running-turn indicator and chat footer. Never delivered to the agent
+/// activity line and conversation size. Never delivered to the agent
 /// itself — see `docs/systems-usage/turn-control.md`.
 async fn update_and_publish_usage(
     response: &InferenceResponse,

@@ -117,7 +117,7 @@ impl Agent {
         }
     }
 
-    /// Restore persisted usage totals at startup, so the chat footer shows
+    /// Restore persisted usage totals at startup, so the conversation size shows
     /// correct totals across a restart instead of resetting to zero.
     pub async fn restore_usage_totals(&mut self, totals: SessionUsageTotals) {
         *self.usage_totals.lock().await = totals;

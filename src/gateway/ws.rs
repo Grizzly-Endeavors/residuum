@@ -409,7 +409,7 @@ fn is_verbose_only(msg: &ServerMessage) -> bool {
     )
 }
 
-/// Carry out a sessions-sidebar command and reply to this connection only.
+/// Carry out a session command from the web UI and reply to this connection only.
 async fn handle_session_command(
     command: SessionCommand,
     state: &GatewayState,
@@ -459,7 +459,7 @@ async fn handle_session_command(
     }
 }
 
-/// The sessions-sidebar commands, split out of [`ClientMessage`] so
+/// The session commands the web UI sends, split out of [`ClientMessage`] so
 /// [`handle_session_command`] can own their handling.
 enum SessionCommand {
     SendMessage {

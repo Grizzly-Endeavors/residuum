@@ -1,4 +1,4 @@
-//! Agent sessions HTTP API: the sessions sidebar's listing and transcripts,
+//! Agent sessions HTTP API: Activity's listing and the session panel's transcripts,
 //! and the start, stop, and message endpoints workbench artifacts use.
 //!
 //! - `GET /api/agents/{name}/sessions` — live sessions plus a page of completed runs.
@@ -10,7 +10,7 @@
 //! - `POST /api/agents/{name}/sessions/{address}/messages` — send a session a message.
 //!
 //! Live updates arrive over the WebSocket as `session_*` frames; these
-//! endpoints give the sidebar its starting state and a finished run's
+//! endpoints give Activity its starting state and a finished run's
 //! history. Stop and message share their rules with the WebSocket's
 //! `session_stop` and `session_send_message` commands
 //! (`crate::gateway::sessions`).
@@ -57,7 +57,7 @@ pub(crate) struct SessionsApiState {
     pub store: Arc<SessionStore>,
     /// Timezone transcript timestamps are rendered in, matching chat history.
     pub tz: chrono_tz::Tz,
-    /// Delivers messages to sessions, as the sidebar's own messages go.
+    /// Delivers messages to sessions, as the owner's messages from a session panel go.
     pub messenger: Arc<AgentMessenger>,
     /// Publishes spawn requests for sessions an artifact starts.
     pub publisher: Publisher,

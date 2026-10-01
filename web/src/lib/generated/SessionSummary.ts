@@ -6,7 +6,7 @@ import type { SessionState } from "./SessionState";
 import type { SessionUsageTotals } from "./SessionUsageTotals";
 
 /**
- * One run of an agent session, as listed in the web UI's sessions sidebar
+ * One run of an agent session, as listed in the web UI's Activity place
  * and carried by `SessionStarted`.
  */
 export type SessionSummary = { 
@@ -60,8 +60,8 @@ episode_id: string | null,
  */
 interrupted: boolean, 
 /**
- * This run's cumulative token usage, for the `SessionView` footer —
- * live for a run still going, final for a completed one. See
+ * This run's cumulative token usage, for the session panel's spent
+ * tokens — live for a run still going, final for a completed one. See
  * `docs/systems-usage/turn-control.md`.
  */
 usage: SessionUsageTotals, 

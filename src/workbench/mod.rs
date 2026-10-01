@@ -4,10 +4,10 @@
 //! folder, `team/workbench/<name>/` with an `index.html` and any other
 //! files it loads. `<name>` is kebab-case. The artifacts listener
 //! ([`server`]) serves them on their own origin at `/<name>/`; the web UI
-//! lists them at `/workbench` and shows one at `/workbench/<name>`. Files
-//! beside an artifact that share its `<name>.` prefix (for example
-//! `<name>.state.json`) are that artifact's saved data: not part of the artifact, not
-//! watched for reloads, and deleted with it.
+//! lists them at `/team/workbench` and opens each in a tab of its own on
+//! that origin. Files beside an artifact that share its `<name>.` prefix
+//! (for example `<name>.state.json`) are that artifact's saved data: not part
+//! of the artifact, not watched for reloads, and deleted with it.
 
 pub(crate) mod forward;
 pub(crate) mod server;

@@ -20,7 +20,7 @@ pub(super) struct StatusResponse {
     version: &'static str,
     features: &'static [&'static str],
     /// On-disk size and checkpoint count for each checkpoint repository, so
-    /// growth is visible before the web UI's own checkpoints view lands.
+    /// growth is visible.
     /// `null` for a repo whose stats couldn't be read just now.
     checkpoints: CheckpointsStatus,
 }

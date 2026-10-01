@@ -1,8 +1,8 @@
 //! A2A web API endpoints: caller-key management, the client-side "remote
 //! agents" endpoints (`GET /api/agents/{name}/a2a/agents` for live status and
 //! `GET`/`PUT /api/agents/{name}/a2a/agents/raw` for the `config/a2a.json` editor), the
-//! sessions sidebar's tasks sent to remote agents (`GET /api/agents/{name}/a2a/outbound`
-//! and the stop endpoints under it), and the settings page's
+//! Activity's tasks sent to remote agents (`GET /api/agents/{name}/a2a/outbound`
+//! and the stop endpoints under it), and the Agent-to-agent settings'
 //! `GET /api/agents/{name}/a2a/status` and `GET /api/agents/{name}/a2a/card`.
 //!
 //! Each request opens its own handle on the key store; writes are serialized

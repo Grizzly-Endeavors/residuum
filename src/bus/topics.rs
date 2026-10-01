@@ -193,12 +193,12 @@ impl Carries<ErrorEvent> for Notification {
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
 impl Carries<OutboundA2aTaskEvent> for Notification {
-    // A dropped update would leave the sessions sidebar showing a task
+    // A dropped update would leave Activity's Running now showing a task
     // that already finished, with a Stop button that no longer applies.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
 impl Carries<PostTurnActivityEvent> for Notification {
-    // A dropped `active: false` would leave the web UI's quiet indicator
+    // A dropped `active: false` would leave the web UI's post-turn status line
     // stuck showing background work that already finished.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
@@ -251,7 +251,7 @@ impl Carries<A2aTaskSignalEvent> for A2aTaskSignal {
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
 
-/// Workbench artifact file changes, for web UI views showing an artifact live.
+/// Workbench artifact file changes, for the Workbench list and artifact pages that update live.
 pub struct Workbench;
 
 impl Topic for Workbench {

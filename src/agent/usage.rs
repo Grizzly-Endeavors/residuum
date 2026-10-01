@@ -1,9 +1,9 @@
-//! Turn and session token-usage aggregation for the web UI's running-turn
-//! indicator and chat footer.
+//! Turn and session token-usage aggregation for the web UI's activity line
+//! and conversation size.
 //!
 //! Usage is tracked and published purely for people watching the web UI: a
-//! running-turn indicator (elapsed time and tokens so far) and a chat
-//! footer (cumulative session totals). It is never added to the agent's own
+//! running turn's activity line (elapsed time and tokens so far) and the
+//! conversation size (cumulative session totals). It is never added to the agent's own
 //! status line, context, or tool results — a visible token/time budget
 //! would push the agent to stop long-running work early. See
 //! `docs/systems-usage/turn-control.md`.
@@ -131,7 +131,7 @@ pub trait UsageSink: Send + Sync {
 ///
 /// Returns the default (all zero) if the file doesn't exist yet, or if it
 /// fails to read or parse — a missing or corrupt totals file only means the
-/// footer starts from zero, never a fatal startup error, so the failure is
+/// conversation size starts from zero, never a fatal startup error, so the failure is
 /// logged at `warn` rather than propagated.
 pub async fn load_session_usage_totals(path: &Path) -> SessionUsageTotals {
     match tokio::fs::read_to_string(path).await {
@@ -157,7 +157,7 @@ pub async fn load_session_usage_totals(path: &Path) -> SessionUsageTotals {
 }
 
 /// Persist session usage totals. Logs at `warn` and returns without error on
-/// failure — a missed write only means the next restart's footer starts
+/// failure — a missed write only means the next restart's conversation size starts
 /// from a slightly stale total, never a reason to fail the turn that
 /// produced it.
 pub async fn save_session_usage_totals(path: &Path, totals: &SessionUsageTotals) {

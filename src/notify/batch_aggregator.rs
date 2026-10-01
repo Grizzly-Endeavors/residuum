@@ -126,7 +126,7 @@ async fn flush<B: NotificationBridge>(bridge: &B, buffer: &[NotificationEvent]) 
 /// Every result that reaches a native channel is also filed to the agent
 /// inbox (`inbox/agent/` in the workspace) by the notification router, so
 /// that is where the full list lives. macOS's "Open" action opens the web
-/// UI's workspace panel (see `MacosBridge`); Windows toasts have no click
+/// UI's Files place (see `MacosBridge`); Windows toasts have no click
 /// action, so the body itself has to say where the rest are.
 const INBOX_POINTER: &str =
     "\n\nAll of them are in your agent's inbox: inbox/agent in the workspace.";

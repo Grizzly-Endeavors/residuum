@@ -106,7 +106,7 @@ impl WorkspaceLayout {
     }
 
     /// Path to the main agent's persisted cumulative token usage totals, so
-    /// the web UI's chat footer shows correct totals across a restart
+    /// the web UI's conversation size shows correct totals across a restart
     /// instead of resetting to zero.
     #[must_use]
     pub fn usage_totals_json(&self) -> PathBuf {

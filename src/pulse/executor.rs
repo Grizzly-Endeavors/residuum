@@ -31,8 +31,8 @@ pub struct PulseContext {
 ///
 /// `overlap` is `Some` when the caller found this pulse's previous run still
 /// live in the session registry — the new run still starts normally, this
-/// only tags it so the overlap is visible in the Scheduled view and the
-/// run's own session view (see `crate::gateway::event_loop::pulse`).
+/// only tags it so the overlap is visible in the Schedule place and on the
+/// run itself in the session panel (see `crate::gateway::event_loop::pulse`).
 ///
 /// `context` is `Some` when `pulse.context_from` names another pulse — see
 /// [`PulseContext`] — and is folded into the prompt by [`build_pulse_prompt`].
