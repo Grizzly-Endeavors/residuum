@@ -881,8 +881,9 @@ describe("the unsaved-edit guard", () => {
     expect(page.router.place).toEqual(files("scout"));
     expect(page.entry()).toEqual({ idx: 1 });
     window.history.back();
-    await settle();
-    expect(page.router.place).toEqual(chat("scout"));
+    await vi.waitFor(() => {
+      expect(page.router.place).toEqual(chat("scout"));
+    });
   });
 
   it("closes the modal from where the confirm dialog's entry leaves the history", async () => {
@@ -914,11 +915,11 @@ describe("the unsaved-edit guard", () => {
     page.router.guard.setConfirm(confirmOnOverlay(page.router, true));
     page.router.guard.register(() => "unsaved changes");
     window.history.back();
-    await settle();
-    await settle();
-    expect(page.url()).toBe("/agent/scout");
-    expect(page.router.place).toEqual(chat("scout"));
-    expect(page.entry().idx).toBe(0);
+    await vi.waitFor(() => {
+      expect(page.router.place).toEqual(chat("scout"));
+      expect(page.url()).toBe("/agent/scout");
+      expect(page.entry().idx).toBe(0);
+    });
   });
 });
 
@@ -946,12 +947,14 @@ describe("following overlay entries only", () => {
     router.openOverlay(first);
     router.openOverlay(second);
     window.history.back();
-    await settle();
-    expect(second).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(second).toHaveBeenCalledTimes(1);
+    });
     expect(first).not.toHaveBeenCalled();
     window.history.back();
-    await settle();
-    expect(first).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(first).toHaveBeenCalledTimes(1);
+    });
     expect(url()).toBe("/dev/gallery");
     expect(window.history.state).toEqual({ idx: 0 });
   });

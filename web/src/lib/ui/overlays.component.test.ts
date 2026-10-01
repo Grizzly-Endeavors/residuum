@@ -50,6 +50,9 @@ afterAll(() => {
 // let it land before the next test opens anything.
 afterEach(async () => {
   cleanup();
+  await vi.waitFor(() => {
+    expect((window.history.state as { overlay?: string } | null)?.overlay).toBeUndefined();
+  });
   await settleHistory();
 });
 
@@ -179,8 +182,9 @@ describe("Dialog", () => {
 
     await user.click(screen.getByRole("button", { name: "Open" }));
     await user.keyboard("{Escape}");
-    await settleHistory();
-    expect(window.history.state).toEqual({ idx: start });
+    await vi.waitFor(() => {
+      expect(window.history.state).toEqual({ idx: start });
+    });
   });
 
   it("closes nested layers one at a time on Back", async () => {
@@ -303,7 +307,9 @@ describe("ConfirmDialog", () => {
     await user.keyboard("{Enter}");
     expect(onconfirm).toHaveBeenCalledTimes(1);
     first.unmount();
-    await settleHistory();
+    await vi.waitFor(() => {
+      expect((window.history.state as { overlay?: string }).overlay).toBeUndefined();
+    });
 
     render(ConfirmDialog, { ...props, open: true });
     await user.keyboard("{Escape}");
