@@ -4,7 +4,6 @@
   import History from "../../components/settings/History.svelte";
   import Integrations from "../../components/settings/Integrations.svelte";
   import MCP from "../../components/settings/MCP.svelte";
-  import Providers from "../../components/settings/Providers.svelte";
   import Secrets from "../../components/settings/Secrets.svelte";
   import { sectionsOf, type SectionId } from "../../lib/settings-sections";
   import RunningOnly from "./RunningOnly.svelte";
@@ -56,13 +55,7 @@
       {/if}
     {:else if agentScope !== null}
       {@const agent = agentScope.agent}
-      {#if section === "model"}
-        <Providers
-          bind:providers={agentScope.providersFile.form.providers}
-          bind:models={agentScope.providersFile.form.models}
-          {agent}
-        />
-      {:else if section === "connections"}
+      {#if section === "connections"}
         <Integrations bind:fields={agentScope.configFile.form} part="channels" {agent} />
         <Integrations bind:fields={agentScope.configFile.form} part="webhooks" {agent} />
       {:else if section === "tools"}

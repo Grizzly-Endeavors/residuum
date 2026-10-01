@@ -104,54 +104,6 @@
   border-bottom: 1px solid var(--border-subtle);
 }
 
-/* ── Provider entry ──────────────────────────────────────────────────── */
-
-.provider-entry {
-  position: relative;
-  padding: 14px 14px 32px;
-  background: var(--bg-deep);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  margin-bottom: 10px;
-}
-
-.provider-remove-btn {
-  position: absolute;
-  bottom: 6px;
-  right: 8px;
-  width: 24px;
-  height: 24px;
-  border-radius: var(--radius-sm);
-  border: none;
-  background: transparent;
-  color: var(--error);
-  font-size: 14px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  opacity: 0.6;
-  transition:
-    opacity var(--dur-default) var(--ease-out-stone),
-    background var(--dur-default) var(--ease-out-stone);
-}
-
-.provider-remove-btn:hover {
-  opacity: 1;
-  background: var(--error-bg);
-}
-
-.provider-entry-fields {
-  flex: 1;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-
-.provider-entry-fields .settings-field {
-  margin-bottom: 0;
-}
-
 /* ── Secret stored badge ─────────────────────────────────────────────── */
 
 .secret-stored {
@@ -314,8 +266,5 @@
   }
   .settings-mode-btn {
     padding: 6px 8px;
-  }
-  .provider-entry-fields {
-    grid-template-columns: 1fr;
   }
 }

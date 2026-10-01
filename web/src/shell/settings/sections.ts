@@ -17,6 +17,7 @@ import GeneralSection from "./GeneralSection.svelte";
 import HistorySection from "./HistorySection.svelte";
 import LimitsSection from "./LimitsSection.svelte";
 import Memory from "./Memory.svelte";
+import ModelSection from "./ModelSection.svelte";
 import RawConfig from "./RawConfig.svelte";
 import Runtime from "./Runtime.svelte";
 import Schedule from "./Schedule.svelte";
@@ -37,6 +38,7 @@ export interface AllSectionProps {
 }
 
 export const AGENT_SECTION_VIEWS: Partial<Record<AgentSectionId, Component<AgentSectionProps>>> = {
+  model: ModelSection,
   memory: Memory,
   schedule: Schedule,
   runtime: Runtime,
