@@ -7,6 +7,7 @@ import { setViewedAgent } from "../../lib/viewed-agent";
 import { jsonResponse, mockFetch, render, screen, settle } from "../../test/component";
 import { FakeWebSocket } from "../../test/fake-websocket";
 import FilesPlace from "./FilesPlace.svelte";
+import { FileTree } from "./file-tree.svelte";
 
 function file(name: string): WorkspaceEntry {
   return { name, entry_type: "file", size: 1, modified: 0, version: "v" };
@@ -178,6 +179,21 @@ describe("the tree follows the disk", () => {
       prefixes: ["team/wiki"],
     });
     wiki.release();
+  });
+});
+
+describe("revealing a linked file", () => {
+  it("opens the folders the file is in, listing each once", async () => {
+    serve("/api/agents/scout/workspace/files");
+    listings[""] = [folder("team")];
+    listings.team = [folder("wiki")];
+    listings["team/wiki"] = [file("index.md")];
+    const tree = new FileTree(SCOUT);
+    await tree.list("");
+    await tree.reveal("team/wiki/index.md");
+    expect([...tree.expanded]).toEqual(["team", "team/wiki"]);
+    expect(tree.rows.map((row) => row.path)).toEqual(["team", "team/wiki", "team/wiki/index.md"]);
+    expect(listed).toEqual({ "": 1, team: 1, "team/wiki": 1 });
   });
 });
 

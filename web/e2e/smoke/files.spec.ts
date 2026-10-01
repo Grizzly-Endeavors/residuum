@@ -200,6 +200,15 @@ test.describe("unsaved edits", () => {
     return page.getByRole("alertdialog", { name: "Discard unsaved changes?" });
   }
 
+  test("stay when the window narrows and the panel becomes a sheet", async ({ page, isMobile }) => {
+    test.skip(isMobile, "A desktop window narrowed to phone width.");
+    await edited(page, false);
+    await page.setViewportSize({ width: 390, height: 844 });
+    const sheet = filePanel(page, true, "SOUL.md");
+    await expect(editor(sheet, "SOUL.md")).toHaveValue(/Unsaved\.$/);
+    await expect(sheet.getByText("Unsaved changes")).toBeVisible();
+  });
+
   test("are asked about before changing place", async ({ page, isMobile }) => {
     test.skip(isMobile, "On a phone the editor covers the places; Back is how to leave it.");
     await edited(page, false);

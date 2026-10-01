@@ -1,8 +1,7 @@
 // ── Shared formatting for the checkpoint history UI ───────────────────
 //
-// Used by the Settings → History view and the per-file history panel
-// opened from the Workspace file browser. See
-// `docs/systems-usage/checkpoints.md`.
+// Used by the Settings → History view and a file's history in Files and
+// Shared files. See `docs/systems-usage/checkpoints.md`.
 
 import type { CheckpointTrigger } from "./types";
 

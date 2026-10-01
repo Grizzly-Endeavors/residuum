@@ -83,6 +83,16 @@ export class FileTree {
     if (!(dir in this.listings)) await this.list(dir);
   }
 
+  /** Open the folders `path` is in, so a file linked to directly shows in the tree. */
+  async reveal(path: string): Promise<void> {
+    const folders = path.split("/").slice(0, -1);
+    for (const [index] of folders.entries()) {
+      const dir = folders.slice(0, index + 1).join("/");
+      this.expanded.add(dir);
+      if (!(dir in this.listings)) await this.list(dir);
+    }
+  }
+
   /** List every folder shown again: nothing listed can be trusted. */
   refreshAll(): void {
     const dirs = ["", ...Object.keys(this.listings), ...Object.keys(this.errors)];

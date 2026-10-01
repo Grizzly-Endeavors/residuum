@@ -19,6 +19,7 @@ test.describe("files", { tag: "@visual" }, () => {
     await page.goto("/team/files");
     await page.getByRole("button", { name: "wiki", exact: true }).click();
     await expect(page.locator('[data-path="wiki/projects"]')).toBeVisible();
+    await page.mouse.move(0, 0);
     await expectScreenshot(page, "files-shared");
   });
 

@@ -23,7 +23,8 @@
   const root = $derived(tree.listings[""]);
 
   onMount(() => {
-    void tree.list("");
+    const linked = shown;
+    void tree.list("").then(() => (linked === null ? undefined : tree.reveal(linked)));
   });
   $effect(() => tree.watch());
 
