@@ -115,8 +115,8 @@ just web-mock-preview 4173   # builds, then: MOCK_DETERMINISTIC=1 npm run previe
 web/
 ├── src/
 │   ├── main.ts               # App entry point
-│   ├── App.svelte            # The root: the setup wizard, or the shell; draws toasts and tooltips in both
-│   ├── shell/                # The shell: the rail, the phone's bottom bar and drawer, the hub banner, place routing, the Settings modal, the command palette, the app's actions, the shortcuts, feedback and Create agent dialogs
+│   ├── App.svelte            # The root: the setup wizard (loaded when it is needed), or the shell; draws toasts and tooltips in both
+│   ├── shell/                # The shell: the rail, the phone's bottom bar and drawer, the hub banner, place routing, the Settings modal, the command palette, the app's actions, the install offer and its Add to Home Screen steps, the shortcuts, feedback and Create agent dialogs
 │   │   ├── panel/                # The context panel: its frame and header, its width, and what each kind shows
 │   │   └── settings/             # The Settings modal's parts: scope picker and section list, save bar, the section API and its shared group card and field components, hosted legacy sections, Raw config, the History browser, the All agents sections (General, Residuum Cloud, Updates, Session limits, Diagnostics) and the agent's Memory, Schedule and Runtime
 │   ├── places/               # Rebuilt places, one folder each
@@ -128,7 +128,7 @@ web/
 │   │   ├── chat/             # An agent's Chat: its header, the feed, and under it the legacy composer, or the state card while the agent isn't running
 │   │   └── schedule/         # An agent's Schedule: its pulses and scheduled actions, and the words they show
 │   ├── feed/                 # A conversation: the feed, its turns and each kind of message in it, shared by Chat and session transcripts; path links
-│   ├── Setup.svelte          # Setup wizard
+│   ├── Setup.svelte          # Setup wizard, built into a chunk of its own
 │   ├── styles/               # Design tokens, bundled fonts, base styles, legacy global styles
 │   ├── components/
 │   │   ├── ChatInput.svelte        # Input box with the `/` menu of chat actions (SlashMenu.svelte)
@@ -155,6 +155,8 @@ web/
 │       ├── overview.svelte.ts    # The team overview: each agent's overview, team events, the newest unread inbox items, what needs the user
 │       ├── inbox.svelte.ts       # The Inbox's list across agents: filter and tab, paging, read, archive, restore
 │       ├── app-badge.ts          # The app icon's badge (the Badging API): the inbox unread total
+│       ├── install.ts            # Installing the app: what this browser can do (secure context, installed, iOS), and keeping the Install app offer current
+│       ├── lazy-component.svelte.ts # A component whose code loads the first time it is needed, with the failure shown and a retry
 │       ├── needs-you.ts          # What needs the user and in what order, and the rail's Home count
 │       ├── agent-failure.ts      # Plain words for why an agent couldn't start, and the Settings section that fixes it
 │       ├── agent-display-state.ts # The state an agent is shown in: the hub's, or stopping while its stop is under way
@@ -237,6 +239,7 @@ web/
 │   ├── smoke/                # Flows on the current UI; `@preview` specs run on the production build
 │   ├── visual/               # `@visual` specs; their baselines are in __screenshots__/
 │   └── harness/              # Specs for the harness itself
+├── public/                   # Served as is: the manifest, the icons, the favicon, the MCP catalog
 ├── playwright.config.ts      # Projects, servers and reporters
 ├── vite.config.ts
 └── package.json
@@ -283,7 +286,7 @@ Old URLs redirect by replace: `/team`, `/agent/:name/sessions/:runId`, `/agent/:
 
 ### The shell
 
-`shell/Shell.svelte` is the frame around every place: the rail (`Rail.svelte`) beside the main region at medium and wide widths, and on phones the bottom bar (`BottomBar.svelte`) with the rail in a `Drawer`. The main region starts with the hub banner (`HubBanner.svelte`, shown while the hub socket is down) and then the place, which `PlaceHost.svelte` picks from the router's location. The shell root carries `data-ui`, and mounts `ConfirmHost` (and gives the router's guard `confirmLeave`), the Settings modal, the command palette, `RecentNotifications`, the Keyboard shortcuts dialog, the feedback dialog, the inbox-note prompt and the Create agent dialog once each; `App.svelte` draws the toast region and tooltips, in setup too.
+`shell/Shell.svelte` is the frame around every place: the rail (`Rail.svelte`) beside the main region at medium and wide widths, and on phones the bottom bar (`BottomBar.svelte`) with the rail in a `Drawer`. The main region starts with the hub banner (`HubBanner.svelte`, shown while the hub socket is down) and then the place, which `PlaceHost.svelte` picks from the router's location. The shell root carries `data-ui`, and mounts `ConfirmHost` (and gives the router's guard `confirmLeave`), the Settings modal and the command palette (each once its code has loaded, see [Installing the app and code splitting](#installing-the-app-and-code-splitting)), `RecentNotifications`, the Keyboard shortcuts dialog, the Add to Home Screen steps, the feedback dialog, the inbox-note prompt and the Create agent dialog once each; `App.svelte` draws the toast region and tooltips, in setup too.
 
 The context panel (`panel/PanelHost.svelte`) is open while the URL has a `panel` its place can show. Its frame (`ContextPanel.svelte`) is a column beside the main region at wide widths, resized from its left edge by pointer or by the arrow keys, Home and End, between `--layout-panel-min-width` and half the viewport; the width the viewer chose is kept in local storage. At medium widths it floats over the main region's right edge at the default width, and on phones it is a full-screen sheet over the bottom bar, a `ModalLayer` whose history entry is the `panel` parameter. Beside or over the main region it takes focus when it opens, Esc inside it closes it, and focus goes back to where it was; on phones the sheet's layer does the same. Closing goes through `router.closePanel`, so Back closes it before it leaves the place. What the panel shows is chosen by kind in `PanelHost`, and each kind's content starts with `PanelHeader`, which names the panel and holds its actions and the way out (Close, or Back on a phone). A file shows the file editor (see [Files](#files)), and a session run the session panel (see [Activity and the session panel](#activity-and-the-session-panel)). Until its unit rebuilds it, the conversation size shows the chat footer's figures inside a `data-legacy-view` element.
 
@@ -293,13 +296,21 @@ The rail's agents are an accordion (`accordion.svelte.ts`): one agent's places a
 
 Every place is rebuilt (see [Home and the overview](#home-and-the-overview), [The Inbox](#the-inbox), [The chat feed](#the-chat-feed), [Activity and the session panel](#activity-and-the-session-panel), [The Schedule](#the-schedule), [Files](#files) and [The Workbench](#the-workbench)). The Settings modal is described in [The Settings modal](#the-settings-modal). The palette and the help dialogs aren't in the URL either; each holds an overlay entry, so Back closes it.
 
+### Installing the app and code splitting
+
+`index.html` and `public/manifest.webmanifest` make the app installable. The manifest's `id` and `start_url` are `/home`, with the base surface as both its colors, the three icons (the maskable one's content stays inside the central 80%) and shortcuts to Home and the Inbox. The `<link rel="manifest">` carries `crossorigin="use-credentials"`: a browser fetches a manifest without cookies otherwise, and Residuum Cloud's relay answers a request with no session cookie with its login page. The viewport is `viewport-fit=cover` and the iOS metas ask for a standalone app with a translucent status bar, so every edge of the shell honours the safe-area insets (see [AESTHETIC.md](./AESTHETIC.md), "Layout").
+
+`lib/install.ts` decides whether Install app is offered, and `shell/install-offer.ts` starts it before the app mounts, since a Chromium browser fires its `beforeinstallprompt` once, early. Install app is listed (`installOffer.install` in `shell/app-actions.svelte.ts`) only in a secure context and only outside an installed app. In Chromium it runs the stored prompt, which a browser shows once, so the entry goes with it and returns if the browser fires a new prompt. On an iPhone or iPad, which has no prompt, it opens `InstallHelpDialog.svelte`, the Add to Home Screen steps. Without a secure context (plain HTTP on a LAN) nothing is offered. Everything that needs a secure context, push included, asks `installContext().secure`.
+
+Settings (`SettingsModal.svelte` and its sections), the command palette, the file view with its editor (`places/files/FilePanel.svelte`) and the setup wizard are built into chunks of their own, and the shell, Home and Chat are in the initial bundle. `LazyComponent` (`lib/lazy-component.svelte.ts`) starts fetching a chunk the first time something asks for it, keeps the component for the life of the page, and on a failed fetch shows an error toast, runs the caller's `onFailure` (the shell puts the modal, the palette or the panel away so the next press asks again) and tries again on the next ask. A chunk is named after the module it is imported from, which is how the `@preview` specs in `e2e/smoke/installable.spec.ts` find it. Importing a lazy module from the initial bundle statically pulls its chunk back in, so import only its types, or go through the `LazyComponent`.
+
 ### Actions
 
 `lib/action-registry.svelte.ts` holds the one list of named actions that the command palette (`shell/CommandPalette.svelte`), the composer's `/` menu and the rail's help menu draw from. A source is a function that builds actions from current state; `actionRegistry.register(key, source)` adds one (replacing the source under that key) and returns a function that removes it, and `actionRegistry.all` is every source's actions in registration order. The shell registers the app's sources (`shell/app-actions.svelte.ts`): the team places, every agent, the bound agent's places and live sessions, the settings sections, the chat actions, Start, Stop and Restart where they apply, Create an agent, and help. Another agent's places, settings and lifecycle actions are `searchOnly`: the palette lists them once something is typed. A unit adds actions by registering a source of its own, or by adding them to the source they belong with.
 
 An action has a heading (`group`), a plain-language `label`, an optional `hint` and `terms` it is also found by, and `run(text?)`. A chat action has a `command`, its old slash name: `/observe` in the composer, or typing `/observe` in the palette, finds "Summarize older messages now". `takesText` marks one that acts on what follows `/name`, and asks for text otherwise. `disabled` holds the reason it can't run now ("Start atlas first"); the palette and the `/` menu show the reason in place of the hint, and running it does nothing. `matchActions` finds the actions holding every typed word; `readCommandLine` reads a `/name text` line the composer sends.
 
-Run actions with `actionRegistry.run(action, text?)`. It tells the registry's run listeners first, then runs the action once the page has settled: the shell closes the phone drawer there, so a dialog an action opens, or a place it goes to, never sits under the drawer. `installOffer.install`, in `app-actions.svelte.ts`, lists Install app among the help actions while it is set.
+Run actions with `actionRegistry.run(action, text?)`. It tells the registry's run listeners first, then runs the action once the page has settled: the shell closes the phone drawer there, so a dialog an action opens, or a place it goes to, never sits under the drawer. `installOffer.install`, in `app-actions.svelte.ts`, lists Install app among the help actions while it is set (see [Installing the app and code splitting](#installing-the-app-and-code-splitting)).
 
 ### Home and the overview
 
@@ -463,6 +474,8 @@ npm test              # Vitest: lib unit tests and Svelte component tests
 npm run test:coverage # The same tests with a coverage summary (HTML report in coverage/)
 npm run e2e:fast      # Playwright specs in Chromium, visual comparisons left out (see Testing)
 ```
+
+`just web-size` builds and prints the size of the initial route: the scripts and stylesheets `dist/index.html` loads before the first screen, raw and gzipped (`scripts/web-initial-route-size.sh`). The release workflow adds the same table to its job summary. It is a report with no threshold.
 
 **TypeScript lint.** Every `.ts` module under `src/` and `e2e/`, including the rune store modules (`*.svelte.ts`), gets the strict type-aware ESLint rules. Only `.svelte` files get the relaxed set that fits runes. When a rule is wrong for one line, use a scoped `// eslint-disable-next-line <rule> -- <reason>`, never a blanket disable.
 

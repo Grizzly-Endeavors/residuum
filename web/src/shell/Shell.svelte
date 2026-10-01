@@ -2,16 +2,23 @@
   import { onMount, tick } from "svelte";
   import { actionRegistry } from "../lib/action-registry.svelte";
   import { showAppBadge } from "../lib/app-badge";
+  import { LazyComponent } from "../lib/lazy-component.svelte";
   import { notifications } from "../lib/notifications.svelte";
   import { overview } from "../lib/overview.svelte";
   import { router } from "../lib/router.svelte";
   import { ALL_SCOPE } from "../lib/settings-sections";
-  import { ConfirmHost, confirmLeave, Drawer, RecentNotifications } from "../lib/ui";
+  import {
+    ConfirmHost,
+    confirmLeave,
+    Drawer,
+    RecentNotifications,
+    Spinner,
+    VisuallyHidden,
+  } from "../lib/ui";
   import { PHONE_QUERY } from "../styles/breakpoints";
   import { RailAccordion } from "./accordion.svelte";
   import { installHelp, registerAppActions } from "./app-actions.svelte";
   import BottomBar from "./BottomBar.svelte";
-  import CommandPalette from "./CommandPalette.svelte";
   import CreateAgentDialog from "./CreateAgentDialog.svelte";
   import FeedbackDialog from "./FeedbackDialog.svelte";
   import HubBanner from "./HubBanner.svelte";
@@ -20,7 +27,6 @@
   import PanelHost from "./panel/PanelHost.svelte";
   import PlaceHost from "./PlaceHost.svelte";
   import Rail from "./Rail.svelte";
-  import SettingsModal from "./SettingsModal.svelte";
   import type { FeedbackTab, ShellActions } from "./shell-actions";
   import ShortcutsDialog from "./ShortcutsDialog.svelte";
 
@@ -28,12 +34,19 @@
   // and wide widths, and the context panel beside it (wide) or over it
   // (medium); on phones the bottom bar, with the rail in a drawer and the
   // panel a full-screen sheet. The shell also owns the overlays its controls
-  // and the action registry open.
+  // and the action registry open. Settings and the palette are built apart
+  // from the shell and load the first time they open.
 
   router.guard.setConfirm(confirmLeave);
 
   /** The drawer opens on the row of the place the user is on. */
   const CURRENT_ROW = '[aria-current="page"]';
+
+  const settingsModal = new LazyComponent(() => import("./SettingsModal.svelte"), "Settings");
+  const commandPalette = new LazyComponent<{ open: boolean }>(
+    () => import("./CommandPalette.svelte"),
+    "search",
+  );
 
   const accordion = new RailAccordion();
   let drawerOpen = $state(false);
@@ -45,6 +58,19 @@
   let inboxNoteAgent = $state<string | null>(null);
   let createOpen = $state(false);
   let sideRail = $state<HTMLElement>();
+
+  // A settings URL, from a link or a reload, opens the modal. If its code can't load, the modal is put away so Settings can be asked for again.
+  $effect(() => {
+    if (router.settings !== null) settingsModal.ensure(() => void router.closeSettings());
+  });
+
+  $effect(() => {
+    if (paletteOpen) {
+      commandPalette.ensure(() => {
+        paletteOpen = false;
+      });
+    }
+  });
 
   // The installed app's icon shows the inbox unread total, once it is known.
   $effect(() => {
@@ -168,8 +194,21 @@
 <Drawer bind:open={drawerOpen} label="Agents and places" initialFocus={CURRENT_ROW}>
   <Rail {accordion} {actions} onclose={() => (drawerOpen = false)} />
 </Drawer>
-<SettingsModal />
-<CommandPalette bind:open={paletteOpen} />
+{#if settingsModal.loading || commandPalette.loading}
+  <!-- Fades in after a moment, so a chunk that arrives quickly never flashes it. -->
+  <div class="shell-opening" role="status" data-ui>
+    <Spinner size={20} />
+    <VisuallyHidden>Opening</VisuallyHidden>
+  </div>
+{/if}
+{#if settingsModal.component !== null}
+  {@const Settings = settingsModal.component}
+  <Settings />
+{/if}
+{#if commandPalette.component !== null}
+  {@const Palette = commandPalette.component}
+  <Palette bind:open={paletteOpen} />
+{/if}
 <CreateAgentDialog bind:open={createOpen} oncreated={(name) => void focusCreatedAgent(name)} />
 <RecentNotifications bind:open={notificationsOpen} />
 <ShortcutsDialog bind:open={shortcutsOpen} />
@@ -204,6 +243,27 @@
     flex-direction: column;
     min-width: 0;
     min-height: 0;
+  }
+
+  /* Over everything but toasts, while Settings or the palette waits for its code. */
+  .shell-opening {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-overlay);
+    display: grid;
+    place-items: center;
+    background: transparent;
+    color: var(--color-text-2);
+    opacity: 0;
+    pointer-events: none;
+    animation: shell-opening-in var(--duration-base) var(--ease-out) calc(var(--duration-base) * 2)
+      forwards;
+  }
+
+  @keyframes shell-opening-in {
+    to {
+      opacity: 1;
+    }
   }
 
   @media (max-width: 760px) {
