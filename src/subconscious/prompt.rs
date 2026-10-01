@@ -276,6 +276,7 @@ mod tests {
                 id: "call_1".to_string(),
                 name: "write_file".to_string(),
                 arguments: serde_json::json!({"path": "wiki/index.md"}),
+                server: None,
             }]),
         );
         let formatted = format_message(&msg);

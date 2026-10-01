@@ -434,6 +434,10 @@ pub enum ServerMessage {
         name: String,
         /// Tool arguments as JSON.
         arguments: serde_json::Value,
+        /// The MCP server (its name in `mcp.json`) that owns this tool, or
+        /// `None` for a built-in.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        server: Option<String>,
     },
     /// A tool completed execution (verbose only).
     ToolResult {
@@ -570,6 +574,10 @@ pub enum ServerMessage {
         name: String,
         /// Tool arguments as JSON.
         arguments: serde_json::Value,
+        /// The MCP server (its name in `mcp.json`) that owns this tool, or
+        /// `None` for a built-in.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        server: Option<String>,
     },
     /// A tool a session invoked returned (verbose only).
     SessionToolResult {

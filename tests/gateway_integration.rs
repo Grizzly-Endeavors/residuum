@@ -471,6 +471,7 @@ mod gateway_integration {
                     id: "tc-1".to_string(),
                     name: "exec".to_string(),
                     arguments: serde_json::json!({"command": "echo test"}),
+                    server: None,
                 })
                 .is_ok(),
             "broadcast send should succeed"

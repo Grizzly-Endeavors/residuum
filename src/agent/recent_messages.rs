@@ -221,6 +221,7 @@ mod tests {
                 id: "call_1".to_string(),
                 name: "exec".to_string(),
                 arguments: serde_json::json!({"command": "echo test"}),
+                server: None,
             }]),
             tool_call_id: None,
             images: Vec::new(),

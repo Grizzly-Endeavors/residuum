@@ -229,6 +229,7 @@ impl OpenAiClient {
                     id: tc.id,
                     name: tc.function.name,
                     arguments,
+                    server: None,
                 })
             })
             .collect::<Result<Vec<_>, InferenceError>>()?;
@@ -762,6 +763,7 @@ mod tests {
                 id: "call_123".to_string(),
                 name: "bash".to_string(),
                 arguments: serde_json::json!({"command": "ls"}),
+                server: None,
             }]),
         );
 

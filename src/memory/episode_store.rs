@@ -884,6 +884,7 @@ mod tests {
                     id: "c1".to_string(),
                     name: "exec".to_string(),
                     arguments: serde_json::json!({"command": "ls"}),
+                    server: None,
                 }]),
             ),
             Message::tool("file.txt", "c1"),

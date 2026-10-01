@@ -148,6 +148,7 @@ pub(crate) fn session_event_to_server_message(event: SessionEvent) -> ServerMess
             id: call.tool_call_id,
             name: call.name,
             arguments: call.arguments,
+            server: call.server,
         },
         SessionEventKind::ToolResult(result) => ServerMessage::SessionToolResult {
             address,
@@ -686,6 +687,7 @@ mod tests {
                 tool_call_id: "tc-1".to_string(),
                 name: "memory_search".to_string(),
                 arguments: serde_json::json!({"q": "x"}),
+                server: None,
             }),
         });
         let json = serde_json::to_value(&msg).unwrap();

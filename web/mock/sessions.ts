@@ -103,6 +103,7 @@ function runSessionTurn(state: MockState, session: SessionSummary, reply: string
       id: toolId,
       name: "memory_search",
       arguments: { query: "fallback" },
+      server: null,
     });
   });
   state.env.after(1200, () => {

@@ -19,6 +19,7 @@ fn tool_activity_frame(activity: ToolActivityEvent) -> ServerMessage {
             id: tc.tool_call_id,
             name: tc.name,
             arguments: tc.arguments,
+            server: tc.server,
         },
         ToolActivityEvent::Result(tr) => ServerMessage::ToolResult {
             tool_call_id: tr.tool_call_id,
@@ -370,6 +371,7 @@ mod tests {
                 tool_call_id: "tc1".into(),
                 name: "search".into(),
                 arguments: serde_json::json!({"q": "test"}),
+                server: None,
             }),
         )
         .await
