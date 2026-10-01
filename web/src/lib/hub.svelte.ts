@@ -25,6 +25,7 @@ import type {
   A2aVisibility,
   Actor,
   AgentActivity,
+  AgentListResponse,
   AgentSummary,
   CreateAgentRequest,
   DeleteOutcome,
@@ -69,6 +70,8 @@ export class HubStore {
   loaded = $state(false);
   /** Busy (and since when) and unread per agent name. Agents with no report are idle. */
   activity = $state<Record<string, AgentActivity>>({});
+  /** Running agents whose stop has begun but not finished. Their state still reads `running`. */
+  stopping = $state<string[]>([]);
   /** Notices received this session, newest first. */
   notices = $state<HubNotice[]>([]);
   /**
@@ -139,9 +142,14 @@ export class HubStore {
    * `ApiError` on failure.
    */
   async refresh(force = false): Promise<void> {
-    const agents = await fetchAgents();
+    const list = await fetchAgents();
     if (this.snapshotSeen && !force) return;
-    this.setAgents(agents);
+    this.setList(list);
+  }
+
+  /** Give up waiting for the hub socket's next reconnect attempt and try now. */
+  reconnectNow(): void {
+    this.transport.reconnectNow();
   }
 
   /**
@@ -167,6 +175,10 @@ export class HubStore {
 
   activityOf(name: string): AgentActivity {
     return this.activity[name] ?? IDLE;
+  }
+
+  isStopping(name: string): boolean {
+    return this.stopping.includes(name);
   }
 
   // ── Hub frames ─────────────────────────────────────────────────────
@@ -280,12 +292,16 @@ export class HubStore {
     switch (msg.type) {
       case "agents_snapshot":
         this.snapshotSeen = true;
-        this.setAgents(msg.agents);
-        this.activity = { ...msg.activity };
+        this.setList(msg);
         break;
       case "agent_state":
         this.noteFailure(msg.agent);
         this.upsert(msg.agent);
+        // A state change ends a stop that was under way.
+        this.stopping = this.stopping.filter((name) => name !== msg.agent.name);
+        break;
+      case "agent_stopping":
+        if (!this.isStopping(msg.name)) this.stopping = [...this.stopping, msg.name];
         break;
       case "agent_created":
         this.upsert(msg.agent);
@@ -318,7 +334,6 @@ export class HubStore {
         this.addNotice("warn", msg.message);
         break;
       case "hub_boot":
-      case "agent_stopping":
       case "hub_config_reloaded":
       case "team_event":
         // Frame listeners act on these, below.
@@ -347,13 +362,11 @@ export class HubStore {
     );
   }
 
-  private setAgents(agents: AgentSummary[]): void {
+  /** Take a whole list: the socket's snapshot, or the same three fields fetched over HTTP. */
+  private setList({ agents, activity, stopping }: AgentListResponse): void {
     this.agents = [...agents].sort(byName);
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- non-reactive scratch
-    const known = new Set(agents.map((a) => a.name));
-    this.activity = Object.fromEntries(
-      Object.entries(this.activity).filter(([name]) => known.has(name)),
-    );
+    this.activity = { ...activity };
+    this.stopping = [...stopping];
     this.loaded = true;
   }
 
@@ -371,6 +384,7 @@ export class HubStore {
   private removeAgent(name: string): void {
     this.agents = this.agents.filter((a) => a.name !== name);
     this.activity = Object.fromEntries(Object.entries(this.activity).filter(([n]) => n !== name));
+    this.stopping = this.stopping.filter((n) => n !== name);
   }
 
   private addNotice(

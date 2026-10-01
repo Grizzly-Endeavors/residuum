@@ -9,9 +9,24 @@ export interface TransportOptions {
   keepalive?: boolean;
 }
 
+/**
+ * Log a frame that couldn't be read, or that broke the code handling it.
+ * Either way the frame is lost; the next one is handled as usual.
+ */
+function reportFrameFailure(message: string, err: unknown): void {
+  // eslint-disable-next-line no-console -- transport-layer failure has no user-visible channel; project rule mandates failure visibility
+  console.warn(message, err);
+}
+
 /** Low-level WebSocket transport with reconnect and keepalive. */
 export class WsTransport<S = ServerMessage, C extends { type: string } = ClientMessage> {
   status = $state<ConnectionStatus>("disconnected");
+  /**
+   * The socket closed, or failed to open, and hasn't opened since. Unlike
+   * `status`, it stays set through each reconnect attempt, so a notice built
+   * on it doesn't flicker while the transport retries.
+   */
+  lost = $state(false);
 
   /** Called when a parsed ServerMessage arrives. */
   onMessage: ((msg: S) => void) | null = null;
@@ -43,6 +58,7 @@ export class WsTransport<S = ServerMessage, C extends { type: string } = ClientM
     socket.onopen = () => {
       if (this.ws !== socket) return;
       this.status = "connected";
+      this.lost = false;
       this.reconnectDelay = 1000;
       this.onConnected?.();
       this.startPing();
@@ -51,12 +67,18 @@ export class WsTransport<S = ServerMessage, C extends { type: string } = ClientM
 
     socket.onmessage = (e) => {
       if (this.ws !== socket) return;
+      let msg: S;
       try {
-        const msg = JSON.parse(String(e.data)) as S;
+        msg = JSON.parse(String(e.data)) as S;
+      } catch (err) {
+        reportFrameFailure("unparseable ws frame", err);
+        return;
+      }
+      try {
         this.onMessage?.(msg);
       } catch (err) {
-        // eslint-disable-next-line no-console -- transport-layer failure has no user-visible channel; project rule mandates failure visibility
-        console.warn("unparseable ws frame", err);
+        const { type } = msg as { type?: unknown };
+        reportFrameFailure(`ws frame handler failed on ${String(type)}`, err);
       }
     };
 
@@ -64,6 +86,7 @@ export class WsTransport<S = ServerMessage, C extends { type: string } = ClientM
       if (this.ws !== socket) return;
       const wasConnected = this.status === "connected";
       this.status = "disconnected";
+      this.lost = true;
       this.stopPing();
       if (wasConnected) this.onDisconnected?.();
       this.scheduleReconnect();
@@ -84,6 +107,21 @@ export class WsTransport<S = ServerMessage, C extends { type: string } = ClientM
       this.ws = null;
     }
     this.status = "disconnected";
+    this.lost = false;
+  }
+
+  /**
+   * Try to connect now instead of waiting out the reconnect delay, and start
+   * the backoff over. Does nothing while a connection is open or opening.
+   */
+  reconnectNow(): void {
+    if (this.status !== "disconnected") return;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.reconnectDelay = 1000;
+    this.connect();
   }
 
   /**
