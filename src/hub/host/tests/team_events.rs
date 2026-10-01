@@ -91,6 +91,9 @@ async fn an_agent_that_cannot_start_is_told_as_failed_with_the_reason() {
     )
     .unwrap();
 
+    let log = crate::hub::test_support::EventLog::default();
+    let _guard = log.capture();
+
     hub.host.start("scout").await.unwrap_err();
 
     let failed = entry(&hub, TeamEventKind::AgentFailed, Some("scout")).await;
@@ -118,6 +121,15 @@ async fn an_agent_that_cannot_start_is_told_as_failed_with_the_reason() {
     assert!(
         of_kind(&hub, TeamEventKind::AgentStarted).is_empty(),
         "an agent that never ran was not started"
+    );
+    assert!(
+        !hub.root.path().join("scout/inbox").exists(),
+        "a first-start failure creates no inbox"
+    );
+    assert!(
+        log.matching("inbox").is_empty(),
+        "the hub doesn't try to write the failure into an inbox the agent never had: {:?}",
+        log.events.lock().unwrap()
     );
 }
 

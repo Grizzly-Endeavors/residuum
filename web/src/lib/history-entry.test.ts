@@ -117,6 +117,43 @@ describe("marks on a replace", () => {
   });
 });
 
+describe("the open inbox item's mark", () => {
+  const list = locationAt({ kind: "inbox", agent: null, tab: "active", item: null });
+  const opened = (id: string, tab: "active" | "archived" = "active"): AppLocation =>
+    locationAt({ kind: "inbox", agent: null, tab, item: { agent: "atlas", id } });
+
+  it("is read back like the others", () => {
+    expect(readEntry({ idx: 2, item: 2 })).toEqual({ idx: 2, item: 2 });
+  });
+
+  it("is set by the push that opens an item", () => {
+    expect(entryAfterPush({ idx: 1 }, list, opened("a"))).toEqual({ idx: 2, item: 2 });
+  });
+
+  it("stays with the entry that opened the first item while others are switched to", () => {
+    expect(entryAfterPush({ idx: 2, item: 2 }, opened("a"), opened("b"))).toEqual({
+      idx: 3,
+      item: 2,
+    });
+    expect(entryAfterReplace({ idx: 2, item: 2 }, opened("a"), opened("b"))).toEqual({
+      idx: 2,
+      item: 2,
+    });
+  });
+
+  it("isn't set when the item opens with another list, or appears by replace", () => {
+    expect(entryAfterPush({ idx: 1 }, list, opened("a", "archived"))).toEqual({ idx: 2 });
+    expect(entryAfterReplace({ idx: 1 }, list, opened("a"))).toEqual({ idx: 1 });
+    expect(entryAfterReplace({ idx: 2, item: 2 }, opened("a"), opened("a", "archived"))).toEqual({
+      idx: 2,
+    });
+  });
+
+  it("counts when entries are compared", () => {
+    expect(sameEntry({ idx: 1, item: 1 }, { idx: 1 })).toBe(false);
+  });
+});
+
 describe("overlay entries", () => {
   it("is the next entry, with the marks below it and its own", () => {
     expect(overlayEntryAfter({ idx: 3, settings: 3 }, "overlay-2")).toEqual({

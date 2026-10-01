@@ -2,19 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeWebSocket } from "../test/fake-websocket";
 import { setViewedAgent } from "./viewed-agent";
 import { ws } from "./ws.svelte";
-import { userInbox } from "./inbox.svelte";
 import { scheduled } from "./scheduled.svelte";
-import type { UserInboxItem } from "./types";
-
-const INBOX_ITEM: UserInboxItem = {
-  id: "item-1",
-  title: "For scout",
-  body: "",
-  source: "agent",
-  timestamp: "2026-09-29T12:00:00Z",
-  read: false,
-  attachments: [],
-};
 
 /** A history segment whose only message says `text`. */
 function history(text: string): Record<string, unknown> {
@@ -61,7 +49,6 @@ function installServer(): FakeServer {
         return json({ live: [], completed: [], next_cursor: null });
       }
       if (input.includes("/a2a/outbound")) return json([]);
-      if (input.includes("/inbox")) return json([INBOX_ITEM]);
       if (input.includes("/scheduled/")) return json([]);
       return new Response("unexpected", { status: 500 });
     }),
@@ -156,18 +143,16 @@ describe("agent connection follows the viewed agent", () => {
 });
 
 describe("switching agents leaves nothing of the old agent behind", () => {
-  it("replaces the feed, sessions, inbox, and scheduled state", async () => {
+  it("replaces the feed, sessions, and scheduled state", async () => {
     installServer();
     setViewedAgent("scout");
     FakeWebSocket.last.simulateOpen();
     await flush();
-    await userInbox.refresh();
     scheduled.pulses = [{ name: "p" } as never];
     scheduled.loaded = true;
     ws.sessions.live = [{ run_id: "r1" } as never];
     ws.store.sessionUsage = { input_tokens: 5, output_tokens: 5, cost: null } as never;
     expect(feedText()).toEqual(["hello from scout"]);
-    expect(userInbox.items).toHaveLength(1);
     const scoutStore = ws.store;
     const scoutSessions = ws.sessions;
 
@@ -178,7 +163,6 @@ describe("switching agents leaves nothing of the old agent behind", () => {
     expect(ws.store.feed).toEqual([]);
     expect(ws.store.sessionUsage).toBeNull();
     expect(ws.sessions.live).toEqual([]);
-    expect(userInbox.items).toEqual([]);
     expect(scheduled.pulses).toEqual([]);
     expect(scheduled.loaded).toBe(false);
   });

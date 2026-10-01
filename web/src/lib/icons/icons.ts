@@ -74,6 +74,7 @@ const DRAWINGS = {
     { path: "M6.5 7l1 12.5h9l1-12.5" },
     { path: "M10.5 11v5M13.5 11v5" },
   ],
+  archive: [{ rect: [3.5, 5, 17, 4.5, 1.2] }, { path: "M5 9.5V19h14V9.5" }, { path: "M10 13h4" }],
   edit: [{ path: "M5 19h3.5L19 8.5 15.5 5 5 15.5z" }],
   copy: [
     { rect: [7.5, 7.5, 12.5, 13, 1.5] },

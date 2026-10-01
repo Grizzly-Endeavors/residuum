@@ -1,6 +1,6 @@
 //! `agent_create` and `agent_delete` against a real host: the tools act as
-//! the calling agent, and the host publishes the toast event and files the
-//! inbox item.
+//! the calling agent, and the host publishes the toast event and files
+//! nothing in the user inbox.
 
 use super::*;
 use crate::tools::Tool as _;
@@ -75,18 +75,9 @@ async fn agent_create_briefs_a_running_teammate_that_inherits_the_creators_setti
         )),
         "the toast event names the creating agent"
     );
-    let inbox = WorkspaceLayout::new(hub.root.path().join("scout")).user_inbox_dir();
-    let filed: Vec<String> = std::fs::read_dir(&inbox)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.is_file())
-        .map(|path| std::fs::read_to_string(path).unwrap())
-        .collect();
     assert!(
-        filed
-            .iter()
-            .any(|item| item.contains("Created the agent nova")),
-        "the creator's user inbox records the creation: {filed:?}"
+        user_inbox_files(&hub, "scout").is_empty(),
+        "creating an agent files nothing in the creator's user inbox"
     );
 }
 
@@ -154,6 +145,10 @@ async fn agent_delete_removes_a_teammate_and_reports_the_checkpoint() {
                 if name == "scout" && by == "atlas"
         )),
         "the toast event names the deleting agent"
+    );
+    assert!(
+        user_inbox_files(&hub, "atlas").is_empty(),
+        "deleting an agent files nothing in the deleter's user inbox"
     );
 
     let unknown = delete.execute(json!({ "name": "scout" })).await.unwrap();

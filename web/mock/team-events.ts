@@ -14,9 +14,10 @@ import type {
   TeamEventPage,
   TeamEventTarget,
 } from "../src/lib/hub-types";
-import type { UserInboxItem } from "../src/lib/types";
+import type { UserInboxAttachment, UserInboxItem } from "../src/lib/types";
 import type { MockEnv } from "./env";
 import { json, parseJsonObject, readBody, stringField } from "./http";
+import { mockAttachment } from "./inbox";
 import type { Route, RouteContext } from "./routes";
 import type { MockAgent, MockState } from "./state";
 
@@ -427,10 +428,29 @@ function userInboxItemId(state: MockState, title: string): string {
   return id;
 }
 
+/** The `attachments` field of the test control's body: file names, each with an optional MIME type. */
+function attachmentsField(body: Record<string, unknown>): UserInboxAttachment[] {
+  const raw = body.attachments;
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) throw new Error("attachments must be a list");
+  return raw.map((entry: unknown) => {
+    if (typeof entry !== "object" || entry === null) {
+      throw new Error("each attachment must be an object with a filename");
+    }
+    const fields = entry as Record<string, unknown>;
+    const filename = stringField(fields, "filename");
+    if (filename === undefined || filename === "") {
+      throw new Error("each attachment needs a filename");
+    }
+    return mockAttachment(filename, stringField(fields, "mime_type") ?? "text/plain");
+  });
+}
+
 /**
  * `POST /api/mock/user-inbox-add`, a test control: the agent (`?agent=`, else
  * the first running one) saves an item in the user's inbox the way its
- * `user_inbox_add` tool does. The body is `{ title?, body? }`. Answers `{ id }`.
+ * `user_inbox_add` tool does. The body is `{ title?, body?, attachments? }`,
+ * with each attachment `{ filename, mime_type? }`. Answers `{ id }`.
  */
 async function addUserInboxItem(ctx: RouteContext): Promise<void> {
   const agent = ctx.hub.agents.get(ctx.state.agentName);
@@ -440,8 +460,10 @@ async function addUserInboxItem(ctx: RouteContext): Promise<void> {
   }
   const raw = await readBody(ctx.req);
   let body: Record<string, unknown>;
+  let attachments: UserInboxAttachment[];
   try {
     body = raw.trim() === "" ? {} : parseJsonObject(raw);
+    attachments = attachmentsField(body);
   } catch (err) {
     json(ctx.res, 400, { error: `mock: ${err instanceof Error ? err.message : String(err)}` });
     return;
@@ -454,7 +476,7 @@ async function addUserInboxItem(ctx: RouteContext): Promise<void> {
     source: "agent",
     timestamp: ctx.hub.env.clock.iso(),
     read: false,
-    attachments: [],
+    attachments,
   };
   agent.state.inboxItems.unshift(item);
   ctx.hub.teamEvents.userInboxAdded(agent, item.id);
