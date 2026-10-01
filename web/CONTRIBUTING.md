@@ -390,7 +390,7 @@ The save bar (`settings/SaveBar.svelte`) shows while the scope has staged change
 - Give a field its problems with `error={fieldError(scope, { kind: "config", field: "timeout_secs" })}`.
 - A part that needs the agent running goes inside `RunningOnly` (`<RunningOnly agent={scope.agent} subject="its status">…</RunningOnly>`), which says "Start atlas to see its status." with Start until it runs.
 - Actions of the section's own register with `actionRegistry.register(key, source)` inside `untrack` in an `$effect` that returns the remover.
-- Immediate actions (secrets, keys, Cloud, updates) call their endpoints and report their own result; they have no part in the save bar.
+- Immediate actions (secrets, keys, Cloud, updates, an agent's visibility, its `a2a.json`) call their endpoints and report their own result; they have no part in the save bar. One that writes a file the scope holds, as visibility writes `config.toml` through the hub, calls `scope.load()` afterwards so the scope's other views read it again.
 
 ## Code Quality
 

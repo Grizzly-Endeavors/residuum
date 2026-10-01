@@ -42,6 +42,19 @@ test("a catalog server is added with its key and saved, and removing it waits fo
   expect(Object.keys(await serversOnDisk(page))).toContain("github");
 });
 
+test("Undo after saving a removal puts the server back on disk", async ({ page }) => {
+  await page.goto("/agent/atlas?settings=atlas/servers");
+  await servers(page).getByRole("button", { name: "Remove filesystem" }).click();
+  await saveBar(page).getByRole("button", { name: "Save changes" }).click();
+  const saved = page.getByRole("status").filter({ hasText: "Saved mcp.json." });
+  await expect(saved).toBeVisible();
+  expect(Object.keys(await serversOnDisk(page))).not.toContain("filesystem");
+
+  await saved.getByRole("button", { name: "Undo" }).click();
+  await expect(servers(page).getByText("filesystem", { exact: true })).toBeVisible();
+  expect(Object.keys(await serversOnDisk(page))).toContain("filesystem");
+});
+
 test("a catalog that can't be read says so, and Try again reads it", async ({ page }) => {
   let unavailable = true;
   await page.route("**/api/hub/mcp-catalog", (route) =>
