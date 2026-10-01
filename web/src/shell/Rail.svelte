@@ -2,7 +2,6 @@
   import type { Attachment } from "svelte/attachments";
   import { Icon, type IconName } from "../lib/icons";
   import { hub } from "../lib/hub.svelte";
-  import { userInbox } from "../lib/inbox.svelte";
   import { overview } from "../lib/overview.svelte";
   import { ws } from "../lib/ws.svelte";
   import { router } from "../lib/router.svelte";
@@ -121,7 +120,7 @@
         homeCount,
         homeCount === 1 ? "thing needs you" : "things need you",
       )}
-      {@render placeRow(INBOX, "Inbox", "inbox", userInbox.unreadCount, "unread")}
+      {@render placeRow(INBOX, "Inbox", "inbox", overview.inboxUnread, "unread")}
     </ul>
 
     <div class="rail-heading">

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import { userInbox } from "../lib/inbox.svelte";
+  import { showAppBadge } from "../lib/app-badge";
+  import { overview } from "../lib/overview.svelte";
   import { router } from "../lib/router.svelte";
   import { HOME } from "../lib/routes";
   import { ALL_SCOPE } from "../lib/settings-sections";
@@ -36,6 +37,11 @@
   let feedbackOpen = $state(false);
   let feedbackTab = $state<FeedbackTab>("bug");
 
+  // The installed app's icon shows the inbox unread total, once it is known.
+  $effect(() => {
+    if (overview.loaded) showAppBadge(overview.inboxUnread);
+  });
+
   // Arriving on an agent opens its places in the rail.
   $effect(() => {
     accordion.follow(router.viewedAgent);
@@ -67,7 +73,6 @@
   };
 
   onMount(() => {
-    userInbox.startPolling();
     // The drawer is the phone's rail; a wider window shows the rail itself.
     const phone = window.matchMedia(PHONE_QUERY);
     const leftPhoneWidth = (): void => {
@@ -75,7 +80,6 @@
     };
     phone.addEventListener("change", leftPhoneWidth);
     return () => {
-      userInbox.stopPolling();
       phone.removeEventListener("change", leftPhoneWidth);
     };
   });

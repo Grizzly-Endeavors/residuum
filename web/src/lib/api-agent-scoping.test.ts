@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
 import { invalidate } from "./cache";
-import { userInbox } from "./inbox.svelte";
 import { NoAgentSelectedError } from "./paths";
 import { scheduled } from "./scheduled.svelte";
 import { SessionsStore, SessionView } from "./sessions.svelte";
@@ -66,7 +65,6 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   scheduled.reset(null);
-  userInbox.reset(null);
 });
 
 const AGENTS = ["scout", "atlas"] as const;
@@ -210,24 +208,24 @@ const AREAS: Record<string, Row[]> = {
   ],
   inbox: [
     [
-      "markUserInboxItemRead",
-      (a) => api.markUserInboxItemRead(a, "i1"),
-      "PUT /api/agents/{agent}/inbox/i1/read",
+      "markHubInboxItemRead",
+      (a) => api.markHubInboxItemRead(a, "i1"),
+      "PUT /api/hub/inbox/{agent}/i1/read",
     ],
     [
-      "archiveUserInboxItem",
-      (a) => api.archiveUserInboxItem(a, "i1"),
-      "POST /api/agents/{agent}/inbox/i1/archive",
+      "archiveHubInboxItem",
+      (a) => api.archiveHubInboxItem(a, "i1"),
+      "POST /api/hub/inbox/{agent}/i1/archive",
     ],
     [
-      "fetchArchivedUserInbox",
-      (a) => api.fetchArchivedUserInbox(a),
-      "GET /api/agents/{agent}/inbox/archive",
+      "restoreHubInboxItem",
+      (a) => api.restoreHubInboxItem(a, "i1"),
+      "POST /api/hub/inbox/{agent}/i1/restore",
     ],
     [
-      "restoreUserInboxItem",
-      (a) => api.restoreUserInboxItem(a, "i1"),
-      "POST /api/agents/{agent}/inbox/i1/restore",
+      "fetchHubInbox",
+      (a) => api.fetchHubInbox({ agent: a, status: "archived" }),
+      "GET /api/hub/inbox?agent={agent}&status=archived",
     ],
   ],
   scheduled: [
@@ -440,22 +438,6 @@ describe("stores address the agent they hold", () => {
     scheduled.reset(null);
     await scheduled.load();
     expect(seen).toEqual([]);
-  });
-
-  it("polls and acts on the inbox of whichever agent it was last reset to", async () => {
-    const seen = recordRequests();
-    userInbox.reset("scout");
-    await userInbox.refresh();
-    userInbox.reset("atlas");
-    await userInbox.refresh();
-    await userInbox.markRead("i1");
-    await userInbox.refreshArchive();
-    expect(seen).toEqual([
-      "GET /api/agents/scout/inbox",
-      "GET /api/agents/atlas/inbox",
-      "PUT /api/agents/atlas/inbox/i1/read",
-      "GET /api/agents/atlas/inbox/archive",
-    ]);
   });
 
   it("lists sessions and outbound tasks for the agent it was made for", async () => {
