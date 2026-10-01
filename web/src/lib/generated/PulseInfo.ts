@@ -12,9 +12,11 @@ export type PulseInfo = { name: string,
  */
 enabled: boolean, schedule: string | null, active_hours: string | null, agent: string | null, 
 /**
- * Estimated from the schedule and `pulse_state.json`'s last run time;
- * does not account for an `active_hours` window that would delay the
- * actual fire.
+ * When the pulse next fires, from `pulse::next_run`: the schedule since
+ * `pulse_state.json`'s last run, moved into `active_hours`. `None` for a
+ * disabled pulse, one whose schedule or active hours can't be read or
+ * never open, and every pulse when the agent's `[pulse]` is off or its
+ * `config.toml` can't be read.
  */
 next_fire_at: string | null, last_outcome: ScheduledRunOutcome | null, current_run: ScheduledCurrentRun | null, 
 /**
