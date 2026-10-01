@@ -5,11 +5,14 @@
   import { Spinner } from "../lib/ui";
   import type { FeedHistory } from "./feed-history";
   import FeedItemView from "./FeedItemView.svelte";
+  import FeedTurn from "./FeedTurn.svelte";
+  import { groupTurns } from "./turns";
 
   // A conversation in the reading column: the main chat, or a session's
-  // transcript. It follows new content while the reader is at the bottom,
-  // offers Jump to latest once they scroll up, and with `history` loads older
-  // parts as they near the top, keeping what they were reading in place.
+  // transcript, with each turn's output grouped (`turns.ts`). It follows new
+  // content while the reader is at the bottom, offers Jump to latest once
+  // they scroll up, and with `history` loads older parts as they near the
+  // top, keeping what they were reading in place.
 
   interface Props {
     /** The agent the conversation belongs to. */
@@ -24,6 +27,8 @@
     loading?: boolean;
     /** Something at the tail is growing (a turn in progress). */
     live?: boolean;
+    /** The correlation id of the turn in flight, whose block is live. */
+    liveTurnId?: string | null;
     /** What shows when there are no items. */
     empty?: Snippet;
     /** Live content after the items, such as the turn in progress. */
@@ -38,11 +43,17 @@
     history,
     loading = false,
     live = false,
+    liveTurnId = null,
     empty,
     tail,
   }: Props = $props();
 
-  const shown = $derived(verbose ? items : items.filter((item) => item.kind !== "tool-group"));
+  // A turn that has only made tool calls shows nothing until they're asked for.
+  const shown = $derived(
+    groupTurns(items, liveTurnId).filter(
+      (entry) => entry.kind === "single" || verbose || entry.items.length > 0,
+    ),
+  );
   const isEmpty = $derived(items.length === 0 && !loading);
 
   let scrollEl = $state<HTMLDivElement>();
@@ -287,7 +298,7 @@
   <!-- A scrolling region with no control inside must take focus so the keyboard can scroll it (axe's scrollable-region-focusable); Svelte counts every region as structure. -->
   <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
   <div class="feed-scroll" role="region" aria-label={label} tabindex="0" bind:this={scrollEl}>
-    <div class="feed-column" class:centered={isEmpty} bind:this={innerEl}>
+    <div class="feed-column" class:centered={items.length === 0} bind:this={innerEl}>
       {#if history}
         <div class="feed-sentinel" bind:this={topSentinel}></div>
         <div class="feed-loading" aria-hidden={!history.loadingOlder}>
@@ -300,10 +311,14 @@
       {#if isEmpty}
         {@render empty?.()}
       {/if}
-      {#each shown as item (item.id)}
-        <div class="feed-item" data-feed-item data-kind={item.kind}>
-          <FeedItemView {item} {agent} />
-        </div>
+      {#each shown as entry (entry.key)}
+        {#if entry.kind === "turn"}
+          <FeedTurn turn={entry} {agent} {verbose} />
+        {:else}
+          <div class="feed-item" data-feed-item data-kind={entry.item.kind}>
+            <FeedItemView item={entry.item} {agent} />
+          </div>
+        {/if}
       {/each}
       {@render tail?.()}
     </div>

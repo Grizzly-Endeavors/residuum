@@ -18,8 +18,7 @@
 
   let { agent, subject = "this", children }: Props = $props();
 
-  const agentState = $derived(hub.agent(agent)?.state ?? "stopped");
-  const stopping = $derived(hub.isStopping(agent));
+  const agentState = $derived(hub.displayStateOf(agent) ?? "stopped");
   let starting = $state(false);
 
   async function start(): Promise<void> {
@@ -32,7 +31,7 @@
   }
 </script>
 
-{#if agentState === "running" && !stopping}
+{#if agentState === "running"}
   {@render children?.()}
 {:else if agentState === "starting"}
   <Banner busy>Starting {agent}…</Banner>
@@ -40,7 +39,13 @@
   <Banner>
     Start {agent} to see {subject}.
     {#snippet actions()}
-      <Button size="sm" icon="play" loading={starting} disabled={stopping} onclick={start}>
+      <Button
+        size="sm"
+        icon="play"
+        loading={starting}
+        disabled={agentState === "stopping"}
+        onclick={start}
+      >
         Start {agent}
       </Button>
     {/snippet}
