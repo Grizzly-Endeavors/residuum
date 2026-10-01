@@ -206,7 +206,11 @@ function chat(shell: ShellActions): AppAction[] {
     surface: (kind, message) => {
       notifications.surface(kind, message);
     },
-    openChat: (name) => void router.openPlace({ kind: "chat", agent: name }),
+    showConversationSize: (name) => {
+      const panel = { kind: "size" } as const;
+      if (router.viewedAgent === name) void router.openPanel(panel);
+      else void router.openPlace({ kind: "chat", agent: name }, { panel });
+    },
     askForInboxNote: shell.addInboxNote,
   });
 }

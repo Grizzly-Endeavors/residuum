@@ -27,8 +27,8 @@ export interface ChatActionContext {
   stopReply: () => void;
   setVerbose: (enabled: boolean) => void;
   surface: (kind: NotificationKind, message: string) => void;
-  /** Go to the agent's chat, where a command's answer appears. */
-  openChat: (agent: string) => void;
+  /** Show the agent's conversation size in the context panel. */
+  showConversationSize: (agent: string) => void;
   /** Ask for the text of an inbox note. */
   askForInboxNote: (agent: string) => void;
 }
@@ -90,13 +90,12 @@ export function chatActions(ctx: ChatActionContext): AppAction[] {
       ...base,
       id: "chat:context",
       label: "Show conversation size",
-      icon: "sliders",
+      icon: "memory",
       command: "context",
       terms: ["tokens", "context"],
-      disabled: offline,
+      disabled: ctx.agent === null ? "Open an agent first" : undefined,
       run: () => {
-        if (ctx.agent !== null) ctx.openChat(ctx.agent);
-        ctx.send({ type: "server_command", name: "context", args: null });
+        if (ctx.agent !== null) ctx.showConversationSize(ctx.agent);
       },
     },
     {

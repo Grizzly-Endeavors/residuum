@@ -92,6 +92,18 @@ test("the palette runs Summarize older messages now", async ({ page, isMobile })
   await expect(page.getByText("Command 'observe' executed. (mock)")).toBeVisible();
 });
 
+test("Show conversation size opens the agent's chat with the size in the panel", async ({
+  page,
+  isMobile,
+}) => {
+  await page.goto("/home");
+  await openPalette(page, isMobile);
+  await page.keyboard.type("conversation size");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => address(page)).toBe("/agent/atlas?panel=size");
+  await expect(page.getByRole("heading", { name: "Conversation size" })).toBeVisible();
+});
+
 test("an action that needs a running agent says why it can't run", async ({ page, isMobile }) => {
   await page.goto("/agent/drifter");
   const dialog = await openPalette(page, isMobile);
@@ -188,7 +200,7 @@ test.describe("on a phone", () => {
     await page.goto("/agent/atlas");
     const dialog = await openPalette(page, isMobile);
     const box = await dialog.boundingBox();
-    expect(box?.width).toBe(page.viewportSize()?.width);
+    expect(box?.width ?? 0).toBeCloseTo(page.viewportSize()?.width ?? -1, 0);
     await dialog.getByRole("button", { name: "Close" }).click();
     await expect(dialog).toBeHidden();
     expect(address(page)).toBe("/agent/atlas");

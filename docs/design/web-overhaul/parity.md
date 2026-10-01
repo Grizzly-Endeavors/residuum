@@ -35,7 +35,7 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [ ] `/verbose` — **Dropped:** tool activity is always shown, collapsed by default
 - [x] `/status` — **Changed:** palette action "Show connection status"
 - [x] `/observe`, `/reflect`, `/reload`, `/stop` — **Changed:** registry actions with plain labels ("Summarize older messages now", "Condense memories now", "Reload settings", "Stop reply"), still reachable from `/`
-- [ ] `/context` — **Changed:** "Show conversation size" opens the context panel
+- [x] `/context` — **Changed:** "Show conversation size" opens the context panel
 - [x] `/inbox <text>` — **Changed:** action "Add a note to <agent>'s inbox" with a text prompt
 - [x] Unknown-command error
 - [ ] Image attach by button, paste, drag-and-drop with highlight; JPEG/PNG/GIF/WebP ≤ 5 MB; rejection message; removable thumbnails; image-only sends

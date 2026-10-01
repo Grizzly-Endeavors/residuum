@@ -15,7 +15,7 @@ function context(overrides: Partial<ChatActionContext> = {}): ChatActionContext 
     stopReply: vi.fn(),
     setVerbose: vi.fn(),
     surface: vi.fn(),
-    openChat: vi.fn(),
+    showConversationSize: vi.fn(),
     askForInboxNote: vi.fn(),
     ...overrides,
   };
@@ -59,11 +59,13 @@ describe("the former slash commands", () => {
     expect(ctx.surface).toHaveBeenCalledWith("notice", "Added a note to atlas's inbox.");
   });
 
-  it("show the conversation size in the agent's chat, where the answer lands", () => {
-    const ctx = context();
-    byId(chatActions(ctx), "chat:context").run();
-    expect(ctx.openChat).toHaveBeenCalledWith("atlas");
-    expect(ctx.send).toHaveBeenCalledWith({ type: "server_command", name: "context", args: null });
+  it("show the conversation size in the panel, even for an agent that isn't running", () => {
+    const ctx = context({ state: "stopped" });
+    const size = byId(chatActions(ctx), "chat:context");
+    expect(size.disabled).toBeUndefined();
+    size.run();
+    expect(ctx.showConversationSize).toHaveBeenCalledWith("atlas");
+    expect(ctx.send).not.toHaveBeenCalled();
   });
 
   it("ask for a note's text when the inbox action has none", () => {
@@ -89,13 +91,7 @@ describe("disabled reasons", () => {
 
   it("ask for the agent to be started when it isn't running", () => {
     const disabled = reasons(context({ state: "stopped" }));
-    for (const id of [
-      "chat:observe",
-      "chat:reflect",
-      "chat:context",
-      "chat:reload",
-      "chat:inbox",
-    ]) {
+    for (const id of ["chat:observe", "chat:reflect", "chat:reload", "chat:inbox"]) {
       expect(disabled[id], id).toBe("Start atlas first");
     }
     expect(disabled["chat:stop"]).toBe("Start atlas first");
