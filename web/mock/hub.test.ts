@@ -586,6 +586,100 @@ describe("hub socket", () => {
       });
     });
   });
+
+  describe("presence", () => {
+    let socket: TestSocket;
+
+    beforeEach(async () => {
+      // A fixed clock, so a report goes stale when the test says it does.
+      await harness.close();
+      harness = await startMockServer({ deterministic: true });
+      socket = await harness.openSocket("/api/hub/ws");
+      await socket.nextOfType("agents_snapshot");
+    });
+
+    /** Tell the hub a page's window for push device `deviceId` is `active`, and wait for it to be handled. */
+    async function report(from: TestSocket, deviceId: string, active: boolean): Promise<Frame[]> {
+      from.send({ type: "presence", device_id: deviceId, active });
+      return from.quietFrames();
+    }
+
+    it("keeps the devices a page reports active, and drops one it reports inactive", async () => {
+      expect(harness.hub.presentPushDevices()).toEqual([]);
+
+      expect(await report(socket, "phone", true)).toEqual([]);
+      await report(socket, "laptop", true);
+      expect(harness.hub.presentPushDevices()).toEqual(["laptop", "phone"]);
+
+      await report(socket, "phone", false);
+      expect(harness.hub.presentPushDevices()).toEqual(["laptop"]);
+    });
+
+    it("answers the test control with the devices the hub would send no push", async () => {
+      await report(socket, "phone", true);
+
+      const res = await fetchJson(`${harness.baseUrl}/api/mock/push/presence`);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ devices: ["phone"] });
+    });
+
+    it("ends a page's reports when it disconnects", async () => {
+      await report(socket, "phone", true);
+      const other = await harness.openSocket("/api/hub/ws");
+      await report(other, "laptop", true);
+
+      await socket.close();
+
+      await expect.poll(() => harness.hub.presentPushDevices()).toEqual(["laptop"]);
+    });
+
+    it("lets a report go stale after a minute, and a repeated report keeps the device present", async () => {
+      const { clock } = harness.hub.env;
+      await report(socket, "phone", true);
+      clock.advance(59_999);
+      expect(harness.hub.presentPushDevices()).toEqual(["phone"]);
+      clock.advance(1);
+      expect(harness.hub.presentPushDevices()).toEqual([]);
+
+      await report(socket, "phone", true);
+      clock.advance(30_000);
+      await report(socket, "phone", true);
+      clock.advance(30_000);
+      expect(harness.hub.presentPushDevices()).toEqual(["phone"]);
+    });
+
+    it("keeps a device present while any page still reports it active", async () => {
+      const other = await harness.openSocket("/api/hub/ws");
+      await report(socket, "laptop", true);
+      await report(other, "laptop", true);
+
+      await report(socket, "laptop", false);
+      expect(harness.hub.presentPushDevices()).toEqual(["laptop"]);
+
+      await report(other, "laptop", false);
+      expect(harness.hub.presentPushDevices()).toEqual([]);
+    });
+
+    it.each([
+      JSON.stringify({ type: "presence", device_id: "phone" }),
+      JSON.stringify({ type: "presence", active: true }),
+      JSON.stringify({ type: "presence", device_id: "phone", active: "yes" }),
+      JSON.stringify({ type: "presence", device_id: 7, active: true }),
+    ])("refuses %s like any frame it can't read", async (frame) => {
+      socket.sendRaw(frame);
+
+      const notice = (await socket.quietFrames()).find((f) => f.type === "notice");
+
+      expect(notice).toEqual({
+        type: "notice",
+        level: "warn",
+        message:
+          "Residuum couldn't read a message from this page. Reload the page if team files stop updating.",
+      });
+      expect(harness.hub.presentPushDevices()).toEqual([]);
+    });
+  });
 });
 
 describe("hub config reload", () => {

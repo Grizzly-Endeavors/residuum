@@ -82,7 +82,11 @@ export function createHub(
 
   const listing = (): AgentListResponse => mockListing(agents.values());
   const bootId = env.deterministic ? MOCK_DETERMINISTIC_BOOT_ID : randomUUID();
-  const { broadcast: sendToPages, dropClients } = openHubSocket(host, bootId, listing);
+  const {
+    broadcast: sendToPages,
+    dropClients,
+    presentDevices,
+  } = openHubSocket(host, bootId, listing, env.clock);
   const teamEvents = createTeamEvents(env, bootId, sendToPages);
   const overview = createOverview(env, bootId, agents, sendToPages);
   // Every frame the hub sends is also read by the log and the overview, as
@@ -106,6 +110,7 @@ export function createHub(
     deleted: new Map(),
     hubState,
     broadcast,
+    presentPushDevices: presentDevices,
     teamEvents,
     overview,
     summary: mockAgentSummary,
