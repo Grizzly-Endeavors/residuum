@@ -1,4 +1,5 @@
 import { expect, test } from "../support/fixtures";
+import { expectFileOpen } from "../support/lazy";
 import { expectScreenshot } from "../support/screenshot";
 
 /** Files and Shared files: the tree, the editor in the context panel, and a file's history. */
@@ -6,7 +7,7 @@ import { expectScreenshot } from "../support/screenshot";
 test.describe("files", { tag: "@visual" }, () => {
   test("an agent's files, with a file open and edited", async ({ page }) => {
     await page.goto("/agent/atlas/files?panel=file:config/channels.toml");
-    const text = page.getByRole("textbox", { name: "Contents of channels.toml" });
+    const text = await expectFileOpen(page, "channels.toml");
     await expect(text).toHaveValue(/\[telegram\]/);
     await text.press("ControlOrMeta+End");
     await text.pressSequentially("broken = ");

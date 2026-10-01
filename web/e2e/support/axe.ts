@@ -8,6 +8,7 @@
  */
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
+import { settleAnimations } from "./app";
 
 type Violation = Awaited<ReturnType<AxeBuilder["analyze"]>>["violations"][number];
 
@@ -52,24 +53,9 @@ function describeViolation(violation: Violation): string {
 }
 
 /**
- * Wait for every animation that ends to finish. A layer still fading in has
- * its text at part opacity, which axe measures as low contrast.
- */
-async function settleAnimations(page: Page): Promise<void> {
-  await page.evaluate(() =>
-    Promise.all(
-      document
-        .getAnimations()
-        .filter((animation) => animation.effect?.getComputedTiming().endTime !== Infinity)
-        .map((animation) => animation.finished.catch(() => undefined)),
-    ),
-  );
-}
-
-/**
  * Scan `page` with axe and fail on serious and critical violations that aren't
- * allowed. Entrance animations finish first; spinners and other endless ones
- * are left running.
+ * allowed. Entrance animations finish first (`settleAnimations`); spinners and
+ * other endless ones are left running.
  */
 export async function expectNoAxeViolations(
   page: Page,

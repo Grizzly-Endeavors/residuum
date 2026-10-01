@@ -1,5 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../support/fixtures";
+import { expectPaletteOpen, expectSettingsOpen } from "../support/lazy";
 
 /**
  * The safe areas (design §2): with `viewport-fit=cover` a phone's notch,
@@ -125,8 +126,7 @@ test.describe("on a phone", () => {
     await expect(drawer).toBeHidden();
 
     await bar.getByRole("button", { name: "Search" }).click();
-    const palette = page.getByRole("dialog", { name: "Search and commands" });
-    await expect(palette).toBeVisible();
+    const palette = await expectPaletteOpen(page);
     await settledBox(palette);
     const field = await settledBox(palette.getByRole("combobox"));
     expect(field.y).toBeGreaterThanOrEqual(insets.top);
@@ -134,8 +134,7 @@ test.describe("on a phone", () => {
     await expect(palette).toBeHidden();
 
     await bar.getByRole("button", { name: "Settings" }).click();
-    const settings = page.getByRole("dialog", { name: "Settings" });
-    await expect(settings).toBeVisible();
+    const settings = await expectSettingsOpen(page);
     await settledBox(settings);
     const sections = await settledBox(page.getByRole("navigation", { name: "Settings sections" }));
     expect(sections.y).toBeGreaterThanOrEqual(insets.top);

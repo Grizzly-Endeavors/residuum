@@ -12,10 +12,17 @@
  */
 import { expect, type Locator, type Page } from "@playwright/test";
 import { FIXED_START_MS } from "../../mock/env";
+import {
+  fontsLoaded,
+  imagesLoaded,
+  settleAnimations,
+  waitForApp,
+  type AppReadyOptions,
+} from "./app";
 
 export const MASK_ATTRIBUTE = "data-visual-mask";
 
-export interface ScreenshotOptions {
+export interface ScreenshotOptions extends AppReadyOptions {
   /** Regions to paint over in this screenshot, beyond the `data-visual-mask` ones. */
   mask?: readonly Locator[];
   /** Capture the whole scrollable page instead of the viewport. */
@@ -24,7 +31,9 @@ export interface ScreenshotOptions {
 
 /**
  * Compare `page` with the baseline called `name`. Wait for the page to reach
- * the state under test first: the helper only waits for fonts.
+ * the state under test first: the helper only waits for the app, the hub
+ * socket (lost, when the test has taken the hub down to shoot the banner), the
+ * animations that end, and the fonts and images the page uses.
  */
 export async function expectScreenshot(
   page: Page,
@@ -37,9 +46,13 @@ export async function expectScreenshot(
     "the page's clock must be frozen for screenshots: run the spec in a visual project",
   ).toBe(FIXED_START_MS);
 
-  await page.evaluate(async () => {
-    await document.fonts.ready;
-  });
+  // The socket can drop between the spec's last wait and here, which shows the
+  // "Can't reach Residuum" banner until it reconnects.
+  await waitForApp(page, { hub: options.hub });
+  await settleAnimations(page);
+  // What the spec opened since the page loaded can draw glyphs from a font file that has not loaded yet.
+  await fontsLoaded(page);
+  await imagesLoaded(page);
 
   await expect(page).toHaveScreenshot(`${name}.png`, {
     animations: "disabled",

@@ -1,6 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
+import { expectFileOpen } from "../support/lazy";
 
 /**
  * The chat feed: older history loading near the top, Jump to latest, catching
@@ -185,9 +186,9 @@ test.describe("path links", () => {
     await expect(page).toHaveURL(
       /\/agent\/atlas\?panel=file:team\/wiki\/notification-fallbacks\.md$/,
     );
-    await expect(
-      page.getByRole("textbox", { name: "Contents of notification-fallbacks.md" }),
-    ).toHaveValue(/# Fallbacks/);
+    await expect(await expectFileOpen(page, "notification-fallbacks.md")).toHaveValue(
+      /# Fallbacks/,
+    );
 
     await page.goBack();
     await expect(page).toHaveURL(/\/agent\/atlas$/);

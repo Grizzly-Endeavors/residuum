@@ -5,14 +5,17 @@
  * - resets the mock before every test, so no test sees what another left behind,
  * - keeps the page on loopback, so a font or script on the internet can't change a run,
  * - freezes the page's clock at the mock's clock when a project asks for it,
+ * - makes `page.goto` and `page.reload` wait until the app is usable (`waitForApp`
+ *   in `app.ts`), so a spec's first action never lands on a half-built page,
  * - skips, with the reason, what can't run here: visual specs outside the
  *   Playwright container, and the WebKit project on a machine that can't start WebKit.
  *
  * All tests share one mock server, whose state is global, so the suite runs on
  * one worker (see `playwright.config.ts`).
  */
-import { expect, test as base, webkit } from "@playwright/test";
+import { expect, test as base, webkit, type Page, type Response } from "@playwright/test";
 import { FIXED_START_MS } from "../../mock/env";
+import { hubReach, waitForApp } from "./app";
 
 export { expect };
 
@@ -66,6 +69,33 @@ function noteOnce(message: string): void {
   process.stderr.write(`\n${message}\n\n`);
 }
 
+/**
+ * Whether a navigation landed on a page of the app under test, as opposed to
+ * an artifact's page on its own origin or something that isn't a page. Those
+ * have no shell to wait for.
+ */
+function isAppPage(response: Response | null, baseURL: string | undefined): boolean {
+  if (response === null || baseURL === undefined) return false;
+  const isHtml = (response.headers()["content-type"] ?? "").includes("text/html");
+  return isHtml && new URL(response.url()).origin === new URL(baseURL).origin;
+}
+
+/** Make `page.goto` and `page.reload` return once the app is usable, not once the document has loaded. */
+function waitForAppAfterLoads(page: Page, baseURL: string | undefined): void {
+  const goto = page.goto.bind(page);
+  const reload = page.reload.bind(page);
+  page.goto = async (url, options) => {
+    const response = await goto(url, options);
+    if (isAppPage(response, baseURL)) await waitForApp(page);
+    return response;
+  };
+  page.reload = async (options) => {
+    const response = await reload(options);
+    if (isAppPage(response, baseURL)) await waitForApp(page);
+    return response;
+  };
+}
+
 const USE_CONTAINER_HINT = "or run `just web-e2e-webkit` to use the Playwright container";
 
 /** Why WebKit can't start on this machine, in one line, or `null` when it can. Probed once per worker. */
@@ -100,6 +130,9 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
         post: async (path, options) => {
           const response = await request.post(path, options);
           expect(response.ok(), `POST ${path} answered ${response.status()}`).toBe(true);
+          // A page loaded while the hub is out of reach is ready when it shows the banner (see `hubReach`).
+          if (path === "/api/mock/hub-socket") hubReach.lost = options?.data?.online === false;
+          if (path === "/api/mock/reset") hubReach.lost = false;
           return (await response.json()) as unknown;
         },
       };
@@ -140,6 +173,17 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
   context: async ({ context, frozenClock }, use) => {
     await context.route(leavesLoopback, (route) => route.abort("blockedbyclient"));
     if (frozenClock) await context.clock.setFixedTime(FIXED_START_MS);
+    // With the network off the hub can't be reached, so a page that loads then is ready showing the banner (see `hubReach`).
+    const setOffline = context.setOffline.bind(context);
+    context.setOffline = async (offline) => {
+      hubReach.lost = offline;
+      await setOffline(offline);
+    };
     await use(context);
+  },
+
+  page: async ({ page, baseURL }, use) => {
+    waitForAppAfterLoads(page, baseURL);
+    await use(page);
   },
 });

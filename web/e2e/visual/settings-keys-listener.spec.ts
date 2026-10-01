@@ -1,4 +1,3 @@
-import type { Page } from "@playwright/test";
 import { MOCK_VAPID_PUBLIC_KEY } from "../../mock/push";
 import { expect, test } from "../support/fixtures";
 import { fakePushService } from "../support/push";
@@ -10,23 +9,12 @@ import { expectScreenshot } from "../support/screenshot";
  * compared.
  */
 
-/**
- * Open `url` once the hub socket is up (the overview is fetched when it says
- * hello), so a slow connection's banner isn't shot.
- */
-async function openConnected(page: Page, url: string): Promise<void> {
-  const hello = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/hub/overview");
-  await page.goto(url);
-  await hello;
-  await expect(page.getByText("Can't reach Residuum.")).toBeHidden();
-}
-
 test.describe(
   "settings: saved keys, listener, notifications and history",
   { tag: "@visual" },
   () => {
     test("Saved keys, with the add key form open", async ({ page }) => {
-      await openConnected(page, "/home?settings=_all/keys");
+      await page.goto("/home?settings=_all/keys");
       await expect(page.getByRole("list", { name: "Agent keys" })).toContainText("github_token");
       await expect(page.getByRole("list", { name: "Stored secrets" })).toContainText("openai_key");
       await page.getByRole("button", { name: "Add a key" }).click();
@@ -39,7 +27,7 @@ test.describe(
     });
 
     test("Agent-to-agent listener, with a new caller key's token shown", async ({ page }) => {
-      await openConnected(page, "/home?settings=_all/listener");
+      await page.goto("/home?settings=_all/listener");
       await expect(page.getByRole("list", { name: "Caller keys" })).toContainText("laptop");
       await page.getByRole("button", { name: "Add a caller key" }).click();
       await page.getByLabel("Name", { exact: true }).fill("phone");
@@ -55,7 +43,7 @@ test.describe(
     });
 
     test("Agent-to-agent listener, switched off", async ({ page }) => {
-      await openConnected(page, "/home?settings=_all/listener");
+      await page.goto("/home?settings=_all/listener");
       await page.getByRole("switch", { name: "Let other agents reach this install" }).click();
       await expect(page.getByLabel("Listener port")).toBeDisabled();
       await page.getByRole("switch", { name: "Let other agents reach this install" }).blur();
@@ -73,7 +61,7 @@ test.describe(
           label: "Old tablet",
         },
       });
-      await openConnected(page, "/home?settings=_all/notifications");
+      await page.goto("/home?settings=_all/notifications");
       const thisDevice = page.getByRole("region", { name: "This device" });
       await thisDevice.getByLabel("Name for this device").fill("Pixel 7");
       await thisDevice.getByRole("button", { name: "Turn on notifications" }).click();
@@ -84,14 +72,14 @@ test.describe(
 
     test("Notifications, before they are turned on", async ({ page, context }) => {
       await fakePushService(context, { registration: true });
-      await openConnected(page, "/home?settings=_all/notifications");
+      await page.goto("/home?settings=_all/notifications");
       await expect(page.getByRole("button", { name: "Turn on notifications" })).toBeVisible();
       await expect(page.getByText("No other devices get notifications.")).toBeVisible();
       await expectScreenshot(page, "settings-notifications-off");
     });
 
     test("History of the install-wide config, with a checkpoint open", async ({ page }) => {
-      await openConnected(page, "/home?settings=_all/history");
+      await page.goto("/home?settings=_all/history");
       await page.getByRole("radio", { name: "Install-wide config" }).click();
       await page.getByRole("button", { name: /^config patch/ }).click();
       await expect(page.getByRole("list", { name: "Files this checkpoint changed" })).toBeVisible();

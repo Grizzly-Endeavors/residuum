@@ -1,6 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
+import { expectSetupOpen } from "../support/lazy";
 
 const DRAFT_KEY = "residuum-setup-draft";
 
@@ -18,7 +19,7 @@ test.beforeEach(async ({ page, mock }) => {
   // A hub with no agents opens the setup wizard.
   await mock.post("/api/mock/reset", { data: { setup: true } });
   await page.goto("/");
-  await expect(stepHeading(page, "Welcome to Residuum")).toBeVisible();
+  await expectSetupOpen(page);
 });
 
 test("completes the wizard and opens the app on the new agent", async ({ page }) => {

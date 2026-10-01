@@ -1,6 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
+import { expectPaletteOpen, expectSettingsOpen, expectSetupOpen } from "../support/lazy";
 
 /**
  * The shell: every place from the rail (the drawer on phones) and the phone's
@@ -104,25 +105,28 @@ const PLACES: readonly PlaceCase[] = [
   },
 ];
 
-test("every place opens from the rail, or the drawer on a phone", async ({ page, isMobile }) => {
-  await page.goto("/home");
-  await expect(page.getByRole("heading", { name: "Home", level: 1 })).toBeVisible();
-
+// One test for each place, with its own timeout: opening a place and scanning it runs for seconds on a loaded machine, so all of them in one test overrun it.
+test.describe("every place opens from the rail, or the drawer on a phone", () => {
   for (const place of PLACES) {
-    const rail = await openRail(page, isMobile);
-    if (place.agent !== undefined) await expandAgent(rail, place.agent);
-    await rail.getByRole("link", { name: place.link }).click();
+    test(place.name, async ({ page, isMobile }) => {
+      await page.goto("/home");
+      await expect(page.getByRole("heading", { name: "Home", level: 1 })).toBeVisible();
 
-    await expect.poll(() => address(page), place.name).toBe(place.path);
-    await expect(place.shows(page), place.name).toBeVisible();
-    await expect(page.getByRole("dialog", { name: "Agents and places" })).toBeHidden();
-    if (!isMobile) {
-      await expect(rail.getByRole("link", { name: place.link })).toHaveAttribute(
-        "aria-current",
-        "page",
-      );
-    }
-    await expectNoAxeViolations(page, { exclude: LEGACY });
+      const rail = await openRail(page, isMobile);
+      if (place.agent !== undefined) await expandAgent(rail, place.agent);
+      await rail.getByRole("link", { name: place.link }).click();
+
+      await expect.poll(() => address(page), place.name).toBe(place.path);
+      await expect(place.shows(page), place.name).toBeVisible();
+      await expect(page.getByRole("dialog", { name: "Agents and places" })).toBeHidden();
+      if (!isMobile) {
+        await expect(rail.getByRole("link", { name: place.link })).toHaveAttribute(
+          "aria-current",
+          "page",
+        );
+      }
+      await expectNoAxeViolations(page, { exclude: LEGACY });
+    });
   }
 });
 
@@ -162,13 +166,13 @@ test.describe("the phone's bottom bar", () => {
     await expect.poll(() => address(page)).toBe("/home");
 
     await bar.getByRole("button", { name: "Search" }).click();
-    await expect(page.getByRole("dialog", { name: "Search and commands" })).toBeVisible();
+    const palette = await expectPaletteOpen(page);
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("dialog", { name: "Search and commands" })).toBeHidden();
+    await expect(palette).toBeHidden();
 
     await bar.getByRole("button", { name: "Settings" }).click();
     await expect.poll(() => address(page)).toBe("/home?settings=_all");
-    await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
+    await expectSettingsOpen(page);
     await page.keyboard.press("Escape");
     await expect.poll(() => address(page)).toBe("/home");
   });
@@ -277,11 +281,14 @@ const REDIRECTS: readonly (readonly [from: string, to: string])[] = [
   ["/notification/abc123", "/agent/atlas/files"],
 ];
 
-test("old URLs redirect to where they lead now", async ({ page }) => {
+// One test for each URL: every one is a full page load, so a single test over all of them spends its timeout on the sum of the loads.
+test.describe("old URLs redirect to where they lead now", () => {
   for (const [from, to] of REDIRECTS) {
-    await page.goto(from);
-    await expect.poll(() => address(page), from).toBe(to);
-    await expect(page.getByRole("main")).toBeVisible();
+    test(`${from} leads to ${to}`, async ({ page }) => {
+      await page.goto(from);
+      await expect.poll(() => address(page), from).toBe(to);
+      await expect(page.getByRole("main")).toBeVisible();
+    });
   }
 });
 
@@ -325,7 +332,7 @@ test("Settings opens on the viewed agent's scope, or All agents, and closes back
   let rail = await openRail(page, isMobile);
   await rail.getByRole("button", { name: "Settings" }).click();
   await expect.poll(() => address(page)).toBe("/agent/atlas?settings=atlas");
-  await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
+  await expectSettingsOpen(page);
   await expect(page.getByRole("dialog", { name: "Agents and places" })).toBeHidden();
   await page.keyboard.press("Escape");
   await expect.poll(() => address(page)).toBe("/agent/atlas");
@@ -335,6 +342,7 @@ test("Settings opens on the viewed agent's scope, or All agents, and closes back
   rail = await openRail(page, isMobile);
   await rail.getByRole("button", { name: "Settings" }).click();
   await expect.poll(() => address(page)).toBe("/home?settings=_all");
+  await expectSettingsOpen(page);
   await expect(page.getByRole("combobox", { name: "Settings for" })).toHaveValue("_all");
 });
 
@@ -366,7 +374,7 @@ test("setup mode has no shell, and neither ? nor the palette's keys open anythin
 }) => {
   await mock.post("/api/mock/reset", { data: { setup: true } });
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Welcome to Residuum", level: 1 })).toBeVisible();
+  await expectSetupOpen(page);
   await expect(page.getByRole("navigation", { name: "Places and agents" })).toHaveCount(0);
 
   await page.locator("body").press("?");
