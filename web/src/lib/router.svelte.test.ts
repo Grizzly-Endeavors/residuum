@@ -24,9 +24,22 @@ interface Harness {
 
 const started: Router[] = [];
 
+/**
+ * jsdom reports a traversal after a chain of up to three zero-delay timers, each
+ * queued by the one before, and a guarded Back or a closing modal can start a
+ * second traversal behind the first. Zero-delay timers run in the order they
+ * were queued however long the event loop stalls, so waiting in turns of the
+ * same timer lets every one of them run first. A wait measured in milliseconds
+ * can end between two links of the chain once the machine is busy, and the
+ * traversal then lands after the assertion.
+ */
+const SETTLE_TURNS = 12;
+
 /** Let the browser report traversals and the router finish what they start. */
 async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 15));
+  for (let turn = 0; turn < SETTLE_TURNS; turn += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
 }
 
 const chat = (agent: string): Place => ({ kind: "chat", agent });
