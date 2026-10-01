@@ -2,20 +2,17 @@
   import { onMount, untrack } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
   import { ws } from "../lib/ws.svelte";
-  import { legacyRouter } from "../lib/legacy-router.svelte";
   import { router } from "../lib/router.svelte";
   import { deleteWorkbenchArtifact, fetchWorkbenchInfo, fetchWorkbenchArtifacts } from "../lib/api";
   import { resolveArtifactsOrigin, type ArtifactsOrigin } from "../lib/workbench";
   import { userErrorMessage } from "../lib/errors";
   import { notifications } from "../lib/notifications.svelte";
   import { relativeTime } from "../lib/time";
-  import { Icon } from "../lib/icons";
   import type { ArtifactSummary } from "../lib/types";
   import { notifyWithUndo } from "../lib/undo";
   import WorkbenchArtifact from "./WorkbenchArtifact.svelte";
 
-  let { artifact, full, onClose }: { artifact: string | null; full: boolean; onClose: () => void } =
-    $props();
+  let { artifact }: { artifact: string | null } = $props();
 
   // How long an artifact's seam glows after the agent changes it.
   const CHANGE_GLOW_MS = 2400;
@@ -28,6 +25,8 @@
   const justChanged = new SvelteSet<string>();
   const deleting = new SvelteSet<string>();
   let listHeading: HTMLHeadingElement | undefined = $state();
+  /** The open artifact fills the window. A view of this page, so not in the URL. */
+  let full = $state(false);
 
   let currentTitle = $derived(artifacts.find((a) => a.name === artifact)?.title ?? artifact ?? "");
 
@@ -86,7 +85,8 @@
     // Let modified clicks open the artifact in a new tab.
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
     event.preventDefault();
-    legacyRouter.openWorkbench(name);
+    full = false;
+    void router.openPlace({ kind: "workbench", artifact: name });
   }
 
   async function remove(item: ArtifactSummary) {
@@ -118,8 +118,11 @@
         title={currentTitle}
         origin={artifactsOrigin}
         {full}
-        onBack={() => legacyRouter.openWorkbench(null)}
-        onSetFull={(next) => legacyRouter.setWorkbenchFull(next)}
+        onBack={() => {
+          full = false;
+          void router.openPlace({ kind: "workbench", artifact: null });
+        }}
+        onSetFull={(next) => (full = next)}
       />
     {/key}
   {:else}
@@ -127,14 +130,6 @@
       <h1 class="settings-title workbench-title" tabindex="-1" bind:this={listHeading}>
         Workbench
       </h1>
-      <button
-        class="icon-btn"
-        title="Close workbench"
-        aria-label="Close workbench"
-        onclick={onClose}
-      >
-        <Icon name="close" size={16} />
-      </button>
     </div>
 
     <div class="workbench-body">

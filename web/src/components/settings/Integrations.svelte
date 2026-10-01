@@ -7,7 +7,6 @@
   import { toast } from "../../lib/toast.svelte";
   import { notifyFormUndo } from "../../lib/form-undo";
   import type { PendingSaveTracker } from "../../lib/pending-save";
-  import { legacyRouter } from "../../lib/legacy-router.svelte";
 
   let {
     fields = $bindable(),
@@ -632,7 +631,7 @@
           <div class="webhook-entry">
             <div class="webhook-entry-header">
               <span class="webhook-entry-label">
-                {wh.name ? `/webhook/${legacyRouter.agent ?? "agent"}/${wh.name}` : "New webhook"}
+                {wh.name ? `/webhook/${agent ?? "agent"}/${wh.name}` : "New webhook"}
               </span>
               <button class="btn btn-sm btn-danger" onclick={() => removeWebhook(i)}>Remove</button>
             </div>

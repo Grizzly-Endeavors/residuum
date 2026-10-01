@@ -103,6 +103,7 @@ export function createHub(
     lagSessionRelay,
     dropClients,
     presentDevices,
+    setOnline: setHubSocketOnline,
   } = openHubSocket(host, bootId, listing, env.clock, (name) => agents.has(name));
   const teamEvents = createTeamEvents(env, bootId, sendToPages);
   const overview = createOverview(env, bootId, agents, sendToPages);
@@ -192,8 +193,10 @@ export function createHub(
       }
       broadcast({ type: "agent_state", agent: mockAgentSummary(agent) });
     },
+    setHubSocketOnline,
     reset({ setup = false } = {}) {
       env.reset();
+      setHubSocketOnline(true);
       dropClients();
       const gone = [...hub.deleted.values()].map((deleted) => deleted.agent);
       for (const agent of [...agents.values(), ...gone]) agent.dispose();

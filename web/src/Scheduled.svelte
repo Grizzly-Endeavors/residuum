@@ -5,8 +5,6 @@
   import { formatLocalDateTime } from "./lib/session-format";
   import { Icon } from "./lib/icons";
 
-  let { onClose }: { onClose: () => void } = $props();
-
   onMount(() => {
     scheduled.startWatching((listener) => ws.onFrame(listener));
     void scheduled.load();
@@ -28,14 +26,6 @@
         disabled={scheduled.loading}
       >
         <Icon name="reload" size={16} />
-      </button>
-      <button
-        class="icon-btn"
-        title="Close"
-        aria-label="Close the scheduled view"
-        onclick={onClose}
-      >
-        <Icon name="close" size={16} />
       </button>
     </div>
   </div>

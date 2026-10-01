@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import type {
     SettingsMode,
     McpServerEntry,
@@ -46,10 +46,12 @@
     type ConfigFields,
   } from "./lib/settings-toml";
   import {
-    legacySectionsFor,
-    type LegacyScope,
-    type LegacySection,
-  } from "./lib/legacy-settings-sections";
+    ALL_SCOPE,
+    scopeKind,
+    sectionGroups,
+    sectionsOf,
+    type SectionId,
+  } from "./lib/settings-sections";
   import Runtime from "./components/settings/Runtime.svelte";
   import Pulses from "./components/settings/Pulses.svelte";
   import HubGeneral from "./components/settings/HubGeneral.svelte";
@@ -71,22 +73,24 @@
   import { requireAgent } from "./lib/paths";
 
   // One page edits one scope: an agent's files, or the hub's. The page is
-  // remounted when the scope or the agent changes, so `scope` is fixed for
-  // the life of the component.
+  // remounted when the scope changes, so `scope` is fixed for the life of the
+  // component. It lists the registry's sections and shows each one with the
+  // panels that hold its settings today.
   let {
     scope,
-    agent,
     section: activeSection,
     onSelectSection,
     onClose,
   }: {
-    scope: LegacyScope;
-    /** The agent whose settings these are; named in the title for agent scope. */
-    agent: string | null;
-    section: LegacySection;
-    onSelectSection: (section: LegacySection) => void;
+    /** An agent's name, or `_all` for the install-wide settings. */
+    scope: string;
+    section: SectionId;
+    onSelectSection: (section: SectionId) => void;
     onClose: () => void;
   } = $props();
+
+  // svelte-ignore state_referenced_locally
+  const agent = scope === ALL_SCOPE ? null : scope;
 
   /**
    * The agent an agent page reads and writes; throws `NoAgentSelectedError`
@@ -99,12 +103,22 @@
 
   // ── State ──────────────────────────────────────────────────────────
 
-  // svelte-ignore state_referenced_locally
-  const isHub = scope === "hub";
+  const isHub = agent === null;
 
-  let settingsMode = $state<SettingsMode>(
-    (localStorage.getItem("residuum-settings-mode") as SettingsMode) || "simple",
-  );
+  const MODE_KEY = "residuum-settings-mode";
+
+  /** Which fields the forms show, remembered between visits. Raw config is a section of its own. */
+  function readFormMode(): "simple" | "advanced" {
+    try {
+      return localStorage.getItem(MODE_KEY) === "advanced" ? "advanced" : "simple";
+    } catch {
+      return "simple";
+    }
+  }
+
+  let formMode = $state(readFormMode());
+  // svelte-ignore state_referenced_locally
+  let settingsMode = $state<SettingsMode>(activeSection === "raw" ? "raw" : formMode);
   let loading = $state(true);
   let saving = $state(false);
   let statusMsg = $state("");
@@ -162,30 +176,24 @@
   let mobileNavOpen = $state(false);
 
   // svelte-ignore state_referenced_locally
-  const sections = legacySectionsFor(scope);
+  const sectionScope = scopeKind(scope);
+  const sections = sectionsOf(sectionScope);
+  const groups = sectionGroups(sectionScope);
 
   let simple = $derived(settingsMode === "simple");
 
-  let title = $derived.by(() => {
-    if (isHub) return "Hub settings";
-    return agent ? `${agent} settings` : "Settings";
-  });
-
-  let scopeNote = $derived.by(() => {
-    if (isHub) return "Applies to every agent";
-    return agent ? `Applies to ${agent} only` : "Applies to this agent only";
-  });
-
-  /** The Integrations file's groups that back each of the agent's sections. */
-  const INTEGRATIONS_PARTS = {
-    channels: "channels",
-    webhooks: "webhooks",
-    skills: "tools",
-  } as const;
+  const title = agent === null ? "All agents" : `${agent} settings`;
+  const scopeNote = agent === null ? "Applies to every agent" : `Only affects ${agent}`;
 
   function activeLabel(): string {
     return sections.find((s) => s.id === activeSection)?.label ?? sections[0]?.label ?? "";
   }
+
+  // The Raw config section is the raw editors; every other section shows the forms.
+  $effect(() => {
+    const mode = activeSection === "raw" ? "raw" : formMode;
+    untrack(() => setMode(mode));
+  });
 
   // ── Load ───────────────────────────────────────────────────────────
 
@@ -228,6 +236,7 @@
     try {
       await fetchScopeFiles(false);
       parseAllToForm();
+      if (settingsMode === "raw") fillRawEditors();
     } catch (err: unknown) {
       statusMsg = userErrorMessage(err, { action: "Couldn't load settings." });
       statusKind = "error";
@@ -392,24 +401,35 @@
 
   // ── Mode switching ────────────────────────────────────────────────
 
+  function fillRawEditors(): void {
+    editConfig = rawConfig;
+    editHubConfig = rawHubConfig;
+    editProviders = rawProviders;
+    editMcp = rawMcp;
+  }
+
   function setMode(mode: SettingsMode) {
     if (mode === settingsMode) return;
     statusMsg = "";
     statusKind = "";
 
     if (mode === "raw") {
-      // Entering raw — load text editors
-      editConfig = rawConfig;
-      editHubConfig = rawHubConfig;
-      editProviders = rawProviders;
-      editMcp = rawMcp;
+      fillRawEditors();
     } else if (settingsMode === "raw") {
       // Leaving raw — reload form from saved raw state
       parseAllToForm();
     }
 
     settingsMode = mode;
-    localStorage.setItem("residuum-settings-mode", mode);
+  }
+
+  function setFormMode(mode: "simple" | "advanced"): void {
+    formMode = mode;
+    try {
+      localStorage.setItem(MODE_KEY, mode);
+    } catch {
+      // Not remembered between visits; this visit still switches.
+    }
   }
 
   // ── Reload ─────────────────────────────────────────────────────────
@@ -874,6 +894,31 @@
   }
 </script>
 
+{#snippet navButton(id: SectionId, label: string)}
+  <button
+    class="settings-sidebar-btn"
+    class:active={activeSection === id}
+    aria-current={activeSection === id ? "page" : undefined}
+    onclick={() => {
+      onSelectSection(id);
+      mobileNavOpen = false;
+    }}
+  >
+    {label}
+  </button>
+{/snippet}
+
+{#snippet integrations(part: "channels" | "webhooks" | "tools")}
+  <Integrations
+    bind:fields={configFields}
+    {simple}
+    {part}
+    {agent}
+    {pendingSave}
+    onReload={reloadConfigFile}
+  />
+{/snippet}
+
 <div class="settings-view emerges">
   <div class="settings-header">
     <div class="settings-heading">
@@ -893,32 +938,26 @@
       >
         <Icon name="reload" size={16} />
       </button>
-      <div class="settings-mode-selector" role="group" aria-label="Settings view">
-        <button
-          class="settings-mode-btn"
-          class:active={settingsMode === "simple"}
-          aria-pressed={settingsMode === "simple"}
-          onclick={() => setMode("simple")}
-        >
-          Simple
-        </button>
-        <button
-          class="settings-mode-btn"
-          class:active={settingsMode === "advanced"}
-          aria-pressed={settingsMode === "advanced"}
-          onclick={() => setMode("advanced")}
-        >
-          Advanced
-        </button>
-        <button
-          class="settings-mode-btn"
-          class:active={settingsMode === "raw"}
-          aria-pressed={settingsMode === "raw"}
-          onclick={() => setMode("raw")}
-        >
-          Raw
-        </button>
-      </div>
+      {#if settingsMode !== "raw"}
+        <div class="settings-mode-selector" role="group" aria-label="Settings view">
+          <button
+            class="settings-mode-btn"
+            class:active={formMode === "simple"}
+            aria-pressed={formMode === "simple"}
+            onclick={() => setFormMode("simple")}
+          >
+            Simple
+          </button>
+          <button
+            class="settings-mode-btn"
+            class:active={formMode === "advanced"}
+            aria-pressed={formMode === "advanced"}
+            onclick={() => setFormMode("advanced")}
+          >
+            Advanced
+          </button>
+        </div>
+      {/if}
       <button class="icon-btn" title="Close settings" aria-label="Close settings" onclick={onClose}>
         <Icon name="close" size={16} />
       </button>
@@ -926,40 +965,28 @@
   </div>
 
   <div class="settings-body">
-    {#if settingsMode !== "raw"}
-      <nav
-        class="settings-sidebar"
-        class:collapsed={!mobileNavOpen}
-        aria-label={isHub ? "Hub settings sections" : "Settings sections"}
+    <nav class="settings-sidebar" class:collapsed={!mobileNavOpen} aria-label="Settings sections">
+      <button
+        class="settings-nav-toggle"
+        aria-expanded={mobileNavOpen}
+        aria-controls="settings-nav-items"
+        onclick={() => {
+          mobileNavOpen = !mobileNavOpen;
+        }}
       >
-        <button
-          class="settings-nav-toggle"
-          aria-expanded={mobileNavOpen}
-          aria-controls="settings-nav-items"
-          onclick={() => {
-            mobileNavOpen = !mobileNavOpen;
-          }}
-        >
-          <span>{activeLabel()}</span>
-          <span class="nav-chevron" class:open={mobileNavOpen}>&#9660;</span>
-        </button>
-        <div class="settings-nav-items" id="settings-nav-items">
-          {#each sections as sec (sec.id)}
-            <button
-              class="settings-sidebar-btn"
-              class:active={activeSection === sec.id}
-              aria-current={activeSection === sec.id ? "page" : undefined}
-              onclick={() => {
-                onSelectSection(sec.id);
-                mobileNavOpen = false;
-              }}
-            >
-              {sec.label}
-            </button>
-          {/each}
-        </div>
-      </nav>
-    {/if}
+        <span>{activeLabel()}</span>
+        <span class="nav-chevron" class:open={mobileNavOpen}>&#9660;</span>
+      </button>
+      <div class="settings-nav-items" id="settings-nav-items">
+        {#each groups.main as sec (sec.id)}
+          {@render navButton(sec.id, sec.label)}
+        {/each}
+        <span class="settings-nav-group" role="presentation">Advanced</span>
+        {#each groups.advanced as sec (sec.id)}
+          {@render navButton(sec.id, sec.label)}
+        {/each}
+      </div>
+    </nav>
 
     <div class="settings-content">
       {#if loading}
@@ -1031,24 +1058,27 @@
             {pendingSave}
             onReload={reloadConfigFile}
           />
-        {:else if activeSection === "a2a"}
+        {:else if activeSection === "notifications"}
+          <p class="settings-placeholder">
+            Push notifications aren't available in this version of Residuum.
+          </p>
+        {:else if activeSection === "listener"}
           <A2a bind:fields={configFields} {simple} scope="hub" {agent} />
-        {:else if activeSection === "sessions"}
+        {:else if activeSection === "limits"}
           <SessionBudget bind:fields={configFields} />
-        {:else if activeSection === "tracing"}
+        {:else if activeSection === "diagnostics"}
           <Tracing bind:fields={configFields} />
-        {:else if activeSection === "update"}
+        {:else if activeSection === "updates"}
           <Update />
-        {:else if activeSection === "secrets"}
+        {:else if activeSection === "keys"}
           <Secrets />
-        {:else if activeSection === "agent-keys"}
           <AgentKeys />
         {:else if activeSection === "history"}
           <History scope="hub" {agent} />
         {/if}
       {:else if activeSection === "runtime"}
         <Runtime bind:fields={configFields} {simple} />
-      {:else if activeSection === "providers"}
+      {:else if activeSection === "model"}
         <Providers
           bind:providers={providerEntries}
           bind:models={modelAssignments}
@@ -1056,20 +1086,16 @@
           {pendingSave}
           onReload={reloadProvidersFile}
         />
-      {:else if activeSection === "channels" || activeSection === "skills" || activeSection === "webhooks"}
-        <Integrations
-          bind:fields={configFields}
-          {simple}
-          part={INTEGRATIONS_PARTS[activeSection]}
-          {agent}
-          {pendingSave}
-          onReload={reloadConfigFile}
-        />
-      {:else if activeSection === "pulses"}
+      {:else if activeSection === "connections"}
+        {@render integrations("channels")}
+        {@render integrations("webhooks")}
+      {:else if activeSection === "tools"}
+        {@render integrations("tools")}
+      {:else if activeSection === "schedule"}
         <Pulses bind:fields={configFields} />
       {:else if activeSection === "memory"}
         <Memory bind:fields={configFields} {simple} />
-      {:else if activeSection === "mcp"}
+      {:else if activeSection === "servers"}
         <MCP bind:servers={mcpServers} {agent} {pendingSave} onReload={reloadMcpFile} />
       {:else if activeSection === "a2a"}
         <A2a bind:fields={configFields} {simple} scope="agent" {agent} />

@@ -56,6 +56,37 @@ describe("test controls", () => {
     });
   });
 
+  describe("hub-socket", () => {
+    const setOnline = (online: unknown): Promise<{ status: number; body: unknown }> =>
+      fetchJson(`${harness.baseUrl}/api/mock/hub-socket`, {
+        method: "POST",
+        body: JSON.stringify({ online }),
+      });
+
+    it("drops the hub's pages and refuses new ones until it is back online", async () => {
+      const page = await harness.openSocket("/api/hub/ws");
+
+      expect(await setOnline(false)).toEqual({ status: 200, body: { online: false } });
+      await page.closed;
+      expect((await harness.refusedUpgrade("/api/hub/ws")).status).toBe(409);
+
+      expect(await setOnline(true)).toEqual({ status: 200, body: { online: true } });
+      const again = await harness.openSocket("/api/hub/ws");
+      expect((await again.nextOfType("hub_boot")).type).toBe("hub_boot");
+    });
+
+    it("comes back online on reset", async () => {
+      await setOnline(false);
+      expect((await control("reset")).status).toBe(200);
+      const page = await harness.openSocket("/api/hub/ws");
+      expect((await page.nextOfType("agents_snapshot")).type).toBe("agents_snapshot");
+    });
+
+    it("refuses anything but true or false", async () => {
+      expect((await setOnline("no")).status).toBe(422);
+    });
+  });
+
   describe("teammate-message", () => {
     it("lands a teammate's message in the agent's conversation, unread until the web UI opens its socket", async () => {
       const hub = await harness.openSocket("/api/hub/ws");

@@ -20,7 +20,7 @@
   import { toast } from "../../lib/toast.svelte";
   import { userErrorMessage } from "../../lib/errors";
   import { Icon } from "../../lib/icons";
-  import { legacyRouter } from "../../lib/legacy-router.svelte";
+  import { router } from "../../lib/router.svelte";
   import { requireAgent } from "../../lib/paths";
   import { notifyWithUndo } from "../../lib/undo";
 
@@ -267,7 +267,7 @@
   }
 
   function openWorkspace() {
-    legacyRouter.setWorkspace(true);
+    if (settingsAgent !== null) void router.openPlace({ kind: "files", agent: settingsAgent });
   }
 
   onMount(() => {

@@ -42,6 +42,7 @@ With [`just`](https://github.com/casey/just), `just web-mock` from the repo root
 - The `POST /api/agents/{name}/sessions` / `.../stop` / `.../messages` HTTP endpoints an artifact's `residuum.sessions.start` uses: the bundled "Tip Splitter" artifact (`/team/workbench/tip-splitter`) has "Start a background session" and "Fire 3 calls at once" buttons for trying the artifact bar's activity panel, Cancel calls, and Stop page by hand. Like every artifact it names its agent, `atlas`, in `ask` and `sessions.start`, and its sessions' frames reach it through the hub socket's session relay, whichever agent the web UI has open. Model calls are slowed down (`MODEL_CALL_DELAY_MS`) so they're visibly "in flight" long enough to cancel
 - The hub socket's session relay. A page subscribes with `subscribe_session` (`{ agent, address }`) to one session, or with `subscribe_artifact_sessions` (`{ artifact }`) to every session whose source label is `artifact:<artifact>` on any agent, including ones that start later, and stops with the matching `unsubscribe_` message. Each subscribe is acknowledged with `subscribed` before any frame, and one that names an unknown agent gets a warning `notice` and no acknowledgement (a stopped agent is known). Every `session_*` frame an agent's state broadcasts then reaches the pages that follow it as `session_frame` `{ agent, frame }`, where `frame` is exactly what the agent's socket sent, tool frames included, because the hub socket has no verbose flag. Subscriptions end with the connection. `POST /api/mock/session-relay-lag` sends `session_relay_lagged` to every page that follows something, as a connection that fell behind the relay is told, and answers `{ "notified": n }`; the page then reads its sessions again over HTTP
 - Tasks sent to other agents in the sessions sidebar's External group: stopping `research-buddy`'s task succeeds, while `laptop` is unreachable, so its Stop fails and the row offers "Stop watching"
+- `POST /api/mock/hub-socket` with `{ "online": false }` takes the hub WebSocket down: every page is dropped and new connections are refused (the HTTP API stays up), so the hub banner shows. `{ "online": true }` lets pages connect again, and a reset does too
 - `POST /api/mock/missed-relay` records a session result in the main chat's history and drops the WebSocket, to exercise catching up after a reconnect
 - The team event log: `GET /api/hub/events` (with `before`, `after` and `limit`) and a `team_event` frame on the hub socket for each new entry. It records what the mock's own lifecycle, chat turns, sessions and notices do, worded as the backend words it, with ids counting from 1 and times from the mock's clock. It starts with `hub_started` and what starting the scenario's agents did, and starts over on reset. `POST /api/mock/user-inbox-add?agent=atlas` (`{ title?, body? }`) saves an item in an agent's user inbox the way its `user_inbox_add` tool does, which adds an `inbox_item_added` entry
 - The team overview: `GET /api/hub/overview` and an `agent_overview` frame on the hub socket whenever an agent's overview changes. Each agent's last message, live sessions and unread inbox count are read from the data the mock's other routes serve (its conversation, sessions and inbox), `upcoming` lists its three soonest runs (its pulses by their next fire time, and its pending scheduled actions) and `outbound_problems` its open tasks to other agents that have been unreachable for ten minutes, and changes are gathered so an agent gets at most one frame per simulated second (the next tick when delays are off). A created agent is sent at once. It starts over on reset
@@ -113,7 +114,8 @@ just web-mock-preview 4173   # builds, then: MOCK_DETERMINISTIC=1 npm run previe
 web/
 ├── src/
 │   ├── main.ts               # App entry point
-│   ├── App.svelte            # Layout — header, sessions sidebar, chat / session view, settings
+│   ├── App.svelte            # The root: the setup wizard, or the shell; draws toasts and tooltips in both
+│   ├── shell/                # The shell: the rail, the phone's bottom bar and drawer, the hub banner, place routing, the Settings modal
 │   ├── Chat.svelte           # Main chat view
 │   ├── Setup.svelte          # Setup wizard
 │   ├── Settings.svelte       # Settings panel
@@ -127,11 +129,10 @@ web/
 │   │   ├── Message*.svelte         # Message components (user, assistant, agent message, status, …)
 │   │   ├── ToolGroup.svelte        # Groups related tool calls together
 │   │   ├── ToolItem.svelte         # Individual tool call display
-│   │   ├── SessionsSidebar.svelte  # Live and finished agent sessions
+│   │   ├── SessionsSidebar.svelte  # Live and finished agent sessions, hosted as the Activity place
 │   │   ├── SessionView.svelte      # One session's transcript, live activity, message box, stop
-│   │   ├── Header.svelte           # Top bar with navigation
-│   │   ├── AgentSwitcher.svelte    # Persistent agent switcher: state, working and unread per agent
-│   │   ├── TeamView.svelte         # Team page: lifecycle controls, autostart, delete, create agent
+│   │   ├── TeamView.svelte         # Team page, hosted as Home: lifecycle controls, autostart, delete, create agent
+│   │   ├── UserInbox.svelte        # The bound agent's user inbox, hosted as the Inbox place
 │   │   ├── Workbench.svelte        # Workbench artifact list; hosts the open artifact
 │   │   ├── WorkbenchArtifact.svelte # One artifact in its sandboxed frame; full view
 │   │   ├── settings/               # Settings sub-panels
@@ -152,8 +153,6 @@ web/
 │       ├── history-entry.ts      # The marks the router keeps in history.state
 │       ├── navigation-guard.ts   # Checks views register for unsaved work, and how the user is asked
 │       ├── settings-sections.ts  # Settings section registry: ids, scopes, labels, groups, old names, config keys
-│       ├── legacy-router.svelte.ts # The current views' navigation, on the router
-│       ├── legacy-settings-sections.ts # The current Settings page's sections
 │       ├── session-address.ts    # Opens a session from where it is mentioned
 │       ├── relay.ts              # Recognizes agent-message headers in transcripts
 │       ├── workbench-bridge.ts   # What workbench artifacts may call, relayed from their frames on the artifacts origin
@@ -208,7 +207,7 @@ web/
 │   ├── artifact-name.ts      # The artifact name rule (`api` is reserved), shared by the workbench and the identity header
 │   ├── workspace-changes.ts  # Changing a team file or an agent's own file and sending its live-update frames
 │   ├── model.ts              # The artifact model call
-│   ├── controls.ts           # Test controls: reset, clock, delays, missed-relay, teammate-message, team-file, agent-file and session-relay-lag
+│   ├── controls.ts           # Test controls: reset, clock, delays, hub-socket, missed-relay, teammate-message, team-file, agent-file and session-relay-lag
 │   ├── team-events.ts        # The team event log: entries, paging, the events route, the user-inbox test control
 │   ├── overview.ts           # The team overview: each agent's last message, live sessions and unread count, its route and frames, and message previews
 │   ├── artifacts-listener.ts # The second origin that serves artifact pages and files, with the SDK injected
@@ -264,7 +263,13 @@ Old URLs redirect by replace: `/team`, `/agent/:name/sessions/:runId`, `/agent/:
 
 **The bound agent** is the viewed agent on an agent place, and on the other places the agent most recently viewed. The last-used agent is remembered in local storage, and `router.setKnownAgents` settles on agents that exist once the agent list is known.
 
-The current views (the header menu, the Settings page, the workbench, the scheduled view, the team pages, the inbox drawer) navigate through `legacyRouter` in `lib/legacy-router.svelte.ts`. It turns their commands into router navigations, and reads off the router's location which old view fills the window and which old Settings section hosts the new one. The workbench's full view is a mode of that page and isn't in the URL. Overlays other than the inbox (help, feedback) and the narrow-screen sessions drawer aren't in the URL.
+### The shell
+
+`shell/Shell.svelte` is the frame around every place: the rail (`Rail.svelte`) beside the main region at medium and wide widths, and on phones the bottom bar (`BottomBar.svelte`) with the rail in a `Drawer`. The main region starts with the hub banner (`HubBanner.svelte`, shown while the hub socket is down) and then the place, which `PlaceHost.svelte` picks from the router's location. The shell root carries `data-ui`, and mounts `ConfirmHost` (and gives the router's guard `confirmLeave`), `RecentNotifications`, the Settings modal and the legacy help and feedback overlays once each; `App.svelte` draws the toast region and tooltips, in setup too.
+
+The rail's agents are an accordion (`accordion.svelte.ts`): one agent's places are open at a time, a press on the open agent closes it, a row press never navigates, and arriving on an agent opens it. `rail-model.ts` works out each agent row's mark, word and unread badge from the hub's snapshot. The Home count is the number of agents that couldn't start, the Inbox count the bound agent's unread items, and an agent's Activity count the bound agent's running sessions. The rail's footer has a Help menu (keyboard shortcuts, Recent notifications, feedback, a bug report) and the Settings gear; both those and the rail's "+" go through `ShellActions`, which the shell answers.
+
+Places not rebuilt yet host their legacy view inside a `data-legacy-view` element, so the legacy global styles apply there and the new base styles don't: Home the team page, Inbox the bound agent's inbox, Chat the current chat, Activity the sessions list, Schedule the Scheduled page, Files and Shared files the workspace, and the Workbench itself. A session panel on an agent's place shows the session view in the main region, over the place. The Settings modal (`SettingsModal.svelte`) hosts the current Settings page, which lists the registry's sections and shows each with the panels that hold its settings; the Raw config section is its raw editors. The workbench's full view is a mode of that page and isn't in the URL. The help and feedback overlays aren't in the URL either.
 
 ### Agents in API calls
 

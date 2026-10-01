@@ -14,10 +14,20 @@ async function pickSection(page: Page, name: string): Promise<void> {
 
 test("agent settings open on the model section, and the runtime section shows the agent's runtime values", async ({
   page,
+  isMobile,
 }) => {
   await page.goto("/agent/atlas");
-  await page.getByRole("button", { name: "Menu" }).click();
-  await page.getByRole("button", { name: "Agent settings" }).click();
+  if (isMobile) {
+    await page
+      .getByRole("navigation", { name: "Main" })
+      .getByRole("button", { name: "Settings" })
+      .click();
+  } else {
+    await page
+      .getByRole("navigation", { name: "Places and agents" })
+      .getByRole("button", { name: "Settings" })
+      .click();
+  }
 
   // The modal is part of the URL, and a URL that names no section opens the agent's Model section.
   await expect(page).toHaveURL(/\/agent\/atlas\?settings=atlas$/);

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, jsonResponse, mockFetch, render, screen, settle } from "../test/component";
 import TeamView from "./TeamView.svelte";
 import { hub } from "../lib/hub.svelte";
-import { legacyRouter } from "../lib/legacy-router.svelte";
+import { router } from "../lib/router.svelte";
 import { toast } from "../lib/toast.svelte";
 import { notifications } from "../lib/notifications.svelte";
 import { activityFrame, snapshot } from "../test/hub-frames";
@@ -137,7 +137,7 @@ function within(el: HTMLElement): { button: (name: string) => HTMLButtonElement 
 
 describe("TeamView agent list", () => {
   it("shows each agent's state, role line, visibility and last error", () => {
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     expect(row("atlas")).toHaveTextContent("running");
     expect(row("atlas")).toHaveTextContent("atlas keeps notes");
     expect(visibilityOf("atlas")).toHaveValue("private");
@@ -149,13 +149,13 @@ describe("TeamView agent list", () => {
 
   it("shows activity: working and unread", () => {
     hub.handleFrame(activityFrame("atlas", true, 2));
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     expect(row("atlas")).toHaveTextContent("working");
     expect(row("atlas")).toHaveTextContent("2 unread");
   });
 
   it("only offers the lifecycle actions that fit the agent's state", () => {
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     const running = within(row("atlas"));
     expect(running.button("Start")).toBeDisabled();
     expect(running.button("Stop")).toBeEnabled();
@@ -170,7 +170,7 @@ describe("TeamView agent list", () => {
   });
 
   it("says why a lifecycle button is unavailable, and gives every control the agent's name", () => {
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     const start = within(row("atlas")).button("Start");
     expect(start).toBeDisabled();
     expect(start).toHaveAttribute("title", "atlas is already running");
@@ -185,7 +185,7 @@ describe("TeamView agent list", () => {
 
   it("keeps the whole row disabled and marks the running action while it is pending", async () => {
     mockFetch(() => new Promise<Response>(() => {}));
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     await fireEvent.click(within(row("atlas")).button("Stop"));
     const pending = within(row("atlas")).button("Stopping");
     expect(pending).toBeDisabled();
@@ -196,10 +196,10 @@ describe("TeamView agent list", () => {
   });
 
   it("opens an agent from its name", async () => {
-    const open = vi.spyOn(legacyRouter, "openAgent").mockImplementation(() => {});
-    render(TeamView, { onClose: () => {} });
+    const open = vi.spyOn(router, "openPlace").mockResolvedValue(true);
+    render(TeamView);
     await fireEvent.click(screen.getByRole("button", { name: /^atlas$/ }));
-    expect(open).toHaveBeenCalledWith("atlas");
+    expect(open).toHaveBeenCalledWith({ kind: "chat", agent: "atlas" });
   });
 });
 
@@ -212,7 +212,7 @@ describe("TeamView lifecycle", () => {
           release = resolve;
         }),
     );
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     const stop = within(row("atlas")).button("Stop");
     await fireEvent.click(stop);
     expect(within(row("atlas")).button("Stopping")).toBeDisabled();
@@ -226,7 +226,7 @@ describe("TeamView lifecycle", () => {
   });
 
   it("starts and restarts through the hub API", async () => {
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     await fireEvent.click(within(row("drifter")).button("Start"));
     await settle();
     await fireEvent.click(within(row("atlas")).button("Restart"));
@@ -243,7 +243,7 @@ describe("TeamView lifecycle", () => {
         ? jsonResponse({ error: "drifter has no providers" }, 400)
         : undefined,
     );
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     await fireEvent.click(within(row("drifter")).button("Start"));
     await vi.waitFor(() => {
       expect(within(row("drifter")).button("Start")).toBeEnabled();
@@ -255,7 +255,7 @@ describe("TeamView lifecycle", () => {
   });
 
   it("toggles autostart", async () => {
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     const checkbox = row("drifter").querySelector<HTMLInputElement>("input[type=checkbox]");
     expect(checkbox?.checked).toBe(false);
     await fireEvent.click(checkbox as HTMLInputElement);
@@ -268,7 +268,7 @@ describe("TeamView lifecycle", () => {
 
   it("puts the autostart box back when the change fails", async () => {
     serveHub(() => jsonResponse({ error: "nope" }, 500));
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     const checkbox = row("drifter").querySelector<HTMLInputElement>("input[type=checkbox]");
     await fireEvent.click(checkbox as HTMLInputElement);
     await vi.waitFor(() => {
@@ -280,14 +280,14 @@ describe("TeamView lifecycle", () => {
 
 describe("TeamView A2A visibility", () => {
   it("explains that public exposes only the card", () => {
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     expect(screen.getByText(/Public shows only an agent's card/)).toBeTruthy();
     expect(screen.getByText(/still needs a caller key/)).toBeTruthy();
     expect(visibilityOf("atlas")).toHaveAttribute("aria-describedby", "team-visibility-hint");
   });
 
   it("changes visibility through the hub API and keeps the choice", async () => {
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     await fireEvent.change(visibilityOf("atlas"), { target: { value: "public" } });
     await vi.waitFor(() => {
       expect(hub.agent("atlas")?.a2a_visibility).toBe("public");
@@ -300,7 +300,7 @@ describe("TeamView A2A visibility", () => {
 
   it("puts the choice back and reports the error when the change fails", async () => {
     serveHub(() => jsonResponse({ error: "nope" }, 500));
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     await fireEvent.change(visibilityOf("atlas"), { target: { value: "public" } });
     await vi.waitFor(() => {
       expect(visibilityOf("atlas")).toHaveValue("private");
@@ -317,7 +317,7 @@ describe("TeamView A2A visibility", () => {
           release = resolve;
         }),
     );
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     await fireEvent.change(visibilityOf("atlas"), { target: { value: "public" } });
     expect(visibilityOf("atlas")).toBeDisabled();
     release(jsonResponse(agent("atlas", { a2a_visibility: "public" })));
@@ -329,7 +329,7 @@ describe("TeamView A2A visibility", () => {
 
 describe("TeamView delete", () => {
   it("asks first, saying the directory is removed and can be restored from checkpoints", async () => {
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     await fireEvent.click(screen.getByRole("button", { name: "Delete drifter" }));
     const dialog = screen.getByRole("dialog");
     expect(dialog).toHaveTextContent("removes");
@@ -339,7 +339,7 @@ describe("TeamView delete", () => {
   });
 
   it("does nothing when the dialog is cancelled", async () => {
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     await fireEvent.click(screen.getByRole("button", { name: "Delete drifter" }));
     await fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -347,7 +347,7 @@ describe("TeamView delete", () => {
   });
 
   it("deletes after confirming and shows the checkpoint id", async () => {
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     await fireEvent.click(screen.getByRole("button", { name: "Delete drifter" }));
     await fireEvent.click(screen.getByRole("button", { name: "Delete agent" }));
     expect((await screen.findByText("ckpt-9")).closest("[role=status]")).toBeTruthy();
@@ -359,7 +359,7 @@ describe("TeamView delete", () => {
     serveHub((call) =>
       call.method === "DELETE" ? jsonResponse({ deleted: true, checkpoint_id: null }) : undefined,
     );
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     await fireEvent.click(screen.getByRole("button", { name: "Delete drifter" }));
     await fireEvent.click(screen.getByRole("button", { name: "Delete agent" }));
     expect(await screen.findByText(/No checkpoint was taken/)).toBeTruthy();
@@ -367,7 +367,7 @@ describe("TeamView delete", () => {
   });
 
   it("offers Undo on the deletion note, which restores the agent from its checkpoint", async () => {
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     await fireEvent.click(screen.getByRole("button", { name: "Delete drifter" }));
     await fireEvent.click(screen.getByRole("button", { name: "Delete agent" }));
     await screen.findByText("ckpt-9");
@@ -388,7 +388,7 @@ describe("TeamView delete", () => {
 
   it("shows Undo as pending and keeps the note when the restore fails", async () => {
     let release: (r: Response) => void = () => {};
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     await fireEvent.click(screen.getByRole("button", { name: "Delete drifter" }));
     await fireEvent.click(screen.getByRole("button", { name: "Delete agent" }));
     await screen.findByText("ckpt-9");
@@ -418,7 +418,7 @@ describe("TeamView recently deleted", () => {
     screen.getByRole("button", { name: `Restore ${name}` });
 
   it("has no section when nothing is deleted", async () => {
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     await vi.waitFor(() => {
       expect(hub.deletedLoaded).toBe(true);
     });
@@ -427,7 +427,7 @@ describe("TeamView recently deleted", () => {
 
   it("lists each deleted agent with when it was deleted", async () => {
     deletedAgents = [deletedAgent("nova", 3), deletedAgent("kit", 48)];
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
 
     expect(await screen.findByText("Recently deleted")).toBeTruthy();
     const nova = restoreButton("nova").closest("li");
@@ -439,7 +439,7 @@ describe("TeamView recently deleted", () => {
 
   it("restores from the deletion's checkpoint, shows progress, and moves the agent into the list", async () => {
     deletedAgents = [deletedAgent("nova")];
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     await screen.findByText("Recently deleted");
     let release: (r: Response) => void = () => {};
     mockFetch(
@@ -463,7 +463,7 @@ describe("TeamView recently deleted", () => {
 
   it("sends the checkpoint id of the row", async () => {
     deletedAgents = [deletedAgent("nova")];
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     await screen.findByText("Recently deleted");
 
     await fireEvent.click(restoreButton("nova"));
@@ -486,7 +486,7 @@ describe("TeamView recently deleted", () => {
         ? jsonResponse({ error: "an agent named 'nova' already exists" }, 409)
         : undefined,
     );
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     await screen.findByText("Recently deleted");
 
     await fireEvent.click(restoreButton("nova"));
@@ -503,7 +503,7 @@ describe("TeamView recently deleted", () => {
   it("says when the list can't be loaded and loads it on Try again", async () => {
     deletedAgents = [deletedAgent("nova")];
     deletedListFails = true;
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load the deleted agents");
 
     deletedListFails = false;
@@ -534,7 +534,7 @@ describe("TeamView create form", () => {
     ["agents", '"agents" is reserved. Pick a different name.'],
     ["atlas", 'An agent named "atlas" already exists.'],
   ])("explains why %s is not allowed and blocks creating it", async (name, message) => {
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     await typeName(name);
     expect(screen.getByRole("alert")).toHaveTextContent(message);
     expect(nameInput()).toHaveAttribute("aria-invalid", "true");
@@ -542,31 +542,31 @@ describe("TeamView create form", () => {
   });
 
   it("accepts a valid name", async () => {
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     await typeName("nova-2");
     expect(screen.queryByRole("alert")).toBeNull();
     expect(createButton()).toBeEnabled();
   });
 
   it("does not scold an empty form, but does not allow creating from it", () => {
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     expect(screen.queryByRole("alert")).toBeNull();
     expect(createButton()).toBeDisabled();
   });
 
   it("explains what the description becomes", () => {
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     expect(screen.getByText(/turns the description into its own notes/)).toBeTruthy();
   });
 
   it("defaults to private visibility and copying models from the first agent", () => {
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     expect(screen.getByLabelText(/Private/)).toBeChecked();
     expect(screen.getByLabelText("Copy model settings from")).toHaveValue("atlas");
   });
 
   it("creates with the chosen options and confirms", async () => {
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     await typeName("nova");
     await fireEvent.input(screen.getByLabelText(/Description/), {
       target: { value: "Watches the release feed." },
@@ -593,7 +593,7 @@ describe("TeamView create form", () => {
   });
 
   it("leaves the description out when it is blank", async () => {
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     await typeName("nova");
     await fireEvent.click(createButton());
     await settle();
@@ -606,7 +606,7 @@ describe("TeamView create form", () => {
 
   it("keeps the form and shows the error when the hub refuses", async () => {
     serveHub(() => jsonResponse({ error: "already exists" }, 409));
-    render(TeamView, { onClose: () => {} });
+    render(TeamView);
     await typeName("nova");
     await fireEvent.click(createButton());
     await settle();

@@ -1,15 +1,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { hub } from "../lib/hub.svelte";
-  import { legacyRouter } from "../lib/legacy-router.svelte";
+  import { router } from "../lib/router.svelte";
   import { agentNameProblem } from "../lib/agent-name";
   import { stateLabel, unreadText } from "../lib/agent-state";
   import { relativeTime } from "../lib/time";
   import type { A2aVisibility, AgentSummary } from "../lib/hub-types";
   import AgentStateGlyph from "./AgentStateGlyph.svelte";
   import Modal from "./Modal.svelte";
-
-  let { onClose }: { onClose: () => void } = $props();
 
   type Action = "start" | "stop" | "restart" | "autostart" | "visibility" | "delete" | "restore";
 
@@ -192,7 +190,6 @@
         Every agent on this install. Start, stop or restart them here, or add a new one.
       </p>
     </div>
-    <button type="button" class="btn btn-secondary btn-sm" onclick={onClose}>Close</button>
   </header>
 
   <p id="team-visibility-hint" class="team-visibility-hint">
@@ -251,7 +248,7 @@
                 type="button"
                 class="team-agent-link"
                 onclick={() => {
-                  legacyRouter.openAgent(agent.name);
+                  void router.openPlace({ kind: "chat", agent: agent.name });
                 }}>{agent.name}</button
               >
               <span class="team-state">{stateLabel(agent.state)}</span>
@@ -465,7 +462,7 @@
             type="button"
             class="team-agent-link"
             onclick={() => {
-              if (created) legacyRouter.openAgent(created);
+              if (created) void router.openPlace({ kind: "chat", agent: created });
             }}>Open it</button
           >
         {/if}

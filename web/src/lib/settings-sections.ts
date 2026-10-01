@@ -5,13 +5,6 @@
 // those names mean: the ids, labels and groups, where each old section name
 // went, and which section a config key belongs to.
 
-import type {
-  LegacyAgentSection,
-  LegacyHubSection,
-  LegacyScope,
-  LegacySection,
-} from "./legacy-settings-sections";
-
 /** The URL token for the install-wide scope. Agent names can't contain an underscore, so it can't collide with one. */
 export const ALL_SCOPE = "_all";
 
@@ -128,6 +121,9 @@ export interface SectionTarget {
   section: SectionId;
 }
 
+/** Which page an old settings URL was under: an agent's settings, or the hub's. */
+export type OldSettingsScope = "agent" | "hub";
+
 /** Where each section of an old agent settings page went. */
 const OLD_AGENT_SECTIONS: Readonly<Record<string, AgentSectionId>> = {
   runtime: "runtime",
@@ -163,59 +159,13 @@ const OLD_HUB_SECTIONS: Readonly<Record<string, AllSectionId>> = {
  * both have (`a2a`, `history`) stays with the scope the URL named. Returns
  * null for a name no old page had.
  */
-export function sectionFromOldName(old: string, urlScope: LegacyScope): SectionTarget | null {
+export function sectionFromOldName(old: string, urlScope: OldSettingsScope): SectionTarget | null {
   const agent = Object.hasOwn(OLD_AGENT_SECTIONS, old) ? OLD_AGENT_SECTIONS[old] : undefined;
   const hub = Object.hasOwn(OLD_HUB_SECTIONS, old) ? OLD_HUB_SECTIONS[old] : undefined;
   const fromAgent: SectionTarget | null =
     agent === undefined ? null : { scope: "agent", section: agent };
   const fromHub: SectionTarget | null = hub === undefined ? null : { scope: "all", section: hub };
   return urlScope === "hub" ? (fromHub ?? fromAgent) : (fromAgent ?? fromHub);
-}
-
-// ── Hosting legacy Settings content ──────────────────────────────────
-
-/** The legacy Settings section that shows a new agent section's content. */
-const HOST_AGENT_SECTIONS: Readonly<Record<AgentSectionId, LegacyAgentSection>> = {
-  model: "providers",
-  connections: "channels",
-  tools: "skills",
-  memory: "memory",
-  schedule: "pulses",
-  runtime: "runtime",
-  servers: "mcp",
-  a2a: "a2a",
-  raw: "runtime",
-  history: "history",
-};
-
-/** The legacy Settings section that shows a new install-wide section's content. */
-const HOST_ALL_SECTIONS: Readonly<Record<AllSectionId, LegacyHubSection>> = {
-  general: "general",
-  notifications: "general",
-  cloud: "cloud",
-  keys: "secrets",
-  updates: "update",
-  limits: "sessions",
-  listener: "a2a",
-  diagnostics: "tracing",
-  raw: "general",
-  history: "history",
-};
-
-/**
- * The legacy Settings page and section that show a new section's content.
- * Sections the legacy page has no equivalent for (`notifications`, `raw`) open
- * the scope's first legacy section.
- */
-export function legacyHostSection(
-  kind: ScopeKind,
-  section: SectionId,
-): { scope: LegacyScope; section: LegacySection } {
-  const id = isSectionOf(kind, section) ? section : defaultSection(kind);
-  if (kind === "all") {
-    return { scope: "hub", section: HOST_ALL_SECTIONS[id as AllSectionId] };
-  }
-  return { scope: "agent", section: HOST_AGENT_SECTIONS[id as AgentSectionId] };
 }
 
 // ── Config keys ──────────────────────────────────────────────────────

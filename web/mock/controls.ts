@@ -169,9 +169,25 @@ function lagSessionRelay({ res, hub }: RouteContext): void {
   json(res, 200, { notified: hub.lagSessionRelay() });
 }
 
+/**
+ * `{ online }`: take the hub WebSocket down (`false`), dropping every page and
+ * refusing new connections, or let pages connect again (`true`). The HTTP API
+ * stays up. Reset brings the socket back.
+ */
+async function hubSocketControl({ req, res, hub }: RouteContext): Promise<void> {
+  const { online } = await readJsonObject(req);
+  if (typeof online !== "boolean") {
+    json(res, 422, { error: "mock: `online` must be true or false" });
+    return;
+  }
+  hub.setHubSocketOnline(online);
+  json(res, 200, { online });
+}
+
 /** The test control routes. */
 export const controlRoutes: readonly Route[] = [
   { method: "GET", pattern: "/api/mock/push/presence", handler: presentPushDevices },
+  { method: "POST", pattern: "/api/mock/hub-socket", handler: hubSocketControl },
   { method: "POST", pattern: "/api/mock/team-file", handler: changeTeamFileControl },
   { method: "POST", pattern: "/api/mock/agent-file", handler: changeAgentFileControl },
   { method: "POST", pattern: "/api/mock/session-relay-lag", handler: lagSessionRelay },

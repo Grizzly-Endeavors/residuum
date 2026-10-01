@@ -21,9 +21,7 @@
   --text-dim: #6a6a6f;
 
   /* ── Vein (blue energy, accents, focus) ────────────────────────────── */
-  /* --vein-intensity is set by main.ts based on local time of day. */
-  /* It modulates the alpha of vein tints by ±10% so the room feels awake at */
-  /* night and settled at midday. Defaults to 1 if JS hasn't run yet. */
+  /* Scales the alpha of the legacy vein tints. */
   --vein-intensity: 1;
 
   --vein: #3b8bdb;

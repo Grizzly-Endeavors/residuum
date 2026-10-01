@@ -1,3 +1,36 @@
+/* ── Icon buttons ────────────────────────────────────────────────────── */
+
+.icon-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  transition:
+    background-color var(--dur-quick),
+    color var(--dur-quick),
+    border-color var(--dur-quick),
+    box-shadow var(--dur-default) var(--ease-out-stone);
+}
+
+.icon-btn:hover {
+  background: var(--bg-raised);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.icon-btn.active {
+  background: var(--vein-glow);
+  color: var(--vein);
+  border-color: var(--vein-dim);
+}
+
 /* ── Chat view ─────────────────────────────────────────────────────────── */
 
 .chat-view {

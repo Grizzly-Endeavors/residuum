@@ -11,7 +11,7 @@ import {
 } from "./test/component";
 import Settings from "./Settings.svelte";
 import { invalidate } from "./lib/cache";
-import type { LegacyScope, LegacySection } from "./lib/legacy-settings-sections";
+import { ALL_SCOPE, type SectionId } from "./lib/settings-sections";
 
 interface Call {
   method: string;
@@ -41,19 +41,37 @@ function serve(): void {
 }
 
 function mount(
-  scope: LegacyScope,
-  section: LegacySection,
-  onSelectSection = vi.fn<(section: LegacySection) => void>(),
+  scope: "agent" | "hub",
+  section: SectionId,
+  onSelectSection = vi.fn<(section: SectionId) => void>(),
 ): typeof onSelectSection {
   render(Settings, {
-    scope,
-    agent: scope === "agent" ? "scout" : null,
+    scope: scope === "agent" ? "scout" : ALL_SCOPE,
     section,
     onSelectSection,
     onClose: () => {},
   });
   return onSelectSection;
 }
+
+const AGENT_LABELS = [
+  "Model",
+  "Connections",
+  "Tools & skills",
+  "Memory",
+  "Schedule",
+  "Runtime",
+  "Tool servers",
+];
+const HUB_LABELS = [
+  "General",
+  "Notifications",
+  "Residuum Cloud",
+  "Saved keys",
+  "Updates",
+  "Session limits",
+  "Diagnostics",
+];
 
 const navButton = (name: string): HTMLElement | undefined =>
   screen
@@ -67,75 +85,43 @@ beforeEach(() => {
 });
 
 describe("Settings scope split", () => {
-  it("shows only the hub's sections under hub settings", async () => {
+  it("lists the registry's install-wide sections under All agents", async () => {
     mount("hub", "general");
     await settle();
-    expect(screen.getByText("Hub settings")).toBeTruthy();
-    for (const label of [
-      "Gateway & timezone",
-      "Cloud",
-      "A2A listener & keys",
-      "Session budget",
-      "Tracing",
-      "Update",
-      "Secrets",
-      "Agent keys",
-      "History",
-    ]) {
-      expect(navButton(label), label).toBeTruthy();
-    }
-    for (const label of [
-      "Runtime",
-      "Models & providers",
-      "Adapters & channels",
-      "Pulses & sessions",
-      "Memory",
-      "Skills & tools",
-      "MCP",
-      "A2A visibility & client",
-      "Webhooks",
-    ]) {
-      expect(navButton(label), label).toBeUndefined();
-    }
+    expect(screen.getByText("All agents")).toBeTruthy();
+    expect(screen.getByText("Applies to every agent")).toBeTruthy();
+    for (const label of HUB_LABELS) expect(navButton(label), label).toBeTruthy();
+    for (const label of AGENT_LABELS) expect(navButton(label), label).toBeUndefined();
   });
 
-  it("shows only the agent's sections under agent settings", async () => {
+  it("lists the registry's agent sections under an agent", async () => {
     mount("agent", "runtime");
     await settle();
     expect(screen.getByText("scout settings")).toBeTruthy();
-    for (const label of [
-      "Runtime",
-      "Models & providers",
-      "Adapters & channels",
-      "Pulses & sessions",
-      "Memory",
-      "Skills & tools",
-      "MCP",
-      "A2A visibility & client",
-      "Webhooks",
-      "History",
-    ]) {
-      expect(navButton(label), label).toBeTruthy();
-    }
-    for (const label of [
-      "Gateway & timezone",
-      "Cloud",
-      "A2A listener & keys",
-      "Session budget",
-      "Tracing",
-      "Update",
-      "Secrets",
-      "Agent keys",
-    ]) {
-      expect(navButton(label), label).toBeUndefined();
-    }
+    expect(screen.getByText("Only affects scout")).toBeTruthy();
+    for (const label of AGENT_LABELS) expect(navButton(label), label).toBeTruthy();
+    for (const label of HUB_LABELS) expect(navButton(label), label).toBeUndefined();
   });
 
-  it("selects a section by id", async () => {
+  it("selects a section by its registry id", async () => {
     const onSelect = mount("hub", "general");
     await settle();
-    await fireEvent.click(navButton("Secrets") as HTMLElement);
-    expect(onSelect).toHaveBeenCalledWith("secrets");
+    await fireEvent.click(navButton("Saved keys") as HTMLElement);
+    expect(onSelect).toHaveBeenCalledWith("keys");
+  });
+
+  it("shows both of a section's panels when it gathers two old pages", async () => {
+    mount("agent", "connections");
+    await settle();
+    expect(await screen.findByText("Discord")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /add webhook/i })).toBeTruthy();
+  });
+
+  it("opens the raw editors as the Raw config section, without a form view toggle", async () => {
+    mount("agent", "raw");
+    await settle();
+    expect(await screen.findByRole("button", { name: "providers.toml" })).toBeTruthy();
+    expect(screen.queryByRole("group", { name: "Settings view" })).toBeNull();
   });
 
   it("reads and writes only hub files on the hub's pages", async () => {
@@ -178,13 +164,13 @@ describe("Settings scope split", () => {
   });
 
   it("lists secrets by name under hub settings", async () => {
-    mount("hub", "secrets");
+    mount("hub", "keys");
     expect(await screen.findByText("openai")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove openai" })).toBeTruthy();
   });
 
   it("splits the A2A page: the listener under the hub, visibility under the agent", async () => {
-    mount("hub", "a2a");
+    mount("hub", "listener");
     expect(await screen.findByText("Listener")).toBeTruthy();
     expect(screen.getByText("Caller keys")).toBeTruthy();
     expect(screen.queryByText("Remote agents")).toBeNull();
