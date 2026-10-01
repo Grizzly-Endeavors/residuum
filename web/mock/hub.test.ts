@@ -334,7 +334,7 @@ describe("hub", () => {
       expect(
         hubSocket.frames
           .map((f) => f.type)
-          .filter((t) => t !== "agents_snapshot" && t !== "hub_boot"),
+          .filter((t) => t !== "agents_snapshot" && t !== "hub_boot" && t !== "team_event"),
       ).toEqual(["agent_stopping", "agent_state", "agent_deleted"]);
       expect(hubSocket.frames.find((f) => f.type === "agent_state")).toMatchObject({
         agent: { name: "atlas", state: "stopped" },
@@ -348,7 +348,7 @@ describe("hub", () => {
       expect(
         hubSocket.frames
           .map((f) => f.type)
-          .filter((t) => t !== "agents_snapshot" && t !== "hub_boot"),
+          .filter((t) => t !== "agents_snapshot" && t !== "hub_boot" && t !== "team_event"),
       ).toEqual(["agent_deleted", "agent_deleted"]);
     });
 

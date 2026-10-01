@@ -228,6 +228,8 @@ describe("the team event routes", () => {
       "agent_stopped: scout stopped",
       "agent_started: nova started",
       "agent_created: nova was created",
+      // A running agent stops before it is deleted, as it does in the backend.
+      "agent_stopped: atlas stopped",
       "agent_deleted: atlas was deleted",
       "agent_started: atlas started",
       "agent_restored: atlas was restored",
@@ -238,9 +240,22 @@ describe("the team event routes", () => {
     await post("/api/hub/agents/scout/stop");
     await fetchJson(`${mock.baseUrl}/api/hub/agents/atlas`, { method: "DELETE" });
 
-    const [deleted, stopped] = (await fetchPage()).events;
+    const { events } = await fetchPage();
+    const stopped = events.find((event) => event.summary === "scout stopped");
+    const deleted = events.find((event) => event.kind === "agent_deleted");
     expect(stopped?.target).toEqual({ kind: "agent_place", agent: "scout", place: "chat" });
     expect(deleted?.target).toBeNull();
+  });
+
+  it("tells a running agent's stop before its deletion, and no stop for an agent that wasn't running", async () => {
+    await fetchJson(`${mock.baseUrl}/api/hub/agents/scout`, { method: "DELETE" });
+    await fetchJson(`${mock.baseUrl}/api/hub/agents/drifter`, { method: "DELETE" });
+
+    expect((await told()).slice(4)).toEqual([
+      "agent_stopped: scout stopped",
+      "agent_deleted: scout was deleted",
+      "agent_deleted: drifter was deleted",
+    ]);
   });
 
   it("tells a failed start again, and a change of settings not at all", async () => {
