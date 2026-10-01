@@ -12,8 +12,8 @@ export default tseslint.config(
   {
     ignores: ["dist/**", "node_modules/**", "*.config.js", "*.config.ts"],
   },
-  // The coverage report ships its own scripts.
-  { ignores: ["coverage/**"] },
+  // The coverage and Playwright reports ship their own scripts.
+  { ignores: ["coverage/**", "playwright-report/**", "test-results/**"] },
 
   // ── Base presets ────────────────────────────────────────────────────
   js.configs.recommended,
@@ -23,7 +23,7 @@ export default tseslint.config(
 
   // ── TypeScript files ────────────────────────────────────────────────
   {
-    files: ["src/**/*.ts", "mock/**/*.ts"],
+    files: ["src/**/*.ts", "mock/**/*.ts", "e2e/**/*.ts"],
     languageOptions: {
       parserOptions: {
         projectService: true,

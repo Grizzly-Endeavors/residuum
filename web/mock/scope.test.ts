@@ -94,6 +94,7 @@ describe("scopeRequest", () => {
       "/api/hub/agents",
       "/api/hub/agents/atlas/start",
       "/api/hub/status",
+      "/api/hub/events",
       "/api/hub/inbox",
       "/api/hub/inbox/unread",
       "/api/hub/inbox/atlas/note/read",
