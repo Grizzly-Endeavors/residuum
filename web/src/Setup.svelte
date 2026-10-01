@@ -195,10 +195,13 @@
     }, 500);
   }
 
+  // The cleanup also runs when the wizard goes away, so a save still waiting
+  // can't write a draft the wizard has finished with.
   $effect(() => {
     $state.snapshot(wizardState);
     step;
     schedulePersist();
+    return () => clearTimeout(persistTimer);
   });
 
   function clearPersisted() {
