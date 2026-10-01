@@ -149,6 +149,19 @@ describe("a running turn's line", () => {
     expect(onStop).not.toHaveBeenCalled();
   });
 
+  it("hands focus from Stop to the summary when the turn ends", async () => {
+    const view = render(ActivityLine, {
+      agent: "atlas",
+      calls: [calls[0] as StepCall],
+      live: true,
+      observed: watched({ endedAt: null, ending: null }),
+      onStop: vi.fn(),
+    });
+    screen.getByRole("button", { name: "Stop the reply" }).focus();
+    await view.rerender({ live: false, observed: watched({ ending: "stopped" }) });
+    expect(screen.getByRole("button", { name: /stopped by you$/ })).toHaveFocus();
+  });
+
   it("notes the steps it may have missed, where it missed them", () => {
     render(ActivityLine, {
       agent: "atlas",

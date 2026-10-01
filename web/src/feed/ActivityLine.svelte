@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { formatElapsed } from "../lib/format-usage";
   import { Icon } from "../lib/icons";
   import type { ObservedTurn } from "../lib/observed-turns.svelte";
@@ -53,6 +54,25 @@
   });
   const elapsed = $derived(startedAt === null ? null : formatElapsed(now - startedAt));
 
+  // Ending the turn takes the live line, and Stop with it, away: focus that
+  // was on it moves to the summary that replaces it, not to the page.
+  let liveEl = $state<HTMLDivElement>();
+  let summaryEl = $state<HTMLButtonElement>();
+  let refocus = false;
+  $effect.pre(() => {
+    if (live) return;
+    untrack(() => {
+      refocus = liveEl?.contains(document.activeElement) ?? false;
+    });
+  });
+  $effect(() => {
+    if (live || !summaryEl) return;
+    untrack(() => {
+      if (refocus) summaryEl?.focus();
+      refocus = false;
+    });
+  });
+
   /** The gap notes that go before step `index`. */
   function gapsAt(index: number, last: boolean): number[] {
     return gaps.filter((at) => at === index || (last && at > index));
@@ -74,7 +94,7 @@
 {/snippet}
 
 {#if live}
-  <div class="activity" data-live>
+  <div class="activity" data-live bind:this={liveEl}>
     <div class="activity-head">
       <StatusDot state="running" working />
       <span class="activity-working">Working</span>
@@ -102,6 +122,7 @@
     <button
       type="button"
       class="activity-summary"
+      bind:this={summaryEl}
       aria-expanded={open}
       aria-controls="{uid}-steps"
       onclick={() => (open = !open)}
