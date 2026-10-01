@@ -55,7 +55,7 @@ port = 7700
 
 # ── Web Push (optional) ──────────────────────────────────────────────────────
 # Browser and installed-app notifications. Devices are registered from the
-# web UI (All agents > Notifications). The contact is how a push service
+# web UI (Settings → All agents → Notifications). The contact is how a push service
 # (Google, Apple, Mozilla) can reach you about misbehaving traffic; it is sent
 # with every push as the VAPID "sub" claim and is never shown to your devices.
 #

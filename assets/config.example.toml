@@ -13,7 +13,7 @@
 # Every token/secret/api_key field below (Discord, Telegram, Teams,
 # webhooks, web search) supports the same three forms: a "${ENV_VAR}"
 # reference, a "secret:name" reference into the encrypted secret store, or a
-# plain literal. The web settings page preserves a "${...}" or "secret:..."
+# plain literal. Settings in the web UI preserve a "${...}" or "secret:..."
 # reference exactly as-is when you save — it only ever moves a literal value
 # into the secret store, never a reference to something else.
 
@@ -194,7 +194,7 @@ enabled = true
 # modify_channels = true     # allow agent to add/remove notification channels (default: true)
 # max_tool_iterations = 50   # stop a turn after this many tool calls (default: unlimited).
 #                             # A runaway turn is still stoppable at any time via the
-#                             # web UI's Cancel button, /stop, or stop_agent — this only
+#                             # web UI's Stop button, /stop, or stop_agent — this only
 #                             # sets an automatic cutoff. Must be at least 1 when set.
 #
 # Guards against a model repeating the exact same tool call (name + byte-identical

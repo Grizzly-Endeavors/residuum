@@ -29,7 +29,7 @@ You can also delegate to other agents over A2A with your ordinary tools — `lis
 - If the agent stays unreachable for 10 minutes, you get a note saying so (retries continue in the background), and another once it's reachable again. The user is told too.
 - The user sees your open tasks in your Activity in the web UI and can stop one there. A task the user stopped arrives as `canceled` with the line "Stopped by the user from the web UI."; don't resend it unless they ask. If its agent couldn't be reached, the user may instead stop watching it, and you're told it may still be running on the remote side.
 
-Editing `config/a2a.json` via `write_file`/`edit_file`, the workspace editor, `POST /api/agents/<agent>/workspace/validate`, or the Settings page's raw editor reports invalid JSON, an invalid agent name, or an empty url as a diagnostic alongside the save — the write always goes through rather than being rejected.
+Editing `config/a2a.json` via `write_file`/`edit_file`, the Files editor, `POST /api/agents/<agent>/workspace/validate`, or Settings → (agent) → Advanced → Raw config reports invalid JSON, an invalid agent name, or an empty url as a diagnostic alongside the save — the write always goes through rather than being rejected.
 
 ## Teammates versus siblings
 
