@@ -3,6 +3,7 @@
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "lib": ["ESNext", "WebWorker"],
     "strict": true,
     "noEmit": true,
     "isolatedModules": true,
@@ -11,6 +12,5 @@
     "noFallthroughCasesInSwitch": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/**/*.ts", "src/**/*.svelte", "build/**/*.ts", "mock/**/*.ts", "e2e/**/*.ts", "playwright.config.ts"],
-  "exclude": ["src/sw"]
+  "include": ["./**/*.ts"]
 }
