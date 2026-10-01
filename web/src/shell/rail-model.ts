@@ -57,6 +57,11 @@ const STATE_WORDS: Readonly<Record<StatusDotState, string>> = {
   failed: "Failed",
 };
 
+/** A state as one capitalized word: "Running", "Stopping". */
+export function stateWord(state: StatusDotState): string {
+  return STATE_WORDS[state];
+}
+
 /**
  * One agent row. Unread replies win the space after the name, then a state
  * that isn't running, then "Working" for a busy agent the user isn't viewing.

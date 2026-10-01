@@ -1,27 +1,32 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import { actionRegistry } from "../lib/action-registry.svelte";
   import { userInbox } from "../lib/inbox.svelte";
+  import { notifications } from "../lib/notifications.svelte";
   import { router } from "../lib/router.svelte";
   import { ALL_SCOPE } from "../lib/settings-sections";
   import { ConfirmHost, confirmLeave, Drawer, RecentNotifications } from "../lib/ui";
   import { PHONE_QUERY } from "../styles/breakpoints";
-  import FeedbackModal from "../components/FeedbackModal.svelte";
-  import HelpOverlay from "../components/HelpOverlay.svelte";
   import { RailAccordion } from "./accordion.svelte";
+  import { registerAppActions } from "./app-actions.svelte";
   import BottomBar from "./BottomBar.svelte";
+  import CommandPalette from "./CommandPalette.svelte";
   import CreateAgentDialog from "./CreateAgentDialog.svelte";
+  import FeedbackDialog from "./FeedbackDialog.svelte";
   import HubBanner from "./HubBanner.svelte";
+  import InboxNoteDialog from "./InboxNoteDialog.svelte";
   import PanelHost from "./panel/PanelHost.svelte";
   import PlaceHost from "./PlaceHost.svelte";
   import Rail from "./Rail.svelte";
   import SettingsModal from "./SettingsModal.svelte";
   import type { FeedbackTab, ShellActions } from "./shell-actions";
+  import ShortcutsDialog from "./ShortcutsDialog.svelte";
 
   // The frame around every place: the rail beside the main region at medium
   // and wide widths, and the context panel beside it (wide) or over it
   // (medium); on phones the bottom bar, with the rail in a drawer and the
   // panel a full-screen sheet. The shell also owns the overlays its controls
-  // open.
+  // and the action registry open.
 
   router.guard.setConfirm(confirmLeave);
 
@@ -34,6 +39,8 @@
   let shortcutsOpen = $state(false);
   let feedbackOpen = $state(false);
   let feedbackTab = $state<FeedbackTab>("bug");
+  let paletteOpen = $state(false);
+  let inboxNoteAgent = $state<string | null>(null);
   let createOpen = $state(false);
   let sideRail = $state<HTMLElement>();
 
@@ -43,6 +50,10 @@
   });
 
   const actions: ShellActions = {
+    openSearch: () => {
+      drawerOpen = false;
+      paletteOpen = true;
+    },
     openSettings: () => {
       drawerOpen = false;
       void router.openSettings({ scope: router.viewedAgent ?? ALL_SCOPE, section: null });
@@ -62,6 +73,9 @@
       drawerOpen = false;
       createOpen = true;
     },
+    addInboxNote: (agent) => {
+      inboxNoteAgent = agent;
+    },
   };
 
   /** A new agent's rail row takes focus, where the rail shows beside the main region (not on phones). */
@@ -69,6 +83,29 @@
     await tick();
     sideRail?.querySelector<HTMLElement>(`[data-rail-agent="${CSS.escape(name)}"]`)?.focus();
   }
+
+  function addInboxNote(text: string): void {
+    inboxNoteAgent = null;
+    const action = actionRegistry.all.find((candidate) => candidate.id === "chat:inbox");
+    if (action?.disabled !== undefined) {
+      notifications.surface("error", `Couldn't add the note: ${action.disabled}.`);
+    } else if (action !== undefined) {
+      void actionRegistry.run(action, text);
+    }
+  }
+
+  // Whatever an action opens or wherever it goes, the drawer it may have been
+  // run from gets out of the way first.
+  onMount(() => {
+    const removeActions = registerAppActions(actions);
+    const stopListening = actionRegistry.onRun(() => {
+      drawerOpen = false;
+    });
+    return () => {
+      removeActions();
+      stopListening();
+    };
+  });
 
   onMount(() => {
     userInbox.startPolling();
@@ -85,14 +122,24 @@
   });
 
   function handleKeydown(event: KeyboardEvent): void {
+    if (event.defaultPrevented) return;
+    // ⌘K or Ctrl+K opens the palette from anywhere, and closes it again.
+    const mod = event.metaKey || event.ctrlKey;
+    if (mod && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      if (paletteOpen) paletteOpen = false;
+      else actions.openSearch();
+      return;
+    }
     // `?` opens the shortcuts, unless something is taking text.
-    if (event.key !== "?" || event.defaultPrevented) return;
+    if (event.key !== "?") return;
     const target = event.target as HTMLElement | null;
     const tag = target?.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) {
       return;
     }
     event.preventDefault();
+    drawerOpen = false;
     shortcutsOpen = true;
   }
 </script>
@@ -115,17 +162,17 @@
   <Rail {accordion} {actions} onclose={() => (drawerOpen = false)} />
 </Drawer>
 <SettingsModal />
+<CommandPalette bind:open={paletteOpen} />
 <CreateAgentDialog bind:open={createOpen} oncreated={(name) => void focusCreatedAgent(name)} />
 <RecentNotifications bind:open={notificationsOpen} />
-<ConfirmHost />
-
-<!-- Legacy overlays, outside the shell root so the legacy styles reach them. -->
-<HelpOverlay open={shortcutsOpen} onClose={() => (shortcutsOpen = false)} />
-<FeedbackModal
-  open={feedbackOpen}
-  initialTab={feedbackTab}
-  onClose={() => (feedbackOpen = false)}
+<ShortcutsDialog bind:open={shortcutsOpen} />
+<FeedbackDialog bind:open={feedbackOpen} bind:tab={feedbackTab} />
+<InboxNoteDialog
+  agent={inboxNoteAgent}
+  onadd={addInboxNote}
+  onclose={() => (inboxNoteAgent = null)}
 />
+<ConfirmHost />
 
 <style>
   .shell {

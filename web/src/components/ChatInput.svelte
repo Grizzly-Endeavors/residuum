@@ -1,9 +1,14 @@
 <script lang="ts">
-  import { filterCommands, COMMAND_REGISTRY } from "../lib/commands";
+  import {
+    actionRegistry,
+    commandActions,
+    matchActions,
+    type AppAction,
+  } from "../lib/action-registry.svelte";
   import type { ImageAttachment } from "../lib/types";
   import { clickOutside } from "../lib/actions/clickOutside";
   import { Icon } from "../lib/icons";
-  import CommandMenu from "./CommandMenu.svelte";
+  import SlashMenu from "./SlashMenu.svelte";
   import ModelSelector from "./ModelSelector.svelte";
   import ThinkingSelector from "./ThinkingSelector.svelte";
 
@@ -15,7 +20,6 @@
   let {
     onSend,
     onStop,
-    onOpenFeedback,
     isProcessing = false,
     disabled = false,
     reconnecting = false,
@@ -23,7 +27,6 @@
   }: {
     onSend: (text: string, images?: ImageAttachment[]) => void;
     onStop: () => void;
-    onOpenFeedback: () => void;
     isProcessing?: boolean;
     /** Blocks drafting and sending outright, for a reason other than the
      * connection (there is currently no such caller). Reconnecting never
@@ -52,17 +55,15 @@
     }, 3000);
   }
 
-  // Autocomplete state
+  // The `/` menu: the registry's chat actions, narrowed by what follows the `/`.
+  const menuId = $props.id();
   let showMenu = $state(false);
   let menuQuery = $state("");
   let menuIndex = $state(0);
   let menuFromButton = $state(false);
   let containerEl: HTMLDivElement | undefined = $state();
 
-  let filtered = $derived.by(() => {
-    if (menuFromButton && !menuQuery) return COMMAND_REGISTRY;
-    return filterCommands(menuQuery);
-  });
+  let filtered = $derived(matchActions(commandActions(actionRegistry.all), menuQuery));
 
   // While a turn is running with nothing typed, the send button becomes a
   // stop button — start typing a steering message and send comes back.
@@ -101,10 +102,10 @@
         case "Tab":
           e.preventDefault();
           {
-            const cmd = filtered[menuIndex];
-            if (cmd) {
+            const action = filtered[menuIndex];
+            if (action?.command !== undefined) {
               // Complete inline so the user can review/edit before sending.
-              value = cmd.name + (cmd.hasArgs ? " " : "");
+              value = `/${action.command}${action.takesText ? " " : ""}`;
               showMenu = false;
               textarea?.focus();
             }
@@ -113,8 +114,8 @@
         case "Enter":
           e.preventDefault();
           {
-            const cmd = filtered[menuIndex];
-            if (cmd) handleCommandSelect(cmd.name);
+            const action = filtered[menuIndex];
+            if (action) handleCommandSelect(action);
           }
           return;
         case "Escape":
@@ -141,17 +142,17 @@
     }
   }
 
-  function handleCommandSelect(name: string) {
-    const cmd = COMMAND_REGISTRY.find((c) => c.name === name);
-    if (cmd?.hasArgs) {
-      value = name + " ";
-      showMenu = false;
+  // A disabled action stays in the menu with its reason, and does nothing.
+  function handleCommandSelect(action: AppAction) {
+    if (action.disabled !== undefined) return;
+    showMenu = false;
+    if (action.takesText && action.command !== undefined) {
+      value = `/${action.command} `;
       textarea?.focus();
-    } else {
-      showMenu = false;
-      value = "";
-      onSend(name);
+      return;
     }
+    value = "";
+    void actionRegistry.run(action);
   }
 
   function toggleCommandMenu() {
@@ -262,7 +263,13 @@
 >
   <div class="chat-input-container">
     {#if showMenu && filtered.length > 0}
-      <CommandMenu commands={filtered} selectedIndex={menuIndex} onSelect={handleCommandSelect} />
+      <SlashMenu
+        id={menuId}
+        actions={filtered}
+        active={menuIndex}
+        onpick={handleCommandSelect}
+        onhover={(index) => (menuIndex = index)}
+      />
     {/if}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
@@ -298,6 +305,10 @@
           class="chat-input"
           placeholder="Send a message..."
           rows="1"
+          aria-controls={showMenu && filtered.length > 0 ? menuId : undefined}
+          aria-activedescendant={showMenu && filtered.length > 0
+            ? `${menuId}-${String(menuIndex)}`
+            : undefined}
           {disabled}
           onkeydown={handleKeydown}
           oninput={handleInput}
@@ -348,19 +359,10 @@
             class="cmd-menu-btn"
             onclick={toggleCommandMenu}
             {disabled}
-            title="Commands"
-            aria-label="Commands"
+            title="Chat actions"
+            aria-label="Chat actions"
           >
             /
-          </button>
-          <button
-            class="feedback-btn"
-            onclick={onOpenFeedback}
-            title="Send feedback to the maintainer"
-            aria-label="Send feedback"
-          >
-            <Icon name="spark" size={13} />
-            <span>feedback</span>
           </button>
         </div>
         <div class="chat-toolbar-right">
