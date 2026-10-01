@@ -25,6 +25,7 @@ The hub serves everything the backend offers from one router over its `AgentDire
 | `POST /api/hub/stop-all` | Stops every running or starting agent and leaves the hub running. `200` with `{ stopped, failed }` when all stopped, `500` with the same body when some did not. Reachable over the tunnel, since the hub keeps running and agents can be started again. |
 | `GET /api/hub/status` | `{ version, uptime_secs, tunnel, agents }`. `tunnel` has the shape of `GET /api/hub/cloud/status`; `agents` counts `starting`, `running`, `stopped`, and `failed` agents. |
 | `GET /api/hub/ws` | The hub WebSocket, below. |
+| `GET /api/hub/events?before=&after=&limit=` | The team event log, newest first: `{ boot_id, events, next_before }`. See [Team events](#team-events). |
 | `GET /api/hub/inbox`, `GET /api/hub/inbox/unread`, `PUT /api/hub/inbox/{agent}/{id}/read`, `POST /api/hub/inbox/{agent}/{id}/archive`, `POST /api/hub/inbox/{agent}/{id}/restore` | Every agent's user inbox, read from their files, below. |
 | `GET`/`PUT /api/hub/config/raw`, `PATCH /api/hub/config/patch`, `POST /api/hub/config/validate` | The hub's `config.toml`. |
 | `POST /api/hub/config/complete-setup` | Onboarding: writes the hub config, the team layer, and the first agent's directory, then the hub starts that agent (see [hub.md](hub.md#start-up-and-shutdown)). `409` when an agent already exists. |
@@ -66,6 +67,14 @@ The hub's inbox routes read and change each agent's user inbox files directly (s
 A listing is newest first by `at`, then `id`, then agent. A page holds `limit` items, 50 when it isn't given, and a limit above 200 is treated as 200. `next_cursor` is `null` on the last page. Otherwise it is an opaque string to pass as `before` to get the page that follows, which starts after the item the cursor names even if that item has since been archived or removed. A listing fails as a whole when any listed agent's inbox can't be read, naming the agent, instead of answering with its items missing.
 
 Errors are `{ "error": message }`: `400` for a `status` other than `active` or `archived`, a `limit` that is not a whole number of at least 1, a `before` the hub didn't issue, or an `id` that isn't a bare item id (empty, `.` or `..`, or containing `/`, `\`, or a NUL); `404` for an unknown agent, or an item that isn't where the call looks for it (`archive` needs it active, `restore` needs it archived); `409` when the destination already holds a different item with the same `id`, in which case both items stay where they are; and `500` when the files can't be read or changed.
+
+### Team events
+
+`GET /api/hub/events?before=<id>&after=<id>&limit=<n>` serves the hub's in-memory team event log (see [Team event log](hub.md#team-event-log)) as `{ boot_id, events, next_before }`. `events` are entries, newest first, each `{ id, at, agent, kind, level, summary, target }`. `boot_id` is the hub process's id, the one `hub_boot` announces; a client that sees it change holds events from an earlier process and starts over.
+
+All three parameters are optional. `before` returns only entries with a lower id, and `after` only entries with a higher id, so `after` with a client's newest id returns what it has not seen. A page holds `limit` entries, 50 when it isn't given, and a limit above 200 is treated as 200. When more entries match than fit, the page holds the newest ones and `next_before` is the id of its oldest entry: pass it as `before`, with the same `after`, for the page that follows. `next_before` is `null` when nothing older matches.
+
+Errors are `{ "error": message }`: `400` for a `before` or `after` that is not a whole number, and for a `limit` that is not a whole number of at least 1.
 
 ### Team routes
 
@@ -121,14 +130,15 @@ Through Residuum Cloud the tunnel's loopback client passes the browser's `Accept
 
 | Frame | Sent when |
 |-------|-----------|
-| `hub_boot` `{ boot_id }` | First on every connection. `boot_id` is a random id the hub generates at startup: every connection to one process sees the same id, and a restarted hub has a new one. |
-| `agents_snapshot` `{ agents, activity, stopping }` | After `hub_boot`, and again whenever the connection fell behind the hub's event stream and events were lost. It has the three fields of `GET /api/hub/agents`. |
+| `hub_boot` `{ boot_id }` | First on every connection. `boot_id` is a random id the hub generates at startup, and the team event log's id too: every connection to one process sees the same id, and a restarted hub has a new one. |
+| `agents_snapshot` `{ agents, activity, stopping }` | After `hub_boot`, and again whenever the connection fell behind the hub's event stream or the team event log and lost frames. It has the three fields of `GET /api/hub/agents`. A client that gets one after its first reads the events it missed from `GET /api/hub/events`. |
 | `agent_state` `{ agent }` | An agent's state, `autostart`, or visibility changed. |
 | `agent_stopping` `{ name }` | A running agent's stop began. Its `state` stays `running` until the stop finishes, which `agent_state` then reports. From this frame on, the team router refuses teammate messages for it and the relay stops listing it. |
 | `agent_created` `{ agent, by }`, `agent_restored` `{ agent, by }`, `agent_deleted` `{ name, by }` | An agent was created, restored from its checkpoint history, or deleted. `by` is `user` or `agent:<name>`. |
 | `agent_activity` `{ name, busy, busy_since, unread }` | An agent's main-conversation activity changed. |
 | `notice` `{ level, message, agent? }` | A hub notice, or a warning about a message this connection sent that could not be used. Created, restored, deleted, and failed events travel only in their own frames. |
 | `hub_config_reloaded` `{ ok, changed, message }` | The hub finished an attempt to reload `hub/config.toml`, beside the notice that tells the user about it. `ok` is false when the file couldn't be loaded and the hub keeps the config it was running. `changed` is true when the loaded config differs from the running one. `message` is the text of that notice, or `null` when nothing changed. |
+| `team_event` `{ boot_id, event }` | The team event log recorded an entry. `event` is the entry, as `GET /api/hub/events` serves it, and `boot_id` the log's id. A connection hears the entries recorded after it connected; what came before is read from the route. |
 | `workspace_changed` `{ changes }`, `workspace_resync` `{ reason }`, `workspace_watch_unavailable` `{ message }` | Team change-feed frames, with the shapes of the agent WebSocket's, for the paths the connection watches. |
 
 `{ "type": "watch_team", "prefixes": [...] }` replaces the set of team paths the connection watches; `[]` stops watching. A prefix names `team` or a path under `team/`, the spelling the change feed uses (`team/wiki`), and matches whole path segments. A prefix outside `team/` or an unreadable message is refused with a warning `notice`, and the current watch stays in force. A connection that starts watching while the team watcher is off gets `workspace_watch_unavailable`.

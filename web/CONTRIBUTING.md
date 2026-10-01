@@ -6,6 +6,7 @@ Welcome! This guide will get you up and running with the frontend without needin
 
 - **Node.js** `^22.13.0 || ^24.0.0 || >=26.0.0` (the `engines` range in `package.json`, set by the test tooling) — check with `node --version`
 - **npm** — comes with Node.js
+- **Docker** — only for the visual comparisons and the WebKit project (see [Testing](#testing)); everything else runs without it
 
 ## Getting Started
 
@@ -39,6 +40,7 @@ With [`just`](https://github.com/casey/just), `just web-mock` from the repo root
 - The `POST /api/agents/{name}/sessions` / `.../stop` / `.../messages` HTTP endpoints an artifact's `residuum.sessions.start` uses: the bundled "Tip Splitter" artifact (`/workbench/tip-splitter`) has "Start a background session" and "Fire 3 calls at once" buttons for trying the artifact bar's activity panel, Cancel calls, and Stop page by hand. Like every artifact it names its agent, `atlas`, in `ask` and `sessions.start`, and a session's frames reach the artifact while atlas is the agent the web UI has open. Model calls are slowed down (`MODEL_CALL_DELAY_MS`) so they're visibly "in flight" long enough to cancel
 - Tasks sent to other agents in the sessions sidebar's External group: stopping `research-buddy`'s task succeeds, while `laptop` is unreachable, so its Stop fails and the row offers "Stop watching"
 - `POST /api/mock/missed-relay` records a session result in the main chat's history and drops the WebSocket, to exercise catching up after a reconnect
+- The team event log: `GET /api/hub/events` (with `before`, `after` and `limit`) and a `team_event` frame on the hub socket for each new entry. It records what the mock's own lifecycle, chat turns, sessions and notices do, worded as the backend words it, with ids counting from 1 and times from the mock's clock. It starts with `hub_started` and what starting the scenario's agents did, and starts over on reset. `POST /api/mock/user-inbox-add?agent=atlas` (`{ title?, body? }`) saves an item in an agent's user inbox the way its `user_inbox_add` tool does, which adds an `inbox_item_added` entry
 - Workspace files, for an agent (`/api/agents/{name}/workspace/...`) and for the shared team tree (`/api/team/workspace/...`): directory listings with size, modification time and version, reads with the version as the `ETag`, writes that answer `412` when the client's `If-Match` no longer matches, and delete, move, validate, `dir`, `raw` reads and writes, the recursive `tree` (with `glob`, `depth` and `content`) and the batch `read` with the backend's size budgets. Edits change the listings, and the team tree is the same one under an agent's `team/`
 - The Scheduled view (`/api/agents/{name}/scheduled/...`): the pulses, with their next fire, last outcome and current run worked out from the agent's sessions the way the backend reads them, toggling a pulse, and the pending actions with cancel. One pulse is disabled and one failed to load
 - Checkpoints, for an agent (`workspace` and `agent_config` repositories) and for the hub (`hub` and `team`): list with `path`, `turn_id` and paging, stats, a checkpoint's detail, diff and file, restore and undo. Each repository keeps the whole tree of each checkpoint, so a restore writes the files back (Settings, the workspace and the team tree show it) and an undo skips a path that changed again since. A route answers `400` for a repository of the other scope, like the backend. The sample histories end at the live files, and `status` reports their stats
@@ -182,6 +184,7 @@ web/
 │   ├── team-changes.ts       # Changing a team file and sending its live-update frames
 │   ├── model.ts              # The artifact model call
 │   ├── controls.ts           # Test controls: reset, clock, delays, missed-relay, teammate-message and team-file
+│   ├── team-events.ts        # The team event log: entries, paging, the events route, the user-inbox test control
 │   ├── artifacts-listener.ts # The second origin that serves artifact pages and files, with the SDK injected
 │   ├── artifacts-origin.ts   # What that origin forwards to the API and sockets, its block list, and the marker for requests that came through it
 │   ├── mock.ts               # Starts the mock on a Vite server, from the environment's options
@@ -190,6 +193,12 @@ web/
 │   ├── test-support.ts       # Test harnesses: route tables over HTTP, the whole mock with its sockets
 │   ├── route-parity.test.ts  # Every API client request lands on a mock route
 │   └── *.test.ts             # Unit tests, run by `npm test`
+├── e2e/                      # Playwright specs, checked like src/ (see Testing)
+│   ├── support/              # Fixtures, the axe scan, the screenshot helper, server ports
+│   ├── smoke/                # Flows on the current UI; `@preview` specs run on the production build
+│   ├── visual/               # `@visual` specs; their baselines are in __screenshots__/
+│   └── harness/              # Specs for the harness itself
+├── playwright.config.ts      # Projects, servers and reporters
 ├── vite.config.ts
 └── package.json
 ```
@@ -227,9 +236,10 @@ npm run format        # Prettier auto-format
 npm run check         # TypeScript / Svelte type check; warnings fail it
 npm test              # Vitest: lib unit tests and Svelte component tests
 npm run test:coverage # The same tests with a coverage summary (HTML report in coverage/)
+npm run e2e:fast      # Playwright specs in Chromium, visual comparisons left out (see Testing)
 ```
 
-**TypeScript lint.** Every `.ts` module under `src/`, including the rune store modules (`*.svelte.ts`), gets the strict type-aware ESLint rules. Only `.svelte` files get the relaxed set that fits runes. When a rule is wrong for one line, use a scoped `// eslint-disable-next-line <rule> -- <reason>`, never a blanket disable.
+**TypeScript lint.** Every `.ts` module under `src/` and `e2e/`, including the rune store modules (`*.svelte.ts`), gets the strict type-aware ESLint rules. Only `.svelte` files get the relaxed set that fits runes. When a rule is wrong for one line, use a scoped `// eslint-disable-next-line <rule> -- <reason>`, never a blanket disable.
 
 **Style lint.** `npm run lint` also runs Stylelint over `src/**/*.css` and the `<style>` blocks of `.svelte` files. Outside the token file (`src/styles/variables.css`) it forbids literal colors (hex, named, `rgb()` and the like), raw `font-size` and `font` values, raw `z-index` values, literal durations and easing curves in `transition` and `animation`, and `transition: all`. Reference a token with `var(--…)` instead. Stylesheets and components that still carry literal values are listed in `stylelint.config.js` and exempt from these rules; remove an entry when its file is rewritten or deleted, and never add new styles to the list.
 
@@ -240,6 +250,85 @@ npm run test:coverage # The same tests with a coverage summary (HTML report in c
 **Mock modules.** Everything under `mock/` is formatted, linted and type-checked with the same rules as `src/`, and its tests (`mock/**/*.test.ts`) run in Node through the same `npm test`. Route handlers live in route tables (`Route` in `mock/routes.ts`), and response bodies are checked against the generated protocol types in `src/lib/generated/` wherever one exists. The Vite plugin entry is `mock/plugin.ts`, and nothing in the mock is left out of these checks. `mock/test-support.ts` has two harnesses: one serves route tables over HTTP against a stub hub, and `startMockServer` runs the whole mock (hub, agents, sockets, scoped routing) on a real HTTP server, with a WebSocket client that keeps the frames it receives. Both take a mock environment (`createMockEnv({ deterministic: true })`, or `startMockServer({ deterministic: true })`), so a test that asserts on times or ids runs on the fixed clock.
 
 Component tests live next to the component as `src/components/**/*.test.ts` (or `*.component.test.ts` anywhere under `src/`). They run in jsdom, through the same `npm test` command as the Node unit tests under `src/lib/`. Mount with `render` and mock `fetch` using `src/test/component.ts`.
+
+## Testing
+
+Tests sit in five layers. Use the lowest one that can show the behavior: a lower layer is faster and breaks for fewer unrelated reasons.
+
+| Layer | Runs in | Use it for | Lives in |
+|---|---|---|---|
+| Unit | Node, Vitest | Stores, routing, formatters, parsers, the mock's own logic | `src/**/*.test.ts`, `mock/**/*.test.ts` |
+| Component | jsdom and Testing Library, in Vitest | One component's empty, loading, error, populated and live states, with fixtures in place of a socket | `src/components/**/*.test.ts`, `src/**/*.component.test.ts` |
+| End-to-end | Playwright in real Chromium, against the mock | A user flow across components: navigation, sockets, focus, touch, anything that needs a real browser and real layout | `e2e/**/*.spec.ts` |
+| Accessibility | axe-core, inside an end-to-end spec | Every place and overlay a change touches | `expectNoAxeViolations` in `e2e/support/axe.ts` |
+| Visual | Playwright screenshots, in the Playwright container | How a surface looks: a few baselines per surface, at desktop and phone size | `e2e/visual/` |
+
+The unit and component layers run in `npm test`, and the pre-commit hook runs them. The other three run through Playwright and are not part of the hook. Pull requests don't run CI, so a frontend change runs `just web-e2e` before it is reported, and the release workflow runs the end-to-end suite too.
+
+### Running the end-to-end suite
+
+| Recipe | Runs | Needs |
+|---|---|---|
+| `just web-e2e` | Everything: the specs on this machine, the visual comparisons in the Playwright container | Docker |
+| `just web-e2e-fast` | Everything but the visual comparisons | Chromium, installed on first use |
+| `just web-e2e-update` | Regenerates the visual baselines in the container | Docker |
+| `just web-e2e-webkit` | The same specs in a WebKit phone, in the container | Docker |
+
+Extra arguments go to Playwright's test command, so `just web-e2e-fast e2e/smoke/chat.spec.ts` runs one file and `--grep`, `--headed` and `--debug` work. The recipes name their projects, so `--project` adds to them instead of narrowing; to run one project, call Playwright directly: `cd web && npx playwright test --project=phone e2e/smoke`. `npm run e2e:report` opens the last HTML report. The first Docker run pulls the Playwright image, about a gigabyte. A fresh Linux machine also needs Chromium's system libraries: `cd web && npx playwright install --with-deps chromium`.
+
+The projects:
+
+| Project | Browser and size | Runs specs |
+|---|---|---|
+| `desktop` | Chromium, 1440×900 | without a tag, against the Vite dev server |
+| `phone` | Chromium, 390×844, touch, mobile user agent | without a tag, against the Vite dev server |
+| `preview-desktop`, `preview-phone` | The same two | tagged `@preview`, against the production build |
+| `visual-desktop`, `visual-phone` | The same two, rendered in the Playwright container, with the page's clock frozen | tagged `@visual` |
+| `webkit-phone` | WebKit as an iPhone 13, 390×844 | without a tag, against the Vite dev server; local only, the release workflow leaves it out |
+
+A spec runs in every project that matches its tag, so one spec covers both sizes. Branch on the size only when behavior differs, with Playwright's `isMobile` fixture. Tags go on a test or a describe block: `test("installs", { tag: "@preview" }, async ({ page }) => { ... })`. Use `@preview` for what the dev server can't show (the service worker, installability, the bundle as shipped) and `@visual` for screenshot comparisons. Give a spec one of them: a spec tagged with both matches no project and never runs.
+
+### Servers and state
+
+Playwright starts two mock servers and stops them when the run ends. One is the deterministic mock on the Vite dev server (port 5273, artifacts on 5280). The other is the production build, rebuilt first, served with the mock (port 4273, artifacts on 4280). They sit apart from `just web-mock` (5173) and `just web-mock-preview` (4173), so a mock you started yourself can stay up. Two suites at once on one machine, from two worktrees for instance, each set their own `E2E_DEV_PORT` and `E2E_PREVIEW_PORT`; a port that is already taken is an error, never a server to reuse.
+
+Every test shares one mock, whose state is global to its server, so the suite runs on one worker and each test starts with `POST /api/mock/reset`. Don't pass `--workers`, and don't rely on what another test did. Requests to anything but localhost are aborted, so the internet can't change a run (a web font fails fast and falls back the same way everywhere).
+
+### Writing a spec
+
+Import `test` and `expect` from `e2e/support/fixtures`, not from `@playwright/test`. Those are Playwright's with the harness added: the mock reset before each test, the loopback-only page, and the skips described below. A spec takes Playwright's own fixtures (`page`, `request`, `isMobile`), and `mock`:
+
+```ts
+import { expect, test } from "../support/fixtures";
+
+test("a teammate's message shows in the chat", async ({ page, mock }) => {
+  await mock.post("/api/mock/teammate-message", { params: { agent: "atlas" } });
+  await page.goto("/agent/atlas");
+  await expect(page.getByText("scout asked me to check the wiki index")).toBeVisible();
+});
+```
+
+`mock.post(path, { params, data })` calls one of the mock's test controls (see [Deterministic mode](#deterministic-mode)) and fails the test on any answer but 2xx. Locate elements by role and accessible name, and wait with web-first assertions (`expect(locator).toBeVisible()`), never with fixed sleeps. The mock runs with zero delays and a fixed clock, so what a spec waits for arrives at once and looks the same on every run; `POST /api/mock/delays` slows it down for a spec about waiting.
+
+**Accessibility.** `expectNoAxeViolations(page)` from `e2e/support/axe.ts` scans the page as it stands and fails on serious and critical violations, naming the rule and the elements. Put the page in the state under test first (open the menu, then scan), and scan each place and overlay a change touches. `{ within: "[role=dialog]" }` limits the scan to a region. The full result is attached to the test. A screen that is known to fail and that a later change replaces lists its violations in the spec, each with the reason and the change that removes it: `{ allow: [{ rule: "color-contrast", reason: "legacy header, removed with the new shell" }] }`. The scan fails when an allowed rule no longer fires, so an entry goes away with the screen it excuses. Minor and moderate findings don't fail; they are in the attached result.
+
+**Visual.** `expectScreenshot(page, "name")` from `e2e/support/screenshot.ts` compares the page with the baseline `name` in `e2e/__screenshots__/`, one per project. Wait for the page to reach the state under test first; the helper waits only for fonts. Put `@visual` on the test, so it runs in the `visual-*` projects, where the page's clock is frozen at the mock's clock (so "2h ago" reads the same on every run) and reduced motion is on. The helper turns off animations and hides the caret, and it paints over anything carrying a `data-visual-mask` attribute; pass `mask: [locator]` to cover a region for one screenshot. Compare the viewport unless a spec needs `fullPage: true`.
+
+Outside the container a `@visual` spec skips itself and says why, so `just web-e2e-fast` never compares screenshots. The WebKit project skips itself, naming the reason, when this machine can't start WebKit (run it through `just web-e2e-webkit` instead).
+
+### Baselines
+
+Text and image rendering differ between machines, so baselines are only ever made and compared inside the official Playwright container (`mcr.microsoft.com/playwright`, the `-noble` image for the installed Playwright version, pulled for `linux/amd64` on any host). `scripts/with-playwright-container.sh` starts it with a browser server, the recipes run the suite against that browser, and the mock stays on your machine. The image tag follows the exact version pinned in `package.json`, so bumping `@playwright/test` means running `just web-e2e-update` and reviewing every changed image.
+
+`just web-e2e-update` rewrites the baselines. Look at each changed image under `e2e/__screenshots__/` before committing it: a baseline records whatever the page showed, including a bug.
+
+### When a spec fails
+
+The run keeps a trace and a screenshot of each failed test under `web/test-results/`, and writes the HTML report to `web/playwright-report/`. Open a trace with `npx playwright show-trace test-results/<test>/trace.zip` to step through the actions, the page at each one, the console and the network. A failed visual comparison leaves the actual, expected and diff images beside it. The release workflow uploads the report and traces as the `playwright-report` artifact when the suite fails.
+
+### Release CI
+
+The quality-checks workflow's web job installs Chromium and runs `npm run e2e:fast`: every spec but the visual ones. Its `visual` input adds the visual comparisons, run through the container wrapper; releases leave it off, and the job summary says when the comparisons were skipped. The workflow can also be started by hand from the Actions tab, with `visual` on if you want the comparisons on the runners.
 
 ## Running Against the Real Backend
 

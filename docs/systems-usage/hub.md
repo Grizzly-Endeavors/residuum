@@ -98,13 +98,38 @@ Every session event, lifecycle or turn (tool calls and responses included), is a
 
 **Turn hook.** The agent runtime calls its activity tracker exactly once when a main turn ends, whatever the outcome, after the turn's replies are published and counted as unread. The hook puts the turn on the same feed: the user's message text, if a user started the turn; the last reply text, if there was one; the time; whether the turn had `user` or `background` visibility; and whether any client had the agent's WebSocket open. Empty text counts as no text. Unread counting is unchanged.
 
-None of this is exposed over HTTP or the hub WebSocket.
+The changes themselves are not exposed over HTTP or the hub WebSocket. The [team event log](#team-event-log) reads them and is.
+
+## Team event log
+
+The hub keeps a log of what has happened across the team since the process started. It lives in memory, holds up to 500 entries, and starts empty on every boot, so its first entry, `hub_started`, marks where this process began. An entry is `{ id, at, agent, kind, level, summary, target }`. `id` increases by one for every entry within a boot. `at` is an RFC 3339 time. `agent` is the agent the entry is about, or `null`. `summary` is one plain sentence that names the agent, such as `atlas finished a session` or `brittle couldn't start: <reason>`. `target` says where a client takes the user to see it, and is `null` when there is no such place: `{ kind: "agent_place", agent, place }` for an agent's chat, `{ kind: "session", agent, run_id }` for a session run, or `{ kind: "inbox_item", agent, item_id }` for an item in the user inbox.
+
+| Kind | Recorded when | Level | Target |
+|---|---|---|---|
+| `hub_started` | The hub process starts, before any agent does. Its summary is `Residuum started`. | `info` | none |
+| `agent_started` | An agent's state becomes `running`: `atlas started`. | `info` | the agent's chat |
+| `agent_stopped` | A `running` or `starting` agent's state becomes `stopped`, on request or because the hub is shutting down: `atlas stopped`. | `info` | the agent's chat |
+| `agent_failed` | An agent's state becomes `failed`. A start that failed reads `atlas couldn't start: <reason>`, with the failure's underlying reason on one line. A running agent that crashed reads `atlas stopped unexpectedly`, and a crash while starting reads `atlas couldn't start because of an internal error`. | `error` | the agent's chat |
+| `agent_created`, `agent_restored` | The matching hub event: `nova was created`, or `nova was created by atlas` when an agent did it. The hub announces an agent once it has started, so the agent's `agent_started` entry comes first. | `info` | the agent's chat |
+| `agent_deleted` | The matching hub event: `nova was deleted`, or `nova was deleted by atlas`. | `info` | none |
+| `agent_replied` | The turn hook reports a main turn that ended with a reply and `user` visibility: `atlas replied in your conversation`. Once per turn, and never for a turn with no reply or a `background` turn. | `info` | the agent's chat |
+| `session_started` | A session run registered, unless it is scheduled (a pulse or a scheduled action): `atlas started a session: <purpose>`. | `info` | the run |
+| `session_finished` | A session run that was not scheduled ended. A completed run reads `atlas finished a session: <purpose>`, a stopped one `atlas's session was stopped: <purpose>`, and a failed one `atlas's session failed: <reason>`. | `info` when completed, `warn` when stopped, `error` when failed | the run |
+| `scheduled_run_finished` | A pulse or scheduled action's run ended. It is the only entry for such a run. `atlas finished the pulse "email_check"`, `atlas's scheduled action "nightly digest" was stopped`, or `atlas's pulse "email_check" failed: <reason>`. | `info`, or `error` when it failed | the run |
+| `inbox_item_added` | The `user_inbox_add` tool saved an item: `atlas added an item to your inbox`. Items that appear any other way, and changes to the inbox's files, add nothing. | `info` | the item |
+| `hub_notice` | The hub published a `notice` to every client. The summary is the notice's text on one line, and the entry has the notice's level and agent. A warning the hub sends to one WebSocket connection alone, about a message that connection sent, is not one. | the notice's | none |
+
+When the log is full, recording a new entry evicts the oldest entry that is not protected, whatever its level. The newest 100 `warn` and `error` entries are protected, so a run of routine entries can't push a failure out. Ids are not reused, so evicted entries leave gaps in a page.
+
+A recorder reads the hub bus and the feed of agent changes (see [Watching running agents](#watching-running-agents)) and writes the entries. The hub starts it before the startup notices and before any agent starts, because neither source replays. The two sources are separate streams, so entries from one can interleave with entries from the other in an order that differs from the order things happened. A slow reader of the hub bus can lose events once it falls 256 behind, and the recorder logs a warning when it does. A session's end is worded from what the recorder saw when that run started, so a run it never saw start records nothing and is logged at `debug`.
+
+The log is read with `GET /api/hub/events`, and each new entry is sent on the hub WebSocket as `team_event`, both described in [Hub HTTP Surface](hub-http.md#team-events).
 
 ## Hub bus events
 
 Every change to an agent's state, autostart, or visibility is published in order as an `agent_state` event carrying the agent's summary. `agent_stopping` carries the name of an agent whose stop has begun. `agent_created`, `agent_restored` and `agent_deleted` carry who did it (`user` or `agent:<name>`); the first two carry the agent's summary. `agent_activity` carries `busy`, `busy_since` and `unread`. `hub_config_reloaded` reports each hub config reload attempt (see [Hub config reloads](#hub-config-reloads)). `notice` events carry hub-level messages: a fallback to the last-known-good hub config, hub config notices, removed environment overrides that are still set, and hub config reload outcomes.
 
-The hub generates a random **boot id** when it starts. Each hub WebSocket connection is sent it first, as `hub_boot`, before the agent snapshot, so a client can tell a restarted hub from a dropped connection to the same one.
+The hub generates a random **boot id** when it starts. Each hub WebSocket connection is sent it first, as `hub_boot`, before the agent snapshot, so a client can tell a restarted hub from a dropped connection to the same one. The team event log carries the same id, in every page it serves and every `team_event` frame, so a client that sees it change discards the events it holds.
 
 ## HTTP
 

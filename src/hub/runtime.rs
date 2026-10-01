@@ -28,6 +28,7 @@ use super::http::{HubHttpState, hub_router};
 use super::relay_agents::RelayAgents;
 use super::services::{HubControl, HubServices};
 use super::team_embedding::EmbeddingSource;
+use super::team_events::{TeamEventLog, TeamEventRecorder, record_hub_started};
 use super::types::{HubEvent, NoticeLevel};
 
 /// How often the hub checks for a newer version.
@@ -239,6 +240,8 @@ struct HubRuntime {
     hub_cfg: HubConfig,
     services: HubServices,
     host: Arc<AgentHost>,
+    /// Records what happens across the team for as long as the hub runs.
+    _team_events: TeamEventRecorder,
     app: axum::Router,
     server: HttpServer,
     /// Resolves when onboarding has written the first agent; `None` once the
@@ -271,13 +274,8 @@ impl HubRuntime {
         let tunnel_status_tx = Arc::new(tunnel_status_tx);
 
         let scan = scan_agents(root, &hub_cfg);
-        // The artifacts listener forwards `/api` to the hub router, which
-        // needs the listener's port and so is built after it; the handle is
-        // bound once the router exists.
-        let workbench_api = HubApi::new();
-        let (workbench_serving, workbench_shutdown_tx) =
-            start_workbench_listener(root, &hub_cfg, &scan.teams_ports, workbench_api.clone())
-                .await;
+        let (workbench_serving, workbench_shutdown_tx, workbench_api) =
+            start_workbench_listener(root, &hub_cfg, &scan.teams_ports).await;
         let services = HubServices::open(
             root,
             &hub_cfg,
@@ -293,6 +291,7 @@ impl HubRuntime {
         .await?;
 
         let host = AgentHost::new(services.clone(), hub_cfg.clone());
+        let (team_events, recorder) = start_team_event_log(&host);
         host.note_team_embedding(scan.team_embedding).await;
         let agents = host.discover()?;
         tracing::info!(agents = agents.len(), names = %agents.join(", "), "found agents");
@@ -303,7 +302,13 @@ impl HubRuntime {
         // this once the first agent is on disk.
         let setup_done = agents.is_empty().then(|| Arc::new(watch::channel(false).0));
         let setup_done_rx = setup_done.as_ref().map(|tx| tx.subscribe());
-        let app = build_app(&host, &services, reload_tx.clone(), setup_done)?;
+        let app = build_app(
+            &host,
+            &services,
+            &team_events,
+            reload_tx.clone(),
+            setup_done,
+        )?;
         workbench_api.bind(app.clone());
         let server = spawn_http_server(&hub_cfg.gateway, app.clone()).await?;
         let a2a = hub_cfg
@@ -350,6 +355,7 @@ impl HubRuntime {
             hub_cfg,
             services,
             host,
+            _team_events: recorder,
             app,
             server,
             setup_done_rx,
@@ -689,7 +695,8 @@ async fn setup_finished(setup_done_rx: &mut Option<watch::Receiver<bool>>) {
 }
 
 /// Build the hub's HTTP app over `host`, with the process-wide handles from
-/// `services`.
+/// `services` and the team event log `team_events`, whose boot id the hub
+/// socket announces.
 ///
 /// # Errors
 /// Returns `FatalError::Gateway` if the hub-level checkpoint repositories
@@ -697,6 +704,7 @@ async fn setup_finished(setup_done_rx: &mut Option<watch::Receiver<bool>>) {
 pub(super) fn build_app(
     host: &Arc<AgentHost>,
     services: &HubServices,
+    team_events: &Arc<TeamEventLog>,
     reload_tx: crate::gateway::types::ReloadSender,
     setup_done: Option<Arc<watch::Sender<bool>>>,
 ) -> Result<axum::Router, FatalError> {
@@ -725,7 +733,7 @@ pub(super) fn build_app(
         team_bus: services.team_feed.bus.clone(),
         team_watch_health: services.team_feed.health.clone(),
         started_at: std::time::Instant::now(),
-        boot_id: uuid::Uuid::new_v4().to_string(),
+        team_events: Arc::clone(team_events),
     };
     Ok(hub_router(
         Arc::clone(host) as Arc<dyn AgentDirectory>,
@@ -746,17 +754,37 @@ async fn poll_tunnel(tunnel: &mut Option<TunnelTask>) -> Result<(), tokio::task:
     }
 }
 
+/// Create the team event log and start the recorder that fills it.
+///
+/// They come before anything else the host does, so the hub's startup notices
+/// and every agent's start are in the log: nothing the recorder listens to is
+/// replayed. The boot id is the log's; the hub socket sends it too.
+fn start_team_event_log(host: &AgentHost) -> (Arc<TeamEventLog>, TeamEventRecorder) {
+    let team_events = TeamEventLog::new(uuid::Uuid::new_v4().to_string());
+    record_hub_started(&team_events);
+    let recorder = TeamEventRecorder::spawn(
+        Arc::clone(&team_events),
+        host.subscribe(),
+        host.agent_changes().subscribe(),
+    );
+    (team_events, recorder)
+}
+
 /// Start the workbench artifacts listener beside the gateway. Teams' and
 /// A2A's configured ports stay free for them, and so do their defaults, so
 /// enabling either later can't collide with the artifacts listener.
+///
+/// The listener forwards `/api` to the hub router, which needs the listener's
+/// port and so is built after it. The returned handle is where the caller
+/// binds that router once it exists.
 async fn start_workbench_listener(
     root: &Path,
     hub: &HubConfig,
     teams_ports: &[u16],
-    api: HubApi,
 ) -> (
     crate::workbench::server::WorkbenchServing,
     Option<watch::Sender<bool>>,
+    HubApi,
 ) {
     let mut reserved = vec![
         crate::config::DEFAULT_TEAMS_PORT,
@@ -766,14 +794,16 @@ async fn start_workbench_listener(
     reserved.extend_from_slice(teams_ports);
     let workbench_dir =
         crate::config::paths::TeamPaths::new(crate::config::paths::team_dir(root)).workbench_dir();
-    crate::workbench::server::start(
+    let api = HubApi::new();
+    let (serving, shutdown_tx) = crate::workbench::server::start(
         &hub.gateway.bind,
         hub.gateway.port,
         &reserved,
         workbench_dir,
-        api,
+        api.clone(),
     )
-    .await
+    .await;
+    (serving, shutdown_tx, api)
 }
 
 /// Report what the hub itself found wrong while starting: a fallback to its
@@ -855,6 +885,27 @@ mod tests {
         model: MockServer,
     }
 
+    /// The value at the JSON pointer `path` of `value`, `null` when there is none.
+    fn at<'a>(value: &'a serde_json::Value, path: &str) -> &'a serde_json::Value {
+        value.pointer(path).unwrap_or(&serde_json::Value::Null)
+    }
+
+    /// The next frame of a hub socket, parsed.
+    async fn next_json(
+        socket: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ) -> serde_json::Value {
+        use futures_util::StreamExt as _;
+
+        let message = tokio::time::timeout(Duration::from_secs(20), socket.next())
+            .await
+            .expect("a frame arrives")
+            .unwrap()
+            .unwrap();
+        serde_json::from_str(&message.into_text().unwrap()).unwrap()
+    }
+
     impl RunningHub {
         async fn start() -> Self {
             Self::start_with(&["atlas", "scout"]).await
@@ -862,6 +913,12 @@ mod tests {
 
         /// A hub over the agents `names`, which may be none.
         async fn start_with(names: &[&str]) -> Self {
+            Self::start_after(names, None).await
+        }
+
+        /// A hub over the agents `names` that starts as if its live config
+        /// had failed to load for `fallback_problem`.
+        async fn start_after(names: &[&str], fallback_problem: Option<&str>) -> Self {
             let root = tempfile::tempdir().unwrap();
             let (gateway_port, a2a_port) = (free_port(), free_port());
             let hub_dir = root.path().join("hub");
@@ -878,10 +935,13 @@ mod tests {
             for name in names {
                 write_agent(root.path(), name, &model.uri());
             }
-            let runtime =
-                HubRuntime::start(root.path(), HubConfig::load_at(&hub_dir).unwrap(), None)
-                    .await
-                    .unwrap();
+            let runtime = HubRuntime::start(
+                root.path(),
+                HubConfig::load_at(&hub_dir).unwrap(),
+                fallback_problem.map(str::to_string),
+            )
+            .await
+            .unwrap();
             let events = runtime.host.subscribe();
             let host = Arc::clone(&runtime.host);
             Self {
@@ -911,6 +971,46 @@ mod tests {
                 assert!(
                     tokio::time::Instant::now() < deadline,
                     "timed out waiting for {path} on port {port} to answer {expected:?}"
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+
+        /// The hub's team event log over HTTP: its boot id and every entry,
+        /// oldest first.
+        async fn team_events(&self) -> (String, Vec<serde_json::Value>) {
+            let page: serde_json::Value = self
+                .http
+                .get(format!(
+                    "http://127.0.0.1:{}/api/hub/events?limit=200",
+                    self.gateway_port
+                ))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            let mut events = at(&page, "/events").as_array().unwrap().clone();
+            events.reverse();
+            (at(&page, "/boot_id").as_str().unwrap().to_string(), events)
+        }
+
+        /// Wait until the team event log holds an entry of `kind` about
+        /// `agent`, and return it.
+        async fn team_event(&self, kind: &str, agent: &str) -> serde_json::Value {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+            loop {
+                let (_boot, events) = self.team_events().await;
+                if let Some(found) = events
+                    .into_iter()
+                    .find(|event| at(event, "/kind") == kind && at(event, "/agent") == agent)
+                {
+                    return found;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "timed out waiting for a {kind} entry about {agent}"
                 );
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
@@ -1008,6 +1108,83 @@ mod tests {
             .is_err(),
             "the server is gone"
         );
+    }
+
+    #[tokio::test]
+    async fn the_hub_logs_its_start_and_its_agents_and_sends_new_entries_under_its_boot_id() {
+        let hub = RunningHub::start().await;
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!(
+            "ws://127.0.0.1:{}/api/hub/ws",
+            hub.gateway_port
+        ))
+        .await
+        .unwrap();
+        let boot = next_json(&mut socket).await;
+        assert_eq!(at(&boot, "/type"), "hub_boot");
+
+        for name in ["atlas", "scout"] {
+            hub.team_event("agent_started", name).await;
+        }
+        let (boot_id, events) = hub.team_events().await;
+        assert_eq!(
+            at(&boot, "/boot_id"),
+            boot_id.as_str(),
+            "the endpoint and hub_boot agree"
+        );
+        let first = events.first().unwrap();
+        assert_eq!(at(first, "/kind"), "hub_started");
+        assert_eq!(at(first, "/id"), 1, "the hub's start begins the log");
+        assert_eq!(at(first, "/summary"), "Residuum started");
+
+        let response = hub
+            .http
+            .post(format!(
+                "http://127.0.0.1:{}/api/hub/agents/scout/stop",
+                hub.gateway_port
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success(), "{response:?}");
+        let frame = loop {
+            let frame = next_json(&mut socket).await;
+            if at(&frame, "/type") == "team_event" && at(&frame, "/event/kind") == "agent_stopped" {
+                break frame;
+            }
+        };
+        assert_eq!(
+            at(&frame, "/boot_id"),
+            at(&boot, "/boot_id"),
+            "the frame agrees too"
+        );
+        assert_eq!(at(&frame, "/event/agent"), "scout");
+        assert_eq!(at(&frame, "/event/summary"), "scout stopped");
+
+        hub.shut_down().await;
+    }
+
+    #[tokio::test]
+    async fn a_notice_the_hub_publishes_while_starting_is_in_its_log() {
+        let hub =
+            RunningHub::start_after(&["scout"], Some("the hub config has a stray bracket")).await;
+
+        let (_boot, events) = hub.team_events().await;
+
+        let notice = events
+            .iter()
+            .find(|event| at(event, "/kind") == "hub_notice")
+            .expect("the startup notice is logged");
+        assert_eq!(at(notice, "/level"), "error");
+        assert!(
+            at(notice, "/summary")
+                .as_str()
+                .unwrap()
+                .contains("the hub config has a stray bracket"),
+            "{notice}"
+        );
+        assert_eq!(at(notice, "/agent"), &serde_json::Value::Null);
+        assert_eq!(at(notice, "/target"), &serde_json::Value::Null);
+        hub.shut_down().await;
     }
 
     #[tokio::test]

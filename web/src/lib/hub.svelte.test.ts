@@ -130,6 +130,32 @@ describe("HubStore frames", () => {
     expect(hub.notices).toEqual([]);
   });
 
+  it("passes a team event to listeners and never raises a notice or toast for it", () => {
+    const hub = new HubStore();
+    hub.handleFrame(snapshot([agent("scout")]));
+    const seen: string[] = [];
+    hub.onFrame((frame) => seen.push(frame.type));
+
+    hub.handleFrame({
+      type: "team_event",
+      boot_id: "boot-1",
+      event: {
+        id: 1,
+        at: "2026-09-30T12:00:00Z",
+        agent: "scout",
+        kind: "agent_failed",
+        level: "error",
+        summary: "scout couldn't start: the model is unavailable",
+        target: { kind: "agent_place", agent: "scout", place: "chat" },
+      },
+    });
+
+    expect(seen).toEqual(["team_event"]);
+    expect(hub.notices).toEqual([]);
+    expect(toast.toasts.size).toBe(0);
+    expect(notifications.history).toEqual([]);
+  });
+
   it("updates an agent's state in place", () => {
     const hub = new HubStore();
     hub.handleFrame(snapshot([agent("atlas"), agent("scout")]));

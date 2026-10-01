@@ -5,10 +5,10 @@
 //! `docs/systems-usage/hub-http.md` places it:
 //!
 //! - `/api/hub/...`: agent lifecycle and status ([`lifecycle`]), the hub
-//!   WebSocket ([`ws`]), every agent's user inbox ([`inbox`]), and the routes
-//!   that exist once per process: hub config, secrets, keys, cloud, update,
-//!   shutdown, tracing, and the hub and team checkpoint repositories
-//!   ([`process`]).
+//!   WebSocket ([`ws`]), every agent's user inbox ([`inbox`]), the team event
+//!   log ([`events`]), and the routes that exist once per process: hub
+//!   config, secrets, keys, cloud, update, shutdown, tracing, and the hub and
+//!   team checkpoint repositories ([`process`]).
 //! - `/api/team/...`: the team's file API and workbench.
 //! - `/api/agents/{name}/...` and `/webhook/{agent}/{name}`: resolved against
 //!   the directory on every request and handed to the agent's own routers
@@ -22,6 +22,7 @@
 mod artifacts_origin;
 mod dispatch;
 mod error;
+mod events;
 mod inbox;
 mod lifecycle;
 mod process;
@@ -62,13 +63,14 @@ pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Rout
         directory: Arc::clone(&directory),
         team_bus: hub.team_bus.clone(),
         team_watch_health: hub.team_watch_health.clone(),
-        boot_id: hub.boot_id.clone(),
+        team_events: Arc::clone(&hub.team_events),
     };
 
     let app = Router::new()
         .merge(lifecycle::routes(lifecycle_state))
         .merge(ws::routes(ws_state))
         .merge(inbox::routes(Arc::clone(&directory)))
+        .merge(events::routes(Arc::clone(&hub.team_events)))
         .merge(process::hub_config_routes(&hub))
         .merge(process::cloud_routes(&hub))
         .merge(process::update_routes(&hub))
