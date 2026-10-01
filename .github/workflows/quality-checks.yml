@@ -1,7 +1,7 @@
 name: Quality Checks
 
-# Also runnable by hand from the Actions tab, to try a change on the runners,
-# `visual` included, without cutting a release.
+# Also runnable by hand from the Actions tab, to try a change on the runners
+# without cutting a release.
 on:
   workflow_call:
     inputs:
@@ -14,9 +14,9 @@ on:
         type: boolean
         default: true
       visual:
-        description: Also run the web visual comparisons, which compare screenshots against the committed baselines
+        description: Run the web visual comparisons, which compare screenshots against the committed baselines; turn off to run the other end-to-end specs only
         type: boolean
-        default: false
+        default: true
   workflow_dispatch:
     inputs:
       web:
@@ -28,9 +28,9 @@ on:
         type: boolean
         default: true
       visual:
-        description: Also run the web visual comparisons, which compare screenshots against the committed baselines
+        description: Run the web visual comparisons, which compare screenshots against the committed baselines; turn off to run the other end-to-end specs only
         type: boolean
-        default: false
+        default: true
 
 jobs:
   web:
@@ -73,7 +73,8 @@ jobs:
       # Playwright container, which the Docker daemon beside the runner starts
       # and the wrapper script stops. E2E_ALL_IN_CONTAINER sends the Chromium
       # projects there, as the visual ones always go. The visual comparisons
-      # run when the `visual` input is on; otherwise the summary says so.
+      # run unless the `visual` input is turned off, and then the summary says
+      # so.
       - name: Web end-to-end tests
         id: web_e2e
         if: ${{ !inputs.visual }}
