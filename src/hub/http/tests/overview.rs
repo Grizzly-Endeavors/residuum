@@ -6,9 +6,8 @@
 //! harness's feed of agent changes, or on the directory's events. Files are
 //! written where the agent's own would be.
 
-use std::time::Instant;
-
 use chrono::{NaiveDate, NaiveDateTime, TimeZone as _};
+use tokio::time::Instant;
 
 use super::*;
 use crate::background::registry::{SessionCategory, SessionState};
@@ -630,30 +629,49 @@ async fn a_request_counts_a_stopped_agents_inbox_again_and_tells_other_clients_w
     expect_no_frame(&mut frames).await;
 }
 
-#[tokio::test]
+/// How long the burst waits between one change and the next. Forty of them
+/// last three windows, so the overview has to gather the changes into more
+/// than one frame.
+const BURST_GAP: Duration = Duration::from_millis(15);
+
+/// The overview sends a frame at most once a window and always sends the
+/// last state.
+///
+/// The clock is paused so that the time a frame is taken is the time it was
+/// sent: a paused clock moves only when every task is waiting, and the task
+/// that takes the frames is ready as soon as one is sent. On the real clock a
+/// test that takes the frames after the burst reads one that waited in the
+/// channel next to one that was just sent, which looks like two frames less
+/// than a window apart whenever the burst outlasts a window.
+#[tokio::test(start_paused = true)]
 async fn a_burst_of_changes_is_gathered_into_frames_a_window_apart_and_the_last_state_is_sent() {
     let h = Harness::new();
     let _tracker = h.track_overview();
     overview_of(&h, "scout").await;
     let mut frames = h.overview.subscribe();
+    let collector = crate::util::spawn_in_span(async move {
+        let mut received = Vec::new();
+        while let Some(frame) = frame_within(&mut frames, OVERVIEW_WINDOW * 3).await {
+            received.push((Instant::now(), frame));
+        }
+        received
+    });
 
     for n in 0..40 {
         let id = format!("20260930_{n:02}");
         place_item(&h, "scout", &id).await;
         changed(&h, "scout", AgentChangeKind::UserInboxAdded { item_id: id });
+        tokio::time::sleep(BURST_GAP).await;
     }
-    let mut received = Vec::new();
-    while let Some(frame) = frame_within(&mut frames, OVERVIEW_WINDOW * 3).await {
-        received.push((Instant::now(), frame));
-    }
+    let received = collector.await.unwrap();
 
     let counts: Vec<u32> = received
         .iter()
         .map(|(_, frame)| frame.inbox_unread)
         .collect();
     assert!(
-        !counts.is_empty() && counts.len() <= 4,
-        "40 changes made {counts:?}"
+        (2..=4).contains(&counts.len()),
+        "40 changes over three windows made {counts:?}"
     );
     assert_eq!(
         counts.last(),
@@ -663,13 +681,15 @@ async fn a_burst_of_changes_is_gathered_into_frames_a_window_apart_and_the_last_
     for pair in received.windows(2) {
         let apart = pair[1].0.duration_since(pair[0].0);
         assert!(
-            apart >= OVERVIEW_WINDOW * 9 / 10,
-            "frames came {apart:?} apart, under the {OVERVIEW_WINDOW:?} window"
+            apart >= OVERVIEW_WINDOW,
+            "frames came {apart:?} apart, under the {OVERVIEW_WINDOW:?} window: {counts:?}"
         );
     }
 }
 
-#[tokio::test]
+/// On the paused clock the second change lands halfway through the wait
+/// however slow the machine is.
+#[tokio::test(start_paused = true)]
 async fn a_change_during_the_wait_is_in_the_frame_the_wait_ends_with() {
     let h = Harness::new();
     let _tracker = h.track_overview();
@@ -702,7 +722,9 @@ async fn a_change_during_the_wait_is_in_the_frame_the_wait_ends_with() {
     expect_no_frame(&mut frames).await;
 }
 
-#[tokio::test]
+/// On the paused clock a frame that waits for the window shows as the window
+/// having passed, however fast the machine is.
+#[tokio::test(start_paused = true)]
 async fn a_new_agent_is_sent_at_once_and_a_deleted_agent_gets_no_further_frames() {
     let h = Harness::new();
     let _tracker = h.track_overview();

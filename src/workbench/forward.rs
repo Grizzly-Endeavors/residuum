@@ -7,6 +7,14 @@
 //! is forwarded: the router's embedded web app, webhooks and relay callback
 //! are not reachable through the artifacts origin.
 //!
+//! The hand-off happens before any routing of the listener's own, so the hub
+//! router gets the request exactly as the listener received it. A route such
+//! as `/api/{*rest}` would leave `rest` on the request as a path parameter, and
+//! the hub router's own match appends to those, so every `Path` extractor in
+//! the hub would count one parameter too many. It would also leave the matched
+//! route behind, which axum's debug assertions reject when the request then
+//! enters a mounted service such as the agent routes.
+//!
 //! The listener starts before the hub router exists (the router needs the
 //! listener's port), so it holds a [`HubApi`], a handle the runtime binds once
 //! the router is built.
@@ -18,10 +26,10 @@
 use std::sync::{Arc, OnceLock};
 
 use axum::Router;
-use axum::extract::{MatchedPath, Request, State};
+use axum::extract::{Request, State};
 use axum::http::StatusCode;
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Json, Response};
-use axum::routing::any;
 use serde_json::json;
 use tower::ServiceExt;
 
@@ -71,10 +79,6 @@ impl HubApi {
             )
                 .into_response();
         };
-        // The listener's router recorded the `/api/{*rest}` route that matched.
-        // The hub router routes the request afresh, and axum refuses to route
-        // into a mounted service (the agent routes) with a stale match.
-        req.extensions_mut().remove::<MatchedPath>();
         req.extensions_mut().insert(ArtifactsOrigin);
         match router.clone().oneshot(req).await {
             Ok(response) => response,
@@ -83,72 +87,147 @@ impl HubApi {
     }
 }
 
-/// The routes that forward to the hub router: `/api` and everything below it.
+/// Put the API in front of `artifacts`: `/api` and everything below it goes to
+/// the hub router, every other path to `artifacts`.
 ///
 /// A folder artifact can't be called `api` (see `is_valid_artifact_name`), so
-/// these never shadow an artifact's page.
-pub(super) fn routes(api: HubApi) -> Router {
+/// the API never shadows an artifact's page.
+///
+/// The split is a middleware over a router that has no routes of its own, not
+/// a route, so nothing matches the request before the hub router does (see the
+/// module docs for what a match would leave behind).
+pub(super) fn forwarding(artifacts: Router, api: HubApi) -> Router {
     Router::new()
-        .route("/api", any(forward))
-        .route("/api/", any(forward))
-        .route("/api/{*rest}", any(forward))
-        .with_state(api)
+        .fallback_service(artifacts)
+        .layer(axum::middleware::from_fn_with_state(api, split_api))
 }
 
-async fn forward(State(api): State<HubApi>, req: Request) -> Response {
-    api.dispatch(req).await
+async fn split_api(State(api): State<HubApi>, req: Request, next: Next) -> Response {
+    if is_api_path(req.uri().path()) {
+        api.dispatch(req).await
+    } else {
+        next.run(req).await
+    }
+}
+
+/// Whether `path` is `/api` or below it. `/apix` and `/api-tools` are not.
+fn is_api_path(path: &str) -> bool {
+    path == "/api" || path.starts_with("/api/")
 }
 
 #[cfg(test)]
 mod tests {
+    use axum::Extension;
     use axum::body::Body;
+    use axum::extract::Path;
     use axum::routing::get;
 
     use super::*;
 
-    /// A hub stand-in that reports whether the request carried the marker.
+    /// An extension the forwarder knows nothing about, standing in for the
+    /// ones axum, hyper and the server put on a request (`OnUpgrade`,
+    /// `ConnectInfo`).
+    #[derive(Debug, Clone, Copy)]
+    struct Carried(u8);
+
+    /// A hub stand-in: `/api/probe` reports whether the request carried the
+    /// marker, `/api/carried` what `Carried` held, and the routes with path
+    /// parameters answer with what their `Path` extractors saw.
     fn stand_in() -> Router {
-        Router::new().route(
-            "/api/probe",
-            get(|req: Request| async move {
-                if req.extensions().get::<ArtifactsOrigin>().is_some() {
-                    "marked"
-                } else {
-                    "unmarked"
-                }
-            }),
-        )
+        Router::new()
+            .route(
+                "/api/probe",
+                get(|req: Request| async move {
+                    if req.extensions().get::<ArtifactsOrigin>().is_some() {
+                        "marked"
+                    } else {
+                        "unmarked"
+                    }
+                }),
+            )
+            .route(
+                "/api/carried",
+                get(|carried: Option<Extension<Carried>>| async move {
+                    carried.map_or_else(|| "none".to_string(), |Extension(c)| c.0.to_string())
+                }),
+            )
+            .route(
+                "/api/x/{id}",
+                get(|Path(id): Path<String>| async move { id }),
+            )
+            .route(
+                "/api/y/{first}/{second}/z",
+                get(|Path((first, second)): Path<(String, String)>| async move {
+                    format!("{first}+{second}")
+                }),
+            )
     }
 
-    async fn body_text(response: Response) -> String {
+    /// The artifacts side: routes shaped like the real ones, which would
+    /// match `/api/...` if the API weren't split off first, and which answer
+    /// "artifact" to tell them from the hub's answers.
+    fn artifacts_stand_in() -> Router {
+        Router::new()
+            .route("/{name}/{*rest}", get(|| async { "artifact" }))
+            .fallback(|| async { "artifact" })
+    }
+
+    fn listener(api: &HubApi) -> Router {
+        forwarding(artifacts_stand_in(), api.clone())
+    }
+
+    async fn get_body(app: Router, path: &str) -> (StatusCode, String) {
+        let response = app
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        String::from_utf8(bytes.to_vec()).unwrap()
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
     }
 
     #[tokio::test]
     async fn an_unbound_handle_answers_503_with_a_plain_message() {
         let api = HubApi::new();
-        let response = routes(api)
-            .oneshot(Request::get("/api/probe").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert!(body_text(response).await.contains("still starting"));
+        let (status, body) = get_body(listener(&api), "/api/probe").await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(body.contains("still starting"), "{body}");
     }
 
     #[tokio::test]
     async fn a_bound_handle_dispatches_with_the_marker() {
         let api = HubApi::new();
-        let forwarder = routes(api.clone());
+        let forwarder = listener(&api);
         api.bind(stand_in());
-        let response = forwarder
-            .oneshot(Request::get("/api/probe").body(Body::empty()).unwrap())
+        let (status, body) = get_body(forwarder, "/api/probe").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "marked");
+    }
+
+    #[tokio::test]
+    async fn path_parameters_of_hub_routes_reach_their_extractors() {
+        let api = HubApi::new();
+        api.bind(stand_in());
+        for (path, expected) in [("/api/x/42", "42"), ("/api/y/ab/cd/z", "ab+cd")] {
+            let (status, body) = get_body(listener(&api), path).await;
+            assert_eq!(status, StatusCode::OK, "{path}: {body}");
+            assert_eq!(body, expected, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_request_reaches_the_hub_router_with_the_extensions_it_arrived_with() {
+        let api = HubApi::new();
+        api.bind(stand_in());
+        let mut request = Request::get("/api/carried").body(Body::empty()).unwrap();
+        request.extensions_mut().insert(Carried(7));
+        let response = listener(&api).oneshot(request).await.unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(body_text(response).await, "marked");
+        assert_eq!(bytes, "7");
     }
 
     #[tokio::test]
@@ -159,15 +238,8 @@ mod tests {
         let hub = Router::new().nest_service("/api/agents", agents);
         let api = HubApi::new();
         api.bind(hub);
-        let response = routes(api)
-            .oneshot(
-                Request::get("/api/agents/scout/status")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(body_text(response).await, "agent");
+        let (_, body) = get_body(listener(&api), "/api/agents/scout/status").await;
+        assert_eq!(body, "agent");
     }
 
     #[tokio::test]
@@ -175,23 +247,29 @@ mod tests {
         let api = HubApi::new();
         api.bind(stand_in());
         api.bind(Router::new());
-        let response = routes(api)
-            .oneshot(Request::get("/api/probe").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        let (status, _) = get_body(listener(&api), "/api/probe").await;
+        assert_eq!(status, StatusCode::OK);
     }
 
     #[tokio::test]
-    async fn only_api_paths_are_forwarded() {
+    async fn only_api_paths_go_to_the_hub_router() {
         let api = HubApi::new();
         api.bind(stand_in());
-        for path in ["/", "/webhook/scout/x", "/cloud/callback", "/assets/app.js"] {
-            let response = routes(api.clone())
-                .oneshot(Request::get(path).body(Body::empty()).unwrap())
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        for path in [
+            "/",
+            "/webhook/scout/x",
+            "/cloud/callback",
+            "/assets/app.js",
+            "/apix/probe",
+            "/api-tools/probe",
+            "/%61pi/probe",
+        ] {
+            let (_, body) = get_body(listener(&api), path).await;
+            assert_eq!(body, "artifact", "{path} is the artifacts side's");
+        }
+        for path in ["/api", "/api/", "/api/probe", "/api/no/such/route"] {
+            let (_, body) = get_body(listener(&api), path).await;
+            assert_ne!(body, "artifact", "{path} is the hub's");
         }
     }
 }
