@@ -672,26 +672,7 @@ button.session-row-artifact-link:focus-visible {
   padding: 8px;
 }
 
-/* ── Status note (inside a session view) ─────────────────────────────── */
-
-.msg-status {
-  align-self: center;
-  max-width: 92%;
-  padding: 4px 12px;
-  font-size: var(--fs-sm);
-  font-style: italic;
-  line-height: 1.5;
-  color: var(--text-muted);
-  text-align: center;
-}
-
-.msg-status.tone-error {
-  font-style: normal;
-  color: #e8a0a0;
-  background: var(--error-bg);
-  border: 1px solid rgba(192, 57, 43, 0.25);
-  border-radius: var(--radius-sm);
-}
+/* ── Failure details (inside a session view) ─────────────────────────── */
 
 .msg-status-details summary {
   cursor: pointer;
@@ -727,80 +708,6 @@ button.session-row-artifact-link:focus-visible {
   word-break: break-word;
   max-height: 200px;
   overflow-y: auto;
-}
-
-/* ── Agent message: a session speaking into a conversation ───────────── */
-/* A moss seam, not a card: it reads as something that grew in from
-   elsewhere, quieter than the conversation it sits in. */
-
-.msg-agent {
-  align-self: stretch;
-  padding: 8px 14px 8px 16px;
-  background: linear-gradient(90deg, rgba(107, 122, 74, 0.1), transparent 75%);
-  border-left: 2px solid var(--moss);
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-}
-
-.msg-agent-head {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-  flex-wrap: wrap;
-  margin-bottom: 4px;
-}
-
-.msg-agent-from {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-  overflow-wrap: anywhere;
-}
-
-.msg-agent-open,
-.msg-agent-toggle {
-  /* 40px to hit, drawn in the space of a 22px line. */
-  min-height: 40px;
-  margin-block: -9px;
-  padding: 0 var(--s-3);
-  font-family: var(--font-body);
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  line-height: 22px;
-  color: var(--moss-hover);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition:
-    color var(--dur-quick),
-    border-color var(--dur-quick);
-}
-
-.msg-agent-open {
-  margin-left: auto;
-}
-
-.msg-agent-open:hover,
-.msg-agent-toggle:hover {
-  color: var(--text);
-  border-color: var(--moss-faint);
-}
-
-.msg-agent-toggle {
-  margin-top: -7px;
-  margin-left: -12px;
-}
-
-.msg-agent-body {
-  font-size: var(--fs-base);
-  color: var(--text-muted);
-}
-
-.msg-agent-body.clamped {
-  max-height: 6.2em;
-  overflow: hidden;
-  mask-image: linear-gradient(180deg, #000 60%, transparent);
-  -webkit-mask-image: linear-gradient(180deg, #000 60%, transparent);
 }
 
 /* ── Reduced motion ──────────────────────────────────────────────────── */

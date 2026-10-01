@@ -215,23 +215,18 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
       hub.teamEvents.agentReplied(agent);
       if (agent.connectedClients() === 0) hub.addUnread(agent);
       const now = env.clock.iso();
+      // Like the backend, every message of the turn carries its correlation id.
+      const ofTurn = { timestamp: now, visibility: "user", turn_id: replyTo } as const;
       state.extraRecent.push(
-        { role: "user", content, timestamp: now, visibility: "user" },
+        { role: "user", content, ...ofTurn },
         {
           role: "assistant",
           content: "Looking through recent notes first.",
           tool_calls: [{ id: toolCallId, name: "memory_search", arguments: toolArgs }],
-          timestamp: now,
-          visibility: "user",
+          ...ofTurn,
         },
-        {
-          role: "tool",
-          content: toolOutput,
-          tool_call_id: toolCallId,
-          timestamp: now,
-          visibility: "user",
-        },
-        { role: "assistant", content: response, timestamp: now, visibility: "user" },
+        { role: "tool", content: toolOutput, tool_call_id: toolCallId, ...ofTurn },
+        { role: "assistant", content: response, ...ofTurn },
       );
       hub.overview.changed(agent);
     });

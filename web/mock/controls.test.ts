@@ -127,9 +127,15 @@ describe("test controls", () => {
         unread: 1,
       });
       const [message, reply] = (await recentMessages("atlas")).slice(-2);
-      expect(message).toMatchObject({ role: "user", visibility: "user" });
+      expect(message).toMatchObject({
+        role: "user",
+        visibility: "background",
+        agent_sender: { address: "agent:scout", category: "teammate" },
+      });
       expect(message?.content).toBe(
-        "[Message from scout]\nCan you look over the wiki index when you get a chance?",
+        "[Message from teammate agent:scout, not the user. Your response in this turn is not " +
+          'shown to them; to reply, call message_agent with to="agent:scout".]\n' +
+          "Can you look over the wiki index when you get a chance?",
       );
       expect(reply).toMatchObject({
         role: "assistant",
@@ -140,7 +146,8 @@ describe("test controls", () => {
     it("names the teammate with ?from=", async () => {
       await control("teammate-message?agent=atlas&from=drifter");
       const message = (await recentMessages("atlas")).at(-2);
-      expect(message?.content).toContain("[Message from drifter]");
+      expect(message?.content).toContain("[Message from teammate agent:drifter,");
+      expect(message?.agent_sender?.address).toBe("agent:drifter");
     });
 
     it("sends the reply to a connected client instead of marking the agent unread", async () => {

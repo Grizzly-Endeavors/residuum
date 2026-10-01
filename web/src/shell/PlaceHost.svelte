@@ -1,11 +1,10 @@
 <script lang="ts">
-  import { hub } from "../lib/hub.svelte";
   import { router } from "../lib/router.svelte";
   import { isAgentPlace } from "../lib/routes";
   import { ws } from "../lib/ws.svelte";
-  import Chat from "../Chat.svelte";
   import SessionsSidebar from "../components/SessionsSidebar.svelte";
   import Workbench from "../components/Workbench.svelte";
+  import ChatPlace from "../places/chat/ChatPlace.svelte";
   import FilesPlace from "../places/files/FilesPlace.svelte";
   import { fileSourceFor } from "../places/files/file-source";
   import Home from "../places/home/Home.svelte";
@@ -15,10 +14,10 @@
   import { agentPlaceLabel } from "./rail-model";
   import type { ShellActions } from "./shell-actions";
 
-  // The main region's place: Home, Inbox, the Schedule, Files or Shared
-  // files, or a place that hasn't been rebuilt, which hosts its legacy view
-  // inside a `data-legacy-view` element, where the legacy global styles still
-  // apply and the new base styles don't.
+  // The main region's place: Home, Inbox, an agent's Chat, Schedule or Files,
+  // Shared files, or a place that hasn't been rebuilt, which hosts its legacy
+  // view inside a `data-legacy-view` element, where the legacy global styles
+  // still apply and the new base styles don't.
 
   let { actions }: { actions: ShellActions } = $props();
 
@@ -46,17 +45,17 @@
   <Home {actions} />
 {:else if place.kind === "inbox"}
   <Inbox {place} />
+{:else if place.kind === "chat"}
+  {#key place.agent}
+    <ChatPlace agent={place.agent} />
+  {/key}
 {:else if place.kind === "schedule"}
   {#key place.agent}
     <Schedule agent={place.agent} />
   {/key}
 {:else}
   {#if isAgentPlace(place)}
-    <PlaceHeader
-      title={place.agent}
-      agent={place.agent}
-      sub={place.kind === "chat" ? hub.agent(place.agent)?.role : agentPlaceLabel(place.kind)}
-    />
+    <PlaceHeader title={place.agent} agent={place.agent} sub={agentPlaceLabel(place.kind)} />
   {:else if place.kind === "shared-files"}
     <PlaceHeader title="Shared files" />
   {/if}
@@ -69,11 +68,7 @@
     <div class="shell-legacy" data-legacy-view>
       {#if isAgentPlace(place)}
         {#key place.agent}
-          {#if place.kind === "chat"}
-            <Chat />
-          {:else}
-            <SessionsSidebar onSelect={openRun} />
-          {/if}
+          <SessionsSidebar onSelect={openRun} />
         {/key}
       {:else if place.kind === "workbench"}
         <Workbench artifact={place.artifact} />
