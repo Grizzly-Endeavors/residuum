@@ -331,6 +331,18 @@ impl Fixture {
     }
 }
 
+/// The item files in a started agent's user inbox. An empty list means the
+/// hub wrote nothing there, since the directory itself must exist.
+fn user_inbox_files(hub: &Fixture, agent: &str) -> Vec<std::path::PathBuf> {
+    let inbox = WorkspaceLayout::new(hub.root.path().join(agent)).user_inbox_dir();
+    assert!(inbox.is_dir(), "{agent} has a user inbox");
+    std::fs::read_dir(&inbox)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.is_file())
+        .collect()
+}
+
 /// Poll `check` until it returns `Some`, or fail after the timeout.
 async fn eventually<T, F, Fut>(what: &str, mut check: F) -> T
 where
@@ -702,7 +714,6 @@ async fn a_panic_in_one_agents_loop_fails_only_that_agent() {
     hub.host.start_autostart().await;
     let mut events = hub.host.subscribe();
 
-    let slot = hub.host.slot("scout").unwrap();
     let command_tx = {
         // The panic hook is a server command; send it over the WebSocket.
         let (mut ws, _) =
@@ -753,8 +764,7 @@ async fn a_panic_in_one_agents_loop_fails_only_that_agent() {
             .contains(&("scout".to_string(), AgentState::Failed)),
         "the failure is published on the hub bus"
     );
-    // The failure was also auto-reported, naming the agent, and left in the
-    // agent's inbox.
+    // The failure was also auto-reported, naming the agent.
     eventually("the automatic bug report", || async {
         let received = reports.received_requests().await.unwrap_or_default();
         received
@@ -763,10 +773,9 @@ async fn a_panic_in_one_agents_loop_fails_only_that_agent() {
             .then_some(())
     })
     .await;
-    let inbox = WorkspaceLayout::new(&slot.dir).user_inbox_dir();
     assert!(
-        std::fs::read_dir(&inbox).is_ok_and(|entries| entries.count() > 0),
-        "the failure is in scout's inbox"
+        user_inbox_files(&hub, "scout").is_empty(),
+        "the hub leaves nothing about the failure in scout's inbox"
     );
 
     // A failed agent restarts only when someone restarts it.
@@ -1457,12 +1466,9 @@ async fn an_agent_created_by_another_agent_is_briefed_in_that_agents_name() {
 }
 
 #[tokio::test]
-async fn the_agent_that_creates_or_deletes_an_agent_gets_an_inbox_item_about_it() {
+async fn the_agent_that_creates_or_deletes_an_agent_files_nothing_in_its_user_inbox() {
     let hub = Fixture::new(&["scout"], "").await;
-    let inbox = WorkspaceLayout::new(hub.root.path().join("scout")).user_inbox_dir();
-    let items = || std::fs::read_dir(&inbox).map_or(0, Iterator::count);
     hub.host.start("scout").await.unwrap();
-    let before = items();
 
     hub.host
         .create(
@@ -1471,20 +1477,16 @@ async fn the_agent_that_creates_or_deletes_an_agent_gets_an_inbox_item_about_it(
         )
         .await
         .unwrap();
-    let after_create = items();
     hub.host
         .delete("nova", Actor::Agent("scout".to_string()))
         .await
         .unwrap();
-    let after_delete = items();
     hub.host
         .create(create_request("kit", None), Actor::User)
         .await
         .unwrap();
 
-    assert_eq!(after_create, before + 1, "creating left an item");
-    assert_eq!(after_delete, after_create + 1, "deleting left an item");
-    assert_eq!(items(), after_delete, "the user's own actions leave none");
+    assert!(user_inbox_files(&hub, "scout").is_empty());
 }
 
 #[tokio::test]
@@ -1794,7 +1796,7 @@ async fn racing_starts_restarts_and_a_delete_never_resurrect_the_agent() {
             hub.host.adopt("bob");
         }
         // Odd rounds start with a broken model config, so the racing starts
-        // fail and go through the failure-to-inbox path.
+        // fail and go through the failure path.
         if round % 2 == 1 {
             std::fs::write(providers_path(&hub, "bob"), "not valid toml [[[").unwrap();
         }
@@ -2435,7 +2437,7 @@ async fn messaging_a_stopped_or_unknown_teammate_is_a_tool_error_and_queues_noth
     let alpha = hub.mock("alpha");
     assert!(
         model_was_told(alpha, "teammate 'beta' is stopped; nothing was queued").await
-            && model_was_told(alpha, "they can start it from the team view").await,
+            && model_was_told(alpha, "they can start it from Home in the web UI").await,
         "a stopped teammate is a tool error that says so"
     );
     assert!(

@@ -1,4 +1,4 @@
-// The words a feed shows about who sent a message and what an attachment is.
+// The words a feed shows about who sent a message.
 
 import type { IconName } from "../lib/icons";
 
@@ -39,11 +39,4 @@ export function cardSender(from: string, category: string | null, agent: string)
   }
   const kind = (category === null ? undefined : SESSION_KINDS[category]) ?? "Session";
   return { kind, sender: from, icon: "layers", isSession: true };
-}
-
-/** A file's size in plain units. */
-export function fileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

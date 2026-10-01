@@ -42,9 +42,18 @@ export function toApiInboxItem(state: MockState, item: UserInboxItem): UserInbox
 }
 
 /** What an attachment serves: the mock keeps no files, so it is a stand-in of the attachment's type. */
-function attachmentBody(attachment: UserInboxAttachment): Buffer {
+function attachmentBody(attachment: Pick<UserInboxAttachment, "filename" | "mime_type">): Buffer {
   if (attachment.mime_type === "image/png") return PNG_PIXEL;
   return Buffer.from(`Mock attachment: ${attachment.filename}\n`);
+}
+
+/**
+ * An attachment of a new item, sized as what it serves. Its `url` is filled in
+ * when the item is listed.
+ */
+export function mockAttachment(filename: string, mimeType: string): UserInboxAttachment {
+  const size = attachmentBody({ filename, mime_type: mimeType }).length;
+  return { filename, mime_type: mimeType, size, url: "" };
 }
 
 function newestFirst(items: readonly UserInboxItem[]): UserInboxItem[] {

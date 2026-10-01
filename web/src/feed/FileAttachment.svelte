@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Icon } from "../lib/icons";
   import type { FileAttachmentFeedItem } from "../lib/types";
-  import { fileSize } from "./feed-words";
+  import { fileSize } from "../lib/file-size";
 
   // A file the agent sent: its caption, the image or audio inline when it is
   // one, and always the file to download with its name and size.

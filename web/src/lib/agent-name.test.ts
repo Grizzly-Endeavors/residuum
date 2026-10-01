@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_AGENT_NAME, agentNameProblem } from "./agent-name";
+import { DEFAULT_AGENT_NAME, agentNameProblem, newAgentNameProblem } from "./agent-name";
 
 describe("agentNameProblem", () => {
   it("accepts the default and typical names", () => {
@@ -29,5 +29,18 @@ describe("agentNameProblem", () => {
     for (const reserved of ["hub", "team", "agents"]) {
       expect(agentNameProblem(reserved), reserved).toMatch(/reserved/);
     }
+  });
+});
+
+describe("newAgentNameProblem", () => {
+  it("accepts a valid name nobody has", () => {
+    expect(newAgentNameProblem("research-buddy", ["atlas", "scout"])).toBeNull();
+  });
+
+  it("names a taken name, and puts the rules first", () => {
+    expect(newAgentNameProblem("atlas", ["atlas", "scout"])).toBe(
+      "You already have an agent called atlas.",
+    );
+    expect(newAgentNameProblem("Atlas", ["Atlas"])).toMatch(/lowercase/);
   });
 });

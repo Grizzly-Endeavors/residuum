@@ -63,9 +63,9 @@
 <div class="prose" data-size={size} {@attach render} {@attach handleClicks}></div>
 
 <style>
+  /* The color comes from where the text sits: a feed's, or a quieter one. */
   .prose {
     min-width: 0;
-    color: var(--color-text);
     font-size: var(--font-size-message);
     line-height: var(--line-height-message);
     overflow-wrap: anywhere;

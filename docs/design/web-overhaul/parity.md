@@ -116,26 +116,26 @@ Every capability the current web UI offers, grouped by the surface that has it t
 ## Team page → Home + Settings (design §6, §8; W27, W28, W38)
 
 - [x] Agent state glyph, name link, state label, working chip, unread chip, role line or "No role page yet", last error with time — **Changed:** Home's agents board (a working agent's dot pulses and its Now line says how long it has been working); the last error is a needs-you item with its time, a plain-language line and the error behind Details
-- [ ] A2A card visibility per agent — **Changed:** set only in Settings → agent → Advanced → Agent-to-agent (today it is in two places with different defaults)
-- [ ] Start automatically toggle, reverting on failure — **Changed:** Home row menu and the stopped state card
-- [ ] Start / Stop / Restart with disabled reasons and pending labels — **Changed:** Home row menu, state cards, needs-you items
-- [ ] Delete with confirmation, then checkpoint note with Undo and Dismiss
-- [ ] Recently deleted with Restore, load error with Try again — **Changed:** collapsed disclosure on Home
-- [ ] Create agent: live-validated name, description, copy model settings from, visibility; "Created X" — **Changed:** Create agent dialog
+- [ ] A2A card visibility per agent — **Changed:** set only in Settings → agent → Advanced → Agent-to-agent (today it is in two places with different defaults). Home no longer has it; the agent's Settings → A2A "Who can see it" holds it until W38 moves it.
+- [x] Start automatically toggle, reverting on failure — **Changed:** Home row menu, a checkbox item that shows the value being saved and then the hub's (the stopped state card's toggle is W23's)
+- [x] Start / Stop / Restart with disabled reasons and pending labels — **Changed:** Home row menu, whose heading names the agent's state; an action the state doesn't take stays reachable but disabled, and the one in flight reads "Starting…", "Stopping…" or "Restarting…" while the row's state shows it too (state cards are W23's; needs-you Restart is W27's)
+- [x] Delete with confirmation, then checkpoint note with Undo and Dismiss — **Changed:** Delete in the row menu asks first (a running agent stops first, and the question says so), then the hub's "You deleted X." toast carries Undo and dismiss; a deletion that took no checkpoint says so in an error; Recently deleted keeps Restore after the toast is gone. The checkpoint id is no longer shown.
+- [x] Recently deleted with Restore, load error with Try again — **Changed:** collapsed disclosure under Home's board, shown once there is something to restore or a failed load
+- [x] Create agent: live-validated name, description, copy model settings from, visibility; "Created X" — **Changed:** Create agent dialog (a sheet on phones) from Home's New agent, the rail's "+" and the palette; copy-from and "Who can find it" under More options; the hub's "You created X." toast, and the new agent's rail row takes focus beside the main region
 - [x] Hub-wide toasts for created / restored / deleted (with Undo), failures and notices (team events never add toasts)
 
 ## Header, agent switcher, notifications, inbox, feedback, help → Shell (design §2, §7; W15b, W19, W21, W29)
 
 - [x] Menu destinations (Chat, Workspace, Workbench, Scheduled, Agent settings, Team, Team files, Hub settings) — **Changed:** rail and bottom bar
 - [x] Connection status text — **Changed:** shown only when degraded
-- [ ] Inbox button with unread badge — **Changed:** rail and bottom bar, across agents
+- [x] Inbox button with unread badge — **Changed:** rail and bottom bar, across agents
 - [x] Bug report entry — **Changed:** help menu and palette
 - [x] Agent chips: state, busy dots, unread (99+), failed-agent error tooltip, current highlight, arrow-key movement — **Changed:** rail agent rows (accordion) with a working indicator and a 99+ chat-unread badge; Up/Down move between rows; the error shows on Home and in the state card; an unknown agent in the URL redirects to Home with a toast
 - [x] Switching agents keeps the kind of page — **Changed:** agent places are explicit routes; the rail accordion links to them
 - [x] Hub offline note — **Changed:** hub banner
 - [x] Toasts: info/success auto-dismiss (4 s, 10 s with action), errors sticky, dismiss, action button
 - [x] Recent notifications history with details, clear and Undo — **Changed:** a Recent notifications dialog from the help menu and palette
-- [ ] User inbox: unread count, tabs, read on open, body and attachment downloads, archive, restore, empty states — **Changed:** one cross-agent Inbox place with live counts from the overview (no polling); bodies render as Markdown; load errors are shown, not swallowed
+- [x] User inbox: unread count, tabs, read on open, body and attachment downloads, archive, restore, empty states — **Changed:** one cross-agent Inbox place with live counts from the overview (no polling); bodies render as Markdown; load errors are shown, not swallowed
 - [x] Feedback dialog: bug and feedback tabs with drafts kept, required fields, severity, receipt with public id and Copy, friendly errors
 - [x] Help overlay with shortcuts and commands — **Fix:** lists "Esc stops a running reply" and describes `/` accurately
 

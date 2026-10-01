@@ -151,7 +151,7 @@ fn not_running_text(name: &str, state: &str) -> String {
     } else {
         format!(
             "teammate '{name}' is {state}; nothing was queued. Tell the user if this message \
-             matters; they can start it from the team view."
+             matters; they can start it from Home in the web UI."
         )
     }
 }

@@ -1,18 +1,18 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { actionRegistry } from "../lib/action-registry.svelte";
-  import { userInbox } from "../lib/inbox.svelte";
+  import { showAppBadge } from "../lib/app-badge";
   import { notifications } from "../lib/notifications.svelte";
+  import { overview } from "../lib/overview.svelte";
   import { router } from "../lib/router.svelte";
-  import { HOME } from "../lib/routes";
   import { ALL_SCOPE } from "../lib/settings-sections";
   import { ConfirmHost, confirmLeave, Drawer, RecentNotifications } from "../lib/ui";
   import { PHONE_QUERY } from "../styles/breakpoints";
-  import { focusAgentCreation } from "../places/home/agent-management.svelte";
   import { RailAccordion } from "./accordion.svelte";
   import { registerAppActions } from "./app-actions.svelte";
   import BottomBar from "./BottomBar.svelte";
   import CommandPalette from "./CommandPalette.svelte";
+  import CreateAgentDialog from "./CreateAgentDialog.svelte";
   import FeedbackDialog from "./FeedbackDialog.svelte";
   import HubBanner from "./HubBanner.svelte";
   import InboxNoteDialog from "./InboxNoteDialog.svelte";
@@ -42,6 +42,13 @@
   let feedbackTab = $state<FeedbackTab>("bug");
   let paletteOpen = $state(false);
   let inboxNoteAgent = $state<string | null>(null);
+  let createOpen = $state(false);
+  let sideRail = $state<HTMLElement>();
+
+  // The installed app's icon shows the inbox unread total, once it is known.
+  $effect(() => {
+    if (overview.loaded) showAppBadge(overview.inboxUnread);
+  });
 
   // Arriving on an agent opens its places in the rail.
   $effect(() => {
@@ -67,18 +74,21 @@
       feedbackTab = tab;
       feedbackOpen = true;
     },
-    // Agents are created on Home, from the form in its agent management.
+    // The user stays where they are: the dialog opens over the current place.
     createAgent: () => {
       drawerOpen = false;
-      void router
-        .openPlace(HOME)
-        .then(() => tick())
-        .then(focusAgentCreation);
+      createOpen = true;
     },
     addInboxNote: (agent) => {
       inboxNoteAgent = agent;
     },
   };
+
+  /** A new agent's rail row takes focus, where the rail shows beside the main region (not on phones). */
+  async function focusCreatedAgent(name: string): Promise<void> {
+    await tick();
+    sideRail?.querySelector<HTMLElement>(`[data-rail-agent="${CSS.escape(name)}"]`)?.focus();
+  }
 
   function addInboxNote(text: string): void {
     inboxNoteAgent = null;
@@ -104,7 +114,6 @@
   });
 
   onMount(() => {
-    userInbox.startPolling();
     // The drawer is the phone's rail; a wider window shows the rail itself.
     const phone = window.matchMedia(PHONE_QUERY);
     const leftPhoneWidth = (): void => {
@@ -112,7 +121,6 @@
     };
     phone.addEventListener("change", leftPhoneWidth);
     return () => {
-      userInbox.stopPolling();
       phone.removeEventListener("change", leftPhoneWidth);
     };
   });
@@ -143,7 +151,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="shell" data-ui>
-  <div class="shell-side">
+  <div class="shell-side" bind:this={sideRail}>
     <Rail {accordion} {actions} />
   </div>
   <main class="shell-main">
@@ -159,6 +167,7 @@
 </Drawer>
 <SettingsModal />
 <CommandPalette bind:open={paletteOpen} />
+<CreateAgentDialog bind:open={createOpen} oncreated={(name) => void focusCreatedAgent(name)} />
 <RecentNotifications bind:open={notificationsOpen} />
 <ShortcutsDialog bind:open={shortcutsOpen} />
 <FeedbackDialog bind:open={feedbackOpen} bind:tab={feedbackTab} />

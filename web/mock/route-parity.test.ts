@@ -120,10 +120,6 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
   createA2aKey: [(a) => a.createA2aKey("laptop", "my laptop")],
   revokeA2aKey: [(a) => a.revokeA2aKey("laptop")],
   fetchA2aAgents: [(a) => a.fetchA2aAgents(AGENT)],
-  markUserInboxItemRead: [(a) => a.markUserInboxItemRead(AGENT, "item-1")],
-  archiveUserInboxItem: [(a) => a.archiveUserInboxItem(AGENT, "item-1")],
-  fetchArchivedUserInbox: [(a) => a.fetchArchivedUserInbox(AGENT)],
-  restoreUserInboxItem: [(a) => a.restoreUserInboxItem(AGENT, "item-1")],
   fetchOutboundA2aTasks: [(a) => a.fetchOutboundA2aTasks(AGENT)],
   stopOutboundA2aTask: [(a) => a.stopOutboundA2aTask(AGENT, "task-1")],
   stopWatchingOutboundA2aTask: [(a) => a.stopWatchingOutboundA2aTask(AGENT, "task-1")],
@@ -249,6 +245,9 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
     (a) => a.fetchHubInbox(),
     (a) => a.fetchHubInbox({ status: "archived", agent: "scout", before: "1:scout:x", limit: 5 }),
   ],
+  markHubInboxItemRead: [(a) => a.markHubInboxItemRead("scout", "item-1")],
+  archiveHubInboxItem: [(a) => a.archiveHubInboxItem("scout", "item-1")],
+  restoreHubInboxItem: [(a) => a.restoreHubInboxItem("scout", "item-1")],
 };
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cardSender, fileSize } from "./feed-words";
+import { cardSender } from "./feed-words";
 
 describe("cardSender", () => {
   it("names a session by its kind and address, and lets it be opened", () => {
@@ -43,13 +43,5 @@ describe("cardSender", () => {
       sender: "atlas",
       isSession: false,
     });
-  });
-});
-
-describe("fileSize", () => {
-  it("reads bytes, kilobytes and megabytes", () => {
-    expect(fileSize(512)).toBe("512 B");
-    expect(fileSize(2048)).toBe("2.0 KB");
-    expect(fileSize(5 * 1024 * 1024)).toBe("5.0 MB");
   });
 });

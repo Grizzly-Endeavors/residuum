@@ -4,16 +4,16 @@
   import { ws } from "../lib/ws.svelte";
   import Scheduled from "../Scheduled.svelte";
   import SessionsSidebar from "../components/SessionsSidebar.svelte";
-  import UserInbox from "../components/UserInbox.svelte";
   import Workbench from "../components/Workbench.svelte";
   import Workspace from "../components/Workspace.svelte";
   import ChatPlace from "../places/chat/ChatPlace.svelte";
   import Home from "../places/home/Home.svelte";
+  import Inbox from "../places/inbox/Inbox.svelte";
   import PlaceHeader from "./PlaceHeader.svelte";
   import { agentPlaceLabel } from "./rail-model";
   import type { ShellActions } from "./shell-actions";
 
-  // The main region's place: Home, an agent's Chat, or a place that hasn't been rebuilt,
+  // The main region's place: Home, Inbox, an agent's Chat, or a place that hasn't been rebuilt,
   // which hosts its legacy view inside a `data-legacy-view` element, where
   // the legacy global styles still apply and the new base styles don't.
 
@@ -40,6 +40,8 @@
 
 {#if place.kind === "home"}
   <Home {actions} />
+{:else if place.kind === "inbox"}
+  <Inbox {place} />
 {:else if place.kind === "chat"}
   {#key place.agent}
     <ChatPlace agent={place.agent} />
@@ -47,8 +49,6 @@
 {:else}
   {#if isAgentPlace(place)}
     <PlaceHeader title={place.agent} agent={place.agent} sub={agentPlaceLabel(place.kind)} />
-  {:else if place.kind === "inbox"}
-    <PlaceHeader title="Inbox" />
   {:else if place.kind === "shared-files"}
     <PlaceHeader title="Shared files" />
   {/if}
@@ -64,8 +64,6 @@
           <Workspace agent={place.agent} />
         {/if}
       {/key}
-    {:else if place.kind === "inbox"}
-      <UserInbox />
     {:else if place.kind === "workbench"}
       <Workbench artifact={place.artifact} />
     {:else}

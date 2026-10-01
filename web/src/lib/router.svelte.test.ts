@@ -399,6 +399,57 @@ describe("push and replace", () => {
   });
 });
 
+describe("the item open in the Inbox", () => {
+  type InboxPlace = Extract<Place, { kind: "inbox" }>;
+  const list: InboxPlace = { kind: "inbox", agent: null, tab: "active", item: null };
+  const opened = (id: string): InboxPlace => ({ ...list, item: { agent: "atlas", id } });
+
+  it("closes by going back when this page opened it, so Back never lands on a copy of the list", async () => {
+    const page = await boot("/inbox");
+    await page.router.openPlace(opened("a"));
+    expect(page.url()).toBe("/inbox?item=atlas:a");
+    await expect(page.router.closeInboxItem()).resolves.toBe(true);
+    expect(page.url()).toBe("/inbox");
+    expect(page.entry().idx).toBe(0);
+    expect(page.replaces).toEqual([]);
+  });
+
+  it("closes by replace when the page was linked to it", async () => {
+    const page = await boot("/inbox?item=atlas:a");
+    await page.router.closeInboxItem();
+    expect(page.url()).toBe("/inbox");
+    expect(page.replaces).toEqual(["/inbox"]);
+    expect(page.pushes).toEqual([]);
+  });
+
+  it("keeps the opener when another item is switched to, so closing leaves the list as it was", async () => {
+    const page = await boot("/inbox");
+    await page.router.openPlace(opened("a"));
+    await page.router.replacePlace(opened("b"));
+    expect(page.url()).toBe("/inbox?item=atlas:b");
+    await page.router.closeInboxItem();
+    expect(page.url()).toBe("/inbox");
+    expect(page.entry().idx).toBe(0);
+  });
+
+  it("forgets the opener when the filter changes", async () => {
+    const page = await boot("/inbox");
+    await page.router.openPlace(opened("a"));
+    await page.router.replacePlace({ ...opened("a"), tab: "archived" });
+    expect(page.entry().item).toBeUndefined();
+    await page.router.closeInboxItem();
+    expect(page.url()).toBe("/inbox?tab=archived");
+    expect(page.entry().idx).toBe(1);
+  });
+
+  it("has nothing to close with no item open", async () => {
+    const page = await boot("/inbox");
+    await expect(page.router.closeInboxItem()).resolves.toBe(true);
+    expect(page.url()).toBe("/inbox");
+    expect(page.pushes).toEqual([]);
+  });
+});
+
 describe("closing the panel and the modal", () => {
   it("goes back when this page pushed the entry that opened the modal", async () => {
     const page = await boot("/agent/scout");
