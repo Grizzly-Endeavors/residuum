@@ -152,6 +152,8 @@
      enters, leaves, expands or moves. */
   --duration-fast: 150ms;
   --duration-base: 200ms;
+  /* Content swapped inside a frame that stays put: the settings sections. */
+  --duration-swap: 120ms;
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
   /* Continuous indicators: a spinner, a working pulse, the rail's flowing
      vein and the streaming caret. */

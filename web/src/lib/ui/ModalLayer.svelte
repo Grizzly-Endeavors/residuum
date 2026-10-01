@@ -18,6 +18,8 @@
     frame?: ModalFrame;
     /** A centered layer fills the screen at phone width. */
     fullscreenOnPhone?: boolean;
+    /** Filling the screen on a phone, stop above the bottom bar (`[data-bottom-bar]`), which stays in reach. */
+    keepBottomBar?: boolean;
     /** The card's width, for the centered frame. */
     width?: string;
     role?: "dialog" | "alertdialog";
@@ -41,6 +43,7 @@
     open,
     frame = "center",
     fullscreenOnPhone = false,
+    keepBottomBar = false,
     width = "480px",
     role = "dialog",
     label,
@@ -65,7 +68,12 @@
             onclose();
           })
         : null;
-      const joined = stack.open({ kind: "modal", element, dismiss: () => onclose() });
+      const joined = stack.open({
+        kind: "modal",
+        element,
+        dismiss: () => onclose(),
+        spare: keepBottomBar ? document.querySelector("[data-bottom-bar]") : null,
+      });
       layer = joined;
       const card = element.querySelector<HTMLElement>(".ui-modal");
       if (card !== null) focusInitial(card, initialFocus);
@@ -89,6 +97,7 @@
     class="ui-modal-layer"
     data-frame={frame}
     data-fullscreen={fullscreenOnPhone || undefined}
+    data-keep-bar={(fullscreenOnPhone && keepBottomBar) || undefined}
     {@attach portal}
     {@attach join}
   >
@@ -232,6 +241,14 @@
         padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px);
         border-radius: 0;
         animation-name: ui-sheet-in;
+      }
+    }
+
+    .ui-modal-layer[data-keep-bar] {
+      bottom: var(--layout-bottom-bar-offset);
+
+      & .ui-modal {
+        padding-bottom: 0;
       }
     }
   }

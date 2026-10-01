@@ -2,21 +2,9 @@
   import { onMount } from "svelte";
   import type { McpServerEntry, McpCatalogEntry } from "../../lib/types";
   import { fetchMcpCatalog } from "../../lib/api";
-  import { notifyFormUndo } from "../../lib/form-undo";
-  import type { PendingSaveTracker } from "../../lib/pending-save";
+  import { notifyStagedRemoval } from "../../lib/form-undo";
 
-  let {
-    servers = $bindable(),
-    agent,
-    pendingSave,
-    onReload,
-  }: {
-    servers: McpServerEntry[];
-    /** The agent whose MCP servers these are. */
-    agent: string | null;
-    pendingSave: PendingSaveTracker;
-    onReload: () => Promise<void>;
-  } = $props();
+  let { servers = $bindable() }: { servers: McpServerEntry[] } = $props();
 
   let catalog = $state<McpCatalogEntry[]>([]);
   let pendingIdx = $state<number | null>(null);
@@ -49,17 +37,9 @@
   function removeServer(idx: number) {
     const [removed] = servers.splice(idx, 1);
     if (!removed) return;
-    notifyFormUndo(
-      agent,
-      `Removed ${removed.name}.`,
-      pendingSave,
-      () => {
-        servers.splice(idx, 0, removed);
-      },
-      "workspace",
-      "config/mcp.json",
-      onReload,
-    );
+    notifyStagedRemoval(`Removed ${removed.name}.`, () => {
+      servers.splice(idx, 0, removed);
+    });
   }
 
   // ── Catalog handling ─────────────────────────────────────────────────

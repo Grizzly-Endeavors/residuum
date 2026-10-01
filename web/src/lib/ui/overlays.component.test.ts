@@ -2,9 +2,11 @@ import { act, cleanup, waitFor } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { render, screen } from "../../test/component";
+import { htmlSnippet } from "../../test/snippets";
 import OverlayHarness from "../../test/ui/OverlayHarness.svelte";
 import { router } from "../router.svelte";
 import ConfirmDialog from "./ConfirmDialog.svelte";
+import ModalLayer from "./ModalLayer.svelte";
 import ConfirmHost from "./ConfirmHost.svelte";
 import { confirmations, confirmLeave } from "./confirm.svelte";
 
@@ -129,6 +131,31 @@ describe("Dialog", () => {
     await user.keyboard("{Escape}");
     expect(container).not.toHaveAttribute("inert");
     expect(document.documentElement.style.overflow).toBe("");
+  });
+
+  it("leaves the bottom bar live beside a layer that keeps it, and the rest of the page inert", async () => {
+    const page = document.createElement("div");
+    const main = document.createElement("main");
+    const bar = document.createElement("nav");
+    bar.setAttribute("data-bottom-bar", "");
+    page.append(main, bar);
+    document.body.append(page);
+    const layer = render(ModalLayer, {
+      open: true,
+      fullscreenOnPhone: true,
+      keepBottomBar: true,
+      historyEntry: false,
+      onclose: () => {},
+      children: htmlSnippet("<p>Settings</p>"),
+    });
+    await waitFor(() => {
+      expect(main).toHaveAttribute("inert");
+    });
+    expect(bar).not.toHaveAttribute("inert");
+    expect(page).not.toHaveAttribute("inert");
+    layer.unmount();
+    expect(main).not.toHaveAttribute("inert");
+    page.remove();
   });
 
   it("leaves inertness it didn't set alone", async () => {

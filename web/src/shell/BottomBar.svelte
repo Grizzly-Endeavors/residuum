@@ -8,7 +8,7 @@
 
   // The phone's bottom bar, on every place: the menu that opens the rail as a
   // drawer, Inbox, Home in the middle, Search, and Settings. The drawer and
-  // every modal layer cover it.
+  // modal layers cover it, except the Settings modal, which stops above it.
 
   interface Props {
     drawerOpen: boolean;
@@ -44,7 +44,7 @@
   </a>
 {/snippet}
 
-<nav class="shell-bar" aria-label="Main">
+<nav class="shell-bar" aria-label="Main" data-bottom-bar>
   <button
     type="button"
     class="bar-tab"

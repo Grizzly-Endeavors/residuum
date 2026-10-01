@@ -55,6 +55,8 @@
     },
     openSettings: () => {
       drawerOpen = false;
+      // The phone's bar stays in reach beside the open modal; pressing Settings there keeps it as it is.
+      if (router.settings !== null) return;
       void router.openSettings({ scope: router.viewedAgent ?? ALL_SCOPE, section: null });
     },
     openShortcuts: () => {

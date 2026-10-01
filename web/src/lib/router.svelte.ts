@@ -235,6 +235,16 @@ class Router {
     return this.close("settings");
   }
 
+  /** Back from a section to the phone's section list: `history.back()` when this page pushed the section, else a replace without it. */
+  closeSettingsSection(): Promise<boolean> {
+    if (this.location.settings?.section == null) return Promise.resolve(true);
+    if (this.queued > 0) return Promise.resolve(false);
+    const steps = stepsToClose(this.entry, this.entry.section);
+    if (steps === null)
+      return this.changeSettings((open) => ({ ...open, section: null }), "replace");
+    return this.traverse(-steps).then(() => true);
+  }
+
   /**
    * Hold a history entry for an overlay that is open (design §3), so Back
    * closes the overlay before it leaves the place. `onDismiss` runs when the
@@ -502,6 +512,9 @@ class Router {
     const restored: EntryState = { idx: arrived.idx + 1 };
     if (shown.settings !== null && this.entry.settings !== undefined) {
       restored.settings = Math.min(this.entry.settings, restored.idx);
+    }
+    if (shown.settings?.section != null && this.entry.section !== undefined) {
+      restored.section = Math.min(this.entry.section, restored.idx);
     }
     if (shown.panel !== null && this.entry.panel !== undefined) {
       restored.panel = Math.min(this.entry.panel, restored.idx);
