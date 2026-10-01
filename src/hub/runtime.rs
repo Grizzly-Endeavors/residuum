@@ -25,6 +25,7 @@ use crate::workbench::forward::HubApi;
 use super::directory::AgentDirectory;
 use super::host::AgentHost;
 use super::http::{HubHttpState, hub_router};
+use super::overview::{OverviewTracker, TeamOverview};
 use super::relay_agents::RelayAgents;
 use super::services::{HubControl, HubServices};
 use super::team_embedding::EmbeddingSource;
@@ -234,14 +235,56 @@ async fn stop_task(name: &str, shutdown_tx: &watch::Sender<bool>, handle: JoinHa
     }
 }
 
+/// What the hub tells its clients about the team, and what keeps it current:
+/// the event log and the overview, each fed from the host's events and from
+/// the feed of agent changes for as long as this lives.
+struct TeamTracking {
+    /// What has happened across the team since this process started.
+    events: Arc<TeamEventLog>,
+    /// What Home shows about each agent.
+    overview: Arc<TeamOverview>,
+    _recorder: TeamEventRecorder,
+    _tracker: OverviewTracker,
+}
+
+impl TeamTracking {
+    /// Start tracking `host`. The log is the process's: its boot id is the
+    /// one the hub socket announces, and the overview names it too.
+    fn start(host: &Arc<AgentHost>) -> Self {
+        let events = TeamEventLog::new(uuid::Uuid::new_v4().to_string());
+        record_hub_started(&events);
+        let recorder = TeamEventRecorder::spawn(
+            Arc::clone(&events),
+            host.subscribe(),
+            host.agent_changes().subscribe(),
+        );
+        let overview = TeamOverview::new(
+            events.boot_id(),
+            Arc::clone(host) as Arc<dyn AgentDirectory>,
+        );
+        let tracker = OverviewTracker::spawn(
+            Arc::clone(&overview),
+            host.subscribe(),
+            host.agent_changes().subscribe(),
+        );
+        Self {
+            events,
+            overview,
+            _recorder: recorder,
+            _tracker: tracker,
+        }
+    }
+}
+
 /// The hub's process-level state.
 struct HubRuntime {
     hub_dir: std::path::PathBuf,
     hub_cfg: HubConfig,
     services: HubServices,
     host: Arc<AgentHost>,
-    /// Records what happens across the team for as long as the hub runs.
-    _team_events: TeamEventRecorder,
+    /// Records what happens across the team and keeps every agent's
+    /// overview current, for as long as the hub runs.
+    _team_tracking: TeamTracking,
     app: axum::Router,
     server: HttpServer,
     /// Resolves when onboarding has written the first agent; `None` once the
@@ -291,7 +334,10 @@ impl HubRuntime {
         .await?;
 
         let host = AgentHost::new(services.clone(), hub_cfg.clone());
-        let (team_events, recorder) = start_team_event_log(&host);
+        // Tracking comes first, so the hub's startup notices and every
+        // agent's start reach the log and the overview: nothing they listen
+        // to is replayed.
+        let team = TeamTracking::start(&host);
         host.note_team_embedding(scan.team_embedding).await;
         let agents = host.discover()?;
         tracing::info!(agents = agents.len(), names = %agents.join(", "), "found agents");
@@ -305,7 +351,8 @@ impl HubRuntime {
         let app = build_app(
             &host,
             &services,
-            &team_events,
+            &team.events,
+            &team.overview,
             reload_tx.clone(),
             setup_done,
         )?;
@@ -355,7 +402,7 @@ impl HubRuntime {
             hub_cfg,
             services,
             host,
-            _team_events: recorder,
+            _team_tracking: team,
             app,
             server,
             setup_done_rx,
@@ -701,8 +748,8 @@ async fn setup_finished(setup_done_rx: &mut Option<watch::Receiver<bool>>) {
 }
 
 /// Build the hub's HTTP app over `host`, with the process-wide handles from
-/// `services` and the team event log `team_events`, whose boot id the hub
-/// socket announces.
+/// `services`, the team event log `team_events`, whose boot id the hub socket
+/// announces, and the team `overview`.
 ///
 /// # Errors
 /// Returns `FatalError::Gateway` if the hub-level checkpoint repositories
@@ -711,6 +758,7 @@ pub(super) fn build_app(
     host: &Arc<AgentHost>,
     services: &HubServices,
     team_events: &Arc<TeamEventLog>,
+    overview: &Arc<TeamOverview>,
     reload_tx: crate::gateway::types::ReloadSender,
     setup_done: Option<Arc<watch::Sender<bool>>>,
 ) -> Result<axum::Router, FatalError> {
@@ -741,6 +789,7 @@ pub(super) fn build_app(
         started_at: std::time::Instant::now(),
         push: Arc::clone(&services.push),
         team_events: Arc::clone(team_events),
+        overview: Arc::clone(overview),
     };
     Ok(hub_router(
         Arc::clone(host) as Arc<dyn AgentDirectory>,
@@ -759,22 +808,6 @@ async fn poll_tunnel(tunnel: &mut Option<TunnelTask>) -> Result<(), tokio::task:
         }
         None => std::future::pending().await,
     }
-}
-
-/// Create the team event log and start the recorder that fills it.
-///
-/// They come before anything else the host does, so the hub's startup notices
-/// and every agent's start are in the log: nothing the recorder listens to is
-/// replayed. The boot id is the log's; the hub socket sends it too.
-fn start_team_event_log(host: &AgentHost) -> (Arc<TeamEventLog>, TeamEventRecorder) {
-    let team_events = TeamEventLog::new(uuid::Uuid::new_v4().to_string());
-    record_hub_started(&team_events);
-    let recorder = TeamEventRecorder::spawn(
-        Arc::clone(&team_events),
-        host.subscribe(),
-        host.agent_changes().subscribe(),
-    );
-    (team_events, recorder)
 }
 
 /// Start the workbench artifacts listener beside the gateway. Teams' and

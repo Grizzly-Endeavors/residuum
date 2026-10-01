@@ -346,6 +346,7 @@ export class HubStore {
       case "agent_stopping":
       case "hub_config_reloaded":
       case "team_event":
+      case "agent_overview":
       case "workspace_resync":
         break;
     }

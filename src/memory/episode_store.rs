@@ -255,6 +255,31 @@ fn is_episode_transcript(path: &Path) -> bool {
             .is_some_and(|s| s.parse::<u32>().is_ok())
 }
 
+/// The paths of every episode transcript under `episodes_dir`, newest episode
+/// first. Empty when the directory doesn't exist.
+///
+/// # Errors
+/// Returns an error if a directory cannot be read.
+pub(crate) fn transcripts_newest_first(episodes_dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    if !episodes_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut transcripts = Vec::new();
+    collect_transcripts(episodes_dir, &mut transcripts)?;
+    transcripts.sort_by_key(|path| std::cmp::Reverse(episode_number(path)));
+    Ok(transcripts)
+}
+
+/// The `NNN` of a transcript named `ep-NNN.jsonl`, `0` for any other name.
+fn episode_number(transcript: &Path) -> u32 {
+    transcript
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .and_then(|s| s.strip_prefix("ep-"))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
+}
+
 /// Read and parse a JSONL episode transcript file.
 ///
 /// Returns the episode metadata and the list of messages. The first line is

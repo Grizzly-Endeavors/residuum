@@ -6,7 +6,8 @@
 //!
 //! - `/api/hub/...`: agent lifecycle and status ([`lifecycle`]), the hub
 //!   WebSocket ([`ws`]), every agent's user inbox ([`inbox`]), the team event
-//!   log ([`events`]), Web Push devices ([`push`]), and the routes that
+//!   log ([`events`]), the team overview ([`overview`]), Web Push devices
+//!   ([`push`]), and the routes that
 //!   exist once per process: hub config, secrets, keys, cloud, update,
 //!   shutdown, tracing, and the hub and team checkpoint repositories
 //!   ([`process`]).
@@ -26,6 +27,7 @@ mod error;
 mod events;
 mod inbox;
 mod lifecycle;
+mod overview;
 mod process;
 mod push;
 mod state;
@@ -66,17 +68,22 @@ pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Rout
         team_bus: hub.team_bus.clone(),
         team_watch_health: hub.team_watch_health.clone(),
         team_events: Arc::clone(&hub.team_events),
+        overview: Arc::clone(&hub.overview),
     };
 
     let app = Router::new()
         .merge(lifecycle::routes(lifecycle_state))
         .merge(ws::routes(ws_state))
-        .merge(inbox::routes(Arc::clone(&directory)))
+        .merge(inbox::routes(inbox::InboxState {
+            directory: Arc::clone(&directory),
+            overview: Arc::clone(&hub.overview),
+        }))
         .merge(push::routes(push::PushApiState {
             push: Arc::clone(&hub.push),
             directory: Arc::clone(&directory),
         }))
         .merge(events::routes(Arc::clone(&hub.team_events)))
+        .merge(overview::routes(Arc::clone(&hub.overview)))
         .merge(process::hub_config_routes(&hub))
         .merge(process::cloud_routes(&hub))
         .merge(process::update_routes(&hub))

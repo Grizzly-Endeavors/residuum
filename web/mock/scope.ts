@@ -90,7 +90,7 @@ export interface ScopeRefusal {
  *   any other route answers `409`. An unknown agent answers `404`, and so
  *   does a route an agent doesn't own (`AGENT_ROUTES`).
  * - Hub routes run against the shared state. Lifecycle, status, hub config,
- *   the team event log, cross-agent inbox routes and team files keep their path; any other
+ *   the team event log, the team overview, cross-agent inbox routes and team files keep their path; any other
  *   the hub owns (`HUB_ROUTES`) becomes `/api/...`, and the rest answer `404`.
  * - `/api/team/...` likewise, except team files, and with the workbench the
  *   only other route it owns (`TEAM_ROUTES`).
@@ -135,6 +135,7 @@ export function scopeRequest(
     path === "/api/hub/agents" ||
     path.startsWith("/api/hub/agents/") ||
     path === "/api/hub/events" ||
+    path === "/api/hub/overview" ||
     path === "/api/hub/inbox" ||
     path.startsWith("/api/hub/inbox/")
   ) {

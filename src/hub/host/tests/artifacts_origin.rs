@@ -15,7 +15,15 @@ type PageSocket =
 /// its address.
 async fn artifacts_port(hub: &Fixture) -> String {
     let (reload_tx, _reload_rx) = tokio::sync::mpsc::unbounded_channel();
-    let app = build_app(&hub.host, &hub.services, &hub.team_events, reload_tx, None).unwrap();
+    let app = build_app(
+        &hub.host,
+        &hub.services,
+        &hub.team_events,
+        &hub.overview,
+        reload_tx,
+        None,
+    )
+    .unwrap();
     let api = HubApi::new();
     api.bind(app);
     let router = crate::workbench::server::router(hub.root.path().join("team/workbench"), api);

@@ -98,7 +98,7 @@ Every session event, lifecycle or turn (tool calls and responses included), is a
 
 **Turn hook.** The agent runtime calls its activity tracker exactly once when a main turn ends, whatever the outcome, after the turn's replies are published and counted as unread. The hook puts the turn on the same feed: the user's message text, if a user started the turn; the last reply text, if there was one; the time; whether the turn had `user` or `background` visibility; and whether any client had the agent's WebSocket open. Empty text counts as no text. Unread counting is unchanged.
 
-The changes themselves are not exposed over HTTP or the hub WebSocket. The [team event log](#team-event-log) reads them and is.
+The changes themselves are not exposed over HTTP or the hub WebSocket. The [team event log](#team-event-log) and the [team overview](#team-overview) read them and are.
 
 ## Team event log
 
@@ -124,6 +124,28 @@ When the log is full, recording a new entry evicts the oldest entry that is not 
 A recorder reads the hub bus and the feed of agent changes (see [Watching running agents](#watching-running-agents)) and writes the entries. The hub starts it before the startup notices and before any agent starts, because neither source replays. The two sources are separate streams, so entries from one can interleave with entries from the other in an order that differs from the order things happened. A slow reader of the hub bus can lose events once it falls 256 behind, and the recorder logs a warning when it does. A session's end is worded from what the recorder saw when that run started, so a run it never saw start records nothing and is logged at `debug`.
 
 The log is read with `GET /api/hub/events`, and each new entry is sent on the hub WebSocket as `team_event`, both described in [Hub HTTP Surface](hub-http.md#team-events).
+
+## Team overview
+
+The hub keeps what Home shows about each agent beyond its state, activity and summary, and tells clients as it changes. An agent's **overview** is `{ name, last_message, live_sessions, upcoming, inbox_unread, outbound_problems }`. Nothing about it is stored: each part is read from where it is kept, and the hub holds only what it last told clients.
+
+**`last_message`** is the newest message of the agent's main conversation that has `user` visibility and text, from the user or the agent. An assistant message that only calls tools has no text and is passed over, and a background turn is not part of it. It is `{ role, preview, at, at_precision }`, or `null` when there is none.
+- `preview` is the text as plain text on one line: Markdown syntax removed (links and images keep their text, code keeps its characters, raw HTML goes), every run of whitespace one space, and cut to at most 200 characters, the `…` that marks a cut included. A message with nothing to show once stripped is passed over too.
+- `at` is RFC 3339 with the offset of the hub's timezone. `at_precision` is `minute`, or `day` for a message read from an episode, which keeps the date and not the time; `at` is then the start of that day.
+- A running agent's comes from the turn hook, for each main turn with `user` visibility: its reply when that has text, otherwise what the user said. Until a turn ends it is read from disk as a stopped agent's is, so it starts from what the agent's history held when it started.
+- A stopped, starting or failed agent's is read from its recent history on disk. When that holds no such message, it is the newest message of the newest main-conversation episode that has one. A session's episode is not the main conversation, and an episode keeps neither who saw each message nor its time, so every user or assistant message in it counts. A history or episode file that can't be read is logged at `warn` and read past.
+
+**`live_sessions`** are the session runs in the agent's session registry, oldest first, each `{ address, run_id, category, source_label, purpose, state, started_at }`. It is empty for an agent that isn't running, whatever its registry still holds.
+
+**`inbox_unread`** is how many items in the agent's active user inbox the user hasn't opened, counted from its files whatever state the agent is in. An inbox that can't be read counts as none and is logged at `warn`.
+
+**`upcoming`** and **`outbound_problems`** are always empty.
+
+A **tracker** reads the hub bus and the feed of agent changes (see [Watching running agents](#watching-running-agents)) and marks the part of an agent's overview that a change may have affected: session changes mark `live_sessions`; `user_inbox_added` or a change to the user inbox's files marks `inbox_unread`; a main turn with `user` visibility sets `last_message`; and a resync, or any change to the agent's state, marks every part. The hub's own inbox actions (`PUT`, `POST .../archive` and `POST .../restore` under `/api/hub/inbox/`) mark that agent's `inbox_unread`, whatever its state, since nothing watches a stopped agent's files. Answering a request for the overview counts every agent's inbox again and reads a stopped agent's parts from its files, so a file placed by hand in a stopped agent's inbox shows up then. The hub starts the tracker before the startup notices and before any agent starts, because neither source replays.
+
+An agent's overview is sent to clients as an `agent_overview` frame carrying the whole overview, whenever any of it differs from what clients were last told. Changes are gathered: the first change after a frame starts a one-second wait, and the frame that ends it shows the agent as it is then. An agent therefore gets at most one frame per second, and its last state is always sent. A request that finds an agent differing from what clients were told starts the same wait. A created or restored agent is sent at once, and a deleted agent gets no frame after its deletion. A tracker that falls 256 events behind the hub bus logs a warning and reads every agent again.
+
+The overview is read with `GET /api/hub/overview` and sent on the hub WebSocket as `agent_overview`, both described in [Hub HTTP Surface](hub-http.md#team-overview).
 
 ## Hub bus events
 

@@ -458,6 +458,7 @@ async function addUserInboxItem(ctx: RouteContext): Promise<void> {
   };
   agent.state.inboxItems.unshift(item);
   ctx.hub.teamEvents.userInboxAdded(agent, item.id);
+  ctx.hub.overview.changed(agent);
   json(ctx.res, 200, { id: item.id });
 }
 

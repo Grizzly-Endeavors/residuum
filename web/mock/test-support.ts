@@ -12,6 +12,7 @@ import { createApiHandler } from "./middleware";
 import { dispatchRoute, type Route } from "./routes";
 import { seedAgents } from "./scenario";
 import { frameText } from "./sockets";
+import { createOverview } from "./overview";
 import { createState, type MockAgent, type MockHub, type MockState } from "./state";
 import { createTeamEvents } from "./team-events";
 import { sleep } from "./util";
@@ -53,6 +54,7 @@ export function createStubHub(env: MockEnv = createMockEnv()): MockHub {
     listing: () => mockListing(agents.values()),
     broadcast: () => {},
     teamEvents: createTeamEvents(env, "stub-boot", () => {}),
+    overview: createOverview(env, "stub-boot", agents, () => {}),
     setBusy: () => {},
     markStopping: () => {},
     reloadHubConfig: () => {},
