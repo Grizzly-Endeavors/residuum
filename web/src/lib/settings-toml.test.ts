@@ -6,7 +6,9 @@ import {
   diffMcpServers,
   diffProviders,
   modelRoleJson,
+  configFieldOwner,
   parseConfigToml,
+  parseProvidersToml,
   splitConfigPatch,
   parseMcpJson,
 } from "./settings-toml";
@@ -154,6 +156,72 @@ describe("modelRoleJson", () => {
   });
 });
 
+describe("failover lists", () => {
+  const raw = `[models]
+main = ["anthropic/a", "openai/b", "gemini/c"]
+default = "anthropic/d"
+observer = { model = ["anthropic/o1", "anthropic/o2"], temperature = 0.2 }
+
+[background.models]
+small = ["anthropic/s1", "anthropic/s2"]
+`;
+
+  it("shows the first model of a list and keeps the rest", () => {
+    const { models } = parseProvidersToml(raw);
+
+    expect(models.main).toBe("anthropic/a");
+    expect(models.fallbacks.main).toEqual(["openai/b", "gemini/c"]);
+    expect(models.observer).toBe("anthropic/o1");
+    expect(models.fallbacks.observer).toEqual(["anthropic/o2"]);
+    expect(models.fallbacks.bgSmall).toEqual(["anthropic/s2"]);
+    expect(models.overrides.observer?.temperature).toBe("0.2");
+  });
+
+  it("has no entry for a role with one model", () => {
+    const { models } = parseProvidersToml(raw);
+    expect(models.default).toBe("anthropic/d");
+    expect(models.fallbacks).not.toHaveProperty("default");
+    expect(defaultModels().fallbacks).toEqual({});
+  });
+
+  it("writes nothing for a list that wasn't touched", () => {
+    const { models } = parseProvidersToml(raw);
+    expect(diffProviders([], [], models, structuredClone(models))).toEqual({});
+  });
+
+  it("writes the whole list when its first model changes", () => {
+    const { models } = parseProvidersToml(raw);
+    const current = { ...structuredClone(models), main: "anthropic/new" };
+    expect(diffProviders([], [], models, current)).toEqual({
+      models: { main: ["anthropic/new", "openai/b", "gemini/c"] },
+    });
+  });
+
+  it("writes a list with an override as the table's own keys, since $inline holds scalars", () => {
+    expect(modelRoleJson("a/x", { temperature: "0.5", thinking: "" }, ["b/y"])).toEqual({
+      model: ["a/x", "b/y"],
+      temperature: 0.5,
+      thinking: null,
+    });
+    expect(modelRoleJson("a/x", { temperature: "", thinking: "low" }, ["b/y"])).toEqual({
+      model: ["a/x", "b/y"],
+      temperature: null,
+      thinking: "low",
+    });
+  });
+
+  it("writes a list back as a list once its overrides are cleared", () => {
+    expect(modelRoleJson("a/x", { temperature: "", thinking: "" }, ["b/y"])).toEqual([
+      "a/x",
+      "b/y",
+    ]);
+  });
+
+  it("clears a role whatever its fallbacks are when its first model is emptied", () => {
+    expect(modelRoleJson("", undefined, ["b/y"])).toBeNull();
+  });
+});
+
 describe("diffProviders", () => {
   it("is empty when nothing changed", () => {
     const models = defaultModels();
@@ -245,6 +313,45 @@ describe("diffMcpServers", () => {
     expect(diff.mcpServers as Record<string, unknown>).not.toHaveProperty("remote.command");
   });
 
+  it("names each variable or header that was removed, since a patch merges tables", () => {
+    const baseline = [
+      mcpServer({
+        name: "fs",
+        env: { A: "1", B: "2", C: "3" },
+      }),
+      mcpServer({
+        name: "remote",
+        transport: "http",
+        command: "",
+        url: "https://a",
+        headers: { X: "1", Y: "2" },
+      }),
+    ];
+    const current = [
+      mcpServer({ name: "fs", env: { A: "1", C: "30", D: "4" } }),
+      mcpServer({
+        name: "remote",
+        transport: "http",
+        command: "",
+        url: "https://a",
+        headers: { X: "1" },
+      }),
+    ];
+
+    expect(diffMcpServers(baseline, current)).toEqual({
+      mcpServers: {
+        fs: { env: { B: null, C: "30", D: "4" } },
+        remote: { headers: { Y: null } },
+      },
+    });
+  });
+
+  it("removes the table when the last variable goes", () => {
+    const baseline = [mcpServer({ name: "fs", env: { A: "1" } })];
+    const current = [mcpServer({ name: "fs", env: {} })];
+    expect(diffMcpServers(baseline, current)).toEqual({ mcpServers: { fs: { env: null } } });
+  });
+
   it("removes a deleted server by name", () => {
     const baseline = [mcpServer({ name: "fs" }), mcpServer({ name: "git" })];
     const current = [mcpServer({ name: "git" })];
@@ -334,6 +441,21 @@ describe("a2a settings diff", () => {
     const baseline = defaultConfigFields();
     const current = { ...baseline, a2a_enabled: false };
     expect(diffConfigFields(baseline, current)).toEqual({ a2a: { enabled: false } });
+  });
+});
+
+describe("which file a key saves to", () => {
+  it("puts the install's keys in the hub's file and the rest in the agent's", () => {
+    expect(configFieldOwner(["timezone"])).toBe("hub");
+    expect(configFieldOwner(["gateway", "port"])).toBe("hub");
+    expect(configFieldOwner(["cloud", "token"])).toBe("hub");
+    expect(configFieldOwner(["tracing", "log_level"])).toBe("hub");
+    expect(configFieldOwner(["a2a", "port"])).toBe("hub");
+    expect(configFieldOwner(["background", "hop_hard_limit"])).toBe("hub");
+    expect(configFieldOwner(["a2a", "visibility"])).toBe("agent");
+    expect(configFieldOwner(["background", "idle_timeout_spawned_minutes"])).toBe("agent");
+    expect(configFieldOwner(["memory", "observer_threshold_tokens"])).toBe("agent");
+    expect(configFieldOwner(["webhooks"])).toBe("agent");
   });
 });
 
