@@ -28,10 +28,20 @@ export const LOAD_TIMEOUT = 20_000;
 /** What the hub socket's state says (`data-hub` on the shell). `lost` is the state the "Can't reach Residuum" banner shows. */
 export type HubState = "connected" | "lost";
 
+/**
+ * Whether the running test has cut the hub off from its page: the browser's
+ * network is off (`context.setOffline(true)`), or the mock's hub socket is down
+ * (`POST /api/mock/hub-socket` with `online: false`). The fixtures keep it, and
+ * `waitForApp` then expects the hub to be lost, which is the state the banner
+ * shows, instead of waiting for a connection the test took away. A worker runs
+ * one test at a time, so one record serves it.
+ */
+export const hubReach = { lost: false };
+
 export interface AppReadyOptions {
   /**
-   * Where the hub socket should stand: `connected` unless the test has taken
-   * the hub down and is looking at the banner, which waits for `lost`.
+   * Where the hub socket should stand. Left out, it follows `hubReach`:
+   * `connected` unless the test has cut the hub off.
    */
   hub?: HubState;
 }
@@ -112,6 +122,6 @@ export async function settleAnimations(page: Page): Promise<void> {
  * that is already there.
  */
 export async function waitForApp(page: Page, options: AppReadyOptions = {}): Promise<void> {
-  await appRendered(page, options.hub ?? "connected");
+  await appRendered(page, options.hub ?? (hubReach.lost ? "lost" : "connected"));
   await fontsLoaded(page);
 }

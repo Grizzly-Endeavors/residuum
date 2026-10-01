@@ -15,7 +15,7 @@
  */
 import { expect, test as base, webkit, type Page, type Response } from "@playwright/test";
 import { FIXED_START_MS } from "../../mock/env";
-import { waitForApp } from "./app";
+import { hubReach, waitForApp } from "./app";
 
 export { expect };
 
@@ -130,6 +130,9 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
         post: async (path, options) => {
           const response = await request.post(path, options);
           expect(response.ok(), `POST ${path} answered ${response.status()}`).toBe(true);
+          // A page loaded while the hub is out of reach is ready when it shows the banner (see `hubReach`).
+          if (path === "/api/mock/hub-socket") hubReach.lost = options?.data?.online === false;
+          if (path === "/api/mock/reset") hubReach.lost = false;
           return (await response.json()) as unknown;
         },
       };
@@ -170,6 +173,12 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
   context: async ({ context, frozenClock }, use) => {
     await context.route(leavesLoopback, (route) => route.abort("blockedbyclient"));
     if (frozenClock) await context.clock.setFixedTime(FIXED_START_MS);
+    // With the network off the hub can't be reached, so a page that loads then is ready showing the banner (see `hubReach`).
+    const setOffline = context.setOffline.bind(context);
+    context.setOffline = async (offline) => {
+      hubReach.lost = offline;
+      await setOffline(offline);
+    };
     await use(context);
   },
 

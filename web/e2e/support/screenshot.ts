@@ -32,8 +32,8 @@ export interface ScreenshotOptions extends AppReadyOptions {
 /**
  * Compare `page` with the baseline called `name`. Wait for the page to reach
  * the state under test first: the helper only waits for the app, the hub
- * socket (`hub: "lost"` when the shot is of the hub banner), the animations that
- * end, and the fonts and images the page uses.
+ * socket (lost, when the test has taken the hub down to shoot the banner), the
+ * animations that end, and the fonts and images the page uses.
  */
 export async function expectScreenshot(
   page: Page,

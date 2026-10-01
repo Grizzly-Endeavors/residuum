@@ -30,6 +30,20 @@ test("goto returns on the setup wizard, which has no hub socket to wait for", as
   expect(await page.locator(".setup-wizard").isVisible()).toBe(true);
 });
 
+test("goto returns on the hub banner when the test has taken the hub down", async ({
+  page,
+  mock,
+}) => {
+  await mock.post("/api/mock/hub-socket", { data: { online: false } });
+  await page.goto("/home");
+  expect(await page.locator(".shell").getAttribute("data-hub")).toBe("lost");
+
+  // Back up, the next load waits for the connection again.
+  await mock.post("/api/mock/hub-socket", { data: { online: true } });
+  await page.reload();
+  expect(await page.locator(".shell").getAttribute("data-hub")).toBe("connected");
+});
+
 test("the app is ready again once a dropped hub socket has reconnected", async ({ page, mock }) => {
   await page.goto("/home");
   const shell = page.locator(".shell");

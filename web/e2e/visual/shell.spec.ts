@@ -1,5 +1,4 @@
 import type { Page } from "@playwright/test";
-import type { AppReadyOptions } from "../support/app";
 import { expect, test } from "../support/fixtures";
 import { expectPaletteOpen } from "../support/lazy";
 import { expectScreenshot } from "../support/screenshot";
@@ -10,12 +9,8 @@ import { expectScreenshot } from "../support/screenshot";
  * closed in the rail, are in `home.spec.ts`.
  */
 
-async function shellScreenshot(
-  page: Page,
-  name: string,
-  options: AppReadyOptions = {},
-): Promise<void> {
-  await expectScreenshot(page, name, { ...options, mask: [page.locator("[data-legacy-view]")] });
+async function shellScreenshot(page: Page, name: string): Promise<void> {
+  await expectScreenshot(page, name, { mask: [page.locator("[data-legacy-view]")] });
 }
 
 test.describe("shell", { tag: "@visual" }, () => {
@@ -37,7 +32,7 @@ test.describe("shell", { tag: "@visual" }, () => {
       "aria-busy",
       "true",
     );
-    await shellScreenshot(page, "shell-offline", { hub: "lost" });
+    await shellScreenshot(page, "shell-offline");
   });
 
   test("the help menu", async ({ page, isMobile }) => {
