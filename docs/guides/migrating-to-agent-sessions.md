@@ -29,7 +29,7 @@ Now, only your own direct message (and the web UI) reaches the main agent. Every
 - A reply in a group chat or channel now comes from that conversation's own session, not from your main agent. It replies only into that same conversation and never falls back to your DM.
 - The session sees the same sender attribution and any buffered unaddressed chatter your interface already collects (see `context_messages` below) — it isn't starting blind.
 - What a session learns in a group chat still reaches your agent's overall memory once the session finishes (see "Session memory" below), just not immediately and not as part of your live conversation.
-- If you want to know what happened in a channel, you can check the web UI's session sidebar, or ask your main agent to look it up in memory once it's had a chance to merge.
+- If you want to know what happened in a channel, you can check the agent's Activity in the web UI, or ask your main agent to look it up in memory once it's had a chance to merge.
 
 No configuration is needed to get this — it's automatic. `respond_to_others` still controls whether non-owner DMs are admitted at all; it just no longer controls whether they land on your main agent.
 
@@ -73,6 +73,6 @@ Previously, what a background task learned stayed in its own transcript and neve
 
 ## Where to go from here
 
-- [`background-tasks.md`](../systems-usage/background-tasks.md) is the full reference for sessions, addresses, messaging, and the web sessions sidebar.
+- [`background-tasks.md`](../systems-usage/background-tasks.md) is the full reference for sessions, addresses, messaging, and the web UI's Activity place.
 - [`heartbeats.md`](../systems-usage/heartbeats.md) and [`scheduled-actions.md`](../systems-usage/scheduled-actions.md) cover the updated pulse and action routing in detail.
 - [`discord.md`](../systems-usage/discord.md), [`telegram.md`](../systems-usage/telegram.md), and [`teams.md`](../systems-usage/teams.md) cover conversation routing and unaddressed-message buffering per interface.

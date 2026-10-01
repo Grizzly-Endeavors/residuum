@@ -20,15 +20,15 @@
      * Model label to show instead of self-fetching the configured main
      * model. Pass `null` (not left undefined) to suppress the model
      * segment entirely — there's no single resolved model string for a
-     * background session's run, only a model *tier*, so `SessionView`
-     * passes `null` here rather than a misleading main-model label.
+     * background session's run, only a model *tier*, so a footer for one
+     * takes `null` here rather than a misleading main-model label.
      */
     model?: string | null;
     /**
      * Whether the background observer/reflector or subconscious cycle is
      * currently running (see `ws.store.memoryWorking`/`subconsciousWorking`).
      * Neither blocks the next turn — this is purely informational, so a
-     * caller with no such state (e.g. `SessionView`) simply omits it.
+     * caller with no such state simply omits it.
      */
     memoryWorking?: boolean;
     subconsciousWorking?: boolean;

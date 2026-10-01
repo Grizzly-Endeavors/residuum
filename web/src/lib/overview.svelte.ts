@@ -25,6 +25,7 @@ import type {
   HubServerMessage,
   TeamEvent,
 } from "./hub-types";
+import type { OutboundA2aTaskSummary } from "./types";
 import { deriveNeedsYou, INBOX_ITEMS_SHOWN, type NeedsYou } from "./needs-you";
 import { notifications } from "./notifications.svelte";
 import { unreachableAgentMessage } from "./sessions.svelte";
@@ -268,34 +269,38 @@ export class OverviewStore {
     return this.stoppingTasks.includes(`${agent}:${taskId}`);
   }
 
-  /** Ask the task's remote agent to cancel it. When the agent can't be reached, say so on the task. */
-  async stopTask(agent: string, taskId: string): Promise<void> {
-    await this.taskCommand(agent, taskId, "Couldn't stop the task.", async () => {
-      await stopOutboundA2aTask(agent, taskId);
-    });
+  /**
+   * Ask the task's remote agent to cancel it. When the agent can't be reached,
+   * say so on the task. Resolves to the task as it stands after, or null.
+   */
+  async stopTask(agent: string, taskId: string): Promise<OutboundA2aTaskSummary | null> {
+    return this.taskCommand(agent, taskId, "Couldn't stop the task.", () =>
+      stopOutboundA2aTask(agent, taskId),
+    );
   }
 
-  /** Stop following the task here, without reaching its agent. */
-  async stopWatching(agent: string, taskId: string): Promise<void> {
-    await this.taskCommand(agent, taskId, "Couldn't stop watching the task.", async () => {
-      await stopWatchingOutboundA2aTask(agent, taskId);
-    });
+  /** Stop following the task here, without reaching its agent. Resolves like `stopTask`. */
+  async stopWatching(agent: string, taskId: string): Promise<OutboundA2aTaskSummary | null> {
+    return this.taskCommand(agent, taskId, "Couldn't stop watching the task.", () =>
+      stopWatchingOutboundA2aTask(agent, taskId),
+    );
   }
 
   private async taskCommand(
     agent: string,
     taskId: string,
     action: string,
-    call: () => Promise<void>,
-  ): Promise<void> {
+    call: () => Promise<OutboundA2aTaskSummary>,
+  ): Promise<OutboundA2aTaskSummary | null> {
     const key = `${agent}:${taskId}`;
-    if (this.stoppingTasks.includes(key)) return;
+    if (this.stoppingTasks.includes(key)) return null;
     this.stoppingTasks = [...this.stoppingTasks, key];
     try {
-      await call();
+      const task = await call();
       this.clearTaskNote(key);
       // The hub's frame follows within a second; the task is already over.
       this.dropProblem(agent, taskId);
+      return task;
     } catch (err) {
       const unreachable = unreachableAgentMessage(err);
       if (unreachable !== null) {
@@ -306,6 +311,7 @@ export class OverviewStore {
       } else {
         notifications.surface("error", userErrorMessage(err, { action }));
       }
+      return null;
     } finally {
       this.stoppingTasks = this.stoppingTasks.filter((k) => k !== key);
     }

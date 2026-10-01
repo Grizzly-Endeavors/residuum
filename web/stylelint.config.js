@@ -25,7 +25,6 @@ const LEGACY_FILES = [
   "src/styles/base.css",
   "src/styles/chat.css",
   "src/styles/forms.css",
-  "src/styles/sessions.css",
   "src/styles/settings.css",
   "src/styles/setup.css",
   "src/styles/workbench.css",

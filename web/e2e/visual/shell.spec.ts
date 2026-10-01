@@ -23,7 +23,7 @@ test.describe("shell", { tag: "@visual" }, () => {
 
   test("with the hub out of reach", async ({ page, mock }) => {
     await page.goto("/agent/atlas/activity");
-    await expect(page.getByRole("heading", { name: "Sessions" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /^Running now/ })).toBeVisible();
     await mock.post("/api/mock/hub-socket", { data: { online: false } });
     await expect(page.getByText("Can't reach Residuum.")).toBeVisible();
     await shellScreenshot(page, "shell-offline");
