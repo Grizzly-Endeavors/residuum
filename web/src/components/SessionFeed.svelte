@@ -2,10 +2,11 @@
   import { tick } from "svelte";
   import { FeedScroller } from "../lib/feed-scroll.svelte";
   import type { FeedItem } from "../lib/types";
-  import FeedItemView from "./FeedItemView.svelte";
+  import FeedItemView from "../feed/FeedItemView.svelte";
   import ThinkingIndicator from "./ThinkingIndicator.svelte";
 
   let {
+    agent,
     items,
     verbose,
     working,
@@ -17,6 +18,8 @@
     loadError,
     onRetry,
   }: {
+    /** The agent the session runs on. */
+    agent: string;
     items: FeedItem[];
     verbose: boolean;
     working: boolean;
@@ -75,7 +78,9 @@
         </div>
       {:else}
         {#each items as item (item.id)}
-          <FeedItemView {item} {verbose} />
+          {#if verbose || item.kind !== "tool-group"}
+            <div class="session-feed-item"><FeedItemView {item} {agent} /></div>
+          {/if}
         {:else}
           <p class="chat-feed-empty">No messages in this run yet.</p>
         {/each}
@@ -91,3 +96,9 @@
     </div>
   </div>
 </div>
+
+<style>
+  .session-feed-item {
+    padding: var(--space-6) 0;
+  }
+</style>
