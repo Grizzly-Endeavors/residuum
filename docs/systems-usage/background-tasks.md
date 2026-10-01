@@ -61,7 +61,7 @@ Configurable in the `[background]` config section:
 | `external` (non-webhook) | `idle_timeout_external_minutes` | 30 minutes |
 | `artifact` | `idle_timeout_artifact_minutes` | 10 minutes |
 
-Each timeout is also editable in the web UI under Settings → Runtime → Pulse & Background.
+Each timeout is also editable in the web UI, in the agent's Schedule settings under Background sessions, along with `episode_skip_token_floor` and `subagent_depth_cap`.
 
 ## Addresses
 
