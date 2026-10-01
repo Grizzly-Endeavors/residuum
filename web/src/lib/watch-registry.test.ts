@@ -192,6 +192,44 @@ describe("WatchRegistry connection", () => {
     registry.connected();
     expect(sent).toEqual([["wiki"], ["notes", "wiki"]]);
   });
+
+  it("tells the owners that watched through a dropped connection that it is back", () => {
+    const { registry } = setup();
+    const heard: string[] = [];
+    const owner = (name: string): WatchHandler => ({
+      changed: () => {},
+      reconnected: () => heard.push(name),
+    });
+    registry.register(owner("before")).set(["wiki"]);
+    registry.connected();
+    // The first connection is no reconnect, for an owner that registered before it or during it.
+    registry.register(owner("during")).set(["notes"]);
+    expect(heard).toEqual([]);
+
+    registry.disconnected();
+    registry.register(owner("while down")).set(["inbox"]);
+    registry.connected();
+    expect(heard).toEqual(["before", "during"]);
+  });
+
+  it("tells the other owners of a reconnect when one of them throws, then reports it", () => {
+    const { registry } = setup();
+    const heard: string[] = [];
+    registry.connected();
+    registry.register({
+      changed: () => {},
+      reconnected: () => {
+        throw new Error("boom");
+      },
+    });
+    registry.register({ changed: () => {}, reconnected: () => heard.push("second") });
+
+    registry.disconnected();
+    expect(() => {
+      registry.connected();
+    }).toThrow("boom");
+    expect(heard).toEqual(["second"]);
+  });
 });
 
 describe("WatchRegistry bound agent", () => {

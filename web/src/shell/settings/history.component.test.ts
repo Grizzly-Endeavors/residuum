@@ -134,8 +134,8 @@ describe("the History browser", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: "Changes to SOUL.md" }));
     const diff = await screen.findByRole("region", { name: "Changes to SOUL.md" });
-    expect(diff.querySelector('[data-kind="add"]')?.textContent).toBe("+new\n");
-    expect(diff.querySelector('[data-kind="remove"]')?.textContent).toBe("-old\n");
+    expect(diff.querySelector('[data-kind="added"]')?.textContent).toBe("+new");
+    expect(diff.querySelector('[data-kind="removed"]')?.textContent).toBe("-old");
   });
 
   it("restores a file through the coordinator, so a form showing it reads it again", async () => {

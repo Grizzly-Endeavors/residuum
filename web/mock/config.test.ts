@@ -97,11 +97,11 @@ describe("config routes", () => {
       expect(await check("a = 1\n")).toEqual({ valid: true });
       expect(await check("a = 1\nb = \n")).toEqual({
         valid: false,
-        error: "invalid value",
+        error: "Invalid TOML document: invalid value",
         diagnostics: [
           {
             severity: "error",
-            message: "invalid value",
+            message: "Invalid TOML document: invalid value",
             location: { kind: "line_column", line: 2, column: 5 },
           },
         ],

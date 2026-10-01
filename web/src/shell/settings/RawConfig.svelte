@@ -13,8 +13,8 @@
   import { toast } from "../../lib/toast.svelte";
   import type { Diagnostic } from "../../lib/types";
   import { Banner, Button, Tabs } from "../../lib/ui";
+  import TextEditor from "../../places/files/TextEditor.svelte";
   import { chooseOnConflict } from "./changed-on-disk.svelte";
-  import RawEditor from "./RawEditor.svelte";
   import type { SettingsScope } from "./sections";
   import SettingsSection from "./SettingsSection.svelte";
 
@@ -144,7 +144,8 @@
         save.
       </Banner>
     {/if}
-    <RawEditor
+    <TextEditor
+      layout="field"
       name={label}
       value={shownText(target)}
       readonly={locked}

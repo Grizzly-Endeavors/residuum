@@ -1,9 +1,11 @@
 import type {
+  Diagnostic,
   WorkspaceEntry,
   WorkspaceMoveResponse,
   WorkspaceValidateResponse,
   WorkspaceWriteResponse,
 } from "../src/lib/types";
+import { checkpointBeforeAction } from "./checkpoints";
 import { configFormatOf, diagnoseConfigText } from "./diagnostics";
 import { json, readBody, readJsonObject, stringField, text, type JsonObject } from "./http";
 import type { Route, RouteContext } from "./routes";
@@ -84,6 +86,15 @@ function requireStrings(
     values.push(value);
   }
   return values;
+}
+
+/**
+ * Diagnostics for `content` saved at `path` in an agent's workspace: a syntax
+ * error in one of its config files (`mock/diagnostics.ts`).
+ */
+function diagnose(scope: WorkspaceScope, path: string, content: string): Diagnostic[] {
+  const format = scope === "agent" ? configFormatOf(path) : null;
+  return format === null ? [] : diagnoseConfigText(format, content);
 }
 
 function notFound(ctx: RouteContext, path: string): void {
@@ -297,7 +308,8 @@ async function putFile(ctx: RouteContext, scope: WorkspaceScope): Promise<void> 
   const at = locate(ctx, scope, path);
   if (at === null || refusesTeamRoot(ctx, at.key) || preconditionFailed(ctx, at)) return;
   const version = writeFile(at.state, at.key, content);
-  json(ctx.res, 200, { saved: true, version, diagnostics: [] } satisfies WorkspaceWriteResponse);
+  const diagnostics = diagnose(scope, path, content);
+  json(ctx.res, 200, { saved: true, version, diagnostics } satisfies WorkspaceWriteResponse);
 }
 
 function deleteFile(ctx: RouteContext, scope: WorkspaceScope): void {
@@ -323,9 +335,11 @@ function deleteFile(ctx: RouteContext, scope: WorkspaceScope): void {
   } else if (preconditionFailed(ctx, at)) {
     return;
   }
+  // Like the backend, the repository that holds the path is checkpointed first, so Undo can restore it.
+  const repo = isTeamKey(at.key) ? "team" : "workspace";
+  const checkpointId = checkpointBeforeAction(at.state, repo, `delete ${path}`);
   removePath(at.state, at.key);
-  // The mock keeps no checkpoints, so there is nothing for Undo to restore.
-  json(ctx.res, 200, { deleted: true, checkpoint_id: null });
+  json(ctx.res, 200, { deleted: true, checkpoint_id: checkpointId, checkpoint_repo: repo });
 }
 
 async function moveFile(ctx: RouteContext, scope: WorkspaceScope): Promise<void> {
@@ -363,13 +377,13 @@ async function moveFile(ctx: RouteContext, scope: WorkspaceScope): Promise<void>
   json(ctx.res, 200, { ...moved, version: versionOf(to) });
 }
 
-async function validateFile(ctx: RouteContext): Promise<void> {
+async function validateFile(ctx: RouteContext, scope: WorkspaceScope): Promise<void> {
   const fields = requireStrings(ctx, await readJsonObject(ctx.req), ["path", "content"]);
   if (fields === undefined) return;
   const [path = "", content = ""] = fields;
-  const format = configFormatOf(path);
-  const diagnostics = format === null ? [] : diagnoseConfigText(format, content);
-  json(ctx.res, 200, { diagnostics } satisfies WorkspaceValidateResponse);
+  json(ctx.res, 200, {
+    diagnostics: diagnose(scope, path, content),
+  } satisfies WorkspaceValidateResponse);
 }
 
 function routesFor(scope: WorkspaceScope, prefix: string): readonly Route[] {
@@ -406,7 +420,7 @@ function routesFor(scope: WorkspaceScope, prefix: string): readonly Route[] {
     { method: "PUT", pattern: `${prefix}/raw`, handler: (ctx) => putRaw(ctx, scope) },
     { method: "POST", pattern: `${prefix}/dir`, handler: (ctx) => makeDirectory(ctx, scope) },
     { method: "POST", pattern: `${prefix}/move`, handler: (ctx) => moveFile(ctx, scope) },
-    { method: "POST", pattern: `${prefix}/validate`, handler: validateFile },
+    { method: "POST", pattern: `${prefix}/validate`, handler: (ctx) => validateFile(ctx, scope) },
     {
       method: "GET",
       pattern: `${prefix}/tree`,

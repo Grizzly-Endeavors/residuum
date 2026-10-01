@@ -100,7 +100,7 @@ describe("Raw config", () => {
     expect(problems).toHaveTextContent("line 2, column 9 invalid value");
     expect(document.querySelector('[data-problem="error"]')?.textContent).toBe("2");
 
-    await fireEvent.click(screen.getByRole("button", { name: "Go to line 2, column 9" }));
+    await fireEvent.click(screen.getByRole("button", { name: "line 2, column 9" }));
     expect(document.activeElement).toBe(text());
     expect(text().selectionStart).toBe("timeout_secs = 30\n".length + 8);
   });

@@ -1,8 +1,7 @@
 // ── Shared formatting for the checkpoint history UI ───────────────────
 //
-// Used by the Settings → History view and the per-file history panel
-// opened from the Workspace file browser. See
-// `docs/systems-usage/checkpoints.md`.
+// Used by the Settings → History view and a file's history in Files and
+// Shared files. See `docs/systems-usage/checkpoints.md`.
 
 import type { ChangeKind, CheckpointTrigger, RepoKind, UndoOutcome } from "./types";
 
@@ -40,10 +39,10 @@ export function undoReport({
 }
 
 /** How one line of a unified diff reads: added, removed, a header, or unchanged context. */
-export function diffLineKind(line: string): "add" | "remove" | "meta" | "context" {
+export function diffLineKind(line: string): "added" | "removed" | "meta" | "context" {
   if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("@@")) return "meta";
-  if (line.startsWith("+")) return "add";
-  if (line.startsWith("-")) return "remove";
+  if (line.startsWith("+")) return "added";
+  if (line.startsWith("-")) return "removed";
   return "context";
 }
 

@@ -2,7 +2,6 @@
   import { fetchCheckpointDetail, fetchCheckpointDiff, fetchCheckpointFile } from "../../lib/api";
   import {
     CHANGE_LABELS,
-    diffLineKind,
     encryptedRestoreHint,
     isEncryptedConfigFile,
     undoReport,
@@ -12,6 +11,7 @@
   import { toast } from "../../lib/toast.svelte";
   import type { ChangedPath, CheckpointDetail, CheckpointSummary, RepoKind } from "../../lib/types";
   import { Badge, Banner, Button, Skeleton } from "../../lib/ui";
+  import CheckpointText from "../../places/files/CheckpointText.svelte";
 
   // What one checkpoint changed, opened in place in the History list: each
   // path with its changes or its whole content at that point, Restore for a
@@ -168,19 +168,16 @@
           {:else if shown}
             {#if shown.text === null}
               <Skeleton lines={3} label="Loading {change.path}" />
+            {:else if shown.text === "" && shown.mode === "diff"}
+              <p class="path-note">No line changes to show.</p>
             {:else}
-              <!-- A scroll box takes focus so the keyboard can scroll it. -->
-              <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-              <pre
-                class="path-view"
-                role="region"
-                tabindex="0"
-                aria-label={shown.mode === "diff"
+              <CheckpointText
+                text={shown.text}
+                as={shown.mode}
+                label={shown.mode === "diff"
                   ? `Changes to ${change.path}`
-                  : `${change.path} at this checkpoint`}>{#if shown.mode === "file"}{shown.text}{:else if shown.text === ""}No line changes to show.{:else}{#each shown.text.split("\n") as line, index (index)}<span
-                      class="line"
-                      data-kind={diffLineKind(line)}>{`${line}\n`}</span
-                    >{/each}{/if}</pre>
+                  : `${change.path} at this checkpoint`}
+              />
             {/if}
           {/if}
         </li>
@@ -260,32 +257,6 @@
     &[data-error] {
       color: var(--color-err-text);
     }
-  }
-
-  .path-view {
-    max-height: 320px;
-    margin: 0;
-    padding: var(--space-10) var(--space-12);
-    overflow: auto;
-    border-radius: var(--corner-sm);
-    background: var(--color-stone-2);
-    color: var(--color-text-2);
-    font-family: var(--font-code);
-    font-size: var(--font-size-xs);
-    line-height: var(--line-height-message);
-    white-space: pre;
-  }
-
-  .line[data-kind="add"] {
-    color: var(--color-moss-text);
-  }
-
-  .line[data-kind="remove"] {
-    color: var(--color-err-text);
-  }
-
-  .line[data-kind="meta"] {
-    color: var(--color-text-3);
   }
 
   .undo {

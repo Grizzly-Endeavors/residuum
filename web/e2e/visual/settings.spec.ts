@@ -35,7 +35,7 @@ test.describe("settings modal", { tag: "@visual" }, () => {
     await page.goto("/agent/atlas?settings=atlas/raw");
     const text = page.getByRole("textbox", { name: "Contents of config.toml" });
     await text.fill(`${await text.inputValue()}\nbroken = \n`);
-    await page.getByRole("button", { name: /^Go to line/ }).click();
+    await page.getByRole("button", { name: /^line \d+/ }).click();
     await text.blur();
     await frameScreenshot(page, "settings-raw-problem");
   });

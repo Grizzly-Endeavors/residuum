@@ -74,6 +74,13 @@ describe("undoReport", () => {
 describe("diffLineKind", () => {
   it("tells added, removed, header and context lines apart", () => {
     const lines = ["+++ b/a", "--- a/a", "@@ -1 +1 @@", "+new", "-old", " same"];
-    expect(lines.map(diffLineKind)).toEqual(["meta", "meta", "meta", "add", "remove", "context"]);
+    expect(lines.map(diffLineKind)).toEqual([
+      "meta",
+      "meta",
+      "meta",
+      "added",
+      "removed",
+      "context",
+    ]);
   });
 });

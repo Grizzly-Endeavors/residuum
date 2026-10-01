@@ -21,10 +21,7 @@ export function diagnoseConfigText(format: "toml" | "json", content: string): Di
     };
     const location =
       line > 0 && column > 0 ? { kind: "line_column" as const, line, column } : undefined;
-    const first = message.split("\n", 1)[0] ?? message;
-    return [
-      { severity: "error", message: first.replace(/^Invalid TOML document: /, ""), location },
-    ];
+    return [{ severity: "error", message: message.split("\n", 1)[0] ?? message, location }];
   }
 }
 
