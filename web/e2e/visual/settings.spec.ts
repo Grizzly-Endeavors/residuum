@@ -38,3 +38,52 @@ test.describe("settings modal", { tag: "@visual" }, () => {
     await frameScreenshot(page, "settings-list");
   });
 });
+
+/** The rebuilt All agents sections hold nothing legacy, so the whole modal is compared. */
+test.describe("settings modal: All agents sections", { tag: "@visual" }, () => {
+  test("General, with the timezone and the gateway options open", async ({ page }) => {
+    await page.goto("/home?settings=_all/general");
+    await expect(page.getByLabel("Timezone")).toHaveValue("America/New_York");
+    await page.getByRole("button", { name: "More options" }).click();
+    await expect(page.getByLabel("Bind address")).toBeVisible();
+    await expectScreenshot(page, "settings-general");
+  });
+
+  test("Residuum Cloud, connected", async ({ page, mock }) => {
+    await mock.post("/api/mock/cloud-callback");
+    await page.goto("/home?settings=_all/cloud");
+    await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+    await expectScreenshot(page, "settings-cloud");
+  });
+
+  test("Residuum Cloud, not connected, with the relay options open", async ({ page }) => {
+    await page.goto("/home?settings=_all/cloud");
+    await expect(page.getByText("Not connected")).toBeVisible();
+    await page.getByRole("button", { name: "More options" }).click();
+    await expect(page.getByLabel("Relay URL")).toBeVisible();
+    await expectScreenshot(page, "settings-cloud-not-connected");
+  });
+
+  test("Updates, after a check", async ({ page }) => {
+    await page.goto("/home?settings=_all/updates");
+    await page.getByRole("button", { name: "Check for updates" }).click();
+    await expect(page.getByText("Up to date")).toBeVisible();
+    await expectScreenshot(page, "settings-updates");
+  });
+
+  test("Session limits, with a value that blocks work", async ({ page }) => {
+    await page.goto("/home?settings=_all/limits");
+    await page.getByLabel("Turns at once").fill("0");
+    await expect(page.getByText(/can never run a turn/)).toBeVisible();
+    await page.getByLabel("Turns at once").blur();
+    await expectScreenshot(page, "settings-limits");
+  });
+
+  test("Diagnostics", async ({ page }) => {
+    await page.goto("/home?settings=_all/diagnostics");
+    await expect(
+      page.getByRole("switch", { name: "Redact content in trace exports" }),
+    ).toBeChecked();
+    await expectScreenshot(page, "settings-diagnostics");
+  });
+});
