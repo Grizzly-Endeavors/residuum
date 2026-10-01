@@ -18,13 +18,12 @@ import AgentKeysGroup from "./AgentKeysGroup.svelte";
 import CallerKeysGroup from "./CallerKeysGroup.svelte";
 import KeysSection from "./KeysSection.svelte";
 import ListenerSection from "./ListenerSection.svelte";
-import NotificationsSection from "./NotificationsSection.svelte";
 import SecretsGroup from "./SecretsGroup.svelte";
 
 // The All agents sections that list what the hub keeps encrypted (Saved
-// keys), the install's agent-to-agent listener with its caller keys, and the
-// Notifications placeholder. The keys act at once through their own
-// endpoints; the listener's switch, port and address are staged.
+// keys), and the install's agent-to-agent listener with its caller keys. The
+// keys act at once through their own endpoints; the listener's switch, port
+// and address are staged.
 
 interface Call {
   method: string;
@@ -568,16 +567,5 @@ describe("Caller keys", () => {
       repo: "hub",
       path: "a2a-keys.toml",
     });
-  });
-});
-
-describe("Notifications", () => {
-  it("holds its place in the install's settings and says nothing is there yet", async () => {
-    await open();
-    render(NotificationsSection, { scope, section: "notifications" });
-
-    expect(screen.getByRole("heading", { name: "Notifications", level: 2 })).toBeInTheDocument();
-    expect(screen.getByText(/aren't available in this version/)).toBeInTheDocument();
-    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
   });
 });

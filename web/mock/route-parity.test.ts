@@ -113,6 +113,18 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
   fetchAgentKeys: [(a) => a.fetchAgentKeys()],
   storeAgentKey: [(a) => a.storeAgentKey("name", "value", "what it is for")],
   deleteAgentKey: [(a) => a.deleteAgentKey("name")],
+  fetchPushKey: [(a) => a.fetchPushKey()],
+  fetchPushDevices: [(a) => a.fetchPushDevices()],
+  registerPushDevice: [
+    (a) =>
+      a.registerPushDevice(
+        { endpoint: "https://push.example/sub", keys: { p256dh: "key", auth: "secret" } },
+        "Phone",
+      ),
+  ],
+  updatePushDevice: [(a) => a.updatePushDevice("device-1", { preferences: { inbox_item: false } })],
+  removePushDevice: [(a) => a.removePushDevice("device-1")],
+  sendPushTest: [(a) => a.sendPushTest("device-1")],
   fetchA2aStatus: [(a) => a.fetchA2aStatus(AGENT)],
   fetchA2aCard: [(a) => a.fetchA2aCard(AGENT)],
   fetchA2aKeys: [(a) => a.fetchA2aKeys()],
