@@ -70,21 +70,22 @@ describe("General", () => {
     render(GeneralSection, { scope, section: "general" });
     expect(screen.getByLabelText("Timezone")).toHaveValue("UTC");
 
-    await type(screen.getByLabelText("Timezone"), "Europe/Berlin");
+    await fireEvent.change(screen.getByLabelText("Timezone"), {
+      target: { value: "Europe/Berlin" },
+    });
 
     expect(scope.dirty).toBe(true);
     expect(scope.configFile.patch).toEqual({ timezone: "Europe/Berlin" });
     expect(patches()).toEqual([]);
   });
 
-  it("flags a name that isn't a timezone without refusing to stage it", async () => {
+  it("flags a saved name that isn't a timezone", async () => {
+    serve('timezone = "Mars/Olympus"\n');
     await open();
     render(GeneralSection, { scope, section: "general" });
 
-    await type(screen.getByLabelText("Timezone"), "Mars/Olympus");
-
+    expect(screen.getByLabelText("Timezone")).toHaveValue("Mars/Olympus");
     expect(screen.getByText(/doesn't look like a timezone name/)).toBeInTheDocument();
-    expect(scope.configFile.patch).toEqual({ timezone: "Mars/Olympus" });
   });
 
   it("offers this device's timezone when it differs, and takes it", async () => {

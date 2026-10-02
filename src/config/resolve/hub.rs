@@ -22,10 +22,47 @@ pub(crate) fn from_file_and_env(
     file: Option<&HubConfigFile>,
     hub_dir: &Path,
 ) -> Result<HubConfig, FatalError> {
+    from_file_and_env_inner(file, hub_dir, false)
+}
+
+/// Like [`from_file_and_env`], but a missing timezone does not fail the load.
+///
+/// The first-run `hub/config.toml` leaves `timezone` commented out, and the
+/// setup wizard is what writes it. Requiring one before the hub is listening
+/// means the wizard never starts. An invalid name is still an error: that
+/// file was edited, and guessing would hide the typo. The stand-in is the
+/// machine's timezone and lives only in this loaded config.
+///
+/// # Errors
+/// Returns `FatalError::Config` if the timezone name is invalid or the
+/// tracing log level string is invalid.
+pub(crate) fn from_file_and_env_for_onboarding(
+    file: Option<&HubConfigFile>,
+    hub_dir: &Path,
+) -> Result<HubConfig, FatalError> {
+    from_file_and_env_inner(file, hub_dir, true)
+}
+
+fn from_file_and_env_inner(
+    file: Option<&HubConfigFile>,
+    hub_dir: &Path,
+    allow_unset_timezone: bool,
+) -> Result<HubConfig, FatalError> {
     let mut notices: Vec<String> = Vec::new();
     let secrets = load_secrets_degraded(hub_dir, &mut notices);
 
-    let timezone = gateway::resolve_timezone(file)?;
+    let timezone = match gateway::resolve_timezone(file) {
+        Ok(tz) => tz,
+        Err(err) if allow_unset_timezone && gateway::is_missing_timezone(&err) => {
+            let stand_in = gateway::machine_timezone();
+            tracing::info!(
+                timezone = %stand_in,
+                "no timezone configured; the setup wizard will ask for one. times use the machine timezone until then"
+            );
+            stand_in
+        }
+        Err(err) => return Err(err),
+    };
     let gateway = gateway::resolve_gateway_config(file.and_then(|f| f.gateway.as_ref()));
     let cloud =
         gateway::resolve_cloud_config(file.and_then(|f| f.cloud.as_ref()), &secrets, &gateway);

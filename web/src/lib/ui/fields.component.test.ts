@@ -118,6 +118,19 @@ describe("SelectField", () => {
     expect(onchange).toHaveBeenCalledOnce();
   });
 
+  it("groups options under their labels", () => {
+    render(SelectField, {
+      label: "Timezone",
+      value: "Europe/Berlin",
+      options: [{ value: "UTC", label: "UTC" }],
+      groups: [{ label: "Europe", options: [{ value: "Europe/Berlin", label: "Europe/Berlin" }] }],
+    });
+    const select = screen.getByRole("combobox", { name: "Timezone" });
+    expect(select).toHaveValue("Europe/Berlin");
+    expect(select.querySelector("optgroup")?.getAttribute("label")).toBe("Europe");
+    expect(screen.getByRole("option", { name: "UTC" })).toBeInTheDocument();
+  });
+
   it("shows a placeholder while nothing is chosen, which can't be chosen back", () => {
     render(SelectField, {
       label: "Provider",

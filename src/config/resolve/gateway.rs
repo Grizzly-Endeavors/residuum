@@ -11,23 +11,46 @@ use super::super::types::{CloudConfig, GatewayConfig};
 ///
 /// # Errors
 /// Returns `FatalError::Config` if no timezone is set or the value is not a
-/// valid IANA timezone name.
+/// valid IANA timezone name. A missing timezone is [`is_missing_timezone`];
+/// onboarding uses that to start without one (see
+/// [`super::hub::from_file_and_env_for_onboarding`]).
 pub(super) fn resolve_timezone(file: Option<&HubConfigFile>) -> Result<chrono_tz::Tz, FatalError> {
-    let tz_name = std::env::var("RESIDUUM_TIMEZONE")
+    let Some(tz_name) = std::env::var("RESIDUUM_TIMEZONE")
         .ok()
-        .or_else(|| file.and_then(|f| f.timezone.clone()))
-        .ok_or_else(|| {
-            FatalError::Config(
-                "timezone is required: set RESIDUUM_TIMEZONE env var or 'timezone' in hub/config.toml \
-                 (IANA name, e.g. \"America/New_York\")"
-                    .to_string(),
-            )
-        })?;
+        .filter(|name| !name.is_empty())
+        .or_else(|| {
+            file.and_then(|f| f.timezone.clone())
+                .filter(|name| !name.is_empty())
+        })
+    else {
+        return Err(FatalError::Config(
+            "timezone is required: set RESIDUUM_TIMEZONE env var or 'timezone' in hub/config.toml \
+             (IANA name, e.g. \"America/New_York\")"
+                .to_string(),
+        ));
+    };
     tz_name.parse().map_err(|_err| {
         FatalError::Config(format!(
             "invalid timezone '{tz_name}': expected IANA name like 'America/New_York' or 'UTC'"
         ))
     })
+}
+
+/// Whether `err` is a missing timezone rather than an invalid name or any
+/// other config problem.
+pub(super) fn is_missing_timezone(err: &FatalError) -> bool {
+    matches!(err, FatalError::Config(msg) if msg.starts_with("timezone is required:"))
+}
+
+/// The machine's IANA timezone, or UTC when it can't be read or parsed.
+///
+/// Onboarding uses this only as a stand-in so the hub can run before the
+/// setup wizard has written a timezone. It is not saved to `config.toml`.
+pub(super) fn machine_timezone() -> chrono_tz::Tz {
+    iana_time_zone::get_timezone()
+        .ok()
+        .and_then(|name| name.parse().ok())
+        .unwrap_or(chrono_tz::UTC)
 }
 
 /// Resolve gateway configuration from TOML section and environment variables.

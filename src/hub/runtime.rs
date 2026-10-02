@@ -59,7 +59,13 @@ struct A2aListenerTask {
 /// the fallback was used — a description of what was wrong with the live
 /// file.
 fn load_hub_with_fallback(hub_dir: &Path) -> Result<(HubConfig, Option<String>), FatalError> {
-    match HubConfig::load_at(hub_dir) {
+    let Some(root) = hub_dir.parent() else {
+        return Err(FatalError::Config(format!(
+            "hub directory {} has no parent, so agents can't be discovered",
+            hub_dir.display()
+        )));
+    };
+    match HubConfig::load_at_for_start(hub_dir, root) {
         Ok(hub) => Ok((hub, None)),
         Err(err) => match last_known_good::hub::load(hub_dir) {
             Ok(hub) => Ok((hub, Some(err.to_string()))),
@@ -893,7 +899,9 @@ fn spawn_update_check(status: &crate::update::SharedUpdateStatus) {
 
 /// Run the hub on the residuum root `root` until it is told to stop.
 ///
-/// Loads the hub config (falling back to its last-known-good copy), starts
+/// Loads the hub config (falling back to its last-known-good copy; a missing
+/// timezone is allowed when no agent exists, so onboarding can ask for one),
+/// starts
 /// the servers and the shared services, and starts every agent whose
 /// `autostart` is on. Returns [`GatewayExit::Restart`] when the binary was
 /// updated and the process should relaunch.
@@ -1512,5 +1520,18 @@ mod tests {
         std::fs::write(hub_dir.join("config.toml"), "not valid toml [[[").unwrap();
 
         assert!(load_hub_with_fallback(&hub_dir).is_err());
+    }
+
+    #[test]
+    fn hub_fallback_starts_without_a_timezone_when_no_agent_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub_dir = dir.path().join("hub");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        std::fs::write(hub_dir.join("config.toml"), "# timezone = \"UTC\"\n").unwrap();
+
+        let (hub, problem) = load_hub_with_fallback(&hub_dir).unwrap();
+
+        assert!(problem.is_none());
+        assert!(!hub.timezone.name().is_empty());
     }
 }

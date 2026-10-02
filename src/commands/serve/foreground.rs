@@ -119,7 +119,7 @@ async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<ForegroundExit, 
     // retries on one and publishes a notice once it's up if it had to.
     // This mirrors the check `run_serve_command` makes before spawning
     // the daemon.
-    ensure_hub_config_loads_or_has_fallback(&hub_dir)?;
+    ensure_hub_config_loads_or_has_fallback(&residuum_root, &hub_dir)?;
 
     // The hub handles reloads in-place and only returns on shutdown or a
     // fatal error no fallback could recover from. An agent that can't

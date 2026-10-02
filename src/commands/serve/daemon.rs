@@ -73,10 +73,13 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
     // below would report success before the child exits. A live config that
     // fails to load is only blocked here when there's no last-known-good
     // copy either — the child falls back to one and keeps running, same as
-    // `run_serve_foreground_inner`'s check. An agent's own broken config
-    // doesn't stop the hub: that agent starts `failed` and the rest run.
-    if !needs_setup {
-        super::startup_config::ensure_hub_config_loads_or_has_fallback(&hub_dir)?;
+    // `run_serve_foreground_inner`'s check. A missing timezone is allowed
+    // when no agent exists: the setup wizard asks for one. `--setup` serves
+    // a throwaway directory, so the real hub config isn't what the child
+    // loads. An agent's own broken config doesn't stop the hub: that agent
+    // starts `failed` and the rest run.
+    if !args.setup {
+        super::startup_config::ensure_hub_config_loads_or_has_fallback(&residuum_root, &hub_dir)?;
     }
 
     // First-launch welcome (or --setup which mimics it)
@@ -114,8 +117,13 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
         std::thread::sleep(std::time::Duration::from_millis(500));
         match child.try_wait() {
             Ok(Some(status)) => {
+                report_startup_failure(
+                    &hub_dir,
+                    label,
+                    &format!("exited immediately with {status}"),
+                );
                 return Err(FatalError::Gateway(format!(
-                    "daemon exited immediately with {status}"
+                    "{label} exited immediately with {status}"
                 )));
             }
             Ok(None) => {

@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { Button, Disclosure, TextField } from "../../lib/ui";
+  import { isTimeZoneName, timeZoneChoices } from "../../lib/time-zones";
+  import { Button, Disclosure, SelectField, TextField } from "../../lib/ui";
   import ConfigNumber from "./ConfigNumber.svelte";
   import { fieldError, type AllSectionProps } from "./sections";
   import SettingsGroup from "./SettingsGroup.svelte";
@@ -11,25 +12,15 @@
 
   let { scope, section }: AllSectionProps = $props();
 
-  const uid = $props.id();
-  const zoneListId = `${uid}-zones`;
-  const zoneNames = Intl.supportedValuesOf("timeZone");
   const deviceZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-
-  function isZoneName(name: string): boolean {
-    try {
-      Intl.DateTimeFormat(undefined, { timeZone: name });
-      return true;
-    } catch {
-      return false;
-    }
-  }
+  const zoneChoices = $derived(timeZoneChoices(scope.config.timezone));
 
   const zone = $derived(scope.config.timezone.trim());
-  // A flag, not a block: the save is still the server's to refuse.
+  // A flag, not a block: the save is still the server's to refuse. The
+  // dropdown only offers real names, so this is a value already in the file.
   const zoneError = $derived(
     fieldError(scope, { kind: "config", field: "timezone" }) ??
-      (zone !== "" && !isZoneName(zone)
+      (zone !== "" && !isTimeZoneName(zone)
         ? "That doesn't look like a timezone name, so Residuum may refuse it. Names look like Europe/Berlin."
         : undefined),
   );
@@ -49,21 +40,15 @@
   lede="Your timezone, and where Residuum listens. Applies to every agent."
 >
   <SettingsGroup>
-    <TextField
+    <SelectField
       label="Timezone"
       bind:value={scope.config.timezone}
-      list={zoneListId}
-      placeholder="e.g. America/New_York"
-      autocomplete="off"
-      spellcheck={false}
+      options={zoneChoices.ungrouped}
+      groups={zoneChoices.groups}
+      placeholder="Choose a timezone"
       hint="Used for every agent's schedules, quiet hours and timestamps. Changing it later doesn't convert timestamps already stored."
       error={zoneError}
     />
-    <datalist id={zoneListId}>
-      {#each zoneNames as name (name)}
-        <option value={name}></option>
-      {/each}
-    </datalist>
     {#if deviceZone !== "" && zone !== deviceZone}
       <div>
         <Button

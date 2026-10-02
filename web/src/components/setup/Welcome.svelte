@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { SetupWizardState } from "../../lib/types";
   import { agentNameProblem } from "../../lib/agent-name";
-  import { TextField } from "../../lib/ui";
+  import { isTimeZoneName, timeZoneChoices } from "../../lib/time-zones";
+  import { SelectField, TextField } from "../../lib/ui";
   import SetupGroup from "./SetupGroup.svelte";
   import SetupNav from "./SetupNav.svelte";
 
@@ -13,6 +14,11 @@
   let { wizardState = $bindable(), onNext }: Props = $props();
 
   let agentNameError = $derived(agentNameProblem(wizardState.agentName));
+  const zone = $derived(wizardState.timezone.trim());
+  const zoneChoices = $derived(timeZoneChoices(wizardState.timezone));
+  const zoneError = $derived(
+    zone !== "" && !isTimeZoneName(zone) ? "That doesn't look like a time zone name." : undefined,
+  );
 </script>
 
 <SetupGroup>
@@ -33,15 +39,18 @@
     hint="Up to 32 characters. Capitals, spaces, and letters from any language are fine."
     error={agentNameError ?? undefined}
   />
-  <TextField
+  <SelectField
     label="Time zone"
     bind:value={wizardState.timezone}
-    placeholder="America/New_York"
-    autocapitalize="off"
-    autocomplete="off"
-    spellcheck="false"
-    hint="An IANA time zone name, like America/New_York."
+    options={zoneChoices.ungrouped}
+    groups={zoneChoices.groups}
+    placeholder="Choose a time zone"
+    hint="Schedules and timestamps use this."
+    error={zoneError}
   />
 </SetupGroup>
 
-<SetupNav {onNext} nextDisabled={agentNameError !== null} />
+<SetupNav
+  {onNext}
+  nextDisabled={agentNameError !== null || zone === "" || zoneError !== undefined}
+/>

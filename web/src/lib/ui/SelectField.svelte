@@ -3,12 +3,14 @@
   import { Icon } from "../icons";
   import Field from "./Field.svelte";
   import Spinner from "./Spinner.svelte";
-  import type { Choice } from "./types";
+  import type { Choice, ChoiceGroup } from "./types";
 
   interface Props extends Omit<HTMLSelectAttributes, "value" | "children" | "id"> {
     label: string;
     value?: string;
-    options: readonly Choice[];
+    options?: readonly Choice[];
+    /** When set, rendered after `options` as `optgroup`s. */
+    groups?: readonly ChoiceGroup[];
     /** Shown while nothing is chosen (value ""); it can't be chosen back. */
     placeholder?: string;
     hint?: string;
@@ -22,7 +24,8 @@
   let {
     label,
     value = $bindable(""),
-    options,
+    options = [],
+    groups = [],
     placeholder,
     hint,
     error,
@@ -56,6 +59,13 @@
           {/if}
           {#each options as option (option.value)}
             <option value={option.value} disabled={option.disabled}>{option.label}</option>
+          {/each}
+          {#each groups as group (group.label)}
+            <optgroup label={group.label}>
+              {#each group.options as option (`${group.label}:${option.value}`)}
+                <option value={option.value} disabled={option.disabled}>{option.label}</option>
+              {/each}
+            </optgroup>
           {/each}
         {/if}
       </select>

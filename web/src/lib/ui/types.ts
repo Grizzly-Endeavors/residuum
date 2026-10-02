@@ -20,6 +20,12 @@ export interface Choice<T extends string = string> {
   readonly disabled?: boolean;
 }
 
+/** A labeled group of choices, rendered as an `optgroup`. */
+export interface ChoiceGroup<T extends string = string> {
+  readonly label: string;
+  readonly options: readonly Choice<T>[];
+}
+
 /** One tab, with an optional count badge. */
 export interface TabItem<T extends string = string> extends Choice<T> {
   readonly count?: number;

@@ -42,7 +42,7 @@ test.describe("General", () => {
     await expect(page.getByLabel("Timezone")).toHaveValue("America/New_York");
     await expectNoAxeViolations(page, { within: OVERLAY });
 
-    await page.getByLabel("Timezone").fill("Europe/Berlin");
+    await page.getByLabel("Timezone").selectOption("Europe/Berlin");
     await page.getByRole("button", { name: "More options" }).click();
     await page.getByLabel("Port", { exact: true }).fill("7711");
     await expect(saveBar(page)).toContainText("You have unsaved changes.");
@@ -62,17 +62,15 @@ test.describe("General", () => {
     await expect(page.getByLabel("Timezone")).toHaveValue("Europe/Berlin");
   });
 
-  test("a name that isn't a timezone is flagged on the field and Discard brings the saved one back", async ({
-    page,
-  }) => {
+  test("Discard brings the saved timezone back", async ({ page }) => {
     await openSection(page, "general");
 
-    await page.getByLabel("Timezone").fill("Mars/Olympus");
-    await expect(page.getByText(/doesn't look like a timezone name/)).toBeVisible();
+    await page.getByLabel("Timezone").selectOption("Europe/Berlin");
+    await expect(saveBar(page)).toBeVisible();
 
     await saveBar(page).getByRole("button", { name: "Discard" }).click();
     await expect(page.getByLabel("Timezone")).toHaveValue("America/New_York");
-    await expect(page.getByText(/doesn't look like a timezone name/)).toBeHidden();
+    await expect(saveBar(page)).toBeHidden();
   });
 });
 
