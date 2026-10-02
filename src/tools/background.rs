@@ -218,7 +218,7 @@ impl Tool for ListAgentsTool {
             };
             lines.push(format!(
                 "  [agent:{name}]{you} {state} — {role}",
-                name = member.name,
+                name = member.label(),
                 state = member.state,
                 role = member.role.as_deref().unwrap_or("no role line yet"),
             ));

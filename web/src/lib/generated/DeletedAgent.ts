@@ -6,9 +6,13 @@
  */
 export type DeletedAgent = { 
 /**
- * The agent's name.
+ * The agent's folder name, which a restore uses.
  */
 name: string, 
+/**
+ * The name people saw. The same as `name` when no separate name was set.
+ */
+display_name: string, 
 /**
  * When the agent was deleted.
  */

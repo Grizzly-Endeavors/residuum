@@ -9,7 +9,7 @@ use reqwest::Method;
 use serde::Deserialize;
 use serde_json::json;
 
-use residuum::config::paths::validate_agent_name;
+use residuum::config::canonicalize_display_name;
 use residuum::util::FatalError;
 
 use super::hub_client::HubClient;
@@ -56,7 +56,7 @@ pub(super) enum AgentCommand {
 
 #[derive(clap::Args)]
 pub(super) struct CreateArgs {
-    /// Name for the new agent (lowercase letters, digits and hyphens)
+    /// Name for the new agent
     name: String,
     /// What the agent is for; it receives this as its first message
     #[arg(long)]
@@ -89,6 +89,8 @@ pub(super) enum AutostartSetting {
 #[derive(Deserialize)]
 struct AgentSummary {
     name: String,
+    #[serde(default)]
+    display_name: String,
     state: String,
     #[serde(default)]
     last_error: Option<LastError>,
@@ -115,6 +117,8 @@ struct AgentList {
 #[derive(Deserialize)]
 struct DeletedAgent {
     name: String,
+    #[serde(default)]
+    display_name: String,
     deleted_at: String,
     checkpoint_id: String,
 }
@@ -162,10 +166,12 @@ async fn execute(command: &AgentCommand, gateway_addr: &str) -> Result<String, F
 }
 
 fn check_name(name: &str) -> Result<(), FatalError> {
-    validate_agent_name(name).map_err(|reason| {
-        tracing::warn!(agent = name, reason = %reason, "rejected agent name");
-        FatalError::Other(anyhow::anyhow!("{reason}"))
-    })
+    canonicalize_display_name(name)
+        .map(|_| ())
+        .map_err(|reason| {
+            tracing::warn!(agent = name, reason = %reason, "rejected agent name");
+            FatalError::Other(anyhow::anyhow!("{reason}"))
+        })
 }
 
 async fn fetch_agents(client: &HubClient) -> Result<Vec<AgentSummary>, FatalError> {
@@ -206,7 +212,7 @@ async fn create(client: &HubClient, args: &CreateArgs) -> Result<String, FatalEr
     tracing::info!(agent = %created.name, models_from = %models_from, "created agent");
     Ok(format!(
         "Created agent '{}' ({}, {}). Model settings copied from '{models_from}'.",
-        created.name,
+        shown_name(&created),
         created.state,
         created.a2a_visibility.as_deref().unwrap_or("private"),
     ))
@@ -229,9 +235,7 @@ fn default_models_source(agents: &[AgentSummary]) -> Result<String, FatalError> 
 
 async fn delete(client: &HubClient, name: &str) -> Result<String, FatalError> {
     check_name(name)?;
-    let response: DeleteResponse = client
-        .send(Method::DELETE, &format!("/api/hub/agents/{name}"), None)
-        .await?;
+    let response: DeleteResponse = client.send(Method::DELETE, &agent_url(name), None).await?;
     tracing::info!(agent = name, checkpoint_id = ?response.checkpoint_id, "deleted agent");
     Ok(match response.checkpoint_id {
         Some(id) => format!(
@@ -262,7 +266,11 @@ async fn restore(client: &HubClient, args: &RestoreArgs) -> Result<String, Fatal
         .send(Method::POST, "/api/hub/agents/restore", Some(&body))
         .await?;
     tracing::info!(agent = %restored.name, state = %restored.state, "restored agent");
-    let mut out = format!("Restored agent '{}' ({}).", restored.name, restored.state);
+    let mut out = format!(
+        "Restored agent '{}' ({}).",
+        shown_name(&restored),
+        restored.state
+    );
     if let Some(error) = &restored.last_error {
         _ = write!(out, "\nLast error: {}", error.message);
     }
@@ -275,7 +283,7 @@ fn render_deleted(agents: &[DeletedAgent]) -> String {
     }
     let name_width = agents
         .iter()
-        .map(|a| a.name.len())
+        .map(|a| deleted_label(a).chars().count())
         .max()
         .unwrap_or(0)
         .max(4);
@@ -293,7 +301,9 @@ fn render_deleted(agents: &[DeletedAgent]) -> String {
         _ = write!(
             out,
             "\n{:<name_width$}  {:<deleted_width$}  {}",
-            agent.name, agent.deleted_at, agent.checkpoint_id
+            deleted_label(agent),
+            agent.deleted_at,
+            agent.checkpoint_id
         );
     }
     _ = write!(out, "\nRestore one with `residuum agent restore <name>`.");
@@ -305,7 +315,7 @@ async fn transition(client: &HubClient, name: &str, action: &str) -> Result<Stri
     let summary: AgentSummary = client
         .send(
             Method::POST,
-            &format!("/api/hub/agents/{name}/{action}"),
+            &format!("{}/{}", agent_url(name), action),
             None,
         )
         .await?;
@@ -327,7 +337,7 @@ async fn autostart(
     let summary: AgentSummary = client
         .send(
             Method::PATCH,
-            &format!("/api/hub/agents/{name}"),
+            &agent_url(name),
             Some(&json!({ "autostart": enabled })),
         )
         .await?;
@@ -347,6 +357,40 @@ async fn autostart(
     ))
 }
 
+fn deleted_label(agent: &DeletedAgent) -> &str {
+    if agent.display_name.is_empty() {
+        &agent.name
+    } else {
+        &agent.display_name
+    }
+}
+
+fn shown_name(agent: &AgentSummary) -> &str {
+    if agent.display_name.is_empty() {
+        &agent.name
+    } else {
+        &agent.display_name
+    }
+}
+
+/// Percent-encode one URL path segment so a name with a space reaches the hub.
+fn encode_segment(name: &str) -> String {
+    let mut out = String::new();
+    for byte in name.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(char::from(byte));
+            }
+            _ => _ = write!(out, "%{byte:02X}"),
+        }
+    }
+    out
+}
+
+fn agent_url(name: &str) -> String {
+    format!("/api/hub/agents/{}", encode_segment(name))
+}
+
 fn render_table(agents: &[AgentSummary]) -> String {
     if agents.is_empty() {
         return "No agents yet. Create one with `residuum agent create <name>`.".to_string();
@@ -354,7 +398,7 @@ fn render_table(agents: &[AgentSummary]) -> String {
 
     let name_width = agents
         .iter()
-        .map(|a| a.name.len())
+        .map(|a| shown_name(a).chars().count())
         .max()
         .unwrap_or(0)
         .max(4);
@@ -375,7 +419,8 @@ fn render_table(agents: &[AgentSummary]) -> String {
         _ = write!(
             out,
             "\n{:<name_width$}  {:<state_width$}  {autostart:<9}  {role}",
-            agent.name, agent.state
+            shown_name(agent),
+            agent.state
         );
         if let Some(error) = &agent.last_error {
             let when = error
@@ -698,7 +743,7 @@ mod tests {
     #[tokio::test]
     async fn create_rejects_invalid_name_before_contacting_hub() {
         let (addr, mock) = mock_hub(vec![summary("a", "running")]).await;
-        let out = message(execute(&AgentCommand::Create(create_args("Bad Name")), &addr).await);
+        let out = message(execute(&AgentCommand::Create(create_args("Not Valid!")), &addr).await);
         assert!(out.contains("agent name"), "{out}");
         assert!(mock.lock().unwrap().requests.is_empty());
     }
@@ -836,7 +881,7 @@ mod tests {
 
         let unknown = message(execute(&restore_of("ghost"), &addr).await);
         let taken = message(execute(&restore_of("scout"), &addr).await);
-        let invalid = message(execute(&restore_of("Bad Name"), &addr).await);
+        let invalid = message(execute(&restore_of("Not Valid!"), &addr).await);
 
         assert_eq!(
             unknown,

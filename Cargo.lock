@@ -4633,6 +4633,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "ts-rs",
+ "unicode-normalization",
  "url",
  "uuid",
  "windows-sys 0.59.0",

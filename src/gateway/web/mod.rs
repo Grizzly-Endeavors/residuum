@@ -153,9 +153,16 @@ impl HubApiState {
         layout: &crate::workspace::layout::WorkspaceLayout,
         user_name: Option<&str>,
         timezone: &str,
+        label: Option<&str>,
     ) -> Result<(), crate::util::FatalError> {
-        crate::workspace::bootstrap::ensure_workspace(layout, &self.team, user_name, Some(timezone))
-            .await
+        crate::workspace::bootstrap::ensure_workspace_labeled(
+            layout,
+            &self.team,
+            user_name,
+            Some(timezone),
+            label,
+        )
+        .await
     }
 
     /// Checkpoint the hub config repository (hub `config.toml` and the

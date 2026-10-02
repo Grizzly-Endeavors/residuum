@@ -5,6 +5,7 @@ import type {
   StopAllResponse,
 } from "../src/lib/hub-types";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
+import { allocateSlug, canonicalAgentName, displayNameKey, slugBase } from "../src/lib/agent-name";
 import { agentNameProblem } from "./agent-name";
 import { checkpointBeforeAction } from "./checkpoints";
 import { cloudStatusOf } from "./cloud";
@@ -12,7 +13,7 @@ import { MOCK_RESIDUUM_VERSION, providersStartFailure } from "./constants";
 import { json, readJsonObject, stringField, type JsonObject } from "./http";
 import { decodedParam, type Route, type RouteContext } from "./routes";
 import { modelProblems } from "./provider-models";
-import type { MockAgent, MockHub } from "./state";
+import type { MockAgent, MockDeletedAgent, MockHub } from "./state";
 import { byName } from "./util";
 
 /** How long an agent takes to start. */
@@ -46,9 +47,32 @@ async function readBodyOr400(ctx: RouteContext, required?: string): Promise<Json
 /** The agent the route's first capture group names, or `null` after answering `404`. */
 function namedAgent(ctx: RouteContext): MockAgent | null {
   const name = decodedParam(ctx, 0);
-  const agent = ctx.hub.agents.get(name);
+  const agent = findAgent(ctx.hub, name);
   if (!agent) json(ctx.res, 404, { error: `no agent named '${name}'` });
   return agent ?? null;
+}
+
+/** The agent `raw` names, by folder or by the name people type. */
+function findAgent(hub: MockHub, raw: string): MockAgent | undefined {
+  const direct = hub.agents.get(raw);
+  if (direct) return direct;
+  const canonical = canonicalAgentName(raw);
+  if (canonical === null) return undefined;
+  const key = displayNameKey(canonical);
+  const matches = [...hub.agents.values()].filter(
+    (agent) => displayNameKey(agent.displayName) === key,
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+/** The deleted agent `raw` names, by folder or by the name people saw. */
+function findDeleted(hub: MockHub, raw: string): MockDeletedAgent | undefined {
+  const direct = hub.deleted.get(raw);
+  if (direct) return direct;
+  const canonical = canonicalAgentName(raw);
+  if (canonical === null) return undefined;
+  const key = displayNameKey(canonical);
+  return [...hub.deleted.values()].find((gone) => displayNameKey(gone.agent.displayName) === key);
 }
 
 function sortedAgents(ctx: RouteContext): MockAgent[] {
@@ -65,6 +89,7 @@ function listDeletedAgents(ctx: RouteContext): void {
     .sort((a, b) => byName(b.deletedAt, a.deletedAt) || byName(a.agent.name, b.agent.name))
     .map((gone) => ({
       name: gone.agent.name,
+      display_name: gone.agent.displayName,
       deleted_at: gone.deletedAt,
       checkpoint_id: gone.checkpointId,
     }));
@@ -82,11 +107,12 @@ async function restoreAgent(ctx: RouteContext): Promise<void> {
     json(res, 400, { error: nameProblem });
     return;
   }
-  if (hub.agents.has(name)) {
-    json(res, 409, { error: `an agent named '${name}' already exists` });
+  const canonical = canonicalAgentName(name);
+  if (canonical !== null && findAgent(hub, canonical)) {
+    json(res, 409, { error: `an agent named '${canonical}' already exists` });
     return;
   }
-  const gone = hub.deleted.get(name);
+  const gone = findDeleted(hub, name);
   if (!gone) {
     json(res, 404, { error: `there is no deleted agent named '${name}' to restore` });
     return;
@@ -96,10 +122,10 @@ async function restoreAgent(ctx: RouteContext): Promise<void> {
     json(res, 400, { error: `${name} has no checkpoint '${checkpointId}' to restore from` });
     return;
   }
-  hub.deleted.delete(name);
+  hub.deleted.delete(gone.agent.name);
   const { agent } = gone;
   agent.runState = agent.autostart ? "running" : "stopped";
-  hub.agents.set(name, agent);
+  hub.agents.set(agent.name, agent);
   hub.broadcast({ type: "agent_restored", agent: hub.summary(agent), by: "user" });
   json(res, 201, hub.summary(agent));
 }
@@ -115,12 +141,14 @@ async function createAgent(ctx: RouteContext): Promise<void> {
     json(res, 400, { error: nameProblem });
     return;
   }
-  if (hub.agents.has(name)) {
-    json(res, 409, { error: `an agent named '${name}' already exists` });
+  const canonical = canonicalAgentName(name) ?? name;
+  if (findAgent(hub, canonical)) {
+    json(res, 409, { error: `an agent named '${canonical}' already exists` });
     return;
   }
   const modelsFrom = stringField(body, "models_from") ?? null;
-  if (modelsFrom !== null && !hub.agents.has(modelsFrom)) {
+  const source = modelsFrom === null ? null : findAgent(hub, modelsFrom);
+  if (modelsFrom !== null && source === undefined) {
     json(res, 400, { error: `no agent named '${modelsFrom}'` });
     return;
   }
@@ -129,9 +157,22 @@ async function createAgent(ctx: RouteContext): Promise<void> {
     return;
   }
   // A new agent replaces the deleted one of that name, whose socket route would answer for it too.
-  hub.deleted.get(name)?.agent.dispose();
-  hub.deleted.delete(name);
-  const agent = hub.createAgent(name, { role: stringField(body, "description") ?? null });
+  const sameGone = findDeleted(hub, canonical);
+  const slug = sameGone
+    ? sameGone.agent.name
+    : allocateSlug(slugBase(canonical), (candidate) => {
+        return (
+          hub.agents.has(candidate) ||
+          [...hub.deleted.values()].some((gone) => gone.agent.name === candidate)
+        );
+      });
+  const replaced = hub.deleted.get(slug);
+  replaced?.agent.dispose();
+  hub.deleted.delete(slug);
+  const agent = hub.createAgent(slug, {
+    role: stringField(body, "description") ?? null,
+    displayName: canonical,
+  });
   if (body.a2a_visibility === "public") agent.visibility = "public";
   hub.broadcast({ type: "agent_created", agent: hub.summary(agent), by: "user" });
   json(res, 201, hub.summary(agent));

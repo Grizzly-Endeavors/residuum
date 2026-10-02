@@ -27,6 +27,7 @@ const TOTALS = {
 function agent(name: string, state: AgentSummary["state"]): AgentSummary {
   return {
     name,
+    display_name: name,
     state,
     last_error: null,
     autostart: true,

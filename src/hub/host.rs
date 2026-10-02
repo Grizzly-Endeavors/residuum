@@ -68,25 +68,31 @@ const PATCH_RELOAD_TIMEOUT: Duration = Duration::from_secs(30);
 /// What start, restart, and create answer once the hub is shutting down.
 const SHUTTING_DOWN: &str = "Residuum is shutting down";
 
-/// The two settings `patch` changes, as the agent's config file holds them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Settings the summary reads from the agent's config file: whether it
+/// starts with the hub, who can see it, and the name people use for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct AgentMeta {
     autostart: bool,
     a2a_visibility: A2aVisibility,
+    display_name: String,
 }
 
 impl AgentMeta {
     /// What a summary reports for an agent whose config has never loaded:
-    /// the default autostart, and private, so a card that can't be checked
-    /// is never served without a key.
-    const UNVERIFIED: Self = Self {
-        autostart: true,
-        a2a_visibility: A2aVisibility::Private,
-    };
+    /// the default autostart, private (so a card that can't be checked is
+    /// never served without a key), and the folder name as the shown name.
+    fn unverified(name: &str) -> Self {
+        Self {
+            autostart: true,
+            a2a_visibility: A2aVisibility::Private,
+            display_name: name.to_string(),
+        }
+    }
 
-    /// Read `autostart` and `[a2a] visibility` from the agent's
-    /// `config/config.toml`, with the defaults an absent key resolves to.
-    /// `had_meta` says whether a config has loaded before.
+    /// Read `autostart`, `[a2a] visibility`, and `display_name` from the
+    /// agent's `config/config.toml`, with the defaults an absent key resolves
+    /// to. `had_meta` says whether a config has loaded before. `name` is the
+    /// folder name, shown when `display_name` is absent or unusable.
     ///
     /// # Errors
     /// Returns why the file could not be used: it can't be read, isn't valid
@@ -94,7 +100,7 @@ impl AgentMeta {
     /// file is). The caller keeps the last meta that did load rather than
     /// guessing. An empty file for an agent that never loaded one reads as
     /// all defaults.
-    fn read(agent_dir: &Path, had_meta: bool) -> Result<Self, String> {
+    fn read(agent_dir: &Path, name: &str, had_meta: bool) -> Result<Self, String> {
         let path = agent_dir.join("config").join("config.toml");
         let text = std::fs::read_to_string(&path)
             .map_err(|e| format!("couldn't read {}: {e}", path.display()))?;
@@ -105,6 +111,7 @@ impl AgentMeta {
             return Ok(Self {
                 autostart: true,
                 a2a_visibility: A2aVisibility::Public,
+                display_name: name.to_string(),
             });
         }
         let doc = text
@@ -127,9 +134,20 @@ impl AgentMeta {
                 A2aVisibility::Private
             }
         };
+        let display_name = match doc.get("display_name").and_then(toml_edit::Item::as_str) {
+            Some(raw) => match crate::config::canonicalize_display_name(raw) {
+                Ok(cleaned) => cleaned,
+                Err(problem) => {
+                    tracing::warn!(agent = name, problem, path = %path.display(), "display_name in config.toml can't be shown; using the folder name");
+                    name.to_string()
+                }
+            },
+            None => name.to_string(),
+        };
         Ok(Self {
             autostart,
             a2a_visibility,
+            display_name,
         })
     }
 }
@@ -223,12 +241,12 @@ impl AgentSlot {
     /// to report and whether it differs from the one published before.
     fn reload_meta(&self) -> (AgentMeta, bool) {
         let had_meta = self.lock().published_meta.is_some();
-        let read = AgentMeta::read(&self.dir, had_meta);
+        let read = AgentMeta::read(&self.dir, &self.name, had_meta);
         let mut guard = self.lock();
         match read {
             Ok(meta) => {
-                let changed = guard.published_meta != Some(meta);
-                guard.published_meta = Some(meta);
+                let changed = guard.published_meta.as_ref() != Some(&meta);
+                guard.published_meta = Some(meta.clone());
                 guard.meta_unreadable = false;
                 (meta, changed)
             }
@@ -242,7 +260,13 @@ impl AgentSlot {
                     };
                     tracing::warn!(agent = %self.name, %reason, "an agent's config file can't be used for its summary; {holding}");
                 }
-                (guard.published_meta.unwrap_or(AgentMeta::UNVERIFIED), false)
+                (
+                    guard
+                        .published_meta
+                        .clone()
+                        .unwrap_or_else(|| AgentMeta::unverified(&self.name)),
+                    false,
+                )
             }
         }
     }
@@ -254,7 +278,7 @@ impl AgentSlot {
         {
             let guard = self.lock();
             if guard.running.is_some()
-                && let Some(meta) = guard.published_meta
+                && let Some(meta) = guard.published_meta.clone()
             {
                 return meta;
             }
@@ -323,12 +347,33 @@ impl AgentHost {
     }
 
     fn slot(&self, name: &str) -> Result<Arc<AgentSlot>, LifecycleError> {
-        self.slots
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(name)
-            .cloned()
-            .ok_or_else(|| LifecycleError::NotFound(name.to_string()))
+        let slots = self.slots.read().unwrap_or_else(PoisonError::into_inner);
+        if let Some(slot) = slots.get(name) {
+            return Ok(Arc::clone(slot));
+        }
+        // A typed name (`Research Desk`, or `atlas` for an agent shown as
+        // `Atlas`) resolves to the folder it belongs to. The folder name
+        // itself was returned above, so a folder is never hidden by another
+        // agent's shown name.
+        let Ok(canonical) = crate::config::canonicalize_display_name(name) else {
+            return Err(LifecycleError::NotFound(name.to_string()));
+        };
+        let key = crate::config::display_name_key(&canonical);
+        let mut found = None;
+        for slot in slots.values() {
+            if crate::config::display_name_key(&slot.current_meta().display_name) != key {
+                continue;
+            }
+            if found.is_some() {
+                tracing::warn!(
+                    name,
+                    "more than one agent is called this; address it by its folder name"
+                );
+                return Err(LifecycleError::NotFound(name.to_string()));
+            }
+            found = Some(Arc::clone(slot));
+        }
+        found.ok_or_else(|| LifecycleError::NotFound(name.to_string()))
     }
 
     fn team_paths(&self) -> TeamPaths {
@@ -526,6 +571,7 @@ impl AgentHost {
         let meta = slot.current_meta();
         AgentSummary {
             name: slot.name.clone(),
+            display_name: meta.display_name,
             state,
             last_error,
             autostart: meta.autostart,
@@ -1045,8 +1091,14 @@ impl AgentHost {
         by: Actor,
     ) -> Result<AgentSummary, LifecycleError> {
         self.ensure_not_stopping()?;
-        let providers_toml = match (&request.models_from, &request.providers_toml) {
-            (Some(from), _) => super::provision::copy_providers_from(&self.services.root, from)?,
+        let display_name = crate::config::canonicalize_display_name(&request.name)
+            .map_err(LifecycleError::InvalidName)?;
+        let from_slug = match &request.models_from {
+            Some(from) => Some(self.slot(from)?.name.clone()),
+            None => None,
+        };
+        let providers_toml = match (from_slug, &request.providers_toml) {
+            (Some(from), _) => super::provision::copy_providers_from(&self.services.root, &from)?,
             (None, Some(raw)) => raw.clone(),
             (None, None) => {
                 return Err(LifecycleError::InvalidRequest(
@@ -1054,15 +1106,17 @@ impl AgentHost {
                 ));
             }
         };
-        let spec = super::provision::AgentSpec {
-            name: request.name.clone(),
-            providers_toml,
-            a2a_visibility: request.a2a_visibility.unwrap_or(A2aVisibility::Private),
-            description: request.description.clone(),
-        };
-        {
+        let slug = {
             let _creating = self.creation_lock.lock().await;
-            self.ensure_name_free(&request.name)?;
+            let slug = self.choose_slug(&display_name).await?;
+            self.ensure_name_free(&slug)?;
+            let spec = super::provision::AgentSpec {
+                name: slug.clone(),
+                display_name: display_name.clone(),
+                providers_toml,
+                a2a_visibility: request.a2a_visibility.unwrap_or(A2aVisibility::Private),
+                description: request.description.clone(),
+            };
             super::provision::provision_agent(
                 &self.services.root,
                 &self.team_paths(),
@@ -1071,11 +1125,12 @@ impl AgentHost {
                 &spec,
             )
             .await?;
-            super::deleted::clear_deletion(&self.checkpoints_dir(), &request.name).await;
-            self.adopt(&request.name);
-        }
+            super::deleted::clear_deletion(&self.checkpoints_dir(), &slug).await;
+            self.adopt(&slug);
+            slug
+        };
 
-        let slot = self.slot(&request.name)?;
+        let slot = self.slot(&slug)?;
         let started = {
             let _op = slot.op_lock.lock().await;
             self.start_locked(&slot).await
@@ -1155,6 +1210,10 @@ impl AgentHost {
     /// its role page, and its roster entry.
     async fn delete_agent(&self, name: &str, by: Actor) -> Result<DeleteOutcome, LifecycleError> {
         let slot = self.slot(name)?;
+        // Files, history, and the role page are keyed by the folder name,
+        // even when `name` was the name people type.
+        let slug = slot.name.clone();
+        let display_name = self.summary_of(&slot).display_name;
         let checkpoint_id = {
             let _op = slot.op_lock.lock().await;
             self.stop_locked(&slot).await?;
@@ -1162,14 +1221,15 @@ impl AgentHost {
             let mut record = super::deleted::DeletionRecord {
                 deleted_at: Utc::now(),
                 checkpoint_id: None,
-                role_page: tokio::fs::read_to_string(self.team_paths().agent_role_page(name))
+                role_page: tokio::fs::read_to_string(self.team_paths().agent_role_page(&slug))
                     .await
                     .ok(),
+                display_name: Some(display_name),
             };
             let engine = self.checkpoint_engine(&slot).map_err(|e| {
-                tracing::error!(agent = %name, error = %e, "couldn't open the agent's checkpoint repositories to delete it");
+                tracing::error!(agent = %slug, error = %e, "couldn't open the agent's checkpoint repositories to delete it");
                 LifecycleError::Failed(format!(
-                    "couldn't open {name}'s checkpoint history, so it was not deleted: {e}"
+                    "couldn't open {slug}'s checkpoint history, so it was not deleted: {e}"
                 ))
             })?;
             let id = super::provision::deprovision_agent(
@@ -1177,28 +1237,98 @@ impl AgentHost {
                 &self.team_paths(),
                 &self.services.team,
                 &team_writer(&by),
-                name,
+                &slug,
                 &engine,
             )
             .await?;
             record.checkpoint_id.clone_from(&id);
-            super::deleted::record_deletion(&self.checkpoints_dir(), name, &record).await;
+            super::deleted::record_deletion(&self.checkpoints_dir(), &slug, &record).await;
             // Marked under the lock and before the slot is forgotten, so a
             // start or restart already holding this slot finds it gone
             // instead of starting the agent in a deleted directory.
             slot.removed.store(true, Ordering::SeqCst);
-            self.forget(name);
+            self.forget(&slug);
             id
         };
         self.spawn_team_embedding_refresh();
         self.publish(HubEvent::AgentDeleted {
-            name: name.to_string(),
+            name: slug.clone(),
             by,
         });
         Ok(DeleteOutcome {
             deleted: true,
             checkpoint_id,
         })
+    }
+
+    /// The folder a new agent called `display` should use.
+    ///
+    /// The same name, ignoring case, is refused when an agent already has it,
+    /// and reused when a deleted agent had it so that agent's history
+    /// continues. Otherwise the first free slug is used, skipping folders
+    /// that still hold someone else's history.
+    async fn choose_slug(&self, display: &str) -> Result<String, LifecycleError> {
+        let key = crate::config::display_name_key(display);
+        for slot in self.slots() {
+            let meta = slot.current_meta();
+            if crate::config::display_name_key(&meta.display_name) == key {
+                return Err(LifecycleError::AlreadyExists(meta.display_name));
+            }
+        }
+        let checkpoints = self.checkpoints_dir();
+        let history = crate::checkpoints::agents_with_history(&checkpoints)
+            .map_err(|e| history_unreadable(&e))?;
+        let mut taken = history.clone();
+        for slot in self.slots() {
+            taken.push(slot.name.clone());
+        }
+        for slug in &history {
+            if self
+                .slots
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains_key(slug)
+            {
+                continue;
+            }
+            let shown = super::deleted::read_deletion(&checkpoints, slug)
+                .await
+                .and_then(|record| record.display_name)
+                .unwrap_or_else(|| slug.clone());
+            if crate::config::display_name_key(&shown) == key {
+                return Ok(slug.clone());
+            }
+        }
+        crate::config::allocate_slug(&crate::config::slug_base(display), |candidate| {
+            taken.iter().any(|slug| slug == candidate)
+        })
+        .map_err(LifecycleError::Failed)
+    }
+
+    /// The folder of the deleted agent `requested` names, by folder name or
+    /// by the name people saw.
+    async fn resolve_deleted_name(&self, requested: &str) -> Result<String, LifecycleError> {
+        let checkpoints = self.checkpoints_dir();
+        let history = crate::checkpoints::agents_with_history(&checkpoints)
+            .map_err(|e| history_unreadable(&e))?;
+        if crate::config::validate_agent_name(requested).is_ok()
+            && history.iter().any(|slug| slug == requested)
+        {
+            return Ok(requested.to_string());
+        }
+        let canonical = crate::config::canonicalize_display_name(requested)
+            .map_err(LifecycleError::InvalidName)?;
+        let key = crate::config::display_name_key(&canonical);
+        for slug in &history {
+            let shown = super::deleted::read_deletion(&checkpoints, slug)
+                .await
+                .and_then(|record| record.display_name)
+                .unwrap_or_else(|| slug.clone());
+            if crate::config::display_name_key(&shown) == key {
+                return Ok(slug.clone());
+            }
+        }
+        Err(LifecycleError::NoDeletedAgent(requested.to_string()))
     }
 
     /// Refuse a name the hub already holds. A slot outlives its directory
@@ -1224,8 +1354,14 @@ impl AgentHost {
         by: Actor,
     ) -> Result<AgentSummary, LifecycleError> {
         self.ensure_not_stopping()?;
-        let name = request.name;
-        crate::config::validate_agent_name(&name).map_err(LifecycleError::InvalidName)?;
+        // A live agent answers before the deleted-history lookup, so restoring
+        // a name that is in use is a conflict rather than "nothing to restore".
+        if let Ok(slot) = self.slot(&request.name) {
+            return Err(LifecycleError::AlreadyExists(
+                slot.current_meta().display_name.clone(),
+            ));
+        }
+        let name = self.resolve_deleted_name(&request.name).await?;
         {
             // The same lock as create, so a restore and a create of one name
             // can't both write the directory.
@@ -1342,9 +1478,16 @@ impl AgentHost {
                     continue;
                 }
             };
-            let deleted_at = record.map_or(latest.timestamp, |record| record.deleted_at);
+            let (deleted_at, display_name) = match record {
+                Some(record) => (
+                    record.deleted_at,
+                    record.display_name.unwrap_or_else(|| name.clone()),
+                ),
+                None => (latest.timestamp, name.clone()),
+            };
             deleted.push(DeletedAgent {
                 name,
+                display_name,
                 deleted_at,
                 checkpoint_id: latest.id,
             });

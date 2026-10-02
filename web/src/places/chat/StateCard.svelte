@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { agentLabel } from "../../lib/agent-name";
   import { failureLine } from "../../lib/agent-failure";
   import type { AgentDisplayState } from "../../lib/agent-display-state";
   import { hub } from "../../lib/hub.svelte";
@@ -25,7 +26,7 @@
   let { agent, shown, alone, actions }: Props = $props();
 
   const uid = $props.id();
-  const name = $derived(agent.name);
+  const name = $derived(agentLabel(agent));
   const busy = $derived(agentActions.pendingOf(agent.name));
 
   let heading = $state<HTMLHeadingElement>();

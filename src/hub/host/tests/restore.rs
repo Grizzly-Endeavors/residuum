@@ -250,7 +250,7 @@ async fn restore_refuses_names_that_exist_have_no_history_or_are_invalid() {
 
     let (taken, taken_body) = restore_over_http(&hub, json!({ "name": "scout" })).await;
     let (unknown, unknown_body) = restore_over_http(&hub, json!({ "name": "ghost" })).await;
-    let (invalid, _) = restore_over_http(&hub, json!({ "name": "Not A Name" })).await;
+    let (invalid, _) = restore_over_http(&hub, json!({ "name": "Not A Name!" })).await;
     let (malformed, _) = restore_over_http(&hub, json!({ "nom": "nova" })).await;
 
     assert_eq!(taken, 409, "{taken_body}");

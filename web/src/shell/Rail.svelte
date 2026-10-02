@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Attachment } from "svelte/attachments";
+  import { agentLabel } from "../lib/agent-name";
   import { actionRegistry, HELP_GROUP } from "../lib/action-registry.svelte";
   import { Icon, type IconName } from "../lib/icons";
   import { hub } from "../lib/hub.svelte";
@@ -158,7 +159,7 @@
             onclick={() => accordion.toggle(agent.name)}
           >
             <StatusDot state={status.dot} working={status.working} />
-            <span class="rail-label">{agent.name}</span>
+            <span class="rail-label">{agentLabel(agent)}</span>
             <span class="rail-tail" aria-hidden="true">
               {#if status.tail.kind === "unread"}
                 <Badge count={status.tail.count} solid />

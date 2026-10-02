@@ -29,6 +29,7 @@ export function createStubHub(env: MockEnv = createMockEnv()): MockHub {
     createAgent(name, options = {}) {
       const agent: MockAgent = {
         name,
+        displayName: options.displayName ?? name,
         runState: options.runState ?? "running",
         lastError: null,
         autostart: true,
@@ -46,6 +47,7 @@ export function createStubHub(env: MockEnv = createMockEnv()): MockHub {
     },
     summary: (agent) => ({
       name: agent.name,
+      display_name: agent.displayName,
       state: agent.runState,
       last_error: agent.lastError,
       autostart: agent.autostart,

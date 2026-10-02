@@ -181,6 +181,7 @@ impl StaticAgentDirectory {
     fn summary_of(name: &str, entry: &Entry) -> AgentSummary {
         AgentSummary {
             name: name.to_string(),
+            display_name: name.to_string(),
             state: entry.state,
             last_error: None,
             autostart: true,

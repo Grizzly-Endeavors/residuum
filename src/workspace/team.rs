@@ -107,7 +107,7 @@ pub async fn ensure_agent_role_page(
     description: Option<&str>,
 ) -> Result<bool, FatalError> {
     let writer = TeamWriter::Agent(name.to_string());
-    ensure_agent_role_page_as(team, coordinator, &writer, name, description).await
+    ensure_agent_role_page_as(team, coordinator, &writer, name, name, description).await
 }
 
 /// [`ensure_agent_role_page`] with `writer` recorded as the last writer of
@@ -122,14 +122,15 @@ pub async fn ensure_agent_role_page_as(
     coordinator: &TeamWriteCoordinator,
     writer: &TeamWriter,
     name: &str,
+    label: &str,
     description: Option<&str>,
 ) -> Result<bool, FatalError> {
     let role = description
         .map(single_line)
         .filter(|d| !d.is_empty())
         .unwrap_or_else(|| ROLE_PLACEHOLDER.to_string());
-    let content = role_page_content(name, &role);
-    create_role_page(team, coordinator, writer, name, &role, &content).await
+    let content = role_page_content(label, &role);
+    create_role_page(team, coordinator, writer, name, label, &role, &content).await
 }
 
 /// Recreate the role page of a restored agent from the text it had when the
@@ -158,7 +159,7 @@ pub async fn restore_agent_role_page(
         .map(|description| single_line(&description))
         .filter(|description| !description.is_empty())
         .unwrap_or_else(|| ROLE_PLACEHOLDER.to_string());
-    create_role_page(team, coordinator, writer, name, &role, page_text).await
+    create_role_page(team, coordinator, writer, name, name, &role, page_text).await
 }
 
 async fn create_role_page(
@@ -166,6 +167,7 @@ async fn create_role_page(
     coordinator: &TeamWriteCoordinator,
     writer: &TeamWriter,
     name: &str,
+    label: &str,
     role: &str,
     content: &str,
 ) -> Result<bool, FatalError> {
@@ -203,14 +205,14 @@ async fn create_role_page(
     // Index entry first, page second: a crash between the two leaves an
     // index entry that the retry skips (it checks for the link) before
     // writing the page.
-    add_index_entry(index_guard, writer, name, role).await?;
+    add_index_entry(index_guard, writer, name, label, role).await?;
     page_guard
         .commit(writer, content.as_bytes())
         .await
         .map_err(|e| {
             FatalError::Workspace(format!("failed to write {}: {e:#}", page_path.display()))
         })?;
-    append_log_line(log_guard, writer, name).await?;
+    append_log_line(log_guard, writer, name, label).await?;
 
     tracing::info!(agent = %name, page = %page_path.display(), "wrote agent role page");
     Ok(true)
@@ -325,12 +327,12 @@ async fn remove_index_entry(
     Ok(true)
 }
 
-fn role_page_content(name: &str, role: &str) -> String {
+fn role_page_content(label: &str, role: &str) -> String {
     format!(
-        "---\ntype: Agent\ntitle: {title}\ndescription: {description}\n---\n\n# {name}\n\n\
-         {name} maintains this page with its role and responsibilities: what it is for, \
+        "---\ntype: Agent\ntitle: {title}\ndescription: {description}\n---\n\n# {label}\n\n\
+         {label} maintains this page with its role and responsibilities: what it is for, \
          what it owns, and what teammates should hand it.\n",
-        title = yaml_scalar(name),
+        title = yaml_scalar(label),
         description = yaml_quoted(role),
     )
 }
@@ -341,6 +343,7 @@ async fn add_index_entry(
     index: &TeamPathGuard,
     writer: &TeamWriter,
     name: &str,
+    label: &str,
     role: &str,
 ) -> Result<(), FatalError> {
     let index_path = index.path().to_path_buf();
@@ -364,7 +367,7 @@ async fn add_index_entry(
     if !updated.ends_with('\n') {
         updated.push('\n');
     }
-    _ = writeln!(updated, "- [{name}]{link} — {role}");
+    _ = writeln!(updated, "- [{label}]{link} — {role}");
     index
         .commit(writer, updated.as_bytes())
         .await
@@ -382,11 +385,12 @@ async fn append_log_line(
     log: &TeamPathGuard,
     writer: &TeamWriter,
     name: &str,
+    label: &str,
 ) -> Result<(), FatalError> {
     append_log_entry(
         log,
         writer,
-        &format!("added role page agents/{name}.md for agent {name}"),
+        &format!("added role page agents/{name}.md for agent {label}"),
     )
     .await
 }

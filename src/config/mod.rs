@@ -5,6 +5,7 @@
 //! `[providers]`, models are assigned to roles in `[models]`, and everything
 //! resolves at load time into fully-built `ProviderSpec` values.
 
+mod agent_name;
 mod bootstrap;
 mod constants;
 pub(crate) mod deserialize;
@@ -22,6 +23,9 @@ pub mod wizard;
 
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
+pub use agent_name::{
+    allocate_slug, canonicalize_display_name, display_name_key, set_display_name_toml, slug_base,
+};
 pub(crate) use constants::{
     DEFAULT_A2A_PORT, DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD,
     DEFAULT_OBSERVER_THRESHOLD, DEFAULT_REFLECTOR_THRESHOLD,

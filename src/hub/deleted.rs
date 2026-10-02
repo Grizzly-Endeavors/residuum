@@ -31,6 +31,10 @@ pub(super) struct DeletionRecord {
     /// The agent's role page as it was, when it had one.
     #[serde(default)]
     pub role_page: Option<String>,
+    /// The name people saw. Absent on a record written before names and
+    /// folder names could differ, which means the folder name was the name.
+    #[serde(default)]
+    pub display_name: Option<String>,
 }
 
 fn record_path(checkpoints_dir: &Path, name: &str) -> PathBuf {

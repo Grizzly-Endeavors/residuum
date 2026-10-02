@@ -95,7 +95,7 @@ Every delivered message names the sender's address and category, so the recipien
 | `agent:<name>/<session-address>` | A session belonging to teammate `<name>`. Used mainly to reply to a teammate's session that messaged you; `agent:<name>/main` is the teammate's main. |
 | `a2a:<name>` | A remote A2A agent (see [a2a.md](a2a.md#client-reaching-other-agents)). |
 
-`agent:` and `a2a:` are distinct prefixes. A teammate name is an agent-directory name (lowercase letters, digits and hyphens), so it never contains `:` or `/`, and an A2A agent name never contains `:` either. A session address never contains `:`, so no session can be mistaken for a teammate or a remote agent. A teammate is not a sibling: the hub's own agents are reached with `agent:`, and relay sibling discovery never lists them (see [a2a.md](a2a.md#teammates-and-siblings)).
+`agent:` and `a2a:` are distinct prefixes. A teammate name is the name people gave the agent. It can contain capitals and spaces, and it never contains `:` or `/`. An A2A agent name never contains `:` either. A session address never contains `:`, so no session can be mistaken for a teammate or a remote agent. A teammate is not a sibling: the hub's own agents are reached with `agent:`, and relay sibling discovery never lists them (see [a2a.md](a2a.md#teammates-and-siblings)).
 
 ### Teammates
 

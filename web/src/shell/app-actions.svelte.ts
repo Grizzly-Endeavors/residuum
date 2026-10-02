@@ -4,6 +4,7 @@
 // for agents other than the bound one are listed only once something is
 // typed, so the unsearched palette stays about the agent at hand.
 
+import { agentLabel } from "../lib/agent-name";
 import { actionRegistry, HELP_GROUP, type AppAction } from "../lib/action-registry.svelte";
 import { displayState } from "../lib/agent-display-state";
 import { lifecycleApplies, type LifecycleAction } from "../lib/agent-lifecycle";
@@ -78,7 +79,7 @@ function agents(): AppAction[] {
     return {
       id: `agent:${agent.name}`,
       group: "Agents",
-      label: agent.name,
+      label: agentLabel(agent),
       hint: stateWord(dot),
       icon: { dot, working: dot === "running" && hub.activityOf(agent.name).busy },
       terms: agent.role === null ? [] : [agent.role],

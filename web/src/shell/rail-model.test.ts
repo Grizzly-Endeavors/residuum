@@ -5,6 +5,7 @@ import { agentRowStatus, type AgentRowContext } from "./rail-model";
 function agent(name: string, overrides: Partial<AgentSummary> = {}): AgentSummary {
   return {
     name,
+    display_name: name,
     state: "running",
     last_error: null,
     autostart: true,

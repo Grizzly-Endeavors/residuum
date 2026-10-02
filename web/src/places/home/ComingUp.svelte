@@ -33,7 +33,7 @@
               onclick={(event) => followLink(event, schedule)}>{runTitle(run.name)}</a
             >
             <span class="run-sub"
-              >{agent}, {run.kind === "pulse" ? "pulse" : "scheduled action"}</span
+              >{hub.shownName(agent)}, {run.kind === "pulse" ? "pulse" : "scheduled action"}</span
             >
           </span>
           <time class="run-when" datetime={run.at}>{upcomingWhen(run.at, now)}</time>

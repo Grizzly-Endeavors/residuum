@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hub } from "../lib/hub.svelte";
   import { Icon } from "../lib/icons";
 
   // Where the summarized past meets the messages kept word for word.
@@ -9,7 +10,7 @@
 <p class="compressed" role="note">
   <Icon name="layers" size={15} />
   <span>
-    Older messages are summarized. {agent} remembers what was said, not the exact wording.
+    Older messages are summarized. {hub.shownName(agent)} remembers what was said, not the exact wording.
   </span>
 </p>
 

@@ -30,7 +30,7 @@
     autocapitalize="off"
     autocomplete="off"
     spellcheck="false"
-    hint="Lowercase letters, digits and hyphens. It's your agent's permanent name and folder."
+    hint="Up to 32 characters. Capitals, spaces, and letters from any language are fine."
     error={agentNameError ?? undefined}
   />
   <TextField

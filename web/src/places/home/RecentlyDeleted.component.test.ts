@@ -13,6 +13,7 @@ const NOW = Date.parse("2026-03-14T12:00:00Z");
 function deletedAgent(name: string, hoursAgo: number): DeletedAgent {
   return {
     name,
+    display_name: name,
     deleted_at: new Date(NOW - hoursAgo * 3_600_000).toISOString(),
     checkpoint_id: `ckpt-${name}`,
   };
@@ -21,6 +22,7 @@ function deletedAgent(name: string, hoursAgo: number): DeletedAgent {
 function restored(name: string): AgentSummary {
   return {
     name,
+    display_name: name,
     state: "running",
     last_error: null,
     autostart: true,

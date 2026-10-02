@@ -10,7 +10,6 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::agent::HopCounter;
-use crate::config::paths::MAX_AGENT_NAME_LEN;
 use crate::hub::{
     Actor, AgentState, AgentSummary, CreateAgentRequest, DirectoryHandle, LifecycleError,
 };
@@ -41,9 +40,7 @@ const HUB_UNAVAILABLE: &str = "the hub is shutting down, so agents can't be crea
 
 fn lifecycle_error_text(error: &LifecycleError, action: &str) -> String {
     match error {
-        LifecycleError::InvalidName(rule) => format!(
-            "can't {action}: {rule}. Names are 1-{MAX_AGENT_NAME_LEN} characters of lowercase letters, digits, and hyphens, with no leading or trailing hyphen."
-        ),
+        LifecycleError::InvalidName(rule) => format!("can't {action}: {rule}"),
         LifecycleError::AlreadyExists(name) => format!(
             "can't {action}: an agent named '{name}' already exists. Pick a different name, or message the existing agent at agent:{name}."
         ),
@@ -65,7 +62,7 @@ fn lifecycle_error_text(error: &LifecycleError, action: &str) -> String {
 /// What the creating agent is told about the new agent: where to reach it,
 /// or, when it failed to start, that it exists but isn't running.
 fn created_text(summary: &AgentSummary) -> String {
-    let name = &summary.name;
+    let name = summary.label();
     if summary.state == AgentState::Failed {
         let reason = summary
             .last_error
@@ -116,8 +113,7 @@ impl Tool for AgentCreateTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: format!(
-                "Create a new teammate: a long-lived agent with its own workspace, memory, and conversation. \
+            description: "Create a new teammate: a long-lived agent with its own workspace, memory, and conversation. \
                  Use it when the work needs a durable specialist (a researcher, an inbox triager) that keeps \
                  its own notes and improves over time. For a one-off task whose result you need now, use \
                  subagent_spawn instead.\n\n\
@@ -125,15 +121,16 @@ impl Tool for AgentCreateTool {
                  the teammate's first message and becomes its SOUL.md notes and team role page. State its \
                  purpose, how it should work, and what to hand it. Message the teammate afterwards at \
                  agent:<name>.\n\n\
-                 Names are 1-{MAX_AGENT_NAME_LEN} characters of lowercase letters, digits, and hyphens, with \
-                 no leading or trailing hyphen."
-            ),
+                 Names are up to 32 characters: letters from any language, numbers, spaces, hyphens, and \
+                 apostrophes. They can't start or end with a hyphen or an apostrophe, and two names that \
+                 differ only by case are the same agent."
+                .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "The new agent's name, for example 'research-desk'"
+                        "description": "The new agent's name, for example 'Research Desk'"
                     },
                     "description": {
                         "type": "string",
@@ -295,6 +292,7 @@ mod tests {
     fn summary(state: AgentState, last_error: Option<&str>) -> AgentSummary {
         AgentSummary {
             name: "nova".to_string(),
+            display_name: "nova".to_string(),
             state,
             last_error: last_error.map(|message| AgentLastError {
                 message: message.to_string(),

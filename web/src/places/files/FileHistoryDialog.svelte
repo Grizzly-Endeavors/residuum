@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { agentLabel } from "../../lib/agent-name";
   import { fetchCheckpointDiff, fetchCheckpointFile, fetchCheckpoints } from "../../lib/api";
   import { triggerLabel } from "../../lib/checkpoints";
   import { configCoordinator } from "../../lib/config-coordinator";
@@ -114,7 +115,7 @@
     <Banner tone="error">
       {loadError}
       {#if agent !== undefined && agent.state !== "running"}
-        {agent.name} isn't running, and its history may not open until it starts.
+        {agentLabel(agent)} isn't running, and its history may not open until it starts.
       {/if}
       {#snippet actions()}
         <Button size="sm" onclick={() => void load()}>Try again</Button>

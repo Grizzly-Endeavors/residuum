@@ -12,6 +12,7 @@ import StateCard from "./StateCard.svelte";
 function failed(kind: AgentErrorKind): AgentSummary {
   return {
     name: "brittle",
+    display_name: "brittle",
     state: "failed",
     last_error: {
       message: "brittle couldn't start: config error. Fix its settings, then start it again.",
@@ -27,6 +28,7 @@ function failed(kind: AgentErrorKind): AgentSummary {
 
 const DRIFTER: AgentSummary = {
   name: "drifter",
+  display_name: "drifter",
   state: "stopped",
   last_error: null,
   autostart: false,

@@ -59,7 +59,7 @@ Restoring holds the same locks as creating, so a restore and a create of one nam
 
 ### Creating an agent with a deleted agent's name
 
-Checkpoint history is keyed by agent name, so a new agent with the name of a deleted one continues the same history. Nothing is lost or rewritten: the deleted agent's checkpoints stay, the new agent's checkpoints follow them, and the checkpoint view of the new agent lists both. The deletion record is removed, so the name is no longer in the deleted list. When the new agent is deleted in turn, it is the one the list offers and the default restore returns; the earlier agent's files are still one `--checkpoint <id>` away.
+Checkpoint history is keyed by the agent's folder name. A new agent with the same name, ignoring case, continues that history. Nothing is lost or rewritten: the deleted agent's checkpoints stay, the new agent's checkpoints follow them, and the checkpoint view of the new agent lists both. The deletion record is removed, so the name is no longer in the deleted list. When the new agent is deleted in turn, it is the one the list offers and the default restore returns; the earlier agent's files are still one `--checkpoint <id>` away. A different name that would use the same folder gets the next free folder and does not continue the other agent's history.
 
 ## Agent tools
 

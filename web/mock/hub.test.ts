@@ -132,7 +132,7 @@ describe("hub", () => {
     });
 
     it.each([
-      [{ name: "Bad Name", models_from: "atlas" }, "agent name 'Bad Name' must contain only"],
+      [{ name: "Bad_Name", models_from: "atlas" }, "agent name 'Bad_Name' can use letters"],
       [{ name: "atlas", models_from: "scout" }, "an agent named 'atlas' already exists"],
       [{ name: "newbie", models_from: "ghost" }, "no agent named 'ghost'"],
       [{ name: "newbie" }, "give models_from or providers_toml"],
@@ -310,7 +310,12 @@ describe("hub", () => {
 
       const list = (await request("GET", "/agents/deleted")).body.agents as Body[];
       expect(list).toEqual([
-        { name: "atlas", deleted_at: expect.any(String) as unknown, checkpoint_id: checkpointId },
+        {
+          name: "atlas",
+          display_name: "atlas",
+          deleted_at: expect.any(String) as unknown,
+          checkpoint_id: checkpointId,
+        },
       ]);
 
       const restored = await request("POST", "/agents/restore", {
@@ -391,7 +396,7 @@ describe("hub", () => {
         error: "there is no deleted agent named 'ghost' to restore",
       });
       expect((await request("POST", "/agents/restore", { name: "scout" })).status).toBe(409);
-      expect((await request("POST", "/agents/restore", { name: "BAD" })).status).toBe(400);
+      expect((await request("POST", "/agents/restore", { name: "BAD!" })).status).toBe(400);
       expect((await request("POST", "/agents/restore", {})).status).toBe(400);
     });
 
@@ -445,6 +450,7 @@ describe("hub socket", () => {
     ]);
     expect(snapshot.agents).toContainEqual({
       name: "brittle",
+      display_name: "brittle",
       state: "failed",
       last_error: {
         message: MOCK_BRITTLE_ERROR,

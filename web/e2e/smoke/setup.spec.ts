@@ -29,9 +29,9 @@ test("completes the wizard and opens the app on the new agent", async ({ page })
   await expectNoAxeViolations(page);
 
   await page.getByLabel("Your name").fill("Ada");
-  await page.getByLabel("Agent name").fill("Scout");
+  await page.getByLabel("Agent name").fill("Scout!");
   await expect(page.getByLabel("Agent name")).toHaveAccessibleDescription(
-    /Use only lowercase letters, digits, and hyphens\./,
+    /Use letters, numbers, spaces, hyphens, and apostrophes\./,
   );
   await expect(page.getByRole("button", { name: "Next" })).toBeDisabled();
   await page.getByLabel("Agent name").fill("scout");

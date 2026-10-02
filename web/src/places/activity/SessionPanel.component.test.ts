@@ -15,7 +15,15 @@ class NoObserver {
 }
 
 function agent(name: string, state: AgentSummary["state"] = "running"): AgentSummary {
-  return { name, state, last_error: null, autostart: true, role: null, a2a_visibility: "private" };
+  return {
+    name,
+    display_name: name,
+    state,
+    last_error: null,
+    autostart: true,
+    role: null,
+    a2a_visibility: "private",
+  };
 }
 
 function summary(overrides: Partial<SessionSummary> = {}): SessionSummary {

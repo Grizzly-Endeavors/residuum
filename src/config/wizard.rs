@@ -4,7 +4,9 @@ use std::io::Write;
 use std::path::Path;
 use std::str::FromStr;
 
-use super::paths::validate_agent_name;
+use super::agent_name::{
+    allocate_slug, canonicalize_display_name, set_display_name_toml, slug_base,
+};
 use super::provider::ProviderKind;
 use crate::util::FatalError;
 
@@ -16,9 +18,7 @@ const DEFAULT_AGENT_NAME: &str = "assistant";
 pub struct WizardAnswers {
     /// The user's name, written to `USER.md`. `None` if skipped.
     pub user_name: Option<String>,
-    /// The first agent's name (validated with
-    /// [`validate_agent_name`]) — its directory name and identity
-    /// everywhere.
+    /// The first agent's name, as the person typed it.
     pub agent_name: String,
     /// IANA timezone (e.g. `"America/New_York"`).
     pub timezone: String,
@@ -73,8 +73,8 @@ pub fn run_interactive() -> Result<WizardAnswers, FatalError> {
             &format!("agent name [{DEFAULT_AGENT_NAME}]"),
             DEFAULT_AGENT_NAME,
         )?;
-        match validate_agent_name(&input) {
-            Ok(()) => break input,
+        match canonicalize_display_name(&input) {
+            Ok(name) => break name,
             Err(e) => println!("  {e}"),
         }
     };
@@ -193,8 +193,8 @@ pub fn from_flags(flags: &WizardFlags<'_>) -> Result<WizardAnswers, FatalError> 
     chrono_tz::Tz::from_str(timezone)
         .map_err(|err| FatalError::Config(format!("invalid timezone '{timezone}': {err}")))?;
 
-    let agent_name = flags.agent_name.unwrap_or(DEFAULT_AGENT_NAME);
-    validate_agent_name(agent_name).map_err(FatalError::Config)?;
+    let agent_name = canonicalize_display_name(flags.agent_name.unwrap_or(DEFAULT_AGENT_NAME))
+        .map_err(FatalError::Config)?;
 
     let provider_str = flags.provider.ok_or_else(|| {
         FatalError::Config("--provider is required in non-interactive mode".to_string())
@@ -224,7 +224,7 @@ pub fn from_flags(flags: &WizardFlags<'_>) -> Result<WizardAnswers, FatalError> 
 
     Ok(WizardAnswers {
         user_name: flags.user_name.map(ToString::to_string),
-        agent_name: agent_name.to_string(),
+        agent_name: agent_name.clone(),
         timezone: timezone.to_string(),
         provider: provider_kind,
         api_key: flags.api_key.map(ToString::to_string),
@@ -243,7 +243,7 @@ pub fn from_flags(flags: &WizardFlags<'_>) -> Result<WizardAnswers, FatalError> 
 ///
 /// `residuum_root` is `~/.residuum` (or an override, e.g. for tests/the
 /// isolated `--setup` temp-directory flow); the hub lives at
-/// `residuum_root/hub` and the agent at `residuum_root/<agent_name>`.
+/// `residuum_root/hub` and the agent in a folder derived from its name.
 ///
 /// # Errors
 /// Returns `FatalError::Config`/`FatalError::Workspace` if bootstrapping the
@@ -270,13 +270,22 @@ pub async fn write_config(residuum_root: &Path, answers: &WizardAnswers) -> Resu
     // The agent's full workspace and the shared team directory: identity
     // files, bundled skills, the wiki, and the team's USER.md personalized
     // with the user's name.
-    let agent_dir = residuum_root.join(&answers.agent_name);
+    let slug = allocate_slug(&slug_base(&answers.agent_name), |candidate| {
+        residuum_root
+            .join(candidate)
+            .join("config")
+            .join("config.toml")
+            .is_file()
+    })
+    .map_err(FatalError::Config)?;
+    let agent_dir = residuum_root.join(&slug);
     let layout = crate::workspace::layout::WorkspaceLayout::new(&agent_dir);
-    crate::workspace::bootstrap::ensure_workspace(
+    crate::workspace::bootstrap::ensure_workspace_labeled(
         &layout,
         &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
         answers.user_name.as_deref(),
         Some(&answers.timezone),
+        Some(&answers.agent_name),
     )
     .await
     .map_err(|e| FatalError::Workspace(e.to_string()))?;
@@ -306,7 +315,8 @@ pub async fn write_config(residuum_root: &Path, answers: &WizardAnswers) -> Resu
         config_lines.push(String::new());
     }
 
-    let config_content = config_lines.join("\n");
+    let config_content = set_display_name_toml(&config_lines.join("\n"), &answers.agent_name)
+        .map_err(FatalError::Config)?;
 
     // providers.toml — models + optional provider
     let providers_path = agent_config_dir.join("providers.toml");

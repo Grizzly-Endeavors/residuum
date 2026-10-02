@@ -5,6 +5,7 @@
 // team change feed. The hub connection is independent of the agent
 // connection (`ws.svelte.ts`) and stays up across agent switches.
 
+import { agentLabel } from "./agent-name";
 import { displayState, type AgentDisplayState } from "./agent-display-state";
 import { WsTransport } from "./transport.svelte";
 import { hubWsUrl } from "./paths";
@@ -60,6 +61,9 @@ function actorLabel(by: Actor): string {
 const IDLE: AgentActivity = { busy: false, busy_since: null, unread: 0 };
 
 function byName(a: AgentSummary, b: AgentSummary): number {
+  const left = agentLabel(a).toLowerCase();
+  const right = agentLabel(b).toLowerCase();
+  if (left !== right) return left < right ? -1 : 1;
   if (a.name === b.name) return 0;
   return a.name < b.name ? -1 : 1;
 }
@@ -172,6 +176,12 @@ export class HubStore {
 
   agent(name: string): AgentSummary | undefined {
     return this.agents.find((a) => a.name === name);
+  }
+
+  /** The name people see for a folder name. The folder itself when it isn't loaded. */
+  shownName(name: string): string {
+    const agent = this.agent(name);
+    return agent === undefined ? name : agentLabel(agent);
   }
 
   activityOf(name: string): AgentActivity {
@@ -317,22 +327,25 @@ export class HubStore {
         break;
       case "agent_created":
         this.upsert(msg.agent);
-        this.addNotice("info", `${actorLabel(msg.by)} created ${msg.agent.name}.`);
+        this.addNotice("info", `${actorLabel(msg.by)} created ${agentLabel(msg.agent)}.`);
         break;
       case "agent_restored":
         this.upsert(msg.agent);
-        this.addNotice("info", `${actorLabel(msg.by)} restored ${msg.agent.name}.`);
+        this.addNotice("info", `${actorLabel(msg.by)} restored ${agentLabel(msg.agent)}.`);
         break;
-      case "agent_deleted":
+      case "agent_deleted": {
+        const gone = this.agents.find((agent) => agent.name === msg.name);
+        const label = gone === undefined ? msg.name : agentLabel(gone);
         this.removeAgent(msg.name);
         this.deletedListChanged();
-        this.addNotice("info", `${actorLabel(msg.by)} deleted ${msg.name}.`, undefined, {
+        this.addNotice("info", `${actorLabel(msg.by)} deleted ${label}.`, undefined, {
           label: "Undo",
           onClick: () => {
             void this.restoreAgent(msg.name);
           },
         });
         break;
+      }
       case "agent_activity":
         this.activity = {
           ...this.activity,

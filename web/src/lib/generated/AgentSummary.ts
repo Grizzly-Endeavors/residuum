@@ -8,9 +8,15 @@ import type { AgentState } from "./AgentState";
  */
 export type AgentSummary = { 
 /**
- * The agent's name: its directory name and identity everywhere.
+ * The agent's folder name: its URL, its A2A path, and the key its
+ * checkpoint history is stored under.
  */
 name: string, 
+/**
+ * The name people see and address (`agent:<display name>`). The same as
+ * `name` when no separate name was set.
+ */
+display_name: string, 
 /**
  * Current lifecycle state.
  */

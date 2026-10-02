@@ -9,6 +9,7 @@ import type { AgentActivity, AgentSummary, DeletedAgent } from "./hub-types";
 function agent(name: string, overrides: Partial<AgentSummary> = {}): AgentSummary {
   return {
     name,
+    display_name: name,
     state: "running",
     last_error: null,
     autostart: true,
@@ -678,6 +679,7 @@ describe("HubStore lifecycle actions", () => {
 
 const gone = (name: string): DeletedAgent => ({
   name,
+  display_name: name,
   deleted_at: "2026-09-29T10:00:00Z",
   checkpoint_id: `ckpt-${name}`,
 });

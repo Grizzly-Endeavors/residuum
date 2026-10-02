@@ -241,7 +241,7 @@ Two different things can look like "another agent of mine", and they have differ
 | Listed by `list_agents` as | `[agent:<name>]` with state and role | `[a2a:<slug>] (your instance)` |
 | Reply | `message_agent` to the sender's `agent:` address | An agent message from `a2a:<slug>` once its task needs attention |
 
-The prefixes can't be confused: `agent:` and `a2a:` are matched exactly, and neither an agent name (lowercase letters, digits, hyphens) nor an A2A name can contain `:` or `/`. Sibling discovery filters this hub's own instance out of every result, so a teammate is never also listed as a sibling. See [Teammates](background-tasks.md#teammates).
+The prefixes can't be confused: `agent:` and `a2a:` are matched exactly, and neither a teammate name nor an A2A name can contain `:` or `/`. A teammate name is the name people gave the agent. A sibling's path segment stays a folder name: lowercase letters, digits, and hyphens, up to 24 characters. Sibling discovery filters this hub's own instance out of every result, so a teammate is never also listed as a sibling. See [Teammates](background-tasks.md#teammates).
 
 ## Siblings
 

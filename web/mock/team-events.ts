@@ -14,6 +14,7 @@ import type {
   TeamEventPage,
   TeamEventTarget,
 } from "../src/lib/hub-types";
+import { agentLabel } from "../src/lib/agent-name";
 import type { UserInboxAttachment, UserInboxItem } from "../src/lib/types";
 import type { MockEnv } from "./env";
 import { json, parseJsonObject, readBody, stringField } from "./http";
@@ -97,14 +98,15 @@ function withActor(name: string, done: string, by: Actor): string {
 
 /** What went wrong with an agent, for its `agent_failed` entry; `before` is the state it failed out of. */
 function failureSummary(agent: AgentSummary, before: AgentState): string {
+  const name = agentLabel(agent);
   const error = agent.last_error;
-  if (error === null) return `${agent.name} failed`;
+  if (error === null) return `${name} failed`;
   if (error.kind === "crash") {
     return before === "running"
-      ? `${agent.name} stopped unexpectedly`
-      : `${agent.name} couldn't start because of an internal error`;
+      ? `${name} stopped unexpectedly`
+      : `${name} couldn't start because of an internal error`;
   }
-  return `${agent.name} couldn't start: ${plain(error.reason).replace(/\.+$/, "")}`;
+  return `${name} couldn't start: ${plain(error.reason).replace(/\.+$/, "")}`;
 }
 
 /** The level and summary of a finished session that was not scheduled. */
@@ -223,9 +225,9 @@ export function createTeamEvents(
     states.set(agent.name, agent.state);
     if (before === agent.state) return;
     if (agent.state === "running") {
-      recordInChat(agent.name, "agent_started", "info", `${agent.name} started`);
+      recordInChat(agent.name, "agent_started", "info", `${agentLabel(agent)} started`);
     } else if (agent.state === "stopped" && (before === "running" || before === "starting")) {
-      recordInChat(agent.name, "agent_stopped", "info", `${agent.name} stopped`);
+      recordInChat(agent.name, "agent_stopped", "info", `${agentLabel(agent)} stopped`);
     } else if (agent.state === "failed") {
       recordInChat(agent.name, "agent_failed", "error", failureSummary(agent, before));
     }
@@ -237,13 +239,12 @@ export function createTeamEvents(
     } else if (frame.type === "agent_created" || frame.type === "agent_restored") {
       // The hub starts the agent before it announces it, so the start comes first.
       onState(frame.agent);
-      const { name } = frame.agent;
       const created = frame.type === "agent_created";
       recordInChat(
-        name,
+        frame.agent.name,
         created ? "agent_created" : "agent_restored",
         "info",
-        withActor(name, created ? "was created" : "was restored", frame.by),
+        withActor(agentLabel(frame.agent), created ? "was created" : "was restored", frame.by),
       );
     } else if (frame.type === "agent_deleted") {
       states.delete(frame.name);

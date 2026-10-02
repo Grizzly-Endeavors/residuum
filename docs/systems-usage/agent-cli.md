@@ -18,7 +18,7 @@
 
 ## Create
 
-- The name is checked locally with the same rules the hub applies (lowercase letters, digits and hyphens), so a bad name fails before any request.
+- The name is checked locally with the same rules the hub applies (up to 32 characters: letters, numbers, spaces, hyphens, and apostrophes), so a bad name fails before any request. A name can also be the folder name.
 - `--models-from <agent>` names the agent whose `providers.toml` is copied. Without it, the CLI copies from the only running agent. If none or several are running it stops with a message asking for `--models-from`.
 - Visibility is private unless `--public` is given.
 - `--description` becomes the new agent's first message and seeds its role page.
@@ -29,7 +29,7 @@ Deleting checkpoints the agent's directory before removing it, and prints the ch
 
 `residuum agent deleted` lists the agents that can be restored. `residuum agent restore <name>` brings one back with its files, settings and role page, and starts it when its `autostart` is on. `--checkpoint <id>` restores its files from that workspace checkpoint instead of the one the deletion took (the ids are in the agent's checkpoint history); its settings and role page are still the ones it was deleted with. A name that exists is refused (`409`) and a name with no history is `404`; both print the server's message.
 
-Checkpoints are keyed by agent name, so creating an agent with a deleted agent's name continues the same history. The new agent replaces the old one in the deleted list. See [Agent Creation, Deletion and Restore](agent-lifecycle.md#creating-an-agent-with-a-deleted-agents-name).
+Checkpoints are keyed by the folder name. Creating an agent with the same name, ignoring case, continues that history. A different name that would use the same folder gets the next folder (`research-desk-2`) and its own history. See [Agent Creation, Deletion and Restore](agent-lifecycle.md#creating-an-agent-with-a-deleted-agents-name).
 
 ## Errors
 

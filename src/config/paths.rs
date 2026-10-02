@@ -5,7 +5,7 @@
 //! their last-known-good copies), `team/` (the shared team layer), and one
 //! directory per agent, each of which *is* that agent's workspace root. This
 //! module is the only place that resolves the literal `~/.residuum` path,
-//! names the reserved directory names, and validates an agent name.
+//! names the reserved directory names, and validates an agent directory name.
 
 use std::path::{Path, PathBuf};
 
@@ -22,9 +22,10 @@ pub const TEAM_DIR_NAME: &str = "team";
 /// `~/.residuum/` for agent directories.
 const RESERVED_NAMES: &[&str] = &[HUB_DIR_NAME, TEAM_DIR_NAME, "agents"];
 
-/// Longest accepted agent name, matching the relay's own slug validation
-/// (an agent's name is also its A2A path segment) — see
-/// `src/a2a/client/siblings.rs`'s `is_valid_sibling_slug`.
+/// Longest accepted agent directory name, matching the relay's own slug
+/// validation (the directory name is also the A2A path segment) — see
+/// `src/a2a/client/siblings.rs`'s `is_valid_sibling_slug`. The name a person
+/// types is checked in `agent_name`.
 pub(crate) const MAX_AGENT_NAME_LEN: usize = 24;
 
 /// The `~/.residuum` root: the only place this literal path is resolved.
@@ -58,8 +59,10 @@ pub fn agent_dir(root: &Path, name: &str) -> PathBuf {
     root.join(name)
 }
 
-/// Validate an agent name: 1–24 characters from `[a-z0-9-]`, no leading or
-/// trailing hyphen, and not a reserved name.
+/// Validate an agent directory name: 1–24 characters from `[a-z0-9-]`, no
+/// leading or trailing hyphen, and not a reserved name. The name a person
+/// types is checked in `agent_name`; this is the folder, the URL, and the
+/// A2A path segment.
 ///
 /// # Errors
 /// Returns a human-readable message naming what is wrong.
