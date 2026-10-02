@@ -36,7 +36,10 @@ async fn checkpoint_config_before_write(checkpoints: Option<&CheckpointEngine>, 
 fn resolve_gateway_addr(residuum_root: &std::path::Path) -> String {
     use residuum::config::{GatewayConfig, HubConfig};
     let hub_dir = residuum::config::paths::hub_dir(residuum_root);
-    HubConfig::load_at(&hub_dir).map_or_else(
+    // First launch has no timezone yet. Loading the way startup does still
+    // resolves the gateway address, including RESIDUUM_GATEWAY_PORT, so the
+    // welcome message names the address the hub will actually bind.
+    HubConfig::load_at_for_start(&hub_dir, residuum_root).map_or_else(
         |_| GatewayConfig::default().addr(),
         |hub| hub.gateway.addr(),
     )

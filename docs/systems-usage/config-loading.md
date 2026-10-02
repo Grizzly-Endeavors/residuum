@@ -11,7 +11,7 @@ An unknown key in any of these files — a typo, or a setting that belongs to th
 Most values that are missing or invalid fall into one of two buckets:
 
 **Fatal — the gateway can't function without it:**
-- No timezone configured (`hub/config.toml` or `RESIDUUM_TIMEZONE`). A fresh install with no hub config goes through onboarding instead.
+- No timezone configured (`hub/config.toml` or `RESIDUUM_TIMEZONE`) once an agent exists. A hub with no agents starts anyway — the first-run file leaves `timezone` commented out — and the setup wizard asks for one. Until that file is written, times are read in the machine's timezone (UTC when the machine's timezone can't be read). An invalid timezone name is fatal either way. The stand-in is not written back to `config.toml`.
 - The agent's main model spec can't be parsed, or its *primary* provider can't be built (missing API key, etc.) — see "Provider chains" below for what "primary" means here.
 - `agent.max_tool_iterations = 0` (a turn that never calls a tool isn't a usable limit).
 - A background model tier that can't be resolved.

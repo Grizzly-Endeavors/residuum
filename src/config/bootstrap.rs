@@ -8,7 +8,7 @@ use crate::util::FatalError;
 /// Minimal hub `config.toml` written on first run — user edits this.
 const MINIMAL_HUB_CONFIG: &str = "# Hub configuration. See hub-config.example.toml for all options.\n\
     \n\
-    # timezone = \"America/New_York\"  # REQUIRED: IANA timezone name\n";
+    # timezone = \"America/New_York\"  # IANA timezone name. The setup wizard writes this.\n";
 
 /// Full reference hub config always regenerated on startup.
 const EXAMPLE_HUB_CONFIG: &str = include_str!("../../assets/hub-config.example.toml");

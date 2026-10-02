@@ -29,6 +29,27 @@ impl HubConfig {
     /// Returns `FatalError::Config` if the file exists but can't be read or
     /// parsed, or if the timezone is missing/invalid.
     pub fn load_at(hub_dir: &Path) -> Result<Self, FatalError> {
+        Self::load_in(hub_dir, false)
+    }
+
+    /// Load `hub/config.toml` the way process start does.
+    ///
+    /// With no agent under `residuum_root`, a missing timezone loads anyway
+    /// (see [`super::resolve::hub::from_file_and_env_for_onboarding`]) so the setup
+    /// wizard can run. Once an agent exists, a missing timezone is fatal,
+    /// the same as [`Self::load_at`]. An invalid timezone name is fatal
+    /// either way.
+    ///
+    /// # Errors
+    /// Returns `FatalError::Config` if the file exists but can't be read or
+    /// parsed, if the timezone is invalid, or if it is missing and an agent
+    /// already exists. Also returns the error from discovering agents.
+    pub fn load_at_for_start(hub_dir: &Path, residuum_root: &Path) -> Result<Self, FatalError> {
+        let onboarding = super::paths::discover_agents(residuum_root)?.is_empty();
+        Self::load_in(hub_dir, onboarding)
+    }
+
+    fn load_in(hub_dir: &Path, onboarding: bool) -> Result<Self, FatalError> {
         let config_path = hub_dir.join("config.toml");
         let (file, notices) = if config_path.exists() {
             let contents = std::fs::read_to_string(&config_path).map_err(|e| {
@@ -47,7 +68,12 @@ impl HubConfig {
             (None, Vec::new())
         };
 
-        let mut cfg = resolve::hub::from_file_and_env(file.as_ref(), hub_dir)?;
+        let resolved = if onboarding {
+            resolve::hub::from_file_and_env_for_onboarding(file.as_ref(), hub_dir)
+        } else {
+            resolve::hub::from_file_and_env(file.as_ref(), hub_dir)
+        };
+        let mut cfg = resolved?;
         let mut load_notices = notices;
         load_notices.extend(std::mem::take(&mut cfg.load_notices));
         cfg.load_notices = load_notices;
@@ -150,6 +176,53 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let result = HubConfig::load_at(dir.path());
         assert!(result.is_err(), "no config.toml means no timezone set");
+    }
+
+    #[test]
+    fn load_at_for_start_allows_the_commented_out_timezone_when_no_agent_exists() {
+        let root = tempfile::tempdir().unwrap();
+        let hub_dir = root.path().join("hub");
+        HubConfig::bootstrap_at(&hub_dir).unwrap();
+
+        let before = std::fs::read_to_string(hub_dir.join("config.toml")).unwrap();
+        let cfg = HubConfig::load_at_for_start(&hub_dir, root.path()).unwrap();
+        let after = std::fs::read_to_string(hub_dir.join("config.toml")).unwrap();
+
+        assert!(!cfg.timezone.name().is_empty());
+        assert_eq!(
+            before, after,
+            "the stand-in timezone must not be written back"
+        );
+    }
+
+    #[test]
+    fn load_at_for_start_still_requires_a_timezone_once_an_agent_exists() {
+        let root = tempfile::tempdir().unwrap();
+        let hub_dir = root.path().join("hub");
+        HubConfig::bootstrap_at(&hub_dir).unwrap();
+        let agent_config = root.path().join("scout").join("config");
+        std::fs::create_dir_all(&agent_config).unwrap();
+        std::fs::write(agent_config.join("config.toml"), "").unwrap();
+
+        let message = HubConfig::load_at_for_start(&hub_dir, root.path())
+            .unwrap_err()
+            .to_string();
+
+        assert!(message.contains("timezone is required"), "{message}");
+    }
+
+    #[test]
+    fn load_at_for_start_rejects_an_invalid_timezone_with_no_agents() {
+        let root = tempfile::tempdir().unwrap();
+        let hub_dir = root.path().join("hub");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        std::fs::write(hub_dir.join("config.toml"), "timezone = \"Not/AZone\"\n").unwrap();
+
+        let message = HubConfig::load_at_for_start(&hub_dir, root.path())
+            .unwrap_err()
+            .to_string();
+
+        assert!(message.contains("invalid timezone"), "{message}");
     }
 
     #[test]

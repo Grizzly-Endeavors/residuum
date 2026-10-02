@@ -14,8 +14,15 @@ use residuum::util::FatalError;
 /// Fail with [`invalid_hub_config_error`] if the hub config under `hub_dir`
 /// doesn't load and has no last-known-good copy to fall back on (the hub
 /// itself retries on one and publishes a notice once it's up if it had to).
-pub(super) fn ensure_hub_config_loads_or_has_fallback(hub_dir: &Path) -> Result<(), FatalError> {
-    match residuum::config::HubConfig::load_at(hub_dir) {
+///
+/// A missing timezone is not a failure when `residuum_root` has no agent:
+/// the first-run file leaves it commented out, and the setup wizard is what
+/// writes it. An invalid timezone name still fails here.
+pub(super) fn ensure_hub_config_loads_or_has_fallback(
+    residuum_root: &Path,
+    hub_dir: &Path,
+) -> Result<(), FatalError> {
+    match residuum::config::HubConfig::load_at_for_start(hub_dir, residuum_root) {
         Ok(_) => Ok(()),
         Err(err) => {
             let had_last_known_good = residuum::gateway::has_hub_last_known_good(hub_dir);
@@ -95,7 +102,21 @@ mod tests {
         std::fs::create_dir_all(&hub_dir).unwrap();
         std::fs::write(hub_dir.join("config.toml"), "timezone = \"UTC\"\n").unwrap();
 
-        ensure_hub_config_loads_or_has_fallback(&hub_dir).unwrap();
+        ensure_hub_config_loads_or_has_fallback(root.path(), &hub_dir).unwrap();
+    }
+
+    #[test]
+    fn a_missing_timezone_with_no_agents_is_ready_for_the_setup_wizard() {
+        let root = tempfile::tempdir().unwrap();
+        let hub_dir = root.path().join("hub");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        std::fs::write(
+            hub_dir.join("config.toml"),
+            "# timezone = \"America/New_York\"\n",
+        )
+        .unwrap();
+
+        ensure_hub_config_loads_or_has_fallback(root.path(), &hub_dir).unwrap();
     }
 
     #[test]
@@ -108,7 +129,7 @@ mod tests {
         )
         .unwrap();
 
-        ensure_hub_config_loads_or_has_fallback(&hub_dir).unwrap();
+        ensure_hub_config_loads_or_has_fallback(root.path(), &hub_dir).unwrap();
     }
 
     #[test]
@@ -116,7 +137,7 @@ mod tests {
         let root = hub_with_broken_config();
         let hub_dir = root.path().join("hub");
 
-        let message = ensure_hub_config_loads_or_has_fallback(&hub_dir)
+        let message = ensure_hub_config_loads_or_has_fallback(root.path(), &hub_dir)
             .unwrap_err()
             .to_string();
 

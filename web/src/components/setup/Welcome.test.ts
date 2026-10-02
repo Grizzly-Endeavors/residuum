@@ -4,7 +4,12 @@ import Welcome from "./Welcome.svelte";
 import type { SetupWizardState } from "../../lib/types";
 
 function wizard(overrides: Partial<SetupWizardState> = {}): SetupWizardState {
-  return { userName: "", agentName: "assistant", timezone: "", ...overrides } as SetupWizardState;
+  return {
+    userName: "",
+    agentName: "assistant",
+    timezone: "UTC",
+    ...overrides,
+  } as SetupWizardState;
 }
 
 describe("Welcome step", () => {
@@ -33,6 +38,16 @@ describe("Welcome step", () => {
     const field = screen.getByLabelText("Agent name");
     expect(field).toBeInvalid();
     expect(field).toHaveAccessibleDescription(expect.stringContaining(message));
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+  });
+
+  it("offers time zones in a dropdown and won't continue without one", () => {
+    render(Welcome, { wizardState: wizard({ timezone: "" }), onNext: () => {} });
+    const field = screen.getByLabelText("Time zone");
+    expect(field.tagName).toBe("SELECT");
+    expect(field).toHaveValue("");
+    expect(screen.getByRole("option", { name: "America/New_York" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "UTC" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
   });
 
