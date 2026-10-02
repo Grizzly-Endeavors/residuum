@@ -102,7 +102,7 @@
   <Feed
     {agent}
     items={store.feed}
-    label="Conversation with {agent}"
+    label="Conversation with {hub.shownName(agent)}"
     {history}
     loading={!store.historyLoaded}
     live={store.isProcessing}
@@ -114,7 +114,7 @@
       {#if running}
         <div class="chat-empty">
           <EmptyState variant="block" icon="chat" title="No messages yet" headingLevel={2}>
-            Tell {agent} what you need. It will ask about anything it's missing.
+            Tell {hub.shownName(agent)} what you need. It will ask about anything it's missing.
           </EmptyState>
         </div>
       {/if}

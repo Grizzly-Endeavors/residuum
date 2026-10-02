@@ -15,14 +15,15 @@
   let { agent }: { agent: string } = $props();
 
   const summary = $derived(hub.agent(agent));
+  const label = $derived(hub.shownName(agent));
   const running = $derived(ws.agent === agent ? ws.sessions.live.length : 0);
 
   /** Why Restart or Stop isn't offered, when the registry doesn't list it. */
   const lifecycleReason = $derived.by(() => {
     const state = hub.displayStateOf(agent);
-    if (state === "stopping") return `${agent} is stopping`;
-    if (state === "starting") return `${agent} is still starting`;
-    return `${agent} isn't running`;
+    if (state === "stopping") return `${label} is stopping`;
+    if (state === "starting") return `${label} is still starting`;
+    return `${label} isn't running`;
   });
 
   interface MenuEntry {
@@ -36,13 +37,13 @@
       actionRegistry.all.find((action) => action.id === id);
     return [
       { label: "Show conversation size", icon: "memory", action: byId("chat:context") },
-      { label: `Restart ${agent}`, icon: "reload", action: byId(`lifecycle:${agent}:restart`) },
-      { label: `Stop ${agent}`, icon: "stop", action: byId(`lifecycle:${agent}:stop`) },
+      { label: `Restart ${label}`, icon: "reload", action: byId(`lifecycle:${agent}:restart`) },
+      { label: `Stop ${label}`, icon: "stop", action: byId(`lifecycle:${agent}:stop`) },
     ];
   });
 </script>
 
-<PlaceHeader title={agent} {agent} sub={summary?.role}>
+<PlaceHeader title={label} {agent} sub={summary?.role}>
   <div class="chat-header-actions">
     {#if running > 0}
       <button
@@ -58,13 +59,13 @@
     <span class="chat-header-gear">
       <IconButton
         icon="settings"
-        label="{agent} settings"
+        label="{label} settings"
         onclick={() => void router.openSettings({ scope: agent, section: null })}
       />
     </span>
-    <Menu label="More for {agent}" align="end">
+    <Menu label="More for {label}" align="end">
       {#snippet trigger(props)}
-        <IconButton icon="more" label="More for {agent}" {...props} />
+        <IconButton icon="more" label="More for {label}" {...props} />
       {/snippet}
       {#each entries as entry (entry.label)}
         {@const action = entry.action}

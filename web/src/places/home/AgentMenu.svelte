@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { agentLabel } from "../../lib/agent-name";
   import type { AgentSummary } from "../../lib/hub-types";
   import { router } from "../../lib/router.svelte";
   import {
@@ -33,13 +34,13 @@
   }
 </script>
 
-<Menu label="Manage {agent.name}" align="end">
+<Menu label="Manage {agentLabel(agent)}" align="end">
   {#snippet trigger(props)}
-    <IconButton icon="more" label="Manage {agent.name}" {...props} />
+    <IconButton icon="more" label="Manage {agentLabel(agent)}" {...props} />
   {/snippet}
   {#snippet heading()}
     <StatusDot {state} {working} />
-    {agent.name}, {STATE_WORDS[state].toLowerCase()}
+    {agentLabel(agent)}, {STATE_WORDS[state].toLowerCase()}
   {/snippet}
   <MenuItem
     icon="chat"

@@ -90,6 +90,9 @@ pub(crate) struct AgentConfigFile {
     pub(super) learning: Option<LearningConfigFile>,
     /// Whether this agent starts when the hub starts (default `true`).
     pub(super) autostart: Option<bool>,
+    /// The name people see and address. The directory name stays the slug.
+    /// Absent means the directory name is shown.
+    pub(super) display_name: Option<String>,
     /// Discord bot configuration.
     pub(super) discord: Option<DiscordConfigFile>,
     /// Telegram bot configuration.

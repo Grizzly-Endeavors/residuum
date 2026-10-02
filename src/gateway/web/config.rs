@@ -110,8 +110,7 @@ pub(super) struct TimezoneResponse {
 pub(super) struct CompleteSetupRequest {
     /// Raw `hub/config.toml` content.
     hub_config: String,
-    /// This installation's first agent name, validated with
-    /// [`crate::config::validate_agent_name`].
+    /// This installation's first agent name.
     agent_name: String,
     /// The user's name, written to the team's `USER.md`.
     #[serde(default)]
@@ -636,6 +635,7 @@ fn internal_error(action: &str, e: impl std::fmt::Display) -> (StatusCode, Json<
 async fn write_first_agent_config_files(
     layout: &crate::workspace::layout::WorkspaceLayout,
     body: &CompleteSetupRequest,
+    config: &str,
 ) -> Result<(), (StatusCode, Json<ValidateResponse>)> {
     let agent_config_dir = layout.config_dir();
     crate::util::fs::atomic_write(&agent_config_dir.join("providers.toml"), &body.providers)
@@ -654,7 +654,7 @@ async fn write_first_agent_config_files(
             .map_err(|e| internal_error("write mcp.json", e))?;
     }
 
-    crate::util::fs::atomic_write(&agent_config_dir.join("config.toml"), &body.config)
+    crate::util::fs::atomic_write(&agent_config_dir.join("config.toml"), config)
         .await
         .map_err(|e| internal_error("write config.toml", e))?;
     Ok(())
@@ -694,8 +694,8 @@ fn refuse_when_agents_exist(
 /// `POST /api/hub/config/complete-setup` — write config + providers, signal setup done.
 ///
 /// Writes `hub/config.toml`, bootstraps the hub directory (`bin/`, `logs/`),
-/// creates the first agent's directory (named `body.agent_name`, validated
-/// with [`crate::config::validate_agent_name`]) under the residuum root,
+/// creates the first agent's directory (a folder derived from
+/// `body.agent_name`) under the residuum root,
 /// bootstraps its full workspace (`SOUL.md`, bundled skills), the shared team
 /// directory (`AGENTS.md`, the wiki, `USER.md` personalized with
 /// `body.user_name`) and its role page, and writes its
@@ -718,15 +718,25 @@ pub(super) async fn api_complete_setup(
         )
     };
 
-    crate::config::validate_agent_name(&body.agent_name).map_err(err)?;
+    let display_name = crate::config::canonicalize_display_name(&body.agent_name).map_err(err)?;
+    let slug_base = crate::config::slug_base(&display_name);
 
     let residuum_root = state
         .hub_dir
         .parent()
         .map_or_else(|| state.hub_dir.clone(), std::path::Path::to_path_buf);
-    let agent_dir = residuum_root.join(&body.agent_name);
-
-    refuse_when_agents_exist(&residuum_root, &body.agent_name)?;
+    // Setup only creates the first agent, so an existing directory is a
+    // conflict on the name the folder would have, before a suffix is tried.
+    refuse_when_agents_exist(&residuum_root, &slug_base)?;
+    let slug = crate::config::allocate_slug(&slug_base, |candidate| {
+        residuum_root
+            .join(candidate)
+            .join("config")
+            .join("config.toml")
+            .is_file()
+    })
+    .map_err(err)?;
+    let agent_dir = residuum_root.join(&slug);
 
     // Parse and resolve the hub config on its own first — the agent config
     // resolves against it (timezone, gateway, ...).
@@ -735,7 +745,8 @@ pub(super) async fn api_complete_setup(
     let hub = crate::config::resolve::resolve_hub_config(Some(&hub_file), &state.hub_dir)
         .map_err(|e| err(format!("{e}")))?;
 
-    let config_file = toml::from_str::<crate::config::deserialize::AgentConfigFile>(&body.config)
+    let config = crate::config::set_display_name_toml(&body.config, &display_name).map_err(err)?;
+    let config_file = toml::from_str::<crate::config::deserialize::AgentConfigFile>(&config)
         .map_err(|e| err(format!("config.toml parse error: {e}")))?;
     let providers_file =
         toml::from_str::<crate::config::deserialize::ProvidersFile>(&body.providers)
@@ -746,7 +757,7 @@ pub(super) async fn api_complete_setup(
         Some(&config_file),
         Some(&providers_file),
         &agent_dir,
-        &body.agent_name,
+        &slug,
         &hub,
     )
     .map_err(|e| err(format!("{e}")))?;
@@ -773,7 +784,12 @@ pub(super) async fn api_complete_setup(
     // skills), personalized with the user's name.
     let layout = crate::workspace::layout::WorkspaceLayout::new(&agent_dir);
     state
-        .bootstrap_workspace(&layout, body.user_name.as_deref(), hub.timezone.name())
+        .bootstrap_workspace(
+            &layout,
+            body.user_name.as_deref(),
+            hub.timezone.name(),
+            Some(&display_name),
+        )
         .await
         .map_err(|e| {
             (
@@ -786,7 +802,7 @@ pub(super) async fn api_complete_setup(
             )
         })?;
 
-    write_first_agent_config_files(&layout, &body).await?;
+    write_first_agent_config_files(&layout, &body, &config).await?;
 
     // The hub picks up the new hub config, and whoever is waiting on setup
     // learns the first agent is on disk.
@@ -1106,7 +1122,7 @@ mod tests {
     #[tokio::test]
     async fn complete_setup_refuses_an_invalid_agent_name_and_writes_nothing() {
         let root = tempfile::tempdir().unwrap();
-        for bad in ["hub", "Team", "-x", "has space", ""] {
+        for bad in ["hub", "Team", "-x", "nope!", ""] {
             let (state, done_rx) = setup_state(root.path());
 
             let Err((status, Json(response))) =

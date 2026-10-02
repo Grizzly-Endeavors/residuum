@@ -28,6 +28,7 @@ let patchFails = false;
 function summary(state: AgentState, visibility: "public" | "private"): AgentSummary {
   return {
     name: agent,
+    display_name: agent,
     state,
     last_error: null,
     autostart: true,

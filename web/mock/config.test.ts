@@ -427,7 +427,7 @@ describe("config routes", () => {
         error: "agent name must not be empty",
         diagnostics: [],
       });
-      expect((await complete({ agent_name: "Bad Name" })).status).toBe(400);
+      expect((await complete({ agent_name: "Bad_Name" })).status).toBe(400);
     });
 
     it("only creates the first agent", async () => {

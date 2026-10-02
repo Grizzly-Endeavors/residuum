@@ -1452,6 +1452,7 @@ async fn creating_an_agent_writes_it_starts_it_and_briefs_it() {
         .unwrap();
 
     assert_eq!(summary.name, "nova");
+    assert_eq!(summary.display_name, "nova");
     assert_eq!(summary.state, AgentState::Running);
     assert_eq!(summary.a2a_visibility, A2aVisibility::Private);
     assert_eq!(summary.role.as_deref(), Some("keeps the wiki tidy"));
@@ -1544,7 +1545,7 @@ async fn creating_an_agent_refuses_bad_requests_before_writing_anything() {
 
     let bad_name = hub
         .host
-        .create(create_request("Not A Name", None), Actor::User)
+        .create(create_request("Not A Name!", None), Actor::User)
         .await;
     let taken = hub
         .host
@@ -1577,6 +1578,42 @@ async fn creating_an_agent_refuses_bad_requests_before_writing_anything() {
     assert!(matches!(unknown_source, Err(LifecycleError::NotFound(_))));
     assert_eq!(hub.host.list().len(), 1);
     assert!(!hub.root.path().join("nova").exists());
+}
+
+#[tokio::test]
+async fn a_typed_name_keeps_its_capitals_and_spaces() {
+    let hub = Fixture::new(&["scout"], "").await;
+
+    let created = hub
+        .host
+        .create(create_request("Research Desk", None), Actor::User)
+        .await
+        .unwrap();
+
+    assert_eq!(created.name, "research-desk");
+    assert_eq!(created.display_name, "Research Desk");
+    assert_eq!(
+        hub.host.summary("research desk").unwrap().name,
+        "research-desk"
+    );
+    assert_eq!(
+        hub.host.summary("Research Desk").unwrap().display_name,
+        "Research Desk"
+    );
+    assert!(matches!(
+        hub.host
+            .create(create_request("research desk", None), Actor::User)
+            .await,
+        Err(LifecycleError::AlreadyExists(_))
+    ));
+
+    let second = hub
+        .host
+        .create(create_request("Research-Desk", None), Actor::User)
+        .await
+        .unwrap();
+    assert_eq!(second.name, "research-desk-2");
+    assert_eq!(second.display_name, "Research-Desk");
 }
 
 #[tokio::test]

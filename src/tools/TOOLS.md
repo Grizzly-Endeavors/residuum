@@ -876,20 +876,20 @@ Routed through `crate::a2a::client`'s `A2aClientHub` (resolves the agent's card 
 >
 > It inherits your model settings and A2A visibility. Write a `description`: it is delivered as the teammate's first message and becomes its SOUL.md notes and team role page. State its purpose, how it should work, and what to hand it. Message the teammate afterwards at agent:<name>.
 >
-> Names are 1-24 characters of lowercase letters, digits, and hyphens, with no leading or trailing hyphen.
+> Names are up to 32 characters: letters from any language, numbers, spaces, hyphens, and apostrophes. They can't start or end with a hyphen or an apostrophe, and two names that differ only by case are the same agent.
 
 ### Input
 
 | Parameter     | Type   | Required | Description |
 |---------------|--------|----------|-------------|
-| `name`        | string | yes      | The new agent's name, for example `research-desk`. |
+| `name`        | string | yes      | The new agent's name, for example `Research Desk`. |
 | `description` | string | no       | What the agent is for and how it should work. Becomes its own SOUL.md notes and role page. |
 
 ### Output
 
 - Created and started: `"Created agent '{name}' (running). Reach it with message_agent at agent:{name}."`
 - Created but it failed to start: `"Created agent '{name}', but it failed to start: {reason}"` followed by a line saying it exists on disk, received no first message, and can be fixed and started from Home in the user's web UI (`is_error = false`: the agent exists, so a retry would hit "already exists").
-- Invalid name, name taken, or any other refusal (`is_error = true`): `"can't create the agent: ..."` with the reason. An invalid name adds the naming rules; a taken name suggests messaging the existing agent.
+- Invalid name, name taken, or any other refusal (`is_error = true`): `"can't create the agent: ..."` with the reason. A taken name suggests messaging the existing agent.
 - The hub is shutting down (`is_error = true`): says agents can't be created right now.
 
 ### Errors

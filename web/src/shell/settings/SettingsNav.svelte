@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { agentLabel } from "../../lib/agent-name";
   import { displayState } from "../../lib/agent-display-state";
   import { hub } from "../../lib/hub.svelte";
   import { Icon } from "../../lib/icons";
@@ -40,7 +41,7 @@
     ...hub.agents.map((entry) => {
       const notes = entry.state === "failed" ? ["couldn't start"] : [];
       if (entry.state === "stopped") notes.push("stopped");
-      return { value: entry.name, label: optionLabel(entry.name, entry.name, notes) };
+      return { value: entry.name, label: optionLabel(agentLabel(entry), entry.name, notes) };
     }),
   ]);
 
@@ -95,7 +96,11 @@
       onchange={(event) => onscope(event.currentTarget.value)}
     />
   </div>
-  <p class="scope-hint">{kind === "all" ? "Applies to every agent" : `Only affects ${scopeId}`}</p>
+  <p class="scope-hint">
+    {kind === "all"
+      ? "Applies to every agent"
+      : `Only affects ${agent ? agentLabel(agent) : scopeId}`}
+  </p>
   {#each groups.main as entry (entry.id)}
     {@render link(entry)}
   {/each}

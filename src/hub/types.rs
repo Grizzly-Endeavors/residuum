@@ -86,8 +86,13 @@ pub struct AgentLastError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct AgentSummary {
-    /// The agent's name: its directory name and identity everywhere.
+    /// The agent's folder name: its URL, its A2A path, and the key its
+    /// checkpoint history is stored under.
     pub name: String,
+    /// The name people see and address (`agent:<display name>`). The same as
+    /// `name` when no separate name was set.
+    #[serde(default)]
+    pub display_name: String,
     /// Current lifecycle state.
     pub state: AgentState,
     /// Set only while `state` is [`AgentState::Failed`].
@@ -98,6 +103,20 @@ pub struct AgentSummary {
     pub role: Option<String>,
     /// The agent's A2A visibility.
     pub a2a_visibility: A2aVisibility,
+}
+
+impl AgentSummary {
+    /// The name people see. A summary from an older client, or one built
+    /// before the config was read, has an empty `display_name` and shows
+    /// the folder name.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        if self.display_name.is_empty() {
+            &self.name
+        } else {
+            &self.display_name
+        }
+    }
 }
 
 /// Who performed a lifecycle action.
@@ -201,8 +220,11 @@ pub struct RestoreAgentRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[ts(export)]
 pub struct DeletedAgent {
-    /// The agent's name.
+    /// The agent's folder name, which a restore uses.
     pub name: String,
+    /// The name people saw. The same as `name` when no separate name was set.
+    #[serde(default)]
+    pub display_name: String,
     /// When the agent was deleted.
     #[ts(type = "string")]
     pub deleted_at: DateTime<Utc>,
@@ -450,6 +472,7 @@ mod tests {
     fn scout() -> AgentSummary {
         AgentSummary {
             name: "scout".to_string(),
+            display_name: "scout".to_string(),
             state: AgentState::Running,
             last_error: None,
             autostart: true,
@@ -464,6 +487,7 @@ mod tests {
             serde_json::to_value(scout()).unwrap(),
             json!({
                 "name": "scout",
+                "display_name": "scout",
                 "state": "running",
                 "last_error": null,
                 "autostart": true,

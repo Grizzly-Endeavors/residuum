@@ -29,8 +29,10 @@ const BOOTSTRAPPED_MARKER: &str = ".bootstrapped";
 /// What a new agent is created from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentSpec {
-    /// The agent's name (validated with the agent-name rules).
+    /// The agent's folder name.
     pub name: String,
+    /// The name people see and address.
+    pub display_name: String,
     /// Full `providers.toml` content. Validated before anything is written.
     pub providers_toml: String,
     /// The agent's A2A visibility, written to its `config.toml`.
@@ -78,6 +80,8 @@ pub async fn provision_agent(
     spec: &AgentSpec,
 ) -> Result<PathBuf, LifecycleError> {
     validate_agent_name(&spec.name).map_err(LifecycleError::InvalidName)?;
+    crate::config::canonicalize_display_name(&spec.display_name)
+        .map_err(LifecycleError::InvalidName)?;
     let final_dir = agent_dir(root, &spec.name);
     if path_exists(&final_dir).await? {
         return Err(LifecycleError::AlreadyExists(spec.name.clone()));
@@ -90,6 +94,7 @@ pub async fn provision_agent(
     install_agent_dir(
         &staging,
         &final_dir,
+        &spec.display_name,
         &layout.required_dirs(),
         &layout.config_dir(),
         &files,
@@ -101,6 +106,7 @@ pub async fn provision_agent(
         coordinator,
         actor,
         &spec.name,
+        &spec.display_name,
         spec.description.as_deref(),
     )
     .await
@@ -113,7 +119,7 @@ pub async fn provision_agent(
         }
         return Err(LifecycleError::Failed(format!(
             "Couldn't create the agent '{}': its role page in the team wiki couldn't be written ({e}). Nothing was created.",
-            spec.name
+            spec.display_name
         )));
     }
 
@@ -139,19 +145,22 @@ fn plan_files(layout: &WorkspaceLayout, spec: &AgentSpec) -> Vec<PlannedFile> {
     });
     files.push(PlannedFile {
         path: layout.config_dir().join("config.toml"),
-        content: agent_config_toml(spec.a2a_visibility),
+        content: agent_config_toml(&spec.display_name, spec.a2a_visibility),
     });
     files
 }
 
-/// The created agent's `config.toml`: `autostart` and its A2A visibility;
-/// every other value is the default.
-fn agent_config_toml(visibility: A2aVisibility) -> String {
+/// The created agent's `config.toml`: the name people see, `autostart`, and
+/// its A2A visibility. Every other value is the default.
+fn agent_config_toml(display_name: &str, visibility: A2aVisibility) -> String {
     let visibility = match visibility {
         A2aVisibility::Public => "public",
         A2aVisibility::Private => "private",
     };
-    format!("autostart = true\n\n[a2a]\nvisibility = \"{visibility}\"\n")
+    format!(
+        "display_name = {display}\n\nautostart = true\n\n[a2a]\nvisibility = \"{visibility}\"\n",
+        display = toml_edit::Value::from(display_name),
+    )
 }
 
 /// Check `spec.providers_toml` against the hub's config the way the agent's
@@ -192,6 +201,7 @@ async fn validate_providers(root: &Path, spec: &AgentSpec) -> Result<(), Lifecyc
 async fn install_agent_dir(
     staging: &Path,
     final_dir: &Path,
+    label: &str,
     dirs: &[PathBuf],
     config_dir: &Path,
     files: &[PlannedFile],
@@ -202,7 +212,7 @@ async fn install_agent_dir(
     let fail = |what: &str, detail: &dyn std::fmt::Display| {
         tracing::error!(error = %detail, agent = %name, "failed to {what}");
         LifecycleError::Failed(format!(
-            "Couldn't create the agent '{name}': failed to {what} ({detail}). Nothing was created."
+            "Couldn't create the agent '{label}': failed to {what} ({detail}). Nothing was created."
         ))
     };
 
@@ -490,7 +500,7 @@ pub async fn restore_agent(
 
     let role_page_result = match role_page {
         Some(text) => restore_agent_role_page(team, coordinator, actor, name, text).await,
-        None => ensure_agent_role_page_as(team, coordinator, actor, name, None).await,
+        None => ensure_agent_role_page_as(team, coordinator, actor, name, name, None).await,
     };
     role_page_result.map_err(|e| {
         tracing::error!(error = %e, agent = %name, "failed to recreate the restored agent's role page");
@@ -581,6 +591,7 @@ mod tests {
     fn spec(name: &str, description: Option<&str>) -> AgentSpec {
         AgentSpec {
             name: name.to_string(),
+            display_name: name.to_string(),
             providers_toml: PROVIDERS.to_string(),
             a2a_visibility: A2aVisibility::Private,
             description: description.map(str::to_string),
@@ -815,6 +826,7 @@ mod tests {
         let err = install_agent_dir(
             &staging,
             &final_dir,
+            "scout",
             &layout.required_dirs(),
             &layout.config_dir(),
             &files,

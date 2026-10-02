@@ -16,7 +16,7 @@
 // Paths that older versions used redirect to these. Nothing here touches the
 // browser: the router applies what this module reads and formats.
 
-import { agentNameProblem } from "./agent-name";
+import { isAgentSlug } from "./agent-name";
 import {
   ALL_SCOPE,
   defaultSection,
@@ -92,9 +92,9 @@ export function isArtifactName(value: string): boolean {
   return value.length <= 64 && ARTIFACT_NAME.test(value);
 }
 
-/** Whether `name` is a well-formed agent name (whether or not such an agent exists). */
+/** Whether `name` is a well-formed agent folder name (whether or not such an agent exists). */
 export function isAgentName(name: string): boolean {
-  return agentNameProblem(name) === null;
+  return isAgentSlug(name);
 }
 
 /** Whether a panel can show on a place: a session of the viewed agent, a file, or the conversation size. */

@@ -88,7 +88,7 @@ async fn agent_create_explains_bad_and_taken_names() {
     let (create, _) = lifecycle_tools(&hub, "scout");
 
     let invalid = create
-        .execute(json!({ "name": "Not A Name" }))
+        .execute(json!({ "name": "Not A Name!" }))
         .await
         .unwrap();
     let taken = create.execute(json!({ "name": "scout" })).await.unwrap();
@@ -98,7 +98,7 @@ async fn agent_create_explains_bad_and_taken_names() {
     assert!(
         invalid
             .output
-            .contains("lowercase letters, digits, and hyphens"),
+            .contains("letters, numbers, spaces, hyphens, and apostrophes"),
         "{}",
         invalid.output
     );

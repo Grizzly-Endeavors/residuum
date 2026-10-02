@@ -191,6 +191,21 @@ pub async fn ensure_workspace(
     user_name: Option<&str>,
     timezone: Option<&str>,
 ) -> Result<(), FatalError> {
+    ensure_workspace_labeled(layout, coordinator, user_name, timezone, None).await
+}
+
+/// [`ensure_workspace`], with `label` as the name on the role page when it
+/// differs from the directory name. `None` uses the directory name.
+///
+/// # Errors
+/// Returns `FatalError::Workspace` if a directory or file cannot be created.
+pub async fn ensure_workspace_labeled(
+    layout: &WorkspaceLayout,
+    coordinator: &TeamWriteCoordinator,
+    user_name: Option<&str>,
+    timezone: Option<&str>,
+    label: Option<&str>,
+) -> Result<(), FatalError> {
     // Create all required directories
     for dir in layout.required_dirs() {
         tokio::fs::create_dir_all(&dir).await.map_err(|e| {
@@ -225,7 +240,16 @@ pub async fn ensure_workspace(
     super::team::ensure_team(layout.team(), user_name, timezone).await?;
     match layout.agent_name() {
         Some(name) => {
-            super::team::ensure_agent_role_page(layout.team(), coordinator, name, None).await?;
+            let writer = super::team_files::TeamWriter::Agent(name.to_string());
+            super::team::ensure_agent_role_page_as(
+                layout.team(),
+                coordinator,
+                &writer,
+                name,
+                label.unwrap_or(name),
+                None,
+            )
+            .await?;
         }
         None => {
             return Err(FatalError::Workspace(format!(

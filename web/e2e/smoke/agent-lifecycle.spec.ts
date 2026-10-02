@@ -148,8 +148,10 @@ test("a name the rules refuse is flagged as it is typed, and nothing is created"
   const dialog = createDialog(page);
   const name = dialog.getByRole("textbox", { name: "Name" });
 
-  await name.fill("Research");
-  await expect(dialog.getByText("Use only lowercase letters, digits, and hyphens.")).toBeVisible();
+  await name.fill("Research!");
+  await expect(
+    dialog.getByText("Use letters, numbers, spaces, hyphens, and apostrophes."),
+  ).toBeVisible();
   await expect(name).toHaveAttribute("aria-invalid", "true");
 
   await name.fill("atlas");

@@ -21,6 +21,7 @@ import type {
   TimezoneResponse,
   ValidateResponse,
 } from "../src/lib/types";
+import { allocateSlug, canonicalAgentName, slugBase } from "../src/lib/agent-name";
 import { agentNameProblem } from "./agent-name";
 import { WEB_ROOT } from "./assets";
 import { checkpointBeforeAction, repoStats } from "./checkpoints";
@@ -328,12 +329,15 @@ async function completeSetup({ req, res, hub, state }: RouteContext): Promise<vo
     return;
   }
   // Setup only creates the first agent (`refuse_when_agents_exist`).
+  // Compare the folder the name would get, before a suffix is tried.
+  const canonical = canonicalAgentName(name) ?? name;
+  const base = slugBase(canonical);
   if (hub.agents.size > 0) {
     const existing = [...hub.agents.keys()].sort(byName);
     json(res, 409, {
       valid: false,
-      error: existing.includes(name)
-        ? `An agent named '${name}' already exists. Choose a different name, or change the existing agent from its settings.`
+      error: existing.includes(base)
+        ? `An agent named '${base}' already exists. Choose a different name, or change the existing agent from its settings.`
         : `This residuum already has an agent ('${existing.join("', '")}'). Setup only creates the first agent.`,
       diagnostics: [],
     } satisfies ValidateResponse);
@@ -341,7 +345,13 @@ async function completeSetup({ req, res, hub, state }: RouteContext): Promise<vo
   }
   state.hubConfigToml = stringField(body, "hub_config") ?? state.hubConfigToml;
   hub.reloadHubConfig();
-  const agent = hub.createAgent(name, { role: null });
+  const agent = hub.createAgent(
+    allocateSlug(base, () => false),
+    {
+      role: null,
+      displayName: canonical,
+    },
+  );
   agent.state.configToml = stringField(body, "config") ?? agent.state.configToml;
   agent.state.providersToml = stringField(body, "providers") ?? agent.state.providersToml;
   const mcpJson = stringField(body, "mcp_json");

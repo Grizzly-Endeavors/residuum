@@ -20,7 +20,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 use crate::background::messaging::{AgentMessenger, DeliveryOutcome, SendError};
 use crate::background::registry::{MAIN_ADDRESS, TEAMMATE_SENDER_CATEGORY, TEAMMATE_SENDER_PREFIX};
 use crate::bus::SessionAddress;
-use crate::config::paths::validate_agent_name;
+use crate::config::canonicalize_display_name;
 
 use super::directory::{AgentDirectory, DirectoryHandle};
 use super::types::{AgentState, AgentSummary, LifecycleError};
@@ -86,7 +86,7 @@ pub fn parse_team_address(to: &str) -> Option<Result<TeamTarget, TeamAddressErro
     if name.is_empty() {
         return Some(Err(TeamAddressError::MissingName));
     }
-    if let Err(problem) = validate_agent_name(name) {
+    if let Err(problem) = canonicalize_display_name(name) {
         return Some(Err(TeamAddressError::InvalidName(problem)));
     }
     let session = match session {
@@ -236,7 +236,10 @@ impl TeamRouter {
         if target.agent == me {
             return Err(TeamSendError::ToSelf(me.to_string()));
         }
-        let messenger = self.reachable_messenger(me, &target.agent)?;
+        let (slug, messenger) = self.reachable_messenger(me, &target.agent)?;
+        if slug == me {
+            return Err(TeamSendError::ToSelf(me.to_string()));
+        }
 
         let qualified = qualify_sender(me, sender);
         let outcome = messenger
@@ -277,14 +280,14 @@ impl TeamRouter {
         &self,
         me: &str,
         name: &str,
-    ) -> Result<Arc<AgentMessenger>, TeamSendError> {
+    ) -> Result<(String, Arc<AgentMessenger>), TeamSendError> {
         let unknown = || TeamSendError::UnknownAgent {
             name: name.to_string(),
             teammates: self
                 .members()
                 .into_iter()
-                .map(|member| member.name)
-                .filter(|member| member != me)
+                .filter(|member| member.name != me)
+                .map(|member| member.label().to_string())
                 .collect(),
         };
         let Some(directory) = self.directory() else {
@@ -298,16 +301,18 @@ impl TeamRouter {
                 return Err(unknown());
             }
         };
-        match (summary.state, self.messenger(name)) {
-            (AgentState::Running, Some(messenger)) => Ok(messenger),
+        let slug = summary.name.clone();
+        let shown = summary.label().to_string();
+        match (summary.state, self.messenger(&slug)) {
+            (AgentState::Running, Some(messenger)) => Ok((slug, messenger)),
             // A running agent whose messenger is gone is between its stop
             // request and its state change.
             (AgentState::Running, None) => Err(TeamSendError::NotRunning {
-                name: name.to_string(),
+                name: shown,
                 state: "stopping".to_string(),
             }),
             (state, _) => Err(TeamSendError::NotRunning {
-                name: name.to_string(),
+                name: shown,
                 state: state.to_string(),
             }),
         }
@@ -396,13 +401,22 @@ impl TeamLink {
         if teammates.is_empty() {
             return None;
         }
+        let me = self
+            .router
+            .directory()
+            .and_then(|directory| directory.summary(&self.me).ok())
+            .map_or_else(|| self.me.clone(), |summary| summary.label().to_string());
         let mut block = format!(
-            "You are \"{}\". Teammates (message_agent to=\"agent:<name>\"; only running ones receive):",
-            self.me
+            "You are \"{me}\". Teammates (message_agent to=\"agent:<name>\"; only running ones receive):"
         );
         for teammate in &teammates {
             let role = teammate.role.as_deref().unwrap_or("no role line yet");
-            _ = write!(block, "\n- {} ({}): {role}", teammate.name, teammate.state);
+            _ = write!(
+                block,
+                "\n- {} ({}): {role}",
+                teammate.label(),
+                teammate.state
+            );
         }
         Some(block)
     }
@@ -475,7 +489,7 @@ mod tests {
         for (bad, needle) in [
             ("agent:", "names no teammate"),
             ("agent:/x", "names no teammate"),
-            ("agent:Bad_Name", "lowercase"),
+            ("agent:Bad_Name", "letters"),
             ("agent:-x", "hyphen"),
             ("agent:writer/", "empty session address"),
         ] {

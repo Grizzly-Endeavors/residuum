@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
+  import { agentLabel } from "../../lib/agent-name";
   import { hub } from "../../lib/hub.svelte";
   import { router } from "../../lib/router.svelte";
   import { EmptyState, Skeleton } from "../../lib/ui";
@@ -53,7 +54,7 @@
     </p>
     {#if agent !== undefined && agent.state !== "running"}
       <p class="files-intro">
-        {agent.name} isn't running. Changes saved here are read when it next starts.
+        {agentLabel(agent)} isn't running. Changes saved here are read when it next starts.
       </p>
     {/if}
 

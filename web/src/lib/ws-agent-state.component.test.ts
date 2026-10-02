@@ -12,7 +12,15 @@ import { ws } from "./ws.svelte";
 // Effects run here, so these live with the component tests.
 
 function agent(name: string, state: AgentState): AgentSummary {
-  return { name, state, last_error: null, autostart: false, role: null, a2a_visibility: "private" };
+  return {
+    name,
+    display_name: name,
+    state,
+    last_error: null,
+    autostart: false,
+    role: null,
+    a2a_visibility: "private",
+  };
 }
 
 function agentSockets(name: string): FakeWebSocket[] {

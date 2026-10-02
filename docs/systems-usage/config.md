@@ -29,17 +29,21 @@ An agent is any directory directly under `~/.residuum/` that holds `config/confi
 
 ### Agent names
 
-1–24 characters from `[a-z0-9-]`, with no leading or trailing hyphen, and not `hub`, `team`, or `agents`. The name is the agent's directory name and its identity everywhere. `config::validate_agent_name` enforces this in both onboarding paths (the setup wizard rejects a bad name before writing anything).
+The name a person types is what the team list, setup, and `agent:` addresses use. It is up to 32 characters: letters from any language, numbers, spaces, hyphens, and apostrophes. It can't start or end with a hyphen or an apostrophe, and it can't be `hub`, `team`, or `agents` (compared ignoring case). Two names that differ only by case are the same agent. `Research Desk` and `research-desk` are different names.
+
+The directory, the URL, and the A2A path are a short folder name derived from that name: lowercase ASCII letters, digits, and hyphens, at most 24 characters, with no leading or trailing hyphen. The person never types the folder name. A name with no ASCII letters gets a stable folder name starting with `n`. When two different names would use the same folder, the second is `…-2`. `config::validate_agent_name` is the folder-name check. The typed name is stored as `display_name` in the agent's `config.toml`; when that key is absent, the folder name is shown.
+
+Changing `display_name` in `config.toml` changes the name people see. The folder, the checkpoint history, and the remote address stay where they are.
 
 ## What lives in which config file
 
 | File | Holds |
 |------|-------|
 | `hub/config.toml` | `timezone` (shared), `[gateway]` bind and port, `[cloud]`, `[a2a]` `enabled`/`port`/`public_url`, `[tracing]`, `[push]` `contact` (a `mailto:` address or `https:` URL sent to push services; the project's address when unset), `[background]` `max_concurrent` (the session budget) and `hop_soft_limit`/`hop_hard_limit` |
-| `<agent>/config/config.toml` | Everything else: `autostart` (default `true`), `timeout_secs`, `max_tokens`, `temperature`, `thinking`, `[memory]`, `[pulse]`, `[subconscious]`, `[learning]`, `[retry]`, `[agent]`, `[idle]`, `[discord]`, `[telegram]`, `[teams]`, `[webhooks]`, `[skills]`, `[tools]`, `[web_search]`, `[a2a]` `visibility`, and `[background]` idle timeouts, `episode_skip_token_floor`, and `subagent_depth_cap` |
+| `<agent>/config/config.toml` | Everything else: `display_name` (the name people see; absent means the folder name), `autostart` (default `true`), `timeout_secs`, `max_tokens`, `temperature`, `thinking`, `[memory]`, `[pulse]`, `[subconscious]`, `[learning]`, `[retry]`, `[agent]`, `[idle]`, `[discord]`, `[telegram]`, `[teams]`, `[webhooks]`, `[skills]`, `[tools]`, `[web_search]`, `[a2a]` `visibility`, and `[background]` idle timeouts, `episode_skip_token_floor`, and `subagent_depth_cap` |
 | `<agent>/config/providers.toml` | `[providers.*]`, `[models]`, `[background.models]` |
 
-Each file is parsed strictly against its own schema: a hub-only key in an agent's `config.toml` (or the reverse) is an unknown key, dropped with a notice (see [Config Loading](config-loading.md)). There is no `name` or `workspace_dir` setting: the user's name lives in `team/USER.md`, and the agent's directory is its workspace.
+Each file is parsed strictly against its own schema: a hub-only key in an agent's `config.toml` (or the reverse) is an unknown key, dropped with a notice (see [Config Loading](config-loading.md)). There is no `workspace_dir` setting: the agent's directory is its workspace. The user's name lives in `team/USER.md`. The agent's shown name is `display_name`.
 
 ## Environment overrides
 

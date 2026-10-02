@@ -1,6 +1,6 @@
 <script lang="ts">
   import { MediaQuery } from "svelte/reactivity";
-  import { newAgentNameProblem } from "../lib/agent-name";
+  import { nameIsTaken, newAgentNameProblem } from "../lib/agent-name";
   import { hub } from "../lib/hub.svelte";
   import {
     Button,
@@ -54,17 +54,20 @@
   const nameProblem = $derived(
     newAgentNameProblem(
       name,
-      hub.agents.map((agent) => agent.name),
+      hub.agents.flatMap((agent) => [agent.display_name || agent.name, agent.name]),
     ),
   );
   const shownProblem = $derived(name !== "" || attempted ? nameProblem : null);
   const nameHint = $derived(
-    hub.deleted.some((gone) => gone.name === name)
-      ? `An agent called ${name} was deleted recently. To bring it back, restore it from Recently deleted on Home instead.`
-      : "Lowercase letters, digits and hyphens, up to 24. It names the agent's folder, so it can't change later.",
+    hub.deleted.some((gone) => nameIsTaken(name, [gone.display_name || gone.name, gone.name]))
+      ? `An agent called ${name.trim()} was deleted recently. To bring it back, restore it from Recently deleted on Home instead.`
+      : "Up to 32 characters. Capitals, spaces, and letters from any language are fine.",
   );
   const modelChoices = $derived(
-    hub.agents.map((agent) => ({ value: agent.name, label: agent.name })),
+    hub.agents.map((agent) => ({
+      value: agent.name,
+      label: agent.display_name || agent.name,
+    })),
   );
   const modelsProblem = $derived(
     attempted && modelsFrom === ""

@@ -36,8 +36,8 @@ const SETTLE: Duration = Duration::from_millis(250);
 /// The relay-facing description of `agents`: one entry per agent, in the
 /// order given, with `a2a_enabled` set for running agents when the hub's A2A
 /// listener is enabled, excluding names in `stopping` (see
-/// [`AgentDirectory::stopping`]). The agent's name doubles as its display
-/// name.
+/// [`AgentDirectory::stopping`]). `name` is the folder; `display_name` is
+/// the name people see.
 #[must_use]
 pub(crate) fn agent_infos(
     agents: &[AgentSummary],
@@ -48,7 +48,7 @@ pub(crate) fn agent_infos(
         .iter()
         .map(|agent| AgentInfo {
             name: agent.name.clone(),
-            display_name: agent.name.clone(),
+            display_name: agent.label().to_string(),
             a2a_enabled: a2a_listener_enabled
                 && agent.state == AgentState::Running
                 && !stopping.contains(&agent.name),
@@ -196,6 +196,7 @@ mod tests {
     fn summary(name: &str, state: AgentState, visibility: A2aVisibility) -> AgentSummary {
         AgentSummary {
             name: name.to_string(),
+            display_name: name.to_string(),
             state,
             last_error: None,
             autostart: true,

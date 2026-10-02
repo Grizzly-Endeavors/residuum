@@ -117,6 +117,8 @@ export interface MockState {
 
 export interface MockAgent {
   name: string;
+  /** The name people see. The same as `name` when no separate name was set. */
+  displayName: string;
   runState: AgentState;
   lastError: AgentLastError | null;
   autostart: boolean;
@@ -160,6 +162,7 @@ export interface MockHub {
     name: string,
     options?: {
       role?: string | null;
+      displayName?: string;
       runState?: AgentState;
       lastError?: Omit<AgentLastError, "at">;
     },

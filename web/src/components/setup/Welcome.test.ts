@@ -23,10 +23,10 @@ describe("Welcome step", () => {
 
   it.each([
     ["", "Give your agent a name."],
-    ["Scout", "Use only lowercase letters, digits, and hyphens."],
-    ["-scout", "The name can't start or end with a hyphen."],
-    ["scout-", "The name can't start or end with a hyphen."],
-    ["a".repeat(25), "Use 24 characters or fewer."],
+    ["Scout!", "Use letters, numbers, spaces, hyphens, and apostrophes."],
+    ["-scout", "The name can't start or end with a hyphen or an apostrophe."],
+    ["scout-", "The name can't start or end with a hyphen or an apostrophe."],
+    ["a".repeat(33), "Use 32 characters or fewer."],
     ["team", '"team" is reserved. Pick a different name.'],
   ])("blocks the agent name %j and says why", (agentName, message) => {
     render(Welcome, { wizardState: wizard({ agentName }), onNext: () => {} });

@@ -12,6 +12,7 @@
     saveDraft,
     saveDraftImages,
   } from "../../lib/composer-drafts";
+  import { hub } from "../../lib/hub.svelte";
   import { Icon } from "../../lib/icons";
   import { IMAGE_TYPES, readImages } from "../../lib/image-attachments";
   import type { ImageAttachment } from "../../lib/types";
@@ -261,7 +262,7 @@
       {/each}
     </ul>
   {/if}
-  <VisuallyHidden id={labelId}>Message {agent}</VisuallyHidden>
+  <VisuallyHidden id={labelId}>Message {hub.shownName(agent)}</VisuallyHidden>
   <div
     class="composer-field"
     role="combobox"
@@ -273,7 +274,7 @@
       bind:this={field}
       bind:value={text}
       rows="1"
-      placeholder="Message {agent}"
+      placeholder="Message {hub.shownName(agent)}"
       aria-labelledby={labelId}
       aria-autocomplete="list"
       aria-controls={showMenu ? menuId : undefined}

@@ -7,6 +7,7 @@ import type { AgentState, AgentSummary } from "./hub-types";
 function agent(name: string, state: AgentState): AgentSummary {
   return {
     name,
+    display_name: name,
     state,
     last_error: null,
     autostart: true,

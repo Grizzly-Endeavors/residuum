@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { agentLabel } from "../../lib/agent-name";
   import { displayState } from "../../lib/agent-display-state";
   import { hub } from "../../lib/hub.svelte";
   import { overview } from "../../lib/overview.svelte";
@@ -60,7 +61,7 @@
             <a
               class="agent-link"
               href={formatLocation(locationAt(chat))}
-              onclick={(event) => followLink(event, chat)}>{agent.name}</a
+              onclick={(event) => followLink(event, chat)}>{agentLabel(agent)}</a
             >
             <Badge count={input.activity.unread} label="unread" solid />
           </span>

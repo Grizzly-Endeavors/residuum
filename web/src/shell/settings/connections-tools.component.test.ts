@@ -41,6 +41,7 @@ const patches = (): unknown[] =>
 function runningAgent(name: string): AgentSummary {
   return {
     name,
+    display_name: name,
     state: "running",
     last_error: null,
     autostart: true,

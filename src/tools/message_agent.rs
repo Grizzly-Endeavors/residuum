@@ -504,7 +504,7 @@ mod tests {
     #[tokio::test]
     async fn a_malformed_teammate_address_is_a_tool_error_naming_the_forms() {
         let (tool, _dir) = make_tool("main", "main").await;
-        for bad in ["agent:", "agent:Bad Name", "agent:writer/"] {
+        for bad in ["agent:", "agent:Bad_Name", "agent:writer/"] {
             let result = tool
                 .execute(serde_json::json!({ "to": bad, "message": "hello" }))
                 .await

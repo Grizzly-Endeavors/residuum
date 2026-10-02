@@ -61,6 +61,7 @@ const OVERVIEW_WINDOW: Duration = Duration::from_millis(200);
 fn summary(name: &str, state: AgentState) -> AgentSummary {
     AgentSummary {
         name: name.to_string(),
+        display_name: name.to_string(),
         state,
         last_error: None,
         autostart: true,
@@ -335,11 +336,18 @@ impl AgentDirectory for FakeDirectory {
         by: Actor,
     ) -> Result<AgentSummary, LifecycleError> {
         self.record(format!("create {} by {}", request.name, by.wire()));
-        crate::config::validate_agent_name(&request.name).map_err(LifecycleError::InvalidName)?;
-        if self.find(&request.name).is_ok() {
-            return Err(LifecycleError::AlreadyExists(request.name));
+        let display_name = crate::config::canonicalize_display_name(&request.name)
+            .map_err(LifecycleError::InvalidName)?;
+        let slug = if crate::config::validate_agent_name(&display_name).is_ok() {
+            display_name.clone()
+        } else {
+            crate::config::slug_base(&display_name)
+        };
+        if self.find(&slug).is_ok() {
+            return Err(LifecycleError::AlreadyExists(display_name));
         }
-        let mut created = summary(&request.name, AgentState::Running);
+        let mut created = summary(&slug, AgentState::Running);
+        created.display_name = display_name;
         if let Some(visibility) = request.a2a_visibility {
             created.a2a_visibility = visibility;
         }
@@ -778,11 +786,11 @@ async fn create_answers_400_for_an_invalid_name_and_409_for_an_existing_one() {
         .expect(
             Method::POST,
             "/api/hub/agents",
-            Some(json!({ "name": "Bad Name" })),
+            Some(json!({ "name": "Not Valid!" })),
             StatusCode::BAD_REQUEST,
         )
         .await;
-    assert!(invalid["error"].as_str().unwrap().contains("Bad Name"));
+    assert!(invalid["error"].as_str().unwrap().contains("Not Valid"));
 
     let duplicate = h
         .expect(
@@ -848,6 +856,7 @@ async fn the_deleted_list_names_each_agent_with_its_deletion_time_and_checkpoint
 
     h.directory.deleted.lock().unwrap().push(DeletedAgent {
         name: "nova".to_string(),
+        display_name: "nova".to_string(),
         deleted_at: "2026-09-01T12:00:00Z".parse().unwrap(),
         checkpoint_id: "cp-9".to_string(),
     });
@@ -858,6 +867,7 @@ async fn the_deleted_list_names_each_agent_with_its_deletion_time_and_checkpoint
         listed,
         json!({ "agents": [{
             "name": "nova",
+            "display_name": "nova",
             "deleted_at": "2026-09-01T12:00:00Z",
             "checkpoint_id": "cp-9",
         }] })
@@ -869,6 +879,7 @@ async fn restore_answers_201_with_the_summary_and_attributes_the_user() {
     let h = Harness::new();
     h.directory.deleted.lock().unwrap().push(DeletedAgent {
         name: "nova".to_string(),
+        display_name: "nova".to_string(),
         deleted_at: "2026-09-01T12:00:00Z".parse().unwrap(),
         checkpoint_id: "cp-9".to_string(),
     });

@@ -133,6 +133,7 @@ pub(crate) fn from_file_and_env(
     );
 
     let autostart = file.and_then(|f| f.autostart).unwrap_or(true);
+    note_unusable_display_name(file, &mut notices);
 
     let thinking = file
         .and_then(|f| f.thinking.as_deref())
@@ -310,6 +311,16 @@ const REMOVED_AGENT_ENV_OVERRIDES: &[&str] = &[
 /// from [`REMOVED_AGENT_ENV_OVERRIDES`] that is set in the process
 /// environment. Called once at startup, not on config load, so a config
 /// reload does not repeat it.
+fn note_unusable_display_name(file: Option<&AgentConfigFile>, notices: &mut Vec<String>) {
+    if let Some(raw) = file.and_then(|f| f.display_name.as_deref())
+        && crate::config::canonicalize_display_name(raw).is_err()
+    {
+        notices.push(format!(
+            "The name \"{raw}\" in config.toml can't be shown. Fix display_name, or remove it to show the folder name."
+        ));
+    }
+}
+
 pub(crate) fn removed_agent_env_override_notices() -> Vec<String> {
     let mut notices = Vec::new();
     for var in REMOVED_AGENT_ENV_OVERRIDES {

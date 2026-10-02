@@ -30,6 +30,7 @@
   // running agent answers for its schedule, so a stopped one offers Start.
 
   let { agent }: { agent: string } = $props();
+  const label = $derived(hub.shownName(agent));
 
   const uid = $props.id();
   const summary = $derived(hub.agent(agent));
@@ -72,7 +73,7 @@
   {#if note}<span class="overlap">{note}</span>{/if}
 {/snippet}
 
-<PlaceHeader title={agent} {agent} sub={agentPlaceLabel("schedule")}>
+<PlaceHeader title={label} {agent} sub={agentPlaceLabel("schedule")}>
   {#if live}
     <span class="reload">
       <IconButton
@@ -92,7 +93,7 @@
       <EmptyState
         variant="block"
         icon={agentState === "failed" ? "warning" : "pause"}
-        title={notRunningTitle(agent, agentState)}
+        title={notRunningTitle(label, agentState)}
         headingLevel={2}
       >
         {#if agentState === "failed"}{failureLine(summary?.last_error?.kind)}{/if}
@@ -102,7 +103,7 @@
             variant="primary"
             icon="play"
             loading={starting || agentState === "starting"}
-            onclick={() => void start()}>Start {agent}</Button
+            onclick={() => void start()}>Start {label}</Button
           >
         {/snippet}
       </EmptyState>
@@ -125,7 +126,7 @@
           <h2 class="heading" id="{uid}-pulses">Pulses</h2>
           {#if pulsesHeld(scheduled.pulses)}
             <Banner tone="warn">
-              None of these pulses will run. Pulses are turned off in {agent}'s settings, or its
+              None of these pulses will run. Pulses are turned off in {label}'s settings, or its
               settings can't be read.
               {#snippet actions()}
                 <Button
@@ -138,7 +139,7 @@
           {/if}
           {#if scheduled.pulses.length === 0}
             <EmptyState>
-              No pulses yet. {agent} sets one up for a check it should repeat, like looking through your
+              No pulses yet. {label} sets one up for a check it should repeat, like looking through your
               inbox every morning.
             </EmptyState>
           {:else}
@@ -193,7 +194,7 @@
           <h2 class="heading" id="{uid}-actions">Scheduled actions</h2>
           {#if scheduled.actions.length === 0}
             <EmptyState>
-              Nothing scheduled. {agent} schedules a one-off action when you ask it to do something later.
+              Nothing scheduled. {label} schedules a one-off action when you ask it to do something later.
             </EmptyState>
           {:else}
             <ul class="rows">
@@ -227,9 +228,9 @@
         </section>
 
         <p class="note">
-          {agent} sets these up as it learns what you need. To add or change one,
+          {label} sets these up as it learns what you need. To add or change one,
           <a href={formatLocation(locationAt(chat))} onclick={(event) => followLink(event, chat)}
-            >ask {agent} in chat</a
+            >ask {label} in chat</a
           >.
         </p>
       {/if}

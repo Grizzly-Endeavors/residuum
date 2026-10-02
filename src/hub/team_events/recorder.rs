@@ -176,13 +176,13 @@ impl Recorder {
                 &agent.name,
                 TeamEventKind::AgentCreated,
                 TeamEventLevel::Info,
-                with_actor(&agent.name, "was created", &by),
+                with_actor(agent.label(), "was created", &by),
             ),
             HubEvent::AgentRestored { agent, by } => self.record_in_chat(
                 &agent.name,
                 TeamEventKind::AgentRestored,
                 TeamEventLevel::Info,
-                with_actor(&agent.name, "was restored", &by),
+                with_actor(agent.label(), "was restored", &by),
             ),
             HubEvent::AgentDeleted { name, by } => self.on_agent_deleted(&name, &by),
             HubEvent::Notice {
@@ -214,12 +214,13 @@ impl Recorder {
             return;
         }
         let name = &agent.name;
+        let label = agent.label();
         match agent.state {
             AgentState::Running => self.record_in_chat(
                 name,
                 TeamEventKind::AgentStarted,
                 TeamEventLevel::Info,
-                format!("{name} started"),
+                format!("{label} started"),
             ),
             AgentState::Stopped => {
                 if matches!(before, AgentState::Running | AgentState::Starting) {
@@ -227,7 +228,7 @@ impl Recorder {
                         name,
                         TeamEventKind::AgentStopped,
                         TeamEventLevel::Info,
-                        format!("{name} stopped"),
+                        format!("{label} stopped"),
                     );
                 }
             }
@@ -398,7 +399,7 @@ fn with_actor(name: &str, done: &str, by: &Actor) -> String {
 /// What went wrong with an agent, for its `agent_failed` entry. `before` is
 /// the state it failed out of.
 fn failure_summary(agent: &AgentSummary, before: AgentState) -> String {
-    let name = &agent.name;
+    let name = agent.label();
     let Some(error) = &agent.last_error else {
         return format!("{name} failed");
     };

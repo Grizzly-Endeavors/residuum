@@ -52,6 +52,7 @@ rmcp = { version = "0.16", features = ["client", "transport-child-process", "tra
 serde_yaml_ng = "0.10"
 tokio-util = { version = "0.7", features = ["rt", "io"] }
 fd-lock = "4"
+unicode-normalization = "0.1.25"
 
 # A2A protocol (server-side foundation: types, JSON-RPC/REST routers, task store;
 # client: agent card resolution, protocol client factory, auth interceptors)

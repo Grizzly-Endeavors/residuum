@@ -16,6 +16,7 @@ import { byName } from "./util";
 export function mockAgentSummary(agent: MockAgent): AgentSummary {
   return {
     name: agent.name,
+    display_name: agent.displayName,
     state: agent.runState,
     last_error: agent.runState === "failed" ? agent.lastError : null,
     autostart: agent.autostart,
@@ -143,6 +144,7 @@ export function createHub(
       const runState = options.runState ?? "running";
       const agent: MockAgent = {
         name,
+        displayName: options.displayName ?? name,
         runState,
         lastError:
           options.lastError === undefined ? null : { ...options.lastError, at: env.clock.iso() },

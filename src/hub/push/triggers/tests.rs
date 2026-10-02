@@ -10,6 +10,7 @@ use crate::hub::types::{A2aVisibility, Actor, AgentLastError};
 fn summary(name: &str, state: AgentState) -> AgentSummary {
     AgentSummary {
         name: name.to_string(),
+        display_name: name.to_string(),
         state,
         last_error: None,
         autostart: true,

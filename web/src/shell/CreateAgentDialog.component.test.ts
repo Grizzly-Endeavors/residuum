@@ -12,6 +12,7 @@ import CreateAgentDialog from "./CreateAgentDialog.svelte";
 function agent(name: string): AgentSummary {
   return {
     name,
+    display_name: name,
     state: "running",
     last_error: null,
     autostart: true,
@@ -83,8 +84,8 @@ describe("CreateAgentDialog", () => {
   it("checks the name as it is typed, and sends nothing until it passes", async () => {
     const user = userEvent.setup();
     openDialog();
-    await user.type(nameField(), "Atlas");
-    expect(nameField()).toHaveAccessibleDescription(/Use only lowercase letters/);
+    await user.type(nameField(), "Atlas!");
+    expect(nameField()).toHaveAccessibleDescription(/letters, numbers, spaces/);
     expect(nameField()).toHaveAttribute("aria-invalid", "true");
 
     await user.clear(nameField());
@@ -167,7 +168,14 @@ describe("CreateAgentDialog", () => {
 
   it("points at Recently deleted when the name belonged to a deleted agent", async () => {
     const user = userEvent.setup();
-    hub.deleted = [{ name: "drifter", deleted_at: "2026-03-14T10:00:00Z", checkpoint_id: "c-1" }];
+    hub.deleted = [
+      {
+        name: "drifter",
+        display_name: "drifter",
+        deleted_at: "2026-03-14T10:00:00Z",
+        checkpoint_id: "c-1",
+      },
+    ];
     openDialog();
     await user.type(nameField(), "drifter");
     expect(nameField()).toHaveAccessibleDescription(/restore it from Recently deleted on Home/);

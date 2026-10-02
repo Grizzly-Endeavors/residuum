@@ -32,6 +32,7 @@
   // bound one, so the lists are the coordinator's sessions store.
 
   let { agent }: { agent: string } = $props();
+  const label = $derived(hub.shownName(agent));
 
   const uid = $props.id();
   const sessions = $derived(ws.sessions);
@@ -92,7 +93,7 @@
   <span class="row-title">{run.purpose || run.address}</span>
 {/snippet}
 
-<PlaceHeader title={agent} {agent} sub={agentPlaceLabel("activity")} />
+<PlaceHeader title={label} {agent} sub={agentPlaceLabel("activity")} />
 
 <div class="activity-scroll">
   <div class="activity">
@@ -100,7 +101,7 @@
       <EmptyState
         variant="block"
         icon={agentState === "failed" ? "warning" : "pause"}
-        title={notRunningTitle(agent, agentState)}
+        title={notRunningTitle(label, agentState)}
         headingLevel={2}
       >
         {#if agentState === "failed"}{failureLine(summary?.last_error?.kind)}{/if}
@@ -110,7 +111,7 @@
             variant="primary"
             icon="play"
             loading={starting || agentState === "starting"}
-            onclick={() => void start()}>Start {agent}</Button
+            onclick={() => void start()}>Start {label}</Button
           >
         {/snippet}
       </EmptyState>
@@ -140,7 +141,7 @@
             </Banner>
           {/if}
           {#if liveCount === 0}
-            <EmptyState>Nothing running. Work {agent} starts on its own shows up here.</EmptyState>
+            <EmptyState>Nothing running. Work {label} starts on its own shows up here.</EmptyState>
           {:else}
             <ul class="rows">
               {#each sessions.live as run (run.run_id)}
