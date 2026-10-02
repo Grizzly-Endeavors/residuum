@@ -5,6 +5,7 @@
 // team change feed. The hub connection is independent of the agent
 // connection (`ws.svelte.ts`) and stays up across agent switches.
 
+import { displayState, type AgentDisplayState } from "./agent-display-state";
 import { WsTransport } from "./transport.svelte";
 import { hubWsUrl } from "./paths";
 import { notifications } from "./notifications.svelte";
@@ -25,6 +26,7 @@ import type {
   A2aVisibility,
   Actor,
   AgentActivity,
+  AgentListResponse,
   AgentSummary,
   CreateAgentRequest,
   DeleteOutcome,
@@ -33,9 +35,9 @@ import type {
   HubServerMessage,
   NoticeLevel,
 } from "./hub-types";
-import type { WorkspaceChange } from "./types";
 import type { ToastAction } from "./toast.svelte";
 import { normalizeTeamWatchPrefix } from "./workspace-watch";
+import { WatchRegistry } from "./watch-registry";
 
 /** How many notices the store keeps for recall. */
 const MAX_NOTICES = 50;
@@ -69,6 +71,8 @@ export class HubStore {
   loaded = $state(false);
   /** Busy (and since when) and unread per agent name. Agents with no report are idle. */
   activity = $state<Record<string, AgentActivity>>({});
+  /** Running agents whose stop has begun but not finished. Their state still reads `running`. */
+  stopping = $state<string[]>([]);
   /** Notices received this session, newest first. */
   notices = $state<HubNotice[]>([]);
   /**
@@ -84,10 +88,21 @@ export class HubStore {
 
   readonly transport: WsTransport<HubServerMessage, HubClientMessage>;
 
+  /**
+   * The team change feed. Whatever follows team files registers here with
+   * `team` or `team/...` prefixes, and the registry keeps the hub socket's one
+   * watch set the union of theirs.
+   */
+  readonly teamWatches = new WatchRegistry({
+    send: (prefixes) => {
+      this.transport.send({ type: "watch_team", prefixes });
+    },
+    normalize: normalizeTeamWatchPrefix,
+    refusal: (prefix) =>
+      `can't watch "${prefix}": team watch paths are "team" or start with "team/", like "team/wiki"`,
+  });
+
   private noticeCounter = 0;
-  private watchedPrefixes: string[] = [];
-  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- bookkeeping only, never rendered
-  private teamListeners = new Set<(changes: WorkspaceChange[]) => void>();
   // eslint-disable-next-line svelte/prefer-svelte-reactivity -- bookkeeping only, never rendered
   private frameListeners = new Set<(msg: HubServerMessage) => void>();
   /** The socket has delivered a snapshot, which is newer than any fetch. */
@@ -103,9 +118,10 @@ export class HubStore {
     };
     this.transport.onConnected = () => {
       // A new connection watches nothing until told.
-      if (this.watchedPrefixes.length > 0) {
-        this.transport.send({ type: "watch_team", prefixes: this.watchedPrefixes });
-      }
+      this.teamWatches.connected();
+    };
+    this.transport.onDisconnected = () => {
+      this.teamWatches.disconnected();
     };
   }
 
@@ -117,6 +133,7 @@ export class HubStore {
   /** Close the hub socket. */
   disconnect(): void {
     this.transport.disconnect();
+    this.teamWatches.disconnected();
   }
 
   /**
@@ -126,9 +143,14 @@ export class HubStore {
    * `ApiError` on failure.
    */
   async refresh(force = false): Promise<void> {
-    const agents = await fetchAgents();
+    const list = await fetchAgents();
     if (this.snapshotSeen && !force) return;
-    this.setAgents(agents);
+    this.setList(list);
+  }
+
+  /** Give up waiting for the hub socket's next reconnect attempt and try now. */
+  reconnectNow(): void {
+    this.transport.reconnectNow();
   }
 
   /**
@@ -156,42 +178,22 @@ export class HubStore {
     return this.activity[name] ?? IDLE;
   }
 
-  // ── Team change feed ───────────────────────────────────────────────
-
-  /**
-   * Watch these team path prefixes on the hub connection, replacing any
-   * before. A prefix is `team` or a path under `team/` (`team/wiki`), the
-   * spelling the hub's change feed uses; anything else throws a `TypeError`,
-   * since the hub would refuse it. `[]` stops watching. Re-sent after every
-   * reconnect.
-   */
-  watchTeam(prefixes: readonly string[]): void {
-    const normalized = prefixes.map((prefix) => {
-      const team = normalizeTeamWatchPrefix(prefix);
-      if (team === null) {
-        throw new TypeError(
-          `can't watch "${prefix}": team watch paths are "team" or start with "team/", like "team/wiki"`,
-        );
-      }
-      return team;
-    });
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- non-reactive scratch
-    const next = [...new Set(normalized)].sort();
-    if (
-      next.length === this.watchedPrefixes.length &&
-      next.every((p, i) => p === this.watchedPrefixes[i])
-    ) {
-      return;
-    }
-    this.watchedPrefixes = next;
-    this.transport.send({ type: "watch_team", prefixes: next });
+  isStopping(name: string): boolean {
+    return this.stopping.includes(name);
   }
 
-  /** Observe team changes under the watched prefixes. Returns a function that stops observing. */
-  onTeamChange(listener: (changes: WorkspaceChange[]) => void): () => void {
-    this.teamListeners.add(listener);
-    return () => this.teamListeners.delete(listener);
+  /** Whether the agent is up and not on its way down, the state its live status and checks can be read in. */
+  isRunning(name: string): boolean {
+    return this.displayStateOf(name) === "running";
   }
+
+  /** How to show the agent's state, or null while the list doesn't name it. */
+  displayStateOf(name: string): AgentDisplayState | null {
+    const agent = this.agent(name);
+    return agent === undefined ? null : displayState(agent.state, this.isStopping(name));
+  }
+
+  // ── Hub frames ─────────────────────────────────────────────────────
 
   /** Observe every hub frame, after the store has handled it. Returns a function that stops observing. */
   onFrame(listener: (msg: HubServerMessage) => void): () => void {
@@ -302,12 +304,16 @@ export class HubStore {
     switch (msg.type) {
       case "agents_snapshot":
         this.snapshotSeen = true;
-        this.setAgents(msg.agents);
-        this.activity = { ...msg.activity };
+        this.setList(msg);
         break;
       case "agent_state":
         this.noteFailure(msg.agent);
         this.upsert(msg.agent);
+        // A state change ends a stop that was under way.
+        this.stopping = this.stopping.filter((name) => name !== msg.agent.name);
+        break;
+      case "agent_stopping":
+        if (!this.isStopping(msg.name)) this.stopping = [...this.stopping, msg.name];
         break;
       case "agent_created":
         this.upsert(msg.agent);
@@ -336,14 +342,10 @@ export class HubStore {
       case "notice":
         this.addNotice(msg.level, msg.message, msg.agent);
         break;
-      case "workspace_changed":
-        for (const listener of this.teamListeners) listener(msg.changes);
-        break;
       case "workspace_watch_unavailable":
         this.addNotice("warn", msg.message);
         break;
       case "hub_boot":
-      case "agent_stopping":
       case "hub_config_reloaded":
       case "team_event":
       case "agent_overview":
@@ -352,10 +354,15 @@ export class HubStore {
       case "subscribed":
       case "session_frame":
       case "session_relay_lagged":
+        // Frame listeners act on these, below.
+        break;
+      case "workspace_changed":
       case "workspace_resync":
+        // Only the team watch owners act on these, below.
         break;
     }
     for (const listener of this.frameListeners) listener(msg);
+    this.teamWatches.handleFrame(msg);
   }
 
   /**
@@ -373,13 +380,11 @@ export class HubStore {
     );
   }
 
-  private setAgents(agents: AgentSummary[]): void {
+  /** Take a whole list: the socket's snapshot, or the same three fields fetched over HTTP. */
+  private setList({ agents, activity, stopping }: AgentListResponse): void {
     this.agents = [...agents].sort(byName);
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- non-reactive scratch
-    const known = new Set(agents.map((a) => a.name));
-    this.activity = Object.fromEntries(
-      Object.entries(this.activity).filter(([name]) => known.has(name)),
-    );
+    this.activity = { ...activity };
+    this.stopping = [...stopping];
     this.loaded = true;
   }
 
@@ -397,6 +402,7 @@ export class HubStore {
   private removeAgent(name: string): void {
     this.agents = this.agents.filter((a) => a.name !== name);
     this.activity = Object.fromEntries(Object.entries(this.activity).filter(([n]) => n !== name));
+    this.stopping = this.stopping.filter((n) => n !== name);
   }
 
   private addNotice(

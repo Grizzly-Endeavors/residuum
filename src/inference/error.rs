@@ -165,7 +165,7 @@ impl FailureCategory {
     fn user_message(&self, err: &InferenceError) -> String {
         match self {
             Self::AuthFailed => "Residuum couldn't authenticate with the AI provider. Check \
-                that the API key in Settings is correct and hasn't expired."
+                that the API key in Settings → Model is correct and hasn't expired."
                 .to_string(),
             Self::RateLimited => "The AI provider is rate-limiting requests right now. Wait a \
                 moment and try again, or check your usage limits with the provider."
@@ -174,7 +174,7 @@ impl FailureCategory {
                 window. Start a new conversation or shorten this one, then try again."
                 .to_string(),
             Self::ModelNotFound => "The configured model isn't available from the provider. \
-                Check the model name in Settings."
+                Check the model name in Settings → Model."
                 .to_string(),
             Self::ProviderOutage => {
                 "The AI provider is having problems on its end. Try again shortly.".to_string()

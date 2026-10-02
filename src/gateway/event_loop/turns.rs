@@ -809,7 +809,7 @@ pub async fn handle_inbound_message(
             .is_some_and(|entry| entry.capabilities.contains(EndpointCapabilities::STREAMING))
     });
 
-    // Held for the whole turn, so the agent switcher shows it busy until it
+    // Held for the whole turn, so the rail and Home show it busy until it
     // ends, however the turn ends.
     let _busy = rt.activity.main_turn();
 
@@ -1151,7 +1151,7 @@ mod tests {
         assert_eq!(
             error.details.as_deref(),
             Some("boom"),
-            "the raw cause must survive in details for a developer or the details toggle"
+            "the raw cause must survive in details for a developer or the Details disclosure"
         );
 
         let ended = lifecycle.recv().await.unwrap().unwrap();

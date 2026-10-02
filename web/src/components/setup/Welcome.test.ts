@@ -10,8 +10,8 @@ function wizard(overrides: Partial<SetupWizardState> = {}): SetupWizardState {
 describe("Welcome step", () => {
   it("asks for your name and the first agent's name", () => {
     render(Welcome, { wizardState: wizard(), onNext: () => {} });
-    expect(screen.getByLabelText("Your Name")).toBeTruthy();
-    expect(screen.getByLabelText("Agent Name")).toHaveValue("assistant");
+    expect(screen.getByLabelText("Your name")).toBeTruthy();
+    expect(screen.getByLabelText("Agent name")).toHaveValue("assistant");
   });
 
   it("lets you continue without giving your name", async () => {
@@ -30,13 +30,15 @@ describe("Welcome step", () => {
     ["team", '"team" is reserved. Pick a different name.'],
   ])("blocks the agent name %j and says why", (agentName, message) => {
     render(Welcome, { wizardState: wizard({ agentName }), onNext: () => {} });
-    expect(screen.getByRole("alert")).toHaveTextContent(message);
+    const field = screen.getByLabelText("Agent name");
+    expect(field).toBeInvalid();
+    expect(field).toHaveAccessibleDescription(expect.stringContaining(message));
     expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
   });
 
   it("accepts a well-formed agent name", () => {
     render(Welcome, { wizardState: wizard({ agentName: "night-owl-2" }), onNext: () => {} });
-    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByLabelText("Agent name")).toBeValid();
     expect(screen.getByRole("button", { name: "Next" })).toBeEnabled();
   });
 });

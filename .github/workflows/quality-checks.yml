@@ -89,6 +89,14 @@ jobs:
           E2E_ALL_IN_CONTAINER: '1'
         run: scripts/with-playwright-container.sh npm --prefix web run e2e
 
+      # Fails when the gzipped initial route outgrows its budget, which is set
+      # in the script. It runs after a successful build even when the end-to-end
+      # specs failed, so a size regression shows up beside a test failure.
+      - name: Web initial-route budget
+        id: web_size
+        if: always() && steps.web_build.outcome == 'success'
+        run: scripts/web-initial-route-size.sh web/dist
+
       - name: Upload Playwright report and traces
         if: always() && (steps.web_e2e.outcome == 'failure' || steps.web_e2e_visual.outcome == 'failure')
         uses: actions/upload-artifact@v7
@@ -118,6 +126,7 @@ jobs:
             else
               echo '| Visual comparisons | skipped: the `visual` input is off |'
             fi
+            echo "| Initial-route budget | ${{ steps.web_size.outcome }} |"
             if [ -f web/coverage/summary.txt ]; then
               echo ''
               echo '### Web test coverage'
@@ -125,6 +134,13 @@ jobs:
               echo '```'
               sed '/^$/d' web/coverage/summary.txt
               echo '```'
+            fi
+            # The table, and the over-budget message when there is one. The budget step decides the outcome.
+            if [ -f web/dist/index.html ]; then
+              echo ''
+              echo '### Web initial-route size'
+              echo ''
+              scripts/web-initial-route-size.sh web/dist 2>&1 || true
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 

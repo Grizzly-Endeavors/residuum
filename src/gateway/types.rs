@@ -194,12 +194,13 @@ pub(crate) struct GatewayState {
     pub file_registry: crate::gateway::file_server::FileRegistry,
     /// Named webhooks served at `/webhook/{name}`; swapped in place on config reload.
     pub webhooks: crate::interfaces::webhook::WebhookTable,
-    /// Live agent sessions, for the sessions listing and the sidebar's stop
+    /// Live agent sessions, for the sessions listing and Activity's stop
     /// command.
     pub session_registry: Arc<SessionRegistry>,
     /// Durable record of every session run, for the listing and transcripts.
     pub session_store: Arc<SessionStore>,
-    /// Delivers the sidebar's and artifacts' messages to sessions.
+    /// Delivers the owner's messages (from a session panel) and artifacts' messages to
+    /// sessions.
     pub agent_messenger: Arc<crate::background::messaging::AgentMessenger>,
     /// The skill index, for checking the skill an artifact's session names.
     pub skill_state: SharedSkillState,
@@ -209,13 +210,13 @@ pub(crate) struct GatewayState {
     /// The hub's one change feed over the team directory, which a connection
     /// watching `team/...` paths reads.
     pub team_feed: Arc<crate::hub::services::TeamChangeFeed>,
-    /// Pending one-off scheduled actions, for the Scheduled view's listing
+    /// Pending one-off scheduled actions, for the Schedule place's listing
     /// and cancel button.
     pub action_store: Arc<tokio::sync::Mutex<ActionStore>>,
-    /// Workspace layout, for the Scheduled view's reads of HEARTBEAT.yml,
+    /// Workspace layout, for the Schedule place's reads of HEARTBEAT.yml,
     /// `pulse_state.json`, and its in-place edits to HEARTBEAT.yml.
     pub layout: WorkspaceLayout,
-    /// Main-conversation activity for the hub's agent switcher; a WebSocket
+    /// Main-conversation activity for the rail and Home; a WebSocket
     /// connection registers itself here so unread counts reset while a client
     /// is watching.
     pub activity: Arc<crate::hub::activity::ActivityTracker>,
@@ -383,7 +384,7 @@ pub(crate) struct AgentRuntime {
     pub path_policy: crate::tools::SharedPathPolicy,
     /// Shared tracing service for observability API.
     pub tracing_service: Arc<TracingService>,
-    /// Main-conversation activity for the hub's agent switcher.
+    /// Main-conversation activity for the rail and Home.
     pub activity: Arc<crate::hub::activity::ActivityTracker>,
 }
 

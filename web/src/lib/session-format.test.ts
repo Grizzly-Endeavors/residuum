@@ -1,14 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
-  SESSION_CATEGORIES,
-  categoryHeading,
-  groupByCategory,
+  finishedOutcome,
   isStoppableState,
+  outboundStatus,
+  runKind,
+  runStatus,
   sessionArtifact,
-  sessionSourceText,
-  sessionsStartedByArtifact,
 } from "./session-format";
-import type { SessionCategory, SessionState, SessionSummary } from "./types";
+import type {
+  OutboundA2aTaskSummary,
+  SessionCategory,
+  SessionState,
+  SessionSummary,
+} from "./types";
 
 function session(
   runId: string,
@@ -37,61 +41,70 @@ function session(
   };
 }
 
-describe("artifact sessions", () => {
-  it("group under their own category, apart from spawned work", () => {
-    const groups = groupByCategory([
-      session("a1", "artifact", "artifact:wiki-graph"),
-      session("s1", "spawned", "agent:researcher"),
-      session("a2", "artifact", "artifact:chart"),
-    ]);
-    expect(groups.artifact.map((s) => s.run_id)).toEqual(["a1", "a2"]);
-    expect(groups.spawned.map((s) => s.run_id)).toEqual(["s1"]);
-    expect(groups.scheduled).toEqual([]);
-    expect(SESSION_CATEGORIES).toContain("artifact");
-    expect(categoryHeading("artifact")).toBe("Artifacts");
+describe("a run's words", () => {
+  const NOW = Date.parse("2026-09-23T12:04:00Z");
+
+  it("names its kind in plain words, and who started a spawned one", () => {
+    expect(runKind("atlas", session("e", "external", "discord:#builds"))).toBe("From another app");
+    expect(runKind("atlas", session("p", "scheduled", "pulse:inbox"))).toBe("Scheduled");
+    expect(runKind("atlas", session("a", "artifact", "artifact:chart"))).toBe(
+      "From a workbench page",
+    );
+    const spawned = session("s", "spawned", "agent:researcher");
+    expect(runKind("atlas", { ...spawned, spawner: "main" })).toBe("Started by atlas");
+    expect(runKind("atlas", { ...spawned, spawner: "spawned-a-1" })).toBe("Started by spawned-a-1");
   });
 
+  it("says how a live run is doing, with how long it has run", () => {
+    const run = session("r", "spawned", "agent:researcher");
+    expect(runStatus(run, NOW)).toEqual({ tone: "working", text: "Working, 4m" });
+    expect(runStatus({ ...run, state: "idle" }, NOW)).toEqual({ tone: "quiet", text: "Idle, 4m" });
+    expect(runStatus({ ...run, state: "forking" }, NOW).text).toBe("Starting");
+  });
+
+  it("says how a finished run ended", () => {
+    const done: SessionSummary = {
+      ...session("r", "spawned", "agent:researcher", "completed"),
+      completed_at: "2026-09-23T12:12:00Z",
+    };
+    expect(runStatus(done, NOW)).toEqual({ tone: "done", text: "Finished" });
+    expect(finishedOutcome(done)).toBe("Finished after 12m");
+    const failed = { ...done, outcome: "failed" as const, error: "the site timed out" };
+    expect(runStatus(failed, NOW)).toEqual({ tone: "failed", text: "Failed" });
+    expect(finishedOutcome(failed)).toBe("Failed: the site timed out");
+    expect(finishedOutcome({ ...done, outcome: "cancelled" })).toBe("Stopped after 12m");
+    expect(finishedOutcome({ ...done, interrupted: true })).toBe("Cut short when Residuum stopped");
+  });
+
+  it("says where a task sent to another agent stands", () => {
+    const task: OutboundA2aTaskSummary = {
+      task_id: "t1",
+      agent: "laptop",
+      sender_address: "main",
+      state: "working",
+      status_text: null,
+      open: true,
+      started_at: "2026-09-23T11:00:00Z",
+      unreachable_since: null,
+    };
+    expect(outboundStatus(task, NOW)).toEqual({ tone: "working", text: "Working" });
+    expect(outboundStatus({ ...task, state: "auth_required" }, NOW).text).toBe(
+      "Waiting on sign-in",
+    );
+    expect(outboundStatus({ ...task, unreachable_since: "2026-09-23T11:47:00Z" }, NOW)).toEqual({
+      tone: "failed",
+      text: "Can't reach laptop for 17m",
+    });
+  });
+});
+
+describe("artifact sessions", () => {
   it("are labelled with the artifact that started them", () => {
     const started = session("a1", "artifact", "artifact:wiki-graph");
     expect(sessionArtifact(started)).toBe("wiki-graph");
-    expect(sessionSourceText(started)).toBe("wiki-graph");
 
     const spawned = session("s1", "spawned", "agent:researcher");
     expect(sessionArtifact(spawned)).toBeNull();
-    expect(sessionSourceText(spawned)).toBe("agent:researcher");
-  });
-
-  it("are picked out of a mixed list for one artifact's activity panel, in list order", () => {
-    const sessions = [
-      session("a1", "artifact", "artifact:wiki-graph"),
-      session("s1", "spawned", "agent:researcher"),
-      session("a2", "artifact", "artifact:chart"),
-      session("a3", "artifact", "artifact:wiki-graph"),
-    ];
-    expect(sessionsStartedByArtifact(sessions, "wiki-graph").map((s) => s.run_id)).toEqual([
-      "a1",
-      "a3",
-    ]);
-    expect(sessionsStartedByArtifact(sessions, "chart").map((s) => s.run_id)).toEqual(["a2"]);
-    expect(sessionsStartedByArtifact(sessions, "no-such-artifact")).toEqual([]);
-  });
-
-  it("stopping one session leaves the artifact's other sessions in the panel's list", () => {
-    const sessions = [
-      session("a1", "artifact", "artifact:wiki-graph", "running"),
-      session("a2", "artifact", "artifact:wiki-graph", "idle"),
-    ];
-    // A frame moving a1 toward completing (as a stop does) mutates only that
-    // entry; a2 is untouched and still shows in the filtered list.
-    const stopped: SessionSummary[] = sessions.map((s) =>
-      s.run_id === "a1" ? { ...s, state: "completing" as const } : s,
-    );
-    const stillListed = sessionsStartedByArtifact(
-      stopped.filter((s) => s.state !== "completed"),
-      "wiki-graph",
-    );
-    expect(stillListed.map((s) => s.run_id)).toEqual(["a1", "a2"]);
-    expect(stillListed.find((s) => s.run_id === "a2")?.state).toBe("idle");
   });
 });
 

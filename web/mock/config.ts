@@ -11,7 +11,9 @@ import type {
   AgentKeysListResponse,
   CreateA2aKeyResponse,
   DeleteSecretResponse,
+  Diagnostic,
   ModelsResponse,
+  RepoKind,
   SecretResponse,
   SecretsListResponse,
   SetAgentKeyResponse,
@@ -21,8 +23,9 @@ import type {
 } from "../src/lib/types";
 import { agentNameProblem } from "./agent-name";
 import { WEB_ROOT } from "./assets";
-import { repoStats } from "./checkpoints";
-import { MOCK_CLOUD_STATUS, MOCK_FEATURES, MOCK_RESIDUUM_VERSION } from "./constants";
+import { checkpointBeforeAction, repoStats } from "./checkpoints";
+import { MOCK_FEATURES, MOCK_RESIDUUM_VERSION } from "./constants";
+import { validation } from "./diagnostics";
 import {
   json,
   parseJsonObject,
@@ -32,45 +35,18 @@ import {
   text,
   type JsonObject,
 } from "./http";
+import { modelProblems, PROVIDER_MODELS } from "./provider-models";
 import { decodedParam, type Route, type RouteContext } from "./routes";
+import { MCP_JSON, type MockState } from "./state";
 import { byName } from "./util";
+import { writeFile } from "./workspace-tree";
 import { MOCK_TIMEZONE } from "./zone";
-
-const modelsByProvider: Record<string, Array<{ id: string; name: string }>> = {
-  anthropic: [
-    { id: "claude-opus-4-6", name: "Claude Opus 4.6" },
-    { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
-    { id: "claude-haiku-4-5", name: "Claude Haiku 4.5" },
-  ],
-  openai: [
-    { id: "gpt-4o", name: "GPT-4o" },
-    { id: "gpt-4o-mini", name: "GPT-4o Mini" },
-    { id: "o3", name: "o3" },
-    { id: "o4-mini", name: "o4-mini" },
-  ],
-  gemini: [
-    { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" },
-    { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
-    { id: "gemini-3.0-flash", name: "Gemini 3.0 Flash" },
-  ],
-  fireworks: [
-    { id: "accounts/fireworks/models/glm-5p3", name: "accounts/fireworks/models/glm-5p3" },
-    { id: "accounts/fireworks/models/kimi-k3", name: "accounts/fireworks/models/kimi-k3" },
-    {
-      id: "accounts/fireworks/routers/glm-flash-latest",
-      name: "accounts/fireworks/routers/glm-flash-latest",
-    },
-  ],
-  ollama: [
-    { id: "llama3.3:latest", name: "Llama 3.3" },
-    { id: "mistral:latest", name: "Mistral" },
-    { id: "deepseek-r1:latest", name: "DeepSeek R1" },
-    { id: "qwen3:latest", name: "Qwen 3" },
-  ],
-};
 
 /** The shape agent key names and A2A caller key names both take. */
 const KEY_NAME = /^[a-z][a-z0-9_]{0,63}$/;
+
+/** Below this many characters an agent key's value is stored with a warning. */
+const SHORT_KEY_VALUE = 8;
 
 const VALID: ValidateResponse = { valid: true };
 
@@ -136,21 +112,6 @@ const systemRoutes: readonly Route[] = [
     },
   },
   {
-    method: "GET",
-    pattern: "/api/cloud/status",
-    handler: ({ res }) => {
-      json(res, 200, MOCK_CLOUD_STATUS);
-    },
-  },
-  {
-    // The mock's tunnel is always disconnected, so there is nothing to turn off.
-    method: "POST",
-    pattern: "/api/cloud/disconnect",
-    handler: ({ res }) => {
-      json(res, 200, { ok: true });
-    },
-  },
-  {
     method: "POST",
     pattern: "/api/tracing/bug-report",
     handler: async ({ req, res, state }) => {
@@ -179,15 +140,34 @@ const systemRoutes: readonly Route[] = [
 
 type TomlDocument = "configToml" | "hubConfigToml" | "providersToml";
 
+/** Why the backend would refuse a patched document, as its validation words it; null when it wouldn't. */
+function patchProblem(field: TomlDocument, doc: JsonObject): string | null {
+  const agent = field === "configToml" ? doc.agent : undefined;
+  const limit =
+    typeof agent === "object" && agent !== null
+      ? (agent as JsonObject).max_tool_iterations
+      : undefined;
+  return limit === 0
+    ? "agent.max_tool_iterations must be at least 1 (leave it unset for unlimited)"
+    : null;
+}
+
+const repoOf = (field: TomlDocument): RepoKind =>
+  field === "hubConfigToml" ? "hub" : "agent_config";
+const fileOf = (field: TomlDocument): string =>
+  field === "providersToml" ? "providers.toml" : "config.toml";
+
 /**
  * Read, replace, patch and validate one TOML document kept in the state.
  * `afterWrite` runs once a write has been answered, as the hub reloads after
- * its own config changes.
+ * its own config changes. `check` finds the problems in text that parses,
+ * which a validate and a raw save report besides syntax errors.
  */
 function tomlDocumentRoutes(
   prefix: string,
   field: TomlDocument,
   afterWrite: (ctx: RouteContext) => void = () => {},
+  check: (text: string) => Diagnostic[] = () => [],
 ): readonly Route[] {
   return [
     {
@@ -201,8 +181,11 @@ function tomlDocumentRoutes(
       method: "PUT",
       pattern: `${prefix}/raw`,
       handler: async (ctx) => {
-        ctx.state[field] = await readBody(ctx.req);
-        json(ctx.res, 200, VALID);
+        const body = await readBody(ctx.req);
+        // A raw save is checkpointed and always written, with its problems reported.
+        checkpointBeforeAction(ctx.state, repoOf(field), `raw write ${fileOf(field)}`);
+        ctx.state[field] = body;
+        json(ctx.res, 200, validation("toml", body, check));
         afterWrite(ctx);
       },
     },
@@ -214,19 +197,47 @@ function tomlDocumentRoutes(
         const diff = await readJsonObject(ctx.req);
         const doc = state[field].trim() ? parseToml(state[field]) : {};
         applyJsonPatch(doc, diff);
+        const problem = patchProblem(field, doc);
+        if (problem !== null) {
+          json(ctx.res, 400, {
+            valid: false,
+            error: problem,
+            diagnostics: [],
+          } satisfies ValidateResponse);
+          return;
+        }
+        // The backend checkpoints the file before it writes, and answers with the checkpoint for Undo.
+        const checkpoint = checkpointBeforeAction(state, repoOf(field), `patch ${fileOf(field)}`);
         state[field] = stringifyToml(doc);
-        json(ctx.res, 200, VALID);
+        json(ctx.res, 200, { ...VALID, checkpoint_id: checkpoint } satisfies ValidateResponse);
         afterWrite(ctx);
       },
     },
     {
       method: "POST",
       pattern: `${prefix}/validate`,
-      handler: ({ res }) => {
-        json(res, 200, VALID);
+      handler: async ({ req, res }) => {
+        json(res, 200, validation("toml", await readBody(req), check));
       },
     },
   ];
+}
+
+/** The agent's `mcp.json`, or the empty document the backend serves when there is none. */
+function mcpJsonOf(state: MockState): string {
+  return state.workspaceFileContents[MCP_JSON] ?? '{"mcpServers":{}}';
+}
+
+/** Write `mcp.json`, checkpointing the workspace first as the backend does, and answer with the checkpoint for Undo. */
+function writeMcpJson(
+  ctx: RouteContext,
+  content: string,
+  summary: string,
+  result: ValidateResponse = VALID,
+): void {
+  const checkpoint = checkpointBeforeAction(ctx.state, "workspace", summary);
+  writeFile(ctx.state, MCP_JSON, content);
+  json(ctx.res, 200, { ...result, checkpoint_id: checkpoint } satisfies ValidateResponse);
 }
 
 const mcpRoutes: readonly Route[] = [
@@ -234,27 +245,28 @@ const mcpRoutes: readonly Route[] = [
     method: "GET",
     pattern: "/api/mcp/raw",
     handler: ({ res, state }) => {
-      text(res, 200, state.mcpJson);
+      text(res, 200, mcpJsonOf(state));
     },
   },
   {
     method: "PUT",
     pattern: "/api/mcp/raw",
-    handler: async ({ req, res, state }) => {
-      state.mcpJson = await readBody(req);
-      json(res, 200, VALID);
+    handler: async (ctx) => {
+      // A raw save is always written, with its problems reported.
+      const body = await readBody(ctx.req);
+      writeMcpJson(ctx, body, "raw write mcp.json", validation("json", body));
     },
   },
   {
     method: "PATCH",
     pattern: "/api/mcp/patch",
-    handler: async ({ req, res, state }) => {
-      const diff = await readJsonObject(req);
-      const doc = state.mcpJson.trim() ? parseJsonObject(state.mcpJson) : { mcpServers: {} };
+    handler: async (ctx) => {
+      const diff = await readJsonObject(ctx.req);
+      const raw = mcpJsonOf(ctx.state);
+      const doc = raw.trim() ? parseJsonObject(raw) : { mcpServers: {} };
       applyJsonPatch(doc, diff);
       doc.mcpServers ??= {};
-      state.mcpJson = JSON.stringify(doc, null, 2);
-      json(res, 200, VALID);
+      writeMcpJson(ctx, JSON.stringify(doc, null, 2), "patch mcp.json");
     },
   },
   {
@@ -273,7 +285,7 @@ const mcpRoutes: readonly Route[] = [
 ];
 
 const providerRoutes: readonly Route[] = [
-  ...tomlDocumentRoutes("/api/providers", "providersToml"),
+  ...tomlDocumentRoutes("/api/providers", "providersToml", () => {}, modelProblems),
   {
     method: "POST",
     pattern: "/api/providers/models",
@@ -283,15 +295,17 @@ const providerRoutes: readonly Route[] = [
 
       // Match against known provider types
       let providerType = provider;
-      for (const key of Object.keys(modelsByProvider)) {
+      for (const key of Object.keys(PROVIDER_MODELS)) {
         if (provider.includes(key)) {
           providerType = key;
           break;
         }
       }
 
-      const models = modelsByProvider[providerType] ?? [
-        { id: `${provider}/default-model`, name: "Default Model" },
+      const models = [
+        ...(PROVIDER_MODELS[providerType] ?? [
+          { id: `${provider}/default-model`, name: "Default Model" },
+        ]),
       ];
       json(res, 200, { models } satisfies ModelsResponse);
     },
@@ -331,9 +345,7 @@ async function completeSetup({ req, res, hub, state }: RouteContext): Promise<vo
   agent.state.configToml = stringField(body, "config") ?? agent.state.configToml;
   agent.state.providersToml = stringField(body, "providers") ?? agent.state.providersToml;
   const mcpJson = stringField(body, "mcp_json");
-  if (mcpJson) {
-    agent.state.mcpJson = mcpJson;
-  }
+  if (mcpJson) writeFile(agent.state, MCP_JSON, mcpJson);
   state.mode = "running";
   json(res, 200, { valid: true, diagnostics: [] } satisfies ValidateResponse);
 }
@@ -363,16 +375,24 @@ const agentKeyRoutes: readonly Route[] = [
       const body = await readJsonObject(req);
       const name = stringField(body, "name") ?? "";
       const value = stringField(body, "value") ?? "";
-      if (!KEY_NAME.test(name) || value.length < 8) {
+      if (!KEY_NAME.test(name) || value === "") {
         text(res, 400, "key name or value is invalid");
         return;
       }
+      checkpointBeforeAction(state, "hub", `set agent key '${name}'`);
       state.agentKeys.set(name, {
         value,
         description: stringField(body, "description") ?? "",
         created_by: "user",
       });
-      json(res, 200, { name, env_var: name.toUpperCase() } satisfies SetAgentKeyResponse);
+      json(res, 200, {
+        name,
+        env_var: name.toUpperCase(),
+        // A short value is stored, with a note that hiding it from output is unreliable.
+        ...(value.length < SHORT_KEY_VALUE
+          ? { warning: "This value is short, so redacting it from output is unreliable." }
+          : {}),
+      } satisfies SetAgentKeyResponse);
     },
   },
   {
@@ -380,14 +400,13 @@ const agentKeyRoutes: readonly Route[] = [
     pattern: /^\/api\/agent-keys\/(.+)$/,
     handler: (ctx) => {
       const name = decodedParam(ctx, 0);
-      if (!ctx.state.agentKeys.delete(name)) {
+      if (!ctx.state.agentKeys.has(name)) {
         text(ctx.res, 404, `no agent key named '${name}'`);
         return;
       }
-      // The mock doesn't keep a checkpoint repository, so there is no id
-      // for Undo to restore. A null id hides the button instead of offering
-      // a restore that would 404.
-      json(ctx.res, 200, { deleted: true, checkpoint_id: null });
+      const checkpointId = checkpointBeforeAction(ctx.state, "hub", `delete agent key '${name}'`);
+      ctx.state.agentKeys.delete(name);
+      json(ctx.res, 200, { deleted: true, checkpoint_id: checkpointId });
     },
   },
 ];
@@ -428,21 +447,56 @@ function closeOutboundTask(ctx: RouteContext): void {
 /** The port of the mock's A2A listener. */
 const A2A_PORT = 7702;
 
+/** The cards the mock's remote agents answer with. An agent not here is still being checked. */
+const REMOTE_CARDS: Readonly<Record<string, A2aAgentCard>> = {
+  "research-buddy": {
+    name: "Research Buddy",
+    description: "Digs through papers and reports back with sources.",
+    skills: [{ id: "lit-review", name: "Literature review" }],
+  },
+};
+
+/** The agents `config/a2a.json` lists, as the running agent reports them; none when it doesn't parse, as the loader skips it. */
+function listedRemoteAgents(raw: string): A2aRemoteAgent[] {
+  let agents: JsonObject = {};
+  try {
+    const listed = parseJsonObject(raw).agents;
+    if (typeof listed === "object" && listed !== null) agents = listed as JsonObject;
+  } catch {
+    return [];
+  }
+  return Object.entries(agents).map(([name, entry]) => {
+    const card = REMOTE_CARDS[name] ?? null;
+    const url =
+      typeof entry === "object" && entry !== null
+        ? stringField(entry as JsonObject, "url")
+        : undefined;
+    return {
+      name,
+      url: url ?? "",
+      source: "config",
+      status: card ? "ok" : "pending",
+      error: null,
+      card,
+    };
+  });
+}
+
 const a2aRoutes: readonly Route[] = [
   {
     method: "GET",
     pattern: "/api/a2a/status",
-    handler: ({ res, state }) => {
+    handler: ({ res, state, hub }) => {
       // The mock has no relay and no address of the user's own: the agent is reachable locally.
       json(res, 200, {
         enabled: true,
         port: A2A_PORT,
-        visibility: "public",
+        visibility: hub.agents.get(state.agentName)?.visibility ?? "private",
         public_url: null,
         local_url: `http://127.0.0.1:${A2A_PORT}/agents/${state.agentName}`,
         relay_access: false,
         relay_access_note:
-          "Reachable locally. Connect to the Residuum relay in Hub settings → Cloud to make it reachable from other places, or set your own address in Hub settings → A2A listener & keys if you run your own tunnel.",
+          "Reachable locally. Connect to the Residuum relay in Settings → All agents → Residuum Cloud to make it reachable from other places, or enter your own address in Settings → All agents → Agent-to-agent if you run your own tunnel.",
         listener_running: true,
         card_error: null,
       } satisfies A2aStatusResponse);
@@ -484,6 +538,7 @@ const a2aRoutes: readonly Route[] = [
         json(res, 409, { error: `an A2A caller key named '${name}' already exists` });
         return;
       }
+      checkpointBeforeAction(state, "hub", `create caller key '${name}'`);
       state.a2aKeys.set(name, {
         description: stringField(body, "description") ?? "",
         created_at: state.env.clock.iso(),
@@ -499,30 +554,21 @@ const a2aRoutes: readonly Route[] = [
     pattern: /^\/api\/a2a\/keys\/(.+)$/,
     handler: (ctx) => {
       const name = decodedParam(ctx, 0);
-      if (!ctx.state.a2aKeys.delete(name)) {
+      if (!ctx.state.a2aKeys.has(name)) {
         json(ctx.res, 404, { error: `no A2A caller key named '${name}'` });
         return;
       }
-      json(ctx.res, 200, { revoked: true, checkpoint_id: null });
+      const checkpointId = checkpointBeforeAction(ctx.state, "hub", `revoke caller key '${name}'`);
+      ctx.state.a2aKeys.delete(name);
+      json(ctx.res, 200, { revoked: true, checkpoint_id: checkpointId });
     },
   },
   {
     method: "GET",
     pattern: "/api/a2a/agents",
-    handler: ({ res }) => {
+    handler: ({ res, state }) => {
       json(res, 200, [
-        {
-          name: "research-buddy",
-          url: "https://example.com/a2a/research-buddy",
-          source: "config",
-          status: "ok",
-          error: null,
-          card: {
-            name: "Research Buddy",
-            description: "Digs through papers and reports back with sources.",
-            skills: [{ id: "lit-review", name: "Literature review" }],
-          },
-        },
+        ...listedRemoteAgents(state.a2aAgentsJson),
         {
           name: "laptop",
           url: "https://example.com/a2a/laptop",

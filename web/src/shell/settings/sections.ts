@@ -1,0 +1,89 @@
+// How a settings section plugs into the Settings modal. A section is a
+// component that takes its scope and its id. The frame loads the scope, swaps
+// sections in its content pane, and owns the save bar, so a section only
+// binds its fields to the scope's forms (`scope.config`, `scope.providers`,
+// `scope.models`, `scope.mcpServers`) and starts with `SettingsSection`.
+//
+// Every section of both scopes is drawn by its own component, listed here.
+
+import type { Component } from "svelte";
+import type { FieldRef } from "../../lib/settings-fields";
+import type { AgentScopeModel, AllScopeModel } from "../../lib/settings-model.svelte";
+import type { AgentSectionId, AllSectionId } from "../../lib/settings-sections";
+import AgentToAgent from "./AgentToAgent.svelte";
+import CloudSection from "./CloudSection.svelte";
+import ConnectionsSection from "./ConnectionsSection.svelte";
+import DiagnosticsSection from "./DiagnosticsSection.svelte";
+import GeneralSection from "./GeneralSection.svelte";
+import HistorySection from "./HistorySection.svelte";
+import KeysSection from "./KeysSection.svelte";
+import LimitsSection from "./LimitsSection.svelte";
+import ListenerSection from "./ListenerSection.svelte";
+import Memory from "./Memory.svelte";
+import ModelSection from "./ModelSection.svelte";
+import NotificationsSection from "./NotificationsSection.svelte";
+import RawConfig from "./RawConfig.svelte";
+import Runtime from "./Runtime.svelte";
+import Schedule from "./Schedule.svelte";
+import ToolServers from "./ToolServers.svelte";
+import ToolsSection from "./ToolsSection.svelte";
+import UpdatesSection from "./UpdatesSection.svelte";
+
+export type SettingsScope = AgentScopeModel | AllScopeModel;
+
+/** What the frame gives an agent's section. */
+export interface AgentSectionProps {
+  scope: AgentScopeModel;
+  section: AgentSectionId;
+}
+
+/** What the frame gives an All agents section. */
+export interface AllSectionProps {
+  scope: AllScopeModel;
+  section: AllSectionId;
+}
+
+export const AGENT_SECTION_VIEWS: Record<AgentSectionId, Component<AgentSectionProps>> = {
+  model: ModelSection,
+  connections: ConnectionsSection,
+  tools: ToolsSection,
+  servers: ToolServers,
+  a2a: AgentToAgent,
+  memory: Memory,
+  schedule: Schedule,
+  runtime: Runtime,
+  raw: RawConfig,
+  history: HistorySection,
+};
+
+export const ALL_SECTION_VIEWS: Record<AllSectionId, Component<AllSectionProps>> = {
+  general: GeneralSection,
+  notifications: NotificationsSection,
+  cloud: CloudSection,
+  keys: KeysSection,
+  updates: UpdatesSection,
+  limits: LimitsSection,
+  listener: ListenerSection,
+  diagnostics: DiagnosticsSection,
+  raw: RawConfig,
+  history: HistorySection,
+};
+
+/** A field's problems from the last save as one line, for a control's `error`; undefined when it has none. */
+export function fieldError(scope: SettingsScope, ref: FieldRef): string | undefined {
+  const found = scope.fieldDiagnostics(ref);
+  return found.length === 0 ? undefined : found.map((problem) => problem.message).join(" ");
+}
+
+/** A `config.toml` field's problems from the last save as one line, for a control's `error`; undefined when it has none. */
+export function configFieldError(
+  scope: SettingsScope,
+  field: Extract<FieldRef, { kind: "config" }>["field"],
+): string | undefined {
+  return fieldError(scope, { kind: "config", field });
+}
+
+/** The scope's name in a sentence: "atlas's settings", or the install-wide ones. */
+export function scopeName(scope: SettingsScope): string {
+  return scope.agent === null ? "the install-wide settings" : `${scope.agent}'s settings`;
+}

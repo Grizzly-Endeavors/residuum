@@ -1,9 +1,9 @@
 //! Teammate lifecycle tools: `agent_create` and `agent_delete`.
 //!
 //! Both call the hub's [`crate::hub::AgentDirectory`] as the calling agent,
-//! so the host files the toast and the inbox item that name it. Neither has
-//! an approval gate: the user sees what happened and can restore a deleted
-//! agent from its checkpoint.
+//! so the host publishes the event that names it, which becomes a toast and a
+//! team event. Neither has an approval gate: the user sees what happened and
+//! can restore a deleted agent from its checkpoint.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -72,7 +72,7 @@ fn created_text(summary: &AgentSummary) -> String {
             .as_ref()
             .map_or("no reason was recorded", |err| err.message.as_str());
         return format!(
-            "Created agent '{name}', but it failed to start: {reason}\nIt exists on disk and did not receive a first message. The user can fix its settings and start it from their team view."
+            "Created agent '{name}', but it failed to start: {reason}\nIt exists on disk and did not receive a first message. The user can fix its settings and start it from Home in the web UI."
         );
     }
     format!(
@@ -214,7 +214,7 @@ impl Tool for AgentDeleteTool {
             name: self.name().to_string(),
             description: "Stop a teammate and remove its directory, role page, and roster entry. Its files \
                  are checkpointed first; the result gives the checkpoint id. The user can restore the \
-                 teammate from the team view's recently deleted list or with `residuum agent restore <name>`; \
+                 teammate from Recently deleted on the web UI's Home or with `residuum agent restore <name>`; \
                  you have no tool to restore one.\n\n\
                  You can delete yourself. That stops your turn the moment this call returns, so send your \
                  messages and save your files first, and call it last."
@@ -248,7 +248,7 @@ impl Tool for AgentDeleteTool {
             // removed. A detached task finishes the delete on its own; a
             // failure reaches the user as a hub notice (see `AgentHost`).
             let told = format!(
-                "Deleting yourself now. You are stopped as soon as this call returns; your files are checkpointed first, and the user can restore you from the team view or with `residuum agent restore {name}`."
+                "Deleting yourself now. You are stopped as soon as this call returns; your files are checkpointed first, and the user can restore you from Recently deleted on the web UI's Home or with `residuum agent restore {name}`."
             );
             crate::util::spawn_in_span(async move {
                 if let Err(e) = directory.delete(&name, by).await {
@@ -269,7 +269,7 @@ impl Tool for AgentDeleteTool {
                     || "No checkpoint could be recorded, so it can't be restored.".to_string(),
                     |id| {
                         format!(
-                            "Its files were checkpointed as {id}; the user can restore it from the team view or with `residuum agent restore {name}`."
+                            "Its files were checkpointed as {id}; the user can restore it from Recently deleted on the web UI's Home or with `residuum agent restore {name}`."
                         )
                     },
                 );
@@ -316,14 +316,14 @@ mod tests {
     }
 
     #[test]
-    fn a_teammate_that_failed_to_start_is_reported_plainly_with_the_team_view() {
+    fn a_teammate_that_failed_to_start_is_reported_plainly_with_where_to_fix_it() {
         let text = created_text(&summary(
             AgentState::Failed,
             Some("nova couldn't start: bad model settings"),
         ));
         assert!(text.contains("failed to start"), "{text}");
         assert!(text.contains("bad model settings"), "{text}");
-        assert!(text.contains("team view"), "{text}");
+        assert!(text.contains("start it from Home"), "{text}");
         assert!(!text.contains("agent:nova"), "{text}");
     }
 }

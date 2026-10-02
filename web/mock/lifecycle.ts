@@ -4,10 +4,14 @@ import type {
   HubStatusResponse,
   StopAllResponse,
 } from "../src/lib/hub-types";
+import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { agentNameProblem } from "./agent-name";
-import { MOCK_BRITTLE_FAILURE, MOCK_CLOUD_STATUS, MOCK_RESIDUUM_VERSION } from "./constants";
+import { checkpointBeforeAction } from "./checkpoints";
+import { cloudStatusOf } from "./cloud";
+import { MOCK_RESIDUUM_VERSION, providersStartFailure } from "./constants";
 import { json, readJsonObject, stringField, type JsonObject } from "./http";
 import { decodedParam, type Route, type RouteContext } from "./routes";
+import { modelProblems } from "./provider-models";
 import type { MockAgent, MockHub } from "./state";
 import { byName } from "./util";
 
@@ -140,7 +144,7 @@ function hubStatus(ctx: RouteContext): void {
   json(ctx.res, 200, {
     version: MOCK_RESIDUUM_VERSION,
     uptime_secs: Math.floor(ctx.hub.env.clock.elapsedMs() / 1000),
-    tunnel: MOCK_CLOUD_STATUS,
+    tunnel: cloudStatusOf(ctx.hub.hubState),
     agents: counts,
   } satisfies HubStatusResponse);
 }
@@ -222,13 +226,25 @@ async function patchAgent(ctx: RouteContext): Promise<void> {
   }
   if (typeof autostart === "boolean") agent.autostart = autostart;
   if (newVisibility !== null) agent.visibility = newVisibility;
+  // The hub writes both to the agent's config.toml, checkpointing it first.
+  const { state } = agent;
+  checkpointBeforeAction(state, "agent_config", "patch config.toml");
+  const doc = state.configToml.trim() ? parseToml(state.configToml) : {};
+  if (typeof autostart === "boolean") doc.autostart = autostart;
+  if (newVisibility !== null) {
+    const a2a = doc.a2a;
+    const table = typeof a2a === "object" && !Array.isArray(a2a) && !(a2a instanceof Date);
+    doc.a2a = { ...(table ? a2a : {}), visibility: newVisibility };
+  }
+  state.configToml = stringifyToml(doc);
   ctx.hub.broadcast({ type: "agent_state", agent: ctx.hub.summary(agent) });
   json(ctx.res, 200, ctx.hub.summary(agent));
 }
 
 /**
  * `POST /api/hub/agents/{name}/(start|stop|restart)`. A start takes a moment,
- * and `brittle` fails it.
+ * and fails while the agent's `providers.toml` names a model its provider
+ * doesn't offer, as brittle's does.
  */
 async function runAgentAction(ctx: RouteContext): Promise<void> {
   const agent = namedAgent(ctx);
@@ -242,8 +258,10 @@ async function runAgentAction(ctx: RouteContext): Promise<void> {
     if (action === "restart" && agent.runState === "running") await stopAgent(hub, agent);
     hub.transition(agent, "starting");
     await hub.env.sleep(STARTUP_MS);
-    if (agent.name === "brittle") {
-      agent.lastError = { ...MOCK_BRITTLE_FAILURE, at: hub.env.clock.iso() };
+    const [problem] = modelProblems(agent.state.providersToml);
+    if (problem !== undefined) {
+      const failure = providersStartFailure(agent.name, problem.message);
+      agent.lastError = { ...failure, at: hub.env.clock.iso() };
       hub.transition(agent, "failed");
     } else {
       hub.transition(agent, "running");

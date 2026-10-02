@@ -143,9 +143,9 @@ pub struct WsSubscribers {
     /// Agent session lifecycle and turn events, forwarded as the
     /// `session_*` frames. Main-agent frames never come from here.
     pub session: Subscriber<SessionEvent>,
-    /// Tasks sent to remote agents, for the sessions sidebar.
+    /// Tasks sent to remote agents, for Activity's Running now.
     pub outbound_a2a: Subscriber<OutboundA2aTaskEvent>,
-    /// Workbench artifact file changes, so an open artifact view reloads live.
+    /// Workbench artifact file changes, so an open artifact page reloads live.
     pub workbench: Subscriber<WorkbenchEvent>,
     /// The agent's own workspace change feed, filtered by `watch_set`.
     pub workspace: Subscriber<WorkspaceEvent>,

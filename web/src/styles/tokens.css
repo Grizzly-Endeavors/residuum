@@ -1,0 +1,183 @@
+/*
+ * Design tokens for the web UI.
+ *
+ * This is the one file that spells out literal colors, type sizes, z-indexes,
+ * durations and easing curves (stylelint enforces it). Component styles
+ * reference these tokens instead. The palette is fixed: tints derive from its
+ * colors and add no new hues. contrast-pairs.ts declares which text and glyph
+ * colors may sit on which surfaces, and tokens.test.ts checks each pair
+ * against WCAG AA.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* ── Surfaces ──────────────────────────────────────────────────────── */
+  /* Stone steps up from the base. stone-4 is the fill for hovered and
+     selected rows, not a surface to build on. */
+  --color-stone-0: #0e0e10;
+  --color-stone-1: #131315;
+  --color-stone-2: #161618;
+  --color-stone-3: #1c1c1f;
+  --color-stone-4: #26262a;
+  --color-input: #141416;
+
+  /* ── Lines ─────────────────────────────────────────────────────────── */
+  /* Hairlines between regions. Groups inside a region separate by tone and
+     spacing instead. */
+  --color-line: #2a2a2e;
+  --color-line-soft: #222225;
+  /* Input, select and toggle boundaries, at 3:1 against stone-0 to stone-3. */
+  --color-control-border: #6a6a6f;
+
+  /* ── Text ──────────────────────────────────────────────────────────── */
+  --color-text: #e8e8ea;
+  --color-text-2: #9a9a9f;
+  --color-text-3: #85858b;
+  /* Only on vein-dim and vein-hover. */
+  --color-on-accent: #ffffff;
+
+  /* ── Vein: accent, focus and links ─────────────────────────────────── */
+  --color-vein: #3b8bdb;
+  --color-vein-bright: #5aa3f0;
+  --color-vein-dim: #2a6cb5;
+  --color-vein-hover: #3175c2;
+  --color-vein-tint: color-mix(in srgb, var(--color-vein) 14%, transparent);
+  --color-vein-faint: color-mix(in srgb, var(--color-vein) 7%, transparent);
+  --color-vein-line: color-mix(in srgb, var(--color-vein) 35%, transparent);
+
+  /* ── Moss: the user's messages and positive states ─────────────────── */
+  --color-moss: #6b7a4a;
+  --color-moss-text: #8a9e62;
+  --color-moss-tint: color-mix(in srgb, var(--color-moss) 20%, transparent);
+
+  /* ── Error ─────────────────────────────────────────────────────────── */
+  --color-err: #c0392b;
+  --color-err-text: #e0675a;
+  --color-err-tint: color-mix(in srgb, var(--color-err) 13%, transparent);
+
+  /* ── Floating layers ───────────────────────────────────────────────── */
+  /* Menus, popovers, sheets, dialogs, the palette and toasts. Nothing else
+     casts a shadow. */
+  --color-scrim: rgb(6 6 8 / 62%);
+  --shadow-float: 0 14px 44px rgb(0 0 0 / 55%), 0 2px 8px rgb(0 0 0 / 35%);
+
+  /* ── Type ──────────────────────────────────────────────────────────── */
+  --font-ui: "Onest", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-code: "JetBrains Mono", "SF Mono", Consolas, monospace;
+  --font-mark: "Cinzel", Georgia, serif;
+
+  --font-size-xs: 12px;
+  --font-size-sm: 13px;
+  --font-size-ui: 14px;
+  --font-size-message: 15px;
+  --font-size-heading: 17px;
+  --font-size-title: 20px;
+  /* Code inside running text, relative to the text around it. */
+  --font-size-code: 0.86em;
+  /* Text fields at phone width. iOS zooms into a focused field whose text
+     is under 16px. */
+  --font-size-field-phone: 16px;
+
+  /* The only weights fonts.css loads. Any other weight is synthesized. */
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+
+  --line-height-tight: 1.35;
+  --line-height-ui: 1.5;
+  --line-height-message: 1.65;
+
+  /* ── Shape ─────────────────────────────────────────────────────────── */
+  --corner-sm: 6px;
+  --corner-md: 8px;
+  --corner-lg: 12px;
+  --corner-pill: 999px;
+
+  /* ── Spacing ───────────────────────────────────────────────────────── */
+  /* Named by size in pixels. The steps are fine at the small end, where
+     compact density needs them. */
+  --space-2: 2px;
+  --space-4: 4px;
+  --space-6: 6px;
+  --space-8: 8px;
+  --space-10: 10px;
+  --space-12: 12px;
+  --space-14: 14px;
+  --space-16: 16px;
+  --space-18: 18px;
+  --space-20: 20px;
+  --space-24: 24px;
+  --space-32: 32px;
+  --space-40: 40px;
+  --space-48: 48px;
+  --space-64: 64px;
+
+  /* ── Safe areas ────────────────────────────────────────────────────── */
+  /* What a notch, a rounded corner, the status bar of an installed app or a
+     home indicator takes from each edge. The viewport's viewport-fit=cover
+     makes the browser report them. The shell, and every surface pinned to an
+     edge of the screen, pads by these. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+
+  /* ── Layout ────────────────────────────────────────────────────────── */
+  --layout-rail-width: 248px;
+  --layout-panel-width: 440px;
+  --layout-panel-min-width: 360px;
+  --layout-panel-max-width: 50vw;
+  --layout-reading-width: 720px;
+  --layout-home-width: 1200px;
+  --layout-place-header-height: 52px;
+  --layout-bottom-bar-height: 60px;
+  /* What the phone bottom bar covers, safe-area inset included. Anything
+     pinned to the bottom of the viewport sits above this. */
+  --layout-bottom-bar-offset: calc(var(--layout-bottom-bar-height) + var(--safe-bottom));
+  --layout-touch-target: 44px;
+
+  /* ── Breakpoints ───────────────────────────────────────────────────── */
+  /* Phone is up to phone-max, wide from wide-min, medium between. Media
+     queries can't read custom properties, so shell @media rules write these
+     widths out; stylelint reads them from here and allows no other width, and
+     breakpoints.ts mirrors them for scripts. Components use container
+     queries for their own responsive rules. */
+  --breakpoint-phone-max: 760px;
+  --breakpoint-wide-min: 1181px;
+
+  /* ── Stacking ──────────────────────────────────────────────────────── */
+  --z-base: 0;
+  --z-sticky: 10;
+  --z-panel: 20;
+  --z-drawer: 30;
+  --z-overlay: 40;
+  --z-palette: 50;
+  --z-toast: 60;
+
+  /* ── Motion ────────────────────────────────────────────────────────── */
+  /* UI transitions: fast for hover and press, base for anything that
+     enters, leaves, expands or moves. */
+  --duration-fast: 150ms;
+  --duration-base: 200ms;
+  /* Content swapped inside a frame that stays put: the settings sections. */
+  --duration-swap: 120ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  /* Continuous indicators: a spinner, a working pulse, the rail's flowing
+     vein and the streaming caret. */
+  --duration-spin: 900ms;
+  --duration-pulse: 1600ms;
+  --duration-flow: 1800ms;
+  --duration-blink: 1000ms;
+  --ease-linear: linear;
+  --ease-in-out: ease-in-out;
+  --ease-blink: steps(2);
+  /* Every animation and transition runs this long under reduced motion.
+     Not zero, so code waiting on animationend or transitionend still hears
+     it. */
+  --duration-instant: 0.01ms;
+
+  /* ── Focus ─────────────────────────────────────────────────────────── */
+  --focus-outline-width: 2px;
+  --focus-outline-offset: 2px;
+}

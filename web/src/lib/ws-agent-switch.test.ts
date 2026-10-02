@@ -1,20 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeWebSocket } from "../test/fake-websocket";
-import { setCurrentAgent } from "./paths";
+import { setViewedAgent } from "./viewed-agent";
 import { ws } from "./ws.svelte";
-import { userInbox } from "./inbox.svelte";
 import { scheduled } from "./scheduled.svelte";
-import type { UserInboxItem } from "./types";
-
-const INBOX_ITEM: UserInboxItem = {
-  id: "item-1",
-  title: "For scout",
-  body: "",
-  source: "agent",
-  timestamp: "2026-09-29T12:00:00Z",
-  read: false,
-  attachments: [],
-};
 
 /** A history segment whose only message says `text`. */
 function history(text: string): Record<string, unknown> {
@@ -55,13 +43,19 @@ function installServer(): FakeServer {
         return json(history(`hello from ${agent}`));
       }
       if (input.includes("/usage")) {
-        return json({ input_tokens: 1, output_tokens: 1, cost: null });
+        await held.get(`${agent}:usage`);
+        const tokens = agent === "scout" ? 111 : 222;
+        return json({
+          input_tokens: tokens,
+          output_tokens: tokens,
+          context_tokens: null,
+          tool_calls: 0,
+        });
       }
       if (input.includes("/sessions")) {
         return json({ live: [], completed: [], next_cursor: null });
       }
       if (input.includes("/a2a/outbound")) return json([]);
-      if (input.includes("/inbox")) return json([INBOX_ITEM]);
       if (input.includes("/scheduled/")) return json([]);
       return new Response("unexpected", { status: 500 });
     }),
@@ -97,14 +91,14 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  setCurrentAgent(null);
+  setViewedAgent(null);
   vi.unstubAllGlobals();
 });
 
-describe("agent connection follows the current agent", () => {
+describe("agent connection follows the viewed agent", () => {
   it("opens the agent's own socket and loads its history", async () => {
     const server = installServer();
-    setCurrentAgent("scout");
+    setViewedAgent("scout");
     expect(FakeWebSocket.last.url).toBe("ws://localhost:7700/api/agents/scout/ws");
     FakeWebSocket.last.simulateOpen();
     await flush();
@@ -114,12 +108,24 @@ describe("agent connection follows the current agent", () => {
     expect(ws.agent).toBe("scout");
   });
 
+  it("keeps a message sent before the history arrived, after the history", async () => {
+    const server = installServer();
+    const held = server.hold("scout");
+    setViewedAgent("scout");
+    FakeWebSocket.last.simulateOpen();
+    ws.sendChat("sent early");
+    held.release();
+    await flush();
+
+    expect(feedText()).toEqual(["hello from scout", "sent early"]);
+  });
+
   it("closes the old socket and opens the new agent's on a switch", () => {
     installServer();
-    setCurrentAgent("scout");
+    setViewedAgent("scout");
     const first = FakeWebSocket.last;
     first.simulateOpen();
-    setCurrentAgent("atlas");
+    setViewedAgent("atlas");
 
     expect(first.readyState).toBe(FakeWebSocket.CLOSED);
     expect(FakeWebSocket.sockets).toHaveLength(2);
@@ -130,10 +136,10 @@ describe("agent connection follows the current agent", () => {
     vi.useFakeTimers();
     try {
       installServer();
-      setCurrentAgent("scout");
+      setViewedAgent("scout");
       const first = FakeWebSocket.last;
       first.simulateOpen();
-      setCurrentAgent("atlas");
+      setViewedAgent("atlas");
       first.simulateClose();
       vi.advanceTimersByTime(60_000);
       expect(FakeWebSocket.sockets.map((s) => s.url)).toEqual([
@@ -147,50 +153,47 @@ describe("agent connection follows the current agent", () => {
 
   it("closes the connection when no agent is current", () => {
     installServer();
-    setCurrentAgent("scout");
+    setViewedAgent("scout");
     const socket = FakeWebSocket.last;
-    setCurrentAgent(null);
+    setViewedAgent(null);
     expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
     expect(ws.agent).toBeNull();
   });
 });
 
 describe("switching agents leaves nothing of the old agent behind", () => {
-  it("replaces the feed, sessions, inbox, and scheduled state", async () => {
+  it("replaces the feed, sessions, and scheduled state", async () => {
     installServer();
-    setCurrentAgent("scout");
+    setViewedAgent("scout");
     FakeWebSocket.last.simulateOpen();
     await flush();
-    await userInbox.refresh();
     scheduled.pulses = [{ name: "p" } as never];
     scheduled.loaded = true;
     ws.sessions.live = [{ run_id: "r1" } as never];
     ws.store.sessionUsage = { input_tokens: 5, output_tokens: 5, cost: null } as never;
     expect(feedText()).toEqual(["hello from scout"]);
-    expect(userInbox.items).toHaveLength(1);
     const scoutStore = ws.store;
     const scoutSessions = ws.sessions;
 
-    setCurrentAgent("atlas");
+    setViewedAgent("atlas");
 
     expect(ws.store).not.toBe(scoutStore);
     expect(ws.sessions).not.toBe(scoutSessions);
     expect(ws.store.feed).toEqual([]);
     expect(ws.store.sessionUsage).toBeNull();
     expect(ws.sessions.live).toEqual([]);
-    expect(userInbox.items).toEqual([]);
     expect(scheduled.pulses).toEqual([]);
     expect(scheduled.loaded).toBe(false);
   });
 
   it("loads the new agent's history and usage, from its own paths", async () => {
     const server = installServer();
-    setCurrentAgent("scout");
+    setViewedAgent("scout");
     FakeWebSocket.last.simulateOpen();
     await flush();
     server.urls.length = 0;
 
-    setCurrentAgent("atlas");
+    setViewedAgent("atlas");
     FakeWebSocket.last.simulateOpen();
     await flush();
 
@@ -201,23 +204,26 @@ describe("switching agents leaves nothing of the old agent behind", () => {
 
   it("drops a message queued for the old agent instead of sending it to the new one", () => {
     installServer();
-    setCurrentAgent("scout");
+    setViewedAgent("scout");
     ws.sendChat("for scout only");
     expect(ws.transport.pendingCount).toBe(1);
 
-    setCurrentAgent("atlas");
+    setViewedAgent("atlas");
     expect(ws.transport.pendingCount).toBe(0);
     FakeWebSocket.last.simulateOpen();
 
-    expect(FakeWebSocket.last.sent).toEqual([]);
+    // Only the frame every connection starts with: the tool frames turned on.
+    expect(FakeWebSocket.last.sent).toEqual([
+      JSON.stringify({ type: "set_verbose", enabled: true }),
+    ]);
   });
 
   it("ignores frames that arrive from the old agent's socket after the switch", async () => {
     installServer();
-    setCurrentAgent("scout");
+    setViewedAgent("scout");
     const first = FakeWebSocket.last;
     first.simulateOpen();
-    setCurrentAgent("atlas");
+    setViewedAgent("atlas");
     FakeWebSocket.last.simulateOpen();
     await flush();
 
@@ -229,11 +235,11 @@ describe("switching agents leaves nothing of the old agent behind", () => {
   it("does not show history that was still loading for the old agent", async () => {
     const server = installServer();
     const slow = server.hold("scout");
-    setCurrentAgent("scout");
+    setViewedAgent("scout");
     FakeWebSocket.last.simulateOpen();
     await flush();
 
-    setCurrentAgent("atlas");
+    setViewedAgent("atlas");
     FakeWebSocket.last.simulateOpen();
     await flush();
     expect(feedText()).toEqual(["hello from atlas"]);
@@ -244,40 +250,28 @@ describe("switching agents leaves nothing of the old agent behind", () => {
   });
 
   it("does not let the old agent's late usage totals land on the new agent", async () => {
-    installServer();
-    setCurrentAgent("scout");
+    const server = installServer();
+    const slow = server.hold("scout:usage");
+    setViewedAgent("scout");
     FakeWebSocket.last.simulateOpen();
-    setCurrentAgent("atlas");
+    setViewedAgent("atlas");
     await flush();
-    expect(ws.store.sessionUsage).toBeNull();
-  });
+    expect(ws.store.sessionUsage?.input_tokens).toBe(222);
 
-  it("does not send a session command from the old agent's store to the new agent", async () => {
-    installServer();
-    setCurrentAgent("scout");
-    FakeWebSocket.last.simulateOpen();
+    slow.release();
     await flush();
-    const oldSessions = ws.sessions;
-
-    setCurrentAgent("atlas");
-    FakeWebSocket.last.simulateOpen();
-    await flush();
-    const sentBefore = FakeWebSocket.last.sent.length;
-
-    oldSessions.sendMessage("main", "stale command");
-
-    expect(FakeWebSocket.last.sent).toHaveLength(sentBefore);
+    expect(ws.store.sessionUsage?.input_tokens).toBe(222);
   });
 
   it("starts the new agent's connection state fresh", async () => {
     installServer();
-    setCurrentAgent("scout");
+    setViewedAgent("scout");
     FakeWebSocket.last.simulateOpen();
     await flush();
     ws.store.handleMessage({ type: "turn_started", reply_to: "t1" } as never);
     expect(ws.store.isProcessing).toBe(true);
 
-    setCurrentAgent("atlas");
+    setViewedAgent("atlas");
 
     expect(ws.store.isProcessing).toBe(false);
     expect(ws.store.activeTurnId).toBeNull();

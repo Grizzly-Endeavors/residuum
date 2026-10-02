@@ -9,6 +9,10 @@
     EMBEDDING_MODEL_LISTS,
     type ModelEntry,
   } from "../../lib/models";
+  import { Banner, SelectField, TextField, type Choice } from "../../lib/ui";
+  import { providerName } from "./providers";
+  import SetupGroup from "./SetupGroup.svelte";
+  import SetupNav from "./SetupNav.svelte";
 
   interface Props {
     wizardState: SetupWizardState;
@@ -16,29 +20,38 @@
     onBack: () => void;
   }
 
-  let { wizardState, onNext, onBack }: Props = $props();
+  let { wizardState = $bindable(), onNext, onBack }: Props = $props();
 
-  const providers: Record<string, string> = {
-    anthropic: "Anthropic",
-    openai: "OpenAI",
-    gemini: "Google Gemini",
-    fireworks: "Fireworks AI",
-    ollama: "Ollama",
-  };
+  const uid = $props.id();
 
-  const roleTooltips: Record<string, string> = {
-    main: "The primary model used for conversations and task execution.",
-    observer:
-      "Watches conversations and extracts facts, preferences, and patterns for long-term memory.",
-    reflector:
-      "Periodically reviews stored memories, consolidates duplicates, and resolves contradictions.",
-    pulse: "Drives proactive behavior — daily briefings, check-ins, and ambient monitoring tasks.",
-    embedding:
-      "Generates vector embeddings for semantic memory search. Only some providers support this.",
-    "bg-small":
-      "Used for lightweight background tasks like formatting, simple lookups, and notifications.",
-    "bg-medium": "Used for moderate background tasks like summarization and analysis.",
-    "bg-large": "Used for complex background tasks that need strong reasoning ability.",
+  /** The model select's value for "a model that isn't listed". */
+  const OTHER = "__other__";
+
+  const ROLES: Record<string, { name: string; description: string }> = {
+    main: { name: "Main agent", description: "Holds your conversations and does the work." },
+    observer: {
+      name: "Observer",
+      description: "Watches conversations and saves facts, preferences and patterns to memory.",
+    },
+    reflector: {
+      name: "Reflector",
+      description:
+        "Reviews saved memories now and then, merging duplicates and settling conflicts.",
+    },
+    pulse: {
+      name: "Pulse",
+      description: "Drives proactive work: daily briefings, check-ins and background monitoring.",
+    },
+    embedding: {
+      name: "Embedding",
+      description: "Turns text into vectors for memory search. Anthropic doesn't offer embeddings.",
+    },
+    "bg-small": {
+      name: "Small",
+      description: "Light jobs, like formatting, simple lookups and notifications.",
+    },
+    "bg-medium": { name: "Medium", description: "Moderate jobs, like summaries and analysis." },
+    "bg-large": { name: "Large", description: "Hard jobs that need strong reasoning." },
   };
 
   // Track model lists per role
@@ -105,12 +118,7 @@
     void loadModels(role);
   }
 
-  function setRoleModel(role: string, value: string) {
-    if (value === "__other__") {
-      otherActive[role] = true;
-      return;
-    }
-    otherActive[role] = false;
+  function writeRoleModel(role: string, value: string) {
     if (role === "main") {
       wizardState.providerConfigs[wizardState.mainProvider].model = value;
     } else if (role === "embedding") {
@@ -124,19 +132,18 @@
     }
   }
 
+  function setRoleModel(role: string, value: string) {
+    if (value === OTHER) {
+      otherActive[role] = true;
+      return;
+    }
+    otherActive[role] = false;
+    writeRoleModel(role, value);
+  }
+
   function setOtherModel(role: string, value: string) {
     otherValues[role] = value;
-    if (role === "main") {
-      wizardState.providerConfigs[wizardState.mainProvider].model = value;
-    } else if (role === "embedding") {
-      wizardState.embeddingModel.model = value;
-    } else if (role.startsWith("bg-")) {
-      const bg = wizardState.backgroundModels[role.slice(3)];
-      if (bg) bg.model = value;
-    } else {
-      const r = wizardState.roles[role];
-      if (r) r.model = value;
-    }
+    writeRoleModel(role, value);
   }
 
   function defaultEmbeddingProvider(): string {
@@ -151,11 +158,18 @@
     wizardState.selectedProviders.some((p) => EMBEDDING_PROVIDERS.includes(p)),
   );
 
-  let mainProviderOptions = $derived([...wizardState.selectedProviders]);
-
-  let embeddingProviderOptions = $derived(
-    EMBEDDING_PROVIDERS.filter((p) => wizardState.selectedProviders.includes(p as ProviderKey)),
-  );
+  /** With the list loaded, pick the default for an unset role, or show a model typed under Other again. */
+  function settleModel(role: string, models: ModelEntry[], defaultModel: string) {
+    const current = getRoleModel(role);
+    if (!current) {
+      if (models.length === 0) return;
+      const found = models.some((m) => m.id === defaultModel);
+      setRoleModel(role, found ? defaultModel : (models[0]?.id ?? ""));
+    } else if (!models.some((m) => m.id === current)) {
+      otherActive[role] = true;
+      otherValues[role] = current;
+    }
+  }
 
   async function loadModels(role: string) {
     const prov = getRoleProvider(role);
@@ -169,12 +183,7 @@
       }
       modelLists[role] = models;
       modelErrors[role] = null;
-      const current = getRoleModel(role);
-      if (!current && models.length > 0) {
-        const defaultModel = DEFAULT_EMBEDDING_MODELS[prov] ?? "";
-        const found = models.some((m) => m.id === defaultModel);
-        setRoleModel(role, found ? defaultModel : (models[0]?.id ?? ""));
-      }
+      settleModel(role, models, DEFAULT_EMBEDDING_MODELS[prov] ?? "");
       return;
     }
 
@@ -183,335 +192,151 @@
     const url = provCfg?.url ?? undefined;
 
     modelLoading[role] = true;
-    const result = await fetchModels(prov, apiKey, url);
+    // No agent exists yet, so the hub looks the models up.
+    const result = await fetchModels(null, prov, apiKey, url);
     modelLists[role] = result.models;
     modelLoading[role] = false;
     modelErrors[role] = result.error;
-
-    // Auto-select default if no model set
-    const current = getRoleModel(role);
-    if (!current && result.models.length > 0) {
-      const defaultModel = DEFAULT_MODELS[prov] ?? "";
-      const found = result.models.some((m) => m.id === defaultModel);
-      setRoleModel(role, found ? defaultModel : (result.models[0]?.id ?? ""));
-    }
+    settleModel(role, result.models, DEFAULT_MODELS[prov] ?? "");
   }
 
-  const allRoles = ["main", "observer", "reflector", "pulse"];
-  const bgTiers = ["small", "medium", "large"];
+  const subsystemRoles = ["observer", "reflector", "pulse"];
+  const backgroundRoles = ["bg-small", "bg-medium", "bg-large"];
 
   onMount(() => {
-    for (const role of allRoles) void loadModels(role);
+    for (const role of ["main", ...subsystemRoles]) void loadModels(role);
     if (hasEmbeddingProvider) void loadModels("embedding");
-    for (const tier of bgTiers) void loadModels(`bg-${tier}`);
+    for (const role of backgroundRoles) void loadModels(role);
   });
 
-  function roleRow(role: string): { label: string; providerOptions: string[] } {
-    if (role === "main") {
-      return { label: "Main Agent", providerOptions: [...wizardState.selectedProviders] };
-    }
-    if (role === "embedding") {
-      return {
-        label: "Embedding",
-        providerOptions: EMBEDDING_PROVIDERS.filter((p) =>
-          wizardState.selectedProviders.includes(p as ProviderKey),
-        ),
-      };
-    }
-    const labels: Record<string, string> = {
-      observer: "Observer",
-      reflector: "Reflector",
-      pulse: "Pulse",
-      "bg-small": "Small",
-      "bg-medium": "Medium",
-      "bg-large": "Large",
-    };
-    return {
-      label: labels[role] ?? role,
-      providerOptions: [...wizardState.selectedProviders],
-    };
+  function providerChoices(role: string): Choice[] {
+    const keys =
+      role === "embedding"
+        ? EMBEDDING_PROVIDERS.filter((p) =>
+            wizardState.selectedProviders.includes(p as ProviderKey),
+          )
+        : wizardState.selectedProviders;
+    return keys.map((key) => ({ value: key, label: providerName(key) }));
+  }
+
+  function modelChoices(role: string): Choice[] {
+    return [
+      ...(modelLists[role] ?? []).map((m) => ({ value: m.id, label: m.name || m.id })),
+      { value: OTHER, label: "Other…" },
+    ];
   }
 </script>
 
-<h2>Assign Models</h2>
-<p class="subtitle">
-  Choose which model to use for each role. All default to the main model if left unchanged.
-</p>
-
-<!-- Agent section -->
-<div class="roles-section">
-  <div class="roles-section-label">Agent</div>
-  <div class="role-row">
-    <div class="role-row-label">
-      Main Agent
-      <span class="role-tooltip">
-        <span class="role-tooltip-icon">?</span>
-        <span class="role-tooltip-text">{roleTooltips.main}</span>
-      </span>
+{#snippet roleRow(role: string)}
+  <div
+    class="setup-role"
+    role="group"
+    aria-labelledby="{uid}-{role}"
+    aria-describedby="{uid}-{role}-desc"
+  >
+    <div class="setup-role-head">
+      <span id="{uid}-{role}" class="setup-role-name">{ROLES[role]?.name}</span>
+      <span id="{uid}-{role}-desc" class="setup-role-desc">{ROLES[role]?.description}</span>
     </div>
-    <div class="role-row-fields">
-      <div class="settings-field">
-        <label for="role-main-provider">Provider</label>
-        <select
-          id="role-main-provider"
-          value={getRoleProvider("main")}
-          onchange={(e) => setRoleProvider("main", (e.target as HTMLSelectElement).value)}
-        >
-          {#each mainProviderOptions as pk (pk)}
-            <option value={pk}>{providers[pk]}</option>
-          {/each}
-        </select>
-      </div>
-      <div class="settings-field">
-        <label for="role-main-model">Model</label>
-        <div class="model-select-wrap">
-          <select
-            id="role-main-model"
-            value={otherActive["main"] ? "__other__" : getRoleModel("main")}
-            onchange={(e) => setRoleModel("main", (e.target as HTMLSelectElement).value)}
-            disabled={modelLoading["main"]}
-          >
-            {#if modelLoading["main"]}
-              <option value="">Loading...</option>
-            {:else}
-              {#each modelLists["main"] ?? [] as m (m.id)}
-                <option value={m.id}>{m.name ?? m.id}</option>
-              {/each}
-              <option value="__other__">Other...</option>
-            {/if}
-          </select>
-          {#if otherActive["main"]}
-            <input
-              class="model-other-input"
-              type="text"
-              placeholder="Enter model ID..."
-              value={otherValues["main"] ?? ""}
-              oninput={(e) => setOtherModel("main", (e.target as HTMLInputElement).value)}
-            />
-          {/if}
-        </div>
-      </div>
+    <div class="setup-role-fields">
+      <SelectField
+        label="Provider"
+        options={providerChoices(role)}
+        bind:value={() => getRoleProvider(role), (value) => setRoleProvider(role, value)}
+      />
+      <SelectField
+        label="Model"
+        options={modelChoices(role)}
+        loading={modelLoading[role] ?? false}
+        bind:value={
+          () => (otherActive[role] ? OTHER : getRoleModel(role)),
+          (value) => setRoleModel(role, value)
+        }
+      />
     </div>
-    {#if modelErrors["main"]}
-      <div class="provider-warning">
-        <span class="provider-warning-icon">&#9888;</span>
-        <span
-          >Couldn't load live models ({modelErrors["main"]}) — showing a fallback list, not the
-          provider's real models. Check the API key or URL and try again.</span
-        >
-      </div>
+    {#if otherActive[role]}
+      <TextField
+        label="Model ID"
+        placeholder="Enter the model's ID"
+        code
+        autocapitalize="off"
+        autocomplete="off"
+        spellcheck="false"
+        bind:value={() => otherValues[role] ?? "", (value) => setOtherModel(role, value)}
+      />
+    {/if}
+    {#if modelErrors[role]}
+      <Banner tone="warn">
+        Couldn't load {providerName(getRoleProvider(role))}'s models ({modelErrors[role]}), so this
+        is a fallback list. Go back to Providers to check the API key or base URL.
+      </Banner>
     {/if}
   </div>
-</div>
+{/snippet}
 
-<!-- Subsystems section -->
-<div class="roles-section">
-  <div class="roles-section-label">Subsystems</div>
-  <p class="roles-section-hint">
-    Memory and proactivity subsystems. These can use smaller, cheaper models.
-  </p>
-  {#each ["observer", "reflector", "pulse"] as role (role)}
-    {@const info = roleRow(role)}
-    <div class="role-row">
-      <div class="role-row-label">
-        {info.label}
-        <span class="role-tooltip">
-          <span class="role-tooltip-icon">?</span>
-          <span class="role-tooltip-text">{roleTooltips[role]}</span>
-        </span>
-      </div>
-      <div class="role-row-fields">
-        <div class="settings-field">
-          <label for="role-{role}-provider">Provider</label>
-          <select
-            id="role-{role}-provider"
-            value={getRoleProvider(role)}
-            onchange={(e) => setRoleProvider(role, (e.target as HTMLSelectElement).value)}
-          >
-            {#each info.providerOptions as pk (pk)}
-              <option value={pk}>{providers[pk]}</option>
-            {/each}
-          </select>
-        </div>
-        <div class="settings-field">
-          <label for="role-{role}-model">Model</label>
-          <div class="model-select-wrap">
-            <select
-              id="role-{role}-model"
-              value={otherActive[role] ? "__other__" : getRoleModel(role)}
-              onchange={(e) => setRoleModel(role, (e.target as HTMLSelectElement).value)}
-              disabled={modelLoading[role]}
-            >
-              {#if modelLoading[role]}
-                <option value="">Loading...</option>
-              {:else}
-                {#each modelLists[role] ?? [] as m (m.id)}
-                  <option value={m.id}>{m.name ?? m.id}</option>
-                {/each}
-                <option value="__other__">Other...</option>
-              {/if}
-            </select>
-            {#if otherActive[role]}
-              <input
-                class="model-other-input"
-                type="text"
-                placeholder="Enter model ID..."
-                value={otherValues[role] ?? ""}
-                oninput={(e) => setOtherModel(role, (e.target as HTMLInputElement).value)}
-              />
-            {/if}
-          </div>
-        </div>
-      </div>
-      {#if modelErrors[role]}
-        <div class="provider-warning">
-          <span class="provider-warning-icon">&#9888;</span>
-          <span
-            >Couldn't load live models ({modelErrors[role]}) — showing a fallback list, not the
-            provider's real models. Check the API key or URL and try again.</span
-          >
-        </div>
-      {/if}
-    </div>
+<SetupGroup title="Agent">
+  {@render roleRow("main")}
+</SetupGroup>
+
+<SetupGroup title="Memory and proactive work" hint="These can use smaller, cheaper models.">
+  {#each subsystemRoles as role (role)}
+    {@render roleRow(role)}
   {/each}
-</div>
+</SetupGroup>
 
-<!-- Embedding section -->
 {#if hasEmbeddingProvider}
-  <div class="roles-section">
-    <div class="roles-section-label">Embedding</div>
-    <p class="roles-section-hint">
-      Used for semantic memory search. Anthropic does not offer embeddings.
-    </p>
-    <div class="role-row">
-      <div class="role-row-label">
-        Embedding
-        <span class="role-tooltip">
-          <span class="role-tooltip-icon">?</span>
-          <span class="role-tooltip-text">{roleTooltips.embedding}</span>
-        </span>
-      </div>
-      <div class="role-row-fields">
-        <div class="settings-field">
-          <label for="role-embedding-provider">Provider</label>
-          <select
-            id="role-embedding-provider"
-            value={getRoleProvider("embedding")}
-            onchange={(e) => setRoleProvider("embedding", (e.target as HTMLSelectElement).value)}
-          >
-            {#each embeddingProviderOptions as pk (pk)}
-              <option value={pk}>{providers[pk]}</option>
-            {/each}
-          </select>
-        </div>
-        <div class="settings-field">
-          <label for="role-embedding-model">Model</label>
-          <div class="model-select-wrap">
-            <select
-              id="role-embedding-model"
-              value={otherActive["embedding"] ? "__other__" : getRoleModel("embedding")}
-              onchange={(e) => setRoleModel("embedding", (e.target as HTMLSelectElement).value)}
-              disabled={modelLoading["embedding"]}
-            >
-              {#if modelLoading["embedding"]}
-                <option value="">Loading...</option>
-              {:else}
-                {#each modelLists["embedding"] ?? [] as m (m.id)}
-                  <option value={m.id}>{m.name ?? m.id}</option>
-                {/each}
-                <option value="__other__">Other...</option>
-              {/if}
-            </select>
-            {#if otherActive["embedding"]}
-              <input
-                class="model-other-input"
-                type="text"
-                placeholder="Enter model ID..."
-                value={otherValues["embedding"] ?? ""}
-                oninput={(e) => setOtherModel("embedding", (e.target as HTMLInputElement).value)}
-              />
-            {/if}
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
+  <SetupGroup title="Memory search">
+    {@render roleRow("embedding")}
+  </SetupGroup>
 {/if}
 
-<!-- Background section -->
-<div class="roles-section">
-  <div class="roles-section-label">Background Tasks</div>
-  <p class="roles-section-hint">
-    Tiered models for background work. Tasks specify small, medium, or large.
-  </p>
-  {#each bgTiers as tier (tier)}
-    {@const role = `bg-${tier}`}
-    {@const info = roleRow(role)}
-    <div class="role-row">
-      <div class="role-row-label">
-        {info.label}
-        <span class="role-tooltip">
-          <span class="role-tooltip-icon">?</span>
-          <span class="role-tooltip-text">{roleTooltips[role]}</span>
-        </span>
-      </div>
-      <div class="role-row-fields">
-        <div class="settings-field">
-          <label for="role-bg-{tier}-provider">Provider</label>
-          <select
-            id="role-bg-{tier}-provider"
-            value={getRoleProvider(role)}
-            onchange={(e) => setRoleProvider(role, (e.target as HTMLSelectElement).value)}
-          >
-            {#each info.providerOptions as pk (pk)}
-              <option value={pk}>{providers[pk]}</option>
-            {/each}
-          </select>
-        </div>
-        <div class="settings-field">
-          <label for="role-bg-{tier}-model">Model</label>
-          <div class="model-select-wrap">
-            <select
-              id="role-bg-{tier}-model"
-              value={otherActive[role] ? "__other__" : getRoleModel(role)}
-              onchange={(e) => setRoleModel(role, (e.target as HTMLSelectElement).value)}
-              disabled={modelLoading[role]}
-            >
-              {#if modelLoading[role]}
-                <option value="">Loading...</option>
-              {:else}
-                {#each modelLists[role] ?? [] as m (m.id)}
-                  <option value={m.id}>{m.name ?? m.id}</option>
-                {/each}
-                <option value="__other__">Other...</option>
-              {/if}
-            </select>
-            {#if otherActive[role]}
-              <input
-                class="model-other-input"
-                type="text"
-                placeholder="Enter model ID..."
-                value={otherValues[role] ?? ""}
-                oninput={(e) => setOtherModel(role, (e.target as HTMLInputElement).value)}
-              />
-            {/if}
-          </div>
-        </div>
-      </div>
-      {#if modelErrors[role]}
-        <div class="provider-warning">
-          <span class="provider-warning-icon">&#9888;</span>
-          <span
-            >Couldn't load live models ({modelErrors[role]}) — showing a fallback list, not the
-            provider's real models. Check the API key or URL and try again.</span
-          >
-        </div>
-      {/if}
-    </div>
+<SetupGroup
+  title="Background tasks"
+  hint="Each background task asks for a small, medium or large model."
+>
+  {#each backgroundRoles as role (role)}
+    {@render roleRow(role)}
   {/each}
-</div>
+</SetupGroup>
 
-<div class="setup-nav">
-  <button class="btn btn-secondary" onclick={onBack}>Back</button>
-  <button class="btn btn-primary" onclick={onNext}>Next</button>
-</div>
+<SetupNav {onBack} {onNext} />
+
+<style>
+  .setup-role {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-12);
+
+    & + & {
+      padding-top: var(--space-16);
+      border-top: 1px solid var(--color-line-soft);
+    }
+  }
+
+  .setup-role-head {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .setup-role-name {
+    font-weight: var(--font-weight-medium);
+  }
+
+  .setup-role-desc {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-2);
+  }
+
+  .setup-role-fields {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--space-12);
+  }
+
+  @container setup-group (max-width: 440px) {
+    .setup-role-fields {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

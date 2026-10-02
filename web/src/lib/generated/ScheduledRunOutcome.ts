@@ -3,6 +3,6 @@ import type { SessionRunStatus } from "./SessionRunStatus";
 
 /**
  * One run's outcome, for a pulse's or action's "last outcome" in the
- * Scheduled view.
+ * Schedule place.
  */
 export type ScheduledRunOutcome = { status: SessionRunStatus, at: string, error: string | null, };

@@ -1,7 +1,7 @@
 //! `upcoming`: the next runs of an agent's pulses and scheduled actions, read
 //! from its files, the same way whether the agent is running or not.
 //!
-//! A pulse's time comes from [`next_run_at`], which the Scheduled view's
+//! A pulse's time comes from [`next_run_at`], which the Schedule place's
 //! `next_fire_at` uses too. A scheduled action's is the time it was set for.
 
 use chrono::{DateTime, Utc};

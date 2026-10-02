@@ -654,7 +654,7 @@ fn record_pending_rollback(prev_path: &Path, target_version: &str) {
 fn record_verification(version: &str, verification: ReleaseVerification) {
     let Ok(config_dir) = crate::config::default_hub_dir() else {
         tracing::warn!(
-            "could not determine hub directory; the update page won't show whether this update was verified"
+            "could not determine hub directory; Settings won't show whether this update was verified"
         );
         return;
     };

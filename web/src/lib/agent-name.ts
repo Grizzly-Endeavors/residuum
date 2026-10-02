@@ -28,3 +28,11 @@ export function agentNameProblem(name: string): string | null {
   }
   return null;
 }
+
+/** Check a name for a new agent: the rules above, and not one of `existing`. */
+export function newAgentNameProblem(name: string, existing: readonly string[]): string | null {
+  const problem = agentNameProblem(name);
+  if (problem !== null) return problem;
+  if (existing.includes(name)) return `You already have an agent called ${name}.`;
+  return null;
+}

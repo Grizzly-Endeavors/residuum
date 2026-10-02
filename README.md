@@ -80,6 +80,8 @@ residuum serve
 
 A setup screen walks you through connecting your AI provider and creating your first agent. Once it's running, just talk to it.
 
+The web app is at `http://localhost:7700`. Home shows every agent and what needs you, each agent has its own chat, and Inbox collects what your agents leave for you. Through [Residuum Cloud](#residuum-cloud) it also installs on your phone as an app and can notify you when an agent has something for you.
+
 ## Works With
 
 Claude, ChatGPT, Gemini, open models on Fireworks, and local models. If one goes down, your agents switch to a backup automatically.

@@ -127,6 +127,11 @@ web-dev *args: _web-deps
 web-build: _web-deps
     cd web && npm run build
 
+# Gzipped size of the initial route (the scripts and styles loaded before the first screen), from a fresh build, against its budget: fails when the route outgrows it, as CI does
+[group('web')]
+web-size: web-build
+    scripts/web-initial-route-size.sh web/dist
+
 # Format web sources
 [group('web')]
 web-fmt: _web-deps
@@ -184,9 +189,9 @@ web-e2e-webkit *args: _web-deps
 
 # --- checks ------------------------------------------------------------------
 
-# CI's web job except the end-to-end suite, which has its own recipes (web-e2e-fast, web-e2e)
+# CI's web job except the end-to-end suite, which has its own recipes (web-e2e-fast, web-e2e); web-size builds, then checks the initial route's budget
 [group('check')]
-web-check: web-fmt-check web-lint web-typecheck web-test web-build
+web-check: web-fmt-check web-lint web-typecheck web-test web-size
 
 # Everything CI's rust job runs
 [group('check')]
@@ -227,7 +232,18 @@ _web-deps:
 _web-e2e-browsers: _web-deps
     cd web && npx playwright install chromium
 
-# build.rs panics without web/dist. A stale dist is refreshed by `just web-build`.
+# build.rs panics without web/dist, and the gateway's asset tests read dist/sw.js. Rebuilds a dist that is
+# missing, incomplete or stale: sw.js is the last file a build writes, so a dist without it is unfinished,
+# and a source newer than it was edited since. Tests and the mock aren't built into dist and don't count.
 [private]
 _web-dist: _web-deps
-    @[ -f web/dist/index.html ] || (cd web && npm run build)
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd web
+    if [ -f dist/index.html ] && [ -f dist/sw.js ]; then
+        newer="$(find src public build index.html package-lock.json vite.config.ts svelte.config.js \
+            -newer dist/sw.js -type f -not -name '*.test.ts' -not -path 'src/test/*' -print -quit)"
+        [ -n "$newer" ] || exit 0
+        echo "web/dist is older than $newer: rebuilding"
+    fi
+    npm run build

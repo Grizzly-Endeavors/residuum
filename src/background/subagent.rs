@@ -363,8 +363,8 @@ pub(crate) struct TurnExecution<'a> {
     /// `execute_turn`) so the run's transcript survives a crash mid-turn in
     /// the session store.
     pub(crate) transcript_sink: Option<&'a dyn crate::agent::turn::TranscriptSink>,
-    /// Where this turn's model-call usage accumulates, for the `SessionView`
-    /// footer. `None` for a turn that doesn't track session-level totals.
+    /// Where this turn's model-call usage accumulates, for the session panel's
+    /// spent tokens. `None` for a turn that doesn't track session-level totals.
     pub(crate) usage_sink: Option<&'a dyn crate::agent::usage::UsageSink>,
     /// The run's own long-lived interrupt channel: draining it is what
     /// delivers an agent message to a *running* turn at its next tool-call

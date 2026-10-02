@@ -42,7 +42,7 @@ pub(super) struct ModelsResponse {
 /// `POST /api/hub/providers/models` (and `/api/agents/{name}/providers/models`)
 /// — fetch available models from a provider API.
 ///
-/// Used by onboarding and the settings pages to populate model dropdowns.
+/// Used by onboarding and the Settings modal to populate model dropdowns.
 /// Takes provider type, optional API key, and optional base URL. Needs no
 /// agent: `secret:` keys resolve against the hub's secret store.
 pub(super) async fn api_provider_models(

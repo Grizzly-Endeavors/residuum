@@ -4,17 +4,23 @@
 // the agent sessions store. It is bound to one agent at a time: switching
 // agents tears the connection down, replaces every agent-scoped store, and
 // opens a new connection, so nothing from one agent shows under another.
+// The connection is open only while the hub says the agent runs: a stopped
+// or failed agent's chat shows its history, read from its files, and nothing
+// tries to reach it until it starts.
 
+import { untrack } from "svelte";
+import { hub } from "./hub.svelte";
 import { WsTransport } from "./transport.svelte";
-import { agentWsUrl, onCurrentAgentChange } from "./paths";
-import { userInbox } from "./inbox.svelte";
+import { agentWsUrl } from "./paths";
+import { onViewedAgentChange } from "./viewed-agent";
 import { scheduled } from "./scheduled.svelte";
 import { FeedStore } from "./feed.svelte";
 import { SessionsStore, isSessionFrame } from "./sessions.svelte";
 import { notifications } from "./notifications.svelte";
 import { invalidate } from "./cache";
 import { userErrorMessage } from "./errors";
-import { WorkspaceWatchSync } from "./workspace-watch";
+import { normalizeWatchPrefix } from "./workspace-watch";
+import { WatchRegistry } from "./watch-registry";
 import {
   fetchChatHistory,
   fetchChatSegment,
@@ -29,42 +35,50 @@ import {
 import type { ClientMessage, ImageAttachment, ServerMessage } from "./types";
 
 class WsCoordinator {
-  /** The agent this connection and its stores belong to, or `null` before one is chosen. */
+  /** The bound agent: the one this connection and its stores belong to, or `null` before one is chosen. */
   agent = $state<string | null>(null);
   transport = new WsTransport({
     url: () => agentWsUrl(this.agent ?? ""),
     keepalive: true,
   });
-  /** The main chat's feed for the current agent. Replaced on an agent switch. */
-  store = $state<FeedStore>(new FeedStore());
-  /** The current agent's sessions. Replaced on an agent switch. */
-  sessions = $state<SessionsStore>(this.createSessions(this.store));
+  /** The main chat's feed for the bound agent. Replaced on an agent switch. */
+  store = $state<FeedStore>(this.createFeed(null));
+  /** The bound agent's sessions. Replaced on an agent switch. */
+  sessions = $state<SessionsStore>(this.createSessions(null, this.store));
   private msgCounter = 0;
   private hasConnected = false;
+  /** The agent started while bound, so its chat may be behind once the connection opens. */
+  private catchUpOnConnect = false;
   private frameListeners = new Set<(msg: ServerMessage, agent: string | null) => void>();
-  private connectionListeners = new Set<(connected: boolean) => void>();
-  /** The open artifact's watched workspace prefixes, re-sent on reconnect. */
-  private workspaceWatch = new WorkspaceWatchSync((msg) => {
-    this.transport.send(msg);
+  /**
+   * The bound agent's workspace watches. Whatever follows changes on this
+   * socket registers here, and the registry keeps the socket's one watch set
+   * the union of theirs.
+   */
+  readonly watches = new WatchRegistry({
+    send: (prefixes) => {
+      this.transport.send({ type: "watch_workspace", prefixes });
+    },
+    normalize: normalizeWatchPrefix,
+    refusal: (prefix) =>
+      `can't watch "${prefix}": watch paths are relative to the workspace, like "team/wiki", and can't contain ".."`,
   });
   /** Whether this connection already told the user live updates are off. */
   private liveUpdatesOffShown = false;
 
-  verbose = $state(false);
-
   constructor() {
-    onCurrentAgentChange((name) => {
+    onViewedAgentChange((name) => {
       this.useAgent(name);
     });
-    try {
-      this.verbose = localStorage.getItem("residuum-verbose") === "true";
-    } catch {
-      // localStorage unavailable
-    }
+    // First among the frame observers, so a watch owner has acted on a change
+    // before the other observers hear of it.
+    this.frameListeners.add((msg) => {
+      this.watches.handleFrame(msg);
+    });
 
     // Wire transport events: route system events to the notification
     // surface, then hand the message to the feed store for any chat-state
-    // side effects (e.g. clearing the thinking indicator on errors).
+    // side effects (e.g. an error clears the reply in progress).
     this.transport.onMessage = (msg) => {
       for (const listener of this.frameListeners) {
         try {
@@ -92,83 +106,138 @@ class WsCoordinator {
         // Gateway is reloading config from disk — anything we cached about
         // server-side state may be stale. Episode history is immutable and
         // intentionally stays cached.
-        invalidate(cacheKeyStatus());
         invalidate(CACHE_KEY_TIMEZONE);
         invalidate(CACHE_KEY_MCP_CATALOG);
-        invalidate(cacheKeyConfigRaw());
-        invalidate(cacheKeyProvidersRaw());
-        invalidate(cacheKeyMcpRaw());
+        if (this.agent !== null) {
+          invalidate(cacheKeyStatus(this.agent));
+          invalidate(cacheKeyConfigRaw(this.agent));
+          invalidate(cacheKeyProvidersRaw(this.agent));
+          invalidate(cacheKeyMcpRaw(this.agent));
+        }
       }
       this.store.handleMessage(msg);
     };
 
     this.transport.onConnected = () => {
-      if (this.verbose) {
-        this.transport.send({ type: "set_verbose", enabled: true });
-      }
+      // First on every connection: the activity line is built from the tool
+      // frames, which the agent sends only to a connection that asks.
+      this.transport.send({ type: "set_verbose", enabled: true });
+      // A turn still in flight carried on while the page was away.
+      if (this.hasConnected) this.store.markReconnectGap();
       // Load the sessions listing, or catch up on frames missed while
       // disconnected.
       this.sessions.resync();
-      // After a reconnect, the main chat may have missed messages too (a
-      // session's relayed result, main's reply).
-      if (this.hasConnected) void this.reconcileMainHistory();
+      // After a reconnect, or once the agent has started, the main chat may
+      // have missed messages too (a session's relayed result, main's reply).
+      if (this.hasConnected || this.catchUpOnConnect) void this.reconcileMainHistory();
       this.hasConnected = true;
-      // Seed the chat footer so it renders correctly before the next model
-      // call, rather than starting blank on every connect.
-      void this.loadUsageTotals();
-      // A new connection watches nothing until told. The watch set goes out
-      // before listeners hear of the reconnect, so an artifact that reloads
-      // on it can't miss changes made in between.
+      this.catchUpOnConnect = false;
+      // The conversation's size as the agent has it now, before its next model call.
+      void this.loadUsage();
+      // A new connection watches nothing until told, so the watch set goes
+      // out again before any owner hears of the reconnect.
       this.liveUpdatesOffShown = false;
-      this.workspaceWatch.connected();
-      this.notifyConnection(true);
+      this.watches.connected();
     };
 
     this.transport.onDisconnected = () => {
-      this.store.clearPostTurnActivity();
-      this.notifyConnection(false);
+      this.connectionClosed();
     };
+
+    $effect.root(() => {
+      $effect(() => {
+        const wanted = this.connectionWanted();
+        untrack(() => {
+          this.followAgentState(wanted);
+        });
+      });
+    });
+  }
+
+  // ── Following the agent's state ───────────────────────────────────
+
+  /**
+   * Whether the bound agent's connection should be open: the hub lists it
+   * running, or hasn't listed the agents yet.
+   */
+  private connectionWanted(): boolean {
+    if (this.agent === null) return false;
+    const state = hub.agent(this.agent)?.state;
+    return state === undefined ? !hub.loaded : state === "running";
+  }
+
+  /** Open the connection once the agent runs, and close it once it doesn't. */
+  private followAgentState(wanted: boolean): void {
+    if (this.agent === null) return;
+    if (wanted) {
+      if (this.transport.status !== "disconnected") return;
+      this.catchUpOnConnect = this.store.historyLoaded;
+      this.transport.reconnectNow();
+      return;
+    }
+    const wasOpen = this.transport.status === "connected";
+    // Also cancels a reconnect that the agent's own shutdown scheduled.
+    this.transport.disconnect();
+    if (wasOpen) this.connectionClosed();
+    this.store.abandonLiveTurn();
+  }
+
+  private connectionClosed(): void {
+    this.watches.disconnected();
+    this.store.clearPostTurnActivity();
   }
 
   // ── Agent binding ─────────────────────────────────────────────────
 
   /**
-   * Build the sessions store for one agent's feed. A store never outlives its
-   * agent: anything still in flight for the old one (a fetch, a queued
-   * command) lands on a store nobody reads, or is dropped.
+   * The main chat's feed for one agent. A turn the page joins already
+   * running is timed from when the hub says the agent became busy.
    */
-  private createSessions(store: FeedStore): SessionsStore {
-    const sessions: SessionsStore = new SessionsStore({
-      send: (msg) => {
-        if (this.sessions === sessions) this.transport.send(msg);
-      },
+  private createFeed(agent: string | null): FeedStore {
+    return new FeedStore(() => {
+      if (agent === null) return null;
+      const since = hub.activityOf(agent).busy_since;
+      const at = since === null ? Number.NaN : Date.parse(since);
+      return Number.isNaN(at) ? null : at;
+    });
+  }
+
+  /**
+   * Build the sessions store for one agent's feed. A store never outlives its
+   * agent: anything still in flight for the old one (a fetch, a stop) lands
+   * on a store nobody reads.
+   */
+  private createSessions(agent: string | null, store: FeedStore): SessionsStore {
+    return new SessionsStore({
+      agent,
       pushToMain: (from, runId, content, category) => {
         store.pushAgentMessage(from, runId, content, category);
       },
     });
-    return sessions;
   }
 
   /**
-   * Bind to `name`, which the router sets as the current agent: close the current agent's connection, discard its state,
-   * and open the new agent's. `null` unbinds. Calling it with the agent
-   * already bound does nothing.
+   * Bind to `name`, the viewed agent: close the bound agent's connection,
+   * discard its state, and open the new agent's. `null` unbinds. Calling it
+   * with the agent already bound does nothing.
    */
   useAgent(name: string | null): void {
     if (name === this.agent) return;
     this.transport.reset();
-    const store = new FeedStore();
+    const store = this.createFeed(name);
     this.store = store;
-    this.sessions = this.createSessions(store);
+    this.sessions = this.createSessions(name, store);
     this.hasConnected = false;
+    this.catchUpOnConnect = false;
     this.liveUpdatesOffShown = false;
-    this.workspaceWatch.clear();
-    scheduled.reset();
-    userInbox.reset();
+    this.watches.bind(name);
+    scheduled.reset(name);
     this.agent = name;
     if (name === null) return;
-    this.transport.connect();
+    if (this.connectionWanted()) this.transport.connect();
     void this.loadMainHistory();
+    // Read whatever the agent's state, so a stopped agent shows its last figures.
+    void this.loadUsage();
   }
 
   // ── Main chat history ─────────────────────────────────────────────
@@ -179,11 +248,12 @@ class WsCoordinator {
    * history and the "compressed history" marker shows from the start.
    */
   async loadMainHistory(): Promise<void> {
-    if (this.agent === null) return;
+    const agent = this.agent;
+    if (agent === null) return;
     const store = this.store;
     let recent;
     try {
-      recent = await fetchChatHistory();
+      recent = await fetchChatHistory(agent);
     } catch (err) {
       if (store !== this.store) return;
       notifications.surface(
@@ -193,7 +263,8 @@ class WsCoordinator {
       return;
     }
     if (store !== this.store) return;
-    store.loadHistory(recent);
+    // A message sent before the history arrived keeps its turn on screen.
+    store.reloadHistory(recent);
     await this.loadOlderHistory();
   }
 
@@ -203,12 +274,13 @@ class WsCoordinator {
    * Returns whether an episode was added.
    */
   async loadOlderHistory(): Promise<boolean> {
+    const agent = this.agent;
     const store = this.store;
     const cursor = store.oldestEpisodeCursor;
-    if (!store.hasMoreHistory || store.isLoadingOlder || !cursor) return false;
+    if (agent === null || !store.hasMoreHistory || store.isLoadingOlder || !cursor) return false;
     store.isLoadingOlder = true;
     try {
-      store.prependEpisode(await fetchChatSegment(cursor));
+      store.prependEpisode(await fetchChatSegment(agent, cursor));
       return true;
     } catch (err) {
       notifications.surface(
@@ -226,11 +298,12 @@ class WsCoordinator {
 
   /** Catch the main chat up on messages recorded while disconnected. */
   private async reconcileMainHistory(): Promise<void> {
+    const agent = this.agent;
     const store = this.store;
-    if (!store.historyLoaded) return;
+    if (agent === null || !store.historyLoaded) return;
     let recent;
     try {
-      recent = await fetchChatHistory();
+      recent = await fetchChatHistory(agent);
     } catch (err) {
       if (store !== this.store) return;
       notifications.surface(
@@ -248,18 +321,27 @@ class WsCoordinator {
   }
 
   /**
-   * Seed the chat footer's cumulative totals on connect/reconnect. Fails
-   * quietly — this is a quiet, non-critical status line, not something
-   * worth a toast over; the footer just stays blank until the next
-   * `turn_usage` frame arrives.
+   * Read the conversation's size: the cumulative token totals the agent
+   * keeps, which `turn_usage` frames update from here on. A failure is kept
+   * on the store, where the conversation-size view shows it with a retry.
    */
-  private async loadUsageTotals(): Promise<void> {
+  async loadUsage(): Promise<void> {
+    const agent = this.agent;
+    if (agent === null) return;
     const store = this.store;
     try {
-      store.setInitialUsage(await fetchUsageTotals());
-    } catch {
-      // quiet degradation, by design — see doc comment above
+      store.setSessionUsage(await fetchUsageTotals(agent));
+    } catch (err) {
+      if (store !== this.store) return;
+      store.usageProblem = userErrorMessage(err, {
+        action: `Couldn't read the size of the conversation with ${agent}.`,
+      });
     }
+  }
+
+  /** The user's messages waiting for the connection to come back. */
+  get queuedMessages(): number {
+    return this.transport.pendingOf("send_message");
   }
 
   /**
@@ -271,30 +353,9 @@ class WsCoordinator {
     return () => this.frameListeners.delete(listener);
   }
 
-  /**
-   * Observe the socket connecting and disconnecting. Returns a function that
-   * stops observing.
-   */
-  onConnectionChange(listener: (connected: boolean) => void): () => void {
-    this.connectionListeners.add(listener);
-    return () => this.connectionListeners.delete(listener);
-  }
-
-  private notifyConnection(connected: boolean): void {
-    for (const listener of this.connectionListeners) listener(connected);
-  }
-
-  /**
-   * Watch these workspace path prefixes on this connection (the open
-   * artifact's), replacing any before. `[]` stops watching.
-   */
-  watchWorkspace(prefixes: readonly string[]): void {
-    this.workspaceWatch.set(prefixes);
-  }
-
   // ── Delegated methods ─────────────────────────────────────────────
 
-  /** Close the connection and unbind from the current agent. */
+  /** Close the connection and unbind from the bound agent. */
   disconnect(): void {
     this.useAgent(null);
   }
@@ -323,17 +384,8 @@ class WsCoordinator {
   stop(): void {
     const replyTo = this.store.activeTurnId;
     if (!replyTo) return;
+    this.store.askStop();
     this.transport.send({ type: "cancel", reply_to: replyTo });
-  }
-
-  setVerbose(enabled: boolean): void {
-    this.verbose = enabled;
-    try {
-      localStorage.setItem("residuum-verbose", String(enabled));
-    } catch {
-      // localStorage unavailable
-    }
-    this.transport.send({ type: "set_verbose", enabled });
   }
 }
 

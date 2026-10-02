@@ -1,51 +1,19 @@
 // @ts-check
 
+import { readFileSync } from "node:fs";
+
 // Style lint for the web UI's global stylesheets and component <style> blocks.
 //
 // Outside the token file, styles reference design tokens instead of spelling
 // out literal colors, font sizes, z-indexes, durations or easing curves. The
 // token file is the one place those literals are declared, so a value changes
-// in one place.
+// in one place. Viewport media queries use only the shell breakpoints; a
+// component that needs its own responsive rule uses a container query.
 
-/** The files that may declare literal values: the design token set. */
-const TOKEN_FILES = ["src/styles/variables.css"];
+/** The one file that may declare literal values: the design token set. */
+const TOKEN_FILE = "src/styles/tokens.css";
 
-/**
- * Stylesheets and components that still carry literal values, exempt from the
- * rules below. Remove an entry when its file is rewritten or deleted. Do not
- * add new files here: give new styles tokens instead.
- */
-const LEGACY_FILES = [
-  "src/styles/base.css",
-  "src/styles/chat.css",
-  "src/styles/forms.css",
-  "src/styles/header.css",
-  "src/styles/layout.css",
-  "src/styles/notifications.css",
-  "src/styles/scheduled.css",
-  "src/styles/sessions.css",
-  "src/styles/settings.css",
-  "src/styles/setup.css",
-  "src/styles/workbench.css",
-  "src/components/AgentStateGlyph.svelte",
-  "src/components/AgentSwitcher.svelte",
-  "src/components/BrandMark.svelte",
-  "src/components/ChatFooter.svelte",
-  "src/components/FeedbackModal.svelte",
-  "src/components/FileHistoryModal.svelte",
-  "src/components/Header.svelte",
-  "src/components/HelpOverlay.svelte",
-  "src/components/Modal.svelte",
-  "src/components/settings/A2a.svelte",
-  "src/components/settings/AgentKeys.svelte",
-  "src/components/settings/History.svelte",
-  "src/components/settings/Integrations.svelte",
-  "src/components/settings/Update.svelte",
-  "src/components/TeamView.svelte",
-  "src/components/UserInboxDrawer.svelte",
-];
-
-/** A single token reference such as `var(--fs-base)`, with no literal fallback. */
+/** A single token reference such as `var(--font-size-ui)`, with no literal fallback. */
 const TOKEN_REFERENCE = /^var\(--[\w-]+\)$/;
 
 /** CSS-wide keywords, which never carry a literal value. */
@@ -64,9 +32,27 @@ const EASING_LITERAL =
 /** `all` as a transitioned property animates everything, including layout. */
 const TRANSITION_ALL = /(^|[\s,])all($|[\s,])/;
 
+/**
+ * Reads a `--breakpoint-*` width in pixels from the token file, so lint and
+ * tokens can't disagree.
+ * @param {string} name
+ * @returns {number}
+ */
+function readBreakpoint(name) {
+  const tokens = readFileSync(new URL(`./${TOKEN_FILE}`, import.meta.url), "utf8");
+  const width = new RegExp(`--breakpoint-${name}:\\s*(\\d+)px;`).exec(tokens)?.[1];
+  if (width === undefined) {
+    throw new Error(`stylelint config: --breakpoint-${name} is missing from ${TOKEN_FILE}`);
+  }
+  return Number(width);
+}
+
+const PHONE_MAX = readBreakpoint("phone-max");
+const WIDE_MIN = readBreakpoint("wide-min");
+
 /** @type {import("stylelint").Config} */
 export default {
-  ignoreFiles: [...TOKEN_FILES, ...LEGACY_FILES],
+  ignoreFiles: [TOKEN_FILE],
   overrides: [{ files: ["**/*.svelte"], customSyntax: "postcss-html" }],
   rules: {
     // Literal colors: hex, named, and the functional notations.
@@ -107,7 +93,20 @@ export default {
       },
       {
         message: (property, value) =>
-          `${property}: ${value} is not allowed. Use motion tokens (var(--dur-…), var(--ease-…)), and name the properties to transition instead of "all".`,
+          `${property}: ${value} is not allowed. Use motion tokens (var(--duration-…), var(--ease-…)), and name the properties to transition instead of "all".`,
+      },
+    ],
+
+    // Viewport widths: min-/max- notation, so the allowed list below sees every width.
+    "media-feature-range-notation": "prefix",
+    "media-feature-name-value-allowed-list": [
+      {
+        "max-width": [`${PHONE_MAX}px`, `${WIDE_MIN - 1}px`],
+        "min-width": [`${PHONE_MAX + 1}px`, `${WIDE_MIN}px`],
+      },
+      {
+        message: (feature, value) =>
+          `${feature}: ${value} is not a shell breakpoint. Use a container query for a component's own responsive rules.`,
       },
     ],
   },

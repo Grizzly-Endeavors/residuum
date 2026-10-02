@@ -34,8 +34,8 @@ describe("toast undo targets the action's own checkpoint", () => {
       vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
         const url = requestUrl(input);
         const method = init?.method ?? "GET";
-        // What `undoLastAction` used to do: ask for the newest checkpoint
-        // at click time. A checkpoint taken after the action is now first.
+        // The listing of the newest checkpoint, which a click-time lookup would
+        // restore from. A checkpoint taken after the action is now first.
         if (method === "GET" && url.startsWith("/api/hub/checkpoints?")) {
           return jsonResponse({
             items: [
@@ -67,7 +67,7 @@ describe("toast undo targets the action's own checkpoint", () => {
   });
 
   it("restores the action's checkpoint when a newer one lands before Undo is clicked", async () => {
-    notifyWithUndo("Removed github_token.", "hub", "agent-keys.toml.enc", ACTION_CHECKPOINT);
+    notifyWithUndo(null, "Removed github_token.", "hub", "agent-keys.toml.enc", ACTION_CHECKPOINT);
     const shown = [...toast.toasts.values()].at(-1);
     expect(shown?.action?.label).toBe("Undo");
 
@@ -80,7 +80,7 @@ describe("toast undo targets the action's own checkpoint", () => {
   });
 
   it("does not offer Undo when no checkpoint id came back", () => {
-    notifyWithUndo("Removed github_token.", "hub", "agent-keys.toml.enc", null);
+    notifyWithUndo(null, "Removed github_token.", "hub", "agent-keys.toml.enc", null);
     const shown = [...toast.toasts.values()].at(-1);
     expect(shown).toMatchObject({ kind: "success", message: "Removed github_token." });
     expect(shown?.action).toBeUndefined();

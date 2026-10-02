@@ -1,7 +1,7 @@
 //! The artifact identity a request made on an artifact's behalf carries.
 //!
-//! The workbench bridge and the SDK set `X-Residuum-Artifact: <name>` on the
-//! requests they make for an artifact. The header is informative, not a
+//! The workbench SDK sets `X-Residuum-Artifact: <name>` on the requests it
+//! makes for an artifact. The header is informative, not a
 //! security boundary: a page on the artifacts origin can call the API itself
 //! and send any valid name. Endpoints that attribute work to an artifact read
 //! it through [`artifact_identity`].
@@ -18,7 +18,7 @@ pub(crate) const ARTIFACT_HEADER: &str = "x-residuum-artifact";
 ///
 /// # Errors
 /// A plain-language explanation when the header is present but isn't a
-/// valid artifact name, which only a request not made through the bridge
+/// valid artifact name, which only a request not made through the SDK
 /// could send.
 pub(crate) fn artifact_identity(headers: &HeaderMap) -> Result<Option<String>, String> {
     let Some(value) = headers.get(ARTIFACT_HEADER) else {

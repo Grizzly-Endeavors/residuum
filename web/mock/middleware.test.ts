@@ -13,7 +13,7 @@ describe("the API handler", () => {
     harness = await startMockServer();
     const res = await fetchJson(`${harness.baseUrl}/api/agents/atlas/usage`);
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ input_tokens: 0, output_tokens: 0 });
+    expect(res.body).toMatchObject({ input_tokens: 412_880, output_tokens: 9_214 });
   });
 
   it("passes a request outside /api on", async () => {

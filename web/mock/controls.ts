@@ -1,6 +1,7 @@
-import { json, readJsonObject } from "./http";
+import { json, parseJsonObject, readBody, readJsonObject } from "./http";
+import { offeredModelsOnly } from "./provider-models";
 import type { Route, RouteContext } from "./routes";
-import { changeTeamFile } from "./team-changes";
+import { changeAgentFile, changeTeamFile } from "./workspace-changes";
 
 /**
  * Test controls: `POST /api/mock/...` endpoints that stage a situation for the
@@ -49,12 +50,18 @@ function teammateMessage({ res, hub, query }: RouteContext): void {
   const now = hub.env.clock.iso();
   const from = query.get("from") ?? "scout";
   const reply = `${from} asked me to check the wiki index. On it.`;
+  const address = `agent:${from}`;
   agent.state.extraRecent.push(
     {
       role: "user",
-      content: `[Message from ${from}]\nCan you look over the wiki index when you get a chance?`,
+      // The header and the structured sender the backend records for a teammate.
+      content:
+        `[Message from teammate ${address}, not the user. Your response in this turn is ` +
+        `not shown to them; to reply, call message_agent with to="${address}".]\n` +
+        "Can you look over the wiki index when you get a chance?",
       timestamp: now,
-      visibility: "user",
+      visibility: "background",
+      agent_sender: { address, category: "teammate" },
     },
     { role: "assistant", content: reply, timestamp: now, visibility: "user" },
   );
@@ -66,12 +73,35 @@ function teammateMessage({ res, hub, query }: RouteContext): void {
 }
 
 /**
+ * Fix the settings that stop an agent (`?agent=brittle`) starting, the way a
+ * user would in Settings: every model its provider doesn't offer becomes the
+ * provider's first one, so its next start succeeds. Its state doesn't change
+ * until something starts it.
+ */
+function fixAgent({ res, hub, query }: RouteContext): void {
+  const agent = hub.agents.get(query.get("agent") ?? "");
+  if (!agent) {
+    json(res, 404, { error: "mock: name an agent with ?agent=" });
+    return;
+  }
+  agent.state.providersToml = offeredModelsOnly(agent.state.providersToml);
+  json(res, 200, { ok: true });
+}
+
+/**
  * Put the mock back as it started (see `MockHub.reset`). Whatever a test did
  * is gone, and every connected page is dropped and reconnects to the initial
- * scenario.
+ * scenario. With `{ "setup": true }` the hub starts over with no agents, so
+ * the web UI opens the setup wizard.
  */
-function reset({ res, hub }: RouteContext): void {
-  hub.reset();
+async function reset({ req, res, hub }: RouteContext): Promise<void> {
+  const raw = await readBody(req);
+  const { setup = false } = raw.trim() === "" ? {} : parseJsonObject(raw);
+  if (typeof setup !== "boolean") {
+    json(res, 422, { error: "mock: `setup` must be true or false" });
+    return;
+  }
+  hub.reset({ setup });
   json(res, 200, { ok: true });
 }
 
@@ -103,16 +133,45 @@ async function setDelays({ req, res, hub }: RouteContext): Promise<void> {
  * send what the real system would (see `changeTeamFile`); the answer says what was sent.
  */
 async function changeTeamFileControl({ req, res, hub }: RouteContext): Promise<void> {
+  const change = await readFileChange(req, res);
+  if (change === null) return;
+  const outcome = changeTeamFile(hub, change.path, change.content);
+  if ("status" in outcome) json(res, outcome.status, { error: outcome.error });
+  else json(res, 200, outcome);
+}
+
+/**
+ * `{ path, content }` with `?agent=atlas`: that agent writes the file at `path`
+ * in its own workspace (`notes/today.md`), or removes it, folders included,
+ * when `content` is `null`. Its socket sends `workspace_changed` to the pages
+ * watching the path (see `changeAgentFile`); the answer says what was sent.
+ */
+async function changeAgentFileControl({ req, res, hub, query }: RouteContext): Promise<void> {
+  const agent = hub.agents.get(query.get("agent") ?? "");
+  if (!agent) {
+    json(res, 404, { error: "mock: name an agent with ?agent=" });
+    return;
+  }
+  const change = await readFileChange(req, res);
+  if (change === null) return;
+  const outcome = changeAgentFile(agent, change.path, change.content);
+  if ("status" in outcome) json(res, outcome.status, { error: outcome.error });
+  else json(res, 200, outcome);
+}
+
+/** A file change control's body, or `null` once it has answered `422` for one it can't use. */
+async function readFileChange(
+  req: RouteContext["req"],
+  res: RouteContext["res"],
+): Promise<{ path: string; content: string | null } | null> {
   const { path, content } = await readJsonObject(req);
   if (typeof path !== "string" || (typeof content !== "string" && content !== null)) {
     json(res, 422, {
       error: "mock: `path` must be a string, and `content` a string, or null to remove the file",
     });
-    return;
+    return null;
   }
-  const outcome = changeTeamFile(hub, path, content);
-  if ("status" in outcome) json(res, outcome.status, { error: outcome.error });
-  else json(res, 200, outcome);
+  return { path, content };
 }
 
 /**
@@ -133,13 +192,43 @@ function lagSessionRelay({ res, hub }: RouteContext): void {
   json(res, 200, { notified: hub.lagSessionRelay() });
 }
 
+/**
+ * `{ online }`: take the hub WebSocket down (`false`), dropping every page and
+ * refusing new connections, or let pages connect again (`true`). The HTTP API
+ * stays up. Reset brings the socket back.
+ */
+async function hubSocketControl({ req, res, hub }: RouteContext): Promise<void> {
+  const { online } = await readJsonObject(req);
+  if (typeof online !== "boolean") {
+    json(res, 422, { error: "mock: `online` must be true or false" });
+    return;
+  }
+  hub.setHubSocketOnline(online);
+  json(res, 200, { online });
+}
+
+/**
+ * The app is rebuilt: a preview server serves its service worker as another
+ * version from then on (see `createRebuiltWorkerHandler`), so a page that has
+ * the old one finds an update. Answers `{ rebuilds }`, how many times so far.
+ * Reset starts over from the build as it is.
+ */
+function rebuildApp({ res, hub }: RouteContext): void {
+  hub.appRebuilds += 1;
+  json(res, 200, { rebuilds: hub.appRebuilds });
+}
+
 /** The test control routes. */
 export const controlRoutes: readonly Route[] = [
+  { method: "POST", pattern: "/api/mock/rebuild", handler: rebuildApp },
   { method: "GET", pattern: "/api/mock/push/presence", handler: presentPushDevices },
+  { method: "POST", pattern: "/api/mock/hub-socket", handler: hubSocketControl },
   { method: "POST", pattern: "/api/mock/team-file", handler: changeTeamFileControl },
+  { method: "POST", pattern: "/api/mock/agent-file", handler: changeAgentFileControl },
   { method: "POST", pattern: "/api/mock/session-relay-lag", handler: lagSessionRelay },
   { method: "POST", pattern: "/api/mock/missed-relay", handler: missedRelay },
   { method: "POST", pattern: "/api/mock/teammate-message", handler: teammateMessage },
+  { method: "POST", pattern: "/api/mock/fix-agent", handler: fixAgent },
   { method: "POST", pattern: "/api/mock/reset", handler: reset },
   { method: "POST", pattern: "/api/mock/clock/advance", handler: advanceClock },
   { method: "POST", pattern: "/api/mock/delays", handler: setDelays },

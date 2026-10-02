@@ -272,10 +272,6 @@ export interface ValidateResponse {
 
 // ── Settings types ───────────────────────────────────────────────────
 
-export type { SettingsSection } from "./settings-sections";
-
-export type SettingsMode = "simple" | "advanced" | "raw";
-
 export interface RollbackNoticeResponse {
   attempted_version: string;
   reason: string;
@@ -347,6 +343,12 @@ export interface SettingsModelAssignments {
   bgMedium: string;
   bgLarge: string;
   overrides: Record<string, RoleOverrides>;
+  /**
+   * The rest of each role's failover list, after the model above. A role has
+   * an entry only when its list is longer than one. The form shows and edits
+   * the first model; the rest ride along so a save never shortens the list.
+   */
+  fallbacks: Record<string, string[]>;
 }
 
 /** One agent key as the API describes it. Values are never sent. */
@@ -484,7 +486,11 @@ export interface ToolCallState {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
-  status: "running" | "done" | "error";
+  /**
+   * `error` when the live result said the call failed (history doesn't keep
+   * that); `stopped` when its turn was stopped or cut off before it finished.
+   */
+  status: "running" | "done" | "error" | "stopped";
   result?: string;
   /** The MCP server (its name in `mcp.json`) that owns this tool; absent for a built-in. */
   server?: string | null;
@@ -492,6 +498,12 @@ export interface ToolCallState {
 
 interface FeedItemBase {
   id: number;
+  /**
+   * The correlation id of the turn the item belongs to, which groups a turn's
+   * output (`feed/turns.ts`): from history where messages carry one, or from
+   * the live turn it arrived in. Episodes carry none.
+   */
+  turnId?: string;
 }
 
 /**
@@ -573,7 +585,7 @@ export interface AgentMessageFeedItem extends FeedItemBase {
 }
 
 /**
- * A one-line status note inside a session view: delivery outcomes, command
+ * A one-line status note in a session transcript: delivery outcomes, command
  * failures, session errors, and the run finishing.
  */
 export interface StatusFeedItem extends FeedItemBase {

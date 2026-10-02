@@ -1,13 +1,13 @@
 // ── Feed scroll following (Svelte 5 runes) ───────────────────────────
 //
-// Shared by the main chat and session views: a feed follows new content only
+// Shared by the main chat and session transcripts: a feed follows new content only
 // while the reader is at the bottom. Once they scroll up to read, new items
 // leave them where they are and a "Jump to latest" pill offers the way back.
 
 /**
- * Within this distance of the bottom, the feed keeps following new content
- * and the pill stays hidden. Generous, because the feeds' bottom padding
- * (room for the floating composer) already counts toward it.
+ * Within this distance of the bottom, a feed keeps following new content and
+ * the pill stays hidden, unless it sets its own. Generous, for a feed whose
+ * bottom padding (room for a floating composer) counts toward it.
  */
 const FOLLOW_THRESHOLD_PX = 400;
 
@@ -34,6 +34,9 @@ export class FeedScroller {
    */
   private held = false;
 
+  /** `followWithinPx`: how near the bottom still counts as following. */
+  constructor(private readonly followWithinPx = FOLLOW_THRESHOLD_PX) {}
+
   private readonly onScroll = (): void => {
     this.measure();
   };
@@ -47,7 +50,10 @@ export class FeedScroller {
   /**
    * Start tracking the scrolling `el`, whose `content` element holds the
    * feed; returns the cleanup. Content growing in place (a tool result
-   * filling in, an image loading) keeps a following reader at the bottom.
+   * filling in, an image loading) keeps a following reader at the bottom, and
+   * so does `el` itself shrinking under them (the composer below it growing,
+   * the window narrowing), which cuts off the newest lines without moving the
+   * content.
    */
   attach(el: HTMLElement, content: HTMLElement): () => void {
     this.el = el;
@@ -55,6 +61,7 @@ export class FeedScroller {
       if (this.following) this.pinToBottom();
     });
     resizes.observe(content);
+    resizes.observe(el);
     el.addEventListener("scroll", this.onScroll, { passive: true });
     for (const type of READER_SCROLL_EVENTS) {
       el.addEventListener(type, this.onReaderScroll, { passive: true });
@@ -127,11 +134,11 @@ export class FeedScroller {
 
   private measure(): void {
     const el = this.el;
-    // A hidden feed (the chat under a session view) reports no size; keep the
+    // A hidden feed reports no size; keep the
     // reader's state for when it's shown again.
     if (!el || isHidden(el) || this.held) return;
     const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const nearBottom = distFromBottom <= FOLLOW_THRESHOLD_PX;
+    const nearBottom = distFromBottom <= this.followWithinPx;
     if (this.jumping) {
       if (!nearBottom) return;
       this.jumping = false;

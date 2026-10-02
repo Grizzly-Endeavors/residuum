@@ -1,4 +1,4 @@
-// ── Feed item building shared by the main chat and session views ─────
+// ── Feed item building shared by the main chat and session transcripts
 
 import { nextFeedId } from "./feed-id";
 import { historyAgentMessage, parseArtifactMessage, parseOwnerMessage } from "./relay";
@@ -108,6 +108,7 @@ export function convertHistory(
     }
 
     const content = msg.content;
+    const ofTurn = msg.turn_id === undefined ? {} : { turnId: msg.turn_id };
     switch (msg.role) {
       case "user": {
         if (agentMessage) {
@@ -118,6 +119,7 @@ export function convertHistory(
             category: agentMessage.category,
             content: agentMessage.body,
             runId: null,
+            ...ofTurn,
           });
           break;
         }
@@ -132,6 +134,7 @@ export function convertHistory(
               id: `artifact:${artifactMessage.artifact}`,
               interface: "workbench artifact",
             },
+            ...ofTurn,
           });
           break;
         }
@@ -141,12 +144,13 @@ export function convertHistory(
           kind: "user",
           content: ownerBody ?? content,
           sender: msg.sender,
+          ...ofTurn,
         });
         break;
       }
       case "assistant": {
         if (content.trim()) {
-          out.push({ id: nextFeedId(), kind: "assistant", content });
+          out.push({ id: nextFeedId(), kind: "assistant", content, ...ofTurn });
         }
         if (msg.tool_calls && msg.tool_calls.length > 0) {
           const calls: ToolCallState[] = msg.tool_calls.map((tc) => {
@@ -160,7 +164,7 @@ export function convertHistory(
             toolCallItems.set(tc.id, call);
             return call;
           });
-          out.push({ id: nextFeedId(), kind: "tool-group", calls });
+          out.push({ id: nextFeedId(), kind: "tool-group", calls, ...ofTurn });
         }
         break;
       }
@@ -203,12 +207,14 @@ export function feedItemSignature(item: FeedItem): string | null {
 
 /**
  * Append a live tool call to `feed`, joining the tool group at the tail if
- * there is one, and remember it in `pending` so its result can find it.
+ * there is one of the same turn, and remember it in `pending` so its result
+ * can find it. `turnId` is the turn in flight, when known.
  */
 export function appendToolCall(
   feed: FeedItem[],
   pending: Map<string, ToolCallState>,
   call: { id: string; name: string; arguments: unknown; server?: string | null },
+  turnId?: string,
 ): void {
   const state: ToolCallState = {
     id: call.id,
@@ -218,10 +224,15 @@ export function appendToolCall(
     server: call.server,
   };
   const last = feed[feed.length - 1];
-  if (last?.kind === "tool-group") {
+  if (last?.kind === "tool-group" && last.turnId === turnId) {
     last.calls.push(state);
   } else {
-    feed.push({ id: nextFeedId(), kind: "tool-group", calls: [state] });
+    feed.push({
+      id: nextFeedId(),
+      kind: "tool-group",
+      calls: [state],
+      ...(turnId === undefined ? {} : { turnId }),
+    });
   }
   // Re-read through `feed` so a `$state` feed hands back its proxied call
   // and later mutations stay reactive.
@@ -229,6 +240,27 @@ export function appendToolCall(
   if (group?.kind !== "tool-group") return;
   const stored = group.calls[group.calls.length - 1];
   if (stored) pending.set(call.id, stored);
+}
+
+/**
+ * The turn ended with calls still waiting on results: `stopped` when it was
+ * stopped or cut off, `done` when it finished and the page missed the result.
+ */
+export function settlePendingCalls(
+  pending: Map<string, ToolCallState>,
+  status: "done" | "stopped",
+): void {
+  for (const call of pending.values()) call.status = status;
+  pending.clear();
+}
+
+/** How many tool calls `items` hold for the turn `turnId`. */
+export function countTurnCalls(items: readonly FeedItem[], turnId: string): number {
+  let count = 0;
+  for (const item of items) {
+    if (item.kind === "tool-group" && item.turnId === turnId) count += item.calls.length;
+  }
+  return count;
 }
 
 /** Apply a live tool result to the call `pending` remembers for it. */

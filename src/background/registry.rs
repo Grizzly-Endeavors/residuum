@@ -36,7 +36,7 @@ pub const MAIN_ADDRESS: &str = "main";
 pub const MAIN_DEPTH: u32 = 0;
 
 /// Sender address for a message the owner types into a session from the web
-/// UI's sessions sidebar. Not a session and never present in the registry:
+/// UI's session panel. Not a session and never present in the registry:
 /// the owner is not an agent, so a message to this address does not resolve.
 pub const OWNER_ADDRESS: &str = "owner";
 

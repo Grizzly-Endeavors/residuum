@@ -14,7 +14,7 @@ If Residuum restarts while an A2A task is unfinished, the task's session receive
 
 ## What you don't control
 
-- **Caller keys** (the credentials other agents present) are managed by the user with `residuum a2a keys create|list|revoke` or Settings → A2A. You have no tool for minting, listing, or revoking them.
+- **Caller keys** (the credentials other agents present) are managed by the user with `residuum a2a keys create|list|revoke` or the install-wide Agent-to-agent section of Settings. You have no tool for minting, listing, or revoking them.
 - **Visibility** (`public` vs `private` in your `config/config.toml`'s `[a2a]`) is config, set by the user. The listener's port and public URL live in the hub's config (`~/.residuum/hub/config.toml`). Your card advertises `{public_url}/agents/<your name>` when a public URL is set, otherwise your relay address while the tunnel is connected, otherwise the local address. The relay lists you only while you are running.
 - **Who a task belongs to.** Every task is scoped to the caller that created it — you never see or act on another caller's task, even if you can see its address.
 
@@ -27,9 +27,9 @@ You can also delegate to other agents over A2A with your ordinary tools — `lis
 - The reply arrives later as an ordinary agent message from `a2a:<name>`, naming the task and its new state, once the task needs your attention (it asks a question, needs auth, or finishes). Don't wait for it inline; go on with other work and react when it lands.
 - `stop_agent` on `a2a:<name>` cancels your open task with that agent.
 - If the agent stays unreachable for 10 minutes, you get a note saying so (retries continue in the background), and another once it's reachable again. The user is told too.
-- The user sees your open tasks in the web UI's sessions sidebar and can stop one there. A task the user stopped arrives as `canceled` with the line "Stopped by the user from the web UI."; don't resend it unless they ask. If its agent couldn't be reached, the user may instead stop watching it, and you're told it may still be running on the remote side.
+- The user sees your open tasks in your Activity in the web UI and can stop one there. A task the user stopped arrives as `canceled` with the line "Stopped by the user from the web UI."; don't resend it unless they ask. If its agent couldn't be reached, the user may instead stop watching it, and you're told it may still be running on the remote side.
 
-Editing `config/a2a.json` via `write_file`/`edit_file`, the workspace editor, `POST /api/agents/<agent>/workspace/validate`, or the Settings page's raw editor reports invalid JSON, an invalid agent name, or an empty url as a diagnostic alongside the save — the write always goes through rather than being rejected.
+Editing `config/a2a.json` via `write_file`/`edit_file`, the Files editor, `POST /api/agents/<agent>/workspace/validate`, or Settings → (agent) → Advanced → Raw config reports invalid JSON, an invalid agent name, or an empty url as a diagnostic alongside the save — the write always goes through rather than being rejected.
 
 ## Teammates versus siblings
 

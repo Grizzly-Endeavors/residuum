@@ -130,6 +130,33 @@ describe("HubStore frames", () => {
     expect(hub.notices).toEqual([]);
   });
 
+  it("keeps an agent in the stopping set from its stop starting until its state changes", () => {
+    const hub = new HubStore();
+    hub.handleFrame(snapshot([agent("scout"), agent("atlas")], { stopping: ["atlas"] }));
+    expect(hub.isStopping("atlas")).toBe(true);
+
+    hub.handleFrame({ type: "agent_stopping", name: "scout" });
+    hub.handleFrame({ type: "agent_stopping", name: "scout" });
+    expect(hub.stopping).toEqual(["atlas", "scout"]);
+
+    hub.handleFrame({ type: "agent_state", agent: agent("scout", { state: "stopped" }) });
+    expect(hub.stopping).toEqual(["atlas"]);
+  });
+
+  it("reads an agent as running only while it is up and not stopping", () => {
+    const hub = new HubStore();
+    hub.handleFrame(
+      snapshot([agent("scout"), agent("atlas"), agent("idle", { state: "stopped" })], {
+        stopping: ["atlas"],
+      }),
+    );
+
+    expect(hub.isRunning("scout")).toBe(true);
+    expect(hub.isRunning("atlas")).toBe(false);
+    expect(hub.isRunning("idle")).toBe(false);
+    expect(hub.isRunning("nobody")).toBe(false);
+  });
+
   it("passes a team event to listeners and never raises a notice or toast for it", () => {
     const hub = new HubStore();
     hub.handleFrame(snapshot([agent("scout")]));
@@ -275,17 +302,6 @@ describe("HubStore frames", () => {
     expect(hub.notices[0]?.message).toBe("n59");
   });
 
-  it("hands team changes to listeners until they stop listening", () => {
-    const hub = new HubStore();
-    const seen: string[][] = [];
-    const stop = hub.onTeamChange((changes) => seen.push(changes.map((c) => c.path)));
-    const change = { path: "team/wiki/a.md", kind: "modified" } as const;
-    hub.handleFrame({ type: "workspace_changed", changes: [change] });
-    stop();
-    hub.handleFrame({ type: "workspace_changed", changes: [change] });
-    expect(seen).toEqual([["team/wiki/a.md"]]);
-  });
-
   it("tells frame observers after the store has handled the frame", () => {
     const hub = new HubStore();
     let listedWhenSeen: string[] = [];
@@ -401,7 +417,8 @@ describe("HubStore connection", () => {
 });
 
 describe("HubStore team watching", () => {
-  it("sends the watch set and only when it changes", () => {
+  /** A hub whose socket is open. */
+  function openHub(): HubStore {
     vi.stubGlobal(
       "fetch",
       vi.fn(() => Promise.resolve(jsonResponse({ agents: [] }))),
@@ -409,27 +426,32 @@ describe("HubStore team watching", () => {
     const hub = new HubStore();
     hub.connect();
     FakeWebSocket.last.simulateOpen();
+    return hub;
+  }
 
-    hub.watchTeam(["team/wiki", "team/workbench/chart"]);
-    hub.watchTeam(["team/workbench/chart", "team/wiki"]);
-    hub.watchTeam(["team/wiki"]);
+  const nothing = { changed: () => {} };
+
+  it("sends the union of its owners' prefixes on the hub socket, and only when it changes", () => {
+    const hub = openHub();
+    const wiki = hub.teamWatches.register(nothing);
+    const chart = hub.teamWatches.register(nothing);
+
+    wiki.set(["team/wiki"]);
+    chart.set(["team/workbench/chart", "team/wiki"]);
+    chart.set(["team/wiki", "team/workbench/chart"]);
+    wiki.release();
     expect(FakeWebSocket.last.sentFrames()).toEqual([
-      { type: "watch_team", prefixes: ["team/wiki", "team/workbench/chart"] },
       { type: "watch_team", prefixes: ["team/wiki"] },
+      { type: "watch_team", prefixes: ["team/wiki", "team/workbench/chart"] },
     ]);
+    chart.release();
+    expect(FakeWebSocket.last.sentFrames().at(-1)).toEqual({ type: "watch_team", prefixes: [] });
     hub.disconnect();
   });
 
   it("spells prefixes as the hub's change feed does: team or team/...", () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(() => Promise.resolve(jsonResponse({ agents: [] }))),
-    );
-    const hub = new HubStore();
-    hub.connect();
-    FakeWebSocket.last.simulateOpen();
-
-    hub.watchTeam(["team", "team//workbench/./chart/"]);
+    const hub = openHub();
+    hub.teamWatches.register(nothing).set(["team", "team//workbench/./chart/"]);
     expect(FakeWebSocket.last.sentFrames()).toEqual([
       { type: "watch_team", prefixes: ["team", "team/workbench/chart"] },
     ]);
@@ -439,17 +461,12 @@ describe("HubStore team watching", () => {
   it.each(["wiki", "workbench/chart", "teams/wiki", "team/../secrets", "/team/wiki", ""])(
     "refuses the prefix %j, which is not under team/, and keeps the current watch",
     (prefix) => {
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(() => Promise.resolve(jsonResponse({ agents: [] }))),
-      );
-      const hub = new HubStore();
-      hub.connect();
-      FakeWebSocket.last.simulateOpen();
-      hub.watchTeam(["team/wiki"]);
+      const hub = openHub();
+      const owner = hub.teamWatches.register(nothing);
+      owner.set(["team/wiki"]);
 
       expect(() => {
-        hub.watchTeam(["team/notes", prefix]);
+        owner.set(["team/notes", prefix]);
       }).toThrow(TypeError);
       expect(FakeWebSocket.last.sentFrames()).toEqual([
         { type: "watch_team", prefixes: ["team/wiki"] },
@@ -458,19 +475,36 @@ describe("HubStore team watching", () => {
     },
   );
 
-  it("sends the watch set again on a new connection, which starts watching nothing", () => {
+  it("sends the union again on a new connection, which starts watching nothing", () => {
     vi.useFakeTimers();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(() => Promise.resolve(jsonResponse({ agents: [] }))),
-    );
-    const hub = new HubStore();
-    hub.connect();
-    FakeWebSocket.last.simulateOpen();
-    hub.watchTeam(["team/wiki"]);
+    const hub = openHub();
+    hub.teamWatches.register(nothing).set(["team/wiki"]);
+    hub.teamWatches.register(nothing).set(["team/notes"]);
 
     FakeWebSocket.last.simulateClose();
     vi.advanceTimersByTime(1000);
+    FakeWebSocket.last.simulateOpen();
+    expect(FakeWebSocket.last.sentFrames()).toEqual([
+      { type: "watch_team", prefixes: ["team/notes", "team/wiki"] },
+    ]);
+    hub.disconnect();
+  });
+
+  it("sends nothing on a new connection when it watches nothing", () => {
+    vi.useFakeTimers();
+    const hub = openHub();
+    FakeWebSocket.last.simulateClose();
+    vi.advanceTimersByTime(1000);
+    FakeWebSocket.last.simulateOpen();
+    expect(FakeWebSocket.last.sent).toEqual([]);
+    hub.disconnect();
+  });
+
+  it("holds a watch registered before the socket opens until it does", () => {
+    const hub = new HubStore();
+    hub.teamWatches.register(nothing).set(["team/wiki"]);
+    hub.connect();
+    expect(FakeWebSocket.last.sent).toEqual([]);
     FakeWebSocket.last.simulateOpen();
     expect(FakeWebSocket.last.sentFrames()).toEqual([
       { type: "watch_team", prefixes: ["team/wiki"] },
@@ -478,39 +512,70 @@ describe("HubStore team watching", () => {
     hub.disconnect();
   });
 
-  it("sends nothing on a new connection when it watches nothing", () => {
-    vi.useFakeTimers();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(() => Promise.resolve(jsonResponse({ agents: [] }))),
-    );
-    const hub = new HubStore();
-    hub.connect();
-    FakeWebSocket.last.simulateOpen();
-    FakeWebSocket.last.simulateClose();
-    vi.advanceTimersByTime(1000);
-    FakeWebSocket.last.simulateOpen();
-    expect(FakeWebSocket.last.sent).toEqual([]);
+  it("hands each owner the team changes under its prefixes, and every owner a resync", () => {
+    const hub = openHub();
+    const wiki: string[][] = [];
+    const chart: string[][] = [];
+    const resyncs: string[] = [];
+    hub.teamWatches
+      .register({
+        changed: (changes) => wiki.push(changes.map((c) => c.path)),
+        resync: (reason) => resyncs.push(`wiki:${reason}`),
+      })
+      .set(["team/wiki"]);
+    hub.teamWatches
+      .register({
+        changed: (changes) => chart.push(changes.map((c) => c.path)),
+        resync: (reason) => resyncs.push(`chart:${reason}`),
+      })
+      .set(["team/workbench/chart"]);
+
+    hub.handleFrame({
+      type: "workspace_changed",
+      changes: [
+        { path: "team/wiki/a.md", kind: "modified" },
+        { path: "team/workbench/chart/index.html", kind: "created" },
+        { path: "team/wikipedia/b.md", kind: "modified" },
+      ],
+    });
+    hub.handleFrame({ type: "workspace_resync", reason: "overflow" });
+
+    expect(wiki).toEqual([["team/wiki/a.md"]]);
+    expect(chart).toEqual([["team/workbench/chart/index.html"]]);
+    expect(resyncs).toEqual(["wiki:overflow", "chart:overflow"]);
     hub.disconnect();
   });
 });
 
 describe("HubStore list fetch", () => {
-  it("loads the list over HTTP", async () => {
+  it("loads the list over HTTP, with its activity and stopping set", async () => {
+    const busy = { busy: true, busy_since: "2026-03-14T12:00:00Z", unread: 2 };
     vi.stubGlobal(
       "fetch",
-      vi.fn(() => Promise.resolve(jsonResponse({ agents: [agent("scout"), agent("atlas")] }))),
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse({
+            agents: [agent("scout"), agent("atlas")],
+            activity: { scout: busy },
+            stopping: ["atlas"],
+          }),
+        ),
+      ),
     );
     const hub = new HubStore();
     await hub.refresh();
     expect(hub.agents.map((a) => a.name)).toEqual(["atlas", "scout"]);
+    expect(hub.activityOf("scout")).toEqual(busy);
+    expect(hub.isStopping("atlas")).toBe(true);
     expect(hub.loaded).toBe(true);
   });
 
   it("ignores a fetch that lands after the socket's snapshot, unless forced", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(() => Promise.resolve(jsonResponse({ agents: [agent("stale")] }))),
+      vi.fn(() =>
+        Promise.resolve(jsonResponse({ agents: [agent("stale")], activity: {}, stopping: [] })),
+      ),
     );
     const hub = new HubStore();
     hub.handleFrame(snapshot([agent("scout")]));

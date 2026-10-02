@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import type { Plugin } from "vite";
 import { readMockOptions, startMock, type MockHost } from "./mock";
 
@@ -24,10 +25,16 @@ import { readMockOptions, startMock, type MockHost } from "./mock";
 export function mockServerPlugin(): Plugin {
   const start = (
     host: MockHost & { config: { logger: { info: (message: string) => void } } },
+    distDir?: string,
   ): void => {
-    startMock(host, readMockOptions(), (message) => {
-      host.config.logger.info(message);
-    });
+    startMock(
+      host,
+      readMockOptions(),
+      (message) => {
+        host.config.logger.info(message);
+      },
+      distDir,
+    );
   };
   return {
     name: "residuum-mock-server",
@@ -35,7 +42,7 @@ export function mockServerPlugin(): Plugin {
       start(server);
     },
     configurePreviewServer(server) {
-      start(server);
+      start(server, resolve(server.config.root, server.config.build.outDir));
     },
   };
 }

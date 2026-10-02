@@ -1,10 +1,50 @@
 // ── Shared formatting for the checkpoint history UI ───────────────────
 //
-// Used by the Settings → History view and the per-file history panel
-// opened from the Workspace file browser. See
-// `docs/systems-usage/checkpoints.md`.
+// Used by the Settings → History view and a file's history in Files and
+// Shared files. See `docs/systems-usage/checkpoints.md`.
 
-import type { CheckpointTrigger } from "./types";
+import type { ChangeKind, CheckpointTrigger, RepoKind, UndoOutcome } from "./types";
+
+/** The repositories a History shows, in order: an agent's two, or the team's and the hub's for `null`. */
+export function historyRepos(agent: string | null): readonly RepoKind[] {
+  return agent === null ? ["team", "hub"] : ["workspace", "agent_config"];
+}
+
+/** What each repository holds, as History names it. */
+export const REPO_LABELS: Readonly<Record<RepoKind, string>> = {
+  workspace: "Workspace",
+  agent_config: "Config files",
+  team: "Shared files",
+  hub: "Install-wide config",
+};
+
+export const CHANGE_LABELS: Readonly<Record<ChangeKind, string>> = {
+  added: "Added",
+  modified: "Changed",
+  deleted: "Removed",
+};
+
+/** What undoing a checkpoint did, in a sentence or two. */
+export function undoReport({
+  reverted_paths: reverted,
+  skipped_paths: skipped,
+}: UndoOutcome): string {
+  const parts: string[] = [];
+  if (reverted.length > 0) parts.push(`Put back ${reverted.join(", ")}.`);
+  if (skipped.length > 0) {
+    const them = skipped.length === 1 ? "it changed" : "they changed";
+    parts.push(`Left ${skipped.join(", ")} alone, because ${them} again since.`);
+  }
+  return parts.length > 0 ? parts.join(" ") : "Nothing needed undoing.";
+}
+
+/** How one line of a unified diff reads: added, removed, a header, or unchanged context. */
+export function diffLineKind(line: string): "added" | "removed" | "meta" | "context" {
+  if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("@@")) return "meta";
+  if (line.startsWith("+")) return "added";
+  if (line.startsWith("-")) return "removed";
+  return "context";
+}
 
 /** Human label for a checkpoint's trigger, as shown in the history list. */
 export function triggerLabel(trigger: CheckpointTrigger): string {

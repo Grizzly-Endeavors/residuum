@@ -406,8 +406,8 @@ pub struct AgentMessageEvent {
     pub content: String,
     /// Hop count carried by this message: one more than the highest hop
     /// count among the inputs that drove the sending turn. External-origin
-    /// input (a user message, a pulse/action firing, a webhook, a web
-    /// sidebar message) is hop `0`.
+    /// input (a user message, a pulse/action firing, a webhook, a message from
+    /// the web UI's session panel) is hop `0`.
     pub hop_count: u32,
 }
 
@@ -415,7 +415,7 @@ impl AgentMessageEvent {
     /// Format this message for injection into the recipient's conversation,
     /// naming the sender's address and category so the recipient can reply.
     ///
-    /// A message the owner typed into the web sessions sidebar (sender
+    /// A message the owner typed into a session panel in the web UI (sender
     /// [`crate::background::registry::OWNER_ADDRESS`]) is labelled as coming
     /// from the owner instead: the owner is not an agent and has no address
     /// to message back, but sees this session's responses directly. A message
@@ -483,8 +483,8 @@ impl AgentMessageEvent {
     }
 
     /// The structured sender for this message's history entry: the sending
-    /// agent, or `None` for a message the owner typed into the web sessions
-    /// sidebar or a workbench artifact sent (neither is an agent).
+    /// agent, or `None` for a message the owner typed into a web UI session
+    /// panel or a workbench artifact sent (neither is an agent).
     #[must_use]
     pub fn agent_sender(&self) -> Option<crate::inference::AgentSender> {
         let from_an_agent = self.from.as_ref() != crate::background::registry::OWNER_ADDRESS
@@ -599,8 +599,8 @@ pub struct SpawnRequestEvent {
 /// Marks a pulse run that started while its previous run was still going
 /// (still `forking`/`queued`/`running`/`idle`/`completing` in the registry).
 /// The new run is never skipped, blocked, or cancelled for this — it starts
-/// normally — but this flag makes the overlap visible in the Scheduled view
-/// and the run's own session view.
+/// normally — but this flag makes the overlap visible in the Schedule place
+/// and on the run itself in the session panel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export)]
 pub struct PulseOverlap {
@@ -655,8 +655,9 @@ pub enum PostTurnActivityKind {
     Subconscious,
 }
 
-/// A background post-turn cycle started or finished running, for a quiet
-/// "updating memory…" / "reviewing turn…" indicator in the web UI — see
+/// A background post-turn cycle started or finished running, for the quiet
+/// status line under the last reply in the web UI ("Noting what matters from
+/// this conversation" / "Reviewing the last reply") — see
 /// `crate::gateway::post_turn`'s module docs for why this work no longer
 /// blocks the event loop, and so needs a signal of its own instead of
 /// being implied by the turn indicator.
@@ -668,7 +669,7 @@ pub struct PostTurnActivityEvent {
 
 /// An outbound A2A task (one this instance sent to a remote agent with
 /// `message_agent a2a:<name>`) was recorded, changed state, or was stopped
-/// — for the web sessions sidebar's list of tasks sent to other agents.
+/// — for the web UI's list of tasks sent to other agents (Activity's Running now).
 #[derive(Debug, Clone)]
 pub struct OutboundA2aTaskEvent {
     pub task: crate::a2a::TrackedTask,
@@ -702,7 +703,7 @@ pub struct ErrorEvent {
     pub correlation_id: String,
     /// Plain-language error description, safe to show as-is.
     pub message: String,
-    /// Full technical cause chain, for a web UI details toggle or a
+    /// Full technical cause chain, for a web UI Details disclosure or a
     /// developer's own logs. Chat interfaces (Discord, Telegram, Teams)
     /// never show this — they destructure only `message`.
     pub details: Option<String>,
@@ -831,8 +832,8 @@ pub enum TurnLifecycleEvent {
 
 /// Token usage and tool-call progress for a turn still running: this
 /// turn's own output tokens and executed tool calls so far (for the
-/// running-turn indicator) and, when the caller tracks cumulative session
-/// totals, the updated totals (for the chat footer). Published after every
+/// activity line) and, when the caller tracks cumulative session
+/// totals, the updated totals (for the conversation size). Published after every
 /// model call and after every tool-call batch; never delivered to the
 /// agent itself. See `docs/systems-usage/turn-control.md`.
 #[derive(Debug, Clone)]

@@ -1,21 +1,15 @@
-import type {
-  ClientMessage,
-  ServerMessage,
-  SessionUsageTotals,
-} from "../src/lib/generated/protocol";
+import type { ClientMessage, ServerMessage } from "../src/lib/generated/protocol";
 import type { ChatHistorySegment } from "../src/lib/types";
 import { cannedResponses, sampleEpisodes, sampleRecentMessages } from "./data/chat";
 import { json } from "./http";
 import type { Route } from "./routes";
 import type { MockAgent, MockHub, MockState } from "./state";
 
-/** What `GET /api/usage` reports: the mock counts no model calls. */
-const NO_USAGE: SessionUsageTotals = {
-  input_tokens: 0,
-  output_tokens: 0,
-  context_tokens: null,
-  tool_calls: 0,
-};
+/**
+ * What one simulated turn adds to the conversation's totals: two model calls
+ * and three tools, with the context growing by the turn's messages.
+ */
+const TURN_USAGE = { input: 37_000, output: 420, tools: 3, context: 17_900, growth: 500 } as const;
 
 /**
  * One page of the main conversation, matching the backend's
@@ -91,13 +85,16 @@ export const chatRoutes: readonly Route[] = [
   {
     method: "GET",
     pattern: "/api/usage",
-    handler: ({ res }) => {
-      json(res, 200, NO_USAGE);
+    handler: ({ res, state }) => {
+      json(res, 200, state.usage);
     },
   },
 ];
 
 type SendMessage = Extract<ClientMessage, { type: "send_message" }>;
+
+/** The files a chat turn reads, after searching memory. */
+const READ_PATHS = ["team/wiki/index.md", "team/wiki/projects/residuum.md"] as const;
 
 /**
  * How long a turn runs. One that loses its connection either ends while the
@@ -132,6 +129,9 @@ export interface ChatSimulator {
  *   new episode meanwhile, so the page has to reload history.
  * - "drop" (anything else): the turn is still running at reconnect and
  *   finishes live afterwards.
+ *
+ * Each turn reports its usage, and adds it to the conversation's totals. A
+ * message starting with "remember" is followed by two seconds of memory work.
  */
 export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulator {
   const { state } = agent;
@@ -164,6 +164,16 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
         timestamp: env.clock.iso(),
       },
     ]);
+    // Then two files read at once; a message starting with "fail" can't read the second.
+    const reads = READ_PATHS.map((path, i) => ({
+      id: `tc_mock_${String(env.nextId())}`,
+      path,
+      output:
+        i === 1 && lower.startsWith("fail")
+          ? `file not found: ${path}`
+          : `   1\t# ${path}\n   2\t(the page as it is today)`,
+      isError: i === 1 && lower.startsWith("fail"),
+    }));
     const response = cannedResponses[responseIndex % cannedResponses.length] ?? "";
     responseIndex++;
 
@@ -191,6 +201,43 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
         server: null,
       });
     });
+    later(600, () => {
+      live({
+        type: "tool_result",
+        tool_call_id: toolCallId,
+        name: "memory_search",
+        output: toolOutput,
+        is_error: false,
+      });
+      live({
+        type: "turn_usage",
+        reply_to: replyTo,
+        output_tokens: TURN_USAGE.output / 2,
+        has_usage: true,
+        tool_calls: 1,
+        session_totals: null,
+      });
+      for (const read of reads) {
+        live({
+          type: "tool_call",
+          id: read.id,
+          name: "read_file",
+          arguments: { path: read.path },
+          server: null,
+        });
+      }
+    });
+    reads.forEach((read, i) => {
+      later(900 + i * 300, () => {
+        live({
+          type: "tool_result",
+          tool_call_id: read.id,
+          name: "read_file",
+          output: read.output,
+          is_error: read.isError,
+        });
+      });
+    });
 
     if (drop) {
       later(600, () => {
@@ -208,36 +255,61 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
 
     later(turnLengthMs(drop, finishWhileDown), () => {
       inFlight.delete(replyTo);
+      const { usage } = state;
+      state.usage = {
+        input_tokens: usage.input_tokens + TURN_USAGE.input,
+        output_tokens: usage.output_tokens + TURN_USAGE.output,
+        context_tokens: (usage.context_tokens ?? TURN_USAGE.context) + TURN_USAGE.growth,
+        tool_calls: usage.tool_calls + TURN_USAGE.tools,
+      };
       live({
-        type: "tool_result",
-        tool_call_id: toolCallId,
-        name: "memory_search",
-        output: toolOutput,
-        is_error: false,
+        type: "turn_usage",
+        reply_to: replyTo,
+        output_tokens: TURN_USAGE.output,
+        has_usage: true,
+        tool_calls: TURN_USAGE.tools,
+        session_totals: state.usage,
       });
       live({ type: "response", reply_to: replyTo, content: response });
       live({ type: "turn_ended", reply_to: replyTo });
+      if (lower.startsWith("remember")) {
+        live({ type: "post_turn_activity", kind: "memory", active: true });
+        later(2000, () => {
+          live({ type: "post_turn_activity", kind: "memory", active: false });
+        });
+      }
       hub.setBusy(agent, false);
       hub.teamEvents.agentReplied(agent);
       if (agent.connectedClients() === 0) hub.addUnread(agent);
       const now = env.clock.iso();
+      // Like the backend, every message of the turn carries its correlation id.
+      const ofTurn = { timestamp: now, visibility: "user", turn_id: replyTo } as const;
       state.extraRecent.push(
-        { role: "user", content, timestamp: now, visibility: "user" },
+        { role: "user", content, ...ofTurn },
         {
           role: "assistant",
           content: "Looking through recent notes first.",
-          tool_calls: [{ id: toolCallId, name: "memory_search", arguments: toolArgs }],
-          timestamp: now,
-          visibility: "user",
+          tool_calls: [
+            { id: toolCallId, name: "memory_search", arguments: toolArgs, server: null },
+          ],
+          ...ofTurn,
         },
+        { role: "tool", content: toolOutput, tool_call_id: toolCallId, ...ofTurn },
         {
-          role: "tool",
-          content: toolOutput,
-          tool_call_id: toolCallId,
-          timestamp: now,
-          visibility: "user",
+          role: "assistant",
+          content: "",
+          tool_calls: reads.map((r) => ({
+            id: r.id,
+            name: "read_file",
+            arguments: { path: r.path },
+            server: null,
+          })),
+          ...ofTurn,
         },
-        { role: "assistant", content: response, timestamp: now, visibility: "user" },
+        ...reads.map(
+          (r) => ({ role: "tool", content: r.output, tool_call_id: r.id, ...ofTurn }) as const,
+        ),
+        { role: "assistant", content: response, ...ofTurn },
       );
       hub.overview.changed(agent);
     });

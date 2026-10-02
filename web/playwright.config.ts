@@ -82,6 +82,9 @@ export default defineConfig<E2EOptions>({
   testMatch: "**/*.spec.ts",
   outputDir: "test-results",
 
+  // Compiles the dev server's modules once, so no spec pays for the first compile of a page or a lazy chunk.
+  globalSetup: "./e2e/support/warmup.ts",
+
   // The mock's state is global to its server, and every test starts by resetting it.
   workers: 1,
   fullyParallel: false,

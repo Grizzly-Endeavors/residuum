@@ -4,8 +4,8 @@
  * Marks a pulse run that started while its previous run was still going
  * (still `forking`/`queued`/`running`/`idle`/`completing` in the registry).
  * The new run is never skipped, blocked, or cancelled for this — it starts
- * normally — but this flag makes the overlap visible in the Scheduled view
- * and the run's own session view.
+ * normally — but this flag makes the overlap visible in the Schedule place
+ * and on the run itself in the session panel.
  */
 export type PulseOverlap = { 
 /**

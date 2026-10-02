@@ -6,6 +6,7 @@ import type {
   AgentSummary,
   OutboundA2aTaskSummary,
   ServerMessage,
+  SessionUsageTotals,
 } from "../src/lib/generated/protocol";
 import type { HubServerMessage } from "../src/lib/hub-types";
 import type { RecentMessage, UserInboxItem, WorkspaceEntry } from "../src/lib/types";
@@ -20,6 +21,7 @@ import { createScheduled, type MockScheduled } from "./scheduled";
 import type { MockOverview } from "./overview";
 import type { SessionEventFrame } from "./session-relay";
 import type { MockTeamEvents } from "./team-events";
+import type { MockCloud } from "./cloud";
 import type { MockUpdateStatus } from "./update";
 
 /** An agent key as the mock stores it, value included. */
@@ -57,10 +59,9 @@ export interface MockState {
   configToml: string;
   hubConfigToml: string;
   providersToml: string;
-  mcpJson: string;
   /** Directory path to its listing. Changed only through `workspace-tree.ts`, which keeps it agreeing with the contents. */
   workspaceFiles: Record<string, WorkspaceEntry[]>;
-  /** File path to its content. */
+  /** File path to its content. `config/mcp.json` (`MCP_JSON`) is the agent's MCP servers. */
   workspaceFileContents: Record<string, string>;
   inboxItems: UserInboxItem[];
   /** The items the user archived, which `restore` brings back to `inboxItems`. */
@@ -71,6 +72,8 @@ export interface MockState {
   scheduled: MockScheduled;
   /** What the hub knows about updates, for the update routes. */
   update: MockUpdateStatus;
+  /** What a test holds about the Residuum Cloud tunnel, for the cloud routes. Only the hub's state is read. */
+  cloud: MockCloud;
   /** The devices registered for Web Push, oldest first. Only the hub's state holds any. */
   pushDevices: MockPushDevice[];
   /** The checkpoint histories this state holds: an agent's own, or the hub's. */
@@ -85,6 +88,8 @@ export interface MockState {
   workbenchPort: number | null;
   /** Main-agent messages recorded after the sample history (see `/api/mock/missed-relay`). */
   extraRecent: RecentMessage[];
+  /** The main conversation's token totals, which `GET /api/usage` reports and each turn adds to. */
+  usage: SessionUsageTotals;
   /** Close every WebSocket, as if the connection dropped. Set by the agent socket. */
   dropSockets: () => void;
   /**
@@ -142,6 +147,12 @@ export interface MockHub {
   agents: Map<string, MockAgent>;
   /** Deleted agents that can be restored, by name. */
   deleted: Map<string, MockDeletedAgent>;
+  /**
+   * How many times a test rebuilt the app (`POST /api/mock/rebuild`). A
+   * preview server then serves a service worker of another version, as a
+   * rebuilt app would. A reset puts it back to zero.
+   */
+  appRebuilds: number;
   /** Hub-level and team-level state: secrets, hub config, team files, the workbench. */
   hubState: MockState;
   /** Register an agent and open its WebSocket route. */
@@ -191,12 +202,15 @@ export interface MockHub {
   clearUnread: (agent: MockAgent) => void;
   /** Move an agent to a run state and tell hub clients. */
   transition: (agent: MockAgent, runState: AgentState) => void;
+  /** Take the hub WebSocket down or bring it back (see `HubSocket.setOnline`). A reset brings it back. */
+  setHubSocketOnline: (online: boolean) => void;
   /**
    * Put the mock back as it started: the clock, the timers and delays, the
    * hub's own state, and the agents the scenario creates. Every socket is
-   * closed, so pages reconnect to the new state.
+   * closed, so pages reconnect to the new state. With `setup`, it starts with
+   * no agents instead, as a hub that hasn't been set up.
    */
-  reset: () => void;
+  reset: (options?: { setup?: boolean }) => void;
 }
 
 /** The remote agents an agent that has run has listed in its A2A client settings. */
@@ -210,6 +224,9 @@ const SAMPLE_A2A_AGENTS_JSON =
 /** The A2A client settings of an agent with no remote agents listed. */
 const EMPTY_A2A_AGENTS_JSON = '{"agents":{}}';
 
+/** Where an agent's MCP servers live in its workspace, which the MCP routes read and write. */
+export const MCP_JSON = "config/mcp.json";
+
 /**
  * Give an agent the data it has once it has run: a conversation, the sample
  * inbox and archive, and its A2A client settings. An agent that has never run
@@ -218,6 +235,12 @@ const EMPTY_A2A_AGENTS_JSON = '{"agents":{}}';
 export function seedAgentData(state: MockState): void {
   const { clock } = state.env;
   state.hasConversation = true;
+  state.usage = {
+    input_tokens: 412_880,
+    output_tokens: 9_214,
+    context_tokens: 18_402,
+    tool_calls: 37,
+  };
   state.inboxItems = createInboxItems(clock);
   state.inboxArchive = createArchivedInboxItems(clock);
   state.a2aAgentsJson = SAMPLE_A2A_AGENTS_JSON;
@@ -234,7 +257,10 @@ export function createState(
   env: MockEnv = createMockEnv(),
 ): MockState {
   const { clock } = env;
-  const workspaceFileContents = createWorkspaceFileContents();
+  const workspaceFileContents = {
+    ...createWorkspaceFileContents(),
+    [MCP_JSON]: loadAsset("mcp.example.json"),
+  };
   const state: MockState = {
     agentName,
     env,
@@ -275,7 +301,6 @@ export function createState(
     configToml: loadAsset("config.example.toml"),
     hubConfigToml: loadAsset("hub-config.example.toml"),
     providersToml: loadAsset("providers.example.toml"),
-    mcpJson: loadAsset("mcp.example.json"),
     workspaceFiles: createWorkspaceFiles(workspaceFileContents, clock),
     workspaceFileContents,
     sessions: createSessions(clock),
@@ -302,6 +327,7 @@ export function createState(
       },
     ],
     extraRecent: [],
+    usage: { input_tokens: 0, output_tokens: 0, context_tokens: null, tool_calls: 0 },
     dropSockets: () => {},
     broadcast: () => {},
     compressedAt: null,
@@ -310,6 +336,7 @@ export function createState(
     agentInbox: [],
     scheduled: { pulses: [], actions: [] },
     update: { latest: null, lastChecked: null },
+    cloud: { tunnel: null, viaTunnel: false },
     pushDevices: [],
     checkpoints: {},
     hasConversation: false,

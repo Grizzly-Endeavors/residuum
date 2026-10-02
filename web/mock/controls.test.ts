@@ -56,6 +56,59 @@ describe("test controls", () => {
     });
   });
 
+  describe("fix-agent", () => {
+    const start = async (agent: string): Promise<unknown> =>
+      (
+        await fetchJson(`${harness.baseUrl}/api/hub/agents/${agent}/start`, {
+          method: "POST",
+        })
+      ).body;
+
+    it("lets an agent that failed every start start, once its settings are fixed", async () => {
+      expect(await start("brittle")).toMatchObject({ state: "failed" });
+
+      expect(await control("fix-agent?agent=brittle")).toEqual({ status: 200, body: { ok: true } });
+
+      expect(await start("brittle")).toMatchObject({ state: "running", last_error: null });
+    });
+
+    it("answers 404 without an agent it knows", async () => {
+      expect((await control("fix-agent?agent=ghost")).status).toBe(404);
+      expect((await control("fix-agent")).status).toBe(404);
+    });
+  });
+
+  describe("hub-socket", () => {
+    const setOnline = (online: unknown): Promise<{ status: number; body: unknown }> =>
+      fetchJson(`${harness.baseUrl}/api/mock/hub-socket`, {
+        method: "POST",
+        body: JSON.stringify({ online }),
+      });
+
+    it("drops the hub's pages and refuses new ones until it is back online", async () => {
+      const page = await harness.openSocket("/api/hub/ws");
+
+      expect(await setOnline(false)).toEqual({ status: 200, body: { online: false } });
+      await page.closed;
+      expect((await harness.refusedUpgrade("/api/hub/ws")).status).toBe(409);
+
+      expect(await setOnline(true)).toEqual({ status: 200, body: { online: true } });
+      const again = await harness.openSocket("/api/hub/ws");
+      expect((await again.nextOfType("hub_boot")).type).toBe("hub_boot");
+    });
+
+    it("comes back online on reset", async () => {
+      await setOnline(false);
+      expect((await control("reset")).status).toBe(200);
+      const page = await harness.openSocket("/api/hub/ws");
+      expect((await page.nextOfType("agents_snapshot")).type).toBe("agents_snapshot");
+    });
+
+    it("refuses anything but true or false", async () => {
+      expect((await setOnline("no")).status).toBe(422);
+    });
+  });
+
   describe("teammate-message", () => {
     it("lands a teammate's message in the agent's conversation, unread until the web UI opens its socket", async () => {
       const hub = await harness.openSocket("/api/hub/ws");
@@ -74,9 +127,15 @@ describe("test controls", () => {
         unread: 1,
       });
       const [message, reply] = (await recentMessages("atlas")).slice(-2);
-      expect(message).toMatchObject({ role: "user", visibility: "user" });
+      expect(message).toMatchObject({
+        role: "user",
+        visibility: "background",
+        agent_sender: { address: "agent:scout", category: "teammate" },
+      });
       expect(message?.content).toBe(
-        "[Message from scout]\nCan you look over the wiki index when you get a chance?",
+        "[Message from teammate agent:scout, not the user. Your response in this turn is not " +
+          'shown to them; to reply, call message_agent with to="agent:scout".]\n' +
+          "Can you look over the wiki index when you get a chance?",
       );
       expect(reply).toMatchObject({
         role: "assistant",
@@ -87,7 +146,8 @@ describe("test controls", () => {
     it("names the teammate with ?from=", async () => {
       await control("teammate-message?agent=atlas&from=drifter");
       const message = (await recentMessages("atlas")).at(-2);
-      expect(message?.content).toContain("[Message from drifter]");
+      expect(message?.content).toContain("[Message from teammate agent:drifter,");
+      expect(message?.agent_sender?.address).toBe("agent:drifter");
     });
 
     it("sends the reply to a connected client instead of marking the agent unread", async () => {
@@ -109,6 +169,44 @@ describe("test controls", () => {
       const expected = { status: 404, body: { error: "mock: name an agent with ?agent=" } };
       expect(await control("teammate-message")).toEqual(expected);
       expect(await control("teammate-message?agent=ghost")).toEqual(expected);
+    });
+  });
+
+  describe("reset", () => {
+    const agentNames = async (): Promise<string[]> => {
+      const res = await fetchJson(`${harness.baseUrl}/api/hub/agents`);
+      return (res.body as { agents: { name: string }[] }).agents.map((agent) => agent.name);
+    };
+
+    const resetWith = (body: unknown): Promise<{ status: number; body: unknown }> =>
+      fetchJson(`${harness.baseUrl}/api/mock/reset`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    it("starts over with no agents when asked for setup, and with the scenario's otherwise", async () => {
+      expect(await resetWith({ setup: true })).toEqual({ status: 200, body: { ok: true } });
+      expect(await agentNames()).toEqual([]);
+
+      expect(await control("reset")).toEqual({ status: 200, body: { ok: true } });
+      expect(await agentNames()).toEqual(["atlas", "brittle", "drifter", "scout"]);
+    });
+
+    it("answers 422 when setup isn't a boolean", async () => {
+      expect(await resetWith({ setup: "yes" })).toEqual({
+        status: 422,
+        body: { error: "mock: `setup` must be true or false" },
+      });
+    });
+  });
+
+  describe("rebuild", () => {
+    it("counts rebuilds of the app, and a reset starts over from the build as it is", async () => {
+      expect(await control("rebuild")).toEqual({ status: 200, body: { rebuilds: 1 } });
+      expect(await control("rebuild")).toEqual({ status: 200, body: { rebuilds: 2 } });
+      expect((await control("reset")).status).toBe(200);
+      expect(await control("rebuild")).toEqual({ status: 200, body: { rebuilds: 1 } });
     });
   });
 });

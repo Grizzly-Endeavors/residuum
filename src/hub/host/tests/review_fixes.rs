@@ -7,49 +7,6 @@ use crate::tools::Tool as _;
 use crate::tools::agent_lifecycle::AgentCreateTool;
 
 #[tokio::test]
-async fn an_agent_deleting_itself_leaves_no_inbox_warning() {
-    let hub = Fixture::new(&["scout"], "").await;
-    hub.host
-        .create(create_request("nova", None), Actor::User)
-        .await
-        .unwrap();
-    let log = EventLog::default();
-    let _guard = log.capture();
-
-    hub.host
-        .delete("nova", Actor::Agent("nova".to_string()))
-        .await
-        .unwrap();
-
-    assert!(
-        log.matching("couldn't leave a hub notice").is_empty(),
-        "a deleted agent has no inbox to write to: {:?}",
-        log.events.lock().unwrap()
-    );
-}
-
-#[tokio::test]
-async fn an_agent_deleting_a_teammate_still_gets_the_inbox_notice() {
-    let hub = Fixture::new(&["scout"], "").await;
-    hub.host.start("scout").await.unwrap();
-    hub.host
-        .create(create_request("nova", None), Actor::User)
-        .await
-        .unwrap();
-
-    hub.host
-        .delete("nova", Actor::Agent("scout".to_string()))
-        .await
-        .unwrap();
-
-    let inbox = WorkspaceLayout::new(hub.root.path().join("scout")).user_inbox_dir();
-    assert!(
-        std::fs::read_dir(&inbox).is_ok_and(|mut entries| entries.next().is_some()),
-        "the deleting agent is told what it did"
-    );
-}
-
-#[tokio::test]
 async fn a_refused_start_after_creation_or_restore_is_logged_with_its_reason() {
     let hub = Fixture::new(&["scout"], "").await;
     let slot = hub.host.slot("scout").unwrap();

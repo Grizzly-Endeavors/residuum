@@ -714,8 +714,9 @@ impl AgentHost {
 
     /// Put the agent in `failed` with `message` and `kind`, log and
     /// auto-report `reason` (the underlying error, which the agent's
-    /// last-error record also carries), and leave the user an inbox item.
-    /// Returns the error a caller of `start` gets back.
+    /// last-error record also carries). The `agent_state` event this
+    /// publishes is what the user hears of the failure. Returns the error a
+    /// caller of `start` gets back.
     async fn record_failure(
         &self,
         slot: &Arc<AgentSlot>,
@@ -742,31 +743,7 @@ impl AgentHost {
                 at: Utc::now(),
             }),
         );
-        self.leave_failure_in_inbox(slot, &message).await;
         LifecycleError::Failed(message)
-    }
-
-    /// Leave the failed agent's user inbox an item saying what happened, so
-    /// the failure is there for the user even without the web UI open.
-    async fn leave_failure_in_inbox(&self, slot: &AgentSlot, message: &str) {
-        // Writing the item would recreate a directory that was deleted.
-        if slot.is_removed() || !slot.dir.is_dir() {
-            tracing::debug!(agent = %slot.name, "not leaving a failure in the inbox of an agent whose directory is gone");
-            return;
-        }
-        let layout = WorkspaceLayout::new(&slot.dir);
-        let tz = self.hub_config().timezone;
-        if let Err(e) = crate::inbox::quick_add(
-            &layout.user_inbox_dir(),
-            &format!("{} failed", slot.name),
-            message,
-            "hub",
-            tz,
-        )
-        .await
-        {
-            tracing::warn!(agent = %slot.name, error = %e, "couldn't leave the agent's failure in its inbox");
-        }
     }
 
     /// Start watching a started agent, before its event loop runs so the
@@ -945,7 +922,7 @@ impl AgentHost {
             Ok(AgentExit::Stopped) => None,
             Ok(AgentExit::BusClosed) => Some((
                 format!(
-                    "{} stopped unexpectedly. Restart it from the team view; if it keeps happening, send a bug report.",
+                    "{} stopped unexpectedly. Restart it from Home; if it keeps happening, send a bug report.",
                     run.slot.name
                 ),
                 "the event loop ended because its message channel closed".to_string(),
@@ -955,7 +932,7 @@ impl AgentHost {
             Err(ref join_err) if requested && join_err.is_cancelled() => None,
             Err(join_err) => Some((
                 format!(
-                    "{} crashed from an internal error. Restart it from the team view; if it keeps happening, send a bug report.",
+                    "{} crashed from an internal error. Restart it from Home; if it keeps happening, send a bug report.",
                     run.slot.name
                 ),
                 describe_join_error(join_err),
@@ -1115,15 +1092,6 @@ impl AgentHost {
             .await;
         }
         let summary = self.summary_of(&slot);
-        self.tell_acting_agent(
-            &by,
-            &format!("Created the agent {}", request.name),
-            &format!(
-                "You created the agent '{}'. It is {}.",
-                request.name, summary.state
-            ),
-        )
-        .await;
         self.publish(HubEvent::AgentCreated {
             agent: summary.clone(),
             by,
@@ -1142,28 +1110,6 @@ impl AgentHost {
                 reason = %reason,
                 "agent was not started"
             );
-        }
-    }
-
-    /// Leave a user inbox item for the agent that created or deleted another,
-    /// so the outcome is there for the user beside that agent's work. The
-    /// user acting through the web UI or CLI sees the toast only.
-    async fn tell_acting_agent(&self, by: &Actor, title: &str, body: &str) {
-        let Actor::Agent(actor) = by else {
-            return;
-        };
-        let dir = crate::config::paths::agent_dir(&self.services.root, actor);
-        let layout = WorkspaceLayout::new(&dir);
-        if let Err(e) = crate::inbox::quick_add(
-            &layout.user_inbox_dir(),
-            title,
-            body,
-            "hub",
-            self.hub_config().timezone,
-        )
-        .await
-        {
-            tracing::warn!(agent = %actor, error = %e, "couldn't leave a hub notice in the agent's inbox");
         }
     }
 
@@ -1245,15 +1191,6 @@ impl AgentHost {
             id
         };
         self.spawn_team_embedding_refresh();
-        // An agent deleting itself has no inbox left to write to.
-        if !matches!(&by, Actor::Agent(actor) if actor == name) {
-            self.tell_acting_agent(
-                &by,
-                &format!("Deleted the agent {name}"),
-            &format!("You deleted the agent '{name}'. Its files were checkpointed first, so the user can restore it from the team view or with `residuum agent restore {name}`."),
-            )
-            .await;
-        }
         self.publish(HubEvent::AgentDeleted {
             name: name.to_string(),
             by,
@@ -1360,12 +1297,6 @@ impl AgentHost {
         }
         self.spawn_team_embedding_refresh();
         let summary = self.summary_of(&slot);
-        self.tell_acting_agent(
-            &by,
-            &format!("Restored the agent {name}"),
-            &format!("You restored the agent '{name}'. It is {}.", summary.state),
-        )
-        .await;
         self.publish(HubEvent::AgentRestored {
             agent: summary.clone(),
             by,
@@ -1842,7 +1773,7 @@ impl AgentDirectory for AgentHost {
             tracing::error!(agent = %name, error = %e, "an agent's request to delete itself failed");
             self.notice(
                 NoticeLevel::Warn,
-                format!("{name} asked to be deleted, but that failed: {e}. It has been stopped; check its state in the team view."),
+                format!("{name} asked to be deleted, but that failed: {e}. It has been stopped; check its state on Home."),
                 Some(name.to_string()),
             );
         }

@@ -22,19 +22,7 @@ test("a critical violation fails and names the rule and the element", async ({ p
   await expect(expectNoAxeViolations(page)).rejects.toThrow(/image-alt \[critical\].*img/s);
 });
 
-test("an allowed rule passes, and the scan can be limited to one region", async ({ page }) => {
+test("the scan can be limited to one region", async ({ page }) => {
   await page.setContent(PAGE_WITH_UNLABELED_IMAGE);
-  await expectNoAxeViolations(page, {
-    allow: [{ rule: "image-alt", reason: "exercised by the harness spec" }],
-  });
   await expectNoAxeViolations(page, { within: "h1" });
-});
-
-test("an allowed rule that no longer fires fails", async ({ page }) => {
-  await page.setContent(CLEAN_PAGE);
-  await expect(
-    expectNoAxeViolations(page, {
-      allow: [{ rule: "image-alt", reason: "a screen that has since been fixed" }],
-    }),
-  ).rejects.toThrow(/no longer fire.*image-alt/s);
 });

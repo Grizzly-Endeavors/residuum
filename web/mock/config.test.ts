@@ -55,13 +55,9 @@ describe("config routes", () => {
       }
     });
 
-    it("answers the timezone, cloud status and feedback submissions", async () => {
+    it("answers the timezone and feedback submissions", async () => {
       expect((await request("GET", "/api/system/timezone")).body).toEqual({
         timezone: "America/New_York",
-      });
-      expect((await request("GET", "/api/cloud/status")).body).toMatchObject({
-        status: "disconnected",
-        has_token: false,
       });
       expect(
         (await request("POST", "/api/tracing/bug-report", { description: "x" })).body,
@@ -90,10 +86,55 @@ describe("config routes", () => {
       await putRaw(`${prefix}/raw`, 'a = 1\n[t]\nb = "x"\n');
       expect((await fetchText(url(`${prefix}/raw`))).body).toBe('a = 1\n[t]\nb = "x"\n');
 
-      expect(await request("POST", `${prefix}/validate`, "anything")).toEqual({
-        status: 200,
-        body: { valid: true },
+      const check = async (text: string): Promise<Body> => {
+        const res = await fetchJson(url(`${prefix}/validate`), { method: "POST", body: text });
+        return res.body as Body;
+      };
+      expect(await check("a = 1\n")).toEqual({ valid: true });
+      expect(await check("a = 1\nb = \n")).toEqual({
+        valid: false,
+        error: "Invalid TOML document: invalid value",
+        diagnostics: [
+          {
+            severity: "error",
+            message: "Invalid TOML document: invalid value",
+            location: { kind: "line_column", line: 2, column: 5 },
+          },
+        ],
       });
+    });
+
+    it("reports a model its provider doesn't offer on the role's key path, in a check and a raw save", async () => {
+      const text = '[models]\nmain = "openai/gpt-9"\n';
+      const expected = {
+        valid: false,
+        error: "model 'gpt-9' is not offered by provider 'openai'",
+        diagnostics: [
+          {
+            severity: "error",
+            message: "model 'gpt-9' is not offered by provider 'openai'",
+            location: { kind: "path", path: "models.main" },
+          },
+        ],
+      };
+      const checked = await fetchJson(url("/api/providers/validate"), {
+        method: "POST",
+        body: text,
+      });
+      expect(checked.body).toEqual(expected);
+      const saved = await fetchJson(url("/api/providers/raw"), { method: "PUT", body: text });
+      expect(saved.body).toEqual(expected);
+      // config.toml has no models to check.
+      const config = await fetchJson(url("/api/config/validate"), { method: "POST", body: text });
+      expect(config.body).toEqual({ valid: true });
+    });
+
+    it("writes a raw save with problems, reports them, and checkpoints the file first", async () => {
+      const before = harness.state.checkpoints.agent_config?.length ?? 0;
+      const res = await fetchJson(url("/api/config/raw"), { method: "PUT", body: "a = \n" });
+      expect(res.body).toMatchObject({ valid: false, diagnostics: [{ severity: "error" }] });
+      expect(harness.state.configToml).toBe("a = \n");
+      expect(harness.state.checkpoints.agent_config?.length).toBe(before + 1);
     });
 
     it("patches a TOML document: set, remove, inline tables, and pruning empty tables", async () => {
@@ -104,7 +145,10 @@ describe("config routes", () => {
         gone: { k: null },
         z: { $inline: { q: 1 } },
       });
-      expect(patch).toEqual({ status: 200, body: { valid: true } });
+      expect(patch).toEqual({
+        status: 200,
+        body: { valid: true, checkpoint_id: expect.any(String) as unknown },
+      });
       const raw = (await fetchText(url("/api/config/raw"))).body;
       expect(raw).toContain("a = 2");
       expect(raw).toMatch(/\[t\]\s+c = 1/);
@@ -112,6 +156,20 @@ describe("config routes", () => {
       expect(raw).toContain('e = "deep"');
       expect(raw).not.toContain("gone");
       expect(raw).toMatch(/\[z\]\s+q = 1/);
+    });
+
+    it("refuses a patch the backend's validation would, and writes nothing", async () => {
+      await putRaw("/api/config/raw", "timeout_secs = 30\n");
+      const refused = await request("PATCH", "/api/config/patch", {
+        agent: { max_tool_iterations: 0 },
+      });
+      expect(refused.status).toBe(400);
+      expect(refused.body).toEqual({
+        valid: false,
+        error: "agent.max_tool_iterations must be at least 1 (leave it unset for unlimited)",
+        diagnostics: [],
+      });
+      expect(harness.state.configToml).toBe("timeout_secs = 30\n");
     });
 
     it("patches an empty document", async () => {
@@ -130,19 +188,34 @@ describe("config routes", () => {
   });
 
   describe("MCP", () => {
+    const mcpJson = (): unknown =>
+      JSON.parse(harness.state.workspaceFileContents["config/mcp.json"] ?? "");
+
     it("patches servers in and out, always keeping a `mcpServers` object", async () => {
       await putRaw("/api/mcp/raw", '{"mcpServers":{"a":{"command":"x"}}}');
       await request("PATCH", "/api/mcp/patch", { mcpServers: { b: { command: "y" }, a: null } });
-      expect(JSON.parse(harness.state.mcpJson)).toEqual({ mcpServers: { b: { command: "y" } } });
+      expect(mcpJson()).toEqual({ mcpServers: { b: { command: "y" } } });
 
       await request("PATCH", "/api/mcp/patch", { mcpServers: { b: null } });
-      expect(JSON.parse(harness.state.mcpJson)).toEqual({ mcpServers: {} });
+      expect(mcpJson()).toEqual({ mcpServers: {} });
     });
 
     it("starts an empty document with `mcpServers`", async () => {
       await putRaw("/api/mcp/raw", "");
       await request("PATCH", "/api/mcp/patch", {});
-      expect(JSON.parse(harness.state.mcpJson)).toEqual({ mcpServers: {} });
+      expect(mcpJson()).toEqual({ mcpServers: {} });
+    });
+
+    it("answers a patch with a workspace checkpoint that holds the file as it was", async () => {
+      const before = harness.state.workspaceFileContents["config/mcp.json"];
+      const { body } = await request("PATCH", "/api/mcp/patch", {
+        mcpServers: { b: { command: "y" } },
+      });
+      const taken = harness.state.checkpoints.workspace?.find(
+        (checkpoint) => checkpoint.summary.id === body.checkpoint_id,
+      );
+      expect(taken?.files["config/mcp.json"]).toBe(before);
+      expect(mcpJson()).toMatchObject({ mcpServers: { b: { command: "y" } } });
     });
 
     it("serves the server catalog", async () => {
@@ -184,12 +257,12 @@ describe("config routes", () => {
       ]);
     });
 
-    it("adds a key, and refuses a bad name or a short value", async () => {
+    it("adds a key, and refuses a bad name or an empty value", async () => {
       const rejected = async (body: unknown): Promise<{ status: number; body: string }> =>
         fetchText(url("/api/agent-keys"), { method: "POST", body: JSON.stringify(body) });
       const invalid = { status: 400, body: "key name or value is invalid" };
       expect(await rejected({ name: "Bad", value: "12345678" })).toEqual(invalid);
-      expect(await rejected({ name: "good", value: "123" })).toEqual(invalid);
+      expect(await rejected({ name: "good", value: "" })).toEqual(invalid);
       expect(await rejected({})).toEqual(invalid);
 
       const ok = await request("POST", "/api/agent-keys", {
@@ -205,9 +278,21 @@ describe("config routes", () => {
       });
     });
 
-    it("deletes a key once, then answers 404", async () => {
+    it("stores a short value and says it can't be hidden reliably", async () => {
+      const { status, body } = await request("POST", "/api/agent-keys", {
+        name: "short",
+        value: "123",
+      });
+      expect(status).toBe(200);
+      expect(body.warning).toEqual(expect.stringContaining("short"));
+      expect(harness.state.agentKeys.has("short")).toBe(true);
+    });
+
+    it("deletes a key once with the checkpoint taken before, then answers 404", async () => {
       const first = await request("DELETE", "/api/agent-keys/github_token");
-      expect(first).toEqual({ status: 200, body: { deleted: true, checkpoint_id: null } });
+      expect(first.status).toBe(200);
+      expect(first.body.deleted).toBe(true);
+      expect(typeof first.body.checkpoint_id).toBe("string");
       const second = await fetchText(url("/api/agent-keys/github_token"), { method: "DELETE" });
       expect(second).toEqual({ status: 404, body: "no agent key named 'github_token'" });
     });
@@ -220,7 +305,7 @@ describe("config routes", () => {
       expect(body).toEqual({
         enabled: true,
         port: 7702,
-        visibility: "public",
+        visibility: "private",
         public_url: null,
         local_url: "http://127.0.0.1:7702/agents/atlas",
         relay_access: false,
@@ -228,6 +313,12 @@ describe("config routes", () => {
         listener_running: true,
         card_error: null,
       });
+    });
+
+    it("reports the visibility the hub has for the agent", async () => {
+      const atlas = harness.hub.agents.get("atlas");
+      if (atlas) atlas.visibility = "public";
+      expect((await request("GET", "/api/a2a/status")).body.visibility).toBe("public");
     });
 
     it("describes the card from the workspace file", async () => {
@@ -252,16 +343,34 @@ describe("config routes", () => {
       const keys = (await request("GET", "/api/a2a/keys")).body.keys as Body[];
       expect(keys.map((k) => k.name)).toEqual(["laptop", "peer"]);
 
-      expect((await request("DELETE", "/api/a2a/keys/peer")).body).toEqual({
-        revoked: true,
-        checkpoint_id: null,
-      });
+      const revoked = (await request("DELETE", "/api/a2a/keys/peer")).body;
+      expect(revoked.revoked).toBe(true);
+      expect(typeof revoked.checkpoint_id).toBe("string");
       expect((await request("DELETE", "/api/a2a/keys/peer")).status).toBe(404);
     });
 
-    it("lists remote agents and keeps the agents file as written", async () => {
+    it("lists the agents file's remote agents and a sibling, and keeps the file as written", async () => {
       const { body } = await fetchJson(url("/api/a2a/agents"));
-      expect((body as Body[]).map((a) => a.name)).toEqual(["research-buddy", "laptop"]);
+      expect(body).toMatchObject([
+        {
+          name: "research-buddy",
+          source: "config",
+          status: "ok",
+          card: { name: "Research Buddy" },
+        },
+        { name: "laptop", source: "sibling", status: "pending" },
+      ]);
+      await putRaw("/api/a2a/agents/raw", '{"agents":{"desk":{"url":"https://desk.example/a2a"}}}');
+      const listed = (await fetchJson(url("/api/a2a/agents"))).body as Body[];
+      expect(listed[0]).toMatchObject({
+        name: "desk",
+        url: "https://desk.example/a2a",
+        status: "pending",
+      });
+      await putRaw("/api/a2a/agents/raw", "{oops");
+      expect(((await fetchJson(url("/api/a2a/agents"))).body as Body[]).map((a) => a.name)).toEqual(
+        ["laptop"],
+      );
       await putRaw("/api/a2a/agents/raw", '{"agents":{}}');
       const raw = await fetch(url("/api/a2a/agents/raw"));
       expect(raw.headers.get("content-type")).toBe("application/json");
@@ -345,11 +454,8 @@ describe("config routes", () => {
       expect(status).toBe(200);
       expect(body).toEqual({ valid: true, diagnostics: [] });
       const created = harness.hub.agents.get("first");
-      expect(created?.state).toMatchObject({
-        configToml: "a = 1",
-        providersToml: "b = 2",
-        mcpJson: '{"mcpServers":{}}',
-      });
+      expect(created?.state).toMatchObject({ configToml: "a = 1", providersToml: "b = 2" });
+      expect(created?.state.workspaceFileContents["config/mcp.json"]).toBe('{"mcpServers":{}}');
       expect(harness.state.hubConfigToml).toBe("c = 3");
       expect(harness.state.mode).toBe("running");
     });

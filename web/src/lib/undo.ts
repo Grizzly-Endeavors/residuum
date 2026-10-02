@@ -8,13 +8,16 @@
 // `docs/systems-usage/checkpoints.md` — so undoing is always just restoring
 // that pre-action checkpoint.
 
-import { undoLastAction, type WorkspaceCheckpoint } from "./api";
+import type { WorkspaceCheckpoint } from "./api";
+import { configCoordinator } from "./config-coordinator";
 import { userErrorMessage } from "./errors";
 import { toast } from "./toast.svelte";
 import type { RepoKind } from "./types";
 
 /**
  * Show a success toast for a destructive action that just completed.
+ * `agent` is the agent the action ran on; only its own repositories
+ * (`workspace`, `agent_config`) need one, so the hub-level ones take `null`.
  * When `checkpointId` is the id the action returned, the toast carries
  * Undo for that checkpoint. When it is null — the checkpoint failed, so
  * there is nothing correct to restore — the toast has no Undo.
@@ -26,6 +29,7 @@ import type { RepoKind } from "./types";
  * whatever list or view showed the now-gone item.
  */
 export function notifyWithUndo(
+  agent: string | null,
   message: string,
   repo: RepoKind,
   path: string | string[],
@@ -39,12 +43,13 @@ export function notifyWithUndo(
   toast.success(message, {
     label: "Undo",
     onClick: () => {
-      void runUndo(checkpointId, repo, path, onRestored);
+      void runUndo(agent, checkpointId, repo, path, onRestored);
     },
   });
 }
 
 async function runUndo(
+  agent: string | null,
   checkpointId: string,
   repo: RepoKind,
   path: string | string[],
@@ -52,7 +57,7 @@ async function runUndo(
 ): Promise<void> {
   try {
     for (const each of Array.isArray(path) ? path : [path]) {
-      await undoLastAction(checkpointId, repo, each);
+      await configCoordinator.restore(agent, checkpointId, repo, each);
     }
     toast.success("Restored.");
     await onRestored?.();
@@ -109,6 +114,7 @@ export function restoreTargets(
  * repository. Undo restores each path from the right repository.
  */
 export function notifyWithWorkspaceUndo(
+  agent: string | null,
   message: string,
   paths: string | string[],
   checkpoints: WorkspaceCheckpoint[],
@@ -122,18 +128,19 @@ export function notifyWithWorkspaceUndo(
   toast.success(message, {
     label: "Undo",
     onClick: () => {
-      void runRestoreTargets(targets, onRestored);
+      void runRestoreTargets(agent, targets, onRestored);
     },
   });
 }
 
 async function runRestoreTargets(
+  agent: string | null,
   targets: RestoreTarget[],
   onRestored?: () => void | Promise<void>,
 ): Promise<void> {
   try {
     for (const target of targets) {
-      await undoLastAction(target.checkpointId, target.repo, target.path);
+      await configCoordinator.restore(agent, target.checkpointId, target.repo, target.path);
     }
     toast.success("Restored.");
     await onRestored?.();

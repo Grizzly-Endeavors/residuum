@@ -103,6 +103,7 @@ export function createHub(
     lagSessionRelay,
     dropClients,
     presentDevices,
+    setOnline: setHubSocketOnline,
   } = openHubSocket(host, bootId, listing, env.clock, (name) => agents.has(name));
   const teamEvents = createTeamEvents(env, bootId, sendToPages);
   const overview = createOverview(env, bootId, agents, sendToPages);
@@ -125,6 +126,7 @@ export function createHub(
     env,
     agents,
     deleted: new Map(),
+    appRebuilds: 0,
     hubState,
     broadcast,
     relaySession: (agent, frame) => {
@@ -192,20 +194,24 @@ export function createHub(
       }
       broadcast({ type: "agent_state", agent: mockAgentSummary(agent) });
     },
-    reset() {
+    setHubSocketOnline,
+    reset({ setup = false } = {}) {
       env.reset();
+      setHubSocketOnline(true);
       dropClients();
       const gone = [...hub.deleted.values()].map((deleted) => deleted.agent);
       for (const agent of [...agents.values(), ...gone]) agent.dispose();
       agents.clear();
       hub.deleted.clear();
+      hub.appRebuilds = 0;
       // The state is replaced in place: the artifacts listener holds it, and
       // the port it listens on is not part of the scenario.
       const { workbenchPort } = hubState;
       Object.assign(hubState, createState(HUB_STATE_NAME, true, env));
       hubState.workbenchPort = workbenchPort;
       hub.reloadHubConfig = createHubConfigReloader(hubState, broadcast);
-      seed?.(hub);
+      if (setup) hubState.mode = "setup";
+      else seed?.(hub);
       beginLog();
     },
   };

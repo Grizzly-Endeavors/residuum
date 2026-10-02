@@ -7,38 +7,10 @@
 //   /api/hub/...             one-per-process things: lifecycle, hub config, secrets
 //   /api/team/...            the shared team layer: team files, workbench
 //
-// The agent scope names the current agent, which the router sets whenever
-// the location changes.
+// An agent-scoped path names its agent: every caller says which one. Nothing
+// here remembers an agent between calls.
 
 const AGENT_STORAGE_KEY = "residuum-last-agent";
-
-let currentAgent: string | null = null;
-
-/** The agent agent-scoped calls address now, or `null` before one is chosen. */
-export function getCurrentAgent(): string | null {
-  return currentAgent;
-}
-
-type AgentListener = (agent: string | null) => void;
-
-const agentListeners = new Set<AgentListener>();
-
-/**
- * Point agent-scoped calls at `name`. Listeners run before this returns, so
- * whatever holds the previous agent's state is torn down before any call can
- * address the new one.
- */
-export function setCurrentAgent(name: string | null): void {
-  if (name === currentAgent) return;
-  currentAgent = name;
-  for (const listener of agentListeners) listener(name);
-}
-
-/** Observe the current agent changing. Returns a function that stops observing. */
-export function onCurrentAgentChange(listener: AgentListener): () => void {
-  agentListeners.add(listener);
-  return () => agentListeners.delete(listener);
-}
 
 /** The agent last opened, kept across reloads. */
 export function readLastAgent(): string | null {
@@ -59,7 +31,7 @@ export function rememberLastAgent(name: string): void {
   }
 }
 
-/** Thrown when an agent-scoped call is made with no agent chosen. */
+/** Thrown when a call needs an agent and none was given. */
 export class NoAgentSelectedError extends Error {
   constructor() {
     super("no agent is selected");
@@ -67,14 +39,23 @@ export class NoAgentSelectedError extends Error {
   }
 }
 
-/** `/api/agents/{name}` for `agent`, or the current agent. */
-export function agentBase(agent: string | null = currentAgent): string {
+/**
+ * `agent` itself, or `NoAgentSelectedError` when there is none. For a caller
+ * that holds a nullable agent (the bound agent before one is chosen) and
+ * reaches an agent-scoped call that needs one.
+ */
+export function requireAgent(agent: string | null): string {
   if (agent === null) throw new NoAgentSelectedError();
+  return agent;
+}
+
+/** `/api/agents/{name}` for `agent`. */
+export function agentBase(agent: string): string {
   return `/api/agents/${encodeURIComponent(agent)}`;
 }
 
-/** An agent-scoped API path: `agentPath("/status")` is `/api/agents/{current}/status`. */
-export function agentPath(sub: string, agent: string | null = currentAgent): string {
+/** An agent-scoped API path: `agentPath("atlas", "/status")` is `/api/agents/atlas/status`. */
+export function agentPath(agent: string, sub: string): string {
   return `${agentBase(agent)}${sub}`;
 }
 
@@ -101,59 +82,4 @@ export function agentWsUrl(agent: string): string {
 /** WebSocket URL for the hub connection. */
 export function hubWsUrl(): string {
   return wsUrl(hubPath("/ws"));
-}
-
-// ── Artifact-facing paths ────────────────────────────────────────────
-//
-// Workbench artifacts address the API by its unscoped paths (`/api/sessions`,
-// `/api/secrets`), which stay stable for artifact authors. The bridge maps
-// each to the scope it lives in.
-
-const HUB_PREFIXES = [
-  "/api/secrets",
-  "/api/agent-keys",
-  "/api/a2a/keys",
-  "/api/cloud/",
-  "/api/update/",
-  "/api/tracing/",
-  "/api/shutdown",
-  "/api/system/timezone",
-  "/api/mcp-catalog",
-];
-
-const TEAM_PREFIXES = ["/api/workbench/"];
-
-/** Already scoped: hub, team, or naming an agent. */
-const SCOPED_PREFIXES = ["/api/hub/", "/api/team/", "/api/agents/"];
-
-function startsWithSegment(path: string, prefix: string): boolean {
-  if (!path.startsWith(prefix)) return false;
-  if (prefix.endsWith("/")) return true;
-  const next = path.charAt(prefix.length);
-  return next === "" || next === "/" || next === "?";
-}
-
-/** Whether a `/api/checkpoints...` query names a hub-level repo (`hub` or `team`). */
-function isHubCheckpointRepo(path: string): boolean {
-  const query = path.split("?")[1] ?? "";
-  const repo = new URLSearchParams(query).get("repo");
-  return repo === "hub" || repo === "team";
-}
-
-/**
- * Map an unscoped `/api/...` path (with optional query) to its scoped
- * contract path. Already-scoped paths pass through.
- */
-export function scopeApiPath(path: string, agent: string | null = currentAgent): string {
-  if (SCOPED_PREFIXES.some((p) => path.startsWith(p))) return path;
-  if (HUB_PREFIXES.some((p) => startsWithSegment(path, p))) {
-    return hubPath(path.slice("/api".length));
-  }
-  if (startsWithSegment(path, "/api/checkpoints") && isHubCheckpointRepo(path)) {
-    return hubPath(path.slice("/api".length));
-  }
-  if (TEAM_PREFIXES.some((p) => startsWithSegment(path, p))) {
-    return teamPath(path.slice("/api".length));
-  }
-  return agentPath(path.slice("/api".length), agent);
 }

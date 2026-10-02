@@ -43,6 +43,12 @@ export interface HubSocket {
    * hub would send it no push. Sorted.
    */
   presentDevices: () => string[];
+  /**
+   * Take the socket down (`false`): connected pages are dropped and new
+   * connections refused, as when the hub can't be reached. `true` lets pages
+   * connect again.
+   */
+  setOnline: (online: boolean) => void;
 }
 
 /** A frame a page sent, read. */
@@ -132,7 +138,10 @@ export function openHubSocket(
   isKnownAgent: (name: string) => boolean,
 ): HubSocket {
   const wss = new WebSocketServer({ noServer: true });
-  routeUpgrades(host, wss, HUB_SOCKET_PATH);
+  let online = true;
+  routeUpgrades(host, wss, HUB_SOCKET_PATH, () =>
+    online ? null : { error: "mock: the hub socket is offline" },
+  );
   const relay = createSessionRelay(isKnownAgent);
   /** What each page watches (`watch_team`); a page that never asked watches nothing. */
   const watching = new WeakMap<WebSocket, WatchSet>();
@@ -190,6 +199,10 @@ export function openHubSocket(
         for (const [device, at] of reports) if (isFresh(at)) present.add(device);
       }
       return [...present].sort();
+    },
+    setOnline: (next) => {
+      online = next;
+      if (!online) for (const client of wss.clients) client.terminate();
     },
   };
 }

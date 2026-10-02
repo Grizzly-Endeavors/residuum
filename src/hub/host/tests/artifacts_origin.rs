@@ -139,7 +139,7 @@ async fn only_the_api_is_served_from_the_hub_router_on_the_artifacts_port() {
         .await
         .unwrap();
     let page = root.text().await.unwrap();
-    assert!(page.contains("Workbench artifacts open from the Workbench page"));
+    assert!(page.contains("Workbench artifacts open from the Workbench in Residuum"));
 }
 
 #[tokio::test]

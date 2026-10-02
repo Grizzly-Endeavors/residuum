@@ -19,7 +19,7 @@ Find your **tenant ID** (`tenant_id`): it's shown on the overview page of the Mi
 
 ## 2. Configure Residuum
 
-In the web UI, open **Settings → Integrations → Microsoft Teams** and enter the app ID, tenant ID, and client secret. The secret goes into Residuum's encrypted secret store. Leave **Let others use the agent** off for now.
+In the web UI, open **Settings** (the gear at the bottom of the left-hand rail, or **Settings** in the bottom bar on a phone), choose the agent that should answer in Teams under **Settings for**, and pick **Connections**. In its **Microsoft Teams** group, enter the **App ID**, **Tenant ID** and **Client secret**, then choose **Save changes**. The secret goes into Residuum's encrypted secret store. Leave **Let others talk to this agent** off for now. Teams is set up per agent, so each agent that should be in Teams needs its own bot and its own **Listener port**.
 
 Or in `config.toml`, after storing the secret with `residuum secret set teams`:
 
@@ -30,11 +30,11 @@ tenant_id = "your-directory-tenant-id"
 app_password = "secret:teams"
 ```
 
-Saving reloads the config. The log shows `teams interface listening` with the address — by default port `7701` on the same address as the gateway.
+Saving reloads the config. The log shows `teams interface listening` with the address — by default port `7701` on the same address as the gateway — and the **Microsoft Teams** group in **Connections** reads **Connected** while the agent is running.
 
 ## 3. Make the Teams port reachable
 
-Point a tunnel at the **Teams port (7701)** only. Never expose the gateway port (7700): it serves the configuration and secrets API without a login. Everything that reaches port 7701 has to carry a valid Microsoft-signed token, or it's rejected.
+Point a tunnel at the **Teams port (7701)** only (the **Listener port** in the same **Microsoft Teams** group in **Connections**). Never expose the gateway port (7700): it serves the configuration and secrets API without a login. Everything that reaches port 7701 has to carry a valid Microsoft-signed token, or it's rejected.
 
 **Tailscale Funnel** (free, stable address, no domain needed):
 
@@ -68,7 +68,7 @@ Send the bot a direct message. **The first person to DM the bot becomes its owne
 
 Add the app to a group chat or a team the way you would any app; you'll be asked to grant the chat or team permissions from step 4. In those conversations, @mention the bot to talk to it. Whatever was said since the last mention comes along as background, so "@Residuum can you summarize this?" works.
 
-Coworkers in those conversations can see the bot. By default it answers only you and tells anyone else it only takes requests from you. To let coworkers use it too, turn on **Let others use the agent** (`respond_to_others = true`); the agent always knows who is asking and keeps your private information out of its replies to them.
+Coworkers in those conversations can see the bot. By default it answers only you and tells anyone else it only takes requests from you. To let coworkers use it too, turn on **Let others talk to this agent** in **Settings → (agent) → Connections → Microsoft Teams** (`respond_to_others = true`) and choose **Save changes**; the agent always knows who is asking and keeps your private information out of its replies to them.
 
 If you add the resource-specific consent permissions after the app is already in a chat, remove and re-add it there — Teams only starts delivering unmentioned messages after a fresh install.
 
@@ -82,6 +82,6 @@ Messages you send never reach the agent:
 
 The agent answers but replies never show up in Teams:
 
-- `could not get a bot token from Microsoft`: the client secret is wrong or expired, or `tenant_id` is wrong. Create a new secret in the Developer Portal and update it in Settings.
+- `could not get a bot token from Microsoft`: the client secret is wrong or expired, or `tenant_id` is wrong. Create a new secret in the Developer Portal and update it under **Client secret** in **Settings → (agent) → Connections → Microsoft Teams**.
 
 The bot says it only takes requests from someone else: someone else DMed it first. See [who the agent answers](../systems-usage/teams.md#who-the-agent-answers) for how to reset the owner.

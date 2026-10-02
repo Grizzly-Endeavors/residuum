@@ -282,7 +282,7 @@ pub(super) struct AgentInboxAddResponse {
 /// `POST /api/agents/{name}/agent-inbox` — add an item to the agent's inbox, the same
 /// place the WS `/inbox` command and the notification router's `inbox`
 /// target write to. The source is `artifact:<name>` when the request carries
-/// the artifact identity header (set by the workbench bridge), `"web"`
+/// the artifact identity header (set by the workbench SDK), `"web"`
 /// otherwise.
 ///
 /// # Errors

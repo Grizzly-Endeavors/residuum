@@ -161,7 +161,7 @@ fn problem_ids(overview: &AgentOverview) -> Vec<&str> {
         .collect()
 }
 
-/// The Scheduled view's routes over the agent in `dir`, as its gateway builds
+/// The Schedule place's routes over the agent in `dir`, as its gateway builds
 /// them.
 fn scheduled_endpoint(dir: &std::path::Path, tz: chrono_tz::Tz) -> axum::Router {
     scheduled_api_router(ScheduledApiState {

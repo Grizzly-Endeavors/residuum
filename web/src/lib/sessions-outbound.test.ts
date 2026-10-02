@@ -1,5 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { setCurrentAgent } from "./paths";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionsStore } from "./sessions.svelte";
 import type { OutboundA2aTaskSummary } from "./types";
 
@@ -18,7 +17,7 @@ function task(overrides: Partial<OutboundA2aTaskSummary> = {}): OutboundA2aTaskS
 }
 
 function store(): SessionsStore {
-  return new SessionsStore({ send: () => {}, pushToMain: () => {} });
+  return new SessionsStore({ agent: "scout", pushToMain: () => {} });
 }
 
 function respond(status: number, body: unknown): void {
@@ -35,12 +34,7 @@ function respond(status: number, body: unknown): void {
   );
 }
 
-beforeEach(() => {
-  setCurrentAgent("scout");
-});
-
 afterEach(() => {
-  setCurrentAgent(null);
   vi.unstubAllGlobals();
 });
 
@@ -67,36 +61,19 @@ describe("SessionsStore outbound A2A tasks", () => {
     expect(s.outbound.map((t) => t.task_id)).toEqual(["t2"]);
   });
 
-  it("offers stop-watching when the agent can't be reached to cancel", async () => {
+  it("takes a task as a stop answered it, ahead of its frame", () => {
     const s = store();
     s.handleFrame({ type: "session_outbound_a2a_task", task: task() });
-    respond(502, {
-      error: "Couldn't reach laptop to cancel the task. You can stop watching it instead.",
-      code: "unreachable",
-    });
-
-    await s.stopOutbound("t1");
-
-    expect(s.outboundUnreachable.get("t1")).toContain("laptop");
-    expect(s.outboundStopping.has("t1")).toBe(false);
-    expect(s.outbound).toHaveLength(1);
-
-    respond(200, task({ state: "canceled", open: false }));
-    await s.stopWatchingOutbound("t1");
-
+    s.applyOutbound(task({ state: "canceled", open: false }));
     expect(s.outbound).toHaveLength(0);
-    expect(s.outboundUnreachable.has("t1")).toBe(false);
   });
 
-  it("removes a task the stop cancelled", async () => {
+  it("loads the open tasks", async () => {
+    respond(200, [task({ task_id: "t9" })]);
     const s = store();
-    s.handleFrame({ type: "session_outbound_a2a_task", task: task() });
-    respond(200, task({ state: "canceled", open: false }));
-
-    await s.stopOutbound("t1");
-
-    expect(s.outbound).toHaveLength(0);
-    expect(s.outboundUnreachable.has("t1")).toBe(false);
+    await s.refreshOutbound();
+    expect(s.outbound.map((t) => t.task_id)).toEqual(["t9"]);
+    expect(s.outboundError).toBeNull();
   });
 
   it("reports a failed listing without touching the sessions list", async () => {

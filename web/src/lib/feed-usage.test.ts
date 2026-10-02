@@ -21,8 +21,7 @@ describe("FeedStore turn usage", () => {
     const store = new FeedStore();
     const before = Date.now();
     store.handleMessage({ type: "turn_started", reply_to: "t1" });
-    expect(store.turnStartedAt).not.toBeNull();
-    expect(store.turnStartedAt).toBeGreaterThanOrEqual(before);
+    expect(store.observed.get("t1")?.startedAt).toBeGreaterThanOrEqual(before);
     expect(store.turnOutputTokens).toBe(0);
     expect(store.turnHasUsage).toBe(false);
     expect(store.turnToolCalls).toBe(0);
@@ -99,19 +98,19 @@ describe("FeedStore turn usage", () => {
     expect(store.turnToolCalls).toBe(4);
   });
 
-  it("clears the turn clock on turn_ended but keeps the session totals", () => {
+  it("stops the turn clock on turn_ended but keeps the session totals", () => {
     const store = new FeedStore();
     store.handleMessage({ type: "turn_started", reply_to: "t1" });
-    store.setInitialUsage(totals(50, 10, 50));
+    store.setSessionUsage(totals(50, 10, 50));
     store.handleMessage({ type: "turn_ended", reply_to: "t1" });
-    expect(store.turnStartedAt).toBeNull();
+    expect(store.observed.get("t1")?.endedAt).not.toBeNull();
     expect(store.sessionUsage).toEqual(totals(50, 10, 50));
   });
 
-  it("setInitialUsage seeds the footer before any turn has run", () => {
+  it("setSessionUsage gives the totals before any turn has run", () => {
     const store = new FeedStore();
     expect(store.sessionUsage).toBeNull();
-    store.setInitialUsage(totals(300, 60, 300));
+    store.setSessionUsage(totals(300, 60, 300));
     expect(store.sessionUsage).toEqual(totals(300, 60, 300));
   });
 

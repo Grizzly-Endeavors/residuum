@@ -58,8 +58,8 @@ impl Tool for AgentKeysListTool {
         if keys.is_empty() {
             return Ok(ToolResult::success(
                 "no agent keys stored. The user can add one with `residuum agent-keys set <name>` \
-                 or in the web UI settings under Agent keys; you can mint one with exec's \
-                 `store_output_as`.",
+                 or in the web UI under Settings → All agents → Saved keys; you can mint one \
+                 with exec's `store_output_as`.",
             ));
         }
 
@@ -162,7 +162,7 @@ impl Tool for AgentKeyDeleteTool {
                         self.publisher.as_ref(),
                         format!(
                             "The agent deleted agent key '{name}', which you created. Restore \
-                             it from Settings → History if this wasn't intended."
+                             it from Settings → All agents → History if this wasn't intended."
                         ),
                     )
                     .await;
