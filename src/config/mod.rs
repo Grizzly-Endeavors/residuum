@@ -23,6 +23,7 @@ pub mod wizard;
 
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
+pub(crate) use agent_name::display_name_in_toml;
 pub use agent_name::{
     allocate_slug, canonicalize_display_name, display_name_key, set_display_name_toml, slug_base,
 };

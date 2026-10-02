@@ -9,7 +9,7 @@ An agent is a directory `~/.residuum/<name>/` holding `config/config.toml`. Crea
 1. The name must follow the agent-name rules (1-24 characters from `[a-z0-9-]`, no leading or trailing hyphen, not `hub`, `team` or `agents`). A name that breaks them is refused, and so is a name whose directory already exists.
 2. `providers.toml` is validated against the hub's config the same way the agent's Settings save validates it. A file that isn't valid TOML, or assigns a model that can't be resolved, is refused before anything is written.
 3. The directory is written from the blank template:
-   - `SOUL.md`, the bundled default with the agent's name;
+   - `SOUL.md`, the bundled default, named with the name the person gave the agent, and with the identity section under that name left empty;
    - `HEARTBEAT.yml`, the built-in pulses without `wiki_lint` (the first agent owns that one);
    - `SUBCONSCIOUS.md`, `memory/OBSERVER.md`, `memory/REFLECTOR.md` and `config/agent-card.json`, the bundled defaults;
    - the standard empty directories (`memory/`, `skills/`, `inbox/`, `archive/`, `a2a/`);

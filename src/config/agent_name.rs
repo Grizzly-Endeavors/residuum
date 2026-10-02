@@ -123,6 +123,21 @@ pub fn allocate_slug(base: &str, mut taken: impl FnMut(&str) -> bool) -> Result<
     Err("couldn't find a free folder for that name. Try a different one.".to_string())
 }
 
+/// The name stored as `display_name` in an agent's `config.toml` text.
+///
+/// `fallback` when the key is absent, empty, or not a usable name, and when
+/// `config` is not TOML.
+#[must_use]
+pub(crate) fn display_name_in_toml(config: &str, fallback: &str) -> String {
+    let Ok(doc) = config.parse::<DocumentMut>() else {
+        return fallback.to_string();
+    };
+    match doc.get("display_name").and_then(toml_edit::Item::as_str) {
+        Some(raw) => canonicalize_display_name(raw).unwrap_or_else(|_| fallback.to_string()),
+        None => fallback.to_string(),
+    }
+}
+
 /// Set `display_name` in an agent's `config.toml` text, leaving the rest of
 /// the file as it is.
 ///
@@ -198,6 +213,20 @@ fn hash_slug(key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_name_in_toml_reads_the_typed_name() {
+        assert_eq!(
+            display_name_in_toml("display_name = \"Mist\"\n", "mist"),
+            "Mist"
+        );
+        assert_eq!(display_name_in_toml("", "mist"), "mist");
+        assert_eq!(display_name_in_toml("not toml", "mist"), "mist");
+        assert_eq!(
+            display_name_in_toml("display_name = \"nope!\"\n", "mist"),
+            "mist"
+        );
+    }
 
     #[test]
     fn capitals_spaces_and_other_languages_are_names() {
