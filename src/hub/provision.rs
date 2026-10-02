@@ -131,7 +131,7 @@ pub async fn provision_agent(
 /// the bootstrapped marker, `providers.toml`, and `config/config.toml`
 /// last.
 fn plan_files(layout: &WorkspaceLayout, spec: &AgentSpec) -> Vec<PlannedFile> {
-    let mut files: Vec<PlannedFile> = blank_agent_template(layout, &spec.name)
+    let mut files: Vec<PlannedFile> = blank_agent_template(layout, &spec.display_name)
         .into_iter()
         .map(|(path, content)| PlannedFile { path, content })
         .collect();
@@ -625,6 +625,7 @@ mod tests {
         assert_eq!(providers, PROVIDERS);
         let soul = std::fs::read_to_string(dir.join("SOUL.md")).unwrap();
         assert!(soul.contains("**Name**: scout"));
+        assert!(!soul.contains("Archetype"));
         assert!(dir.join("SUBCONSCIOUS.md").is_file());
         let leftovers: Vec<_> = std::fs::read_dir(fx.root())
             .unwrap()
@@ -632,6 +633,22 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().starts_with(".provision-"))
             .collect();
         assert!(leftovers.is_empty(), "no staging directory remains");
+    }
+
+    #[tokio::test]
+    async fn provision_names_the_soul_with_the_display_name() {
+        let fx = Fixture::new().await;
+        let mut created = spec("mist", None);
+        created.display_name = "Mist".to_string();
+
+        let dir = provision_agent(fx.root(), &fx.team, &fx.coordinator, &fx.actor, &created)
+            .await
+            .unwrap();
+
+        let soul = std::fs::read_to_string(dir.join("SOUL.md")).unwrap();
+        assert!(soul.contains("**Name**: Mist"), "{soul}");
+        assert!(!soul.contains("Ralph"));
+        assert!(!soul.contains("Archetype"));
     }
 
     #[tokio::test]

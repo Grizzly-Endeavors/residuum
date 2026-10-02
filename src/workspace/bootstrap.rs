@@ -169,14 +169,17 @@ const SKILL_AUTHORING_REF_STANDARDS: &str =
 /// identity files, and that the shared team layer it belongs to exists.
 ///
 /// The agent directory gets `SOUL.md`, `HEARTBEAT.yml`, `SUBCONSCIOUS.md`,
-/// the memory prompts, its A2A card, and (once) `BOOTSTRAP.md`. The team
-/// directory (see [`super::team::ensure_team`]) gets the shared `AGENTS.md`,
-/// `USER.md` and wiki skeleton, and the agent gets a role page in the team
-/// wiki. When `user_name` is provided and the team's `USER.md` does not yet
-/// exist, the default content is personalised with the user's name; when
-/// `timezone` is provided, it is included as well.
+/// the memory prompts, its A2A card, and (once) `BOOTSTRAP.md`. `SOUL.md`
+/// is named with the directory name. The team directory (see
+/// [`super::team::ensure_team`]) gets the shared `AGENTS.md`, `USER.md` and
+/// wiki skeleton, and the agent gets a role page in the team wiki. When
+/// `user_name` is provided and the team's `USER.md` does not yet exist, the
+/// default content is personalised with the user's name; when `timezone` is
+/// provided, it is included as well.
 ///
-/// This is idempotent: existing files and directories are not modified.
+/// This is idempotent: existing files and directories are not modified,
+/// except a `SOUL.md` that is still the bundled template. That file gets the
+/// agent's name, and its identity section under the name is left empty.
 ///
 /// `coordinator` is the team write coordinator for `layout.team()`; the role
 /// page and the roster files are written under its locks.
@@ -194,8 +197,9 @@ pub async fn ensure_workspace(
     ensure_workspace_labeled(layout, coordinator, user_name, timezone, None).await
 }
 
-/// [`ensure_workspace`], with `label` as the name on the role page when it
-/// differs from the directory name. `None` uses the directory name.
+/// [`ensure_workspace`], with `label` as the name in `SOUL.md` and on the
+/// role page when it differs from the directory name. `None` uses the
+/// directory name. An empty `label` is treated as `None`.
 ///
 /// # Errors
 /// Returns `FatalError::Workspace` if a directory or file cannot be created.
@@ -234,30 +238,26 @@ pub async fn ensure_workspace_labeled(
         }
     }
 
-    // Create default identity files if they don't exist
-    write_if_missing(&layout.soul_md(), DEFAULT_SOUL).await?;
+    let Some(dir_name) = layout.agent_name() else {
+        return Err(FatalError::Workspace(format!(
+            "workspace {} has no directory name to use as the agent's name",
+            layout.root().display()
+        )));
+    };
+    let soul_name = label.filter(|label| !label.is_empty()).unwrap_or(dir_name);
+    write_soul(&layout.soul_md(), soul_name).await?;
 
     super::team::ensure_team(layout.team(), user_name, timezone).await?;
-    match layout.agent_name() {
-        Some(name) => {
-            let writer = super::team_files::TeamWriter::Agent(name.to_string());
-            super::team::ensure_agent_role_page_as(
-                layout.team(),
-                coordinator,
-                &writer,
-                name,
-                label.unwrap_or(name),
-                None,
-            )
-            .await?;
-        }
-        None => {
-            return Err(FatalError::Workspace(format!(
-                "workspace {} has no directory name to use as the agent's name",
-                layout.root().display()
-            )));
-        }
-    }
+    let writer = super::team_files::TeamWriter::Agent(dir_name.to_string());
+    super::team::ensure_agent_role_page_as(
+        layout.team(),
+        coordinator,
+        &writer,
+        dir_name,
+        soul_name,
+        None,
+    )
+    .await?;
 
     // BOOTSTRAP.md is first-run only: write it once, then drop a sentinel so it
     // is never recreated after the agent deletes it.
@@ -303,9 +303,87 @@ pub async fn ensure_workspace_labeled(
     Ok(())
 }
 
-/// The default `SOUL.md` with `name` as the agent's name.
+/// Identity lines removed from a soul that is otherwise the bundled template,
+/// so the section under the name stays empty.
+const STOCK_ARCHETYPE_LINE: &str =
+    "- **Archetype**: Personal agent — part assistant, part collaborator, part automation layer\n";
+const STOCK_TONE_LINE: &str = "- **Tone**: Calm, confident, and wise. Ready to get shit done. Skip the bullet points, just talk.";
+
+/// The default `SOUL.md` with `name` as the agent's name. The identity
+/// section under the name is empty.
 fn soul_named(name: &str) -> String {
     DEFAULT_SOUL.replace("**Name**: Ralph", &format!("**Name**: {name}"))
+}
+
+fn strip_stock_identity(content: &str) -> String {
+    content
+        .replace(STOCK_ARCHETYPE_LINE, "")
+        .replace(&format!("{STOCK_TONE_LINE}\n"), "")
+        .replace(STOCK_TONE_LINE, "")
+}
+
+/// The bundled soul named `name`, when `existing` is still that template.
+///
+/// The template name is replaced with `name`. Stock archetype and tone lines
+/// are dropped. A name the file already carries, other than the template
+/// name, is kept. An edited file is left alone (`None`).
+fn settled_soul(existing: &str, name: &str) -> Option<String> {
+    let stripped = strip_stock_identity(existing);
+    let name_line = stripped
+        .lines()
+        .find(|line| line.starts_with("- **Name**: "))?;
+    let normalized = stripped.replacen(name_line, "- **Name**: Ralph", 1);
+    if normalized != DEFAULT_SOUL {
+        return None;
+    }
+    let rewritten = if name_line == "- **Name**: Ralph" {
+        soul_named(name)
+    } else if stripped != existing {
+        stripped
+    } else {
+        return None;
+    };
+    (rewritten != existing).then_some(rewritten)
+}
+
+/// Write `SOUL.md` named `name`, or bring an unedited template up to date.
+async fn write_soul(path: &std::path::Path, name: &str) -> Result<(), FatalError> {
+    match tokio::fs::read_to_string(path).await {
+        Ok(existing) => {
+            if let Some(rewritten) = settled_soul(&existing, name) {
+                tokio::fs::write(path, rewritten).await.map_err(|e| {
+                    FatalError::Workspace(format!(
+                        "failed to set the name in {}: {e}",
+                        path.display()
+                    ))
+                })?;
+                tracing::info!(
+                    path = %path.display(),
+                    name,
+                    "set the agent's name in SOUL.md"
+                );
+            } else {
+                tracing::trace!(path = %path.display(), "SOUL.md already edited, leaving it");
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            tokio::fs::write(path, soul_named(name))
+                .await
+                .map_err(|err| {
+                    FatalError::Workspace(format!(
+                        "failed to write default {}: {err}",
+                        path.display()
+                    ))
+                })?;
+            tracing::debug!(path = %path.display(), "created default identity file");
+            Ok(())
+        }
+        Err(e) => Err(FatalError::Workspace(format!(
+            "failed to read {}: {e}",
+            path.display()
+        ))),
+    }
 }
 
 /// The identity and prompt files of the blank agent template, as
@@ -387,7 +465,9 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
             ))
         })?;
 
-    write_if_missing(&started_dir.join("SKILL.md"), GETTING_STARTED_SKILL_MD).await?;
+    let started_skill = started_dir.join("SKILL.md");
+    write_if_missing(&started_skill, GETTING_STARTED_SKILL_MD).await?;
+    refresh_getting_started_actions(&started_skill).await?;
     write_if_missing(
         &started_workflows.join("getting-organized.md"),
         GETTING_STARTED_ORGANIZED,
@@ -452,6 +532,56 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
     Ok(())
 }
 
+const TONE_LINE_ACTION: &str =
+    "- Update the **Tone** line in `SOUL.md` to reflect their preference\n";
+const NAME_LINE_ACTION: &str = "- If they gave you a name or asked you to change something about your personality, update `SOUL.md` accordingly\n";
+
+/// Point a getting-started skill that still names a Tone line at the empty
+/// identity section. An edited skill that no longer has those lines is left
+/// as it is.
+fn refreshed_getting_started(content: &str) -> Option<String> {
+    if !content.contains(TONE_LINE_ACTION) && !content.contains(NAME_LINE_ACTION) {
+        return None;
+    }
+    let updated = content
+        .replace(
+            TONE_LINE_ACTION,
+            "- Write how they want you to communicate into the Identity section of `SOUL.md`, under your name. That section starts with your name and nothing else.\n",
+        )
+        .replace(
+            NAME_LINE_ACTION,
+            "- If they gave you a different name, or asked you to change something else about how you are, update `SOUL.md` accordingly\n",
+        );
+    (updated != content).then_some(updated)
+}
+
+async fn refresh_getting_started_actions(path: &std::path::Path) -> Result<(), FatalError> {
+    let existing = match tokio::fs::read_to_string(path).await {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(FatalError::Workspace(format!(
+                "failed to read {}: {error}",
+                path.display()
+            )));
+        }
+    };
+    let Some(updated) = refreshed_getting_started(&existing) else {
+        return Ok(());
+    };
+    tokio::fs::write(path, updated).await.map_err(|error| {
+        FatalError::Workspace(format!(
+            "failed to update the getting-started skill at {}: {error}",
+            path.display()
+        ))
+    })?;
+    tracing::info!(
+        path = %path.display(),
+        "pointed the getting-started skill at the empty identity section"
+    );
+    Ok(())
+}
+
 /// Write content to a file only if it does not already exist.
 async fn write_if_missing(path: &std::path::Path, content: &str) -> Result<(), FatalError> {
     if tokio::fs::try_exists(path)
@@ -486,10 +616,101 @@ mod tests {
             .unwrap();
         assert!(soul.contains("**Name**: scout"));
         assert!(!soul.contains("Ralph"));
+        assert!(!soul.contains("Archetype"));
+        assert!(!soul.contains("**Tone**"));
         assert!(
             files.iter().all(|(path, _)| *path != layout.bootstrap_md()),
             "created agents never get BOOTSTRAP.md"
         );
+    }
+
+    #[test]
+    fn a_getting_started_skill_that_names_a_tone_line_is_pointed_at_the_identity_section() {
+        let old = format!("before\n{TONE_LINE_ACTION}{NAME_LINE_ACTION}after\n");
+        let updated = refreshed_getting_started(&old).unwrap();
+        assert!(updated.contains("under your name"));
+        assert!(!updated.contains("**Tone** line"));
+        assert!(updated.contains("a different name"));
+        assert!(refreshed_getting_started(&updated).is_none());
+        assert!(refreshed_getting_started("custom skill").is_none());
+    }
+
+    fn stock_soul() -> String {
+        DEFAULT_SOUL.replacen(
+            "- **Name**: Ralph\n",
+            &format!("- **Name**: Ralph\n{STOCK_ARCHETYPE_LINE}{STOCK_TONE_LINE}"),
+            1,
+        )
+    }
+
+    #[test]
+    fn an_unedited_template_soul_takes_the_given_name_and_drops_the_stock_lines() {
+        let settled = settled_soul(&stock_soul(), "Mist").unwrap();
+        assert!(settled.contains("**Name**: Mist"));
+        assert!(!settled.contains("Ralph"));
+        assert!(!settled.contains("Archetype"));
+        assert!(!settled.contains("**Tone**"));
+        assert!(settled_soul(&settled, "Mist").is_none());
+    }
+
+    #[test]
+    fn an_edited_soul_is_left_alone_even_when_its_name_is_still_the_template() {
+        let edited = stock_soul().replace("Have opinions.", "Have few opinions.");
+        assert!(settled_soul(&edited, "Mist").is_none());
+    }
+
+    #[test]
+    fn a_soul_that_already_has_its_own_name_keeps_it_when_the_stock_lines_go() {
+        let named = stock_soul().replace("**Name**: Ralph", "**Name**: Bob");
+        let settled = settled_soul(&named, "Mist").unwrap();
+        assert!(settled.contains("**Name**: Bob"));
+        assert!(!settled.contains("Archetype"));
+        assert!(settled_soul(&settled, "Mist").is_none());
+    }
+
+    #[tokio::test]
+    async fn bootstrap_writes_the_given_name_into_an_empty_identity_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("mist"));
+
+        ensure_workspace_labeled(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+            Some("Mist"),
+        )
+        .await
+        .unwrap();
+
+        let soul = tokio::fs::read_to_string(layout.soul_md()).await.unwrap();
+        assert!(soul.contains("**Name**: Mist"), "{soul}");
+        assert!(!soul.contains("Ralph"));
+        assert!(!soul.contains("Archetype"));
+        assert!(!soul.contains("**Tone**"));
+    }
+
+    #[tokio::test]
+    async fn bootstrap_replaces_an_unedited_template_soul() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("mist"));
+        let coordinator = crate::workspace::team_files::TeamWriteCoordinator::new(layout.team());
+
+        ensure_workspace_labeled(&layout, &coordinator, None, None, Some("Mist"))
+            .await
+            .unwrap();
+        tokio::fs::write(layout.soul_md(), stock_soul())
+            .await
+            .unwrap();
+
+        ensure_workspace_labeled(&layout, &coordinator, None, None, Some("Mist"))
+            .await
+            .unwrap();
+
+        let soul = tokio::fs::read_to_string(layout.soul_md()).await.unwrap();
+        assert!(soul.contains("**Name**: Mist"), "{soul}");
+        assert!(!soul.contains("Archetype"), "{soul}");
+        assert!(!soul.contains("**Tone**"), "{soul}");
     }
 
     #[tokio::test]

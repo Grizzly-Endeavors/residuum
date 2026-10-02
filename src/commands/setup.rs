@@ -167,6 +167,12 @@ mod tests {
             user_md.contains("Sam"),
             "team USER.md should carry the user's name: {user_md}"
         );
+        let soul = std::fs::read_to_string(dir.path().join("scout/SOUL.md")).unwrap();
+        assert!(
+            soul.contains("**Name**: scout"),
+            "SOUL.md should carry the agent's name: {soul}"
+        );
+        assert!(!soul.contains("Ralph"));
     }
 
     #[tokio::test]

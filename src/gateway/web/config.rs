@@ -1112,6 +1112,10 @@ mod tests {
         assert!(user_md.contains("Sam"), "team USER.md: {user_md}");
         assert!(!root.path().join("scout").join("USER.md").exists());
         assert!(team.agent_role_page("scout").is_file());
+        let soul = std::fs::read_to_string(root.path().join("scout/SOUL.md")).unwrap();
+        assert!(soul.contains("**Name**: scout"), "{soul}");
+        assert!(!soul.contains("Ralph"));
+        assert!(!soul.contains("Archetype"));
         assert!(*done_rx.borrow(), "setup should be signalled complete");
         assert_eq!(
             crate::config::discover_agents(root.path()).unwrap(),

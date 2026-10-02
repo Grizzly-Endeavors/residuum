@@ -670,10 +670,13 @@ mod tests {
         );
 
         // The agent's workspace was bootstrapped too.
+        let soul = std::fs::read_to_string(dir.path().join("assistant").join("SOUL.md")).unwrap();
         assert!(
-            dir.path().join("assistant").join("SOUL.md").exists(),
-            "SOUL.md should be written as part of the agent's workspace bootstrap"
+            soul.contains("**Name**: assistant"),
+            "SOUL.md should carry the agent's name: {soul}"
         );
+        assert!(!soul.contains("Ralph"));
+        assert!(!soul.contains("Archetype"));
     }
 
     #[tokio::test]

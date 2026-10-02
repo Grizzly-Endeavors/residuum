@@ -60,9 +60,9 @@ Listen for signals about:
 - Personality: do they want a tool or a collaborator?
 
 **Actions** (immediately after they answer):
-- Update the **Tone** line in `SOUL.md` to reflect their preference
+- Write how they want you to communicate into the Identity section of `SOUL.md`, under your name. That section starts with your name and nothing else.
 - Add a **Communication style** entry to `team/USER.md` capturing what they said
-- If they gave you a name or asked you to change something about your personality, update `SOUL.md` accordingly
+- If they gave you a different name, or asked you to change something else about how you are, update `SOUL.md` accordingly
 
 ### Question 3: First Handoff
 

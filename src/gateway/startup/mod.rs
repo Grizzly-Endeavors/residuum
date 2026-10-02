@@ -28,7 +28,7 @@ use crate::notify::channels::InboxChannel;
 use crate::skills::{SharedSkillState, SkillIndex, SkillState};
 use crate::tools::SharedToolsPath;
 use crate::util::FatalError;
-use crate::workspace::bootstrap::ensure_workspace;
+use crate::workspace::bootstrap::ensure_workspace_labeled;
 use crate::workspace::identity::IdentityFiles;
 use crate::workspace::layout::WorkspaceLayout;
 use crate::workspace::team_files::TeamWriteCoordinator;
@@ -91,10 +91,29 @@ pub(super) async fn init_workspace(
     let tz = cfg.timezone;
     // USER.md is personalized once, at onboarding time
     // (`gateway::web::config::api_complete_setup`). Every later call here is
-    // idempotent (write-if-missing).
-    ensure_workspace(&layout, team, None, Some(cfg.timezone.name())).await?;
+    // idempotent (write-if-missing), apart from a `SOUL.md` that is still the
+    // bundled template: that one is named from `display_name`.
+    let shown = shown_name(&cfg.config_dir, &cfg.agent_name).await;
+    ensure_workspace_labeled(&layout, team, None, Some(cfg.timezone.name()), Some(&shown)).await?;
 
     Ok((layout, tz))
+}
+
+/// The name in `config_dir`'s `config.toml`, or `folder` when that name can't
+/// be read.
+async fn shown_name(config_dir: &std::path::Path, folder: &str) -> String {
+    let path = config_dir.join("config.toml");
+    match tokio::fs::read_to_string(&path).await {
+        Ok(text) => crate::config::display_name_in_toml(&text, folder),
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                path = %path.display(),
+                "couldn't read the agent's name from config.toml; using the folder name"
+            );
+            folder.to_string()
+        }
+    }
 }
 
 /// Open (or create) this agent's workspace and agent-config checkpoint
