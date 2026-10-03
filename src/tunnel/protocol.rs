@@ -22,6 +22,11 @@ pub(crate) enum Surface {
     /// refused.
     #[serde(rename = "a2a")]
     A2a,
+    /// One agent's Teams listener, for `{origin}/teams/{instance}/{agent}`.
+    /// The relay forwards only `POST` of a Bot Framework activity, and the hub
+    /// delivers it to that agent's listener as `POST /api/teams/messages`.
+    /// Answered with a buffered `HttpResponse`. It serves no sockets.
+    Teams,
 }
 
 /// One agent this hub advertises to the relay in a
@@ -38,6 +43,13 @@ pub(crate) struct AgentInfo {
     /// Whether the agent is gated by caller key or sibling attestation,
     /// rather than open to anyone.
     pub a2a_private: bool,
+    /// Whether the agent has a complete Teams configuration. The relay accepts
+    /// Teams messages for it while this is set, including while the agent is
+    /// stopped: the hub answers those with a retry until the listener is back.
+    /// Absent on a hub that predates Teams-through-the-relay, which the relay
+    /// reads as not configured.
+    #[serde(default)]
+    pub teams_configured: bool,
 }
 
 /// A single frame exchanged over the tunnel WebSocket connection.
@@ -267,12 +279,14 @@ mod tests {
                     display_name: "Scout".to_string(),
                     a2a_enabled: true,
                     a2a_private: false,
+                    teams_configured: false,
                 },
                 AgentInfo {
                     name: "archivist".to_string(),
                     display_name: "Archivist".to_string(),
                     a2a_enabled: false,
                     a2a_private: true,
+                    teams_configured: true,
                 },
             ],
         };
@@ -281,8 +295,8 @@ mod tests {
             serde_json::json!({
                 "type": "agents_update",
                 "agents": [
-                    {"name": "scout", "display_name": "Scout", "a2a_enabled": true, "a2a_private": false},
-                    {"name": "archivist", "display_name": "Archivist", "a2a_enabled": false, "a2a_private": true},
+                    {"name": "scout", "display_name": "Scout", "a2a_enabled": true, "a2a_private": false, "teams_configured": false},
+                    {"name": "archivist", "display_name": "Archivist", "a2a_enabled": false, "a2a_private": true, "teams_configured": true},
                 ],
             })
         );
@@ -293,6 +307,17 @@ mod tests {
         };
         assert_eq!(agents.len(), 2);
         assert_eq!(agents.first().map(|a| a.name.as_str()), Some("scout"));
+        assert_eq!(agents.first().map(|a| a.teams_configured), Some(false));
+        assert_eq!(agents.get(1).map(|a| a.teams_configured), Some(true));
+    }
+
+    #[test]
+    fn an_agent_list_without_teams_configured_reads_as_not_configured() {
+        let json = r#"{"type":"agents_update","agents":[{"name":"scout","display_name":"Scout","a2a_enabled":true,"a2a_private":false}]}"#;
+        let TunnelFrame::AgentsUpdate { agents } = serde_json::from_str(json).unwrap() else {
+            panic!("expected AgentsUpdate");
+        };
+        assert_eq!(agents.first().map(|a| a.teams_configured), Some(false));
     }
 
     #[test]

@@ -68,6 +68,19 @@ const PATCH_RELOAD_TIMEOUT: Duration = Duration::from_secs(30);
 /// What start, restart, and create answer once the hub is shutting down.
 const SHUTTING_DOWN: &str = "Residuum is shutting down";
 
+/// Whether `doc`'s `[teams]` section has the three fields the listener requires.
+fn teams_section_is_configured(doc: &toml_edit::DocumentMut) -> bool {
+    let Some(teams) = doc.get("teams") else {
+        return false;
+    };
+    ["app_id", "tenant_id", "app_password"].iter().all(|key| {
+        teams
+            .get(key)
+            .and_then(toml_edit::Item::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    })
+}
+
 /// Settings the summary reads from the agent's config file: whether it
 /// starts with the hub, who can see it, and the name people use for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +88,8 @@ struct AgentMeta {
     autostart: bool,
     a2a_visibility: A2aVisibility,
     display_name: String,
+    /// A complete `[teams]` section: app id, tenant id, and client secret all set.
+    teams_configured: bool,
 }
 
 impl AgentMeta {
@@ -86,6 +101,7 @@ impl AgentMeta {
             autostart: true,
             a2a_visibility: A2aVisibility::Private,
             display_name: name.to_string(),
+            teams_configured: false,
         }
     }
 
@@ -112,6 +128,7 @@ impl AgentMeta {
                 autostart: true,
                 a2a_visibility: A2aVisibility::Public,
                 display_name: name.to_string(),
+                teams_configured: false,
             });
         }
         let doc = text
@@ -148,6 +165,7 @@ impl AgentMeta {
             autostart,
             a2a_visibility,
             display_name,
+            teams_configured: teams_section_is_configured(&doc),
         })
     }
 }
@@ -305,6 +323,10 @@ pub struct AgentHost {
     /// Teams adapter ports held by agents that are starting or running,
     /// keyed by port, so two agents starting at once can't both take one.
     teams_ports: Mutex<BTreeMap<u16, String>>,
+    /// The same reservations keyed by agent name, for the tunnel to dial the
+    /// listener a Teams message names. Updated under the same changes as
+    /// [`Self::teams_ports`].
+    teams_ports_tx: watch::Sender<BTreeMap<String, u16>>,
     /// The embedding model the team wiki currently uses. Holding the lock
     /// covers choosing and swapping, so refreshes never interleave.
     team_embedding: tokio::sync::Mutex<Option<EmbeddingSource>>,
@@ -316,6 +338,7 @@ impl AgentHost {
     /// every agent resolves its own config against.
     pub(crate) fn new(services: HubServices, hub_cfg: HubConfig) -> Arc<Self> {
         let (events, _first_subscriber) = broadcast::channel(HUB_EVENT_CAPACITY);
+        let (teams_ports_tx, _) = watch::channel(BTreeMap::new());
         Arc::new_cyclic(|me| {
             // Agent tools and the team router reach this host through the
             // directory handle in the shared services.
@@ -332,6 +355,7 @@ impl AgentHost {
                 creation_lock: tokio::sync::Mutex::new(()),
                 stopping: AtomicBool::new(false),
                 teams_ports: Mutex::new(BTreeMap::new()),
+                teams_ports_tx,
                 team_embedding: tokio::sync::Mutex::new(None),
             }
         })
@@ -577,6 +601,7 @@ impl AgentHost {
             autostart: meta.autostart,
             role: role_line(&self.team_paths(), &slot.name),
             a2a_visibility: meta.a2a_visibility,
+            teams_configured: meta.teams_configured,
         }
     }
 
@@ -723,15 +748,39 @@ impl AgentHost {
         }
         ports.retain(|_, holder| holder != agent);
         ports.insert(port, agent.to_string());
+        self.publish_teams_ports(&ports);
         Ok(())
     }
 
     /// Release the Teams port `agent` holds, if any.
     fn release_teams_port(&self, agent: &str) {
-        self.teams_ports
+        let mut ports = self
+            .teams_ports
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .retain(|_, holder| holder != agent);
+            .unwrap_or_else(PoisonError::into_inner);
+        ports.retain(|_, holder| holder != agent);
+        self.publish_teams_ports(&ports);
+    }
+
+    /// The ports the tunnel dials for Teams, keyed by agent name.
+    pub(crate) fn subscribe_teams_ports(&self) -> watch::Receiver<BTreeMap<String, u16>> {
+        self.teams_ports_tx.subscribe()
+    }
+
+    /// Publish `ports` (keyed by port) as agent name to port.
+    fn publish_teams_ports(&self, ports: &BTreeMap<u16, String>) {
+        let by_agent = ports
+            .iter()
+            .map(|(port, agent)| (agent.clone(), *port))
+            .collect();
+        self.teams_ports_tx.send_if_modified(|current| {
+            if *current == by_agent {
+                false
+            } else {
+                *current = by_agent;
+                true
+            }
+        });
     }
 
     /// After a reload, move the agent's Teams port reservation to the port

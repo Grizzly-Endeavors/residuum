@@ -23,6 +23,7 @@ function failed(kind: AgentErrorKind): AgentSummary {
     autostart: true,
     role: null,
     a2a_visibility: "private",
+    teams_configured: false,
   };
 }
 
@@ -34,6 +35,7 @@ const DRIFTER: AgentSummary = {
   autostart: false,
   role: null,
   a2a_visibility: "private",
+  teams_configured: false,
 };
 
 let shell: ShellActions;

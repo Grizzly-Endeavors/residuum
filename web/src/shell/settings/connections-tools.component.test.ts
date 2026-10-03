@@ -1,6 +1,7 @@
 import { within, type BoundFunctions, type queries } from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hub } from "../../lib/hub.svelte";
+import type { CloudStatusResponse } from "../../lib/types";
 import type { AgentSummary } from "../../lib/hub-types";
 import { router } from "../../lib/router.svelte";
 import { settingsModel } from "../../lib/settings-model.svelte";
@@ -27,6 +28,8 @@ let count = 0;
 let answer: FetchHandler;
 /** The credentials sent to the secret store, as `[name, value]`. */
 let secrets: [string, string][] = [];
+/** Cloud status the Connections section reads. Null leaves the request hanging, like the other fetches this page doesn't answer. */
+let cloud: CloudStatusResponse | null = null;
 
 const saveBar = (): HTMLElement | null => screen.queryByRole("region", { name: "Unsaved changes" });
 const group = (name: string): BoundFunctions<typeof queries> =>
@@ -47,6 +50,7 @@ function runningAgent(name: string): AgentSummary {
     autostart: true,
     role: null,
     a2a_visibility: "private",
+    teams_configured: false,
   };
 }
 
@@ -92,8 +96,12 @@ beforeEach(() => {
   for (const id of [...toast.toasts.keys()]) toast.dismiss(id);
   agent = `conn-${String(++count)}`;
   secrets = [];
+  cloud = null;
   server = fakeAgentConfig(agent, { hub: 'timezone = "UTC"\n' });
   answer = (url, init) => {
+    if (url.endsWith("/cloud/status")) {
+      return cloud === null ? new Promise(() => {}) : jsonResponse(cloud);
+    }
     if (init?.method === "POST" && url === "/api/hub/secrets") {
       const body = JSON.parse(typeof init.body === "string" ? init.body : "{}") as {
         name: string;
@@ -238,6 +246,38 @@ describe("Connections", () => {
     expect(patches()).toEqual([
       { teams: { app_id: "app-1", tenant_id: "tenant-1", app_password: "secret:teams" } },
     ]);
+  });
+
+  it("shows the messaging endpoint while Residuum Cloud is connected", async () => {
+    cloud = {
+      status: "connected",
+      user_id: "bear",
+      has_token: true,
+      enabled: true,
+      viewed_via_tunnel: false,
+      origin: "https://bear.agent-residuum.com",
+      instance: "laptop",
+    };
+    await open("connections", {
+      config: '[teams]\napp_id = "app-1"\ntenant_id = "tenant-1"\napp_password = "secret:teams"\n',
+    });
+    const teams = group("Microsoft Teams");
+    expect(teams.getByText(`https://bear.agent-residuum.com/teams/laptop/${agent}`)).toBeTruthy();
+    expect(teams.getByRole("button", { name: "Copy messaging endpoint" })).toBeTruthy();
+  });
+
+  it("says Teams messages can't arrive through Residuum Cloud while it is disconnected", async () => {
+    cloud = {
+      status: "disconnected",
+      user_id: null,
+      has_token: true,
+      enabled: false,
+      viewed_via_tunnel: false,
+    };
+    await open("connections", {
+      config: '[teams]\napp_id = "app-1"\ntenant_id = "tenant-1"\napp_password = "secret:teams"\n',
+    });
+    expect(group("Microsoft Teams").getByText(/can't arrive until it is connected/)).toBeTruthy();
   });
 
   it("shows a warning from a save on the field its key path names", async () => {

@@ -171,6 +171,7 @@ struct TunnelInputs<'a> {
     workbench_port: Option<u16>,
     status_tx: &'a Arc<watch::Sender<TunnelStatus>>,
     relay_agents: &'a RelayAgents,
+    teams_ports: watch::Receiver<std::collections::BTreeMap<String, u16>>,
 }
 
 /// Start the relay tunnel for `cloud`. The tunnel forwards A2A requests to the
@@ -185,6 +186,7 @@ fn spawn_tunnel(
     let workbench_port = inputs.workbench_port;
     let a2a_port = hub.a2a.enabled.then_some(hub.a2a.port);
     let agents_rx = inputs.relay_agents.subscribe();
+    let teams_ports = inputs.teams_ports.clone();
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let status_tx = Arc::clone(inputs.status_tx);
     let handle = crate::util::spawn_monitored("tunnel", async move {
@@ -192,6 +194,7 @@ fn spawn_tunnel(
             cloud,
             workbench_port,
             a2a_port,
+            teams_ports,
             agents_rx,
             shutdown_rx,
             status_tx,
@@ -393,6 +396,7 @@ impl HubRuntime {
                     workbench_port: services.workbench_serving.port(),
                     status_tx: &tunnel_status_tx,
                     relay_agents: &relay_agents,
+                    teams_ports: host.subscribe_teams_ports(),
                 },
             )
         });
@@ -533,6 +537,7 @@ impl HubRuntime {
                     workbench_port: self.services.workbench_serving.port(),
                     status_tx: &self.tunnel_status_tx,
                     relay_agents: &self.relay_agents,
+                    teams_ports: self.host.subscribe_teams_ports(),
                 },
             ));
             tracing::info!("tunnel respawned after unexpected exit");
@@ -730,6 +735,7 @@ impl HubRuntime {
                     workbench_port: self.services.workbench_serving.port(),
                     status_tx: &self.tunnel_status_tx,
                     relay_agents: &self.relay_agents,
+                    teams_ports: self.host.subscribe_teams_ports(),
                 },
             ));
             tracing::info!("tunnel restarted with new config");

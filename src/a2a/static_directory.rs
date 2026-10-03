@@ -187,6 +187,7 @@ impl StaticAgentDirectory {
             autostart: true,
             role: None,
             a2a_visibility: entry.visibility,
+            teams_configured: false,
         }
     }
 }

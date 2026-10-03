@@ -1,6 +1,9 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+  import { CloudConnection, teamsMessagingEndpoint } from "../../lib/cloud.svelte";
   import { hub } from "../../lib/hub.svelte";
-  import { Banner, TextField } from "../../lib/ui";
+  import { toast } from "../../lib/toast.svelte";
+  import { Banner, IconButton, TextField } from "../../lib/ui";
   import ChannelGroup from "./ChannelGroup.svelte";
   import type { ChannelState } from "./channel-state";
   import ConfigNumber from "./ConfigNumber.svelte";
@@ -47,6 +50,29 @@
     scope.config.teams_app_id = "";
     scope.config.teams_tenant_id = "";
     scope.config.teams_app_password = "";
+  }
+
+  // The messaging endpoint exists only while Residuum Cloud is connected and
+  // the relay has announced this hub's origin and instance.
+  const cloud = new CloudConnection();
+  onMount(() => cloud.follow());
+  const endpoint = $derived.by(() => {
+    const status = cloud.status;
+    if (!teamsOn || status?.status !== "connected") return null;
+    if (status == null) return null;
+    const origin = status.origin;
+    const instance = status.instance;
+    if (origin == null || origin === "" || instance == null || instance === "") return null;
+    return teamsMessagingEndpoint(origin, instance, agent);
+  });
+
+  async function copyEndpoint(address: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(address);
+      toast.success("Copied the messaging endpoint.");
+    } catch {
+      toast.error("Couldn't copy the messaging endpoint. Select it and copy it instead.");
+    }
   }
 </script>
 
@@ -134,7 +160,7 @@
 
   <ChannelGroup
     title="Microsoft Teams"
-    lede="{agent} can chat in direct messages, group chats and channels. Point the bot's messaging endpoint at a tunnel to this machine's Teams port."
+    lede="{agent} can chat in direct messages, group chats and channels. Residuum Cloud gives the bot its messaging endpoint. A tunnel to the listener port works too."
     state={stateOf(teamsOn, teamsFilled === 3)}
     ondisconnect={teamsOn && teamsFilled > 0 ? disconnectTeams : undefined}
     guide={{
@@ -173,6 +199,35 @@
         three, or clear them to leave Teams unconfigured.
       </Banner>
     {/if}
+    {#if teamsOn && cloud.loadError !== ""}
+      <Banner tone="error">{cloud.loadError}</Banner>
+    {:else if endpoint !== null}
+      <div class="address">
+        <span class="address-label">Messaging endpoint</span>
+        <div class="address-row">
+          <code class="address-text">{endpoint}</code>
+          <IconButton
+            icon="copy"
+            size="sm"
+            label="Copy messaging endpoint"
+            onclick={() => void copyEndpoint(endpoint)}
+          />
+        </div>
+        <p class="note">
+          Paste this into the bot's endpoint address in the Teams developer portal.
+        </p>
+      </div>
+    {:else if teamsOn && cloud.status?.status === "connected"}
+      <Banner tone="warn">
+        This Residuum Cloud connection doesn't publish a Teams address yet. Update the relay, or
+        point your own tunnel at the listener port.
+      </Banner>
+    {:else if teamsOn && cloud.status !== null}
+      <Banner>
+        Connect Residuum Cloud to get a messaging endpoint, or point your own tunnel at the listener
+        port. Teams messages through Residuum Cloud can't arrive until it is connected.
+      </Banner>
+    {/if}
     {@render reach(
       "teams",
       `Off: only you, the first person to message the bot. On: coworkers can mention or message ${agent} too.`,
@@ -182,7 +237,7 @@
       {scope}
       field="teams_port"
       label="Listener port"
-      hint="Expose only this port through your tunnel."
+      hint="Only for your own tunnel. Residuum Cloud doesn't use this port."
       placeholder="7701"
     />
   </ChannelGroup>
@@ -194,5 +249,30 @@
   .connections-notice {
     max-width: 640px;
     margin-bottom: var(--space-16);
+  }
+
+  .address {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .address-label,
+  .note {
+    color: var(--color-text-3);
+    font-size: var(--font-size-sm);
+  }
+
+  .address-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+  }
+
+  .address-text {
+    font-size: var(--font-size-xs);
+    overflow-wrap: anywhere;
   }
 </style>

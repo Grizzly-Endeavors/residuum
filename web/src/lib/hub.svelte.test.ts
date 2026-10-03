@@ -15,6 +15,7 @@ function agent(name: string, overrides: Partial<AgentSummary> = {}): AgentSummar
     autostart: true,
     role: null,
     a2a_visibility: "private",
+    teams_configured: false,
     ...overrides,
   };
 }

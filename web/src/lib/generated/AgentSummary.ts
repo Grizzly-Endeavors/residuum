@@ -36,4 +36,10 @@ role: string | null,
 /**
  * The agent's A2A visibility.
  */
-a2a_visibility: A2aVisibility, };
+a2a_visibility: A2aVisibility, 
+/**
+ * Whether the agent's config has a complete `[teams]` section. The relay
+ * accepts Teams messages for the agent while this is set. A stopped agent
+ * stays configured; delivery retries until its listener is back.
+ */
+teams_configured: boolean, };
