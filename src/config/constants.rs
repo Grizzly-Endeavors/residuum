@@ -6,6 +6,15 @@ pub(super) const DEFAULT_ANTHROPIC_URL: &str = "https://api.anthropic.com";
 /// Default base URL for a local Ollama instance.
 pub(super) const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 
+/// Default base URL for `TypeSafe`'s System 1 API.
+pub(super) const DEFAULT_TYPESAFE_URL: &str = "https://api.typesafe.ai";
+
+/// Default `TypeSafe` model: the alias for the latest stable Jev.
+pub(super) const DEFAULT_TYPESAFE_MODEL: &str = "jev-latest";
+
+/// Environment variable `TypeSafe`'s own SDKs read the API key from.
+pub(super) const TYPESAFE_API_KEY_ENV: &str = "TYPESAFE_API_KEY";
+
 /// Default base URL for the `OpenAI` API.
 pub(super) const DEFAULT_OPENAI_URL: &str = "https://api.openai.com/v1";
 

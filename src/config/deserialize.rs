@@ -32,6 +32,24 @@ pub(crate) struct HubConfigFile {
     pub(super) background: Option<HubBackgroundConfigFile>,
     /// Web Push settings.
     pub(super) push: Option<HubPushConfigFile>,
+    /// The System 1 (decision model) provider every agent shares.
+    pub(super) system_one: Option<SystemOneConfigFile>,
+}
+
+/// Raw TOML `[system_one]` section in `hub/config.toml`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SystemOneConfigFile {
+    /// `"typesafe"`, `"ollama"`, or `"other"`.
+    pub(super) provider: Option<String>,
+    /// Model ID or alias sent in each request's `model` field.
+    pub(super) model: Option<String>,
+    /// Base URL. Required for `other`; overrides the default for the others.
+    pub(super) url: Option<String>,
+    /// API key: a literal, `secret:<name>`, or `${ENV_VAR}`.
+    pub(super) api_key: Option<String>,
+    /// Ollama `keep_alive` (e.g. `"5m"`).
+    pub(super) keep_alive: Option<String>,
 }
 
 /// Raw TOML `[push]` section in `hub/config.toml`.

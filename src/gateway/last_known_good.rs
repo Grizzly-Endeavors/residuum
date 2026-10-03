@@ -199,6 +199,7 @@ mod tests {
             tracing: crate::config::TracingConfig::default(),
             background: crate::config::HubBackgroundConfig::default(),
             push: crate::config::HubPushConfig::default(),
+            system_one: None,
             config_dir: base.join("hub"),
             load_notices: Vec::new(),
         }
