@@ -194,6 +194,8 @@ describe("what each scope owns", () => {
     "system/timezone",
     "mcp-catalog",
     "providers/models",
+    "system-one/models",
+    "system-one/test",
     "checkpoints/stats",
     "push/key",
     "push/devices",

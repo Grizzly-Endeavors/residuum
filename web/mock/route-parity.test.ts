@@ -78,6 +78,8 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
     // Onboarding lists models before any agent exists.
     (a) => a.fetchProviderModels(null, "openai"),
   ],
+  fetchSystemOneModels: [(a) => a.fetchSystemOneModels({ provider: "ollama" })],
+  testSystemOne: [(a) => a.testSystemOne({ provider: "ollama", model: "nimble" })],
   fetchMcpCatalog: [(a) => a.fetchMcpCatalog()],
   storeSecret: [(a) => a.storeSecret("name", "value")],
   completeSetup: [

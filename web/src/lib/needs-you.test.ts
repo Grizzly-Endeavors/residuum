@@ -152,4 +152,41 @@ describe("deriveNeedsYou", () => {
     });
     expect(needs.items.map((i) => i.key)).toEqual(["failed:crumbly", "failed:brittle"]);
   });
+
+  it("shows one decision model item while it is down, and none once it answers", () => {
+    const outage = {
+      kind: "unreachable" as const,
+      message: "Couldn't reach Ollama at http://localhost:11434.",
+      since: "2026-10-03T14:00:00Z",
+    };
+    const down = deriveNeedsYou({
+      agents: [failed("brittle", "2026-10-03T15:00:00Z")],
+      overviews: {},
+      unreadItems: [],
+      systemOne: { configured: true, provider: "Ollama", model: "nimble", outage },
+    });
+    expect(down.items.map((i) => [i.key, i.severity])).toEqual([
+      ["failed:brittle", "error"],
+      ["system_one", "warn"],
+    ]);
+    expect(down.count).toBe(2);
+
+    const back = deriveNeedsYou({
+      agents: [],
+      overviews: {},
+      unreadItems: [],
+      systemOne: { configured: true, provider: "Ollama", model: "nimble", outage: null },
+    });
+    expect(back.items).toEqual([]);
+  });
+
+  it("says nothing about an unconfigured decision model nobody has asked", () => {
+    const needs = deriveNeedsYou({
+      agents: [],
+      overviews: {},
+      unreadItems: [],
+      systemOne: { configured: false, provider: null, model: null, outage: null },
+    });
+    expect(needs.items).toEqual([]);
+  });
 });

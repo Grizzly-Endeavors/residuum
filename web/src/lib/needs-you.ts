@@ -8,6 +8,8 @@ import type {
   AgentSummary,
   HubInboxItem,
   OutboundProblem,
+  SystemOneOutage,
+  SystemOneStatus,
 } from "./hub-types";
 
 /** The most inbox items the list shows; the rest are counted under it. */
@@ -43,7 +45,19 @@ export interface InboxNeedsItem extends ItemBase {
   item: HubInboxItem;
 }
 
-export type NeedsYouItem = FailedAgentItem | OutboundProblemItem | InboxNeedsItem;
+/** The decision model can't answer, so Auto Mode's checks are skipped until it can. */
+export interface SystemOneNeedsItem extends ItemBase {
+  kind: "system_one";
+  outage: SystemOneOutage;
+  /** The configured provider's name, when one is set. */
+  provider: string | null;
+}
+
+export type NeedsYouItem =
+  | FailedAgentItem
+  | OutboundProblemItem
+  | InboxNeedsItem
+  | SystemOneNeedsItem;
 
 export interface NeedsYou {
   /** Error first, then warn, then info; newest first within each. */
@@ -62,6 +76,8 @@ export interface NeedsYouInput {
   overviews: Readonly<Record<string, AgentOverview>>;
   /** The newest unread user-inbox items across agents, newest first. */
   unreadItems: readonly HubInboxItem[];
+  /** The decision model service's status; null until the hub reports it. */
+  systemOne?: SystemOneStatus | null;
 }
 
 const SEVERITY_RANK: Readonly<Record<NeedsYouSeverity, number>> = { error: 0, warn: 1, info: 2 };
@@ -81,9 +97,27 @@ function byNeed(a: NeedsYouItem, b: NeedsYouItem): number {
   return a.key < b.key ? -1 : 1;
 }
 
-export function deriveNeedsYou({ agents, overviews, unreadItems }: NeedsYouInput): NeedsYou {
+export function deriveNeedsYou({
+  agents,
+  overviews,
+  unreadItems,
+  systemOne,
+}: NeedsYouInput): NeedsYou {
   const items: NeedsYouItem[] = [];
   let inboxUnread = 0;
+
+  // The hub reports an outage only once something has asked for a decision,
+  // so an unused, unconfigured decision model never shows here.
+  if (systemOne?.outage) {
+    items.push({
+      kind: "system_one",
+      key: "system_one",
+      severity: "warn",
+      at: systemOne.outage.since,
+      outage: systemOne.outage,
+      provider: systemOne.provider,
+    });
+  }
 
   for (const agent of agents) {
     const overview = overviews[agent.name];

@@ -236,6 +236,7 @@ describe("hub", () => {
       expect((await request("GET", "/agents")).body.stopping).toEqual([]);
       expect(hubSocket.frames.map((f) => f.type).filter((t) => t !== "agents_snapshot")).toEqual([
         "hub_boot",
+        "system_one_status",
         "agent_stopping",
         "agent_state",
         "team_event",
@@ -345,7 +346,13 @@ describe("hub", () => {
       expect(
         hubSocket.frames
           .map((f) => f.type)
-          .filter((t) => t !== "agents_snapshot" && t !== "hub_boot" && t !== "team_event"),
+          .filter(
+            (t) =>
+              t !== "agents_snapshot" &&
+              t !== "hub_boot" &&
+              t !== "system_one_status" &&
+              t !== "team_event",
+          ),
       ).toEqual(["agent_stopping", "agent_state", "agent_deleted"]);
       expect(hubSocket.frames.find((f) => f.type === "agent_state")).toMatchObject({
         agent: { name: "atlas", state: "stopped" },
@@ -359,7 +366,13 @@ describe("hub", () => {
       expect(
         hubSocket.frames
           .map((f) => f.type)
-          .filter((t) => t !== "agents_snapshot" && t !== "hub_boot" && t !== "team_event"),
+          .filter(
+            (t) =>
+              t !== "agents_snapshot" &&
+              t !== "hub_boot" &&
+              t !== "system_one_status" &&
+              t !== "team_event",
+          ),
       ).toEqual(["agent_deleted", "agent_deleted"]);
     });
 
@@ -433,6 +446,7 @@ describe("hub socket", () => {
     expect(boot).toEqual({ type: "hub_boot", boot_id: expect.any(String) as unknown });
     expect(boot.boot_id).not.toBe("");
     expect(await second.next()).toEqual(boot);
+    expect((await first.next()).type).toBe("system_one_status");
     expect((await first.next()).type).toBe("agents_snapshot");
   });
 
@@ -440,6 +454,10 @@ describe("hub socket", () => {
     harness = await startMockServer();
     const socket = await harness.openSocket("/api/hub/ws");
     await socket.nextOfType("hub_boot");
+    expect(await socket.next()).toEqual({
+      type: "system_one_status",
+      status: { configured: false, provider: null, model: null, outage: null },
+    });
     const snapshot = await socket.next();
     expect(snapshot.type).toBe("agents_snapshot");
     expect((snapshot.agents as { name: string; state: string }[]).map((a) => a.name)).toEqual([
@@ -483,13 +501,17 @@ describe("hub socket", () => {
     });
     expect(snapshot.stopping).toEqual(["atlas"]);
     expect(await socket.quietFrames()).toEqual([]);
-    expect(socket.frames.map((f) => f.type)).toEqual(["hub_boot", "agents_snapshot"]);
+    expect(socket.frames.map((f) => f.type)).toEqual([
+      "hub_boot",
+      "system_one_status",
+      "agents_snapshot",
+    ]);
   });
 
   it("starts empty before setup has created an agent", async () => {
     harness = await startMockServer({ seed: false });
     const socket = await harness.openSocket("/api/hub/ws");
-    await socket.nextOfType("hub_boot");
+    await socket.nextOfType("system_one_status");
     expect(await socket.next()).toEqual({
       type: "agents_snapshot",
       agents: [],

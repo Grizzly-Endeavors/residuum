@@ -23,6 +23,7 @@ import type {
   AgentSummary,
   HubInboxItem,
   HubServerMessage,
+  SystemOneStatus,
   TeamEvent,
 } from "./hub-types";
 import type { OutboundA2aTaskSummary } from "./types";
@@ -39,6 +40,8 @@ const INBOX_PAGE = 50;
 /** What the store reads from the hub store. */
 export interface OverviewHub {
   readonly agents: readonly AgentSummary[];
+  /** The decision model service's status, when the hub has reported it. */
+  readonly systemOne?: SystemOneStatus | null;
   onFrame: (listener: (msg: HubServerMessage) => void) => () => void;
 }
 
@@ -76,6 +79,7 @@ export class OverviewStore {
       agents: this.source.agents,
       overviews: this.overviews,
       unreadItems: this.unreadItems,
+      systemOne: this.source.systemOne,
     }),
   );
 

@@ -313,6 +313,67 @@ const providerRoutes: readonly Route[] = [
   },
 ];
 
+/** The models each decision model provider offers in the mock. */
+const SYSTEM_ONE_MODELS: Readonly<
+  Record<string, readonly { id: string; description: string | null }[]>
+> = {
+  typesafe: [
+    { id: "jev-latest", description: "The most recent stable Jev" },
+    { id: "jev-preview", description: "The most recent Jev, official or not" },
+  ],
+  ollama: [
+    { id: "nimble", description: null },
+    { id: "tev1", description: null },
+    { id: "tev1:0.8b", description: null },
+  ],
+};
+
+const systemOneRoutes: readonly Route[] = [
+  {
+    method: "POST",
+    pattern: "/api/system-one/models",
+    handler: async ({ req, res }) => {
+      const body = await readJsonObject(req);
+      const provider = stringField(body, "provider") ?? "";
+      const models = SYSTEM_ONE_MODELS[provider];
+      if (models === undefined) {
+        json(res, 200, {
+          models: [],
+          error: "Couldn't reach the decision model service. Check the address.",
+        });
+        return;
+      }
+      json(res, 200, { models });
+    },
+  },
+  {
+    method: "POST",
+    pattern: "/api/system-one/test",
+    handler: async ({ req, res }) => {
+      const body = await readJsonObject(req);
+      const provider = stringField(body, "provider") ?? "";
+      const model = stringField(body, "model") ?? (provider === "typesafe" ? "jev-latest" : "");
+      if (provider === "typesafe" && !stringField(body, "api_key")) {
+        json(res, 200, {
+          ok: false,
+          message:
+            "TypeSafe didn't accept the API key. Check the key under Settings → All agents → Decision model.",
+        });
+        return;
+      }
+      if (model === "") {
+        json(res, 200, { ok: false, message: "Choose a model first." });
+        return;
+      }
+      json(res, 200, {
+        ok: true,
+        message: `The decision model answered. Decisions will use ${model}.`,
+        answered_by: model,
+      });
+    },
+  },
+];
+
 // ─── Setup ─────────────────────────────────────────────────────────────────────
 
 /** Finish first-run setup: create the first agent from the wizard's files. */
@@ -665,6 +726,7 @@ export const configRoutes: readonly Route[] = [
   }),
   { method: "POST", pattern: "/api/hub/config/complete-setup", handler: completeSetup },
   ...providerRoutes,
+  ...systemOneRoutes,
   ...mcpRoutes,
   ...agentKeyRoutes,
   ...a2aRoutes,
