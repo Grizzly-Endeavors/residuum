@@ -145,6 +145,7 @@ export class OverviewStore {
       case "agent_activity":
       case "notice":
       case "hub_config_reloaded":
+      case "system_one_status":
       case "workspace_changed":
       case "workspace_resync":
       case "workspace_watch_unavailable":

@@ -75,6 +75,7 @@ pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Rout
         overview: Arc::clone(&hub.overview),
         agent_changes: Arc::clone(&hub.agent_changes),
         presence: Arc::clone(hub.push.presence()),
+        system_one: Arc::clone(&hub.system_one),
     };
 
     let app = Router::new()

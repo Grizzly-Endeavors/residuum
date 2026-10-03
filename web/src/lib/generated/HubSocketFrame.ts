@@ -3,6 +3,7 @@ import type { AgentListResponse } from "./AgentListResponse";
 import type { AgentOverview } from "./AgentOverview";
 import type { ServerMessage } from "./ServerMessage";
 import type { SessionSubscriptionKind } from "./SessionSubscriptionKind";
+import type { SystemOneStatus } from "./SystemOneStatus";
 import type { TeamEvent } from "./TeamEvent";
 
 /**
@@ -37,4 +38,4 @@ agent: string,
 /**
  * The `session_*` frame exactly as the agent's own socket sends it.
  */
-frame: ServerMessage, } | { "type": "session_relay_lagged" };
+frame: ServerMessage, } | { "type": "session_relay_lagged" } | { "type": "system_one_status", status: SystemOneStatus, };

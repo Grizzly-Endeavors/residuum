@@ -13,6 +13,7 @@ use crate::hub::agent_watch::AgentChangeFeed;
 use crate::hub::overview::TeamOverview;
 use crate::hub::push::PushService;
 use crate::hub::team_events::TeamEventLog;
+use crate::inference::system_one::SystemOneService;
 use crate::tracing_service::{ClientContext, Subagent, TracingService};
 use crate::tunnel::TunnelStatus;
 use crate::update::SharedUpdateStatus;
@@ -96,4 +97,7 @@ pub struct HubHttpState {
     /// WebSocket relays the session events on it to the clients that
     /// subscribed to a session.
     pub agent_changes: Arc<AgentChangeFeed>,
+    /// The shared System 1 service. The hub WebSocket sends its status, and
+    /// the decision-model routes list models and test configurations.
+    pub system_one: Arc<SystemOneService>,
 }

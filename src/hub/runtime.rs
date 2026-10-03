@@ -654,6 +654,12 @@ impl HubRuntime {
                 .push
                 .set_contact(new_hub.push.contact.as_deref());
         }
+        if old.system_one != new_hub.system_one {
+            changed.push("decision model");
+            self.services
+                .system_one
+                .reconfigure(new_hub.system_one.as_ref());
+        }
         if old.background.max_concurrent != new_hub.background.max_concurrent {
             changed.push("background limits");
             self.host.notice(
@@ -810,6 +816,7 @@ pub(super) fn build_app(
         team_events: Arc::clone(team_events),
         overview: Arc::clone(overview),
         agent_changes: Arc::clone(host.agent_changes()),
+        system_one: Arc::clone(&services.system_one),
     };
     Ok(hub_router(
         Arc::clone(host) as Arc<dyn AgentDirectory>,
