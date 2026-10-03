@@ -5,6 +5,7 @@ import type {
   SessionSummary as _SessionSummary,
   RepoStats as _RepoStats,
 } from "./generated/protocol";
+import type { AutoModeVerdict } from "./generated/AutoModeVerdict";
 export type {
   ClientMessage,
   ServerMessage,
@@ -494,6 +495,8 @@ export interface ToolCallState {
   result?: string;
   /** The MCP server (its name in `mcp.json`) that owns this tool; absent for a built-in. */
   server?: string | null;
+  /** Auto Mode's verdict, from the live result; history doesn't keep it. */
+  autoMode?: AutoModeVerdict;
 }
 
 interface FeedItemBase {

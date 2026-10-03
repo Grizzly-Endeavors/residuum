@@ -178,7 +178,13 @@ impl SystemOneService {
         }
         let weak = Arc::downgrade(self);
         let interval = self.recovery_interval;
-        *slot = Some(tokio::spawn(recovery_check(weak, interval)));
+        // The check serves the whole hub, so it logs under its own span
+        // rather than that of whichever agent's call noticed the outage.
+        let task = tracing::Instrument::instrument(
+            recovery_check(weak, interval),
+            tracing::info_span!("system_one_recovery"),
+        );
+        *slot = Some(crate::util::spawn_in_span(task));
     }
 
     fn stop_recovery_check(&self) {

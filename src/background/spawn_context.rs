@@ -73,6 +73,9 @@ pub(crate) struct SpawnContext {
     /// Guards against a model repeating the exact same tool call, mirroring
     /// `cfg.agent.repeat_call_guard`.
     pub(crate) repeat_call_guard: crate::config::RepeatCallGuardConfig,
+    /// The main agent's Auto Mode, shared so session tool calls are checked
+    /// against the same live rules. `None` in tests that need no checks.
+    pub(crate) auto_mode: Option<crate::agent::auto_mode::SharedAutoMode>,
     pub(crate) layout: WorkspaceLayout,
     /// The agent's own `config/` directory (`<agent>/config`), for a
     /// session's `write_file`/`edit_file` tools to recognize `config.toml`/
@@ -335,13 +338,17 @@ pub(crate) async fn build_spawn_resources(
         lifecycle: ctx.lifecycle.clone(),
     };
 
-    build_subagent_resources(
+    let mut resources = build_subagent_resources(
         provider,
         &ctx.skill_state,
         Arc::clone(&ctx.mcp_registry),
         build_config,
     )
-    .await
+    .await?;
+    if let Some(auto_mode) = &ctx.auto_mode {
+        resources.tools.set_auto_mode(Arc::clone(auto_mode));
+    }
+    Ok(resources)
 }
 
 #[cfg(test)]

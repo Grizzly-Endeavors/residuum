@@ -194,6 +194,7 @@ async fn a_subscribed_session_streams_every_event_tool_frames_included() {
             name: "read_file".to_string(),
             output: "three notes".to_string(),
             is_error: false,
+            auto_mode: None,
         }),
         SessionEventKind::Response {
             turn_id: "t-1".to_string(),

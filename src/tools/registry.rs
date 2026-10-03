@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 use crate::a2a::{A2aClientHub, RemoteTaskTracker};
 use crate::actions::store::ActionStore;
 use crate::agent::HopCounter;
+use crate::agent::auto_mode::SharedAutoMode;
 use crate::agent_keys::{Redactor, SharedAgentKeys};
 use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
@@ -41,6 +42,9 @@ pub struct ToolRegistry {
     /// delete a key the user created, and announce each user inbox item they
     /// save. `None` means those go unpublished (the action still happens).
     publisher: Option<Publisher>,
+    /// The agent's Auto Mode, checked before every tool call the turn loop
+    /// dispatches. `None` means no call is checked.
+    auto_mode: Option<SharedAutoMode>,
 }
 
 impl Default for ToolRegistry {
@@ -157,7 +161,20 @@ impl ToolRegistry {
             agent_keys: None,
             checkpoints: None,
             publisher: None,
+            auto_mode: None,
         }
+    }
+
+    /// Attach the agent's Auto Mode, which the turn loop consults before
+    /// dispatching each tool call.
+    pub fn set_auto_mode(&mut self, auto_mode: SharedAutoMode) {
+        self.auto_mode = Some(auto_mode);
+    }
+
+    /// The agent's Auto Mode, if one is attached.
+    #[must_use]
+    pub fn auto_mode(&self) -> Option<&SharedAutoMode> {
+        self.auto_mode.as_ref()
     }
 
     /// Set the effective `PATH` handle injected into the `exec` tool.

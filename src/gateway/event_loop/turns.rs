@@ -955,6 +955,7 @@ mod tests {
             retry: crate::inference::retry::RetryConfig::default(),
             background: crate::config::BackgroundConfig::default(),
             agent: crate::config::AgentAbilitiesConfig::default(),
+            auto_mode: crate::config::AutoModeConfig::default(),
             idle: crate::config::IdleConfig::default(),
             temperature: None,
             thinking: None,

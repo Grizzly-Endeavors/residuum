@@ -40,9 +40,9 @@ pub use paths::{HubPaths, default_hub_dir, discover_agents, residuum_root, valid
 pub use provider::{ModelSpec, ProviderKind, ProviderSpec};
 pub use secrets::SecretStore;
 pub use types::{
-    A2aConfig, A2aVisibility, AgentAbilitiesConfig, BackgroundConfig, BackgroundModelTier,
-    BackgroundModelsConfig, CloudConfig, Config, DiscordConfig, GatewayConfig, IdleConfig,
-    LearningConfig, LogLevel, MemoryConfig, OtelEndpoint, ProviderNativeSearchConfig,
+    A2aConfig, A2aVisibility, AgentAbilitiesConfig, AutoModeConfig, BackgroundConfig,
+    BackgroundModelTier, BackgroundModelsConfig, CloudConfig, Config, DiscordConfig, GatewayConfig,
+    IdleConfig, LearningConfig, LogLevel, MemoryConfig, OtelEndpoint, ProviderNativeSearchConfig,
     RepeatCallGuardConfig, RoleOverrides, SearchConfig, SkillsConfig, StandaloneBackendConfig,
     SubconsciousSettings, TeamsConfig, TelegramConfig, ToolsConfig, TracingConfig, WebSearchConfig,
     WebhookEntry, WebhookFormat, WebhookRouting,

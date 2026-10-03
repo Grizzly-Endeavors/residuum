@@ -1,5 +1,6 @@
 //! Agent runtime: context assembly, tool loop, and message history management.
 
+pub mod auto_mode;
 pub mod context;
 mod core;
 pub mod hop;

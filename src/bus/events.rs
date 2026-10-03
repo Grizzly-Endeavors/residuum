@@ -318,6 +318,8 @@ pub struct ToolResultEvent {
     pub output: String,
     /// Whether the tool reported an error.
     pub is_error: bool,
+    /// Auto Mode's verdict on the call, when Auto Mode checked it.
+    pub auto_mode: Option<crate::agent::auto_mode::AutoModeVerdict>,
 }
 
 /// Intermediate model text emitted during a turn.

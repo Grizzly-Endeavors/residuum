@@ -5,6 +5,7 @@
     type ToolResultCollapse,
   } from "../lib/format-tool-result";
   import type { StepCall } from "./activity";
+  import { autoModeNote } from "./auto-mode";
   import { argumentLines } from "./step-args";
 
   // A step's details: its arguments, summarized per tool, and what it
@@ -32,6 +33,11 @@
 </script>
 
 <div class="step-detail">
+  {#if call.autoMode}
+    <p class="step-auto-mode" data-decision={call.autoMode.decision}>
+      {autoModeNote(call.autoMode)}
+    </p>
+  {/if}
   {#each lines as line, index (index)}
     {#if line.kind === "pairs"}
       <dl class="step-pairs">
@@ -233,6 +239,14 @@
 
   .step-pending {
     color: var(--color-text-3);
+  }
+
+  .step-auto-mode {
+    color: var(--color-text-3);
+
+    &[data-decision="blocked"] {
+      color: var(--color-err-text);
+    }
   }
 
   @media (max-width: 760px) {

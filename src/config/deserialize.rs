@@ -140,6 +140,21 @@ pub(crate) struct AgentConfigFile {
     pub(super) web_search: Option<WebSearchConfigFile>,
     /// `Agent2Agent` (A2A) visibility for this agent.
     pub(super) a2a: Option<AgentA2aConfigFile>,
+    /// Plain-language rules every tool call is checked against.
+    pub(super) auto_mode: Option<AutoModeConfigFile>,
+}
+
+/// Raw TOML `[auto_mode]` section in `<agent>/config/config.toml`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct AutoModeConfigFile {
+    pub(super) enabled: Option<bool>,
+    /// What the agent isn't allowed to do.
+    pub(super) deny: Option<Vec<String>>,
+    /// Exceptions to the deny rules.
+    pub(super) allow: Option<Vec<String>>,
+    /// Probability (0 to 1) at which a rule counts as matching.
+    pub(super) threshold: Option<f64>,
 }
 
 /// Raw TOML `[a2a]` section in `<agent>/config/config.toml`.

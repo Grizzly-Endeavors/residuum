@@ -2,6 +2,7 @@
 
 import { nextFeedId } from "./feed-id";
 import { historyAgentMessage, parseArtifactMessage, parseOwnerMessage } from "./relay";
+import type { AutoModeVerdict } from "./generated/AutoModeVerdict";
 import type { DividerFeedItem, FeedItem, RecentMessage, ToolCallState } from "./types";
 
 /**
@@ -266,11 +267,17 @@ export function countTurnCalls(items: readonly FeedItem[], turnId: string): numb
 /** Apply a live tool result to the call `pending` remembers for it. */
 export function applyToolResult(
   pending: Map<string, ToolCallState>,
-  result: { tool_call_id: string; output: string; is_error: boolean },
+  result: {
+    tool_call_id: string;
+    output: string;
+    is_error: boolean;
+    auto_mode?: AutoModeVerdict;
+  },
 ): void {
   const call = pending.get(result.tool_call_id);
   if (!call) return;
   call.status = result.is_error ? "error" : "done";
+  if (result.auto_mode) call.autoMode = result.auto_mode;
   if (result.output) appendResult(call, result.output);
   pending.delete(result.tool_call_id);
 }

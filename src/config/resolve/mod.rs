@@ -176,6 +176,7 @@ pub(crate) fn from_file_and_env(
         retry,
         background,
         agent: agent_abilities,
+        auto_mode: agent::resolve_auto_mode_config(file, &mut notices),
         idle,
         temperature: file.and_then(|f| f.temperature),
         thinking,
