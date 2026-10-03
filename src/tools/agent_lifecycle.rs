@@ -303,6 +303,7 @@ mod tests {
             autostart: true,
             role: None,
             a2a_visibility: A2aVisibility::Private,
+            teams_configured: false,
         }
     }
 

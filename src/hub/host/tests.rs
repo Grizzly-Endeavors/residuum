@@ -2120,6 +2120,7 @@ async fn a_reload_that_changes_the_teams_port_moves_the_reservation() {
     std::fs::write(config_path(&hub, "atlas"), teams_config(second)).unwrap();
     drop(second_reservation);
     let slot = hub.host.slot("atlas").unwrap();
+    let mut announced = hub.host.subscribe_teams_ports();
     hub.host.refresh_teams_port(&slot);
 
     {
@@ -2127,6 +2128,7 @@ async fn a_reload_that_changes_the_teams_port_moves_the_reservation() {
         assert_eq!(ports.get(&second).map(String::as_str), Some("atlas"));
         assert!(!ports.contains_key(&first));
     }
+    assert_eq!(announced.borrow_and_update().get("atlas"), Some(&second));
     hub.host.start("scout").await.unwrap();
     assert_eq!(hub.state_of("scout"), AgentState::Running);
 }

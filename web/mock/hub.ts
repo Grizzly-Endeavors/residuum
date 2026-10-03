@@ -22,6 +22,7 @@ export function mockAgentSummary(agent: MockAgent): AgentSummary {
     autostart: agent.autostart,
     role: agent.role,
     a2a_visibility: agent.visibility,
+    teams_configured: false,
   };
 }
 

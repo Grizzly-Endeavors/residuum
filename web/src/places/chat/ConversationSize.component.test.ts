@@ -33,6 +33,7 @@ function agent(name: string, state: AgentSummary["state"]): AgentSummary {
     autostart: true,
     role: null,
     a2a_visibility: "private",
+    teams_configured: false,
   };
 }
 

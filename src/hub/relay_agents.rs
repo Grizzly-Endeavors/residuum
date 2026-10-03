@@ -53,6 +53,7 @@ pub(crate) fn agent_infos(
                 && agent.state == AgentState::Running
                 && !stopping.contains(&agent.name),
             a2a_private: agent.a2a_visibility == A2aVisibility::Private,
+            teams_configured: agent.teams_configured,
         })
         .collect()
 }
@@ -202,6 +203,7 @@ mod tests {
             autostart: true,
             role: None,
             a2a_visibility: visibility,
+            teams_configured: false,
         }
     }
 
@@ -251,6 +253,16 @@ mod tests {
                 .iter()
                 .all(|a| !a.a2a_enabled)
         );
+    }
+
+    #[test]
+    fn a_stopped_agent_with_teams_configured_stays_configured() {
+        let mut agent = summary("scout", AgentState::Stopped, A2aVisibility::Public);
+        agent.teams_configured = true;
+        let infos = agent_infos(&[agent], true, &HashSet::new());
+        let scout = infos.first().expect("scout");
+        assert!(scout.teams_configured);
+        assert!(!scout.a2a_enabled);
     }
 
     #[test]

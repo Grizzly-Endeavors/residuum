@@ -36,6 +36,14 @@ pub(crate) struct CloudStatusResponse {
     /// is refused server-side (see `gateway::remote_control_guard`), so a
     /// remote viewer should never see a button that can't work.
     viewed_via_tunnel: bool,
+    /// Public origin of this hub through the relay, while connected and the
+    /// relay has announced one. The Teams messaging endpoint is
+    /// `{origin}/teams/{instance}/{agent}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    origin: Option<String>,
+    /// This hub's instance slug on the relay, while connected and announced.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instance: Option<String>,
 }
 
 impl CloudStatusResponse {
@@ -49,10 +57,20 @@ impl CloudStatusResponse {
     ) -> Self {
         let tunnel_status = tunnel_status_rx.borrow().clone();
 
-        let (status, user_id) = match tunnel_status {
-            TunnelStatus::Disconnected => ("disconnected", None),
-            TunnelStatus::Connecting => ("connecting", None),
-            TunnelStatus::Connected { ref user_id, .. } => ("connected", Some(user_id.clone())),
+        let (status, user_id, origin, instance) = match tunnel_status {
+            TunnelStatus::Disconnected => ("disconnected", None, None, None),
+            TunnelStatus::Connecting => ("connecting", None, None, None),
+            TunnelStatus::Connected {
+                ref user_id,
+                ref origin,
+                ref instance,
+                ..
+            } => (
+                "connected",
+                Some(user_id.clone()),
+                origin.clone(),
+                instance.clone(),
+            ),
         };
 
         // Check config for cloud section presence
@@ -72,6 +90,8 @@ impl CloudStatusResponse {
             has_token,
             enabled,
             viewed_via_tunnel,
+            origin,
+            instance,
         }
     }
 }

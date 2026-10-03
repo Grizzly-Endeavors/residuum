@@ -103,6 +103,11 @@ pub struct AgentSummary {
     pub role: Option<String>,
     /// The agent's A2A visibility.
     pub a2a_visibility: A2aVisibility,
+    /// Whether the agent's config has a complete `[teams]` section. The relay
+    /// accepts Teams messages for the agent while this is set. A stopped agent
+    /// stays configured; delivery retries until its listener is back.
+    #[serde(default)]
+    pub teams_configured: bool,
 }
 
 impl AgentSummary {
@@ -478,6 +483,7 @@ mod tests {
             autostart: true,
             role: Some("Research".to_string()),
             a2a_visibility: A2aVisibility::Private,
+            teams_configured: false,
         }
     }
 
@@ -493,6 +499,7 @@ mod tests {
                 "autostart": true,
                 "role": "Research",
                 "a2a_visibility": "private",
+                "teams_configured": false,
             })
         );
     }
