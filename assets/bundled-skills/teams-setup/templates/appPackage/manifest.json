@@ -5,10 +5,10 @@
   "id": "${{TEAMS_APP_ID}}",
   "packageName": "com.residuum.agent",
   "developer": {
-    "name": "${{BOT_DISPLAY_NAME}}",
-    "websiteUrl": "https://github.com/Grizzly-Endeavors/residuum",
-    "privacyUrl": "https://github.com/Grizzly-Endeavors/residuum",
-    "termsOfUseUrl": "https://github.com/Grizzly-Endeavors/residuum"
+    "name": "${{DEVELOPER_NAME}}",
+    "websiteUrl": "${{DEVELOPER_URL}}",
+    "privacyUrl": "${{PRIVACY_URL}}",
+    "termsOfUseUrl": "${{TERMS_URL}}"
   },
   "icons": {
     "color": "color.png",
@@ -19,8 +19,8 @@
     "full": "${{TEAMS_APP_NAME}}"
   },
   "description": {
-    "short": "${{BOT_DISPLAY_NAME}} in Microsoft Teams",
-    "full": "Personal AI agent gateway integration with Microsoft Teams"
+    "short": "${{SHORT_DESCRIPTION}}",
+    "full": "${{LONG_DESCRIPTION}}"
   },
   "accentColor": "#4F46E5",
   "bots": [

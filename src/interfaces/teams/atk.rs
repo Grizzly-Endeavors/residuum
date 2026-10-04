@@ -6,15 +6,19 @@
 //! the agent's `[teams]` section via the checkpointed config path.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use aes::Aes256;
-use aes::cipher::{BlockEncrypt, KeyInit};
+use aes_gcm::AesGcm;
+use aes_gcm::aead::consts::U16;
+use aes_gcm::aead::{Aead, KeyInit, Nonce};
 use ring::pbkdf2;
 
+type Aes256Gcm16 = AesGcm<Aes256, U16>;
+
 use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger, RepoKind};
-use crate::config::paths::{agent_dir, hub_dir};
+use crate::config::paths::{agent_dir, hub_dir, team_dir};
 use crate::config::secrets::SecretStore;
 use crate::config::{Config, HubConfig};
 use crate::util::FatalError;
@@ -30,6 +34,87 @@ pub const ATK_DEFAULT_GLOBAL_KEY: &str = "teamsfx_global_key";
 
 /// Prefix prepended to hex-encoded encrypted secrets by ATK `LocalCrypto`.
 pub const CRYPTO_PREFIX: &str = "crypto_";
+
+/// Embedded template for `m365agents.yml`.
+pub const TEAMS_SETUP_M365AGENTS_YML: &str =
+    include_str!("../../../assets/bundled-skills/teams-setup/templates/m365agents.yml");
+
+/// Embedded template for `appPackage/manifest.json`.
+pub const TEAMS_SETUP_MANIFEST_JSON: &str =
+    include_str!("../../../assets/bundled-skills/teams-setup/templates/appPackage/manifest.json");
+
+/// Embedded default 192x192 PNG color icon.
+pub const TEAMS_SETUP_COLOR_PNG: &[u8] =
+    include_bytes!("../../../assets/bundled-skills/teams-setup/templates/appPackage/color.png");
+
+/// Embedded default 32x32 PNG outline icon.
+pub const TEAMS_SETUP_OUTLINE_PNG: &[u8] =
+    include_bytes!("../../../assets/bundled-skills/teams-setup/templates/appPackage/outline.png");
+
+/// Embedded template for `env/.env.residuum`.
+pub const TEAMS_SETUP_ENV_RESIDUUM: &str =
+    include_str!("../../../assets/bundled-skills/teams-setup/templates/env/.env.residuum");
+
+/// Validate that `bytes` begins with a valid PNG signature and has an IHDR chunk
+/// matching `expected_w` and `expected_h`.
+///
+/// # Errors
+///
+/// Returns [`FatalError::Config`] if the image is not a valid PNG or has mismatched dimensions.
+pub fn validate_png_dimensions(
+    bytes: &[u8],
+    expected_w: u32,
+    expected_h: u32,
+    label: &str,
+) -> Result<(), FatalError> {
+    const PNG_MAGIC: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if bytes.len() < 24 || bytes.get(..8) != Some(PNG_MAGIC.as_slice()) {
+        return Err(FatalError::Config(format!(
+            "invalid {label}: not a valid PNG file (invalid header)"
+        )));
+    }
+    if bytes.get(12..16) != Some(b"IHDR") {
+        return Err(FatalError::Config(format!(
+            "invalid {label}: missing IHDR chunk"
+        )));
+    }
+    let width_bytes: [u8; 4] = bytes
+        .get(16..20)
+        .ok_or_else(|| FatalError::Config(format!("invalid {label}: corrupted width")))?
+        .try_into()
+        .map_err(|_err| FatalError::Config(format!("invalid {label}: corrupted width")))?;
+    let height_bytes: [u8; 4] = bytes
+        .get(20..24)
+        .ok_or_else(|| FatalError::Config(format!("invalid {label}: corrupted height")))?
+        .try_into()
+        .map_err(|_err| FatalError::Config(format!("invalid {label}: corrupted height")))?;
+    let width = u32::from_be_bytes(width_bytes);
+    let height = u32::from_be_bytes(height_bytes);
+    if width != expected_w || height != expected_h {
+        return Err(FatalError::Config(format!(
+            "{label} dimensions must be {expected_w}x{expected_h}, found {width}x{height}"
+        )));
+    }
+    Ok(())
+}
+
+/// Quote and escape a value for use in a `.env` file according to standard dotenv rules.
+///
+/// Wraps value in double quotes and escapes `"` and `\`. Rejects values containing newline
+/// characters (`\n` or `\r`).
+///
+/// # Errors
+///
+/// Returns [`FatalError::Config`] if the value contains newline characters.
+pub fn format_dotenv_val(key: &str, val: &str) -> Result<String, FatalError> {
+    if val.contains('\n') || val.contains('\r') {
+        return Err(FatalError::Config(format!(
+            "invalid value for '{key}': contains newline characters which are not allowed in .env files"
+        )));
+    }
+    let escaped = val.replace('\\', "\\\\").replace('"', "\\\"");
+    Ok(format!("\"{escaped}\""))
+}
 
 /// Error returned when ATK secret decryption fails.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -106,10 +191,6 @@ pub fn decrypt_atk_secret(
 }
 
 /// Decrypt AES-256-GCM using Cryptr's 16-byte IV layout and PBKDF2 derivation.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "cryptographic block and counter indexing with fixed-size buffers"
-)]
 fn decrypt_gcm_with_secret(
     secret: &str,
     salt: &[u8],
@@ -128,126 +209,19 @@ fn decrypt_gcm_with_secret(
         &mut key,
     );
 
-    // 2. AES-256 cipher
-    let cipher = Aes256::new_from_slice(&key).map_err(|_err| ())?;
+    // 2. AES-256-GCM with 16-byte nonce (AesGcm<Aes256, U16>)
+    let cipher = Aes256Gcm16::new_from_slice(&key).map_err(|_err| ())?;
+    let nonce = Nonce::<Aes256Gcm16>::from_slice(iv);
 
-    // 3. Compute H = AES(key, 0^16)
-    let mut h = [0_u8; 16];
-    cipher.encrypt_block((&mut h).into());
+    // Reassemble ciphertext || tag for standard AEAD decryption
+    let mut payload = Vec::with_capacity(enc.len().saturating_add(tag.len()));
+    payload.extend_from_slice(enc);
+    payload.extend_from_slice(tag);
 
-    // 4. Compute J0 for 16-byte IV (NIST SP 800-38D Section 7.1)
-    // Block 1: IV (16 bytes)
-    // Block 2: 0^8 || [128]_64 (len(IV) in bits as 64-bit big endian integer)
-    let mut iv_block2 = [0_u8; 16];
-    iv_block2[8..16].copy_from_slice(&128_u64.to_be_bytes());
-    let mut j0_data = [0_u8; 32];
-    j0_data[0..16].copy_from_slice(iv);
-    j0_data[16..32].copy_from_slice(&iv_block2);
-    let j0 = ghash(&h, &j0_data);
-
-    // 5. Decrypt CTR
-    let mut decrypted = Vec::with_capacity(enc.len());
-    let mut ctr = j0;
-    let mut offset = 0;
-    while offset < enc.len() {
-        inc32(&mut ctr);
-        let mut ks = ctr;
-        cipher.encrypt_block((&mut ks).into());
-        let chunk_len = (enc.len() - offset).min(16);
-        for i in 0..chunk_len {
-            decrypted.push(enc[offset + i] ^ ks[i]);
-        }
-        offset += chunk_len;
-    }
-
-    // 6. Verify Tag
-    // GHASH data: enc padded to 16 bytes || [0]_64 || [len(enc)*8]_64
-    let pad_len = (16 - (enc.len() % 16)) % 16;
-    let total_ghash_len = enc.len() + pad_len + 16;
-    let mut ghash_buf = vec![0_u8; total_ghash_len];
-    ghash_buf[..enc.len()].copy_from_slice(enc);
-    let bit_len = (enc.len() as u64) * 8;
-    ghash_buf[total_ghash_len - 8..total_ghash_len].copy_from_slice(&bit_len.to_be_bytes());
-
-    let s = ghash(&h, &ghash_buf);
-    let mut tag_mask = j0;
-    cipher.encrypt_block((&mut tag_mask).into());
-    let mut expected_tag = [0_u8; 16];
-    for i in 0..16 {
-        expected_tag[i] = s[i] ^ tag_mask[i];
-    }
-
-    if subtle_eq(tag, &expected_tag) {
-        String::from_utf8(decrypted).map_err(|_err| ())
-    } else {
-        Err(())
-    }
-}
-
-/// GF(2^128) multiplication per NIST SP 800-38D Section 6.3.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "cryptographic bit and byte indexing in GF(2^128) arithmetic"
-)]
-fn gf_mul(x: &[u8; 16], y: &[u8; 16]) -> [u8; 16] {
-    let mut v = *y;
-    let mut z = [0_u8; 16];
-    for i in 0..128 {
-        let byte_idx = i / 8;
-        let bit_idx = 7 - (i % 8);
-        let bit = (x[byte_idx] >> bit_idx) & 1;
-        if bit == 1 {
-            for j in 0..16 {
-                z[j] ^= v[j];
-            }
-        }
-        let lsb = v[15] & 1;
-        for j in (1..16).rev() {
-            v[j] = (v[j] >> 1) | ((v[j - 1] & 1) << 7);
-        }
-        v[0] >>= 1;
-        if lsb == 1 {
-            v[0] ^= 0xe1;
-        }
-    }
-    z
-}
-
-/// GHASH function per NIST SP 800-38D Section 6.4.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "GHASH block copying with 16-byte chunks"
-)]
-fn ghash(h: &[u8; 16], data: &[u8]) -> [u8; 16] {
-    let mut y = [0_u8; 16];
-    for chunk in data.chunks(16) {
-        let mut block = [0_u8; 16];
-        block[..chunk.len()].copy_from_slice(chunk);
-        for i in 0..16 {
-            y[i] ^= block[i];
-        }
-        y = gf_mul(&y, h);
-    }
-    y
-}
-
-/// Increment 32-bit counter in the rightmost 4 bytes of a 16-byte block.
-fn inc32(block: &mut [u8; 16]) {
-    let mut val = u32::from_be_bytes([block[12], block[13], block[14], block[15]]);
-    val = val.wrapping_add(1);
-    block[12..16].copy_from_slice(&val.to_be_bytes());
-}
-
-/// Constant-time comparison for authentication tags.
-fn subtle_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0_u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
+    let decrypted = cipher
+        .decrypt(nonce, payload.as_slice())
+        .map_err(|_err| ())?;
+    String::from_utf8(decrypted).map_err(|_err| ())
 }
 
 /// Parsed output variables from an ATK project directory.
@@ -397,10 +371,443 @@ pub fn read_atk_project_env(project_dir: &Path) -> Result<AtkProjectEnv, FatalEr
 /// 4. Updates `[teams]` in the agent's `config.toml` through a checkpointed write.
 /// 5. Validates the updated configuration.
 ///
+/// Paths associated with an agent's ATK project setup.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct AtkPaths {
+    /// Path to the teams-app project directory.
+    pub project_dir: PathBuf,
+    /// Path to the installed ATK binary inside `<hub>/tools/m365agentstoolkit`.
+    pub atk_bin: PathBuf,
+    /// Path to the built zip package for Teams deployment.
+    pub package_zip: PathBuf,
+    /// Path to the `.env.residuum` environment file.
+    pub env_file: PathBuf,
+}
+
+/// Resolve standard ATK paths for an agent.
+#[must_use]
+pub fn resolve_atk_paths(residuum_root: &Path, agent_name: &str) -> AtkPaths {
+    let hub_path = hub_dir(residuum_root);
+    let agent_path = agent_dir(residuum_root, agent_name);
+    let project_dir = agent_path.join("teams-app");
+    let atk_bin_name = if cfg!(windows) { "atk.cmd" } else { "atk" };
+    let atk_bin = hub_path
+        .join("tools")
+        .join("m365agentstoolkit")
+        .join("node_modules")
+        .join(".bin")
+        .join(atk_bin_name);
+    let package_zip = project_dir
+        .join("appPackage")
+        .join("build")
+        .join("appPackage.residuum.zip");
+    let env_file = project_dir.join("env").join(".env.residuum");
+    AtkPaths {
+        project_dir,
+        atk_bin,
+        package_zip,
+        env_file,
+    }
+}
+
+/// Query the local gateway to derive the cloud Teams messaging endpoint for `agent_name`.
+///
+/// Returns `Some(https://<origin>/teams/<instance>/<agent_name>)` if the hub is running and connected
+/// to Residuum Cloud, or `None` if unreachable or not connected.
+pub async fn derive_cloud_teams_endpoint(residuum_root: &Path, agent_name: &str) -> Option<String> {
+    let hub_path = hub_dir(residuum_root);
+    let gateway_addr = HubConfig::load_at_for_start(&hub_path, residuum_root).map_or_else(
+        |_| crate::config::GatewayConfig::default().addr(),
+        |hub| hub.gateway.addr(),
+    );
+    derive_cloud_teams_endpoint_from_addr(&gateway_addr, agent_name).await
+}
+
+/// Query a specific gateway address to derive the cloud Teams messaging endpoint.
+pub async fn derive_cloud_teams_endpoint_from_addr(
+    gateway_addr: &str,
+    agent_name: &str,
+) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct CloudStatus {
+        origin: Option<String>,
+        instance: Option<String>,
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .ok()?;
+    let url = format!("http://{gateway_addr}/api/hub/cloud/status");
+    let resp = client.get(&url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let status: CloudStatus = resp.json().await.ok()?;
+    let origin = status.origin?.trim().trim_end_matches('/').to_string();
+    let instance = status.instance?.trim().to_string();
+    if origin.is_empty() || instance.is_empty() {
+        return None;
+    }
+    Some(format!("{origin}/teams/{instance}/{agent_name}"))
+}
+
+/// Options for scaffolding an ATK project for an agent.
+#[derive(Debug, Clone)]
+pub struct AtkScaffoldOptions {
+    /// Agent name.
+    pub agent_name: String,
+    /// Bot messaging endpoint URL.
+    pub endpoint: String,
+    /// Custom project directory (defaults to `<agent>/teams-app`).
+    pub project_dir: Option<PathBuf>,
+    /// Allow overwriting existing files.
+    pub force: bool,
+    /// Bot display name (defaults to `agent_name`).
+    pub bot_name: Option<String>,
+    /// Developer name for manifest (defaults to "Residuum").
+    pub developer_name: Option<String>,
+    /// Developer website URL for manifest.
+    pub developer_url: Option<String>,
+    /// Privacy URL for manifest.
+    pub privacy_url: Option<String>,
+    /// Terms of use URL for manifest.
+    pub terms_url: Option<String>,
+    /// Short description for manifest.
+    pub short_description: Option<String>,
+    /// Long description for manifest.
+    pub long_description: Option<String>,
+    /// Optional path to custom 192x192 PNG color icon.
+    pub color_icon: Option<PathBuf>,
+    /// Optional path to custom 32x32 PNG outline icon.
+    pub outline_icon: Option<PathBuf>,
+}
+
+/// Result of scaffolding an ATK project.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ScaffoldAtkResult {
+    /// Absolute path to the scaffolded project directory.
+    pub project_dir: PathBuf,
+    /// Absolute path to the ATK CLI binary.
+    pub atk_bin: PathBuf,
+    /// Absolute path to the package zip file once built.
+    pub package_zip: PathBuf,
+    /// Absolute path to the written `.env.residuum` file.
+    pub env_file: PathBuf,
+    /// Bot endpoint configured in `.env.residuum`.
+    pub endpoint: String,
+}
+
+/// Scaffold a Microsoft 365 Agents Toolkit project for an agent.
+///
+/// Copies templates from `<team>/skills/teams-setup/templates/` falling back to embedded templates,
+/// generates `.env.residuum` with properly escaped values, validates PNG icons, and verifies
+/// that existing files are not overwritten unless `force` is set.
+///
+/// # Errors
+///
+async fn resolve_template_text(
+    team_path: &Path,
+    embedded: &str,
+    label: &str,
+) -> Result<String, FatalError> {
+    if team_path.is_file() {
+        tokio::fs::read_to_string(team_path)
+            .await
+            .map_err(|e| FatalError::Config(format!("failed to read template {label}: {e}")))
+    } else {
+        Ok(embedded.to_string())
+    }
+}
+
+async fn resolve_icon_bytes(
+    custom_icon: Option<&Path>,
+    team_path: &Path,
+    embedded: &[u8],
+    (w, h): (u32, u32),
+    label: &str,
+) -> Result<Vec<u8>, FatalError> {
+    if let Some(path) = custom_icon {
+        let bytes = tokio::fs::read(path).await.map_err(|e| {
+            FatalError::Config(format!(
+                "failed to read {label} from {}: {e}",
+                path.display()
+            ))
+        })?;
+        validate_png_dimensions(&bytes, w, h, label)?;
+        Ok(bytes)
+    } else if team_path.is_file() {
+        let bytes = tokio::fs::read(team_path)
+            .await
+            .map_err(|e| FatalError::Config(format!("failed to read template {label}: {e}")))?;
+        validate_png_dimensions(&bytes, w, h, label)?;
+        Ok(bytes)
+    } else {
+        validate_png_dimensions(embedded, w, h, label)?;
+        Ok(embedded.to_vec())
+    }
+}
+
+fn build_scaffold_env(options: &AtkScaffoldOptions) -> Result<String, FatalError> {
+    let bot_display = options.bot_name.as_deref().unwrap_or(&options.agent_name);
+    let dev_name = options.developer_name.as_deref().unwrap_or("Residuum");
+    let dev_url = options
+        .developer_url
+        .as_deref()
+        .unwrap_or("https://github.com/Grizzly-Endeavors/residuum");
+    let priv_url = options
+        .privacy_url
+        .as_deref()
+        .unwrap_or("https://github.com/Grizzly-Endeavors/residuum");
+    let terms_url = options
+        .terms_url
+        .as_deref()
+        .unwrap_or("https://github.com/Grizzly-Endeavors/residuum");
+    let short_desc = options
+        .short_description
+        .as_deref()
+        .unwrap_or("Residuum Agent in Microsoft Teams");
+    let long_desc = options
+        .long_description
+        .as_deref()
+        .unwrap_or("Personal AI agent gateway integration with Microsoft Teams");
+
+    let lines = [
+        "TEAMSFX_ENV=residuum".to_string(),
+        format!(
+            "BOT_DISPLAY_NAME={}",
+            format_dotenv_val("BOT_DISPLAY_NAME", bot_display)?
+        ),
+        format!(
+            "TEAMS_APP_NAME={}",
+            format_dotenv_val("TEAMS_APP_NAME", bot_display)?
+        ),
+        format!(
+            "BOT_ENDPOINT={}",
+            format_dotenv_val("BOT_ENDPOINT", &options.endpoint)?
+        ),
+        format!(
+            "DEVELOPER_NAME={}",
+            format_dotenv_val("DEVELOPER_NAME", dev_name)?
+        ),
+        format!(
+            "DEVELOPER_URL={}",
+            format_dotenv_val("DEVELOPER_URL", dev_url)?
+        ),
+        format!(
+            "PRIVACY_URL={}",
+            format_dotenv_val("PRIVACY_URL", priv_url)?
+        ),
+        format!("TERMS_URL={}", format_dotenv_val("TERMS_URL", terms_url)?),
+        format!(
+            "SHORT_DESCRIPTION={}",
+            format_dotenv_val("SHORT_DESCRIPTION", short_desc)?
+        ),
+        format!(
+            "LONG_DESCRIPTION={}",
+            format_dotenv_val("LONG_DESCRIPTION", long_desc)?
+        ),
+    ];
+    Ok(format!("{}\n", lines.join("\n")))
+}
+
+/// Scaffold a Microsoft 365 Agents Toolkit project for an agent.
+///
+/// Copies templates from `<team>/skills/teams-setup/templates/` falling back to embedded templates,
+/// generates `.env.residuum` with properly escaped values, validates PNG icons, and verifies
+/// that existing files are not overwritten unless `force` is set.
+///
+/// # Errors
+fn check_overwrite_safety(
+    project_dir: &Path,
+    target_files: &[PathBuf],
+    force: bool,
+) -> Result<(), FatalError> {
+    if force {
+        return Ok(());
+    }
+    let existing: Vec<_> = target_files.iter().filter(|p| p.exists()).collect();
+    if existing.is_empty() {
+        return Ok(());
+    }
+    let names = existing
+        .iter()
+        .map(|p| p.file_name().unwrap_or_default().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(FatalError::Config(format!(
+        "refusing to overwrite existing ATK project files in '{}' ({names}); pass --force to overwrite",
+        project_dir.display()
+    )))
+}
+
+struct ScaffoldPayload<'a> {
+    m365_content: &'a str,
+    manifest_content: &'a str,
+    color_bytes: &'a [u8],
+    outline_bytes: &'a [u8],
+    env_content: &'a str,
+}
+
+async fn write_scaffold_project(
+    project_dir: &Path,
+    payload: ScaffoldPayload<'_>,
+) -> Result<(), FatalError> {
+    let app_package_dir = project_dir.join("appPackage");
+    let env_dir = project_dir.join("env");
+
+    tokio::fs::create_dir_all(&app_package_dir)
+        .await
+        .map_err(|e| {
+            FatalError::Config(format!(
+                "failed to create directory {}: {e}",
+                app_package_dir.display()
+            ))
+        })?;
+    tokio::fs::create_dir_all(&env_dir).await.map_err(|e| {
+        FatalError::Config(format!(
+            "failed to create directory {}: {e}",
+            env_dir.display()
+        ))
+    })?;
+
+    crate::util::fs::atomic_write(&project_dir.join("m365agents.yml"), payload.m365_content)
+        .await?;
+    crate::util::fs::atomic_write(
+        &app_package_dir.join("manifest.json"),
+        payload.manifest_content,
+    )
+    .await?;
+    tokio::fs::write(app_package_dir.join("color.png"), payload.color_bytes)
+        .await
+        .map_err(|e| FatalError::Config(format!("failed to write color.png: {e}")))?;
+    tokio::fs::write(app_package_dir.join("outline.png"), payload.outline_bytes)
+        .await
+        .map_err(|e| FatalError::Config(format!("failed to write outline.png: {e}")))?;
+    crate::util::fs::atomic_write(&env_dir.join(".env.residuum"), payload.env_content).await?;
+    Ok(())
+}
+
+/// Scaffold a Microsoft 365 Agents Toolkit project for an agent.
+///
+/// Copies templates from `<team>/skills/teams-setup/templates/` falling back to embedded templates,
+/// generates `.env.residuum` with properly escaped values, validates PNG icons, and verifies
+/// that existing files are not overwritten unless `force` is set.
+///
+/// # Errors
+///
+/// Returns [`FatalError::Config`] if the agent name is invalid, the agent directory does not exist,
+/// files already exist without `force`, icon dimensions are invalid, or writes fail.
+pub async fn scaffold_atk_project(
+    residuum_root: &Path,
+    options: &AtkScaffoldOptions,
+) -> Result<ScaffoldAtkResult, FatalError> {
+    crate::config::paths::validate_agent_name(&options.agent_name).map_err(FatalError::Config)?;
+
+    let agent_path = agent_dir(residuum_root, &options.agent_name);
+    if !agent_path.exists() {
+        return Err(FatalError::Config(format!(
+            "agent directory '{}' does not exist",
+            agent_path.display()
+        )));
+    }
+
+    let project_dir = options
+        .project_dir
+        .clone()
+        .unwrap_or_else(|| agent_path.join("teams-app"));
+
+    check_overwrite_safety(
+        &project_dir,
+        &[
+            project_dir.join("m365agents.yml"),
+            project_dir.join("appPackage/manifest.json"),
+            project_dir.join("appPackage/color.png"),
+            project_dir.join("appPackage/outline.png"),
+            project_dir.join("env/.env.residuum"),
+        ],
+        options.force,
+    )?;
+
+    let team_templates = team_dir(residuum_root)
+        .join("skills")
+        .join("teams-setup")
+        .join("templates");
+
+    let m365_content = resolve_template_text(
+        &team_templates.join("m365agents.yml"),
+        TEAMS_SETUP_M365AGENTS_YML,
+        "m365agents.yml",
+    )
+    .await?;
+
+    let manifest_content = resolve_template_text(
+        &team_templates.join("appPackage").join("manifest.json"),
+        TEAMS_SETUP_MANIFEST_JSON,
+        "manifest.json",
+    )
+    .await?;
+
+    let color_bytes = resolve_icon_bytes(
+        options.color_icon.as_deref(),
+        &team_templates.join("appPackage").join("color.png"),
+        TEAMS_SETUP_COLOR_PNG,
+        (192, 192),
+        "color icon",
+    )
+    .await?;
+
+    let outline_bytes = resolve_icon_bytes(
+        options.outline_icon.as_deref(),
+        &team_templates.join("appPackage").join("outline.png"),
+        TEAMS_SETUP_OUTLINE_PNG,
+        (32, 32),
+        "outline icon",
+    )
+    .await?;
+
+    let env_content = build_scaffold_env(options)?;
+
+    write_scaffold_project(
+        &project_dir,
+        ScaffoldPayload {
+            m365_content: &m365_content,
+            manifest_content: &manifest_content,
+            color_bytes: &color_bytes,
+            outline_bytes: &outline_bytes,
+            env_content: &env_content,
+        },
+    )
+    .await?;
+
+    let paths = resolve_atk_paths(residuum_root, &options.agent_name);
+    let package_zip = project_dir
+        .join("appPackage")
+        .join("build")
+        .join("appPackage.residuum.zip");
+
+    Ok(ScaffoldAtkResult {
+        project_dir: project_dir.clone(),
+        atk_bin: paths.atk_bin,
+        package_zip,
+        env_file: project_dir.join("env/.env.residuum"),
+        endpoint: options.endpoint.clone(),
+    })
+}
+
+/// Import an ATK project into Residuum:
+///
+/// 1. Reads `.env.residuum` and `.env.residuum.user` from `project_dir`.
+/// 2. Decrypts `SECRET_BOT_PASSWORD`.
+/// 3. Validates patched configuration against `HubConfig`.
+/// 4. Stores `teams` secret in `SecretStore` at `hub_dir`.
+/// 5. Updates `[teams]` in the agent's `config/config.toml` through a checkpointed write.
+///
 /// # Errors
 ///
 /// Returns [`FatalError::Config`] if the agent directory does not exist, the ATK env
-/// files cannot be read or decrypted, the patched config is invalid, or writing fails.
+/// files cannot be read or decrypted, the hub config cannot be loaded, the patched
+/// config fails validation, or writing fails.
 pub async fn import_atk_project(
     project_dir: &Path,
     agent_name: &str,
@@ -416,23 +823,31 @@ pub async fn import_atk_project(
         )));
     }
 
-    let project_env = read_atk_project_env(project_dir)?;
-    let checkpoints = CheckpointEngine::open_for_cli(&hub_path);
+    // Determine config path: prefer canonical <agent>/config/config.toml, fallback to <agent>/config.toml
+    let canonical_config = agent_path.join("config").join("config.toml");
+    let legacy_config = agent_path.join("config.toml");
+    let config_path = if canonical_config.exists() {
+        canonical_config
+    } else if legacy_config.exists() {
+        legacy_config
+    } else if agent_path.join("config").is_dir() {
+        canonical_config
+    } else {
+        legacy_config
+    };
 
-    // 1. Checkpoint hub config and save secret in SecretStore
-    if let Some(ref engine) = checkpoints {
-        engine
-            .checkpoint_config_before_write(CheckpointContext::system(
-                CheckpointTrigger::PreConfigWrite,
-                format!("import Teams secret for agent '{agent_name}'"),
-            ))
-            .await;
-    }
-    let mut secret_store = SecretStore::load(&hub_path)?;
-    secret_store.set("teams", &project_env.bot_password, &hub_path)?;
+    let project_env = read_atk_project_env(project_dir)?;
+
+    // 1. Load hub config for validation; do not skip validation if loading fails!
+    let hub = HubConfig::load_at(&hub_path).map_err(|e| {
+        tracing::error!(hub_path = %hub_path.display(), error = %e, "failed to load hub configuration for validation");
+        FatalError::Config(format!(
+            "failed to load hub configuration at {}: {e}",
+            hub_path.display()
+        ))
+    })?;
 
     // 2. Read agent config.toml and apply patch
-    let config_path = agent_path.join("config.toml");
     let existing_toml = match tokio::fs::read_to_string(&config_path).await {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -458,15 +873,32 @@ pub async fn import_atk_project(
     let patched_toml = crate::config::patch::apply_patch(&existing_toml, patch_map, "config.toml")
         .map_err(FatalError::Config)?;
 
-    // 3. Validate patched config against hub config if loadable
-    if let Ok(hub) = HubConfig::load_at(&hub_path) {
-        Config::validate_agent_toml(&patched_toml, &agent_path, agent_name, &hub)
-            .map_err(FatalError::Config)?;
-    }
+    // 3. Validate patched config BEFORE saving secret or modifying disk
+    Config::validate_agent_toml(&patched_toml, &agent_path, agent_name, &hub)
+        .map_err(FatalError::Config)?;
 
-    // 4. Checkpoint agent config repo before writing
+    let checkpoints = CheckpointEngine::open_for_cli(&hub_path);
+
+    // 4. Checkpoint hub config and save secret in SecretStore
     if let Some(ref engine) = checkpoints {
-        let _ = engine
+        let hub_cp = engine
+            .checkpoint_config_id_before_write(CheckpointContext::system(
+                CheckpointTrigger::PreConfigWrite,
+                format!("import Teams secret for agent '{agent_name}'"),
+            ))
+            .await;
+        if hub_cp.is_none() {
+            tracing::warn!(agent = %agent_name, "no hub config checkpoint recorded before saving Teams secret");
+        } else {
+            tracing::debug!(agent = %agent_name, checkpoint_id = ?hub_cp, "checkpointed hub config before saving Teams secret");
+        }
+    }
+    let mut secret_store = SecretStore::load(&hub_path)?;
+    secret_store.set("teams", &project_env.bot_password, &hub_path)?;
+
+    // 5. Checkpoint agent config repo before writing
+    if let Some(ref engine) = checkpoints {
+        let config_id = engine
             .checkpoint_config_kind_id_before_write(
                 RepoKind::AgentConfig,
                 CheckpointContext::system(
@@ -475,9 +907,20 @@ pub async fn import_atk_project(
                 ),
             )
             .await;
+        if config_id.is_none() {
+            tracing::warn!(agent = %agent_name, "no agent config checkpoint recorded before writing Teams configuration");
+        } else {
+            tracing::debug!(agent = %agent_name, checkpoint_id = ?config_id, "checkpointed agent config before writing Teams configuration");
+        }
     }
 
-    crate::util::fs::atomic_write(&config_path, &patched_toml).await?;
+    // 6. Write patched config to disk
+    if let Err(e) = crate::util::fs::atomic_write(&config_path, &patched_toml).await {
+        return Err(FatalError::Config(format!(
+            "failed to write {}: {e}. Secret 'teams' was stored in hub SecretStore, but agent config was not updated.",
+            config_path.display()
+        )));
+    }
 
     Ok(ImportAtkResult {
         bot_id: project_env.bot_id,
@@ -697,5 +1140,299 @@ mod tests {
         assert!(patched.contains("tenant_id = \"tenant-guid-777\""));
         assert!(patched.contains("app_password = \"secret:teams\""));
         assert!(patched.contains("name = \"test-agent\""));
+    }
+
+    #[test]
+    fn format_dotenv_val_escaping_and_newline_rejection() {
+        assert_eq!(
+            format_dotenv_val("TEST_KEY", "simple").unwrap(),
+            "\"simple\""
+        );
+        assert_eq!(
+            format_dotenv_val("TEST_KEY", "hello \"world\"").unwrap(),
+            "\"hello \\\"world\\\"\""
+        );
+        assert_eq!(
+            format_dotenv_val("TEST_KEY", "path\\to\\dir").unwrap(),
+            "\"path\\\\to\\\\dir\""
+        );
+
+        let err_nl = format_dotenv_val("TEST_KEY", "hello\nworld").unwrap_err();
+        assert!(err_nl.to_string().contains("contains newline characters"));
+
+        let err_cr = format_dotenv_val("TEST_KEY", "hello\rworld").unwrap_err();
+        assert!(err_cr.to_string().contains("contains newline characters"));
+    }
+
+    #[test]
+    fn validate_png_dimensions_checks() {
+        // Embedded PNGs should pass
+        validate_png_dimensions(TEAMS_SETUP_COLOR_PNG, 192, 192, "color icon").unwrap();
+        validate_png_dimensions(TEAMS_SETUP_OUTLINE_PNG, 32, 32, "outline icon").unwrap();
+
+        // Mismatched dimensions fail
+        let err_dim =
+            validate_png_dimensions(TEAMS_SETUP_COLOR_PNG, 32, 32, "color icon").unwrap_err();
+        assert!(
+            err_dim
+                .to_string()
+                .contains("dimensions must be 32x32, found 192x192")
+        );
+
+        // Invalid header fails
+        let err_hdr =
+            validate_png_dimensions(b"not a png image at all", 192, 192, "bad icon").unwrap_err();
+        assert!(err_hdr.to_string().contains("invalid header"));
+
+        // Short slice fails
+        let err_short =
+            validate_png_dimensions(b"\x89PNG\r\n\x1a\n", 192, 192, "short icon").unwrap_err();
+        assert!(err_short.to_string().contains("invalid header"));
+    }
+
+    #[tokio::test]
+    async fn scaffold_atk_project_basic_and_overwrite_refusal() {
+        let temp = tempfile::tempdir().unwrap();
+        let residuum_root = temp.path().to_path_buf();
+        let agent_path = residuum_root.join("scout");
+        tokio::fs::create_dir_all(&agent_path).await.unwrap();
+
+        let options = AtkScaffoldOptions {
+            agent_name: "scout".to_string(),
+            endpoint: "https://relay.example.com/teams/inst1/scout".to_string(),
+            project_dir: None,
+            force: false,
+            bot_name: Some("Scout Assistant".to_string()),
+            developer_name: Some("Grizzly Endeavors".to_string()),
+            developer_url: None,
+            privacy_url: None,
+            terms_url: None,
+            short_description: Some("Scout bot".to_string()),
+            long_description: None,
+            color_icon: None,
+            outline_icon: None,
+        };
+
+        // First scaffold succeeds
+        let res = scaffold_atk_project(&residuum_root, &options)
+            .await
+            .unwrap();
+        assert_eq!(res.project_dir, agent_path.join("teams-app"));
+        assert!(res.project_dir.join("m365agents.yml").exists());
+        assert!(res.project_dir.join("appPackage/manifest.json").exists());
+        assert!(res.project_dir.join("appPackage/color.png").exists());
+        assert!(res.project_dir.join("appPackage/outline.png").exists());
+        assert!(res.project_dir.join("env/.env.residuum").exists());
+
+        // Verify .env.residuum content
+        let env_content = tokio::fs::read_to_string(res.project_dir.join("env/.env.residuum"))
+            .await
+            .unwrap();
+        assert!(env_content.contains("BOT_DISPLAY_NAME=\"Scout Assistant\""));
+        assert!(
+            env_content.contains("BOT_ENDPOINT=\"https://relay.example.com/teams/inst1/scout\"")
+        );
+        assert!(env_content.contains("DEVELOPER_NAME=\"Grizzly Endeavors\""));
+
+        // Overwrite without force fails
+        let err = scaffold_atk_project(&residuum_root, &options)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("refusing to overwrite"));
+
+        // Overwrite with force succeeds
+        let mut force_opts = options.clone();
+        force_opts.force = true;
+        force_opts.bot_name = Some("Updated Scout".to_string());
+        let res2 = scaffold_atk_project(&residuum_root, &force_opts)
+            .await
+            .unwrap();
+        let env2 = tokio::fs::read_to_string(res2.project_dir.join("env/.env.residuum"))
+            .await
+            .unwrap();
+        assert!(env2.contains("BOT_DISPLAY_NAME=\"Updated Scout\""));
+    }
+
+    #[tokio::test]
+    async fn scaffold_atk_project_custom_icon_validation() {
+        let temp = tempfile::tempdir().unwrap();
+        let residuum_root = temp.path().to_path_buf();
+        let agent_path = residuum_root.join("scout");
+        tokio::fs::create_dir_all(&agent_path).await.unwrap();
+
+        // Write bad icon file
+        let bad_icon = temp.path().join("bad.png");
+        tokio::fs::write(&bad_icon, b"not a valid png")
+            .await
+            .unwrap();
+
+        let options = AtkScaffoldOptions {
+            agent_name: "scout".to_string(),
+            endpoint: "https://example.com/teams".to_string(),
+            project_dir: None,
+            force: false,
+            bot_name: None,
+            developer_name: None,
+            developer_url: None,
+            privacy_url: None,
+            terms_url: None,
+            short_description: None,
+            long_description: None,
+            color_icon: Some(bad_icon),
+            outline_icon: None,
+        };
+
+        let err = scaffold_atk_project(&residuum_root, &options)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("invalid color icon"));
+    }
+
+    #[tokio::test]
+    async fn scaffold_atk_project_uses_team_template_override() {
+        let temp = tempfile::tempdir().unwrap();
+        let residuum_root = temp.path().to_path_buf();
+        let agent_path = residuum_root.join("scout");
+        tokio::fs::create_dir_all(&agent_path).await.unwrap();
+
+        // Create team template override for m365agents.yml
+        let team_templates = residuum_root.join("team/skills/teams-setup/templates");
+        tokio::fs::create_dir_all(&team_templates).await.unwrap();
+        tokio::fs::write(
+            team_templates.join("m365agents.yml"),
+            "# Custom team template override\nversion: v1.13\n",
+        )
+        .await
+        .unwrap();
+
+        let options = AtkScaffoldOptions {
+            agent_name: "scout".to_string(),
+            endpoint: "https://example.com/teams".to_string(),
+            project_dir: None,
+            force: false,
+            bot_name: None,
+            developer_name: None,
+            developer_url: None,
+            privacy_url: None,
+            terms_url: None,
+            short_description: None,
+            long_description: None,
+            color_icon: None,
+            outline_icon: None,
+        };
+
+        let res = scaffold_atk_project(&residuum_root, &options)
+            .await
+            .unwrap();
+        let m365_content = tokio::fs::read_to_string(res.project_dir.join("m365agents.yml"))
+            .await
+            .unwrap();
+        assert!(m365_content.contains("# Custom team template override"));
+    }
+
+    #[tokio::test]
+    async fn import_atk_project_uses_canonical_config_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let residuum_root = temp.path().to_path_buf();
+        let hub_path = residuum_root.join("hub");
+        let agent_path = residuum_root.join("scout");
+        let agent_config_dir = agent_path.join("config");
+
+        tokio::fs::create_dir_all(&hub_path).await.unwrap();
+        tokio::fs::create_dir_all(&agent_config_dir).await.unwrap();
+
+        tokio::fs::write(hub_path.join("config.toml"), "timezone = \"UTC\"\n")
+            .await
+            .unwrap();
+        tokio::fs::write(
+            agent_config_dir.join("config.toml"),
+            "[agent]\nname = \"scout\"\n",
+        )
+        .await
+        .unwrap();
+
+        let project_dir = agent_path.join("teams-app");
+        let env_dir = project_dir.join("env");
+        tokio::fs::create_dir_all(&env_dir).await.unwrap();
+
+        tokio::fs::write(
+            env_dir.join(".env.residuum"),
+            "BOT_ID=bot-id-abc\nTEAMS_APP_TENANT_ID=tenant-id-def\n",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            env_dir.join(".env.residuum.user"),
+            format!("SECRET_BOT_PASSWORD={FIXTURE_GLOBAL_CIPHERTEXT}\n"),
+        )
+        .await
+        .unwrap();
+
+        let res = import_atk_project(&project_dir, "scout", &residuum_root)
+            .await
+            .unwrap();
+        assert_eq!(res.bot_id, "bot-id-abc");
+
+        // Canonical config/config.toml was patched
+        let patched = tokio::fs::read_to_string(agent_config_dir.join("config.toml"))
+            .await
+            .unwrap();
+        assert!(patched.contains("[teams]"));
+        assert!(patched.contains("app_id = \"bot-id-abc\""));
+    }
+
+    #[tokio::test]
+    async fn import_atk_project_validates_before_storing_secret() {
+        let temp = tempfile::tempdir().unwrap();
+        let residuum_root = temp.path().to_path_buf();
+        let hub_path = residuum_root.join("hub");
+        let agent_path = residuum_root.join("scout");
+
+        tokio::fs::create_dir_all(&hub_path).await.unwrap();
+        tokio::fs::create_dir_all(&agent_path).await.unwrap();
+
+        // Hub config has missing/invalid timezone so agent config validation will fail
+        // or agent config has an invalid setting that fails Config::validate_agent_toml
+        tokio::fs::write(hub_path.join("config.toml"), "timezone = \"UTC\"\n")
+            .await
+            .unwrap();
+        // An invalid agent config toml (invalid type for timeout_secs: string instead of integer)
+        tokio::fs::write(
+            agent_path.join("config.toml"),
+            "timeout_secs = \"not-a-number\"\n",
+        )
+        .await
+        .unwrap();
+
+        let project_dir = agent_path.join("teams-app");
+        let env_dir = project_dir.join("env");
+        tokio::fs::create_dir_all(&env_dir).await.unwrap();
+
+        tokio::fs::write(
+            env_dir.join(".env.residuum"),
+            "BOT_ID=bot-id-abc\nTEAMS_APP_TENANT_ID=tenant-id-def\n",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            env_dir.join(".env.residuum.user"),
+            format!("SECRET_BOT_PASSWORD={FIXTURE_GLOBAL_CIPHERTEXT}\n"),
+        )
+        .await
+        .unwrap();
+
+        // Import should fail on config validation
+        let err = import_atk_project(&project_dir, "scout", &residuum_root)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("invalid")
+                || err.to_string().contains("expected a string")
+                || err.to_string().contains("data did not match")
+        );
+
+        // Crucial check: SecretStore was NOT populated because validation failed FIRST!
+        let store = SecretStore::load(&hub_path).unwrap();
+        assert_eq!(store.get("teams"), None);
     }
 }
