@@ -22,6 +22,12 @@ const POLL_INTERVAL_MS = 3000;
 /** How long after the user starts signing in on the relay's page the section keeps looking for the result. */
 const EXPECT_WINDOW_MS = 120_000;
 
+/** The messaging endpoint Microsoft posts Teams activities to for one agent. */
+export function teamsMessagingEndpoint(origin: string, instance: string, agent: string): string {
+  const base = origin.endsWith("/") ? origin.slice(0, -1) : origin;
+  return `${base}/teams/${instance}/${agent}`;
+}
+
 /** The relay's sign-in page for a gateway, and the host it is on. */
 export interface ConnectTarget {
   url: string;

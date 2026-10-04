@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { connectTarget, phaseOf } from "./cloud.svelte";
+import { connectTarget, phaseOf, teamsMessagingEndpoint } from "./cloud.svelte";
 import type { CloudStatusResponse } from "./types";
 
 function status(overrides: Partial<CloudStatusResponse> = {}): CloudStatusResponse {
@@ -12,6 +12,17 @@ function status(overrides: Partial<CloudStatusResponse> = {}): CloudStatusRespon
     ...overrides,
   };
 }
+
+describe("teamsMessagingEndpoint", () => {
+  it("builds the address pasted into the Teams developer portal", () => {
+    expect(teamsMessagingEndpoint("https://bear.agent-residuum.com", "laptop", "scout")).toBe(
+      "https://bear.agent-residuum.com/teams/laptop/scout",
+    );
+    expect(teamsMessagingEndpoint("https://bear.agent-residuum.com/", "laptop", "scout")).toBe(
+      "https://bear.agent-residuum.com/teams/laptop/scout",
+    );
+  });
+});
 
 describe("connectTarget", () => {
   it("signs in at Residuum Cloud's relay when no relay is set", () => {

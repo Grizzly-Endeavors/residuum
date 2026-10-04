@@ -203,11 +203,13 @@ impl ChannelHarness {
             let a2a_client = forward_a2a::forwarding_client().unwrap();
             let (status_tx, _status_rx) = watch::channel(TunnelStatus::Disconnected);
             let mut read = futures_util::stream::poll_fn(move |cx| from_relay_rx.poll_recv(cx));
+            let (_teams_tx, teams_ports) = watch::channel(BTreeMap::new());
             run_tunnel_loop(
                 LoopContext {
                     clients: TunnelClients {
                         client: &client,
                         a2a_client: &a2a_client,
+                        teams_ports: &teams_ports,
                     },
                     targets,
                     keepalive_timeout: Duration::from_secs(60),

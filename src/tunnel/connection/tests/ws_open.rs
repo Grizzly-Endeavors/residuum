@@ -163,9 +163,11 @@ impl WsHarness {
     async fn send_open(&mut self, frame: TunnelFrame) -> Result<mpsc::Sender<String>, String> {
         let client = forward_http::forwarding_client().unwrap();
         let a2a_client = forward_a2a::forwarding_client().unwrap();
+        let (_teams_tx, teams_ports) = watch::channel(BTreeMap::new());
         let clients = TunnelClients {
             client: &client,
             a2a_client: &a2a_client,
+            teams_ports: &teams_ports,
         };
         let mut local_ws_channels = HashMap::new();
         let mut streams = HashMap::new();

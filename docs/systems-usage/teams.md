@@ -4,9 +4,11 @@ The Teams interface lets the agent chat in Microsoft Teams: in a direct message 
 
 ## How messages reach Residuum
 
-Teams has no outbound connection mode like Discord's gateway or Telegram's long polling: Microsoft's Bot Connector delivers every message as an HTTPS `POST` of a Bot Framework activity to the bot's public messaging endpoint. Residuum therefore runs a small dedicated listener for Teams on `[teams] port` (default `7701`, bound on the gateway's `bind` address) serving a single route, `POST /api/teams/messages`.
+Teams has no outbound connection mode like Discord's gateway or Telegram's long polling: Microsoft's Bot Connector delivers every message as an HTTPS `POST` of a Bot Framework activity to the bot's public messaging endpoint. Residuum runs a small dedicated listener for Teams on `[teams] port` (default `7701`, bound on the gateway's `bind` address) serving a single route, `POST /api/teams/messages`.
 
-That listener is deliberately separate from the gateway port. The gateway serves the config and secrets API without authentication and is meant to stay on loopback; a public tunnel pointed at the Teams port exposes only the Teams route. Making the port reachable from the internet is up to the user (Tailscale Funnel, a Cloudflare named tunnel, or any reverse proxy with a trusted certificate — Microsoft requires HTTPS on 443 with a publicly trusted certificate).
+With Residuum Cloud connected, that public address is on the relay: `https://{user}.agent-residuum.com/teams/{instance}/{agent}`. Settings → Connections → Microsoft Teams shows it while the tunnel is up. The relay accepts only that `POST` and forwards it, bearer token included, through the tunnel to this agent's listener. It does not check the token. Replies still go from the hub straight to Microsoft. While the tunnel is down, or the agent is configured for Teams but not listening, the relay answers `503` so Microsoft retries. An agent with no Teams configuration answers `404`. A hub that hasn't advertised the `teams` capability gets a response telling you to update Residuum.
+
+The listener stays separate from the gateway port, and a tunnel of your own pointed at the Teams port still works. The gateway serves the config and secrets API without authentication and is meant to stay on loopback; a tunnel pointed at the Teams port exposes only the Teams route. Microsoft requires HTTPS on 443 with a publicly trusted certificate, which the relay already has. Tailscale Funnel, a Cloudflare named tunnel, or any reverse proxy with a trusted certificate are the other way to reach the port.
 
 Every request is authenticated before anything in it is trusted:
 

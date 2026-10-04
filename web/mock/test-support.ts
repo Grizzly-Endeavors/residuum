@@ -53,6 +53,7 @@ export function createStubHub(env: MockEnv = createMockEnv()): MockHub {
       autostart: agent.autostart,
       role: agent.role,
       a2a_visibility: agent.visibility,
+      teams_configured: false,
     }),
     listing: () => mockListing(agents.values()),
     broadcast: () => {},

@@ -479,6 +479,7 @@ describe("hub socket", () => {
       autostart: true,
       role: "Has a broken model config",
       a2a_visibility: "private",
+      teams_configured: false,
     });
   });
 

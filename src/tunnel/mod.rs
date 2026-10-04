@@ -94,10 +94,17 @@ const A2A_CAPABILITY: &str = "a2a";
 /// Always advertised.
 const AGENTS_CAPABILITY: &str = "agents";
 
+/// Capability: this hub delivers a `teams`-surface request to the named
+/// agent's Teams listener. Always advertised: Teams is configured per agent,
+/// and that flag travels in the agent list, which changes without reconnecting
+/// the tunnel. A hub that predates it is never sent the surface.
+const TEAMS_CAPABILITY: &str = "teams";
+
 /// Build the `x-residuum-capabilities` header value: always
-/// `workbench-surface,workbench-sockets,http-streaming,agents`, plus `a2a`
-/// when the hub's A2A listener is enabled. Each agent's visibility travels in
-/// its [`protocol::AgentInfo`], not in a capability.
+/// `workbench-surface,workbench-sockets,http-streaming,agents,teams`, plus
+/// `a2a` when the hub's A2A listener is enabled. Each agent's visibility and
+/// Teams configuration travel in its [`protocol::AgentInfo`], not in a
+/// capability.
 #[must_use]
 fn build_capabilities_header(a2a_enabled: bool) -> String {
     let mut capabilities = vec![
@@ -105,6 +112,7 @@ fn build_capabilities_header(a2a_enabled: bool) -> String {
         WORKBENCH_SOCKETS_CAPABILITY,
         HTTP_STREAMING_CAPABILITY,
         AGENTS_CAPABILITY,
+        TEAMS_CAPABILITY,
     ];
     if a2a_enabled {
         capabilities.push(A2A_CAPABILITY);
@@ -235,7 +243,7 @@ mod tests {
     fn capabilities_header_without_a2a() {
         assert_eq!(
             build_capabilities_header(false),
-            "workbench-surface,workbench-sockets,http-streaming,agents"
+            "workbench-surface,workbench-sockets,http-streaming,agents,teams"
         );
     }
 
@@ -243,7 +251,7 @@ mod tests {
     fn capabilities_header_with_a2a() {
         assert_eq!(
             build_capabilities_header(true),
-            "workbench-surface,workbench-sockets,http-streaming,agents,a2a"
+            "workbench-surface,workbench-sockets,http-streaming,agents,teams,a2a"
         );
     }
 

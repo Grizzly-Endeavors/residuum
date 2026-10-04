@@ -5,7 +5,7 @@ This walks through putting your agent in Microsoft Teams: a bot you can DM, and 
 You will need:
 
 - A Microsoft 365 work or school account whose Teams lets you upload custom apps. Check in Teams under **Apps → Manage your apps**: if you see **Upload an app**, you're set. If not, your IT admin has to allow custom app upload for you or approve the app.
-- A way to give this machine a public HTTPS address. Microsoft delivers every Teams message to your bot over the internet; there is no mode where the bot connects out instead. Step 3 covers the options.
+- Residuum Cloud connected, which gives the bot its public address. Microsoft delivers every Teams message to your bot over the internet; there is no mode where the bot connects out instead. A tunnel of your own to the Teams port works instead, and step 3 covers both.
 
 ## 1. Register the bot
 
@@ -32,9 +32,11 @@ app_password = "secret:teams"
 
 Saving reloads the config. The log shows `teams interface listening` with the address — by default port `7701` on the same address as the gateway — and the **Microsoft Teams** group in **Connections** reads **Connected** while the agent is running.
 
-## 3. Make the Teams port reachable
+## 3. Set the messaging endpoint
 
-Point a tunnel at the **Teams port (7701)** only (the **Listener port** in the same **Microsoft Teams** group in **Connections**). Never expose the gateway port (7700): it serves the configuration and secrets API without a login. Everything that reaches port 7701 has to carry a valid Microsoft-signed token, or it's rejected.
+With Residuum Cloud connected, **Settings → (agent) → Connections → Microsoft Teams** shows a **Messaging endpoint** like `https://<you>.agent-residuum.com/teams/<instance>/<agent>`. Copy it. In the Developer Portal bot page, set **Endpoint address** to that URL and save. The relay delivers messages to this agent while the cloud connection is up. Teams messages can't arrive through it while Residuum Cloud is disconnected.
+
+To reach the bot without Residuum Cloud, point a tunnel at the **Teams port (7701)** only (the **Listener port** in the same **Microsoft Teams** group). Never expose the gateway port (7700): it serves the configuration and secrets API without a login. Everything that reaches port 7701 has to carry a valid Microsoft-signed token, or it's rejected. The endpoint is then `https://…/api/teams/messages`.
 
 **Tailscale Funnel** (free, stable address, no domain needed):
 
@@ -48,7 +50,7 @@ Your messaging endpoint is `https://<machine>.<tailnet>.ts.net/api/teams/message
 
 **Microsoft Dev Tunnels** work for trying things out (`devtunnel host -p 7701 --allow-anonymous`), but Microsoft labels them not for production, and an unused tunnel expires after 30 days.
 
-Back in the Developer Portal bot page, set **Endpoint address** to your `https://…/api/teams/messages` URL and save.
+Set **Endpoint address** to that `https://…/api/teams/messages` URL and save.
 
 ## 4. Create the Teams app
 

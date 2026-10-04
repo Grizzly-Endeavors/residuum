@@ -305,6 +305,10 @@ export interface CloudStatusResponse {
   enabled: boolean;
   /** True when this response was served to a browser viewing the gateway through the tunnel. */
   viewed_via_tunnel: boolean;
+  /** Public origin of this hub through the relay, while connected and announced. */
+  origin?: string | null;
+  /** This hub's instance slug on the relay, while connected and announced. */
+  instance?: string | null;
 }
 
 export interface SettingsProviderEntry {

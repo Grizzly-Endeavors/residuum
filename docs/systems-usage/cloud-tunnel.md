@@ -4,14 +4,14 @@ Residuum Cloud (`[cloud]` in `hub/config.toml`, Settings → All agents → Resi
 
 ## Capabilities
 
-The tunnel declares what it can handle in the `x-residuum-capabilities` header of its WebSocket upgrade: `workbench-surface`, `workbench-sockets`, `http-streaming` and `agents` always, plus `a2a` while the hub's A2A listener is enabled (`[a2a] enabled`). Each agent's A2A visibility isn't a capability; it travels with the agent list.
+The tunnel declares what it can handle in the `x-residuum-capabilities` header of its WebSocket upgrade: `workbench-surface`, `workbench-sockets`, `http-streaming`, `agents` and `teams` always, plus `a2a` while the hub's A2A listener is enabled (`[a2a] enabled`). Each agent's A2A visibility and whether it has Teams configured aren't capabilities; they travel with the agent list.
 
 - `workbench-surface`: an `http_request` tagged `"surface": "workbench"` is sent to the workbench artifacts listener.
 - `workbench-sockets`: a `ws_open` tagged `"surface": "workbench"` is connected to the workbench artifacts listener (see [Sockets through the tunnel](#sockets-through-the-tunnel)). Both workbench capabilities are advertised even while that listener isn't running, so the relay still forwards and the visitor gets an explanation instead of a generic "update Residuum" answer.
 
 ## Agents on the relay
 
-One tunnel connection is one hub, and the hub can host several agents. The hub sends the relay its full agent list as an `agents_update` frame, `{ "agents": [{ "name", "display_name", "a2a_enabled", "a2a_private" }] }`:
+One tunnel connection is one hub, and the hub can host several agents. The hub sends the relay its full agent list as an `agents_update` frame, `{ "agents": [{ "name", "display_name", "a2a_enabled", "a2a_private", "teams_configured" }] }`. An older hub that never sends `teams_configured` is read as not configured:
 
 - right after the relay's `Connected` frame, on every (re)connect;
 - again whenever the list changes: an agent is created or deleted, starts or stops, or changes A2A visibility, or the hub's `[a2a] enabled` flips.
@@ -21,6 +21,7 @@ The frame always carries the whole list and the relay replaces its stored copy, 
 - `name` is the agent's name, and `display_name` is the same.
 - `a2a_enabled` is true when the hub's A2A listener is enabled and the agent is running. A stopped or failed agent can't answer, so the relay hides it from its directory and answers `404` for it. An agent whose stop has begun is hidden the same way, from the moment the stop is requested rather than when it finishes (which can take up to the stop timeout): the same moment the hub's team router stops accepting messages for it. Starting it again re-lists it.
 - `a2a_private` is true when the agent's A2A visibility is private. The relay lists a private agent only for your own installs (or a caller the agent's own auth-check accepts) and forwards every request to the hub, whose auth layer answers `404` to anyone it doesn't recognize.
+- `teams_configured` is true when the agent's config has a complete `[teams]` section, whether or not the agent is running. The relay accepts `POST /teams/{instance}/{agent}` for those agents and forwards it to the hub on the `teams` surface. The hub delivers it to that agent's Teams listener as `POST /api/teams/messages`, and answers `503` while the listener isn't up so Microsoft retries. See [Microsoft Teams](teams.md).
 
 Until the relay has received the first list on a connection it answers `503` to A2A requests for the instance, and an instance that never sends one has no A2A entries.
 

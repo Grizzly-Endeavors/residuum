@@ -34,6 +34,7 @@ function summary(state: AgentState, visibility: "public" | "private"): AgentSumm
     autostart: true,
     role: null,
     a2a_visibility: visibility,
+    teams_configured: false,
   };
 }
 

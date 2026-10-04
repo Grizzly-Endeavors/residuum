@@ -1,6 +1,6 @@
 //! Core tunnel connection logic with automatic reconnection.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,6 +26,10 @@ use crate::config::CloudConfig;
 struct TunnelClients<'a> {
     client: &'a reqwest::Client,
     a2a_client: &'a reqwest::Client,
+    /// Agent name to the port its Teams listener is bound on. Read when a
+    /// request arrives, so a listener that starts or stops mid-connection is
+    /// seen without reconnecting.
+    teams_ports: &'a watch::Receiver<BTreeMap<String, u16>>,
 }
 
 /// The bookkeeping needed to track in-flight A2A streaming forwards so a
@@ -84,6 +88,7 @@ pub(crate) async fn start_tunnel(
     cfg: CloudConfig,
     workbench_port: Option<u16>,
     a2a_port: Option<u16>,
+    teams_ports: watch::Receiver<BTreeMap<String, u16>>,
     mut agents_rx: watch::Receiver<Vec<AgentInfo>>,
     mut shutdown_rx: watch::Receiver<bool>,
     status_tx: Arc<watch::Sender<TunnelStatus>>,
@@ -166,6 +171,7 @@ pub(crate) async fn start_tunnel(
                 clients: TunnelClients {
                     client: &client,
                     a2a_client: &a2a_client,
+                    teams_ports: &teams_ports,
                 },
                 targets,
                 keepalive_timeout,
@@ -514,6 +520,10 @@ fn forward_port(targets: ForwardTargets, surface: Option<Surface>) -> Result<u16
         Some(Surface::A2a) => targets.a2a.ok_or(
             "The A2A endpoint isn't available on this Residuum instance right now: its A2A listener isn't running. Check Residuum's logs for why it couldn't start.",
         ),
+        // Teams is one port per agent, resolved when the request arrives.
+        Some(Surface::Teams) => Err(
+            "This Teams request has no listener to deliver it to.",
+        ),
     }
 }
 
@@ -627,6 +637,81 @@ fn spawn_a2a_forward(
     tracker.streams.insert(request_id, handle.abort_handle());
 }
 
+/// Where a Teams-surface request is delivered, or the status and plain-language
+/// reason it isn't. The path is always the listener's single route: the relay
+/// names the agent, and nothing else on that port is reachable through this
+/// surface.
+fn teams_delivery(
+    agent: Option<&str>,
+    ports: &watch::Receiver<BTreeMap<String, u16>>,
+) -> Result<u16, (u16, &'static str)> {
+    let Some(agent) = agent else {
+        return Err((
+            404,
+            "This Teams request didn't name an agent. Agents are reached at /teams/{instance}/{agent}.",
+        ));
+    };
+    if crate::config::paths::validate_agent_name(agent).is_err() {
+        return Err((
+            404,
+            "No agent with that name is available on this Residuum instance.",
+        ));
+    }
+    ports.borrow().get(agent).copied().ok_or((
+        503,
+        "This agent isn't listening for Teams right now. It will accept the message once it is.",
+    ))
+}
+
+/// Deliver a Teams-surface request to the named agent's listener and answer
+/// with one buffered response. A request that can't be delivered is answered
+/// here, so it never falls through to the main gateway listener.
+fn spawn_teams_forward(
+    client: &reqwest::Client,
+    ports: watch::Receiver<BTreeMap<String, u16>>,
+    write: &Arc<Mutex<TunnelSink>>,
+    agent: Option<String>,
+    request: ForwardRequest,
+) {
+    let client = client.clone();
+    let write = Arc::clone(write);
+    let ForwardRequest {
+        request_id,
+        headers,
+        body,
+        ..
+    } = request;
+    crate::util::spawn_in_span(async move {
+        let response = match teams_delivery(agent.as_deref(), &ports) {
+            Ok(port) => {
+                forward_http::forward(
+                    &client,
+                    port,
+                    request_id,
+                    "POST".to_string(),
+                    crate::interfaces::teams::MESSAGES_PATH.to_string(),
+                    headers,
+                    body,
+                )
+                .await
+            }
+            Err((status, message)) => {
+                warn!(
+                    request_id = %request_id,
+                    agent = agent.as_deref().unwrap_or(""),
+                    status,
+                    reason = message,
+                    "couldn't deliver a Teams message from the relay"
+                );
+                forward_http::text_response(request_id, status, message)
+            }
+        };
+        if let Err(e) = send_frame(&write, &response).await {
+            warn!(error = %e, "failed to send HttpResponse");
+        }
+    });
+}
+
 /// Forward a non-A2A `HttpRequest` with the existing buffered behavior: one
 /// local request, one `HttpResponse` frame back.
 fn spawn_buffered_forward(
@@ -667,6 +752,7 @@ fn ws_open_port(targets: ForwardTargets, surface: Option<Surface>) -> Result<u16
     match surface {
         None | Some(Surface::Workbench) => forward_port(targets, surface),
         Some(Surface::A2a) => Err("The A2A endpoint doesn't serve WebSockets."),
+        Some(Surface::Teams) => Err("The Teams endpoint doesn't serve WebSockets."),
     }
 }
 
@@ -701,6 +787,37 @@ fn spawn_ws_open(
     });
 }
 
+/// Send one proxied HTTP request to the listener its surface names.
+fn dispatch_http(
+    clients: &TunnelClients<'_>,
+    targets: ForwardTargets,
+    write: &Arc<Mutex<TunnelSink>>,
+    a2a_tracker: &mut A2aStreamTracker<'_>,
+    mut request: ForwardRequest,
+    surface: Option<Surface>,
+    agent: Option<String>,
+) {
+    if matches!(surface, Some(Surface::A2a)) {
+        match a2a_listener_path(agent.as_deref(), &request.path) {
+            Ok(listener_path) => {
+                request.path = listener_path;
+                spawn_a2a_forward(clients.a2a_client, targets, write, a2a_tracker, request);
+            }
+            Err(message) => spawn_a2a_rejection(write, request.request_id, message),
+        }
+    } else if matches!(surface, Some(Surface::Teams)) {
+        spawn_teams_forward(
+            clients.client,
+            clients.teams_ports.clone(),
+            write,
+            agent,
+            request,
+        );
+    } else {
+        spawn_buffered_forward(clients.client, targets, write, surface, request);
+    }
+}
+
 /// Process a single tunnel frame.
 async fn handle_frame(
     frame: TunnelFrame,
@@ -730,26 +847,21 @@ async fn handle_frame(
             body,
             surface,
             agent,
-        } => {
-            let mut request = ForwardRequest {
+        } => dispatch_http(
+            clients,
+            targets,
+            write,
+            a2a_tracker,
+            ForwardRequest {
                 request_id,
                 method,
                 path,
                 headers,
                 body,
-            };
-            if matches!(surface, Some(Surface::A2a)) {
-                match a2a_listener_path(agent.as_deref(), &request.path) {
-                    Ok(listener_path) => {
-                        request.path = listener_path;
-                        spawn_a2a_forward(clients.a2a_client, targets, write, a2a_tracker, request);
-                    }
-                    Err(message) => spawn_a2a_rejection(write, request.request_id, message),
-                }
-            } else {
-                spawn_buffered_forward(clients.client, targets, write, surface, request);
-            }
-        }
+            },
+            surface,
+            agent,
+        ),
         TunnelFrame::HttpCancel { request_id } => {
             if let Some(handle) = a2a_tracker.streams.remove(&request_id) {
                 handle.abort();
@@ -1016,7 +1128,7 @@ mod tests {
             req.headers()
                 .get("x-residuum-capabilities")
                 .and_then(|v| v.to_str().ok()),
-            Some("workbench-surface,workbench-sockets,http-streaming,agents")
+            Some("workbench-surface,workbench-sockets,http-streaming,agents,teams")
         );
     }
 
@@ -1032,7 +1144,7 @@ mod tests {
             req.headers()
                 .get("x-residuum-capabilities")
                 .and_then(|v| v.to_str().ok()),
-            Some("workbench-surface,workbench-sockets,http-streaming,agents,a2a")
+            Some("workbench-surface,workbench-sockets,http-streaming,agents,teams,a2a")
         );
     }
 
@@ -1137,9 +1249,11 @@ mod tests {
             workbench: None,
             a2a: None,
         };
+        let (_teams_tx, teams_ports) = watch::channel(BTreeMap::new());
         let clients = TunnelClients {
             client: &client,
             a2a_client: &a2a_client,
+            teams_ports: &teams_ports,
         };
         let mut local_ws_channels = HashMap::new();
         let (ws_events_tx, _ws_events_rx) = mpsc::channel(1);
@@ -1220,9 +1334,11 @@ mod tests {
             workbench: None,
             a2a: Some(addr.port()),
         };
+        let (_teams_tx, teams_ports) = watch::channel(BTreeMap::new());
         let clients = TunnelClients {
             client: &client,
             a2a_client: &a2a_client,
+            teams_ports: &teams_ports,
         };
         let mut local_ws_channels = HashMap::new();
         let (ws_events_tx, _ws_events_rx) = mpsc::channel(1);
@@ -1292,6 +1408,7 @@ mod tests {
             display_name: name.to_string(),
             a2a_enabled,
             a2a_private: false,
+            teams_configured: false,
         }
     }
 
@@ -1360,11 +1477,13 @@ mod tests {
             let mut read = futures_util::stream::pending::<
                 Result<Message, tokio_tungstenite::tungstenite::Error>,
             >();
+            let (_teams_tx, teams_ports) = watch::channel(BTreeMap::new());
             run_tunnel_loop(
                 LoopContext {
                     clients: TunnelClients {
                         client: &client,
                         a2a_client: &a2a_client,
+                        teams_ports: &teams_ports,
                     },
                     targets: ForwardTargets {
                         main: 7700,
@@ -1625,9 +1744,11 @@ mod tests {
         async fn send(&self, frame: TunnelFrame) {
             let client = forward_http::forwarding_client().unwrap();
             let a2a_client = forward_a2a::forwarding_client().unwrap();
+            let (_teams_tx, teams_ports) = watch::channel(BTreeMap::new());
             let clients = TunnelClients {
                 client: &client,
                 a2a_client: &a2a_client,
+                teams_ports: &teams_ports,
             };
             let mut local_ws_channels = HashMap::new();
             let (ws_events_tx, _ws_events_rx) = mpsc::channel(1);

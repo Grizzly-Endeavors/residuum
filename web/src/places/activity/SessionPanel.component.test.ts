@@ -23,6 +23,7 @@ function agent(name: string, state: AgentSummary["state"] = "running"): AgentSum
     autostart: true,
     role: null,
     a2a_visibility: "private",
+    teams_configured: false,
   };
 }
 
