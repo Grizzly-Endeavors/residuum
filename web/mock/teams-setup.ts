@@ -27,7 +27,7 @@ export function defaultTeamsSetupPrereqs(state: MockState): TeamsSetupPrereqs {
       pinned_version: "1.1.17",
       install_dir: "~/.residuum/hub/tools/m365agentstoolkit",
     },
-    min_node_version: "18.0.0",
+    min_node_version: "12.0.0",
     teams_already_configured: teamsAlreadyConfigured,
     suggested_endpoint: "https://my-hub.residuum.cloud/api/teams/messages",
     suggested_endpoint_source: "residuum_cloud",
@@ -244,7 +244,7 @@ async function startJob({ req, res, state }: RouteContext): Promise<void> {
   // Consent check
   if (!start.consent_install_cli && !prereqs.atk.installed) {
     json(res, 400, {
-      message:
+      error:
         "consent_install_cli is required: You must consent to installing the Agents Toolkit CLI to continue.",
     });
     return;
@@ -253,7 +253,7 @@ async function startJob({ req, res, state }: RouteContext): Promise<void> {
   // Replace existing check
   if (!start.replace_existing && prereqs.teams_already_configured) {
     json(res, 400, {
-      message:
+      error:
         "replace_existing is required: Microsoft Teams is already configured. Confirm replacing the existing bot to continue.",
     });
     return;
@@ -261,35 +261,35 @@ async function startJob({ req, res, state }: RouteContext): Promise<void> {
 
   // Form validation
   if (!start.form.bot_name.trim()) {
-    json(res, 400, { message: "Bot name is required." });
+    json(res, 400, { error: "Bot name is required." });
     return;
   }
   if (!start.form.short_description.trim()) {
-    json(res, 400, { message: "Short description is required." });
+    json(res, 400, { error: "Short description is required." });
     return;
   }
   if (start.form.short_description.length > 80) {
-    json(res, 400, { message: "Short description must be 80 characters or fewer." });
+    json(res, 400, { error: "Short description must be 80 characters or fewer." });
     return;
   }
   if (!start.form.long_description.trim()) {
-    json(res, 400, { message: "Long description is required." });
+    json(res, 400, { error: "Long description is required." });
     return;
   }
   if (start.form.long_description.length > 4000) {
-    json(res, 400, { message: "Long description must be 4000 characters or fewer." });
+    json(res, 400, { error: "Long description must be 4000 characters or fewer." });
     return;
   }
   if (!start.form.developer_name.trim()) {
-    json(res, 400, { message: "Developer name is required." });
+    json(res, 400, { error: "Developer name is required." });
     return;
   }
   if (!start.form.developer_url.trim()) {
-    json(res, 400, { message: "Developer URL is required." });
+    json(res, 400, { error: "Developer URL is required." });
     return;
   }
   if (!start.form.messaging_endpoint.trim()) {
-    json(res, 400, { message: "Messaging endpoint is required." });
+    json(res, 400, { error: "Messaging endpoint is required." });
     return;
   }
 
@@ -341,12 +341,12 @@ async function submitRedirect({ req, res, state }: RouteContext): Promise<void> 
   const url = typeof body.url === "string" ? body.url : "";
 
   if (job.phase !== "sign_in" || job.state !== "waiting_for_user") {
-    json(res, 400, { message: "Job is not waiting for a sign-in redirect." });
+    json(res, 400, { error: "Job is not waiting for a sign-in redirect." });
     return;
   }
 
   if (job.sign_in === null) {
-    json(res, 400, { message: "Authentication listener is no longer running." });
+    json(res, 400, { error: "Authentication listener is no longer running." });
     return;
   }
 
@@ -354,7 +354,7 @@ async function submitRedirect({ req, res, state }: RouteContext): Promise<void> 
   try {
     parsedUrl = new URL(url);
   } catch {
-    json(res, 400, { message: "Redirect URL is not a valid URL." });
+    json(res, 400, { error: "Redirect URL is not a valid URL." });
     return;
   }
 
@@ -366,7 +366,7 @@ async function submitRedirect({ req, res, state }: RouteContext): Promise<void> 
 
   if (!isLocalhost) {
     json(res, 400, {
-      message: `Invalid redirect URL: must be a localhost URL (e.g. http://localhost:${expectedPort}/).`,
+      error: `Invalid redirect URL: must be a localhost URL (e.g. http://localhost:${expectedPort}/).`,
     });
     return;
   }
@@ -374,7 +374,7 @@ async function submitRedirect({ req, res, state }: RouteContext): Promise<void> 
   const port = parsedUrl.port !== "" ? parseInt(parsedUrl.port, 10) : 80;
   if (port !== expectedPort) {
     json(res, 400, {
-      message: `Invalid redirect URL: wrong port (expected http://localhost:${expectedPort}/, got port ${port}).`,
+      error: `Invalid redirect URL: wrong port (expected http://localhost:${expectedPort}/, got port ${port}).`,
     });
     return;
   }
@@ -438,14 +438,14 @@ function installApp({ res, state }: RouteContext): void {
   }
 
   if (job.state !== "succeeded") {
-    json(res, 400, { message: "App installation requires a successfully completed setup." });
+    json(res, 400, { error: "App installation requires a successfully completed setup." });
     return;
   }
 
   const formData = jobFormData.get(job.agent);
   if (formData?.botName === "fail_install_app") {
     json(res, 400, {
-      message:
+      error:
         "App installation failed: Sideloading apps is blocked by your Microsoft 365 tenant policy. IT administrator approval is required.",
     });
     return;
@@ -488,7 +488,6 @@ function deleteJob({ res, state }: RouteContext): void {
   if (job.state === "running" || job.state === "waiting_for_user") {
     json(res, 409, {
       error: "Cannot delete a running Teams setup job",
-      message: "Cannot delete a running Teams setup job.",
     });
     return;
   }

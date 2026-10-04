@@ -132,10 +132,21 @@ Setup jobs are held in daemon memory. If the Residuum daemon restarts while a se
 
 ### Cleanup Endpoint
 
-The cleanup endpoint (`DELETE /api/teams-setup` or `residuum teams cleanup`) allows selective or complete cleanup of local assets:
-- `project_files: true`: Deletes `<agent>/teams-app/`.
-- `cli: true`: Removes `<hub>/tools/m365agentstoolkit/`.
-- `sign_out: true`: Runs `atk auth logout m365` to clear credentials.
+The cleanup endpoint (`POST /api/teams-setup/cleanup` or `residuum teams cleanup`) allows selective or complete cleanup of local assets:
+- `project_files: true` / `--project-files`: Deletes `<agent>/teams-app/`.
+- `cli: true` / `--cli`: Removes `<hub>/tools/m365agentstoolkit/`.
+- `sign_out: true` / `--sign-out`: Runs `atk auth logout m365` to clear credentials.
+
+### CLI Commands
+
+The `residuum teams` subcommands provide terminal access to toolkit management and automation:
+
+- `residuum teams import-atk --agent <agent> [--dir <dir>]`: Securely decrypts bot credentials from `<dir>/env/.env.residuum.user`, stores the password in the encrypted secret store under secret `teams`, and updates `[teams]` in the agent's `config.toml`.
+- `residuum teams forward-redirect "<url>"`: Forwards an OAuth callback redirect URL (`http://localhost:<port>/?code=...`) to the local listener during remote sign-in.
+- `residuum teams atk-login --agent <agent> [--status] [--cancel]`: Manages detached Microsoft 365 sign-in. Starts the login process in the background and prints the browser authorization URL, inspects running sign-in status, or cancels an active login.
+- `residuum teams atk-scaffold --agent <agent> [--endpoint <url>] [--dir <dir>] [--force] [--bot-name <name>] ...`: Scaffolds the ATK project files (`m365agents.yml`, `appPackage/manifest.json`, icons) in `<agent>/teams-app/`, using the derived cloud endpoint or an explicit messaging endpoint.
+- `residuum teams atk-paths --agent <agent> [--json]`: Resolves standard project directory, ATK binary, package zip, and environment file paths.
+- `residuum teams cleanup --agent <agent> [--project-files] [--cli] [--sign-out] [--json]`: Selectively removes local project files, the hub-level ATK CLI installation, or signs out of Microsoft 365.
 
 ## Code
 

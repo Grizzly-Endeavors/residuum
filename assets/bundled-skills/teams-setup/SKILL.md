@@ -119,4 +119,8 @@ Explain cleanup options to the user:
 - The local `<project_dir>` directory can be kept for future updates or removed.
 - The toolkit CLI at `<hub>/tools/m365agentstoolkit` can be deleted at any time.
 - To sign out of Microsoft 365, run `<atk_bin> auth logout m365`.
+- Cleanup can be performed using Residuum:
+  ```bash
+  residuum teams cleanup --agent <agent_name> [--project-files] [--cli] [--sign-out]
+  ```
 - Cloud resources (Entra app registration and Developer Portal bot) are retained in the user's tenant until manually deleted via the portal links.

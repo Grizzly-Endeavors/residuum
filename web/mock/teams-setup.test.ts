@@ -63,7 +63,7 @@ describe("the Teams setup wizard mock routes", () => {
       replace_existing: false,
     });
     expect(res.status).toBe(400);
-    expect((res.body as { message: string }).message).toContain("consent");
+    expect((res.body as { error: string }).error).toContain("consent");
   });
 
   it("validates replace_existing when Teams is already configured", async () => {
@@ -79,7 +79,7 @@ describe("the Teams setup wizard mock routes", () => {
       replace_existing: false,
     });
     expect(res.status).toBe(400);
-    expect((res.body as { message: string }).message).toContain("replac");
+    expect((res.body as { error: string }).error).toContain("replac");
   });
 
   it("validates required form fields and length bounds", async () => {
@@ -89,7 +89,7 @@ describe("the Teams setup wizard mock routes", () => {
       replace_existing: true,
     });
     expect(res.status).toBe(400);
-    expect((res.body as { message: string }).message).toContain("Bot name");
+    expect((res.body as { error: string }).error).toContain("Bot name");
 
     res = await call("POST", "/job", {
       form: { ...validForm, short_description: "a".repeat(81) },
@@ -97,7 +97,7 @@ describe("the Teams setup wizard mock routes", () => {
       replace_existing: true,
     });
     expect(res.status).toBe(400);
-    expect((res.body as { message: string }).message).toContain("Short description");
+    expect((res.body as { error: string }).error).toContain("Short description");
 
     res = await call("POST", "/job", {
       form: { ...validForm, developer_url: "" },
@@ -105,7 +105,7 @@ describe("the Teams setup wizard mock routes", () => {
       replace_existing: true,
     });
     expect(res.status).toBe(400);
-    expect((res.body as { message: string }).message).toContain("Developer URL");
+    expect((res.body as { error: string }).error).toContain("Developer URL");
   });
 
   it("simulates happy path: prereqs -> install_cli -> pauses at sign_in -> redirect -> provision -> import -> succeeded", async () => {
@@ -128,7 +128,7 @@ describe("the Teams setup wizard mock routes", () => {
       url: "https://login.microsoft.com/bad",
     });
     expect(badRedirect.status).toBe(400);
-    expect((badRedirect.body as { message: string }).message).toContain("http://localhost:4321/");
+    expect((badRedirect.body as { error: string }).error).toContain("http://localhost:4321/");
 
     // Valid redirect URL accepted, job enters scaffold
     const goodRedirect = await call("POST", "/job/redirect", {
@@ -295,14 +295,14 @@ describe("the Teams setup wizard mock routes", () => {
       url: "https://example.com:4321/auth?code=123",
     });
     expect(external.status).toBe(400);
-    expect((external.body as { message: string }).message).toContain("localhost");
+    expect((external.body as { error: string }).error).toContain("localhost");
 
     // Wrong port
     const wrongPort = await call("POST", "/job/redirect", {
       url: "http://localhost:9999/auth?code=123",
     });
     expect(wrongPort.status).toBe(400);
-    expect((wrongPort.body as { message: string }).message).toContain("wrong port");
+    expect((wrongPort.body as { error: string }).error).toContain("wrong port");
   });
 
   it("filters log lines incrementally when log_since is passed", async () => {

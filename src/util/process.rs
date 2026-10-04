@@ -165,29 +165,17 @@ pub fn configure_process_group(cmd: &mut tokio::process::Command) {
     }
 }
 
-/// Pure helper to resolve the effective executable and argument list for a command,
-/// taking into account Windows `.cmd` or `.bat` shims.
+/// Pure helper to resolve the effective executable and argument list for a command.
+///
+/// On Windows, Rust std (>= 1.77) natively escapes arguments and spawns `cmd.exe`
+/// under the hood when invoked on `.cmd` or `.bat` paths without needing a hand-rolled
+/// `cmd.exe /d /s /c` layer that could break paths with spaces (e.g. `C:\Program Files\nodejs\npm.cmd`).
 #[must_use]
 pub fn build_platform_command_spec(
     program: &Path,
     args: &[&str],
-    is_windows: bool,
+    _is_windows: bool,
 ) -> (PathBuf, Vec<String>) {
-    if is_windows {
-        let is_batch = program
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"));
-        if is_batch {
-            let mut full_args = Vec::with_capacity(args.len() + 4);
-            full_args.push("/d".to_string());
-            full_args.push("/s".to_string());
-            full_args.push("/c".to_string());
-            full_args.push(program.to_string_lossy().to_string());
-            full_args.extend(args.iter().copied().map(String::from));
-            return (PathBuf::from("cmd.exe"), full_args);
-        }
-    }
     (
         program.to_path_buf(),
         args.iter().copied().map(String::from).collect(),
@@ -196,8 +184,7 @@ pub fn build_platform_command_spec(
 
 /// Create a [`tokio::process::Command`] with argv and process group configured.
 ///
-/// On Windows, if `program` points to a `.cmd` or `.bat` script, it is invoked via
-/// `cmd.exe /d /s /c <script> <args...>` without shell string interpolation.
+/// Spawns the specified program with argv, isolated in its own process group on Unix.
 #[must_use]
 pub fn create_argv_command(program: &Path, args: &[&str]) -> tokio::process::Command {
     let (target_bin, target_args) = build_platform_command_spec(program, args, cfg!(windows));
@@ -229,33 +216,20 @@ mod tests {
     }
 
     #[test]
-    fn platform_command_spec_windows_cmd_routes_via_cmd_exe() {
-        let prog = Path::new(r"C:\tools\atk.cmd");
-        let (exe, args) = build_platform_command_spec(prog, &["auth", "list", "m365"], true);
-        assert_eq!(exe, Path::new("cmd.exe"));
-        assert_eq!(
-            args,
-            vec![
-                "/d",
-                "/s",
-                "/c",
-                r"C:\tools\atk.cmd",
-                "auth",
-                "list",
-                "m365"
-            ]
-        );
+    fn platform_command_spec_windows_cmd_with_spaces_preserves_program() {
+        let prog = Path::new(r"C:\Program Files\nodejs\atk.cmd");
+        let (exe, args) =
+            build_platform_command_spec(prog, &["auth", "list", "m365", "path with spaces"], true);
+        assert_eq!(exe, prog);
+        assert_eq!(args, vec!["auth", "list", "m365", "path with spaces"]);
     }
 
     #[test]
-    fn platform_command_spec_windows_bat_routes_via_cmd_exe() {
-        let prog = Path::new(r"C:\tools\npm.bat");
+    fn platform_command_spec_windows_bat_preserves_program() {
+        let prog = Path::new(r"C:\Program Files\nodejs\npm.bat");
         let (exe, args) = build_platform_command_spec(prog, &["--version"], true);
-        assert_eq!(exe, Path::new("cmd.exe"));
-        assert_eq!(
-            args,
-            vec!["/d", "/s", "/c", r"C:\tools\npm.bat", "--version"]
-        );
+        assert_eq!(exe, prog);
+        assert_eq!(args, vec!["--version"]);
     }
 
     #[test]

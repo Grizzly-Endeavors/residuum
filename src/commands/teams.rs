@@ -9,6 +9,8 @@ use residuum::interfaces::teams::atk::{
     resolve_atk_paths, scaffold_atk_project,
 };
 use residuum::interfaces::teams::atk_runner::AgentLoginManager;
+use residuum::interfaces::teams::setup_job::get_or_create_manager;
+use residuum::interfaces::teams::setup_types::CleanupRequest;
 use residuum::util::FatalError;
 
 /// Teams management subcommands.
@@ -47,6 +49,24 @@ pub(super) enum TeamsCommand {
         /// Name of the agent
         #[arg(long)]
         agent: String,
+        /// Output summary as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Clean up local setup files, CLI installation, and/or Microsoft 365 sign-out
+    Cleanup {
+        /// Name of the agent to clean up
+        #[arg(long)]
+        agent: String,
+        /// Remove local teams-app project files and credentials
+        #[arg(long)]
+        project_files: bool,
+        /// Remove hub-level m365agentstoolkit CLI installation
+        #[arg(long)]
+        cli: bool,
+        /// Sign out of Microsoft 365 account via ATK CLI
+        #[arg(long)]
+        sign_out: bool,
         /// Output summary as JSON
         #[arg(long)]
         json: bool,
@@ -173,6 +193,20 @@ pub(super) async fn run_teams_command_at(
                 println!("  Env File:     {}", paths.env_file.display());
             }
         }
+        TeamsCommand::Cleanup {
+            agent,
+            project_files,
+            cli,
+            sign_out,
+            json,
+        } => {
+            let req = CleanupRequest {
+                project_files: *project_files,
+                cli: *cli,
+                sign_out: *sign_out,
+            };
+            handle_cleanup(residuum_root, agent, req, *json).await?;
+        }
     }
     Ok(())
 }
@@ -254,9 +288,85 @@ async fn handle_atk_scaffold(
     Ok(())
 }
 
+async fn handle_cleanup(
+    residuum_root: &Path,
+    agent: &str,
+    req: CleanupRequest,
+    json: bool,
+) -> Result<(), FatalError> {
+    if !req.project_files && !req.cli && !req.sign_out {
+        return Err(FatalError::Config(
+            "no cleanup targets specified; provide at least one of --project-files, --cli, or --sign-out".to_string(),
+        ));
+    }
+
+    let manager = get_or_create_manager(residuum_root);
+    let result = manager.cleanup(agent, req).await;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&result).map_err(|e| FatalError::Config(e.to_string()))?
+        );
+    } else {
+        println!("Teams cleanup completed for agent '{agent}':");
+        if !result.removed.is_empty() {
+            println!("  Removed: {}", result.removed.join(", "));
+        }
+        if !result.failed.is_empty() {
+            println!("  Failures:");
+            for failure in &result.failed {
+                println!("    - {}: {}", failure.item, failure.message);
+            }
+        }
+    }
+    if !result.failed.is_empty() {
+        return Err(FatalError::Other(anyhow::anyhow!(
+            "one or more cleanup tasks failed"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn run_teams_command_cleanup() {
+        let temp = tempfile::tempdir().unwrap();
+        let residuum_root = temp.path().to_path_buf();
+        let agent_path = residuum_root.join("scout");
+        let teams_app = agent_path.join("teams-app");
+        let cli_dir = residuum_root.join("hub/tools/m365agentstoolkit");
+        tokio::fs::create_dir_all(&teams_app).await.unwrap();
+        tokio::fs::create_dir_all(&cli_dir).await.unwrap();
+
+        // Error when no flags specified
+        let empty_cmd = TeamsCommand::Cleanup {
+            agent: "scout".to_string(),
+            project_files: false,
+            cli: false,
+            sign_out: false,
+            json: false,
+        };
+        assert!(
+            run_teams_command_at(&residuum_root, &empty_cmd)
+                .await
+                .is_err()
+        );
+
+        // Success when cleanup flags specified
+        let cmd = TeamsCommand::Cleanup {
+            agent: "scout".to_string(),
+            project_files: true,
+            cli: true,
+            sign_out: false,
+            json: true,
+        };
+        run_teams_command_at(&residuum_root, &cmd).await.unwrap();
+        assert!(!teams_app.exists());
+        assert!(!cli_dir.exists());
+    }
 
     #[tokio::test]
     async fn run_teams_command_import_atk() {

@@ -345,13 +345,17 @@ pub async fn run_command_streaming(
         () = cancel.cancelled() => {
             kill_process_tree(pid).await;
             tree_guard.disarm();
-            drop(child.wait().await);
+            if let Err(e) = child.wait().await {
+                tracing::debug!(error = %e, "error reaping child after cancellation");
+            }
             return Err(RunnerError::Cancelled);
         }
         () = tokio::time::sleep(timeout) => {
             kill_process_tree(pid).await;
             tree_guard.disarm();
-            drop(child.wait().await);
+            if let Err(e) = child.wait().await {
+                tracing::debug!(error = %e, "error reaping child after timeout");
+            }
             return Err(RunnerError::TimedOut(timeout));
         }
         status = child.wait() => status,
@@ -591,24 +595,24 @@ pub async fn forward_redirect_with_port_check(
     expected_port: u16,
 ) -> Result<u16, FatalError> {
     let parsed = url::Url::parse(url_str)
-        .map_err(|e| FatalError::Config(format!("invalid redirect URL: {e}")))?;
+        .map_err(|e| FatalError::Config(format!("Invalid redirect URL: not a valid URL: {e}")))?;
 
     let host = parsed.host_str().unwrap_or("");
     if host != "localhost" && host != "127.0.0.1" {
         return Err(FatalError::Config(format!(
-            "invalid redirect host '{host}': only localhost / 127.0.0.1 URLs can be forwarded"
+            "Invalid redirect URL: must be a localhost URL (e.g. http://localhost:{expected_port}/)."
         )));
     }
 
     let port = parsed.port().ok_or_else(|| {
-        FatalError::Config(
-            "redirect URL must specify a port (e.g. http://localhost:35437/...)".to_string(),
-        )
+        FatalError::Config(format!(
+            "Invalid redirect URL: wrong port (expected http://localhost:{expected_port}/, no port specified)."
+        ))
     })?;
 
     if port != expected_port {
         return Err(FatalError::Config(format!(
-            "redirect URL port {port} does not match the active sign-in listener port {expected_port}"
+            "Invalid redirect URL: wrong port (expected http://localhost:{expected_port}/, got port {port})."
         )));
     }
 
@@ -655,7 +659,11 @@ impl AgentLoginManager {
                     "a login process is already running for this agent; use --cancel to terminate it or --status to check progress".to_string()
                 ));
             }
-            drop(tokio::fs::remove_file(&pid_path).await);
+            if let Err(e) = tokio::fs::remove_file(&pid_path).await
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(error = %e, path = %pid_path.display(), "failed to remove stale pid file");
+            }
         }
 
         let log_file = std::fs::File::create(&log_path).map_err(|e| {
@@ -748,7 +756,11 @@ impl AgentLoginManager {
         let dummy_log = BoundedLog::new(10);
         let cancel = CancellationToken::new();
         if check_signed_in(&paths.atk_bin, &dummy_log, &cancel).await {
-            drop(tokio::fs::remove_file(&pid_path).await);
+            if let Err(e) = tokio::fs::remove_file(&pid_path).await
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(error = %e, path = %pid_path.display(), "failed to remove stale pid file");
+            }
             return "signed in".to_string();
         }
 
@@ -776,7 +788,11 @@ impl AgentLoginManager {
             kill_process_tree_sync(Some(pid));
         }
 
-        drop(tokio::fs::remove_file(&pid_path).await);
+        if let Err(e) = tokio::fs::remove_file(&pid_path).await
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(error = %e, path = %pid_path.display(), "failed to remove stale pid file");
+        }
         Ok(true)
     }
 }
@@ -875,15 +891,12 @@ mod tests {
         let err = forward_redirect_with_port_check("http://localhost:3000/?code=123", 4000)
             .await
             .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("does not match the active sign-in listener port")
-        );
+        assert!(err.to_string().contains("wrong port"));
 
         // Non-localhost rejected
         let err_host = forward_redirect_with_port_check("http://example.com:3000/?code=123", 3000)
             .await
             .unwrap_err();
-        assert!(err_host.to_string().contains("invalid redirect host"));
+        assert!(err_host.to_string().contains("must be a localhost URL"));
     }
 }

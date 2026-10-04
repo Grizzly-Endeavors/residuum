@@ -233,14 +233,29 @@ impl TeamsSetupJobManager {
                 "Bot name is required.".to_string(),
             ));
         }
+        if f.short_description.trim().is_empty() {
+            return Err(SetupJobError::BadRequest(
+                "Short description is required.".to_string(),
+            ));
+        }
         if f.short_description.len() > 80 {
             return Err(SetupJobError::BadRequest(
                 "Short description must be 80 characters or fewer.".to_string(),
             ));
         }
+        if f.long_description.trim().is_empty() {
+            return Err(SetupJobError::BadRequest(
+                "Long description is required.".to_string(),
+            ));
+        }
         if f.long_description.len() > 4000 {
             return Err(SetupJobError::BadRequest(
                 "Long description must be 4000 characters or fewer.".to_string(),
+            ));
+        }
+        if f.developer_name.trim().is_empty() {
+            return Err(SetupJobError::BadRequest(
+                "Developer name is required.".to_string(),
             ));
         }
         if f.developer_url.trim().is_empty() {
@@ -258,12 +273,12 @@ impl TeamsSetupJobManager {
         let prereqs = self.get_prereqs(agent).await;
         if !prereqs.atk.installed && !req.consent_install_cli {
             return Err(SetupJobError::BadRequest(
-                "You must consent to installing the Agents Toolkit CLI to continue.".to_string(),
+                "consent_install_cli is required: You must consent to installing the Agents Toolkit CLI to continue.".to_string(),
             ));
         }
         if prereqs.teams_already_configured && !req.replace_existing {
             return Err(SetupJobError::BadRequest(
-                "Microsoft Teams is already configured. Confirm replacing the existing bot to continue."
+                "replace_existing is required: Microsoft Teams is already configured. Confirm replacing the existing bot to continue."
                     .to_string(),
             ));
         }
@@ -298,17 +313,12 @@ impl TeamsSetupJobManager {
                 ));
             }
             let prompt = lock.sign_in.as_ref().ok_or_else(|| {
-                SetupJobError::BadRequest("no active sign-in prompt found".to_string())
+                SetupJobError::BadRequest(
+                    "Authentication listener is no longer running.".to_string(),
+                )
             })?;
             prompt.redirect_port
         };
-
-        let expected_prefix = format!("http://localhost:{expected_port}/");
-        if !url_str.starts_with(&expected_prefix) {
-            return Err(SetupJobError::BadRequest(format!(
-                "Invalid redirect URL: must start with {expected_prefix}"
-            )));
-        }
 
         forward_redirect_with_port_check(url_str, expected_port)
             .await
@@ -1414,7 +1424,7 @@ exit 0
         let temp = tempfile::tempdir().unwrap();
         let (root, mut overrides) = setup_mock_env(&temp);
 
-        // Slow provision script that sleeps
+        // Slow provision script that spawns a grandchild process
         let slow_atk = root.join("bin/slow_atk");
         make_script(
             &slow_atk,
@@ -1424,7 +1434,14 @@ sub="$2"
 if [ "$cmd" = "--version" ]; then echo "1.1.17"; exit 0; fi
 if [ "$cmd" = "auth" ] && [ "$sub" = "list" ]; then echo "Your Microsoft 365 account is: test@contoso.com."; exit 0; fi
 if [ "$cmd" = "provision" ]; then
-    sleep 30
+    folder=""
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = "--folder" ]; then folder="$2"; shift 2; else shift; fi
+    done
+    # Spawn background grandchild process that writes its pid and sleeps
+    sleep 30 &
+    echo $! > "$folder/grandchild.pid"
+    wait
     exit 0
 fi
 exit 0
@@ -1450,19 +1467,189 @@ exit 0
         let req = sample_start_form();
         mgr.start_job("agent-1", req).await.unwrap();
 
-        // Wait until it reaches Provision phase
+        // Wait until it reaches Provision phase and grandchild.pid exists
+        let pid_file = root.join("agent-1/teams-app/grandchild.pid");
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut grandchild_pid = None;
         while tokio::time::Instant::now() < deadline {
             if let Some(j) = mgr.get_job("agent-1", None).await
                 && j.phase == TeamsSetupPhase::Provision
+                && let Ok(content) = tokio::fs::read_to_string(&pid_file).await
+                && let Ok(pid) = content.trim().parse::<u32>()
             {
+                grandchild_pid = Some(pid);
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
+        let pid = grandchild_pid.expect("grandchild should have spawned and written pid");
+        #[cfg(unix)]
+        assert!(crate::util::process::is_process_running(pid));
+
         let cancelled = mgr.cancel_job("agent-1").await.unwrap();
         assert_eq!(cancelled.state, TeamsSetupState::Cancelled);
+
+        // Verify that the grandchild process tree is actually gone
+        #[cfg(unix)]
+        {
+            let kill_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            while tokio::time::Instant::now() < kill_deadline {
+                if !crate::util::process::is_process_running(pid) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert!(
+                !crate::util::process::is_process_running(pid),
+                "grandchild process tree should be terminated after cancel"
+            );
+        }
+        #[cfg(not(unix))]
+        let _ = pid;
+    }
+
+    fn make_login_atk_script(path: &Path) {
+        make_script(
+            path,
+            r#"#!/bin/sh
+cmd="$1"
+sub="$2"
+if [ "$cmd" = "--version" ]; then echo "1.1.17"; exit 0; fi
+if [ "$cmd" = "auth" ] && [ "$sub" = "list" ]; then
+    echo "No account signed in." >&2
+    exit 1
+fi
+if [ "$cmd" = "auth" ] && [ "$sub" = "login" ]; then
+    python3 -c '
+import http.server, socket
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind(("127.0.0.1", 0))
+port = s.getsockname()[1]
+s.close()
+print(f"Log in to your Microsoft 365 account - opening default web browser at https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=123&redirect_uri=http%3A%2F%2Flocalhost%3A{port}%2F", flush=True)
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, format, *args):
+        pass
+
+server = http.server.HTTPServer(("127.0.0.1", port), Handler)
+server.handle_request()
+'
+    exit 0
+fi
+if [ "$cmd" = "provision" ]; then
+    folder=""
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = "--folder" ]; then folder="$2"; shift 2; else shift; fi
+    done
+    mkdir -p "$folder/env"
+    cat << 'EOF' > "$folder/env/.env.residuum"
+BOT_ID=bot-login-1111
+TEAMS_APP_TENANT_ID=tenant-login-2222
+TEAMS_APP_ID=app-login-3333
+EOF
+    cat << 'EOF' > "$folder/env/.env.residuum.user"
+SECRET_BOT_PASSWORD=mock-pass
+EOF
+    mkdir -p "$folder/appPackage/build"
+    echo "zip" > "$folder/appPackage/build/appPackage.residuum.zip"
+    exit 0
+fi
+exit 0
+"#,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_job_sign_in_waiting_and_redirect_forwarding() {
+        let temp = tempfile::tempdir().unwrap();
+        let (root, mut overrides) = setup_mock_env(&temp);
+
+        let login_atk = root.join("bin/login_atk");
+        make_login_atk_script(&login_atk);
+        overrides.atk_bin = Some(login_atk);
+
+        let mgr = TeamsSetupJobManager::with_overrides(root.clone(), overrides);
+        tokio::fs::create_dir_all(root.join("hub")).await.unwrap();
+        tokio::fs::create_dir_all(root.join("agent-1"))
+            .await
+            .unwrap();
+        tokio::fs::write(root.join("hub/config.toml"), "timezone = \"UTC\"\n")
+            .await
+            .unwrap();
+        tokio::fs::write(
+            root.join("agent-1/config.toml"),
+            "[agent]\nname = \"agent-1\"\n",
+        )
+        .await
+        .unwrap();
+
+        let req = sample_start_form();
+        mgr.start_job("agent-1", req).await.unwrap();
+
+        // Wait until it reaches SignIn phase and WaitingForUser state
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut sign_in_prompt = None;
+        while tokio::time::Instant::now() < deadline {
+            if let Some(j) = mgr.get_job("agent-1", None).await
+                && j.phase == TeamsSetupPhase::SignIn
+                && j.state == TeamsSetupState::WaitingForUser
+                && let Some(p) = j.sign_in
+            {
+                sign_in_prompt = Some(p);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        let prompt = sign_in_prompt.expect("job should enter sign_in waiting_for_user");
+        let port = prompt.redirect_port;
+
+        // Port mismatch rejection
+        let wrong_port_url = format!("http://localhost:{}/?code=test", port + 1);
+        let err_port = mgr
+            .forward_redirect("agent-1", &wrong_port_url)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err_port,
+            SetupJobError::BadRequest(ref msg) if msg.contains("wrong port")
+        ));
+
+        // Host mismatch rejection
+        let err_host = mgr
+            .forward_redirect("agent-1", "https://example.com:4321/?code=test")
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err_host,
+            SetupJobError::BadRequest(ref msg) if msg.contains("must be a localhost URL")
+        ));
+
+        // Valid redirect forward to the fake listener
+        let valid_url = format!("http://localhost:{port}/?code=valid-code-xyz");
+        mgr.forward_redirect("agent-1", &valid_url)
+            .await
+            .expect("forward_redirect should succeed with matching port");
+
+        // The job should now advance past SignIn to Scaffold/Provision/Succeeded
+        let advance_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut advanced = false;
+        while tokio::time::Instant::now() < advance_deadline {
+            if let Some(j) = mgr.get_job("agent-1", None).await
+                && (j.phase != TeamsSetupPhase::SignIn || j.state == TeamsSetupState::Succeeded)
+            {
+                advanced = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(advanced, "job should advance past sign-in after redirect");
     }
 
     #[tokio::test]

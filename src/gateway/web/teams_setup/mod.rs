@@ -116,12 +116,12 @@ async fn api_teams_setup_job_post(
         Err(SetupJobError::Conflict(job)) => (StatusCode::CONFLICT, Json(*job)).into_response(),
         Err(SetupJobError::BadRequest(msg)) => (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "message": msg })),
+            Json(serde_json::json!({ "error": msg })),
         )
             .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "message": e.to_string() })),
+            Json(serde_json::json!({ "error": e.to_string() })),
         )
             .into_response(),
     }
@@ -146,12 +146,12 @@ async fn api_teams_setup_job_redirect(
             .into_response(),
         Err(SetupJobError::BadRequest(msg)) => (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "message": msg })),
+            Json(serde_json::json!({ "error": msg })),
         )
             .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "message": e.to_string() })),
+            Json(serde_json::json!({ "error": e.to_string() })),
         )
             .into_response(),
     }
@@ -170,7 +170,7 @@ async fn api_teams_setup_job_cancel(State(state): State<ConfigApiState>) -> Resp
             .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "message": e.to_string() })),
+            Json(serde_json::json!({ "error": e.to_string() })),
         )
             .into_response(),
     }
@@ -190,12 +190,12 @@ async fn api_teams_setup_job_retry(State(state): State<ConfigApiState>) -> Respo
         Err(SetupJobError::Conflict(job)) => (StatusCode::CONFLICT, Json(*job)).into_response(),
         Err(SetupJobError::BadRequest(msg)) => (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "message": msg })),
+            Json(serde_json::json!({ "error": msg })),
         )
             .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "message": e.to_string() })),
+            Json(serde_json::json!({ "error": e.to_string() })),
         )
             .into_response(),
     }
@@ -214,12 +214,12 @@ async fn api_teams_setup_job_install_app(State(state): State<ConfigApiState>) ->
             .into_response(),
         Err(SetupJobError::BadRequest(msg)) => (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "message": msg })),
+            Json(serde_json::json!({ "error": msg })),
         )
             .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "message": e.to_string() })),
+            Json(serde_json::json!({ "error": e.to_string() })),
         )
             .into_response(),
     }
@@ -253,7 +253,7 @@ async fn api_teams_setup_job_package(State(state): State<ConfigApiState>) -> Res
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
-                "message": format!("failed to read package file: {e}")
+                "error": format!("failed to read package file: {e}")
             })),
         )
             .into_response(),
@@ -280,7 +280,7 @@ async fn api_teams_setup_job_delete(State(state): State<ConfigApiState>) -> Resp
             .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "message": e.to_string() })),
+            Json(serde_json::json!({ "error": e.to_string() })),
         )
             .into_response(),
     }
@@ -306,6 +306,7 @@ async fn api_teams_setup_cleanup(
 )]
 mod tests {
     use std::fs;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
 
@@ -337,9 +338,12 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, content).unwrap();
-        let mut perms = fs::metadata(path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(path, perms).unwrap();
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(path).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(path, perms).unwrap();
+        }
     }
 
     fn setup_mock_env(temp: &tempfile::TempDir) -> (PathBuf, AtkRunnerOverrides) {
@@ -504,7 +508,7 @@ exit 0
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let err = body_json(resp).await;
         assert!(
-            err["message"]
+            err["error"]
                 .as_str()
                 .unwrap()
                 .contains("Bot name is required.")

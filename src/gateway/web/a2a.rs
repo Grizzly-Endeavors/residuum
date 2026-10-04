@@ -633,7 +633,7 @@ pub(super) async fn api_a2a_card(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::util::test_ports::{free_port, reserve_port};
+    use crate::util::test_ports::free_port;
 
     fn hub_state(dir: &std::path::Path) -> HubApiState {
         HubApiState::for_test(dir)
@@ -1116,26 +1116,22 @@ mod tests {
     #[tokio::test]
     async fn status_reports_listener_running_when_something_answers_auth_check() {
         let dir = tempfile::tempdir().unwrap();
-        let reservation = reserve_port();
-        let port = reservation.port();
+        let router = axum::Router::new().route(
+            AUTH_CHECK_PATH,
+            axum::routing::get(|| async { StatusCode::NO_CONTENT }),
+        );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        crate::util::spawn_in_span(async move { axum::serve(listener, router).await });
+
         write_config(
             dir.path(),
             &format!("[a2a]\nenabled = true\nport = {port}\n"),
         );
         let state = test_state(dir.path());
         write_card(&state, VALID_CARD);
-
-        let router = axum::Router::new().route(
-            AUTH_CHECK_PATH,
-            axum::routing::get(|| async { StatusCode::NO_CONTENT }),
-        );
-        // The real bind below takes over `port`; drop the reservation right
-        // before so no other test process can take it first.
-        drop(reservation);
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
-            .await
-            .unwrap();
-        crate::util::spawn_in_span(async move { axum::serve(listener, router).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let status = api_a2a_status(State(status_state(state))).await.0;
