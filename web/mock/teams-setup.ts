@@ -244,7 +244,8 @@ async function startJob({ req, res, state }: RouteContext): Promise<void> {
   // Consent check
   if (!start.consent_install_cli && !prereqs.atk.installed) {
     json(res, 400, {
-      message: "You must consent to installing the Agents Toolkit CLI to continue.",
+      message:
+        "consent_install_cli is required: You must consent to installing the Agents Toolkit CLI to continue.",
     });
     return;
   }
@@ -253,7 +254,7 @@ async function startJob({ req, res, state }: RouteContext): Promise<void> {
   if (!start.replace_existing && prereqs.teams_already_configured) {
     json(res, 400, {
       message:
-        "Microsoft Teams is already configured. Confirm replacing the existing bot to continue.",
+        "replace_existing is required: Microsoft Teams is already configured. Confirm replacing the existing bot to continue.",
     });
     return;
   }
@@ -263,12 +264,24 @@ async function startJob({ req, res, state }: RouteContext): Promise<void> {
     json(res, 400, { message: "Bot name is required." });
     return;
   }
+  if (!start.form.short_description.trim()) {
+    json(res, 400, { message: "Short description is required." });
+    return;
+  }
   if (start.form.short_description.length > 80) {
     json(res, 400, { message: "Short description must be 80 characters or fewer." });
     return;
   }
+  if (!start.form.long_description.trim()) {
+    json(res, 400, { message: "Long description is required." });
+    return;
+  }
   if (start.form.long_description.length > 4000) {
     json(res, 400, { message: "Long description must be 4000 characters or fewer." });
+    return;
+  }
+  if (!start.form.developer_name.trim()) {
+    json(res, 400, { message: "Developer name is required." });
     return;
   }
   if (!start.form.developer_url.trim()) {
@@ -332,11 +345,36 @@ async function submitRedirect({ req, res, state }: RouteContext): Promise<void> 
     return;
   }
 
-  const expectedPort = job.sign_in?.redirect_port ?? 4321;
-  const expectedPrefix = `http://localhost:${expectedPort}/`;
-  if (!url.startsWith(expectedPrefix)) {
+  if (job.sign_in === null) {
+    json(res, 400, { message: "Authentication listener is no longer running." });
+    return;
+  }
+
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    json(res, 400, { message: "Redirect URL is not a valid URL." });
+    return;
+  }
+
+  const expectedPort = job.sign_in.redirect_port;
+  const isLocalhost =
+    parsedUrl.hostname === "localhost" ||
+    parsedUrl.hostname === "127.0.0.1" ||
+    parsedUrl.hostname === "[::1]";
+
+  if (!isLocalhost) {
     json(res, 400, {
-      message: `Invalid redirect URL: must start with ${expectedPrefix}`,
+      message: `Invalid redirect URL: must be a localhost URL (e.g. http://localhost:${expectedPort}/).`,
+    });
+    return;
+  }
+
+  const port = parsedUrl.port !== "" ? parseInt(parsedUrl.port, 10) : 80;
+  if (port !== expectedPort) {
+    json(res, 400, {
+      message: `Invalid redirect URL: wrong port (expected http://localhost:${expectedPort}/, got port ${port}).`,
     });
     return;
   }
@@ -413,6 +451,7 @@ function installApp({ res, state }: RouteContext): void {
     return;
   }
 
+  job.phase = "install_app";
   job.app_installed = true;
   if (!job.completed_phases.includes("install_app")) {
     job.completed_phases.push("install_app");
@@ -447,7 +486,10 @@ function deleteJob({ res, state }: RouteContext): void {
   }
 
   if (job.state === "running" || job.state === "waiting_for_user") {
-    json(res, 409, { error: "Cannot delete a running Teams setup job" });
+    json(res, 409, {
+      error: "Cannot delete a running Teams setup job",
+      message: "Cannot delete a running Teams setup job.",
+    });
     return;
   }
 
