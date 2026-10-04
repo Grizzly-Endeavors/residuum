@@ -24,3 +24,4 @@ pub use last_known_good::exists as has_last_known_good;
 pub use last_known_good::hub::exists as has_hub_last_known_good;
 pub use last_known_good::hub::load as load_hub_last_known_good;
 pub use types::{GatewayExit, ReloadSignal, ServerCommand};
+pub use web::teams_setup;
