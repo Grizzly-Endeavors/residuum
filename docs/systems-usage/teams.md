@@ -90,6 +90,53 @@ port = 7701
 
 A corrupt `teams_state.json` is moved aside (to `teams_state.json.corrupt`) and the interface starts fresh with a notice, rather than staying down until someone fixes the file by hand — the owner and every conversation reference are lost, so the owner will need to message the bot again to be recognized.
 
+## Automated Setup & Toolkit Runner
+
+Residuum integrates the Microsoft 365 Agents Toolkit (`@microsoft/m365agentstoolkit-cli`) to automate bot registration, provisioning, app packaging, and sideloading without manual portal clicks.
+
+### Job Lifecycle and Phases
+
+Automated setup runs as an in-memory, agent-scoped job managed by `TeamsSetupJobManager`. Only one job can run per agent at a time (concurrent attempts return HTTP `409 Conflict`). The job executes through sequential phases:
+
+1. **Check Prerequisites (`check_prereqs`)**: Verifies that Node.js (v18+ LTS recommended) and npm are installed in `PATH`.
+2. **Install CLI (`install_cli`)**: Installs the pinned Microsoft 365 Agents Toolkit CLI (`@microsoft/m365agentstoolkit-cli@1.1.17`) into `<hub>/tools/m365agentstoolkit`. Skipped if already installed.
+3. **Sign In (`sign_in`)**: Checks whether the user is already authenticated via `atk auth list m365`. If not, runs `atk auth login m365`, extracts the login URL and local redirect port, and transitions the job to `waiting_for_user`. Once the user authenticates (or forwards the OAuth callback URL via `forward_redirect`), execution resumes.
+4. **Scaffold (`scaffold`)**: Generates the ATK project files (`m365agents.yml`, `appPackage/manifest.json`, icons) in `<agent>/teams-app/`.
+5. **Provision (`provision`)**: Runs `atk provision --env residuum --interactive false` to register the Entra bot app and generate credentials in `env/.env.residuum`. If provisioning fails mid-way, partial resources (e.g., `BOT_ID`) are captured and preserved so they can be cleaned up or retried.
+6. **Import (`import`)**: Decrypts the bot password, stores it in Residuum's `SecretStore` under secret `teams`, updates `[teams]` in the agent's `config.toml`, and creates checkpoints.
+7. **Install App (`install_app`)**: Optional post-setup step that sideloads the generated `appPackage.residuum.zip` into the user's Teams tenant via `atk install`.
+
+### File Layout
+
+- `<hub>/tools/m365agentstoolkit/`: Hub-level tool directory hosting the isolated npm installation and binary wrapper for the Agents Toolkit CLI.
+- `<agent>/teams-app/`: Agent-specific project workspace holding:
+  - `m365agents.yml`: Project manifest configuring ATK actions.
+  - `appPackage/`: App manifest template (`manifest.json`), icons (`color.png`, `outline.png`), and built deployment package (`build/appPackage.residuum.zip`).
+  - `env/.env.residuum` & `env/.env.residuum.user`: Environment files containing `BOT_ID`, `TEAMS_APP_TENANT_ID`, `TEAMS_APP_ID`, and encrypted bot credentials.
+
+### Authentication and Token Cache
+
+The ATK CLI stores Microsoft 365 account credentials in `~/.fx/account/`. When a user signs in, tokens are cached there and reused across setup runs.
+To sign out or switch accounts:
+- Call the cleanup endpoint with `sign_out: true` or run `atk auth logout m365`.
+
+### Multi-Tenancy Considerations
+
+The Microsoft 365 Agents Toolkit authentication cache (`~/.fx/account/`) is user-global. All agents set up on the same machine share the signed-in tenant unless explicitly logged out and switched. Each agent requires its own bot registration and unique listener port (e.g., `7701`, `7702`), but can share the same tenant.
+
+### Daemon-Restart and Recovery
+
+Setup jobs are held in daemon memory. If the Residuum daemon restarts while a setup job is running or waiting:
+- The in-memory job state is lost, but files created on disk (`<agent>/teams-app/`) remain intact.
+- Calling the setup API or asking the agent to retry resumes the workflow: existing tools and signed-in status are detected immediately, and already-scaffolded files are preserved unless `replace_existing` is specified.
+
+### Cleanup Endpoint
+
+The cleanup endpoint (`DELETE /api/teams-setup` or `residuum teams cleanup`) allows selective or complete cleanup of local assets:
+- `project_files: true`: Deletes `<agent>/teams-app/`.
+- `cli: true`: Removes `<hub>/tools/m365agentstoolkit/`.
+- `sign_out: true`: Runs `atk auth logout m365` to clear credentials.
+
 ## Code
 
-`src/interfaces/teams/`: `mod.rs` (listener, worker, reply routing), `auth.rs` (token validation), `handler.rs` (activity handling), `connector.rs` (outbound calls), `store.rs`, `subscriber.rs`, `activity.rs` (wire types). The unmentioned-message buffer is `src/interfaces/context_buffer.rs`, shared with Discord and Telegram.
+`src/interfaces/teams/`: `mod.rs` (listener, worker, reply routing), `atk_runner.rs` (CLI execution, log streaming, prereqs, sign-in), `setup_job.rs` (job lifecycle manager), `setup_types.rs` (contract types), `auth.rs` (token validation), `handler.rs` (activity handling), `connector.rs` (outbound calls), `store.rs`, `subscriber.rs`, `activity.rs` (wire types). The unmentioned-message buffer is `src/interfaces/context_buffer.rs`, shared with Discord and Telegram.

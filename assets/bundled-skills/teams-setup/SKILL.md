@@ -41,18 +41,18 @@ Before running any commands:
 
 ## 3. Microsoft 365 Authentication
 
-Because agent tool execution via `exec` runs synchronously and waits for command exit, running interactive login directly will hang. Instead, launch the login command as a background process and log its output:
+Because agent tool execution via `exec` runs synchronously and waits for command exit, running interactive login directly will hang. Instead, launch login detached using the cross-platform `atk-login` helper:
 
-1. Create the project directory (or scaffold it first via step 4) and start login in the background:
+1. Start login detached via Residuum:
    ```bash
-   mkdir -p <project_dir>
-   nohup <atk_bin> auth login m365 > "<project_dir>/atk-login.log" 2>&1 & echo $! > "<project_dir>/atk-login.pid"
+   residuum teams atk-login --agent <agent_name>
    ```
+   This command starts the login process in the background, waits until the sign-in URL appears, prints the URL and redirect port, and returns while the login keeps running.
+   You can also inspect its progress or cancel:
+   - Check status: `residuum teams atk-login --agent <agent_name> --status`
+   - Cancel: `residuum teams atk-login --agent <agent_name> --cancel`
 
-2. Read `<project_dir>/atk-login.log`:
-   The output contains the sign-in URL:
-   `Log in to your Microsoft 365 account - opening default web browser at <url>`
-   Parse the URL and present it clearly to the user in chat.
+2. Present the printed Microsoft sign-in URL clearly to the user in chat.
 
 3. When the user signs in on a remote or different machine, their browser redirects to `http://localhost:<port>/?code=...` and cannot connect.
    Ask the user to paste that full address into chat. Then forward the redirect to the local listener:
@@ -60,10 +60,7 @@ Because agent tool execution via `exec` runs synchronously and waits for command
    residuum teams forward-redirect "<pasted-url>"
    ```
    The local listener completes the token exchange and exits.
-   Verify the login process finished and remove the temporary `.pid` and `.log` files:
-   ```bash
-   rm -f "<project_dir>/atk-login.pid" "<project_dir>/atk-login.log"
-   ```
+   Verify with `residuum teams atk-login --agent <agent_name> --status` that sign-in completed.
 
 ## 4. Scaffold the Project
 

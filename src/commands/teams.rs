@@ -8,6 +8,7 @@ use residuum::interfaces::teams::atk::{
     AtkScaffoldOptions, derive_cloud_teams_endpoint, forward_redirect, import_atk_project,
     resolve_atk_paths, scaffold_atk_project,
 };
+use residuum::interfaces::teams::atk_runner::AgentLoginManager;
 use residuum::util::FatalError;
 
 /// Teams management subcommands.
@@ -26,6 +27,18 @@ pub(super) enum TeamsCommand {
     ForwardRedirect {
         /// The redirect URL copied from your browser (e.g. `http://localhost:<port>/?code=...`)
         url: String,
+    },
+    /// Manage detached Microsoft 365 Agents Toolkit authentication
+    AtkLogin {
+        /// Name of the agent to authenticate
+        #[arg(long)]
+        agent: String,
+        /// Check authentication status for this agent
+        #[arg(long)]
+        status: bool,
+        /// Cancel a running detached login process
+        #[arg(long)]
+        cancel: bool,
     },
     /// Scaffold a new Microsoft 365 Agents Toolkit project for an agent
     AtkScaffold(Box<AtkScaffoldArgs>),
@@ -134,52 +147,15 @@ pub(super) async fn run_teams_command_at(
             let status = forward_redirect(url).await?;
             println!("Successfully forwarded redirect URL to local listener (HTTP {status}).");
         }
+        TeamsCommand::AtkLogin {
+            agent,
+            status,
+            cancel,
+        } => {
+            handle_atk_login(residuum_root, agent, *status, *cancel).await?;
+        }
         TeamsCommand::AtkScaffold(args) => {
-            let endpoint = match args.endpoint.clone() {
-                Some(ep) => ep,
-                None => {
-                    if let Some(derived) =
-                        derive_cloud_teams_endpoint(residuum_root, &args.agent).await
-                    {
-                        derived
-                    } else {
-                        return Err(FatalError::Config(
-                            "no --endpoint was specified and could not derive a cloud endpoint (is Residuum Cloud connected?); please provide --endpoint <URL>".to_string()
-                        ));
-                    }
-                }
-            };
-            let options = AtkScaffoldOptions {
-                agent_name: args.agent.clone(),
-                endpoint,
-                project_dir: args.dir.clone(),
-                force: args.force,
-                bot_name: args.bot_name.clone(),
-                developer_name: args.developer_name.clone(),
-                developer_url: args.developer_url.clone(),
-                privacy_url: args.privacy_url.clone(),
-                terms_url: args.terms_url.clone(),
-                short_description: args.short_description.clone(),
-                long_description: args.long_description.clone(),
-                color_icon: args.color_icon.clone(),
-                outline_icon: args.outline_icon.clone(),
-            };
-            let result = scaffold_atk_project(residuum_root, &options).await?;
-            if args.json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&result)
-                        .map_err(|e| FatalError::Config(e.to_string()))?
-                );
-            } else {
-                println!("Teams ATK project scaffolded successfully:");
-                println!("  Agent:        {}", args.agent);
-                println!("  Project Dir:  {}", result.project_dir.display());
-                println!("  ATK Binary:   {}", result.atk_bin.display());
-                println!("  Package Zip:  {}", result.package_zip.display());
-                println!("  Env File:     {}", result.env_file.display());
-                println!("  Endpoint:     {}", result.endpoint);
-            }
+            handle_atk_scaffold(residuum_root, args).await?;
         }
         TeamsCommand::AtkPaths { agent, json } => {
             let paths = resolve_atk_paths(residuum_root, agent);
@@ -197,6 +173,83 @@ pub(super) async fn run_teams_command_at(
                 println!("  Env File:     {}", paths.env_file.display());
             }
         }
+    }
+    Ok(())
+}
+
+async fn handle_atk_login(
+    residuum_root: &Path,
+    agent: &str,
+    status: bool,
+    cancel: bool,
+) -> Result<(), FatalError> {
+    if cancel {
+        let cancelled = AgentLoginManager::cancel(residuum_root, agent).await?;
+        if cancelled {
+            println!("Login process cancelled for agent '{agent}'.");
+        } else {
+            println!("No active login process found for agent '{agent}'.");
+        }
+    } else if status {
+        let status_msg = AgentLoginManager::status(residuum_root, agent).await;
+        println!("Microsoft 365 sign-in status for agent '{agent}':\n{status_msg}");
+    } else {
+        let (url, port) = AgentLoginManager::start(residuum_root, agent).await?;
+        println!("Microsoft 365 login started in background for agent '{agent}'.");
+        println!("Open this URL in your browser to sign in:");
+        println!("  {url}");
+        println!("Redirect port: {port}");
+        println!("Once signed in, if remote, forward redirect with:");
+        println!("  residuum teams forward-redirect \"<pasted-url>\"");
+    }
+    Ok(())
+}
+
+async fn handle_atk_scaffold(
+    residuum_root: &Path,
+    args: &AtkScaffoldArgs,
+) -> Result<(), FatalError> {
+    let endpoint = match args.endpoint.clone() {
+        Some(ep) => ep,
+        None => {
+            if let Some(derived) = derive_cloud_teams_endpoint(residuum_root, &args.agent).await {
+                derived
+            } else {
+                return Err(FatalError::Config(
+                    "no --endpoint was specified and could not derive a cloud endpoint (is Residuum Cloud connected?); please provide --endpoint <URL>".to_string(),
+                ));
+            }
+        }
+    };
+    let options = AtkScaffoldOptions {
+        agent_name: args.agent.clone(),
+        endpoint,
+        project_dir: args.dir.clone(),
+        force: args.force,
+        bot_name: args.bot_name.clone(),
+        developer_name: args.developer_name.clone(),
+        developer_url: args.developer_url.clone(),
+        privacy_url: args.privacy_url.clone(),
+        terms_url: args.terms_url.clone(),
+        short_description: args.short_description.clone(),
+        long_description: args.long_description.clone(),
+        color_icon: args.color_icon.clone(),
+        outline_icon: args.outline_icon.clone(),
+    };
+    let result = scaffold_atk_project(residuum_root, &options).await?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&result).map_err(|e| FatalError::Config(e.to_string()))?
+        );
+    } else {
+        println!("Teams ATK project scaffolded successfully:");
+        println!("  Agent:        {}", args.agent);
+        println!("  Project Dir:  {}", result.project_dir.display());
+        println!("  ATK Binary:   {}", result.atk_bin.display());
+        println!("  Package Zip:  {}", result.package_zip.display());
+        println!("  Env File:     {}", result.env_file.display());
+        println!("  Endpoint:     {}", result.endpoint);
     }
     Ok(())
 }
@@ -304,5 +357,47 @@ mod tests {
         run_teams_command_at(&residuum_root, &paths_cmd)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_teams_command_atk_login_status_and_cancel_handling() {
+        let temp = tempfile::tempdir().unwrap();
+        let residuum_root = temp.path().to_path_buf();
+        let agent_path = residuum_root.join("scout");
+        let teams_app = agent_path.join("teams-app");
+        tokio::fs::create_dir_all(&teams_app).await.unwrap();
+
+        // 1. Status when no pid file exists
+        let status_cmd = TeamsCommand::AtkLogin {
+            agent: "scout".to_string(),
+            status: true,
+            cancel: false,
+        };
+        run_teams_command_at(&residuum_root, &status_cmd)
+            .await
+            .unwrap();
+
+        // 2. Status with stale pid file (process dead)
+        let pid_path = teams_app.join("atk-login.pid");
+        let log_path = teams_app.join("atk-login.log");
+        tokio::fs::write(&pid_path, "9999999\n").await.unwrap();
+        tokio::fs::write(&log_path, "Login timed out\n")
+            .await
+            .unwrap();
+
+        let status_str = AgentLoginManager::status(&residuum_root, "scout").await;
+        assert!(status_str.contains("failed (process exited)"));
+        assert!(status_str.contains("Login timed out"));
+
+        // 3. Cancel command removes pid file
+        let cancel_cmd = TeamsCommand::AtkLogin {
+            agent: "scout".to_string(),
+            status: false,
+            cancel: true,
+        };
+        run_teams_command_at(&residuum_root, &cancel_cmd)
+            .await
+            .unwrap();
+        assert!(!pid_path.exists());
     }
 }

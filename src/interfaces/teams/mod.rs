@@ -15,9 +15,12 @@
 
 mod activity;
 pub mod atk;
+pub mod atk_runner;
 mod auth;
 mod connector;
 mod handler;
+pub mod setup_job;
+pub mod setup_types;
 mod store;
 mod subscriber;
 

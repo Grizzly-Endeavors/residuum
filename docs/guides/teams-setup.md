@@ -7,7 +7,36 @@ You will need:
 - A Microsoft 365 work or school account whose Teams lets you upload custom apps. Check in Teams under **Apps → Manage your apps**: if you see **Upload an app**, you're set. If not, your IT admin has to allow custom app upload for you or approve the app.
 - Residuum Cloud connected, which gives the bot its public address. Microsoft delivers every Teams message to your bot over the internet; there is no mode where the bot connects out instead. A tunnel of your own to the Teams port works instead, and step 3 covers both.
 
-## 1. Register the bot
+## Automated Setup (Recommended)
+
+You can set up Teams automatically without manually creating resources in the Microsoft portal.
+
+### Option 1: Web UI Settings Wizard
+
+1. Open **Settings → Connections → Microsoft Teams** in the Residuum web interface.
+2. Click **Set up with Microsoft 365 Agents Toolkit**.
+3. Follow the guided wizard:
+   - Check system prerequisites (Node.js 18+ and npm).
+   - If needed, consent to install the Microsoft 365 Agents Toolkit CLI.
+   - Click the Microsoft sign-in link to authenticate in your browser. If working on a remote machine, paste the final redirect URL into the prompt.
+   - Enter your bot details and icons.
+   - Residuum will scaffold the project, provision the bot resources in Entra, and save your credentials automatically.
+   - Optionally choose **Install App** to sideload the package directly into Teams.
+
+### Option 2: Ask Your Agent
+
+If your agent has the `teams-setup` skill enabled, you can simply ask it:
+> "Set up a Microsoft Teams bot for this agent"
+
+The agent will check your prerequisites, start the background login flow, give you the sign-in URL, provision the resources, and configure its own connection.
+
+---
+
+## Manual Setup
+
+If you prefer to configure the bot yourself using the Teams Developer Portal, follow the steps below.
+
+### 1. Register the bot
 
 1. Open the Teams Developer Portal at [dev.teams.microsoft.com](https://dev.teams.microsoft.com) and sign in with your work account.
 2. Go to **Tools → Bot management** and create a new bot. Give it the name you want to see in Teams.
