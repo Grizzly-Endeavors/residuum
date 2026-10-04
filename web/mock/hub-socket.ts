@@ -155,6 +155,10 @@ export function openHubSocket(
     presence.set(ws, reports);
     ws.on("close", () => presence.delete(ws));
     sendFrame(ws, { type: "hub_boot", boot_id: bootId } satisfies HubServerMessage);
+    sendFrame(ws, {
+      type: "system_one_status",
+      status: { configured: false, provider: null, model: null, outage: null },
+    } satisfies HubServerMessage);
     sendFrame(ws, { type: "agents_snapshot", ...listing() } satisfies HubServerMessage);
     ws.on("message", (raw) => {
       const read = readClientFrame(frameText(raw));

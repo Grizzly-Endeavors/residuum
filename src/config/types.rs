@@ -443,6 +443,42 @@ impl Default for RepeatCallGuardConfig {
     }
 }
 
+/// Validated `[auto_mode]`: plain-language rules a decision model checks
+/// every tool call against before it runs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AutoModeConfig {
+    pub enabled: bool,
+    /// What the agent isn't allowed to do. A call matching one is blocked.
+    pub deny: Vec<String>,
+    /// Exceptions: a call matching one of these runs even if it matches a
+    /// deny rule.
+    pub allow: Vec<String>,
+    /// Probability (exclusive 0 to inclusive 1) at which a rule matches.
+    pub threshold: f64,
+}
+
+/// The probability at which an Auto Mode rule counts as matching.
+pub const DEFAULT_AUTO_MODE_THRESHOLD: f64 = 0.5;
+
+impl Default for AutoModeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            deny: Vec::new(),
+            allow: Vec::new(),
+            threshold: DEFAULT_AUTO_MODE_THRESHOLD,
+        }
+    }
+}
+
+impl AutoModeConfig {
+    /// Whether any call would be checked: enabled with at least one deny rule.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.enabled && !self.deny.is_empty()
+    }
+}
+
 /// Validated idle system configuration.
 #[derive(Clone, Debug, PartialEq)]
 pub struct IdleConfig {
@@ -868,6 +904,8 @@ pub struct Config {
     pub background: BackgroundConfig,
     /// Agent ability gates.
     pub agent: AgentAbilitiesConfig,
+    /// Auto Mode rules for tool calls.
+    pub auto_mode: AutoModeConfig,
     /// Idle system configuration.
     pub idle: IdleConfig,
     /// Sampling temperature for model completions.
@@ -924,6 +962,7 @@ impl fmt::Debug for Config {
             .field("retry", &self.retry)
             .field("background", &self.background)
             .field("agent", &self.agent)
+            .field("auto_mode", &self.auto_mode)
             .field("idle", &self.idle)
             .field("temperature", &self.temperature)
             .field("thinking", &self.thinking)

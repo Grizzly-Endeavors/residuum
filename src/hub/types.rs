@@ -401,6 +401,11 @@ pub enum HubSocketFrame {
     /// what it missed. A client reads the sessions it follows again over
     /// HTTP.
     SessionRelayLagged,
+    /// The System 1 (decision model) service's status: sent after the first
+    /// snapshot and again whenever it changes.
+    SystemOneStatus {
+        status: crate::inference::system_one::SystemOneStatus,
+    },
 }
 
 /// The kind of subscription a `subscribed` frame confirms.

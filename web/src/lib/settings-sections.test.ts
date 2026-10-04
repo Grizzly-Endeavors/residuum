@@ -20,6 +20,7 @@ describe("section registry", () => {
       ["model", "Model", "main"],
       ["connections", "Connections", "main"],
       ["tools", "Tools & skills", "main"],
+      ["auto_mode", "Auto Mode", "main"],
       ["memory", "Memory", "main"],
       ["schedule", "Schedule", "main"],
       ["runtime", "Runtime", "advanced"],
@@ -36,6 +37,7 @@ describe("section registry", () => {
       ["notifications", "Notifications", "main"],
       ["cloud", "Residuum Cloud", "main"],
       ["keys", "Saved keys", "main"],
+      ["system_one", "Decision model", "main"],
       ["updates", "Updates", "main"],
       ["limits", "Session limits", "main"],
       ["listener", "Agent-to-agent", "advanced"],
@@ -56,6 +58,7 @@ describe("section registry", () => {
       "model",
       "connections",
       "tools",
+      "auto_mode",
       "memory",
       "schedule",
     ]);

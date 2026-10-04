@@ -119,6 +119,17 @@ export interface ConfigFields {
   cloud_local_port: string;
   // push
   push_contact: string;
+  // decision model (hub)
+  system_one_provider: string;
+  system_one_model: string;
+  system_one_url: string;
+  system_one_api_key: string;
+  system_one_keep_alive: string;
+  // auto mode (agent)
+  auto_mode_enabled: boolean;
+  auto_mode_deny: string[];
+  auto_mode_allow: string[];
+  auto_mode_threshold: string;
   // tracing
   tracing_log_level: string;
   tracing_auto_error_reporting: boolean;
@@ -210,6 +221,15 @@ export function defaultConfigFields(): ConfigFields {
     cloud_relay_url: "",
     cloud_local_port: "",
     push_contact: "",
+    system_one_provider: "",
+    system_one_model: "",
+    system_one_url: "",
+    system_one_api_key: "",
+    system_one_keep_alive: "",
+    auto_mode_enabled: false,
+    auto_mode_deny: [],
+    auto_mode_allow: [],
+    auto_mode_threshold: "",
     tracing_log_level: "",
     tracing_auto_error_reporting: false,
     tracing_sanitize_content: true,
@@ -241,6 +261,10 @@ function str(v: unknown): string {
 
 function bool(v: unknown, fallback: boolean): boolean {
   return typeof v === "boolean" ? v : fallback;
+}
+
+function stringList(v: unknown): string[] {
+  return Array.isArray(v) ? v.map((item) => str(item)) : [];
 }
 
 function isTable(v: unknown): v is Record<string, unknown> {
@@ -428,6 +452,23 @@ export function parseConfigToml(raw: string, hubRaw = ""): ConfigFields {
 
   const push = doc.push as Record<string, unknown> | undefined;
   if (push) fields.push_contact = str(push.contact);
+
+  const systemOne = doc.system_one as Record<string, unknown> | undefined;
+  if (systemOne) {
+    fields.system_one_provider = str(systemOne.provider);
+    fields.system_one_model = str(systemOne.model);
+    fields.system_one_url = str(systemOne.url);
+    fields.system_one_api_key = str(systemOne.api_key);
+    fields.system_one_keep_alive = str(systemOne.keep_alive);
+  }
+
+  const autoMode = doc.auto_mode as Record<string, unknown> | undefined;
+  if (autoMode) {
+    fields.auto_mode_enabled = bool(autoMode.enabled, false);
+    fields.auto_mode_deny = stringList(autoMode.deny);
+    fields.auto_mode_allow = stringList(autoMode.allow);
+    fields.auto_mode_threshold = str(autoMode.threshold);
+  }
 
   const tracing = doc.tracing as Record<string, unknown> | undefined;
   if (tracing) {
@@ -925,6 +966,17 @@ export const CONFIG_FIELD_MAP: readonly FieldSpec[] = [
 
   { key: "push_contact", path: ["push", "contact"], kind: "string" },
 
+  { key: "system_one_provider", path: ["system_one", "provider"], kind: "string" },
+  { key: "system_one_model", path: ["system_one", "model"], kind: "string" },
+  { key: "system_one_url", path: ["system_one", "url"], kind: "string" },
+  { key: "system_one_api_key", path: ["system_one", "api_key"], kind: "string" },
+  { key: "system_one_keep_alive", path: ["system_one", "keep_alive"], kind: "string" },
+
+  { key: "auto_mode_enabled", path: ["auto_mode", "enabled"], kind: "bool", default: false },
+  { key: "auto_mode_deny", path: ["auto_mode", "deny"], kind: "stringArray" },
+  { key: "auto_mode_allow", path: ["auto_mode", "allow"], kind: "stringArray" },
+  { key: "auto_mode_threshold", path: ["auto_mode", "threshold"], kind: "number" },
+
   { key: "tracing_log_level", path: ["tracing", "log_level"], kind: "string" },
   {
     key: "tracing_auto_error_reporting",
@@ -1091,6 +1143,7 @@ const HUB_SECTIONS: ReadonlySet<string> = new Set([
   "gateway",
   "cloud",
   "push",
+  "system_one",
   "tracing",
 ]);
 

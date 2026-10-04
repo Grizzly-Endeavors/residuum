@@ -205,6 +205,19 @@ enabled = true
 # repeat_call_stop_after = 6         # consecutive identical calls before the turn ends
 #                                     # instead of running the call again
 
+# ── Auto Mode (optional) ─────────────────────────────────────────────────────
+# Plain-language rules every tool call is checked against before it runs,
+# using the decision model set in hub/config.toml [system_one]. A call that
+# matches a deny rule (and no allow rule) is skipped, and the agent is told
+# which rule it hit. If the decision model can't be reached, calls run
+# unchecked and Home shows one notice until it's back.
+#
+# [auto_mode]
+# enabled = true
+# deny = ["Pushing to the main branch", "Deleting files outside the workspace"]
+# allow = ["Deleting files under tmp/"]   # exceptions to the deny rules
+# threshold = 0.5                          # how sure the model must be that a rule matches (0 to 1)
+
 # ── Web search (optional) ────────────────────────────────────────────────
 # Providers with native search (Anthropic, OpenAI, Gemini) enable it
 # automatically. OpenAI-type providers only qualify when pointed at the OpenAI

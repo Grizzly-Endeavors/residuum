@@ -33,14 +33,16 @@ pub(crate) use constants::{
     DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS, DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
     DEFAULT_TEAMS_PORT,
 };
-pub use hub_types::{HubA2aConfig, HubBackgroundConfig, HubConfig, HubPushConfig};
+pub use hub_types::{
+    HubA2aConfig, HubBackgroundConfig, HubConfig, HubPushConfig, SystemOneConfig, SystemOneProvider,
+};
 pub use paths::{HubPaths, default_hub_dir, discover_agents, residuum_root, validate_agent_name};
 pub use provider::{ModelSpec, ProviderKind, ProviderSpec};
 pub use secrets::SecretStore;
 pub use types::{
-    A2aConfig, A2aVisibility, AgentAbilitiesConfig, BackgroundConfig, BackgroundModelTier,
-    BackgroundModelsConfig, CloudConfig, Config, DiscordConfig, GatewayConfig, IdleConfig,
-    LearningConfig, LogLevel, MemoryConfig, OtelEndpoint, ProviderNativeSearchConfig,
+    A2aConfig, A2aVisibility, AgentAbilitiesConfig, AutoModeConfig, BackgroundConfig,
+    BackgroundModelTier, BackgroundModelsConfig, CloudConfig, Config, DiscordConfig, GatewayConfig,
+    IdleConfig, LearningConfig, LogLevel, MemoryConfig, OtelEndpoint, ProviderNativeSearchConfig,
     RepeatCallGuardConfig, RoleOverrides, SearchConfig, SkillsConfig, StandaloneBackendConfig,
     SubconsciousSettings, TeamsConfig, TelegramConfig, ToolsConfig, TracingConfig, WebSearchConfig,
     WebhookEntry, WebhookFormat, WebhookRouting,

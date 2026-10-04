@@ -65,6 +65,18 @@ port = 7700
 # contact = "mailto:you@example.com"   # a mailto: address or an https:// URL. Empty or unset
 #                                       # uses https://github.com/Grizzly-Endeavors/residuum
 
+# ── Decision model (System 1, optional) ──────────────────────────────────────
+# A fast model that answers typed questions (yes/no, pick one, rate) instead
+# of writing text. Every agent shares it; Auto Mode uses it to check each tool
+# call against the agent's rules. Set from Settings → All agents → Decision model.
+#
+# [system_one]
+# provider = "typesafe"         # "typesafe", "ollama" (0.35+), or "other"
+# model = "jev-latest"          # default for typesafe; required for ollama and other (e.g. "nimble")
+# api_key = "secret:typesafe"   # typesafe: required (falls back to TYPESAFE_API_KEY); other: optional
+# url = ""                      # required for other; defaults to https://api.typesafe.ai or http://localhost:11434
+# keep_alive = "5m"             # ollama only: how long the model stays loaded
+
 # ── Tracing and observability (optional) ─────────────────────────────────────
 # [tracing]
 # log_level = "debug"             # "info", "debug", or "trace"

@@ -26,6 +26,7 @@ pub mod providers;
 pub(crate) mod scheduled;
 pub mod secrets;
 pub(crate) mod sessions;
+mod system_one;
 pub mod tracing_api;
 pub mod update;
 pub(crate) mod workbench;
@@ -522,6 +523,14 @@ pub(crate) fn hub_api_router(state: HubApiState) -> axum::Router {
         .route(
             "/api/hub/providers/models",
             post(providers::api_provider_models),
+        )
+        .route(
+            "/api/hub/system-one/models",
+            post(system_one::api_system_one_models),
+        )
+        .route(
+            "/api/hub/system-one/test",
+            post(system_one::api_system_one_test),
         )
         .route("/api/hub/system/timezone", get(config::api_system_timezone))
         .route("/api/hub/mcp-catalog", get(config::api_mcp_catalog))

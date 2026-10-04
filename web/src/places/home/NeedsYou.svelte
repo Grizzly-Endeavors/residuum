@@ -4,7 +4,9 @@
   import { Icon, type IconName } from "../../lib/icons";
   import type { NeedsYouItem } from "../../lib/needs-you";
   import { overview } from "../../lib/overview.svelte";
+  import { router } from "../../lib/router.svelte";
   import { formatLocation, locationAt, type Place } from "../../lib/routes";
+  import { ALL_SCOPE } from "../../lib/settings-sections";
   import { relativeTime } from "../../lib/time";
   import { Badge, Button, Disclosure } from "../../lib/ui";
   import type { ShellActions } from "../../shell/shell-actions";
@@ -33,6 +35,7 @@
     failed: "warning",
     outbound: "handoff",
     inbox: "inbox",
+    system_one: "warning",
   };
 
   async function run(key: string, action: string, call: () => Promise<unknown>): Promise<void> {
@@ -96,6 +99,15 @@
               {#if note}
                 <p class="need-note" role="status">{note} Stop watching closes it here instead.</p>
               {/if}
+            {:else if item.kind === "system_one"}
+              <p class="need-title">
+                Auto Mode can't check tool calls
+                <span class="need-meta">{relativeTime(item.outage.since, now)}</span>
+              </p>
+              <p class="need-detail">
+                {item.outage.message} Until {item.provider ?? "the decision model"} answers, agents with
+                Auto Mode on run their tool calls without checking them.
+              </p>
             {:else}
               <p class="need-title">
                 {item.item.title}
@@ -130,6 +142,13 @@
                   void run(item.key, "unwatch", () =>
                     overview.stopWatching(item.agent, item.problem.task_id),
                   )}>Stop watching</Button
+              >
+            {:else if item.kind === "system_one"}
+              <Button
+                size="sm"
+                onclick={() =>
+                  void router.openSettings({ scope: ALL_SCOPE, section: "system_one" })}
+                >Decision model settings</Button
               >
             {:else}
               {@const place = inboxPlace(item.item.agent, item.item.id)}

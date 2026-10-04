@@ -35,6 +35,7 @@ import type {
   HubClientMessage,
   HubServerMessage,
   NoticeLevel,
+  SystemOneStatus,
 } from "./hub-types";
 import type { ToastAction } from "./toast.svelte";
 import { normalizeTeamWatchPrefix } from "./workspace-watch";
@@ -79,6 +80,8 @@ export class HubStore {
   stopping = $state<string[]>([]);
   /** Notices received this session, newest first. */
   notices = $state<HubNotice[]>([]);
+  /** The decision model service: configured or not, and any outage. Null until the socket says. */
+  systemOne = $state<SystemOneStatus | null>(null);
   /**
    * Deleted agents that can be restored, newest deletion first. Empty until
    * `refreshDeleted` has run; kept current after that. Never lists an agent
@@ -357,6 +360,9 @@ export class HubStore {
         break;
       case "workspace_watch_unavailable":
         this.addNotice("warn", msg.message);
+        break;
+      case "system_one_status":
+        this.systemOne = msg.status;
         break;
       case "hub_boot":
       case "hub_config_reloaded":

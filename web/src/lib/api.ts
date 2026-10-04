@@ -363,6 +363,48 @@ export async function fetchProviderModels(
   });
 }
 
+/** The decision model form's values, saved or not: what the model list and the connection test use. */
+export interface SystemOneForm {
+  provider: string;
+  url?: string;
+  model?: string;
+  /** A literal key or a `secret:<name>` reference. */
+  api_key?: string;
+  keep_alive?: string;
+}
+
+/** `POST /api/hub/system-one/models`. */
+export interface SystemOneModelsResponse {
+  models: { id: string; description: string | null }[];
+  /** Why the list couldn't be read, in plain words. */
+  error?: string;
+}
+
+/** `POST /api/hub/system-one/test`. */
+export interface SystemOneTestResponse {
+  ok: boolean;
+  message: string;
+  answered_by?: string;
+}
+
+/** The model names a decision model provider accepts. Throws `ApiError` only when the hub can't be reached. */
+export async function fetchSystemOneModels(form: SystemOneForm): Promise<SystemOneModelsResponse> {
+  return apiFetch<SystemOneModelsResponse>(hubPath("/system-one/models"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(form),
+  });
+}
+
+/** Ask the decision model the form describes one small question. Throws `ApiError` only when the hub can't be reached. */
+export async function testSystemOne(form: SystemOneForm): Promise<SystemOneTestResponse> {
+  return apiFetch<SystemOneTestResponse>(hubPath("/system-one/test"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(form),
+  });
+}
+
 /** The MCP catalog. Throws `ApiError`; a failed read isn't cached, so the caller can offer Try again. */
 export async function fetchMcpCatalog(): Promise<McpCatalogEntry[]> {
   return cachedFetch(CACHE_KEY_MCP_CATALOG, () =>

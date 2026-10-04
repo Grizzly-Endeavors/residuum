@@ -32,6 +32,8 @@ The hub serves everything the backend offers from one router over its `AgentDire
 | `GET`/`PUT /api/hub/config/raw`, `PATCH /api/hub/config/patch`, `POST /api/hub/config/validate` | The hub's `config.toml`. |
 | `POST /api/hub/config/complete-setup` | Onboarding: writes the hub config, the team layer, and the first agent's directory, then the hub starts that agent (see [hub.md](hub.md#start-up-and-shutdown)). `409` when an agent already exists. |
 | `POST /api/hub/providers/models` | Lists the models a provider offers from the settings in the request, with no agent. `secret:` keys resolve against the hub's secret store. |
+| `POST /api/hub/system-one/models` | Lists the model names a [decision model](system-one.md) provider accepts, from `{ provider, url?, model?, api_key?, keep_alive? }` (the settings form's values, saved or not). Answers `{ models: [{ id, description }], error? }`, with a plain-language `error` when the list can't be read. `secret:` keys resolve against the hub's secret store. |
+| `POST /api/hub/system-one/test` | Asks the decision model the same body describes one small question, without touching the running service or its status. Answers `{ ok, message, answered_by? }`; `message` says what happened in plain words. |
 | `GET`/`POST /api/hub/secrets`, `DELETE /api/hub/secrets/{name}` | Secret names and writes. |
 | `GET`/`POST /api/hub/agent-keys`, `DELETE /api/hub/agent-keys/{name}` | Agent keys (see [agent-keys.md](agent-keys.md)). |
 | `GET`/`POST /api/hub/a2a/keys`, `DELETE /api/hub/a2a/keys/{name}` | A2A caller keys (see [a2a.md](a2a.md)). |
@@ -169,7 +171,8 @@ Through Residuum Cloud the tunnel's loopback client passes the browser's `Accept
 | Frame | Sent when |
 |-------|-----------|
 | `hub_boot` `{ boot_id }` | First on every connection. `boot_id` is a random id the hub generates at startup, and the team event log's id too: every connection to one process sees the same id, and a restarted hub has a new one. |
-| `agents_snapshot` `{ agents, activity, stopping }` | After `hub_boot`, and again whenever the connection fell behind the hub's event stream, the team event log or the overview frames and lost frames. It has the three fields of `GET /api/hub/agents`. A client that gets one after its first reads the events it missed from `GET /api/hub/events` and the overviews from `GET /api/hub/overview`. |
+| `system_one_status` `{ status }` | After `hub_boot`, and again whenever the [decision model's](system-one.md#status-and-outages) status changes. `status` is `{ configured, provider, model, outage }`; `outage` is `null`, or `{ kind, message, since }` with `kind` one of `not_configured`, `unreachable` or `rejected` and `message` a plain-language reason. |
+| `agents_snapshot` `{ agents, activity, stopping }` | After `system_one_status`, and again whenever the connection fell behind the hub's event stream, the team event log or the overview frames and lost frames. It has the three fields of `GET /api/hub/agents`. A client that gets one after its first reads the events it missed from `GET /api/hub/events` and the overviews from `GET /api/hub/overview`. |
 | `agent_state` `{ agent }` | An agent's state, `autostart`, or visibility changed. |
 | `agent_stopping` `{ name }` | A running agent's stop began. Its `state` stays `running` until the stop finishes, which `agent_state` then reports. From this frame on, the team router refuses teammate messages for it and the relay stops listing it. |
 | `agent_created` `{ agent, by }`, `agent_restored` `{ agent, by }`, `agent_deleted` `{ name, by }` | An agent was created, restored from its checkpoint history, or deleted. `by` is `user` or `agent:<name>`. |

@@ -27,6 +27,9 @@ pub(super) struct ToolRegistryDeps<'a> {
     /// Shared write policy — the same instance sessions fork with and
     /// config reloads update.
     pub path_policy: &'a crate::tools::SharedPathPolicy,
+    /// The agent's Auto Mode, attached to main's registry so the turn loop
+    /// checks main's tool calls against it.
+    pub auto_mode: &'a crate::agent::auto_mode::SharedAutoMode,
     pub agent_keys: &'a crate::agent_keys::SharedAgentKeys,
     pub session_registry: &'a Arc<SessionRegistry>,
     pub endpoint_registry: &'a EndpointRegistry,
@@ -89,6 +92,7 @@ pub(super) fn init_tool_registry(
     tools.set_agent_keys(Arc::clone(deps.agent_keys));
     tools.set_checkpoints(Arc::clone(deps.checkpoints));
     tools.set_publisher(deps.publisher.clone());
+    tools.set_auto_mode(Arc::clone(deps.auto_mode));
     let file_tracker = crate::tools::FileTracker::new_shared();
     let diagnostics_paths = crate::diagnostics::DiagnosticsPaths {
         config_dir: cfg.config_dir.clone(),
@@ -333,6 +337,7 @@ mod tests {
             retry: RetryConfig::default(),
             background: BackgroundConfig::default(),
             agent: AgentAbilitiesConfig::default(),
+            auto_mode: crate::config::AutoModeConfig::default(),
             idle: IdleConfig::default(),
             temperature: None,
             thinking: None,
@@ -543,12 +548,18 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let h = build_harness(dir.path()).await;
 
+        let auto_mode = crate::agent::auto_mode::AutoModeGate::new_shared(
+            "test",
+            crate::config::AutoModeConfig::default(),
+            crate::inference::system_one::SystemOneService::new(None),
+        );
         let deps = ToolRegistryDeps {
             action_store: &h.action_store,
             action_notify: &h.action_notify,
             skill_state: &h.skill_state,
             tools_path: &h.tools_path,
             path_policy: &h.path_policy,
+            auto_mode: &auto_mode,
             agent_keys: &h.agent_keys,
             session_registry: &h.session_registry,
             endpoint_registry: &h.endpoint_registry,

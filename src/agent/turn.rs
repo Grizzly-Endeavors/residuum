@@ -954,7 +954,37 @@ async fn execute_mcp_tool(
     }
 }
 
+/// Dispatch a tool call and flatten its outcome into the output text,
+/// whether it is an error, and any images, logging a failure with its source.
+async fn run_dispatched_tool_call(
+    tool_call: &ToolCall,
+    resources: &TurnResources<'_>,
+) -> (String, bool, Vec<crate::inference::ImageData>) {
+    let (result, used_mcp) = dispatch_tool_call(tool_call, resources).await;
+    match result {
+        Ok(r) => (r.output, r.is_error, r.images),
+        Err(e) => {
+            let source = match (&e, used_mcp) {
+                (ToolError::MalformedName(_), _) => "validation",
+                (_, true) => "mcp",
+                (_, false) => "built-in",
+            };
+            tracing::warn!(
+                error = %e,
+                tool_name = %crate::tools::truncate_tool_name_for_display(&tool_call.name),
+                tool_call_id = %tool_call.id,
+                source,
+                "tool execution failed"
+            );
+            (e.to_string(), true, vec![])
+        }
+    }
+}
+
 /// Execute a single tool call, falling back to MCP servers.
+///
+/// When the agent's Auto Mode is on, the call is checked against its rules
+/// first; a blocked call never dispatches, and its result names the rule.
 ///
 /// `steering_note`, when set, is appended to the tool's own result — used by
 /// the repeat-call guard to nudge a model that keeps calling this tool with
@@ -980,25 +1010,21 @@ async fn execute_tool(
         )
         .await;
 
-    let (result, used_mcp) = dispatch_tool_call(tool_call, resources).await;
-
-    let (mut output, is_error, images) = match result {
-        Ok(r) => (r.output, r.is_error, r.images),
-        Err(e) => {
-            let source = match (&e, used_mcp) {
-                (ToolError::MalformedName(_), _) => "validation",
-                (_, true) => "mcp",
-                (_, false) => "built-in",
-            };
-            tracing::warn!(
-                error = %e,
-                tool_name = %crate::tools::truncate_tool_name_for_display(&tool_call.name),
-                tool_call_id = %tool_call.id,
-                source,
-                "tool execution failed"
-            );
-            (e.to_string(), true, vec![])
+    let auto_mode = match resources.tools.auto_mode() {
+        Some(gate) => {
+            let request = crate::agent::auto_mode::latest_user_request(recent_messages.messages());
+            gate.check(tool_call, request).await
         }
+        None => None,
+    };
+    let blocked = auto_mode
+        .as_ref()
+        .filter(|v| v.decision == crate::agent::auto_mode::AutoModeDecision::Blocked);
+
+    let (mut output, is_error, images) = if let Some(verdict) = blocked {
+        (verdict.blocked_message(), true, vec![])
+    } else {
+        run_dispatched_tool_call(tool_call, resources).await
     };
 
     // Reached only when the dispatch above actually raced against the stop
@@ -1044,6 +1070,7 @@ async fn execute_tool(
                 name: tool_call.name.clone(),
                 output: output.clone(),
                 is_error,
+                auto_mode,
             }),
             &tool_call.name,
         )
@@ -1092,6 +1119,7 @@ async fn record_cancelled_tool_call(
                 name: tool_call.name.clone(),
                 output: result.output.clone(),
                 is_error: result.is_error,
+                auto_mode: None,
             }),
             &tool_call.name,
         )
@@ -1604,6 +1632,128 @@ mod tests {
             "the value should be replaced by its marker: {}",
             msg.content
         );
+    }
+
+    /// Run `counting_tool` once through `execute_tool` with an Auto Mode
+    /// that denies "Running the counting tool", against a decision model
+    /// answering `deny_0` with `probability` (or an unreachable one when
+    /// `None`). Returns how many times the tool ran and the recorded result.
+    async fn run_counting_tool_under_auto_mode(probability: Option<f64>) -> (usize, String) {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        if let Some(p) = probability {
+            Mock::given(method("POST"))
+                .and(path("/v1/systemone"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "model": "nimble",
+                    "answers": { "deny_0": { "type": "noul", "noul": p } },
+                    "usage": { "input_tokens": 30, "output_tokens": 1 }
+                })))
+                .mount(&server)
+                .await;
+        }
+        let url = if probability.is_some() {
+            server.uri()
+        } else {
+            "http://127.0.0.1:9".to_string()
+        };
+        let service = crate::inference::system_one::SystemOneService::new(Some(
+            &crate::config::SystemOneConfig {
+                provider: crate::config::SystemOneProvider::Ollama,
+                url,
+                model: "nimble".to_string(),
+                api_key: None,
+                keep_alive: None,
+            },
+        ));
+        let gate = crate::agent::auto_mode::AutoModeGate::new_shared(
+            "scout",
+            crate::config::AutoModeConfig {
+                enabled: true,
+                deny: vec!["Running the counting tool".to_string()],
+                allow: Vec::new(),
+                threshold: 0.5,
+            },
+            service,
+        );
+
+        let runs = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(CountingTool {
+            calls: Arc::clone(&runs),
+        }));
+        tools.set_auto_mode(gate);
+
+        let tool_call = ToolCall {
+            id: "call-1".to_string(),
+            name: "counting_tool".to_string(),
+            arguments: serde_json::json!({}),
+            server: None,
+        };
+        let provider = crate::inference::providers::null::NullProvider;
+        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let identity = IdentityFiles::default();
+        let options = CompletionOptions::default();
+        let stop_token = CancellationToken::new();
+        let hop_counter = HopCounter::new(0);
+        let resources = TurnResources {
+            provider: &provider,
+            tools: &tools,
+            mcp_registry: &mcp_registry,
+            identity: &identity,
+            options: &options,
+            max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            stop_token: &stop_token,
+            transcript_sink: None,
+            hop_counter: &hop_counter,
+            usage_sink: None,
+        };
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: None,
+                tool_activity_endpoint: None,
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+        let mut recent = RecentMessages::new();
+        execute_tool(&tool_call, &resources, &mut recent, &events, None).await;
+        let output = recent
+            .messages()
+            .first()
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+        (runs.load(Ordering::SeqCst), output)
+    }
+
+    #[tokio::test]
+    async fn a_call_auto_mode_blocks_never_reaches_the_tool() {
+        let (runs, output) = run_counting_tool_under_auto_mode(Some(0.95)).await;
+        assert_eq!(runs, 0, "a blocked call must not run");
+        assert!(
+            output.contains("Auto Mode blocked") && output.contains("Running the counting tool"),
+            "the agent is told which rule blocked it: {output}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_call_auto_mode_allows_runs_normally() {
+        let (runs, output) = run_counting_tool_under_auto_mode(Some(0.05)).await;
+        assert_eq!(runs, 1);
+        assert_eq!(output, "ok");
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_decision_model_lets_the_call_run_unchecked() {
+        let (runs, output) = run_counting_tool_under_auto_mode(None).await;
+        assert_eq!(runs, 1, "an outage degrades to running unchecked");
+        assert_eq!(output, "ok");
     }
 
     /// A tool whose `execute()` never resolves, so the default

@@ -26,6 +26,7 @@ fn tool_activity_frame(activity: ToolActivityEvent) -> ServerMessage {
             name: tr.name,
             output: tr.output,
             is_error: tr.is_error,
+            auto_mode: tr.auto_mode,
         },
     }
 }
@@ -408,6 +409,7 @@ mod tests {
                 name: "search".into(),
                 output: "found it".into(),
                 is_error: false,
+                auto_mode: None,
             }),
         )
         .await
@@ -416,7 +418,7 @@ mod tests {
         let msg = subs.recv().await.unwrap();
         assert!(matches!(
             msg,
-            ServerMessage::ToolResult { tool_call_id, name, output, is_error }
+            ServerMessage::ToolResult { tool_call_id, name, output, is_error, .. }
                 if tool_call_id == "tc1" && name == "search" && output == "found it" && !is_error
         ));
     }

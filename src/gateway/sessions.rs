@@ -157,6 +157,7 @@ pub(crate) fn session_event_to_server_message(event: SessionEvent) -> ServerMess
             name: result.name,
             output: result.output,
             is_error: result.is_error,
+            auto_mode: result.auto_mode,
         },
         SessionEventKind::Intermediate { content } => ServerMessage::SessionBroadcastResponse {
             address,

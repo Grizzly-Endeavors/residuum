@@ -452,6 +452,7 @@ const SECRET_FIELDS = [
   { field: "telegram_token", name: "telegram" },
   { field: "teams_app_password", name: "teams" },
   { field: "cloud_token", name: "cloud_token" },
+  { field: "system_one_api_key", name: "system_one" },
   { field: "ws_brave_api_key", name: "ws_brave" },
   { field: "ws_tavily_api_key", name: "ws_tavily" },
   { field: "ws_ollama_api_key", name: "ws_ollama" },

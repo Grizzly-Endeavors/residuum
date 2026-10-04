@@ -1,6 +1,7 @@
 //! The hub WebSocket, `/api/hub/ws`.
 //!
-//! Server to client: `hub_boot` and then an `agents_snapshot` on connect, then
+//! Server to client: `hub_boot`, the `system_one_status` (sent again whenever
+//! that status changes), and an `agents_snapshot` on connect, then
 //! every hub event (`agent_state`, `agent_stopping`, `agent_created`,
 //! `agent_restored`, `agent_deleted`, `agent_activity`, `notice`,
 //! `hub_config_reloaded`), a `team_event` for every entry the team event log
@@ -41,6 +42,7 @@ use crate::hub::push::{Presence, PresenceConnection};
 use crate::hub::team_events::{TeamEvent, TeamEventLog};
 use crate::hub::types::{AgentListResponse, HubClientMessage, HubSocketFrame};
 use crate::hub::{AgentDirectory, HubEvent};
+use crate::inference::system_one::{SystemOneService, SystemOneStatus};
 use crate::interfaces::websocket::subscriber::workspace_frame;
 use crate::workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchHealth, WatchSet};
 
@@ -58,6 +60,9 @@ pub(super) struct HubWsState {
     pub agent_changes: Arc<AgentChangeFeed>,
     /// Where clients report whether their push device is in front of the user.
     pub presence: Arc<Presence>,
+    /// The System 1 service. Each connection subscribes to its status, sends
+    /// the current value after `hub_boot`, and every change after.
+    pub system_one: Arc<SystemOneService>,
 }
 
 /// The route that upgrades to the hub WebSocket.
@@ -96,6 +101,10 @@ async fn serve(socket: WebSocket, state: HubWsState) {
     if !send_frame(&mut outbound, &boot).await {
         return;
     }
+    let mut system_one = state.system_one.subscribe();
+    if !send_system_one_status(&mut outbound, &mut system_one).await {
+        return;
+    }
     if !send_snapshot(&mut outbound, state.directory.as_ref()).await {
         return;
     }
@@ -105,6 +114,9 @@ async fn serve(socket: WebSocket, state: HubWsState) {
 
     loop {
         let alive = tokio::select! {
+            Ok(()) = system_one.changed() => {
+                send_system_one_status(&mut outbound, &mut system_one).await
+            }
             event = events.recv() => {
                 forward_hub_event(&mut outbound, state.directory.as_ref(), event).await
             }
@@ -171,6 +183,16 @@ pub(super) async fn send_frame(outbound: &mut Outbound, frame: &impl Serialize) 
         }
     };
     outbound.send(Message::text(text)).await.is_ok()
+}
+
+async fn send_system_one_status(
+    outbound: &mut Outbound,
+    status: &mut watch::Receiver<SystemOneStatus>,
+) -> bool {
+    let frame = HubSocketFrame::SystemOneStatus {
+        status: status.borrow_and_update().clone(),
+    };
+    send_frame(outbound, &frame).await
 }
 
 async fn send_snapshot(outbound: &mut Outbound, directory: &dyn AgentDirectory) -> bool {

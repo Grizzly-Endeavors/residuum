@@ -141,6 +141,7 @@ fn test_config(dir: &std::path::Path) -> Config {
         retry: RetryConfig::default(),
         background: BackgroundConfig::default(),
         agent: AgentAbilitiesConfig::default(),
+        auto_mode: crate::config::AutoModeConfig::default(),
         idle: IdleConfig::default(),
         temperature: None,
         thinking: None,

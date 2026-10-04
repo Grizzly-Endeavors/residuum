@@ -15,6 +15,7 @@ export type AgentSectionId =
   | "model"
   | "connections"
   | "tools"
+  | "auto_mode"
   | "memory"
   | "schedule"
   | "runtime"
@@ -28,6 +29,7 @@ export type AllSectionId =
   | "notifications"
   | "cloud"
   | "keys"
+  | "system_one"
   | "updates"
   | "limits"
   | "listener"
@@ -62,6 +64,7 @@ export const AGENT_SECTIONS: readonly SectionEntry<AgentSectionId>[] = [
   listed("model", "Model", "Which model it thinks with"),
   listed("connections", "Connections", "Discord, Telegram and other places to talk"),
   listed("tools", "Tools & skills", "What it can use and do"),
+  listed("auto_mode", "Auto Mode", "Rules its tool calls are checked against"),
   listed("memory", "Memory", "What it keeps and when it summarizes"),
   listed("schedule", "Schedule", "Regular checks and background sessions"),
   listed("runtime", "Runtime", "Time limits and reply length", "advanced"),
@@ -77,6 +80,7 @@ export const ALL_SECTIONS: readonly SectionEntry<AllSectionId>[] = [
   listed("notifications", "Notifications", "Alerts on this device"),
   listed("cloud", "Residuum Cloud", "Reach your agents from anywhere"),
   listed("keys", "Saved keys", "Keys and passwords your agents use"),
+  listed("system_one", "Decision model", "The fast model behind Auto Mode"),
   listed("updates", "Updates", "Get the latest version"),
   listed("limits", "Session limits", "How much background work can run at once"),
   listed("listener", "Agent-to-agent", "Let agents elsewhere hand work to yours", "advanced"),
@@ -206,6 +210,7 @@ const AGENT_CONFIG_KEYS: Readonly<Record<string, AgentSectionId>> = {
   agent: "runtime",
   idle: "runtime",
   a2a: "a2a",
+  auto_mode: "auto_mode",
 };
 
 /** An agent's `providers.toml`, by top-level key. */
@@ -224,6 +229,7 @@ const HUB_CONFIG_KEYS: Readonly<Record<string, AllSectionId>> = {
   background: "limits",
   a2a: "listener",
   tracing: "diagnostics",
+  system_one: "system_one",
 };
 
 /** The section that holds a config file's raw editor. */

@@ -7,6 +7,7 @@ pub(crate) mod failover;
 mod http;
 pub(crate) mod providers;
 pub(crate) mod retry;
+pub mod system_one;
 mod types;
 
 pub(crate) use embedding::build_embedding_provider;

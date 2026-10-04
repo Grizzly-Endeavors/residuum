@@ -19,6 +19,7 @@ use crate::config::paths::TeamPaths;
 use crate::config::{HubConfig, HubPaths};
 use crate::hub::push::PushService;
 use crate::inference::EmbeddingProvider;
+use crate::inference::system_one::SystemOneService;
 use crate::memory::team_wiki::TeamWikiIndex;
 use crate::tracing_service::TracingService;
 use crate::tunnel::TunnelStatus;
@@ -175,6 +176,9 @@ pub(crate) struct HubServices {
     pub directory: super::directory::DirectoryHandle,
     /// Web Push: registered devices and delivery. Triggers send through it.
     pub push: Arc<PushService>,
+    /// The System 1 (decision model) client every agent shares, with its
+    /// health. Rebuilt in place when `[system_one]` changes.
+    pub system_one: Arc<SystemOneService>,
 }
 
 impl HubServices {
@@ -221,6 +225,7 @@ impl HubServices {
             root: root.to_path_buf(),
             a2a_keys: crate::a2a::A2aKeys::new_shared(&hub_dir),
             push: PushService::new(&hub_dir, hub.push.contact.as_deref()),
+            system_one: SystemOneService::new(hub.system_one.as_ref()),
             hub_dir,
             team,
             team_wiki,
