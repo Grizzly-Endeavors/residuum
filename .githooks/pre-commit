@@ -80,7 +80,7 @@ if [ -n "$STAGED_RUST" ] || [ -n "$STAGED_MANIFEST" ]; then
 
     if command -v cargo-deny >/dev/null 2>&1; then
         echo "Auditing dependencies..."
-        cargo deny check || cargo deny check --disable-fetch || fail "ERROR: cargo deny found issues."
+        cargo deny check || fail "ERROR: cargo deny found issues."
     else
         echo -e "${YELLOW}NOTE: cargo-deny not installed — skipping dependency audit.${NC}"
         echo "      Install with: cargo install cargo-deny"
