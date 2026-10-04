@@ -42,6 +42,11 @@ import type {
   RestoreOutcome,
   UndoOutcome,
   RepoKind,
+  CleanupRequest,
+  CleanupResult,
+  TeamsSetupJob,
+  TeamsSetupPrereqs,
+  TeamsSetupStart,
 } from "./types";
 import type {
   A2aVisibility,
@@ -1339,4 +1344,113 @@ export async function restoreHubInboxItem(agent: string, id: string): Promise<Hu
     method: "POST",
   });
   return item;
+}
+
+// ── Teams setup API ─────────────────────────────────────────────────
+
+/** Fetch prerequisite check results for Teams setup. */
+export async function fetchTeamsSetupPrereqs(agent: string): Promise<TeamsSetupPrereqs> {
+  return apiFetch<TeamsSetupPrereqs>(agentPath(agent, "/teams-setup/prereqs"));
+}
+
+/**
+ * Fetch current Teams setup job state. Returns `null` on 404 when no job exists.
+ * When `logSince` is given, only log lines with `seq > logSince` are returned.
+ */
+export async function fetchTeamsSetupJob(
+  agent: string,
+  logSince?: number,
+): Promise<TeamsSetupJob | null> {
+  const query = logSince !== undefined ? `?log_since=${encodeURIComponent(logSince)}` : "";
+  try {
+    return await apiFetch<TeamsSetupJob>(agentPath(agent, `/teams-setup/job${query}`));
+  } catch (err: unknown) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+/**
+ * Start or resume a Teams setup job.
+ * On 409 (already running), returns the currently running job.
+ * On 400 (validation failure), throws ApiError with the actionable message.
+ */
+export async function startTeamsSetupJob(
+  agent: string,
+  start: TeamsSetupStart,
+): Promise<TeamsSetupJob> {
+  try {
+    return await apiFetch<TeamsSetupJob>(agentPath(agent, "/teams-setup/job"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(start),
+    });
+  } catch (err: unknown) {
+    if (err instanceof ApiError && err.status === 409) {
+      try {
+        return JSON.parse(err.body) as TeamsSetupJob;
+      } catch {
+        throw err;
+      }
+    }
+    throw err;
+  }
+}
+
+/** Submit a redirect URL from browser authentication. */
+export async function submitTeamsSetupRedirect(agent: string, url: string): Promise<TeamsSetupJob> {
+  return apiFetch<TeamsSetupJob>(agentPath(agent, "/teams-setup/job/redirect"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+}
+
+/** Cancel a running Teams setup job and kill its process tree. */
+export async function cancelTeamsSetupJob(agent: string): Promise<TeamsSetupJob> {
+  return apiFetch<TeamsSetupJob>(agentPath(agent, "/teams-setup/job/cancel"), {
+    method: "POST",
+  });
+}
+
+/** Retry a failed or cancelled Teams setup job from the failed phase. */
+export async function retryTeamsSetupJob(agent: string): Promise<TeamsSetupJob> {
+  return apiFetch<TeamsSetupJob>(agentPath(agent, "/teams-setup/job/retry"), {
+    method: "POST",
+  });
+}
+
+/** Install the generated Teams app package into Teams via ATK. */
+export async function installTeamsApp(agent: string): Promise<TeamsSetupJob> {
+  return apiFetch<TeamsSetupJob>(agentPath(agent, "/teams-setup/job/install-app"), {
+    method: "POST",
+  });
+}
+
+/** Direct URL for downloading the app package zip. */
+export function teamsAppPackageUrl(agent: string): string {
+  return agentPath(agent, "/teams-setup/job/package");
+}
+
+/** Fetch the app package zip as a Blob. */
+export async function fetchTeamsAppPackage(agent: string): Promise<Blob> {
+  const resp = await checkOk(await fetch(agentPath(agent, "/teams-setup/job/package")));
+  return resp.blob();
+}
+
+/** Forget a finished Teams setup job. Throws 409 if still running. */
+export async function deleteTeamsSetupJob(agent: string): Promise<void> {
+  await apiFetchText(agentPath(agent, "/teams-setup/job"), { method: "DELETE" });
+}
+
+/** Clean up local project files, CLI install, or M365 session. */
+export async function cleanupTeamsSetup(
+  agent: string,
+  req: CleanupRequest,
+): Promise<CleanupResult> {
+  return apiFetch<CleanupResult>(agentPath(agent, "/teams-setup/cleanup"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
 }

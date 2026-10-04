@@ -17,6 +17,12 @@ mod ts_export {
         ActionInfo, ArtifactSummary, ClientMessage, PulseInfo, ServerMessage, SessionListResponse,
         WorkbenchInfo,
     };
+    use residuum::gateway::teams_setup::types::{
+        AtkStatus, CleanupFailure, CleanupRequest, CleanupResult, CreatedResources, LogLine,
+        LogStream, SetupError, SetupResult, SignInPrompt, SuggestedEndpointSource, TeamsSetupForm,
+        TeamsSetupJob, TeamsSetupPhase, TeamsSetupPrereqs, TeamsSetupRedirect, TeamsSetupStart,
+        TeamsSetupState, ToolStatus,
+    };
     use residuum::hub::inbox::{HubInboxItem, HubInboxPage, HubInboxUnread, InboxStatus};
     use residuum::hub::overview::{AgentOverview, OverviewResponse};
     use residuum::hub::push::{
@@ -37,6 +43,10 @@ mod ts_export {
     use residuum::inference::ImageData;
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "exports all protocol types sequentially into TypeScript"
+    )]
     fn export_protocol_types() {
         let out_dir = "web/src/lib/generated";
         let cfg = ts_rs::Config::new().with_out_dir(out_dir);
@@ -163,6 +173,27 @@ mod ts_export {
         OverviewResponse::export_all(&cfg).unwrap();
         AgentOverview::export_all(&cfg).unwrap();
 
+        // Microsoft Teams setup wizard via Agents Toolkit.
+        ToolStatus::export_all(&cfg).unwrap();
+        AtkStatus::export_all(&cfg).unwrap();
+        SuggestedEndpointSource::export_all(&cfg).unwrap();
+        TeamsSetupPrereqs::export_all(&cfg).unwrap();
+        TeamsSetupForm::export_all(&cfg).unwrap();
+        TeamsSetupStart::export_all(&cfg).unwrap();
+        TeamsSetupPhase::export_all(&cfg).unwrap();
+        TeamsSetupState::export_all(&cfg).unwrap();
+        LogStream::export_all(&cfg).unwrap();
+        LogLine::export_all(&cfg).unwrap();
+        SignInPrompt::export_all(&cfg).unwrap();
+        SetupError::export_all(&cfg).unwrap();
+        CreatedResources::export_all(&cfg).unwrap();
+        SetupResult::export_all(&cfg).unwrap();
+        TeamsSetupJob::export_all(&cfg).unwrap();
+        TeamsSetupRedirect::export_all(&cfg).unwrap();
+        CleanupRequest::export_all(&cfg).unwrap();
+        CleanupFailure::export_all(&cfg).unwrap();
+        CleanupResult::export_all(&cfg).unwrap();
+
         // Verify the generated files exist
         assert!(
             std::path::Path::new("web/src/lib/generated/ClientMessage.ts").exists(),
@@ -175,6 +206,14 @@ mod ts_export {
         assert!(
             std::path::Path::new("web/src/lib/generated/ImageAttachment.ts").exists(),
             "ImageAttachment.ts should be generated (renamed from ImageData)"
+        );
+        assert!(
+            std::path::Path::new("web/src/lib/generated/TeamsSetupJob.ts").exists(),
+            "TeamsSetupJob.ts should be generated"
+        );
+        assert!(
+            std::path::Path::new("web/src/lib/generated/TeamsSetupPrereqs.ts").exists(),
+            "TeamsSetupPrereqs.ts should be generated"
         );
     }
 }

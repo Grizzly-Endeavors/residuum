@@ -26,6 +26,7 @@ pub mod providers;
 pub(crate) mod scheduled;
 pub mod secrets;
 pub(crate) mod sessions;
+pub mod teams_setup;
 pub mod tracing_api;
 pub mod update;
 pub(crate) mod workbench;

@@ -281,6 +281,79 @@ const AREAS: Record<string, Row[]> = {
       "POST /api/agents/{agent}/a2a/outbound/t1/stop-watching",
     ],
   ],
+  teams_setup: [
+    [
+      "fetchTeamsSetupPrereqs",
+      (a) => api.fetchTeamsSetupPrereqs(a),
+      "GET /api/agents/{agent}/teams-setup/prereqs",
+    ],
+    [
+      "fetchTeamsSetupJob",
+      (a) => api.fetchTeamsSetupJob(a),
+      "GET /api/agents/{agent}/teams-setup/job",
+    ],
+    [
+      "fetchTeamsSetupJobWithSeq",
+      (a) => api.fetchTeamsSetupJob(a, 42),
+      "GET /api/agents/{agent}/teams-setup/job?log_since=42",
+    ],
+    [
+      "startTeamsSetupJob",
+      (a) =>
+        api.startTeamsSetupJob(a, {
+          form: {
+            bot_name: "bot",
+            short_description: "short",
+            long_description: "long",
+            developer_name: "dev",
+            developer_url: "https://dev.example.com",
+            privacy_url: null,
+            terms_url: null,
+            messaging_endpoint: "https://example.com/api/teams/messages",
+            color_icon_png_base64: null,
+            outline_icon_png_base64: null,
+          },
+          consent_install_cli: true,
+          replace_existing: false,
+        }),
+      "POST /api/agents/{agent}/teams-setup/job",
+    ],
+    [
+      "submitTeamsSetupRedirect",
+      (a) => api.submitTeamsSetupRedirect(a, "http://localhost:1234/auth"),
+      "POST /api/agents/{agent}/teams-setup/job/redirect",
+    ],
+    [
+      "cancelTeamsSetupJob",
+      (a) => api.cancelTeamsSetupJob(a),
+      "POST /api/agents/{agent}/teams-setup/job/cancel",
+    ],
+    [
+      "retryTeamsSetupJob",
+      (a) => api.retryTeamsSetupJob(a),
+      "POST /api/agents/{agent}/teams-setup/job/retry",
+    ],
+    [
+      "installTeamsApp",
+      (a) => api.installTeamsApp(a),
+      "POST /api/agents/{agent}/teams-setup/job/install-app",
+    ],
+    [
+      "fetchTeamsAppPackage",
+      (a) => api.fetchTeamsAppPackage(a),
+      "GET /api/agents/{agent}/teams-setup/job/package",
+    ],
+    [
+      "deleteTeamsSetupJob",
+      (a) => api.deleteTeamsSetupJob(a),
+      "DELETE /api/agents/{agent}/teams-setup/job",
+    ],
+    [
+      "cleanupTeamsSetup",
+      (a) => api.cleanupTeamsSetup(a, { project_files: true, cli: false, sign_out: false }),
+      "POST /api/agents/{agent}/teams-setup/cleanup",
+    ],
+  ],
 };
 
 describe("every agent-scoped call goes to the agent it names", () => {
