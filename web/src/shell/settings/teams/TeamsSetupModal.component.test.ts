@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { settingsModel } from "../../../lib/settings-model.svelte";
 import type { TeamsSetupJob, TeamsSetupPrereqs } from "../../../lib/types";
 import {
+  advance,
   fireEvent,
   jsonResponse,
   mockFetch,
@@ -19,6 +20,8 @@ let currentPrereqs: TeamsSetupPrereqs;
 let currentJob: TeamsSetupJob | null = null;
 let redirectErrorResponse: { status: number; message: string } | null = null;
 let installAppErrorResponse: { status: number; message: string } | null = null;
+let getJobError: Error | { status: number } | null = null;
+let lastLogSinceRequested: number | null = null;
 let cancelCalled = false;
 let retryCalled = false;
 let installAppCalled = false;
@@ -90,6 +93,8 @@ beforeEach(() => {
   currentJob = null;
   redirectErrorResponse = null;
   installAppErrorResponse = null;
+  getJobError = null;
+  lastLogSinceRequested = null;
   cancelCalled = false;
   retryCalled = false;
   installAppCalled = false;
@@ -164,6 +169,17 @@ beforeEach(() => {
     }
 
     if (url.includes(`/api/agents/${agent}/teams-setup/job`) && method === "GET") {
+      const parsedUrl = new URL(url, "http://localhost");
+      const logSinceStr = parsedUrl.searchParams.get("log_since");
+      if (logSinceStr !== null) {
+        lastLogSinceRequested = parseInt(logSinceStr, 10);
+      }
+      if (getJobError !== null) {
+        if (getJobError instanceof Error) {
+          throw getJobError;
+        }
+        return jsonResponse({ error: "Server error" }, getJobError.status);
+      }
       if (currentJob === null) {
         return new Response("Not found", { status: 404 });
       }
@@ -418,13 +434,14 @@ describe("TeamsSetupModal", () => {
     render(TeamsSetupModal, { agent, open: true });
     await waitForModalReady();
 
-    // All 6 phases rendered
+    // All 7 phases rendered
     expect(screen.getByText("Check prerequisites")).toBeTruthy();
     expect(screen.getByText("Install Agents Toolkit CLI")).toBeTruthy();
     expect(screen.getByText("Sign in to Microsoft 365")).toBeTruthy();
     expect(screen.getByText("Scaffold Teams app")).toBeTruthy();
     expect(screen.getByText("Provision cloud resources")).toBeTruthy();
     expect(screen.getByText("Import bot registration")).toBeTruthy();
+    expect(screen.getByText("Install in Teams")).toBeTruthy();
 
     // Elapsed time
     expect(screen.getByText(/Elapsed:/i)).toBeTruthy();
@@ -584,6 +601,91 @@ describe("TeamsSetupModal", () => {
     await settle();
     expect(cleanupCalled).toBe(true);
   });
+
+  it("displays non-blocking 'Lost contact with Residuum' banner when polling fails and clears when communication recovers", async () => {
+    vi.useFakeTimers();
+    try {
+      currentJob = fakeJob({ state: "running", phase: "provision" });
+      render(TeamsSetupModal, { agent, open: true });
+      await settle();
+
+      expect(screen.queryByText(/Lost contact with Residuum, retrying…/i)).toBeNull();
+
+      // Trigger poll failure
+      getJobError = new TypeError("Network error");
+      await advance(1100);
+
+      expect(screen.getByText(/Lost contact with Residuum, retrying…/i)).toBeTruthy();
+      expect(screen.getByText(/Setup is continuing on the server/i)).toBeTruthy();
+
+      // Clear error and advance timer -> recovers
+      getJobError = null;
+      await advance(1100);
+
+      expect(screen.queryByText(/Lost contact with Residuum, retrying…/i)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("passes log_since when polling, deduplicates log lines by seq, and trims buffer when exceeding 1000 lines", async () => {
+    vi.useFakeTimers();
+    try {
+      currentJob = fakeJob({
+        state: "running",
+        phase: "provision",
+        log: [
+          { seq: 1, stream: "stdout", text: "Line 1", at: "2026-10-04T12:00:01Z" },
+          { seq: 2, stream: "stdout", text: "Line 2", at: "2026-10-04T12:00:02Z" },
+        ],
+        last_seq: 2,
+      });
+      render(TeamsSetupModal, { agent, open: true });
+      await settle();
+
+      // Initial load passes log_since=0
+      expect(lastLogSinceRequested).toBe(0);
+
+      // Expand logs
+      const logDisclosure = screen.getByRole("button", { name: /Show logs/i });
+      await fireEvent.click(logDisclosure);
+      await settle();
+
+      expect(screen.getByText("Line 1")).toBeTruthy();
+      expect(screen.getByText("Line 2")).toBeTruthy();
+
+      // Advance timer: poll passes log_since=2
+      const manyLines = [];
+      for (let i = 3; i <= 1005; i++) {
+        manyLines.push({
+          seq: i,
+          stream: "stdout" as const,
+          text: `Generated log line ${i}`,
+          at: "2026-10-04T12:00:05Z",
+        });
+      }
+      currentJob = fakeJob({
+        state: "running",
+        phase: "provision",
+        log: [
+          { seq: 2, stream: "stdout", text: "Line 2", at: "2026-10-04T12:00:02Z" },
+          ...manyLines,
+        ],
+        last_seq: 1005,
+      });
+
+      await advance(1100);
+
+      // Poll should have requested log_since=2
+      expect(lastLogSinceRequested).toBe(2);
+
+      // 1005 total unique lines minus 1000 max = 5 trimmed lines
+      expect(screen.getByText(/5 older log lines were trimmed/i)).toBeTruthy();
+      expect(screen.getByText("Generated log line 1005")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("ConnectionsSection Teams integration", () => {
@@ -621,5 +723,28 @@ describe("ConnectionsSection Teams integration", () => {
     await vi.waitFor(() => {
       expect(screen.getByRole("dialog", { name: /Setting up Microsoft Teams/i })).toBeTruthy();
     });
+  });
+
+  it("displays a warning banner with retry button in ConnectionsSection when status fetch fails", async () => {
+    getJobError = { status: 500 };
+    const scope = settingsModel.agent(agent);
+    await scope.load();
+    render(ConnectionsSection, { scope, section: "connections" });
+
+    // Warning banner should be rendered
+    const banner = await screen.findByText(/Couldn't check Teams setup status/i);
+    expect(banner).toBeTruthy();
+
+    const retryBtn = screen.getByRole("button", { name: "Retry" });
+    expect(retryBtn).toBeTruthy();
+
+    // Clear error and click Retry -> banner disappears
+    getJobError = null;
+    currentJob = fakeJob({ state: "running" });
+    await fireEvent.click(retryBtn);
+    await settle();
+
+    expect(screen.queryByText(/Couldn't check Teams setup status/i)).toBeNull();
+    expect(screen.getByText("Setup running")).toBeTruthy();
   });
 });

@@ -248,4 +248,81 @@ describe("the Teams setup wizard mock routes", () => {
       failed: [],
     });
   });
+
+  it("returns 409 with the running job on second start attempt", async () => {
+    const start1 = await call("POST", "/job", {
+      form: validForm,
+      consent_install_cli: true,
+      replace_existing: false,
+    });
+    expect(start1.status).toBe(200);
+
+    const start2 = await call("POST", "/job", {
+      form: validForm,
+      consent_install_cli: true,
+      replace_existing: false,
+    });
+    expect(start2.status).toBe(409);
+    const conflictJob = start2.body as TeamsSetupJob;
+    expect(conflictJob.agent).toBe(agent);
+    expect(conflictJob.state).toBe("waiting_for_user");
+  });
+
+  it("refuses DELETE with 409 while job is running or waiting for user", async () => {
+    await call("POST", "/job", {
+      form: validForm,
+      consent_install_cli: true,
+      replace_existing: false,
+    });
+
+    const delStatus = (
+      await fetchText(`${harness.baseUrl}/api/agents/${agent}/teams-setup/job`, {
+        method: "DELETE",
+      })
+    ).status;
+    expect(delStatus).toBe(409);
+  });
+
+  it("validates redirect port and host per contract", async () => {
+    await call("POST", "/job", {
+      form: validForm,
+      consent_install_cli: true,
+      replace_existing: false,
+    });
+
+    // Non-localhost URL
+    const external = await call("POST", "/job/redirect", {
+      url: "https://example.com:4321/auth?code=123",
+    });
+    expect(external.status).toBe(400);
+    expect((external.body as { message: string }).message).toContain("localhost");
+
+    // Wrong port
+    const wrongPort = await call("POST", "/job/redirect", {
+      url: "http://localhost:9999/auth?code=123",
+    });
+    expect(wrongPort.status).toBe(400);
+    expect((wrongPort.body as { message: string }).message).toContain("wrong port");
+  });
+
+  it("filters log lines incrementally when log_since is passed", async () => {
+    await call("POST", "/job", {
+      form: validForm,
+      consent_install_cli: true,
+      replace_existing: false,
+    });
+
+    const allLogs = await getJob();
+    expect(allLogs.status).toBe(200);
+    expect(allLogs.job.log.length).toBeGreaterThan(0);
+    const lastSeq = allLogs.job.last_seq;
+
+    const noNewLogs = await getJob(lastSeq);
+    expect(noNewLogs.status).toBe(200);
+    expect(noNewLogs.job.log).toHaveLength(0);
+
+    const partialLogs = await getJob(1);
+    expect(partialLogs.status).toBe(200);
+    expect(partialLogs.job.log.every((l) => l.seq > 1)).toBe(true);
+  });
 });

@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { fetchTeamsSetupJob } from "../../lib/api";
   import { CloudConnection, teamsMessagingEndpoint } from "../../lib/cloud.svelte";
+  import { userErrorMessage } from "../../lib/errors";
   import { hub } from "../../lib/hub.svelte";
   import { toast } from "../../lib/toast.svelte";
   import type { TeamsSetupJob, TeamsSetupState } from "../../lib/types";
@@ -59,13 +60,18 @@
   // the relay has announced this hub's origin and instance.
   const cloud = new CloudConnection();
   let teamsJob = $state<TeamsSetupJob | null>(null);
+  let teamsJobError = $state<string | null>(null);
   let teamsModalOpen = $state(false);
 
   async function loadTeamsJob(): Promise<void> {
     try {
       teamsJob = await fetchTeamsSetupJob(agent);
-    } catch {
+      teamsJobError = null;
+    } catch (err: unknown) {
       teamsJob = null;
+      teamsJobError = userErrorMessage(err, {
+        action: "Couldn't check Teams setup status.",
+      });
     }
   }
 
@@ -222,6 +228,14 @@
         <Badge dot tone={teamsJobTone(teamsJob.state)}>{teamsJobLabel(teamsJob.state)}</Badge>
       {/if}
     </div>
+    {#if teamsJobError !== null}
+      <Banner tone="warn">
+        <div class="teams-error-banner">
+          <span>{teamsJobError}</span>
+          <Button variant="quiet" size="sm" onclick={() => void loadTeamsJob()}>Retry</Button>
+        </div>
+      </Banner>
+    {/if}
 
     <TextField
       label="App ID"
@@ -317,6 +331,14 @@
     display: flex;
     align-items: center;
     gap: var(--space-8);
+  }
+
+  .teams-error-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-8);
+    width: 100%;
   }
 
   .address {
