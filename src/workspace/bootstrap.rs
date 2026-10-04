@@ -165,6 +165,19 @@ const SKILL_AUTHORING_SKILL_MD: &str =
 const SKILL_AUTHORING_REF_STANDARDS: &str =
     include_str!("../../assets/bundled-skills/skill-authoring/references/authoring-standards.md");
 
+// teams-setup skill
+const TEAMS_SETUP_SKILL_MD: &str = include_str!("../../assets/bundled-skills/teams-setup/SKILL.md");
+const TEAMS_SETUP_M365AGENTS_YML: &str =
+    include_str!("../../assets/bundled-skills/teams-setup/templates/m365agents.yml");
+const TEAMS_SETUP_MANIFEST_JSON: &str =
+    include_str!("../../assets/bundled-skills/teams-setup/templates/appPackage/manifest.json");
+const TEAMS_SETUP_ENV_RESIDUUM: &str =
+    include_str!("../../assets/bundled-skills/teams-setup/templates/env/.env.residuum");
+const TEAMS_SETUP_COLOR_PNG: &[u8] =
+    include_bytes!("../../assets/bundled-skills/teams-setup/templates/appPackage/color.png");
+const TEAMS_SETUP_OUTLINE_PNG: &[u8] =
+    include_bytes!("../../assets/bundled-skills/teams-setup/templates/appPackage/outline.png");
+
 /// Ensure the agent's workspace directory structure exists with default
 /// identity files, and that the shared team layer it belongs to exists.
 ///
@@ -527,8 +540,42 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
     write_if_missing(&workbench_dir.join("SKILL.md"), WORKBENCH_SKILL_MD).await?;
     write_if_missing(&workbench_refs.join("api.md"), WORKBENCH_REF_API).await?;
 
+    // teams-setup skill
+    write_teams_setup_skill(&skills_root).await?;
+
     tracing::debug!(workspace = %layout.root().display(), "wrote bundled skills");
 
+    Ok(())
+}
+
+/// Write the bundled `teams-setup` skill and its scaffolding templates.
+async fn write_teams_setup_skill(skills_root: &std::path::Path) -> Result<(), FatalError> {
+    let teams_dir = skills_root.join("teams-setup");
+    let teams_templates = teams_dir.join("templates");
+    let teams_pkg = teams_templates.join("appPackage");
+    let teams_env = teams_templates.join("env");
+    tokio::fs::create_dir_all(&teams_pkg).await.map_err(|e| {
+        FatalError::Workspace(format!(
+            "failed to create skill directory {}: {e}",
+            teams_pkg.display()
+        ))
+    })?;
+    tokio::fs::create_dir_all(&teams_env).await.map_err(|e| {
+        FatalError::Workspace(format!(
+            "failed to create skill directory {}: {e}",
+            teams_env.display()
+        ))
+    })?;
+    write_if_missing(&teams_dir.join("SKILL.md"), TEAMS_SETUP_SKILL_MD).await?;
+    write_if_missing(
+        &teams_templates.join("m365agents.yml"),
+        TEAMS_SETUP_M365AGENTS_YML,
+    )
+    .await?;
+    write_if_missing(&teams_pkg.join("manifest.json"), TEAMS_SETUP_MANIFEST_JSON).await?;
+    write_if_missing(&teams_pkg.join("color.png"), TEAMS_SETUP_COLOR_PNG).await?;
+    write_if_missing(&teams_pkg.join("outline.png"), TEAMS_SETUP_OUTLINE_PNG).await?;
+    write_if_missing(&teams_env.join(".env.residuum"), TEAMS_SETUP_ENV_RESIDUUM).await?;
     Ok(())
 }
 
@@ -583,16 +630,21 @@ async fn refresh_getting_started_actions(path: &std::path::Path) -> Result<(), F
 }
 
 /// Write content to a file only if it does not already exist.
-async fn write_if_missing(path: &std::path::Path, content: &str) -> Result<(), FatalError> {
+async fn write_if_missing(
+    path: &std::path::Path,
+    content: impl AsRef<[u8]>,
+) -> Result<(), FatalError> {
     if tokio::fs::try_exists(path)
         .await
         .map_err(|e| FatalError::Workspace(format!("failed to check {}: {e}", path.display())))?
     {
         tracing::trace!(path = %path.display(), "identity file already exists, skipping");
     } else {
-        tokio::fs::write(path, content).await.map_err(|e| {
-            FatalError::Workspace(format!("failed to write default {}: {e}", path.display()))
-        })?;
+        tokio::fs::write(path, content.as_ref())
+            .await
+            .map_err(|e| {
+                FatalError::Workspace(format!("failed to write default {}: {e}", path.display()))
+            })?;
         tracing::debug!(path = %path.display(), "created default identity file");
     }
     Ok(())
@@ -1327,5 +1379,86 @@ mod tests {
             content, DEFAULT_TEAM_USER,
             "empty strings should produce default USER.md"
         );
+    }
+
+    #[tokio::test]
+    async fn teams_setup_bundled_skill_written_with_valid_templates_and_binary_icons() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let teams_dir = layout.team().skills_dir().join("teams-setup");
+        let skill_md = tokio::fs::read_to_string(teams_dir.join("SKILL.md"))
+            .await
+            .unwrap();
+        assert!(skill_md.contains("name: teams-setup"));
+        assert!(skill_md.contains("Microsoft Teams"));
+
+        // Verify m365agents.yml exists and parses as valid YAML
+        let yml_str = tokio::fs::read_to_string(teams_dir.join("templates/m365agents.yml"))
+            .await
+            .unwrap();
+        let yml_val: serde_json::Value = serde_yaml_ng::from_str(&yml_str).unwrap();
+        assert_eq!(
+            yml_val.get("version").and_then(|v| v.as_str()),
+            Some("v1.13")
+        );
+        assert!(
+            yml_val
+                .get("provision")
+                .is_some_and(serde_json::Value::is_array)
+        );
+
+        // Verify manifest.json exists and parses as valid JSON
+        let manifest_str =
+            tokio::fs::read_to_string(teams_dir.join("templates/appPackage/manifest.json"))
+                .await
+                .unwrap();
+        let manifest_val: serde_json::Value = serde_json::from_str(&manifest_str).unwrap();
+        assert_eq!(
+            manifest_val.get("manifestVersion").and_then(|v| v.as_str()),
+            Some("1.17")
+        );
+        assert_eq!(
+            manifest_val
+                .get("icons")
+                .and_then(|i| i.get("color"))
+                .and_then(|v| v.as_str()),
+            Some("color.png")
+        );
+        assert_eq!(
+            manifest_val
+                .get("icons")
+                .and_then(|i| i.get("outline"))
+                .and_then(|v| v.as_str()),
+            Some("outline.png")
+        );
+
+        // Verify binary icons are valid PNGs matching embedded byte slices
+        let color_png = tokio::fs::read(teams_dir.join("templates/appPackage/color.png"))
+            .await
+            .unwrap();
+        assert_eq!(color_png, TEAMS_SETUP_COLOR_PNG);
+        assert!(color_png.starts_with(b"\x89PNG\r\n\x1a\n"));
+
+        let outline_png = tokio::fs::read(teams_dir.join("templates/appPackage/outline.png"))
+            .await
+            .unwrap();
+        assert_eq!(outline_png, TEAMS_SETUP_OUTLINE_PNG);
+        assert!(outline_png.starts_with(b"\x89PNG\r\n\x1a\n"));
+
+        // Verify .env.residuum
+        let env_str = tokio::fs::read_to_string(teams_dir.join("templates/env/.env.residuum"))
+            .await
+            .unwrap();
+        assert!(env_str.contains("TEAMSFX_ENV=residuum"));
     }
 }
