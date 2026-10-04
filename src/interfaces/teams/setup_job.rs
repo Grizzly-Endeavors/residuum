@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -24,7 +24,7 @@ use crate::interfaces::teams::atk_runner::{
     run_command_streaming,
 };
 use crate::interfaces::teams::setup_types::{
-    CleanupFailedItem, CleanupRequest, CleanupResult, CreatedResources, LogStream, SetupError,
+    CleanupFailure, CleanupRequest, CleanupResult, CreatedResources, LogStream, SetupError,
     SetupResult, SignInPrompt, TeamsSetupForm, TeamsSetupJob, TeamsSetupPhase, TeamsSetupPrereqs,
     TeamsSetupStart, TeamsSetupState,
 };
@@ -68,7 +68,7 @@ struct JobSession {
 }
 
 impl JobSession {
-    fn to_external(&self, log_since: Option<usize>) -> TeamsSetupJob {
+    fn to_external(&self, log_since: Option<u64>) -> TeamsSetupJob {
         let since = log_since.unwrap_or(0);
         let log_lines = self.log.lines_since(since);
         let last_seq = self.log.last_seq();
@@ -98,6 +98,28 @@ pub struct TeamsSetupJobManager {
     overrides: Option<AtkRunnerOverrides>,
 }
 
+static MANAGERS: LazyLock<std::sync::Mutex<HashMap<PathBuf, TeamsSetupJobManager>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Get or create a cached singleton `TeamsSetupJobManager` for the given residuum root.
+#[must_use]
+pub fn get_or_create_manager(residuum_root: &Path) -> TeamsSetupJobManager {
+    let mut map = MANAGERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    map.entry(residuum_root.to_path_buf())
+        .or_insert_with(|| TeamsSetupJobManager::new(residuum_root.to_path_buf()))
+        .clone()
+}
+
+/// Register a test manager with overrides for a specific residuum root.
+pub fn register_test_manager(residuum_root: &Path, manager: TeamsSetupJobManager) {
+    let mut map = MANAGERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    map.insert(residuum_root.to_path_buf(), manager);
+}
+
 impl TeamsSetupJobManager {
     /// Create a new setup job manager.
     #[must_use]
@@ -125,7 +147,7 @@ impl TeamsSetupJobManager {
     }
 
     /// Inspect current setup job status for `agent`.
-    pub async fn get_job(&self, agent: &str, log_since: Option<usize>) -> Option<TeamsSetupJob> {
+    pub async fn get_job(&self, agent: &str, log_since: Option<u64>) -> Option<TeamsSetupJob> {
         let session = {
             let guard = self.jobs.read().await;
             guard.get(agent).cloned()?
@@ -208,27 +230,27 @@ impl TeamsSetupJobManager {
         let f = &req.form;
         if f.bot_name.trim().is_empty() {
             return Err(SetupJobError::BadRequest(
-                "bot_name cannot be empty".to_string(),
-            ));
-        }
-        if f.messaging_endpoint.trim().is_empty() {
-            return Err(SetupJobError::BadRequest(
-                "messaging_endpoint cannot be empty".to_string(),
-            ));
-        }
-        if f.developer_url.trim().is_empty() {
-            return Err(SetupJobError::BadRequest(
-                "developer_url cannot be empty".to_string(),
+                "Bot name is required.".to_string(),
             ));
         }
         if f.short_description.len() > 80 {
             return Err(SetupJobError::BadRequest(
-                "short_description exceeds 80 characters".to_string(),
+                "Short description must be 80 characters or fewer.".to_string(),
             ));
         }
         if f.long_description.len() > 4000 {
             return Err(SetupJobError::BadRequest(
-                "long_description exceeds 4000 characters".to_string(),
+                "Long description must be 4000 characters or fewer.".to_string(),
+            ));
+        }
+        if f.developer_url.trim().is_empty() {
+            return Err(SetupJobError::BadRequest(
+                "Developer URL is required.".to_string(),
+            ));
+        }
+        if f.messaging_endpoint.trim().is_empty() {
+            return Err(SetupJobError::BadRequest(
+                "Messaging endpoint is required.".to_string(),
             ));
         }
 
@@ -236,12 +258,12 @@ impl TeamsSetupJobManager {
         let prereqs = self.get_prereqs(agent).await;
         if !prereqs.atk.installed && !req.consent_install_cli {
             return Err(SetupJobError::BadRequest(
-                "consent_install_cli must be true when Microsoft 365 Agents Toolkit is not installed".to_string()
+                "You must consent to installing the Agents Toolkit CLI to continue.".to_string(),
             ));
         }
         if prereqs.teams_already_configured && !req.replace_existing {
             return Err(SetupJobError::BadRequest(
-                "replace_existing must be true when Teams is already configured for this agent"
+                "Microsoft Teams is already configured. Confirm replacing the existing bot to continue."
                     .to_string(),
             ));
         }
@@ -272,7 +294,7 @@ impl TeamsSetupJobManager {
                 || lock.phase != TeamsSetupPhase::SignIn
             {
                 return Err(SetupJobError::BadRequest(
-                    "job is not currently waiting for a Microsoft sign-in redirect".to_string(),
+                    "Job is not waiting for a sign-in redirect.".to_string(),
                 ));
             }
             let prompt = lock.sign_in.as_ref().ok_or_else(|| {
@@ -280,6 +302,13 @@ impl TeamsSetupJobManager {
             })?;
             prompt.redirect_port
         };
+
+        let expected_prefix = format!("http://localhost:{expected_port}/");
+        if !url_str.starts_with(&expected_prefix) {
+            return Err(SetupJobError::BadRequest(format!(
+                "Invalid redirect URL: must start with {expected_prefix}"
+            )));
+        }
 
         forward_redirect_with_port_check(url_str, expected_port)
             .await
@@ -488,7 +517,7 @@ impl TeamsSetupJobManager {
             let project_dir = agent_dir(&self.residuum_root, agent).join("teams-app");
             if project_dir.exists() {
                 if let Err(e) = tokio::fs::remove_dir_all(&project_dir).await {
-                    failed.push(CleanupFailedItem {
+                    failed.push(CleanupFailure {
                         item: "project_files".to_string(),
                         message: format!("failed to remove {}: {e}", project_dir.display()),
                     });
@@ -506,7 +535,7 @@ impl TeamsSetupJobManager {
                 .join("m365agentstoolkit");
             if cli_dir.exists() {
                 if let Err(e) = tokio::fs::remove_dir_all(&cli_dir).await {
-                    failed.push(CleanupFailedItem {
+                    failed.push(CleanupFailure {
                         item: "cli".to_string(),
                         message: format!("failed to remove {}: {e}", cli_dir.display()),
                     });
@@ -542,13 +571,13 @@ impl TeamsSetupJobManager {
                         removed.push("sign_out".to_string());
                     }
                     Ok(out) => {
-                        failed.push(CleanupFailedItem {
+                        failed.push(CleanupFailure {
                             item: "sign_out".to_string(),
                             message: format!("logout exited with error: {}", out.stderr),
                         });
                     }
                     Err(e) => {
-                        failed.push(CleanupFailedItem {
+                        failed.push(CleanupFailure {
                             item: "sign_out".to_string(),
                             message: format!("failed to execute logout: {e}"),
                         });

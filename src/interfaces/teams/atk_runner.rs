@@ -5,7 +5,7 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -17,7 +17,8 @@ use crate::interfaces::teams::atk::{
     ATK_CLI_VERSION, derive_cloud_teams_endpoint, forward_redirect, resolve_atk_paths,
 };
 use crate::interfaces::teams::setup_types::{
-    AtkStatus, LogLine, LogStream, SetupError, TeamsSetupPhase, TeamsSetupPrereqs, ToolStatus,
+    AtkStatus, LogLine, LogStream, SetupError, SuggestedEndpointSource, TeamsSetupPhase,
+    TeamsSetupPrereqs, ToolStatus,
 };
 use crate::util::FatalError;
 use crate::util::process::{
@@ -29,8 +30,7 @@ use crate::util::process::{
 pub const DEFAULT_LOG_CAPACITY: usize = 1000;
 
 /// Documentation URL for the manual Teams setup walkthrough.
-pub const MANUAL_GUIDE_URL: &str =
-    "https://github.com/Grizzly-Endeavors/residuum/blob/main/docs/guides/teams-setup.md";
+pub const MANUAL_GUIDE_URL: &str = "https://residuum.dev/docs/guides/teams-setup";
 
 /// Minimum supported Node.js version constant.
 pub const MIN_NODE_VERSION: &str = "12.0.0";
@@ -39,7 +39,7 @@ pub const MIN_NODE_VERSION: &str = "12.0.0";
 #[derive(Debug, Clone)]
 pub struct BoundedLog {
     max_lines: usize,
-    next_seq: Arc<AtomicUsize>,
+    next_seq: Arc<AtomicU64>,
     entries: Arc<Mutex<VecDeque<LogLine>>>,
 }
 
@@ -55,7 +55,7 @@ impl BoundedLog {
     pub fn new(max_lines: usize) -> Self {
         Self {
             max_lines,
-            next_seq: Arc::new(AtomicUsize::new(1)),
+            next_seq: Arc::new(AtomicU64::new(1)),
             entries: Arc::new(Mutex::new(VecDeque::with_capacity(max_lines))),
         }
     }
@@ -86,7 +86,7 @@ impl BoundedLog {
 
     /// Retrieve all log entries with sequence number strictly greater than `log_since`.
     #[must_use]
-    pub fn lines_since(&self, log_since: usize) -> Vec<LogLine> {
+    pub fn lines_since(&self, log_since: u64) -> Vec<LogLine> {
         let Ok(lock) = self.entries.lock() else {
             return Vec::new();
         };
@@ -108,7 +108,7 @@ impl BoundedLog {
 
     /// Return the sequence number of the most recently written line, or 0 if empty.
     #[must_use]
-    pub fn last_seq(&self) -> usize {
+    pub fn last_seq(&self) -> u64 {
         self.next_seq.load(Ordering::SeqCst).saturating_sub(1)
     }
 
@@ -452,7 +452,9 @@ pub async fn detect_prereqs(
 
     // 5. Derive suggested cloud endpoint
     let suggested = derive_cloud_teams_endpoint(residuum_root, agent_name).await;
-    let suggested_endpoint_source = suggested.as_ref().map(|_| "residuum_cloud".to_string());
+    let suggested_endpoint_source = suggested
+        .as_ref()
+        .map(|_| SuggestedEndpointSource::ResiduumCloud);
 
     TeamsSetupPrereqs {
         node: node_status,

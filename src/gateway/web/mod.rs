@@ -450,6 +450,7 @@ pub fn agent_repair_api_router(state: ConfigApiState) -> axum::Router {
         .route("/api/mcp/raw", put(config::api_mcp_raw_put))
         .route("/api/mcp/patch", patch(config::api_mcp_patch))
         .merge(workspace_api_router("/api"))
+        .merge(teams_setup::teams_setup_api_router())
         .with_state(state)
         .merge(checkpoints)
 }
