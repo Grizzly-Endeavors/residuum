@@ -55,11 +55,12 @@ A directory that can't be read (a permissions problem, not a missing directory) 
 
 ## Bundled Skills
 
-Three skills are bundled with the team:
+Bundled skills include:
 
 - **`residuum-system`**: Quick reference for all systems — tool names, config files, workspace layout. The agent activates this when it needs to look up operational details.
 - **`residuum-getting-started`**: First-conversation onboarding. Routes the user into one of several guided workflows. Deactivates itself after the first conversation.
 - **`skill-authoring`**: The agent's doctrine for creating and maintaining its own skills — when to create a new skill versus patch an existing one, what shape a skill should take, what not to capture in a skill, and description-length discipline (descriptions stay under ~60 characters so the skill index stays scannable). The agent should activate this skill whenever it's about to author or edit a skill, rather than improvising the format.
+- **`teams-setup`**: Guided setup to deploy and configure the agent as a Microsoft Teams bot using Microsoft 365 Agents Toolkit (ATK).
 
 Bundled skills live under `team/skills/` and follow the same format, so every agent sees them as team skills. They are written when missing and are not overwritten if the user (or an agent) edits them.
 

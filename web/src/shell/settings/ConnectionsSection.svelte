@@ -1,9 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { fetchTeamsSetupJob } from "../../lib/api";
   import { CloudConnection, teamsMessagingEndpoint } from "../../lib/cloud.svelte";
+  import { userErrorMessage } from "../../lib/errors";
   import { hub } from "../../lib/hub.svelte";
   import { toast } from "../../lib/toast.svelte";
-  import { Banner, IconButton, TextField } from "../../lib/ui";
+  import type { TeamsSetupJob, TeamsSetupState } from "../../lib/types";
+  import { Badge, Banner, Button, IconButton, TextField } from "../../lib/ui";
   import ChannelGroup from "./ChannelGroup.svelte";
   import type { ChannelState } from "./channel-state";
   import ConfigNumber from "./ConfigNumber.svelte";
@@ -12,6 +15,7 @@
   import SecretConfigField from "./SecretConfigField.svelte";
   import { configFieldError, type AgentSectionProps } from "./sections";
   import SettingsSection from "./SettingsSection.svelte";
+  import TeamsSetupModal from "./teams/TeamsSetupModal.svelte";
   import WebhooksGroup from "./WebhooksGroup.svelte";
 
   // The agent's Connections section: the chat platforms people reach it on,
@@ -55,7 +59,55 @@
   // The messaging endpoint exists only while Residuum Cloud is connected and
   // the relay has announced this hub's origin and instance.
   const cloud = new CloudConnection();
-  onMount(() => cloud.follow());
+  let teamsJob = $state<TeamsSetupJob | null>(null);
+  let teamsJobError = $state<string | null>(null);
+  let teamsModalOpen = $state(false);
+
+  async function loadTeamsJob(): Promise<void> {
+    try {
+      teamsJob = await fetchTeamsSetupJob(agent);
+      teamsJobError = null;
+    } catch (err: unknown) {
+      teamsJob = null;
+      teamsJobError = userErrorMessage(err, {
+        action: "Couldn't check Teams setup status.",
+      });
+    }
+  }
+
+  onMount(() => {
+    cloud.follow();
+    void loadTeamsJob();
+  });
+
+  function teamsJobTone(state: TeamsSetupState): "accent" | "neutral" | "positive" | "danger" {
+    switch (state) {
+      case "running":
+      case "waiting_for_user":
+        return "accent";
+      case "succeeded":
+        return "positive";
+      case "failed":
+        return "danger";
+      case "cancelled":
+        return "neutral";
+    }
+  }
+
+  function teamsJobLabel(state: TeamsSetupState): string {
+    switch (state) {
+      case "running":
+        return "Setup running";
+      case "waiting_for_user":
+        return "Action needed";
+      case "succeeded":
+        return "Configured via Toolkit";
+      case "failed":
+        return "Setup failed";
+      case "cancelled":
+        return "Setup cancelled";
+    }
+  }
   const endpoint = $derived.by(() => {
     const status = cloud.status;
     if (!teamsOn || status?.status !== "connected") return null;
@@ -168,6 +220,23 @@
       label: "Register a bot in the Teams developer portal",
     }}
   >
+    <div class="teams-setup-row">
+      <Button variant="secondary" size="sm" onclick={() => (teamsModalOpen = true)}>
+        {teamsJob !== null ? "View setup" : "Set up with Agents Toolkit"}
+      </Button>
+      {#if teamsJob !== null}
+        <Badge dot tone={teamsJobTone(teamsJob.state)}>{teamsJobLabel(teamsJob.state)}</Badge>
+      {/if}
+    </div>
+    {#if teamsJobError !== null}
+      <Banner tone="warn">
+        <div class="teams-error-banner">
+          <span>{teamsJobError}</span>
+          <Button variant="quiet" size="sm" onclick={() => void loadTeamsJob()}>Retry</Button>
+        </div>
+      </Banner>
+    {/if}
+
     <TextField
       label="App ID"
       bind:value={scope.config.teams_app_id}
@@ -243,12 +312,33 @@
   </ChannelGroup>
 
   <WebhooksGroup {scope} />
+
+  <TeamsSetupModal
+    {agent}
+    bind:open={teamsModalOpen}
+    onsuccess={loadTeamsJob}
+    onclose={loadTeamsJob}
+  />
 </SettingsSection>
 
 <style>
   .connections-notice {
     max-width: 640px;
     margin-bottom: var(--space-16);
+  }
+
+  .teams-setup-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-8);
+  }
+
+  .teams-error-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-8);
+    width: 100%;
   }
 
   .address {

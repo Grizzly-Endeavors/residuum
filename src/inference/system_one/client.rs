@@ -456,7 +456,7 @@ mod tests {
             http,
             SystemOneEndpoint {
                 provider: "Ollama".to_string(),
-                base_url: "http://127.0.0.1:9".to_string(),
+                base_url: "http://unreachable.invalid".to_string(),
                 model: "nimble".to_string(),
                 api_key: None,
                 keep_alive: None,
@@ -466,7 +466,7 @@ mod tests {
         let err = c.evaluate(&json!("x"), &one_question()).await.unwrap_err();
         assert!(
             matches!(err, SystemOneError::Unreachable { .. }),
-            "connection refused should be Unreachable, got {err:?}"
+            "unreachable server should be Unreachable, got {err:?}"
         );
     }
 

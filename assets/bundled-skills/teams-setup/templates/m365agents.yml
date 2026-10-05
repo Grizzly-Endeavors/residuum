@@ -1,0 +1,37 @@
+# yaml-language-server: $schema=https://aka.ms/m365-agents-toolkits/v1.13/yaml.schema.json
+version: v1.13
+
+provision:
+  - uses: botAadApp/create
+    with:
+      name: ${{BOT_DISPLAY_NAME}}
+    writeToEnvironmentFile:
+      botId: BOT_ID
+      botPassword: SECRET_BOT_PASSWORD
+
+  - uses: botFramework/create
+    with:
+      botId: ${{BOT_ID}}
+      name: ${{BOT_DISPLAY_NAME}}
+      messagingEndpoint: ${{BOT_ENDPOINT}}
+
+  - uses: teamsApp/create
+    with:
+      name: ${{TEAMS_APP_NAME}}
+    writeToEnvironmentFile:
+      teamsAppId: TEAMS_APP_ID
+      teamsAppTenantId: TEAMS_APP_TENANT_ID
+
+  - uses: teamsApp/validateAppPackage
+    with:
+      manifestPath: ./appPackage/manifest.json
+
+  - uses: teamsApp/zipAppPackage
+    with:
+      manifestPath: ./appPackage/manifest.json
+      outputZipPath: ./appPackage/build/appPackage.${{TEAMSFX_ENV}}.zip
+      outputFolder: ./appPackage/build
+
+  - uses: teamsApp/update
+    with:
+      appPackagePath: ./appPackage/build/appPackage.${{TEAMSFX_ENV}}.zip

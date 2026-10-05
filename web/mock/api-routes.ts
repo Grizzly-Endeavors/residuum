@@ -14,6 +14,7 @@ import type { Route } from "./routes";
 import { scheduledRoutes } from "./scheduled";
 import { sessionRoutes } from "./sessions";
 import { teamEventRoutes } from "./team-events";
+import { teamsSetupRoutes } from "./teams-setup";
 import { updateRoutes } from "./update";
 import { workbenchRoutes } from "./workbench";
 import { workspaceRoutes } from "./workspace";
@@ -31,6 +32,7 @@ export const apiRoutes: readonly Route[] = [
   ...overviewRoutes,
   ...agentInboxRoutes,
   ...scheduledRoutes,
+  ...teamsSetupRoutes,
   ...updateRoutes,
   ...cloudRoutes,
   ...checkpointRoutes,

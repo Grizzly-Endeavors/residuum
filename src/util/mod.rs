@@ -6,6 +6,7 @@ mod error;
 pub mod frontmatter;
 pub(crate) mod fs;
 pub mod log_format;
+pub mod process;
 pub mod secret_compare;
 mod spawn;
 pub mod telemetry;

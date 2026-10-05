@@ -73,7 +73,7 @@ impl AgentRouterKind {
         match segments.as_slice() {
             [
                 "api",
-                "config" | "providers" | "mcp" | "workspace" | "checkpoints",
+                "config" | "providers" | "mcp" | "workspace" | "checkpoints" | "teams-setup",
                 ..,
             ] => Self::Repair,
             ["api", route @ ..] if is_file_data_route(route) => Self::Files,
@@ -220,6 +220,14 @@ mod tests {
             "/api/workspace/file",
             "/api/checkpoints",
             "/api/checkpoints/abc/diff",
+            "/api/teams-setup/prereqs",
+            "/api/teams-setup/job",
+            "/api/teams-setup/job/redirect",
+            "/api/teams-setup/job/cancel",
+            "/api/teams-setup/job/retry",
+            "/api/teams-setup/job/install-app",
+            "/api/teams-setup/job/package",
+            "/api/teams-setup/cleanup",
         ] {
             assert_eq!(
                 AgentRouterKind::for_inner_path(repair),

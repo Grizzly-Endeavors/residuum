@@ -5,7 +5,7 @@ import type { MockHub, MockState } from "./state";
  * it: the same list as the backend's repair router (`src/hub/http/dispatch.rs`).
  * The path is the agent's own, below `/api/agents/{name}`.
  */
-const REPAIR_ROUTES = /^\/(config|providers|mcp|workspace|checkpoints)(\/|$)/;
+const REPAIR_ROUTES = /^\/(config|providers|mcp|workspace|checkpoints|teams-setup)(\/|$)/;
 
 /**
  * What each scope owns, by path below the scope's prefix. A path outside them
@@ -21,7 +21,7 @@ const REPAIR_ROUTES = /^\/(config|providers|mcp|workspace|checkpoints)(\/|$)/;
  * - The team: the workbench. Team files keep their own spelling.
  */
 const AGENT_ROUTES =
-  /^\/(status|config|providers|mcp|workspace|checkpoints|chat|usage|inbox|agent-inbox|sessions|scheduled|files|memory|model|a2a\/(status|card|agents|outbound))(\/|$)/;
+  /^\/(status|config|providers|mcp|workspace|checkpoints|chat|usage|inbox|agent-inbox|sessions|scheduled|files|memory|model|teams-setup|a2a\/(status|card|agents|outbound))(\/|$)/;
 const HUB_ROUTES =
   /^\/(secrets|agent-keys|a2a\/keys|cloud|update|tracing|system|system-one|mcp-catalog|providers\/models|shutdown|checkpoints|push)(\/|$)/;
 const TEAM_ROUTES = /^\/workbench(\/|$)/;

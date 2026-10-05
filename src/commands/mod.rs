@@ -11,6 +11,7 @@ mod secret;
 mod serve;
 mod setup;
 mod stop;
+mod teams;
 mod tracing_cmd;
 mod update;
 mod update_watchdog;
@@ -80,6 +81,11 @@ enum Command {
         #[command(subcommand)]
         command: secret::SecretCommand,
     },
+    /// Manage Microsoft Teams bot integration and ATK setup
+    Teams {
+        #[command(subcommand)]
+        command: teams::TeamsCommand,
+    },
     /// Stop the running hub and all its agents
     Stop(stop::StopArgs),
     /// Manage tracing and observability
@@ -128,6 +134,7 @@ pub async fn run() -> Result<(), FatalError> {
 
     match command {
         Command::Secret { command } => secret::run_secret_command(&command).await,
+        Command::Teams { ref command } => teams::run_teams_command(command).await,
         Command::AgentKeys { ref command } => agent_keys::run_agent_keys_command(command).await,
         Command::A2a { ref command } => a2a::run_a2a_command(command).await,
         Command::Agent { ref command } => {

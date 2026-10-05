@@ -112,6 +112,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "aes-gcm"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "831010a0f742e1209b3bcea8fab6a8e149051ba6099432c8cb2cc117dec3ead1"
+dependencies = [
+ "aead",
+ "aes",
+ "cipher",
+ "ctr",
+ "ghash",
+ "subtle",
+]
+
+[[package]]
 name = "aes-gcm-siv"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1541,6 +1555,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghash"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0d8a4362ccb29cb0b265253fb0a2728f592895ee6854fd9bc13f2ffda266ff1"
+dependencies = [
+ "opaque-debug",
+ "polyval",
+]
+
+[[package]]
 name = "gix"
 version = "0.87.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1951,7 +1975,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c91d8cffac8849493a82233811bd02b2b183b8cf39bf704de0fa0841b737595"
 dependencies = [
  "bstr",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -4570,6 +4594,8 @@ dependencies = [
  "a2a-client-lf",
  "a2a-lf",
  "a2a-server-lf",
+ "aes",
+ "aes-gcm",
  "aes-gcm-siv",
  "anyhow",
  "async-trait",
@@ -4586,6 +4612,7 @@ dependencies = [
  "futures-util",
  "gix",
  "globset",
+ "hex",
  "http",
  "iana-time-zone",
  "mime_guess",

@@ -7,6 +7,9 @@ import type {
   OutboundA2aTaskSummary,
   ServerMessage,
   SessionUsageTotals,
+  TeamsSetupJob,
+  TeamsSetupPrereqs,
+  LogLine,
 } from "../src/lib/generated/protocol";
 import type { HubServerMessage } from "../src/lib/hub-types";
 import type { RecentMessage, UserInboxItem, WorkspaceEntry } from "../src/lib/types";
@@ -113,6 +116,12 @@ export interface MockState {
    * into that episode.
    */
   compressedAt: number | null;
+  /** Current Teams setup job for this agent, if any. */
+  teamsSetupJob?: TeamsSetupJob | null;
+  /** Custom prerequisite overrides for Teams setup, if set. */
+  teamsSetupPrereqs?: TeamsSetupPrereqs;
+  /** All cumulative log lines for the Teams setup job. */
+  teamsSetupAllLogs?: LogLine[];
 }
 
 export interface MockAgent {
@@ -343,6 +352,9 @@ export function createState(
     pushDevices: [],
     checkpoints: {},
     hasConversation: false,
+    teamsSetupJob: null,
+    teamsSetupPrereqs: undefined,
+    teamsSetupAllLogs: [],
   };
   if (hasRun) seedAgentData(state);
   seedCheckpoints(state);

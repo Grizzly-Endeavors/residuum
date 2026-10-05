@@ -165,6 +165,19 @@ const SKILL_AUTHORING_SKILL_MD: &str =
 const SKILL_AUTHORING_REF_STANDARDS: &str =
     include_str!("../../assets/bundled-skills/skill-authoring/references/authoring-standards.md");
 
+// teams-setup skill
+const TEAMS_SETUP_SKILL_MD: &str = include_str!("../../assets/bundled-skills/teams-setup/SKILL.md");
+const TEAMS_SETUP_M365AGENTS_YML: &str =
+    include_str!("../../assets/bundled-skills/teams-setup/templates/m365agents.yml");
+const TEAMS_SETUP_MANIFEST_JSON: &str =
+    include_str!("../../assets/bundled-skills/teams-setup/templates/appPackage/manifest.json");
+const TEAMS_SETUP_ENV_RESIDUUM: &str =
+    include_str!("../../assets/bundled-skills/teams-setup/templates/env/.env.residuum");
+const TEAMS_SETUP_COLOR_PNG: &[u8] =
+    include_bytes!("../../assets/bundled-skills/teams-setup/templates/appPackage/color.png");
+const TEAMS_SETUP_OUTLINE_PNG: &[u8] =
+    include_bytes!("../../assets/bundled-skills/teams-setup/templates/appPackage/outline.png");
+
 /// Ensure the agent's workspace directory structure exists with default
 /// identity files, and that the shared team layer it belongs to exists.
 ///
@@ -316,9 +329,14 @@ fn soul_named(name: &str) -> String {
 }
 
 fn strip_stock_identity(content: &str) -> String {
+    let archetype_crlf = STOCK_ARCHETYPE_LINE.replace('\n', "\r\n");
+    let tone_crlf = format!("{STOCK_TONE_LINE}\r\n");
+    let tone_lf = format!("{STOCK_TONE_LINE}\n");
     content
+        .replace(&archetype_crlf, "")
         .replace(STOCK_ARCHETYPE_LINE, "")
-        .replace(&format!("{STOCK_TONE_LINE}\n"), "")
+        .replace(&tone_crlf, "")
+        .replace(&tone_lf, "")
         .replace(STOCK_TONE_LINE, "")
 }
 
@@ -333,11 +351,16 @@ fn settled_soul(existing: &str, name: &str) -> Option<String> {
         .lines()
         .find(|line| line.starts_with("- **Name**: "))?;
     let normalized = stripped.replacen(name_line, "- **Name**: Ralph", 1);
-    if normalized != DEFAULT_SOUL {
+    if normalized.replace("\r\n", "\n") != DEFAULT_SOUL.replace("\r\n", "\n") {
         return None;
     }
     let rewritten = if name_line == "- **Name**: Ralph" {
-        soul_named(name)
+        let soul = soul_named(name);
+        if existing.contains("\r\n") {
+            soul.replace('\n', "\r\n").replace("\r\r\n", "\r\n")
+        } else {
+            soul.replace("\r\n", "\n")
+        }
     } else if stripped != existing {
         stripped
     } else {
@@ -527,8 +550,42 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
     write_if_missing(&workbench_dir.join("SKILL.md"), WORKBENCH_SKILL_MD).await?;
     write_if_missing(&workbench_refs.join("api.md"), WORKBENCH_REF_API).await?;
 
+    // teams-setup skill
+    write_teams_setup_skill(&skills_root).await?;
+
     tracing::debug!(workspace = %layout.root().display(), "wrote bundled skills");
 
+    Ok(())
+}
+
+/// Write the bundled `teams-setup` skill and its scaffolding templates.
+async fn write_teams_setup_skill(skills_root: &std::path::Path) -> Result<(), FatalError> {
+    let teams_dir = skills_root.join("teams-setup");
+    let teams_templates = teams_dir.join("templates");
+    let teams_pkg = teams_templates.join("appPackage");
+    let teams_env = teams_templates.join("env");
+    tokio::fs::create_dir_all(&teams_pkg).await.map_err(|e| {
+        FatalError::Workspace(format!(
+            "failed to create skill directory {}: {e}",
+            teams_pkg.display()
+        ))
+    })?;
+    tokio::fs::create_dir_all(&teams_env).await.map_err(|e| {
+        FatalError::Workspace(format!(
+            "failed to create skill directory {}: {e}",
+            teams_env.display()
+        ))
+    })?;
+    write_if_missing(&teams_dir.join("SKILL.md"), TEAMS_SETUP_SKILL_MD).await?;
+    write_if_missing(
+        &teams_templates.join("m365agents.yml"),
+        TEAMS_SETUP_M365AGENTS_YML,
+    )
+    .await?;
+    write_if_missing(&teams_pkg.join("manifest.json"), TEAMS_SETUP_MANIFEST_JSON).await?;
+    write_if_missing(&teams_pkg.join("color.png"), TEAMS_SETUP_COLOR_PNG).await?;
+    write_if_missing(&teams_pkg.join("outline.png"), TEAMS_SETUP_OUTLINE_PNG).await?;
+    write_if_missing(&teams_env.join(".env.residuum"), TEAMS_SETUP_ENV_RESIDUUM).await?;
     Ok(())
 }
 
@@ -540,13 +597,27 @@ const NAME_LINE_ACTION: &str = "- If they gave you a name or asked you to change
 /// identity section. An edited skill that no longer has those lines is left
 /// as it is.
 fn refreshed_getting_started(content: &str) -> Option<String> {
-    if !content.contains(TONE_LINE_ACTION) && !content.contains(NAME_LINE_ACTION) {
+    let tone_crlf = TONE_LINE_ACTION.replace('\n', "\r\n");
+    let name_crlf = NAME_LINE_ACTION.replace('\n', "\r\n");
+    if !content.contains(TONE_LINE_ACTION)
+        && !content.contains(&tone_crlf)
+        && !content.contains(NAME_LINE_ACTION)
+        && !content.contains(&name_crlf)
+    {
         return None;
     }
     let updated = content
         .replace(
+            &tone_crlf,
+            "- Write how they want you to communicate into the Identity section of `SOUL.md`, under your name. That section starts with your name and nothing else.\r\n",
+        )
+        .replace(
             TONE_LINE_ACTION,
             "- Write how they want you to communicate into the Identity section of `SOUL.md`, under your name. That section starts with your name and nothing else.\n",
+        )
+        .replace(
+            &name_crlf,
+            "- If they gave you a different name, or asked you to change something else about how you are, update `SOUL.md` accordingly\r\n",
         )
         .replace(
             NAME_LINE_ACTION,
@@ -583,16 +654,21 @@ async fn refresh_getting_started_actions(path: &std::path::Path) -> Result<(), F
 }
 
 /// Write content to a file only if it does not already exist.
-async fn write_if_missing(path: &std::path::Path, content: &str) -> Result<(), FatalError> {
+async fn write_if_missing(
+    path: &std::path::Path,
+    content: impl AsRef<[u8]>,
+) -> Result<(), FatalError> {
     if tokio::fs::try_exists(path)
         .await
         .map_err(|e| FatalError::Workspace(format!("failed to check {}: {e}", path.display())))?
     {
         tracing::trace!(path = %path.display(), "identity file already exists, skipping");
     } else {
-        tokio::fs::write(path, content).await.map_err(|e| {
-            FatalError::Workspace(format!("failed to write default {}: {e}", path.display()))
-        })?;
+        tokio::fs::write(path, content.as_ref())
+            .await
+            .map_err(|e| {
+                FatalError::Workspace(format!("failed to write default {}: {e}", path.display()))
+            })?;
         tracing::debug!(path = %path.display(), "created default identity file");
     }
     Ok(())
@@ -636,11 +712,15 @@ mod tests {
     }
 
     fn stock_soul() -> String {
-        DEFAULT_SOUL.replacen(
-            "- **Name**: Ralph\n",
-            &format!("- **Name**: Ralph\n{STOCK_ARCHETYPE_LINE}{STOCK_TONE_LINE}"),
-            1,
-        )
+        let (needle, archetype) = if DEFAULT_SOUL.contains("\r\n") {
+            (
+                "- **Name**: Ralph\r\n",
+                STOCK_ARCHETYPE_LINE.replace('\n', "\r\n"),
+            )
+        } else {
+            ("- **Name**: Ralph\n", STOCK_ARCHETYPE_LINE.to_string())
+        };
+        DEFAULT_SOUL.replacen(needle, &format!("{needle}{archetype}{STOCK_TONE_LINE}"), 1)
     }
 
     #[test]
@@ -662,6 +742,16 @@ mod tests {
     #[test]
     fn a_soul_that_already_has_its_own_name_keeps_it_when_the_stock_lines_go() {
         let named = stock_soul().replace("**Name**: Ralph", "**Name**: Bob");
+        let settled = settled_soul(&named, "Mist").unwrap();
+        assert!(settled.contains("**Name**: Bob"));
+        assert!(!settled.contains("Archetype"));
+        assert!(settled_soul(&settled, "Mist").is_none());
+    }
+
+    #[test]
+    fn a_soul_with_crlf_line_endings_settles_properly() {
+        let crlf_stock = stock_soul().replace('\n', "\r\n").replace("\r\r\n", "\r\n");
+        let named = crlf_stock.replace("**Name**: Ralph", "**Name**: Bob");
         let settled = settled_soul(&named, "Mist").unwrap();
         assert!(settled.contains("**Name**: Bob"));
         assert!(!settled.contains("Archetype"));
@@ -1327,5 +1417,86 @@ mod tests {
             content, DEFAULT_TEAM_USER,
             "empty strings should produce default USER.md"
         );
+    }
+
+    #[tokio::test]
+    async fn teams_setup_bundled_skill_written_with_valid_templates_and_binary_icons() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let teams_dir = layout.team().skills_dir().join("teams-setup");
+        let skill_md = tokio::fs::read_to_string(teams_dir.join("SKILL.md"))
+            .await
+            .unwrap();
+        assert!(skill_md.contains("name: teams-setup"));
+        assert!(skill_md.contains("Microsoft Teams"));
+
+        // Verify m365agents.yml exists and parses as valid YAML
+        let yml_str = tokio::fs::read_to_string(teams_dir.join("templates/m365agents.yml"))
+            .await
+            .unwrap();
+        let yml_val: serde_json::Value = serde_yaml_ng::from_str(&yml_str).unwrap();
+        assert_eq!(
+            yml_val.get("version").and_then(|v| v.as_str()),
+            Some("v1.13")
+        );
+        assert!(
+            yml_val
+                .get("provision")
+                .is_some_and(serde_json::Value::is_array)
+        );
+
+        // Verify manifest.json exists and parses as valid JSON
+        let manifest_str =
+            tokio::fs::read_to_string(teams_dir.join("templates/appPackage/manifest.json"))
+                .await
+                .unwrap();
+        let manifest_val: serde_json::Value = serde_json::from_str(&manifest_str).unwrap();
+        assert_eq!(
+            manifest_val.get("manifestVersion").and_then(|v| v.as_str()),
+            Some("1.17")
+        );
+        assert_eq!(
+            manifest_val
+                .get("icons")
+                .and_then(|i| i.get("color"))
+                .and_then(|v| v.as_str()),
+            Some("color.png")
+        );
+        assert_eq!(
+            manifest_val
+                .get("icons")
+                .and_then(|i| i.get("outline"))
+                .and_then(|v| v.as_str()),
+            Some("outline.png")
+        );
+
+        // Verify binary icons are valid PNGs matching embedded byte slices
+        let color_png = tokio::fs::read(teams_dir.join("templates/appPackage/color.png"))
+            .await
+            .unwrap();
+        assert_eq!(color_png, TEAMS_SETUP_COLOR_PNG);
+        assert!(color_png.starts_with(b"\x89PNG\r\n\x1a\n"));
+
+        let outline_png = tokio::fs::read(teams_dir.join("templates/appPackage/outline.png"))
+            .await
+            .unwrap();
+        assert_eq!(outline_png, TEAMS_SETUP_OUTLINE_PNG);
+        assert!(outline_png.starts_with(b"\x89PNG\r\n\x1a\n"));
+
+        // Verify .env.residuum
+        let env_str = tokio::fs::read_to_string(teams_dir.join("templates/env/.env.residuum"))
+            .await
+            .unwrap();
+        assert!(env_str.contains("TEAMSFX_ENV=residuum"));
     }
 }

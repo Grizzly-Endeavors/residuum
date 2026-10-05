@@ -20,6 +20,7 @@ use crate::agent_keys::{
 use crate::bus::Publisher;
 use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger};
 use crate::inference::ToolDefinition;
+use crate::util::process::{ProcessTreeGuard, kill_process_tree};
 
 /// Maximum output size from a command (100KB).
 const MAX_OUTPUT_BYTES: usize = 100 * 1024;
@@ -453,133 +454,6 @@ fn shell_command(command: &str) -> Command {
     }
 }
 
-/// Kill every process in the tree rooted at a spawned command's shell, not
-/// just the shell itself — the command runs via a shell, so a plain kill of
-/// that one process would orphan whatever it spawned.
-///
-/// A no-op if the process has already been reaped (`pid` is `None`).
-async fn kill_process_tree(pid: Option<u32>) {
-    let Some(pid) = pid else {
-        return;
-    };
-
-    #[cfg(unix)]
-    {
-        let Ok(pid) = i32::try_from(pid) else {
-            tracing::warn!(
-                pid,
-                "exec pid doesn't fit a pid_t, skipping process-group kill"
-            );
-            return;
-        };
-        // The kill syscall itself is synchronous; run it on a blocking-pool
-        // thread rather than the async worker thread that's awaiting this.
-        let result = crate::util::spawn_blocking_in_span(move || {
-            use nix::sys::signal::{Signal, killpg};
-            use nix::unistd::Pid;
-            // Safe: `shell_command` puts the shell in its own process
-            // group, so this reaches only the command's own tree.
-            killpg(Pid::from_raw(pid), Signal::SIGKILL)
-        })
-        .await;
-        match result {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                tracing::warn!(error = %e, pid, "failed to kill exec command's process group");
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, pid, "process-group kill task panicked");
-            }
-        }
-    }
-    #[cfg(windows)]
-    {
-        // `/T` kills the whole process tree, not just the immediate
-        // `cmd.exe` — `Child::kill` alone only signals that one process and
-        // would orphan anything it spawned.
-        if let Err(e) = Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &pid.to_string()])
-            .kill_on_drop(true)
-            .output()
-            .await
-        {
-            tracing::warn!(error = %e, pid, "failed to kill exec command's process tree");
-        }
-    }
-}
-
-/// Kills a spawned command's whole process tree if dropped while the child
-/// may still be running.
-///
-/// `Command::kill_on_drop` alone only signals the immediate shell process
-/// when the future awaiting it is dropped instead of run to completion (e.g.
-/// the turn future itself is dropped rather than cancelled through the
-/// `select!` in [`run_with_timeout_and_cancel`]) — any grandchildren the
-/// shell spawned are left running, orphaned. This guard uses the same
-/// process-group kill (Unix) / `taskkill /T` (Windows) as the timeout and
-/// stop paths, run synchronously since `Drop` can't await.
-struct ProcessTreeGuard {
-    pid: Option<u32>,
-}
-
-impl ProcessTreeGuard {
-    const fn new(pid: Option<u32>) -> Self {
-        Self { pid }
-    }
-
-    /// Mark the tree as already handled (killed, or the child already
-    /// reaped after exiting on its own) so the drop handler is a no-op.
-    fn disarm(&mut self) {
-        self.pid = None;
-    }
-}
-
-impl Drop for ProcessTreeGuard {
-    fn drop(&mut self) {
-        let Some(pid) = self.pid else {
-            return;
-        };
-        #[cfg(unix)]
-        {
-            use nix::sys::signal::{Signal, killpg};
-            use nix::unistd::Pid;
-
-            let Ok(pid) = i32::try_from(pid) else {
-                tracing::warn!(
-                    pid,
-                    "exec pid doesn't fit a pid_t, skipping process-group kill on drop"
-                );
-                return;
-            };
-            // Safe: `shell_command` puts the shell in its own process
-            // group, so this reaches only the command's own tree.
-            if let Err(e) = killpg(Pid::from_raw(pid), Signal::SIGKILL) {
-                tracing::warn!(
-                    error = %e,
-                    pid,
-                    "failed to kill exec command's process group on drop"
-                );
-            }
-        }
-        #[cfg(windows)]
-        {
-            // Synchronous std::process::Command, not tokio's — Drop can't
-            // await, and this is a best-effort cleanup on an already-dying
-            // future so blocking briefly here is acceptable.
-            if let Err(e) = std::process::Command::new("taskkill")
-                .args(["/T", "/F", "/PID", &pid.to_string()])
-                .output()
-            {
-                tracing::warn!(
-                    error = %e,
-                    pid,
-                    "failed to kill exec command's process tree on drop"
-                );
-            }
-        }
-    }
-}
-
 /// How a spawned command's run ended.
 enum RunOutcome {
     /// The command exited on its own before the timeout or a stop.
@@ -960,13 +834,13 @@ mod tests {
     /// killed, not merely abandoned.
     #[cfg(unix)]
     async fn wait_for_pid_to_die(pid: i32) {
-        use nix::sys::signal::kill;
-        use nix::unistd::Pid;
-
+        let Ok(pid_u32) = u32::try_from(pid) else {
+            return;
+        };
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                if kill(Pid::from_raw(pid), None).is_err() {
-                    return; // ESRCH: no such process.
+                if !crate::util::process::is_process_running(pid_u32) {
+                    return;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }

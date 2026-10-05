@@ -35,6 +35,7 @@ const MAKES_NO_REQUESTS = [
   "cacheKeyConfigRaw",
   "cacheKeyProvidersRaw",
   "cacheKeyMcpRaw",
+  "teamsAppPackageUrl",
 ] as const;
 
 type RequestFunction = Exclude<
@@ -263,6 +264,38 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
   markHubInboxItemRead: [(a) => a.markHubInboxItemRead("scout", "item-1")],
   archiveHubInboxItem: [(a) => a.archiveHubInboxItem("scout", "item-1")],
   restoreHubInboxItem: [(a) => a.restoreHubInboxItem("scout", "item-1")],
+  fetchTeamsSetupPrereqs: [(a) => a.fetchTeamsSetupPrereqs(AGENT)],
+  fetchTeamsSetupJob: [(a) => a.fetchTeamsSetupJob(AGENT), (a) => a.fetchTeamsSetupJob(AGENT, 10)],
+  startTeamsSetupJob: [
+    (a) =>
+      a.startTeamsSetupJob(AGENT, {
+        form: {
+          bot_name: "bot",
+          short_description: "short",
+          long_description: "long",
+          developer_name: "dev",
+          developer_url: "https://dev.example.com",
+          privacy_url: null,
+          terms_url: null,
+          messaging_endpoint: "https://example.com/api/teams/messages",
+          color_icon_png_base64: null,
+          outline_icon_png_base64: null,
+        },
+        consent_install_cli: true,
+        replace_existing: false,
+      }),
+  ],
+  submitTeamsSetupRedirect: [
+    (a) => a.submitTeamsSetupRedirect(AGENT, "http://localhost:4321/auth?code=123"),
+  ],
+  cancelTeamsSetupJob: [(a) => a.cancelTeamsSetupJob(AGENT)],
+  retryTeamsSetupJob: [(a) => a.retryTeamsSetupJob(AGENT)],
+  installTeamsApp: [(a) => a.installTeamsApp(AGENT)],
+  fetchTeamsAppPackage: [(a) => a.fetchTeamsAppPackage(AGENT)],
+  deleteTeamsSetupJob: [(a) => a.deleteTeamsSetupJob(AGENT)],
+  cleanupTeamsSetup: [
+    (a) => a.cleanupTeamsSetup(AGENT, { project_files: true, cli: false, sign_out: false }),
+  ],
 };
 
 /**

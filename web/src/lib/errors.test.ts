@@ -65,6 +65,15 @@ describe("userErrorReason", () => {
     expect(userErrorReason(err, { action: "Couldn't save." })).toBe("Port already in use.");
   });
 
+  it("extracts the message field from a JSON body", () => {
+    const err = new ApiError(
+      400,
+      "Bad Request",
+      JSON.stringify({ message: "developer URL is required" }),
+    );
+    expect(userErrorReason(err, { action: "Couldn't start." })).toBe("Developer URL is required.");
+  });
+
   it("shows a long 4xx validation message verbatim instead of swapping in a generic one", () => {
     // Regression: this used to be silently replaced once it crossed the old
     // 240-char cap, so a real validation error (e.g. HEARTBEAT.yml) was
