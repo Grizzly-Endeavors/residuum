@@ -11,6 +11,7 @@ import type { FieldRef } from "../../lib/settings-fields";
 import type { AgentScopeModel, AllScopeModel } from "../../lib/settings-model.svelte";
 import type { AgentSectionId, AllSectionId } from "../../lib/settings-sections";
 import AgentToAgent from "./AgentToAgent.svelte";
+import AutoModeSection from "./AutoModeSection.svelte";
 import CloudSection from "./CloudSection.svelte";
 import ConnectionsSection from "./ConnectionsSection.svelte";
 import DiagnosticsSection from "./DiagnosticsSection.svelte";
@@ -25,6 +26,7 @@ import NotificationsSection from "./NotificationsSection.svelte";
 import RawConfig from "./RawConfig.svelte";
 import Runtime from "./Runtime.svelte";
 import Schedule from "./Schedule.svelte";
+import SystemOneSection from "./SystemOneSection.svelte";
 import ToolServers from "./ToolServers.svelte";
 import ToolsSection from "./ToolsSection.svelte";
 import UpdatesSection from "./UpdatesSection.svelte";
@@ -47,6 +49,7 @@ export const AGENT_SECTION_VIEWS: Record<AgentSectionId, Component<AgentSectionP
   model: ModelSection,
   connections: ConnectionsSection,
   tools: ToolsSection,
+  auto_mode: AutoModeSection,
   servers: ToolServers,
   a2a: AgentToAgent,
   memory: Memory,
@@ -61,6 +64,7 @@ export const ALL_SECTION_VIEWS: Record<AllSectionId, Component<AllSectionProps>>
   notifications: NotificationsSection,
   cloud: CloudSection,
   keys: KeysSection,
+  system_one: SystemOneSection,
   updates: UpdatesSection,
   limits: LimitsSection,
   listener: ListenerSection,

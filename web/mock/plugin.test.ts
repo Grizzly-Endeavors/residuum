@@ -76,7 +76,7 @@ function firstHubFrames(url: string): Promise<string[]> {
     const seen: string[] = [];
     ws.on("message", (raw) => {
       seen.push((JSON.parse(frameText(raw)) as { type: string }).type);
-      if (seen.length === 2) {
+      if (seen.length === 3) {
         ws.close();
         resolve(seen);
       }
@@ -190,6 +190,7 @@ describe("the mock server plugin", () => {
     });
     expect(await firstHubFrames(`${preview.baseUrl.replace("http", "ws")}/api/hub/ws`)).toEqual([
       "hub_boot",
+      "system_one_status",
       "agents_snapshot",
     ]);
   });
@@ -210,6 +211,7 @@ describe("the mock server plugin", () => {
     );
     expect(await firstHubFrames(`ws://${artifacts}/api/hub/ws`)).toEqual([
       "hub_boot",
+      "system_one_status",
       "agents_snapshot",
     ]);
 

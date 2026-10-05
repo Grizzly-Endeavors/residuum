@@ -86,6 +86,10 @@ The web UI shows how long a turn has been running while it runs, and the convers
 
 **Degradation.** A provider that reports no usage for a call leaves the numeric token fields unchanged rather than showing a `0` or erroring, and is logged at `debug` — this can happen per call, not just per provider, so a session's or the main chat's token totals may simply stop advancing for a stretch without any error surfacing. The tool-call count has no such gap: it comes from the turn loop itself, not a provider, so it always advances exactly with what actually ran.
 
+## Auto Mode
+
+When an agent's [Auto Mode](auto-mode.md) is on, every tool call in every turn loop (main and session alike) is checked against the agent's plain-language rules before it dispatches. A blocked call never runs: it gets an error result naming the rule, the rest of the batch continues, and the turn goes on. A blocked call still counts toward the turn's tool-call count, the repeat-call guard's streak and `max_tool_iterations`, the same as any call that returned a result. When the decision model can't answer, calls run unchecked.
+
 ## Repeat-Call Guard
 
 An observed failure — GLM 5.3 Flash calling a tool with byte-identical arguments hundreds of times in a row, spinning instead of finishing — is guarded against directly, in every turn loop (main and background/session/artifact turns alike). The turn tracks a streak of consecutive calls whose tool name and raw argument JSON exactly match the previous call; any different call (a different tool, or different arguments) resets the streak. Calls within one model response's batch count in order, the same as calls from separate model responses.

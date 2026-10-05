@@ -452,6 +452,10 @@ pub enum ServerMessage {
         output: String,
         /// Whether the tool returned an error.
         is_error: bool,
+        /// Auto Mode's verdict on the call, when Auto Mode checked it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        auto_mode: Option<crate::agent::auto_mode::AutoModeVerdict>,
     },
     /// The agent's final text response.
     Response {
@@ -596,6 +600,10 @@ pub enum ServerMessage {
         output: String,
         /// Whether the tool returned an error.
         is_error: bool,
+        /// Auto Mode's verdict on the call, when Auto Mode checked it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        auto_mode: Option<crate::agent::auto_mode::AutoModeVerdict>,
     },
     /// Token usage and tool-call progress for a session's turn still
     /// running — the session counterpart of `TurnUsage`.

@@ -758,6 +758,7 @@ async fn build_runtime(
         webhooks: spawned.webhooks,
         bus_infra_handles: infra.bus_infra_handles,
         http_client: parts.http_client,
+        auto_mode: parts.spawn_context.auto_mode.clone(),
         spawn_context: parts.spawn_context,
         model_call_resources_tx: channels.model_call_resources_tx,
         bus_handle: core.bus_handle,

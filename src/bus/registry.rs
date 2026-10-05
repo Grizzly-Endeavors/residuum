@@ -232,6 +232,7 @@ mod tests {
             retry: RetryConfig::default(),
             background: BackgroundConfig::default(),
             agent: Default::default(),
+            auto_mode: Default::default(),
             idle: IdleConfig::default(),
             temperature: None,
             thinking: None,

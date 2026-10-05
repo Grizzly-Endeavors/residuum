@@ -707,6 +707,7 @@ mod tests {
             name: "exec".into(),
             output: "ok".into(),
             is_error: false,
+            auto_mode: None,
         };
         let main_call = ServerMessage::ToolCall {
             id: "tc".into(),

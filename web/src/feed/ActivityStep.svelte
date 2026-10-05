@@ -3,6 +3,7 @@
   import { openSessionByAddress } from "../lib/session-address";
   import { Spinner } from "../lib/ui";
   import { stepText, type ActivityStep } from "./activity";
+  import { blockedByAutoMode } from "./auto-mode";
   import { openPathInPanel, pathHref } from "./feed-links";
   import StepDetail from "./StepDetail.svelte";
 
@@ -21,7 +22,9 @@
     failed: "Failed",
     stopped: "Stopped",
   };
-  const statusWord = $derived(STATUS_WORDS[step.status]);
+  const statusWord = $derived(
+    blockedByAutoMode(step.call.autoMode) ? "Blocked by Auto Mode" : STATUS_WORDS[step.status],
+  );
   const linked = $derived(step.target?.kind === "path" || step.target?.kind === "session");
 
   function openTarget(event: MouseEvent): void {

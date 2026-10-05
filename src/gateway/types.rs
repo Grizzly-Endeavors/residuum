@@ -382,6 +382,8 @@ pub(crate) struct AgentRuntime {
     pub stop_tx: mpsc::Sender<StopRequest>,
     /// Shared path policy for updating blocked paths on reload.
     pub path_policy: crate::tools::SharedPathPolicy,
+    /// Shared Auto Mode, updated with the agent's `[auto_mode]` on reload.
+    pub auto_mode: Option<crate::agent::auto_mode::SharedAutoMode>,
     /// Shared tracing service for observability API.
     pub tracing_service: Arc<TracingService>,
     /// Main-conversation activity for the rail and Home.

@@ -425,6 +425,7 @@ mod tests {
             tracing: super::super::TracingConfig::default(),
             background: super::super::HubBackgroundConfig::default(),
             push: super::super::HubPushConfig::default(),
+            system_one: None,
             config_dir: std::env::temp_dir().join("residuum-test-load-hub"),
             load_notices: Vec::new(),
         }

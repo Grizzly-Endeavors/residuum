@@ -70,6 +70,101 @@ pub struct HubPushConfig {
     pub contact: Option<String>,
 }
 
+/// Which service hosts the System 1 (decision model).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemOneProvider {
+    /// `TypeSafe`'s hosted Jev models.
+    TypeSafe,
+    /// A local Ollama (0.35+) serving decision models.
+    Ollama,
+    /// Any other endpoint serving the `/v1/systemone` API.
+    Other,
+}
+
+impl SystemOneProvider {
+    /// The name shown to the user in messages.
+    #[must_use]
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::TypeSafe => "TypeSafe",
+            Self::Ollama => "Ollama",
+            Self::Other => "the decision model service",
+        }
+    }
+
+    /// The base URL used when the config names none.
+    #[must_use]
+    pub fn default_url(self) -> Option<&'static str> {
+        match self {
+            Self::TypeSafe => Some(super::constants::DEFAULT_TYPESAFE_URL),
+            Self::Ollama => Some(super::constants::DEFAULT_OLLAMA_URL),
+            Self::Other => None,
+        }
+    }
+
+    /// The model used when the config names none.
+    #[must_use]
+    pub fn default_model(self) -> Option<&'static str> {
+        match self {
+            Self::TypeSafe => Some(super::constants::DEFAULT_TYPESAFE_MODEL),
+            Self::Ollama | Self::Other => None,
+        }
+    }
+}
+
+impl std::str::FromStr for SystemOneProvider {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_lowercase().as_str() {
+            "typesafe" => Ok(Self::TypeSafe),
+            "ollama" => Ok(Self::Ollama),
+            "other" => Ok(Self::Other),
+            other => Err(format!(
+                "unknown provider \"{other}\", expected typesafe, ollama, or other"
+            )),
+        }
+    }
+}
+
+/// The resolved System 1 endpoint every agent shares.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SystemOneConfig {
+    pub provider: SystemOneProvider,
+    /// Base URL, without the `/v1/...` path.
+    pub url: String,
+    pub model: String,
+    pub api_key: Option<String>,
+    pub keep_alive: Option<String>,
+}
+
+impl SystemOneConfig {
+    /// The name shown in messages: the provider's, or the custom URL's host.
+    #[must_use]
+    pub fn display_name(&self) -> String {
+        if self.provider == SystemOneProvider::Other {
+            url::Url::parse(&self.url)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_string))
+                .unwrap_or_else(|| self.provider.display_name().to_string())
+        } else {
+            self.provider.display_name().to_string()
+        }
+    }
+}
+
+impl std::fmt::Debug for SystemOneConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SystemOneConfig")
+            .field("provider", &self.provider)
+            .field("url", &self.url)
+            .field("model", &self.model)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("keep_alive", &self.keep_alive)
+            .finish()
+    }
+}
+
 /// Validated hub-level runtime configuration, loaded from `hub/config.toml`.
 ///
 /// Shared by every agent the hub hosts. It hot-reloads independently of the
@@ -91,6 +186,9 @@ pub struct HubConfig {
     pub background: HubBackgroundConfig,
     /// Web Push settings.
     pub push: HubPushConfig,
+    /// The System 1 (decision model) endpoint. `None` when `[system_one]` is
+    /// absent or too incomplete to call (a load notice says why).
+    pub system_one: Option<SystemOneConfig>,
     /// Directory this config was loaded from (`~/.residuum/hub`).
     pub config_dir: PathBuf,
     /// User-facing notices describing what was skipped or degraded while

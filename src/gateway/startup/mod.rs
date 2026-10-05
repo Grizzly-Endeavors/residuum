@@ -356,6 +356,7 @@ struct StartupSpawnContextInputs<'a> {
     /// copied, so sessions see the same live state as main.
     tools_path: &'a SharedToolsPath,
     path_policy: &'a crate::tools::SharedPathPolicy,
+    auto_mode: &'a crate::agent::auto_mode::SharedAutoMode,
     agent_keys: &'a crate::agent_keys::SharedAgentKeys,
     a2a_hub: &'a Arc<crate::a2a::A2aClientHub>,
     a2a_tracker: &'a Arc<crate::a2a::RemoteTaskTracker>,
@@ -402,6 +403,7 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
         web_search_backend: inputs.web_search_backend,
         tools_path: Arc::clone(inputs.tools_path),
         path_policy: Arc::clone(inputs.path_policy),
+        auto_mode: Some(Arc::clone(inputs.auto_mode)),
         agent_keys: Arc::clone(inputs.agent_keys),
         a2a_hub: Arc::clone(inputs.a2a_hub),
         a2a_tracker: Arc::clone(inputs.a2a_tracker),
@@ -860,6 +862,7 @@ struct MainAgentInputs<'a> {
     options: crate::inference::CompletionOptions,
     net: &'a NetworkingComponents,
     path_policy: &'a crate::tools::SharedPathPolicy,
+    auto_mode: &'a crate::agent::auto_mode::SharedAutoMode,
     action_store: &'a Arc<tokio::sync::Mutex<ActionStore>>,
     action_notify: &'a Arc<tokio::sync::Notify>,
     skill_state: &'a SharedSkillState,
@@ -904,6 +907,7 @@ async fn build_main_agent(
             skill_state: inputs.skill_state,
             tools_path: &inputs.net.tools_path,
             path_policy: inputs.path_policy,
+            auto_mode: inputs.auto_mode,
             agent_keys: &inputs.net.agent_keys,
             session_registry: inputs.session_registry,
             endpoint_registry: &inputs.net.endpoint_registry,
@@ -953,6 +957,7 @@ struct AgentInitInputs<'a> {
     tracing_service: &'a Arc<crate::tracing_service::TracingService>,
     tracing_client_context: &'a Arc<crate::tracing_service::ClientContext>,
     path_policy: &'a crate::tools::SharedPathPolicy,
+    auto_mode: &'a crate::agent::auto_mode::SharedAutoMode,
     a2a_hub: &'a Arc<crate::a2a::A2aClientHub>,
     a2a_tracker: &'a Arc<crate::a2a::RemoteTaskTracker>,
     checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
@@ -1000,6 +1005,7 @@ async fn build_spawn_context_and_agent(
         web_search_backend: inputs.cfg.web_search.standalone_backend.clone(),
         tools_path: &inputs.net.tools_path,
         path_policy: inputs.path_policy,
+        auto_mode: inputs.auto_mode,
         agent_keys: &inputs.net.agent_keys,
         a2a_hub: inputs.a2a_hub,
         a2a_tracker: inputs.a2a_tracker,
@@ -1018,6 +1024,7 @@ async fn build_spawn_context_and_agent(
         options: inputs.options,
         net: inputs.net,
         path_policy: inputs.path_policy,
+        auto_mode: inputs.auto_mode,
         action_store: inputs.action_store,
         action_notify: inputs.action_notify,
         skill_state: inputs.skill_state,
@@ -1182,6 +1189,7 @@ struct SupportingInfra {
     net: NetworkingComponents,
     tracing_client_context: Arc<crate::tracing_service::ClientContext>,
     path_policy: crate::tools::SharedPathPolicy,
+    auto_mode: crate::agent::auto_mode::SharedAutoMode,
     a2a_hub: Arc<crate::a2a::A2aClientHub>,
     a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
     config_reload_tracker: crate::tools::SharedConfigReloadTracker,
@@ -1201,10 +1209,16 @@ async fn init_supporting_infra(
     let tracing_client_context = init_tracing_client_context(cfg);
     let path_policy = build_path_policy(cfg, layout, hub, &shared.team);
     let (a2a_hub, a2a_tracker) = init_a2a_client(layout, &net.agent_keys, agent_messenger).await;
+    let auto_mode = crate::agent::auto_mode::AutoModeGate::new_shared(
+        cfg.agent_name.clone(),
+        cfg.auto_mode.clone(),
+        Arc::clone(&shared.system_one),
+    );
     SupportingInfra {
         net,
         tracing_client_context,
         path_policy,
+        auto_mode,
         a2a_hub,
         a2a_tracker,
         config_reload_tracker: crate::tools::SharedConfigReloadTracker::new_shared(),
@@ -1339,6 +1353,7 @@ pub(crate) async fn initialize(
             tracing_service: &shared.tracing_service,
             tracing_client_context: &infra.tracing_client_context,
             path_policy: &infra.path_policy,
+            auto_mode: &infra.auto_mode,
             a2a_hub: &infra.a2a_hub,
             a2a_tracker: &infra.a2a_tracker,
             checkpoints: &checkpoints,

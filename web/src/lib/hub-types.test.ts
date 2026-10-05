@@ -80,6 +80,7 @@ describe("hub types", () => {
       | "subscribed"
       | "session_frame"
       | "session_relay_lagged"
+      | "system_one_status"
       | "workspace_changed"
       | "workspace_resync"
       | "workspace_watch_unavailable"

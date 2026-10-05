@@ -198,6 +198,7 @@ async fn the_boot_id_is_the_same_in_hub_boot_the_events_route_and_the_frames() {
     let addr = h.serve().await;
     let mut socket = connect(addr, "/api/hub/ws").await;
     let boot = next_frame(&mut socket).await;
+    assert_eq!(next_frame(&mut socket).await["type"], "system_one_status");
     assert_eq!(next_frame(&mut socket).await["type"], "agents_snapshot");
     record(&h, "an entry", TeamEventLevel::Info);
     let frame = next_team_event(&mut socket).await;

@@ -9,6 +9,7 @@ pub(crate) mod hub;
 mod memory;
 mod models;
 mod subconscious;
+mod system_one;
 mod tracing_config;
 mod web_search;
 
@@ -175,6 +176,7 @@ pub(crate) fn from_file_and_env(
         retry,
         background,
         agent: agent_abilities,
+        auto_mode: agent::resolve_auto_mode_config(file, &mut notices),
         idle,
         temperature: file.and_then(|f| f.temperature),
         thinking,
@@ -247,6 +249,7 @@ pub(super) mod test_helpers {
             tracing: super::super::TracingConfig::default(),
             background: super::super::HubBackgroundConfig::default(),
             push: super::super::HubPushConfig::default(),
+            system_one: None,
             config_dir: std::env::temp_dir().join("residuum-test-hub"),
             load_notices: Vec::new(),
         }

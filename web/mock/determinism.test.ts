@@ -242,7 +242,11 @@ describe("a deterministic mock", () => {
     await hub.nextOfType("agents_snapshot");
     // The turn would have ended, and reported scout idle, by now.
     await sleep(500);
-    expect(hub.frames.map((frame) => frame.type)).toEqual(["hub_boot", "agents_snapshot"]);
+    expect(hub.frames.map((frame) => frame.type)).toEqual([
+      "hub_boot",
+      "system_one_status",
+      "agents_snapshot",
+    ]);
     expect(server.hub.agents.get("scout")?.busySince).toBeNull();
     await hub.close();
   });

@@ -76,6 +76,11 @@ fn from_file_and_env_inner(
     };
     let background = resolve_hub_background_config(file.and_then(|f| f.background.as_ref()));
     let push = resolve_hub_push_config(file.and_then(|f| f.push.as_ref()), &mut notices);
+    let system_one = super::system_one::resolve_system_one_config(
+        file.and_then(|f| f.system_one.as_ref()),
+        &secrets,
+        &mut notices,
+    );
 
     Ok(HubConfig {
         timezone,
@@ -85,6 +90,7 @@ fn from_file_and_env_inner(
         tracing,
         background,
         push,
+        system_one,
         config_dir: hub_dir.to_path_buf(),
         load_notices: notices,
     })

@@ -645,6 +645,7 @@ fn build_spawn_context(
         web_search_backend: new_cfg.web_search.standalone_backend.clone(),
         tools_path: Arc::clone(&rt.tools_path),
         path_policy: Arc::clone(&rt.path_policy),
+        auto_mode: rt.auto_mode.clone(),
         agent_keys: Arc::clone(&rt.agent_keys),
         a2a_hub: Arc::clone(&rt.a2a_hub),
         a2a_tracker: Arc::clone(&rt.a2a_tracker),
@@ -846,6 +847,9 @@ async fn reload_agent_abilities(rt: &mut AgentRuntime, new_cfg: &Config) {
             &rt.layout,
             &rt.hub_dir,
         ));
+    if let Some(auto_mode) = &rt.auto_mode {
+        auto_mode.set_config(new_cfg.auto_mode.clone());
+    }
     rt.agent
         .set_max_tool_iterations(new_cfg.agent.max_tool_iterations);
     rt.agent
@@ -1030,6 +1034,7 @@ mod tests {
             retry: RetryConfig::default(),
             background: BackgroundConfig::default(),
             agent: AgentAbilitiesConfig::default(),
+            auto_mode: crate::config::AutoModeConfig::default(),
             idle: crate::config::IdleConfig::default(),
             temperature: None,
             thinking: None,

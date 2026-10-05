@@ -527,6 +527,7 @@ impl Harness {
             team_events: Arc::clone(&team_events),
             overview: Arc::clone(&overview),
             agent_changes: Arc::clone(&changes),
+            system_one: crate::inference::system_one::SystemOneService::new(None),
         };
         let app = hub_router(shared, hub);
         Self {
@@ -672,11 +673,14 @@ async fn connect(addr: SocketAddr, path: &str) -> ClientSocket {
     socket
 }
 
-/// Open the hub socket and read its `hub_boot` frame, which comes first.
+/// Open the hub socket and read its `hub_boot` and `system_one_status`
+/// frames, which come first.
 async fn connect_hub(addr: SocketAddr) -> ClientSocket {
     let mut socket = connect(addr, "/api/hub/ws").await;
     let boot = next_frame(&mut socket).await;
     assert_eq!(boot["type"], "hub_boot");
+    let system_one = next_frame(&mut socket).await;
+    assert_eq!(system_one["type"], "system_one_status");
     socket
 }
 
@@ -2188,6 +2192,13 @@ async fn the_hub_socket_sends_hub_boot_first_on_every_connection() {
             next_frame(&mut socket).await,
             json!({ "type": "hub_boot", "boot_id": TEST_BOOT_ID })
         );
+        assert_eq!(
+            next_frame(&mut socket).await,
+            json!({
+                "type": "system_one_status",
+                "status": { "configured": false, "provider": null, "model": null, "outage": null }
+            })
+        );
         assert_eq!(next_frame(&mut socket).await["type"], "agents_snapshot");
     }
 }
@@ -2324,6 +2335,7 @@ async fn a_lagging_hub_socket_gets_a_fresh_snapshot_instead_of_silence() {
     // The boot id, the connect snapshot, then a second one because events
     // were lost, then the events that were still buffered.
     assert_eq!(next_frame(&mut socket).await["type"], "hub_boot");
+    assert_eq!(next_frame(&mut socket).await["type"], "system_one_status");
     let connect_snapshot = next_frame(&mut socket).await;
     assert_eq!(connect_snapshot["type"], "agents_snapshot");
     let resnapshot = next_frame(&mut socket).await;

@@ -32,6 +32,24 @@ pub(crate) struct HubConfigFile {
     pub(super) background: Option<HubBackgroundConfigFile>,
     /// Web Push settings.
     pub(super) push: Option<HubPushConfigFile>,
+    /// The System 1 (decision model) provider every agent shares.
+    pub(super) system_one: Option<SystemOneConfigFile>,
+}
+
+/// Raw TOML `[system_one]` section in `hub/config.toml`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SystemOneConfigFile {
+    /// `"typesafe"`, `"ollama"`, or `"other"`.
+    pub(super) provider: Option<String>,
+    /// Model ID or alias sent in each request's `model` field.
+    pub(super) model: Option<String>,
+    /// Base URL. Required for `other`; overrides the default for the others.
+    pub(super) url: Option<String>,
+    /// API key: a literal, `secret:<name>`, or `${ENV_VAR}`.
+    pub(super) api_key: Option<String>,
+    /// Ollama `keep_alive` (e.g. `"5m"`).
+    pub(super) keep_alive: Option<String>,
 }
 
 /// Raw TOML `[push]` section in `hub/config.toml`.
@@ -122,6 +140,21 @@ pub(crate) struct AgentConfigFile {
     pub(super) web_search: Option<WebSearchConfigFile>,
     /// `Agent2Agent` (A2A) visibility for this agent.
     pub(super) a2a: Option<AgentA2aConfigFile>,
+    /// Plain-language rules every tool call is checked against.
+    pub(super) auto_mode: Option<AutoModeConfigFile>,
+}
+
+/// Raw TOML `[auto_mode]` section in `<agent>/config/config.toml`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct AutoModeConfigFile {
+    pub(super) enabled: Option<bool>,
+    /// What the agent isn't allowed to do.
+    pub(super) deny: Option<Vec<String>>,
+    /// Exceptions to the deny rules.
+    pub(super) allow: Option<Vec<String>>,
+    /// Probability (0 to 1) at which a rule counts as matching.
+    pub(super) threshold: Option<f64>,
 }
 
 /// Raw TOML `[a2a]` section in `<agent>/config/config.toml`.

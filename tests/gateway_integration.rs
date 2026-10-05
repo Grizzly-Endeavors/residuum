@@ -498,6 +498,7 @@ mod gateway_integration {
                     name: "exec".to_string(),
                     output: "test output".to_string(),
                     is_error: false,
+                    auto_mode: None,
                 })
                 .is_ok(),
             "broadcast send should succeed"
