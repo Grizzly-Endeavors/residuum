@@ -146,7 +146,10 @@ impl PushService {
     }
 
     /// Register a device, or update the one already registered for the same
-    /// subscription endpoint, which keeps its id and delivery history.
+    /// subscription endpoint, which keeps its id and delivery history. When
+    /// `previous_endpoint` names a device instead (a browser's rotated
+    /// subscription, which arrives under a new endpoint), that device is
+    /// updated in place the same way.
     ///
     /// # Errors
     /// Returns [`PushError::BadRequest`] for a blank label and
@@ -159,14 +162,16 @@ impl PushService {
             subscription,
             label,
             preferences,
+            previous_endpoint,
         } = request;
         let label = label.map(|raw| clean_label(&raw)).transpose()?;
         let updated = self
             .store
             .update(|devices| {
-                let existing = devices
-                    .iter()
-                    .position(|d| d.subscription.endpoint == subscription.endpoint);
+                let existing = devices.iter().position(|d| {
+                    d.subscription.endpoint == subscription.endpoint
+                        || previous_endpoint.as_deref() == Some(d.subscription.endpoint.as_str())
+                });
                 let device = if let Some(index) = existing {
                     devices.get_mut(index)?
                 } else {
@@ -579,6 +584,7 @@ mod tests {
             },
             label: Some(label.to_string()),
             preferences: None,
+            previous_endpoint: None,
         }
     }
 
@@ -670,6 +676,48 @@ mod tests {
             .unwrap();
         assert_ne!(other.id, first.id);
         assert_eq!(service.devices().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_rotated_subscription_updates_the_device_its_previous_endpoint_identifies() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = service_in(&dir, FAST_RETRY);
+        let browser = Browser::new();
+
+        let first = service
+            .upsert_device(put("https://push.example/old", &browser, "Laptop"))
+            .await
+            .unwrap();
+        service
+            .patch_device(
+                &first.id,
+                PatchPushDeviceRequest {
+                    label: None,
+                    preferences: Some(PushPreferencesPatch {
+                        reply_while_away: Some(true),
+                        ..PushPreferencesPatch::default()
+                    }),
+                },
+            )
+            .await
+            .unwrap();
+
+        let mut rotated = put("https://push.example/new", &browser, "ignored");
+        rotated.label = None;
+        rotated.previous_endpoint = Some("https://push.example/old".to_string());
+        let second = service.upsert_device(rotated).await.unwrap();
+
+        assert_eq!(
+            second.id, first.id,
+            "the previous endpoint identifies the device"
+        );
+        assert_eq!(second.created_at, first.created_at);
+        assert_eq!(second.label, "Laptop", "a rotation carries no label change");
+        assert!(
+            second.preferences.wants(PushEvent::ReplyWhileAway),
+            "preferences from before the rotation stay"
+        );
+        assert_eq!(service.devices().await.unwrap(), vec![second]);
     }
 
     #[tokio::test]

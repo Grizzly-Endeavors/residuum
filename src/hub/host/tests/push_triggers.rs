@@ -52,6 +52,7 @@ impl Phone {
                 },
                 label: Some(label.to_string()),
                 preferences: Some(preferences),
+                previous_endpoint: None,
             })
             .await
             .unwrap();
