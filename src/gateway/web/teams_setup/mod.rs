@@ -405,7 +405,7 @@ exit 0
             .unwrap();
             make_script(
                 &mock_atk,
-                "@echo off\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dpn0.ps1\" %*\n",
+                "@echo off\nif \"%~1\"==\"--version\" ( echo 1.1.17 & exit /b 0 )\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dpn0.ps1\" %*\nexit /b %ERRORLEVEL%\n",
             );
         } else {
             make_script(

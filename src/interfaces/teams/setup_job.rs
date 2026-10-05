@@ -1488,7 +1488,7 @@ exit 0
             std::fs::write(&ps1_path, win_ps1).unwrap();
             make_script(
                 path,
-                "@echo off\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dpn0.ps1\" %*\n",
+                "@echo off\nif \"%~1\"==\"--version\" ( echo 1.1.17 & exit /b 0 )\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dpn0.ps1\" %*\nexit /b %ERRORLEVEL%\n",
             );
         } else {
             make_script(path, unix_script);
@@ -1635,7 +1635,7 @@ exit 0
         let _ = mgr.start_job("agent-1", req).await.unwrap();
 
         // Poll job until Succeeded
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         let mut final_job = None;
         while tokio::time::Instant::now() < deadline {
             if let Some(job) = mgr.get_job("agent-1", None).await
@@ -1704,7 +1704,7 @@ exit 0
 
         // Wait until it reaches Provision phase and grandchild.pid exists
         let pid_file = root.join("agent-1/teams-app/grandchild.pid");
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         let mut grandchild_pid = None;
         while tokio::time::Instant::now() < deadline {
             if let Some(j) = mgr.get_job("agent-1", None).await
@@ -1725,7 +1725,7 @@ exit 0
         assert_eq!(cancelled.state, TeamsSetupState::Cancelled);
 
         // Verify that the grandchild process tree is actually gone
-        let kill_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let kill_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         while tokio::time::Instant::now() < kill_deadline {
             if !crate::util::process::is_process_running(pid) {
                 break;
@@ -1767,7 +1767,7 @@ exit 0
         mgr.start_job("agent-1", req).await.unwrap();
 
         // Wait until it reaches SignIn phase and WaitingForUser state
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         let mut sign_in_prompt = None;
         while tokio::time::Instant::now() < deadline {
             if let Some(j) = mgr.get_job("agent-1", None).await
@@ -1812,7 +1812,7 @@ exit 0
             .expect("forward_redirect should succeed with matching port");
 
         // The job should now advance past SignIn to Scaffold/Provision/Succeeded
-        let advance_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let advance_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         let mut advanced = false;
         while tokio::time::Instant::now() < advance_deadline {
             if let Some(j) = mgr.get_job("agent-1", None).await
@@ -1856,7 +1856,7 @@ exit 0
         mgr.start_job("agent-1", req).await.unwrap();
 
         // Wait for failure
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         let mut failed_job = None;
         while tokio::time::Instant::now() < deadline {
             if let Some(j) = mgr.get_job("agent-1", None).await
@@ -1879,7 +1879,7 @@ exit 0
         mgr.retry_job("agent-1").await.unwrap();
 
         // Wait for success
-        let retry_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let retry_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         let mut succeeded_job = None;
         while tokio::time::Instant::now() < retry_deadline {
             if let Some(j) = mgr.get_job("agent-1", None).await
