@@ -104,9 +104,11 @@ Load with `GET /api/team/workspace/tree`, start watching before that first load,
 
 ## Agent Sessions
 
-`await residuum.sessions.start({ agent, prompt, context, skill, model })` starts a session: a full fork of the agent named by `agent`, with its tools and memory, working on `prompt`. A session runs on one agent, so `agent` is required: a call without it rejects with a `TypeError` before anything is sent. `context` is extra text it reads first, `skill` a skill to run as, `model` one of `"small"`, `"medium"` (default), `"large"`. The session knows which artifact started it. Its output comes back to the page only: it never posts in the main chat, never files an inbox item on its own, and can't message the main agent. The page hears it from its first frame, whichever agent runs it. It shows in that agent's Activity in the web UI, as From a workbench page, where the user can watch or stop it. It keeps running if the page closes or reloads; a reloaded page finds its sessions with `GET /api/agents/<agent>/sessions?artifact=<name>`.
+`await residuum.sessions.start({ agent, prompt, context, skill, model })` starts a session: a full fork of the agent named by `agent`, with its tools and memory, working on `prompt`. A session runs on one agent, so `agent` is required: a call without it rejects with a `TypeError` before anything is sent. `context` is extra text it reads first, `skill` a skill to run as, `model` one of `"small"`, `"medium"` (default), `"large"`. The session knows which artifact started it. Its output comes back to the page only: it never posts in the main chat, never files an inbox item on its own, and can't message the main agent. The page hears it from its first frame, whichever agent runs it. It shows in that agent's Activity in the web UI, as From a workbench page, where the user can watch or stop it. It keeps running if the page closes or reloads; a reloaded page finds its sessions with `GET /api/agents/<agent>/sessions?artifact=<name>`, then gets a handle back for one still running with `residuum.sessions.follow(agent, address)`.
 
-It resolves to a handle:
+`residuum.sessions.follow(agent, address)` returns the same handle shape, at once, for a session the page already knows the address of — one still running across a reload, or one that started while the page was open elsewhere. It needs no prompt: the session already exists. Both `agent` and `address` are required, or it throws a `TypeError` before anything is sent. The handle's first frame is a `resync` with the session's current state, since a `follow` has none of its own frames to go on yet.
+
+Both resolve to (or, for `follow`, return) a handle:
 
 | Member | Does |
 |--------|------|
