@@ -201,6 +201,15 @@ export interface McpServerEntry {
   url?: string;
   /** http only. */
   headers?: Record<string, string>;
+  /**
+   * Names of `env` keys that hold a credential the catalog's
+   * `requires_input` asked for, as opposed to plain config. Only ever set by
+   * the setup wizard, which uses it to keep the value out of the
+   * `localStorage` draft and to exchange it for a `secret:<name>` reference
+   * on save, the same way it already does for provider keys and chat
+   * tokens.
+   */
+  secretEnvKeys?: string[];
 }
 
 export interface McpRequiredInput {

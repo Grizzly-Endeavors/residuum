@@ -32,6 +32,10 @@
     return wizardState.mcpServers.some((s) => s.name === name);
   }
 
+  function envKeyOf(field: string): string {
+    return field.startsWith("env.") ? field.slice(4) : field;
+  }
+
   function handleAdd(idx: number) {
     const srv = catalog[idx];
     if (!srv) return;
@@ -76,8 +80,7 @@
     // Build env with user values — strip "env." prefix from catalog field names
     const env = { ...(srv.env || {}) };
     for (const req of srv.requires_input) {
-      const key = req.field.startsWith("env.") ? req.field.slice(4) : req.field;
-      env[key] = (pendingInputs[req.field] ?? "").trim();
+      env[envKeyOf(req.field)] = (pendingInputs[req.field] ?? "").trim();
     }
 
     wizardState.mcpServers.push({
@@ -85,6 +88,7 @@
       command: srv.command,
       args: [...(srv.args || [])],
       env: env as Record<string, string>,
+      secretEnvKeys: srv.requires_input.map((req) => envKeyOf(req.field)),
     });
     pendingIdx = null;
   }

@@ -24,8 +24,10 @@ import type { Diagnostic, McpServerEntry, ModelRoleKey, SettingsProviderEntry } 
 /** A config file of one scope. The hub's only one is `config`. */
 export type FieldFile = AgentConfigFileName;
 
-/** The fields of a collection's entry. The entry's `name` is its key in the file, not a field. */
-type EntryField<T> = Exclude<keyof T, "name">;
+/** The fields of a collection's entry. The entry's `name` is its key in the file, not a field.
+ * `secretEnvKeys` is excluded too: it's wizard-only bookkeeping, never a field the Settings
+ * forms edit or save. */
+type EntryField<T> = Exclude<keyof T, "name" | "secretEnvKeys">;
 
 export type FieldRef =
   /** A field of `ConfigFields`, including its lists and the `webhooks` collection as a whole. */

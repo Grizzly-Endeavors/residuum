@@ -87,7 +87,21 @@ describe("Setup tool servers step", () => {
     await fireEvent.input(input, { target: { value: " tvly-123 " } });
     await fireEvent.click(screen.getByRole("button", { name: "Add tavily" }));
     expect(state.mcpServers).toEqual([
-      { name: "tavily", command: "npx", args: ["tavily"], env: { TAVILY_API_KEY: "tvly-123" } },
+      {
+        name: "tavily",
+        command: "npx",
+        args: ["tavily"],
+        env: { TAVILY_API_KEY: "tvly-123" },
+        secretEnvKeys: ["TAVILY_API_KEY"],
+      },
     ]);
+  });
+
+  it("marks a server with no required inputs as having no secret env keys to strip", async () => {
+    const state = wizard();
+    renderStep(state, [entry("fetch")]);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Add fetch" }));
+    expect(state.mcpServers).toEqual([{ name: "fetch", command: "npx", args: ["fetch"], env: {} }]);
   });
 });
