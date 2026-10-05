@@ -46,7 +46,10 @@ export interface Sdk {
   watch(prefix: string, handler: Handler): () => void;
   agent(name: unknown): AgentHandle;
   state: { get(): Promise<unknown>; set(value: unknown): Promise<void> };
-  sessions: { start(options: Record<string, unknown>): Promise<SessionHandle> };
+  sessions: {
+    start(options: Record<string, unknown>): Promise<SessionHandle>;
+    follow(agent: unknown, address: unknown): SessionHandle;
+  };
 }
 
 /** One request the SDK sent, waiting for the test to answer it. */

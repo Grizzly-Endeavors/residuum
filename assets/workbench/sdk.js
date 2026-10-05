@@ -656,6 +656,35 @@
     else if (startsInFlight > 0) unclaimed.push({ key, frame });
   }
 
+  // Reads one agent's sessions for this artifact and hands each of `routes`
+  // `resync` with its session as listed now, or the reason the list couldn't
+  // be read. Shared by the bulk resync below and a single freshly followed
+  // session, which wants its current state without waiting for a lag or a
+  // reconnect.
+  async function resyncRoutes(agentName, routes) {
+    let listing = null;
+    let error = null;
+    try {
+      const resp = await fetchApi(
+        `/api/agents/${encodeURIComponent(agentName)}/sessions?artifact=${encodeURIComponent(ARTIFACT)}`,
+      );
+      if (!resp.ok) throw await errorFrom(resp, `Couldn't read ${agentName}'s sessions.`);
+      listing = await resp.json();
+    } catch (err) {
+      console.error(`residuum: couldn't read ${agentName}'s sessions after missing frames`, err);
+      error = err.message;
+    }
+    for (const route of routes) {
+      if (listing === null) {
+        route.emit({ type: "resync", session: null, error });
+        continue;
+      }
+      const mine = (session) => session.address === route.address;
+      const session = listing.live.find(mine) ?? listing.completed.find(mine) ?? null;
+      route.emit({ type: "resync", session });
+    }
+  }
+
   // Lost frames can't be replayed, so each handle hears `resync` with its
   // session as Residuum lists it now (`null` when it isn't listed), or the
   // reason the list couldn't be read.
@@ -665,34 +694,7 @@
       if (!byAgent.has(route.agent)) byAgent.set(route.agent, []);
       byAgent.get(route.agent).push(route);
     }
-    await Promise.all(
-      [...byAgent].map(async ([agentName, routes]) => {
-        let listing = null;
-        let error = null;
-        try {
-          const resp = await fetchApi(
-            `/api/agents/${encodeURIComponent(agentName)}/sessions?artifact=${encodeURIComponent(ARTIFACT)}`,
-          );
-          if (!resp.ok) throw await errorFrom(resp, `Couldn't read ${agentName}'s sessions.`);
-          listing = await resp.json();
-        } catch (err) {
-          console.error(
-            `residuum: couldn't read ${agentName}'s sessions after missing frames`,
-            err,
-          );
-          error = err.message;
-        }
-        for (const route of routes) {
-          if (listing === null) {
-            route.emit({ type: "resync", session: null, error });
-            continue;
-          }
-          const mine = (session) => session.address === route.address;
-          const session = listing.live.find(mine) ?? listing.completed.find(mine) ?? null;
-          route.emit({ type: "resync", session });
-        }
-      }),
-    );
+    await Promise.all([...byAgent].map(([agentName, routes]) => resyncRoutes(agentName, routes)));
   }
 
   // `early` holds the frames that arrived before the handle existed. Each
@@ -784,6 +786,57 @@
     return sessionHandle(agentName, address, early);
   }
 
+  // A session already running when the page opens, or still running across a
+  // reload, has no handle: `residuum.sessions.start` only ever hears a
+  // session from its own start request on. `follow` subscribes to it
+  // directly, by (agent, address), over the same relay (`subscribe_session`,
+  // not the artifact-wide `subscribe_artifact_sessions` a start registers),
+  // and resyncs it at once so the handle has the session's current state
+  // without waiting for a lag or a reconnect to ask for it.
+  const followedSessions = new Map();
+
+  function sendFollowSubscriptions() {
+    for (const { agent: agentName, address } of followedSessions.values()) {
+      hub.send({ type: "subscribe_session", agent: agentName, address });
+    }
+  }
+
+  // The subscription ends with the connection, so a reconnect's frames are
+  // lost the same way a lag's are: resync once it is active again, but not
+  // the first time, when the handle's own resync below already covers it.
+  function sessionSubscribed(agentName, address) {
+    const key = sessionKey(agentName, address);
+    const followed = followedSessions.get(key);
+    if (!followed) return;
+    if (followed.activeBefore) {
+      const route = sessionRoutes.get(key);
+      if (route) void resyncRoutes(agentName, [route]);
+    }
+    followed.activeBefore = true;
+  }
+
+  function followSession(agentName, address) {
+    if (typeof agentName !== "string" || agentName === "") {
+      throw new TypeError(
+        "residuum.sessions.follow needs an agent: residuum.sessions.follow(agent, address)",
+      );
+    }
+    if (typeof address !== "string" || address === "") {
+      throw new TypeError(
+        "residuum.sessions.follow needs a session address: residuum.sessions.follow(agent, address)",
+      );
+    }
+    const key = sessionKey(agentName, address);
+    if (!followedSessions.has(key)) {
+      followedSessions.set(key, { agent: agentName, address, activeBefore: false });
+      hub.send({ type: "subscribe_session", agent: agentName, address });
+    }
+    const handle = sessionHandle(agentName, address, []);
+    const route = sessionRoutes.get(key);
+    if (route) void resyncRoutes(agentName, [route]);
+    return handle;
+  }
+
   // ── The hub socket ───────────────────────────────────────────────────
 
   let hubConnectedBefore = false;
@@ -791,6 +844,7 @@
   function hubOpened() {
     if (teamWatchers.size > 0) hub.send({ type: "watch_team", prefixes: prefixesOf(teamWatchers) });
     if (relay.requested) hub.send({ type: "subscribe_artifact_sessions", artifact: ARTIFACT });
+    sendFollowSubscriptions();
     if (hubConnectedBefore)
       deliverToWatchers(teamWatchers, { type: "workspace_resync", reason: "reconnected" });
     hubConnectedBefore = true;
@@ -809,6 +863,7 @@
         return;
       case "subscribed":
         if (frame.kind === "artifact_sessions" && frame.artifact === ARTIFACT) relaySubscribed();
+        else if (frame.kind === "session") sessionSubscribed(frame.agent, frame.address);
         return;
       case "session_frame":
         routeSessionFrame(frame.agent, frame.frame);
@@ -844,6 +899,6 @@
     watch,
     agent,
     state: Object.freeze({ get: stateGet, set: stateSet }),
-    sessions: Object.freeze({ start: startSession }),
+    sessions: Object.freeze({ start: startSession, follow: followSession }),
   });
 })();

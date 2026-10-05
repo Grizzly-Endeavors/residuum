@@ -542,3 +542,132 @@ describe("residuum.sessions.start", () => {
     expect(seen).toEqual([{ type: "resync", session: null }]);
   });
 });
+
+describe("residuum.sessions.follow", () => {
+  it("needs an agent and an address, and sends nothing without them", () => {
+    const { sdk, hub, requests } = connected();
+    expect(thrownBy(() => sdk.sessions.follow("", "artifact-chart-1")).name).toBe("TypeError");
+    expect(thrownBy(() => sdk.sessions.follow("atlas", "")).name).toBe("TypeError");
+    expect(thrownBy(() => sdk.sessions.follow(undefined, "artifact-chart-1")).message).toContain(
+      "residuum.sessions.follow(agent, address)",
+    );
+    expect(hub.sentFrames()).toEqual([]);
+    expect(requests).toEqual([]);
+  });
+
+  it("subscribes to the session directly, resyncs it with its current state, and routes its frames", async () => {
+    const { sdk, hub, requests } = connected("chart");
+    const handle = sdk.sessions.follow("atlas", "artifact-chart-1");
+    expect(handle).toMatchObject({ agent: "atlas", address: "artifact-chart-1" });
+    // Not the artifact-wide relay a start uses: the session relay's own subscription.
+    expect(hub.sentFrames()).toEqual([
+      { type: "subscribe_session", agent: "atlas", address: "artifact-chart-1" },
+    ]);
+
+    const all: Frame[] = [];
+    handle.on("*", (frame) => all.push(frame));
+    await settle();
+    expect(lastRequest(requests).url).toBe("/api/agents/atlas/sessions?artifact=chart");
+    lastRequest(requests).respond(200, {
+      live: [{ address: "artifact-chart-1", state: "running" }],
+      completed: [],
+      next_cursor: null,
+    });
+    await settle();
+    expect(all).toEqual([
+      { type: "resync", session: { address: "artifact-chart-1", state: "running" } },
+    ]);
+
+    hub.simulateMessage(
+      relayed("atlas", { type: "session_response", address: "artifact-chart-1", content: "mine" }),
+    );
+    hub.simulateMessage(
+      relayed("scout", {
+        type: "session_response",
+        address: "artifact-chart-1",
+        content: "theirs",
+      }),
+    );
+    hub.simulateMessage(
+      relayed("atlas", { type: "session_response", address: "other", content: "not mine" }),
+    );
+    expect(all.map((f) => f.type)).toEqual(["resync", "session_response"]);
+    expect(all.at(-1)).toMatchObject({ content: "mine" });
+  });
+
+  it("subscribes once the hub socket opens when the page follows before that", async () => {
+    const { sdk, socket } = loadSdk();
+    sdk.sessions.follow("atlas", "artifact-chart-1");
+    await settle();
+    socket(HUB).simulateOpen();
+    expect(socket(HUB).sentFrames()).toEqual([
+      { type: "subscribe_session", agent: "atlas", address: "artifact-chart-1" },
+    ]);
+  });
+
+  it("messages and stops the followed session through its own routes, like a started one", async () => {
+    const { sdk, requests } = connected();
+    const handle = sdk.sessions.follow("scout", "artifact-chart-1");
+    await settle();
+    lastRequest(requests).respond(200, { live: [], completed: [], next_cursor: null });
+
+    const sent = handle.send("keep going");
+    await settle();
+    expect(lastRequest(requests).url).toBe("/api/agents/scout/sessions/artifact-chart-1/messages");
+    lastRequest(requests).respond(200, { outcome: "live" });
+    expect(await sent).toBe("live");
+
+    const stopped = handle.stop();
+    await settle();
+    expect(lastRequest(requests).url).toBe("/api/agents/scout/sessions/artifact-chart-1/stop");
+    lastRequest(requests).respond(200, {});
+    await stopped;
+  });
+
+  it("resyncs again after a reconnect, but not right after the first subscribe is acknowledged", async () => {
+    vi.useFakeTimers();
+    const { sdk, hub, requests, socket } = connected();
+    const handle = sdk.sessions.follow("atlas", "artifact-chart-1");
+    const seen: Frame[] = [];
+    handle.on("resync", (frame) => seen.push(frame));
+    await settle();
+    lastRequest(requests).respond(200, { live: [], completed: [], next_cursor: null });
+    await settle();
+    expect(requests).toHaveLength(1);
+
+    hub.simulateMessage({
+      type: "subscribed",
+      kind: "session",
+      agent: "atlas",
+      address: "artifact-chart-1",
+    });
+    await settle();
+    expect(requests).toHaveLength(1);
+
+    hub.simulateClose();
+    await vi.advanceTimersByTimeAsync(1000);
+    const again = socket(HUB);
+    again.simulateOpen();
+    expect(again.sentFrames()).toEqual([
+      { type: "subscribe_session", agent: "atlas", address: "artifact-chart-1" },
+    ]);
+    again.simulateMessage({
+      type: "subscribed",
+      kind: "session",
+      agent: "atlas",
+      address: "artifact-chart-1",
+    });
+    await settle();
+    expect(requests).toHaveLength(2);
+    lastRequest(requests).respond(200, {
+      live: [{ address: "artifact-chart-1", state: "idle" }],
+      completed: [],
+      next_cursor: null,
+    });
+    await settle();
+    expect(seen).toEqual([
+      { type: "resync", session: null },
+      { type: "resync", session: { address: "artifact-chart-1", state: "idle" } },
+    ]);
+  });
+});
