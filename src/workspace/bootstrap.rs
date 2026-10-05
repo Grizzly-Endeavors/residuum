@@ -329,9 +329,14 @@ fn soul_named(name: &str) -> String {
 }
 
 fn strip_stock_identity(content: &str) -> String {
+    let archetype_crlf = STOCK_ARCHETYPE_LINE.replace('\n', "\r\n");
+    let tone_crlf = format!("{STOCK_TONE_LINE}\r\n");
+    let tone_lf = format!("{STOCK_TONE_LINE}\n");
     content
+        .replace(&archetype_crlf, "")
         .replace(STOCK_ARCHETYPE_LINE, "")
-        .replace(&format!("{STOCK_TONE_LINE}\n"), "")
+        .replace(&tone_crlf, "")
+        .replace(&tone_lf, "")
         .replace(STOCK_TONE_LINE, "")
 }
 
@@ -346,11 +351,16 @@ fn settled_soul(existing: &str, name: &str) -> Option<String> {
         .lines()
         .find(|line| line.starts_with("- **Name**: "))?;
     let normalized = stripped.replacen(name_line, "- **Name**: Ralph", 1);
-    if normalized != DEFAULT_SOUL {
+    if normalized.replace("\r\n", "\n") != DEFAULT_SOUL.replace("\r\n", "\n") {
         return None;
     }
     let rewritten = if name_line == "- **Name**: Ralph" {
-        soul_named(name)
+        let soul = soul_named(name);
+        if existing.contains("\r\n") {
+            soul.replace('\n', "\r\n").replace("\r\r\n", "\r\n")
+        } else {
+            soul.replace("\r\n", "\n")
+        }
     } else if stripped != existing {
         stripped
     } else {
@@ -587,13 +597,27 @@ const NAME_LINE_ACTION: &str = "- If they gave you a name or asked you to change
 /// identity section. An edited skill that no longer has those lines is left
 /// as it is.
 fn refreshed_getting_started(content: &str) -> Option<String> {
-    if !content.contains(TONE_LINE_ACTION) && !content.contains(NAME_LINE_ACTION) {
+    let tone_crlf = TONE_LINE_ACTION.replace('\n', "\r\n");
+    let name_crlf = NAME_LINE_ACTION.replace('\n', "\r\n");
+    if !content.contains(TONE_LINE_ACTION)
+        && !content.contains(&tone_crlf)
+        && !content.contains(NAME_LINE_ACTION)
+        && !content.contains(&name_crlf)
+    {
         return None;
     }
     let updated = content
         .replace(
+            &tone_crlf,
+            "- Write how they want you to communicate into the Identity section of `SOUL.md`, under your name. That section starts with your name and nothing else.\r\n",
+        )
+        .replace(
             TONE_LINE_ACTION,
             "- Write how they want you to communicate into the Identity section of `SOUL.md`, under your name. That section starts with your name and nothing else.\n",
+        )
+        .replace(
+            &name_crlf,
+            "- If they gave you a different name, or asked you to change something else about how you are, update `SOUL.md` accordingly\r\n",
         )
         .replace(
             NAME_LINE_ACTION,
@@ -688,11 +712,15 @@ mod tests {
     }
 
     fn stock_soul() -> String {
-        DEFAULT_SOUL.replacen(
-            "- **Name**: Ralph\n",
-            &format!("- **Name**: Ralph\n{STOCK_ARCHETYPE_LINE}{STOCK_TONE_LINE}"),
-            1,
-        )
+        let (needle, archetype) = if DEFAULT_SOUL.contains("\r\n") {
+            (
+                "- **Name**: Ralph\r\n",
+                STOCK_ARCHETYPE_LINE.replace('\n', "\r\n"),
+            )
+        } else {
+            ("- **Name**: Ralph\n", STOCK_ARCHETYPE_LINE.to_string())
+        };
+        DEFAULT_SOUL.replacen(needle, &format!("{needle}{archetype}{STOCK_TONE_LINE}"), 1)
     }
 
     #[test]
@@ -714,6 +742,16 @@ mod tests {
     #[test]
     fn a_soul_that_already_has_its_own_name_keeps_it_when_the_stock_lines_go() {
         let named = stock_soul().replace("**Name**: Ralph", "**Name**: Bob");
+        let settled = settled_soul(&named, "Mist").unwrap();
+        assert!(settled.contains("**Name**: Bob"));
+        assert!(!settled.contains("Archetype"));
+        assert!(settled_soul(&settled, "Mist").is_none());
+    }
+
+    #[test]
+    fn a_soul_with_crlf_line_endings_settles_properly() {
+        let crlf_stock = stock_soul().replace('\n', "\r\n").replace("\r\r\n", "\r\n");
+        let named = crlf_stock.replace("**Name**: Ralph", "**Name**: Bob");
         let settled = settled_soul(&named, "Mist").unwrap();
         assert!(settled.contains("**Name**: Bob"));
         assert!(!settled.contains("Archetype"));

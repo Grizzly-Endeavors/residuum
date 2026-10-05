@@ -401,15 +401,25 @@ pub async fn detect_prereqs(
     let timeout = Duration::from_secs(10);
 
     // 1. Detect node
+    let default_node = if cfg!(windows) {
+        Path::new("node.exe")
+    } else {
+        Path::new("node")
+    };
     let node_bin = overrides
         .and_then(|o| o.node_bin.as_deref())
-        .unwrap_or_else(|| Path::new("node"));
+        .unwrap_or(default_node);
     let node_status = detect_tool(node_bin, timeout, &cancel).await;
 
     // 2. Detect npm
+    let default_npm = if cfg!(windows) {
+        Path::new("npm.cmd")
+    } else {
+        Path::new("npm")
+    };
     let npm_bin = overrides
         .and_then(|o| o.npm_bin.as_deref())
-        .unwrap_or_else(|| Path::new("npm"));
+        .unwrap_or(default_npm);
     let npm_status = detect_tool(npm_bin, timeout, &cancel).await;
 
     // 3. Detect atk

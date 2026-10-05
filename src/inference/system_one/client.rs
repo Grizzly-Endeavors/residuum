@@ -451,12 +451,16 @@ mod tests {
 
     #[tokio::test]
     async fn unreachable_server_is_reported_as_unreachable() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
         let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(2)).unwrap();
         let c = SystemOneClient::new(
             http,
             SystemOneEndpoint {
                 provider: "Ollama".to_string(),
-                base_url: "http://127.0.0.1:9".to_string(),
+                base_url: format!("http://127.0.0.1:{port}"),
                 model: "nimble".to_string(),
                 api_key: None,
                 keep_alive: None,

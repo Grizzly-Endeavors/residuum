@@ -351,16 +351,66 @@ mod tests {
         let bin_dir = root.join("mock-bin");
         fs::create_dir_all(&bin_dir).unwrap();
 
-        let mock_node = bin_dir.join("node");
-        make_script(&mock_node, "#!/bin/sh\necho \"v20.11.0\"\nexit 0\n");
+        let ext = if cfg!(windows) { ".cmd" } else { "" };
+        let mock_node = bin_dir.join(format!("node{ext}"));
+        if cfg!(windows) {
+            make_script(&mock_node, "@echo off\necho v20.11.0\nexit /b 0\n");
+        } else {
+            make_script(&mock_node, "#!/bin/sh\necho \"v20.11.0\"\nexit 0\n");
+        }
 
-        let mock_npm = bin_dir.join("npm");
-        make_script(&mock_npm, "#!/bin/sh\necho \"10.2.4\"\nexit 0\n");
+        let mock_npm = bin_dir.join(format!("npm{ext}"));
+        if cfg!(windows) {
+            make_script(&mock_npm, "@echo off\necho 10.2.4\nexit /b 0\n");
+        } else {
+            make_script(&mock_npm, "#!/bin/sh\necho \"10.2.4\"\nexit 0\n");
+        }
 
-        let mock_atk = bin_dir.join("atk");
-        make_script(
-            &mock_atk,
-            r#"#!/bin/sh
+        let mock_atk = bin_dir.join(format!("atk{ext}"));
+        if cfg!(windows) {
+            let ps1_path = bin_dir.join("atk.ps1");
+            fs::write(
+                &ps1_path,
+                r#"$cmd = $args[0]
+$sub = $args[1]
+if ($cmd -eq "--version") { Write-Output "1.1.17"; exit 0 }
+if ($cmd -eq "auth" -and $sub -eq "list") { Write-Output "Your Microsoft 365 account is: user@example.com."; exit 0 }
+if ($cmd -eq "auth" -and $sub -eq "logout") { exit 0 }
+if ($cmd -eq "install") { exit 0 }
+if ($cmd -eq "provision") {
+    $folder = ""
+    for ($i = 0; $i -lt $args.Length; $i++) {
+        if ($args[$i] -eq "--folder" -and $i + 1 -lt $args.Length) {
+            $folder = $args[$i + 1]
+            break
+        }
+    }
+    if ($folder -ne "") {
+        New-Item -ItemType Directory -Force -Path "$folder\env" | Out-Null
+        $envRes = @"
+BOT_ID=mock-bot-id-123
+TEAMS_APP_TENANT_ID=mock-tenant-id-456
+TEAMS_APP_ID=mock-teams-app-id-789
+"@
+        [System.IO.File]::WriteAllText("$folder\env\.env.residuum", $envRes)
+        [System.IO.File]::WriteAllText("$folder\env\.env.residuum.user", "SECRET_BOT_PASSWORD=mock-password-sec`n")
+        New-Item -ItemType Directory -Force -Path "$folder\appPackage\build" | Out-Null
+        [System.IO.File]::WriteAllText("$folder\appPackage\build\appPackage.residuum.zip", "zip`n")
+    }
+    exit 0
+}
+exit 0
+"#,
+            )
+            .unwrap();
+            make_script(
+                &mock_atk,
+                "@echo off\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dpn0.ps1\" %*\n",
+            );
+        } else {
+            make_script(
+                &mock_atk,
+                r#"#!/bin/sh
 cmd="$1"
 sub="$2"
 if [ "$cmd" = "--version" ]; then echo "1.1.17"; exit 0; fi
@@ -387,7 +437,8 @@ fi
 if [ "$cmd" = "install" ]; then exit 0; fi
 exit 0
 "#,
-        );
+            );
+        }
 
         let overrides = AtkRunnerOverrides {
             node_bin: Some(mock_node),

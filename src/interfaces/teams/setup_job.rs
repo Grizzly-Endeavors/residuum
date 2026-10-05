@@ -727,11 +727,16 @@ impl TeamsSetupJobManager {
         let install_dir = hub_dir(&self.residuum_root)
             .join("tools")
             .join("m365agentstoolkit");
+        let default_npm = if cfg!(windows) {
+            PathBuf::from("npm.cmd")
+        } else {
+            PathBuf::from("npm")
+        };
         let npm_bin = self
             .overrides
             .as_ref()
             .and_then(|o| o.npm_bin.clone())
-            .unwrap_or_else(|| PathBuf::from("npm"));
+            .unwrap_or(default_npm);
 
         install_cli(&install_dir, &npm_bin, &log, cancel).await
     }
@@ -1222,24 +1227,7 @@ mod tests {
         make_executable(path);
     }
 
-    fn setup_mock_env(temp: &tempfile::TempDir) -> (PathBuf, AtkRunnerOverrides) {
-        let root = temp.path().to_path_buf();
-        let bin_dir = root.join("bin");
-        std::fs::create_dir_all(&bin_dir).unwrap();
-
-        let node_path = bin_dir.join("fake_node");
-        make_script(&node_path, "#!/bin/sh\necho 'v20.11.0'\nexit 0\n");
-
-        let npm_path = bin_dir.join("fake_npm");
-        make_script(
-            &npm_path,
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '10.2.4'; else echo 'ok'; fi\nexit 0\n",
-        );
-
-        let atk_path = bin_dir.join("fake_atk");
-        make_script(
-            &atk_path,
-            r#"#!/bin/sh
+    const FAKE_ATK_UNIX: &str = r#"#!/bin/sh
 cmd="$1"
 sub="$2"
 if [ "$cmd" = "--version" ]; then
@@ -1283,8 +1271,274 @@ if [ "$cmd" = "install" ]; then
     exit 0
 fi
 exit 0
-"#,
-        );
+"#;
+
+    const FAKE_ATK_WIN_PS1: &str = r#"$cmd = $args[0]
+$sub = $args[1]
+if ($cmd -eq "--version") { Write-Output "1.1.17"; exit 0 }
+if ($cmd -eq "auth" -and $sub -eq "list") { Write-Output "Your Microsoft 365 account is: test@contoso.com."; exit 0 }
+if ($cmd -eq "auth" -and $sub -eq "logout") { Write-Output "Logged out."; exit 0 }
+if ($cmd -eq "install") { Write-Output "App installed successfully"; exit 0 }
+if ($cmd -eq "provision") {
+    $folder = ""
+    for ($i = 0; $i -lt $args.Length; $i++) {
+        if ($args[$i] -eq "--folder" -and $i + 1 -lt $args.Length) {
+            $folder = $args[$i + 1]
+            break
+        }
+    }
+    if ($folder -ne "") {
+        New-Item -ItemType Directory -Force -Path "$folder\env" | Out-Null
+        $envRes = @"
+BOT_ID=bot-mock-1234
+TEAMS_APP_TENANT_ID=tenant-mock-5678
+TEAMS_APP_ID=app-mock-9999
+"@
+        [System.IO.File]::WriteAllText("$folder\env\.env.residuum", $envRes)
+        [System.IO.File]::WriteAllText("$folder\env\.env.residuum.user", "SECRET_BOT_PASSWORD=mock-pass`n")
+        New-Item -ItemType Directory -Force -Path "$folder\appPackage\build" | Out-Null
+        [System.IO.File]::WriteAllText("$folder\appPackage\build\appPackage.residuum.zip", "zip`n")
+        Write-Output "Provisioning succeeded"
+    }
+    exit 0
+}
+exit 0
+"#;
+
+    const SLOW_ATK_UNIX: &str = r#"#!/bin/sh
+cmd="$1"
+sub="$2"
+if [ "$cmd" = "--version" ]; then echo "1.1.17"; exit 0; fi
+if [ "$cmd" = "auth" ] && [ "$sub" = "list" ]; then echo "Your Microsoft 365 account is: test@contoso.com."; exit 0; fi
+if [ "$cmd" = "provision" ]; then
+    folder=""
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = "--folder" ]; then folder="$2"; shift 2; else shift; fi
+    done
+    sleep 30 &
+    echo $! > "$folder/grandchild.pid"
+    wait
+    exit 0
+fi
+exit 0
+"#;
+
+    const SLOW_ATK_WIN_PS1: &str = r#"$cmd = $args[0]
+$sub = $args[1]
+if ($cmd -eq "--version") { Write-Output "1.1.17"; exit 0 }
+if ($cmd -eq "auth" -and $sub -eq "list") { Write-Output "Your Microsoft 365 account is: test@contoso.com."; exit 0 }
+if ($cmd -eq "provision") {
+    $folder = ""
+    for ($i = 0; $i -lt $args.Length; $i++) {
+        if ($args[$i] -eq "--folder" -and $i + 1 -lt $args.Length) {
+            $folder = $args[$i + 1]
+            break
+        }
+    }
+    $p = Start-Process powershell -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 30' -PassThru
+    [System.IO.File]::WriteAllText((Join-Path $folder 'grandchild.pid'), $p.Id.ToString())
+    Wait-Process -Id $p.Id
+    exit 0
+}
+exit 0
+"#;
+
+    const LOGIN_ATK_UNIX: &str = r#"#!/bin/sh
+cmd="$1"
+sub="$2"
+if [ "$cmd" = "--version" ]; then echo "1.1.17"; exit 0; fi
+if [ "$cmd" = "auth" ] && [ "$sub" = "list" ]; then
+    echo "No account signed in." >&2
+    exit 1
+fi
+if [ "$cmd" = "auth" ] && [ "$sub" = "login" ]; then
+    python3 -c '
+import http.server, socket
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind(("127.0.0.1", 0))
+port = s.getsockname()[1]
+s.close()
+print(f"Log in to your Microsoft 365 account - opening default web browser at https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=123&redirect_uri=http%3A%2F%2Flocalhost%3A{port}%2F", flush=True)
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, format, *args):
+        pass
+
+server = http.server.HTTPServer(("127.0.0.1", port), Handler)
+server.handle_request()
+'
+    exit 0
+fi
+if [ "$cmd" = "provision" ]; then
+    folder=""
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = "--folder" ]; then folder="$2"; shift 2; else shift; fi
+    done
+    mkdir -p "$folder/env"
+    cat << 'EOF' > "$folder/env/.env.residuum"
+BOT_ID=bot-login-1111
+TEAMS_APP_TENANT_ID=tenant-login-2222
+TEAMS_APP_ID=app-login-3333
+EOF
+    cat << 'EOF' > "$folder/env/.env.residuum.user"
+SECRET_BOT_PASSWORD=mock-pass
+EOF
+    mkdir -p "$folder/appPackage/build"
+    echo "zip" > "$folder/appPackage/build/appPackage.residuum.zip"
+    exit 0
+fi
+exit 0
+"#;
+
+    const LOGIN_ATK_WIN_PS1: &str = r#"$cmd = $args[0]
+$sub = $args[1]
+if ($cmd -eq "--version") { Write-Output "1.1.17"; exit 0 }
+if ($cmd -eq "auth" -and $sub -eq "list") {
+    [Console]::Error.WriteLine("No account signed in.")
+    exit 1
+}
+if ($cmd -eq "auth" -and $sub -eq "login") {
+    $s = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    $s.Start()
+    $port = $s.LocalEndpoint.Port
+    Write-Output "Log in to your Microsoft 365 account - opening default web browser at https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=123&redirect_uri=http%3A%2F%2Flocalhost%3A$port%2F"
+    $client = $s.AcceptTcpClient()
+    $stream = $client.GetStream()
+    $reader = [System.IO.StreamReader]::new($stream)
+    $null = $reader.ReadLine()
+    $response = [System.Text.Encoding]::UTF8.GetBytes("HTTP/1.1 200 OK`r`nContent-Length: 2`r`nConnection: close`r`n`r`nOK")
+    $stream.Write($response, 0, $response.Length)
+    $stream.Flush()
+    $client.Close()
+    $s.Stop()
+    exit 0
+}
+if ($cmd -eq "provision") {
+    $folder = ""
+    for ($i = 0; $i -lt $args.Length; $i++) {
+        if ($args[$i] -eq "--folder" -and $i + 1 -lt $args.Length) {
+            $folder = $args[$i + 1]
+            break
+        }
+    }
+    if ($folder -ne "") {
+        New-Item -ItemType Directory -Force -Path "$folder\env" | Out-Null
+        $envRes = @"
+BOT_ID=bot-login-1111
+TEAMS_APP_TENANT_ID=tenant-login-2222
+TEAMS_APP_ID=app-login-3333
+"@
+        [System.IO.File]::WriteAllText("$folder\env\.env.residuum", $envRes)
+        [System.IO.File]::WriteAllText("$folder\env\.env.residuum.user", "SECRET_BOT_PASSWORD=mock-pass`n")
+        New-Item -ItemType Directory -Force -Path "$folder\appPackage\build" | Out-Null
+        [System.IO.File]::WriteAllText("$folder\appPackage\build\appPackage.residuum.zip", "zip`n")
+    }
+    exit 0
+}
+exit 0
+"#;
+
+    const FAIL_ATK_UNIX: &str = r#"#!/bin/sh
+cmd="$1"
+sub="$2"
+if [ "$cmd" = "--version" ]; then echo "1.1.17"; exit 0; fi
+if [ "$cmd" = "auth" ] && [ "$sub" = "list" ]; then echo "Your Microsoft 365 account is: test@contoso.com."; exit 0; fi
+if [ "$cmd" = "provision" ]; then
+    folder=""
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = "--folder" ]; then folder="$2"; shift 2; else shift; fi
+    done
+    mkdir -p "$folder/env"
+    echo "BOT_ID=partial-bot-id-4444" > "$folder/env/.env.residuum"
+    echo "fatal provisioning error" >&2
+    exit 1
+fi
+exit 0
+"#;
+
+    const FAIL_ATK_WIN_PS1: &str = r#"$cmd = $args[0]
+$sub = $args[1]
+if ($cmd -eq "--version") { Write-Output "1.1.17"; exit 0 }
+if ($cmd -eq "auth" -and $sub -eq "list") { Write-Output "Your Microsoft 365 account is: test@contoso.com."; exit 0 }
+if ($cmd -eq "provision") {
+    $folder = ""
+    for ($i = 0; $i -lt $args.Length; $i++) {
+        if ($args[$i] -eq "--folder" -and $i + 1 -lt $args.Length) {
+            $folder = $args[$i + 1]
+            break
+        }
+    }
+    if ($folder -ne "") {
+        New-Item -ItemType Directory -Force -Path "$folder\env" | Out-Null
+        [System.IO.File]::WriteAllText("$folder\env\.env.residuum", "BOT_ID=partial-bot-id-4444`n")
+    }
+    [Console]::Error.WriteLine("fatal provisioning error")
+    exit 1
+}
+exit 0
+"#;
+
+    fn make_ps1_or_sh_script(path: &Path, unix_script: &str, win_ps1: &str) {
+        if cfg!(windows) {
+            let ps1_path = path.with_extension("ps1");
+            std::fs::write(&ps1_path, win_ps1).unwrap();
+            make_script(
+                path,
+                "@echo off\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dpn0.ps1\" %*\n",
+            );
+        } else {
+            make_script(path, unix_script);
+        }
+    }
+
+    fn make_fake_atk_script(path: &Path) {
+        make_ps1_or_sh_script(path, FAKE_ATK_UNIX, FAKE_ATK_WIN_PS1);
+    }
+
+    fn make_slow_atk_script(path: &Path) {
+        make_ps1_or_sh_script(path, SLOW_ATK_UNIX, SLOW_ATK_WIN_PS1);
+    }
+
+    fn make_login_atk_script(path: &Path) {
+        make_ps1_or_sh_script(path, LOGIN_ATK_UNIX, LOGIN_ATK_WIN_PS1);
+    }
+
+    fn make_fail_atk_script(path: &Path) {
+        make_ps1_or_sh_script(path, FAIL_ATK_UNIX, FAIL_ATK_WIN_PS1);
+    }
+
+    fn setup_mock_env(temp: &tempfile::TempDir) -> (PathBuf, AtkRunnerOverrides) {
+        let root = temp.path().to_path_buf();
+        let bin_dir = root.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        let ext = if cfg!(windows) { ".cmd" } else { "" };
+        let node_path = bin_dir.join(format!("fake_node{ext}"));
+        if cfg!(windows) {
+            make_script(&node_path, "@echo off\necho v20.11.0\nexit /b 0\n");
+        } else {
+            make_script(&node_path, "#!/bin/sh\necho 'v20.11.0'\nexit 0\n");
+        }
+
+        let npm_path = bin_dir.join(format!("fake_npm{ext}"));
+        if cfg!(windows) {
+            make_script(
+                &npm_path,
+                "@echo off\nif \"%~1\"==\"--version\" ( echo 10.2.4 ) else ( echo ok )\nexit /b 0\n",
+            );
+        } else {
+            make_script(
+                &npm_path,
+                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '10.2.4'; else echo 'ok'; fi\nexit 0\n",
+            );
+        }
+
+        let atk_path = bin_dir.join(format!("fake_atk{ext}"));
+        make_fake_atk_script(&atk_path);
 
         let overrides = AtkRunnerOverrides {
             node_bin: Some(node_path),
@@ -1425,28 +1679,9 @@ exit 0
         let (root, mut overrides) = setup_mock_env(&temp);
 
         // Slow provision script that spawns a grandchild process
-        let slow_atk = root.join("bin/slow_atk");
-        make_script(
-            &slow_atk,
-            r#"#!/bin/sh
-cmd="$1"
-sub="$2"
-if [ "$cmd" = "--version" ]; then echo "1.1.17"; exit 0; fi
-if [ "$cmd" = "auth" ] && [ "$sub" = "list" ]; then echo "Your Microsoft 365 account is: test@contoso.com."; exit 0; fi
-if [ "$cmd" = "provision" ]; then
-    folder=""
-    while [ "$#" -gt 0 ]; do
-        if [ "$1" = "--folder" ]; then folder="$2"; shift 2; else shift; fi
-    done
-    # Spawn background grandchild process that writes its pid and sleeps
-    sleep 30 &
-    echo $! > "$folder/grandchild.pid"
-    wait
-    exit 0
-fi
-exit 0
-"#,
-        );
+        let ext = if cfg!(windows) { ".cmd" } else { "" };
+        let slow_atk = root.join(format!("bin/slow_atk{ext}"));
+        make_slow_atk_script(&slow_atk);
         overrides.atk_bin = Some(slow_atk);
 
         let mgr = TeamsSetupJobManager::with_overrides(root.clone(), overrides);
@@ -1484,84 +1719,22 @@ exit 0
         }
 
         let pid = grandchild_pid.expect("grandchild should have spawned and written pid");
-        #[cfg(unix)]
         assert!(crate::util::process::is_process_running(pid));
 
         let cancelled = mgr.cancel_job("agent-1").await.unwrap();
         assert_eq!(cancelled.state, TeamsSetupState::Cancelled);
 
         // Verify that the grandchild process tree is actually gone
-        #[cfg(unix)]
-        {
-            let kill_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-            while tokio::time::Instant::now() < kill_deadline {
-                if !crate::util::process::is_process_running(pid) {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
+        let kill_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while tokio::time::Instant::now() < kill_deadline {
+            if !crate::util::process::is_process_running(pid) {
+                break;
             }
-            assert!(
-                !crate::util::process::is_process_running(pid),
-                "grandchild process tree should be terminated after cancel"
-            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        #[cfg(not(unix))]
-        let _ = pid;
-    }
-
-    fn make_login_atk_script(path: &Path) {
-        make_script(
-            path,
-            r#"#!/bin/sh
-cmd="$1"
-sub="$2"
-if [ "$cmd" = "--version" ]; then echo "1.1.17"; exit 0; fi
-if [ "$cmd" = "auth" ] && [ "$sub" = "list" ]; then
-    echo "No account signed in." >&2
-    exit 1
-fi
-if [ "$cmd" = "auth" ] && [ "$sub" = "login" ]; then
-    python3 -c '
-import http.server, socket
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.bind(("127.0.0.1", 0))
-port = s.getsockname()[1]
-s.close()
-print(f"Log in to your Microsoft 365 account - opening default web browser at https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=123&redirect_uri=http%3A%2F%2Flocalhost%3A{port}%2F", flush=True)
-
-class Handler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-    def log_message(self, format, *args):
-        pass
-
-server = http.server.HTTPServer(("127.0.0.1", port), Handler)
-server.handle_request()
-'
-    exit 0
-fi
-if [ "$cmd" = "provision" ]; then
-    folder=""
-    while [ "$#" -gt 0 ]; do
-        if [ "$1" = "--folder" ]; then folder="$2"; shift 2; else shift; fi
-    done
-    mkdir -p "$folder/env"
-    cat << 'EOF' > "$folder/env/.env.residuum"
-BOT_ID=bot-login-1111
-TEAMS_APP_TENANT_ID=tenant-login-2222
-TEAMS_APP_ID=app-login-3333
-EOF
-    cat << 'EOF' > "$folder/env/.env.residuum.user"
-SECRET_BOT_PASSWORD=mock-pass
-EOF
-    mkdir -p "$folder/appPackage/build"
-    echo "zip" > "$folder/appPackage/build/appPackage.residuum.zip"
-    exit 0
-fi
-exit 0
-"#,
+        assert!(
+            !crate::util::process::is_process_running(pid),
+            "grandchild process tree should be terminated after cancel"
         );
     }
 
@@ -1570,7 +1743,8 @@ exit 0
         let temp = tempfile::tempdir().unwrap();
         let (root, mut overrides) = setup_mock_env(&temp);
 
-        let login_atk = root.join("bin/login_atk");
+        let ext = if cfg!(windows) { ".cmd" } else { "" };
+        let login_atk = root.join(format!("bin/login_atk{ext}"));
         make_login_atk_script(&login_atk);
         overrides.atk_bin = Some(login_atk);
 
@@ -1658,27 +1832,9 @@ exit 0
         let (root, mut overrides) = setup_mock_env(&temp);
 
         // Failing provision script that writes partial env file and exits with 1
-        let fail_atk = root.join("bin/fail_atk");
-        make_script(
-            &fail_atk,
-            r#"#!/bin/sh
-cmd="$1"
-sub="$2"
-if [ "$cmd" = "--version" ]; then echo "1.1.17"; exit 0; fi
-if [ "$cmd" = "auth" ] && [ "$sub" = "list" ]; then echo "Your Microsoft 365 account is: test@contoso.com."; exit 0; fi
-if [ "$cmd" = "provision" ]; then
-    folder=""
-    while [ "$#" -gt 0 ]; do
-        if [ "$1" = "--folder" ]; then folder="$2"; shift 2; else shift; fi
-    done
-    mkdir -p "$folder/env"
-    echo "BOT_ID=partial-bot-id-4444" > "$folder/env/.env.residuum"
-    echo "fatal provisioning error" >&2
-    exit 1
-fi
-exit 0
-"#,
-        );
+        let ext = if cfg!(windows) { ".cmd" } else { "" };
+        let fail_atk = root.join(format!("bin/fail_atk{ext}"));
+        make_fail_atk_script(&fail_atk);
         overrides.atk_bin = Some(fail_atk.clone());
 
         let mgr = TeamsSetupJobManager::with_overrides(root.clone(), overrides);
@@ -1718,34 +1874,7 @@ exit 0
         assert!(job.error.is_some());
 
         // Now fix the script and retry
-        make_script(
-            &fail_atk,
-            r#"#!/bin/sh
-cmd="$1"
-sub="$2"
-if [ "$cmd" = "--version" ]; then echo "1.1.17"; exit 0; fi
-if [ "$cmd" = "auth" ] && [ "$sub" = "list" ]; then echo "Your Microsoft 365 account is: test@contoso.com."; exit 0; fi
-if [ "$cmd" = "provision" ]; then
-    folder=""
-    while [ "$#" -gt 0 ]; do
-        if [ "$1" = "--folder" ]; then folder="$2"; shift 2; else shift; fi
-    done
-    mkdir -p "$folder/env"
-    cat << 'EOF' > "$folder/env/.env.residuum"
-BOT_ID=bot-mock-1234
-TEAMS_APP_TENANT_ID=tenant-mock-5678
-TEAMS_APP_ID=app-mock-9999
-EOF
-    cat << 'EOF' > "$folder/env/.env.residuum.user"
-SECRET_BOT_PASSWORD=mock-pass
-EOF
-    mkdir -p "$folder/appPackage/build"
-    echo "zip" > "$folder/appPackage/build/appPackage.residuum.zip"
-    exit 0
-fi
-exit 0
-"#,
-        );
+        make_fake_atk_script(&fail_atk);
 
         mgr.retry_job("agent-1").await.unwrap();
 
