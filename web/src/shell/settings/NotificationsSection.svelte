@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { userErrorMessage } from "../../lib/errors";
+  import { hub } from "../../lib/hub.svelte";
   import type { PushDevice } from "../../lib/hub-types";
   import { push } from "../../lib/push.svelte";
   import { toast } from "../../lib/toast.svelte";
@@ -52,6 +53,13 @@
 
   onMount(() => {
     void push.load();
+    // A device the hub pruned (its subscription expired, or a rotation's
+    // resubscribe failed) reaches the user as a plain hub notice; there's no
+    // structured frame naming the device, so any notice is cause to read the
+    // list again rather than leave it stale until the section remounts.
+    return hub.onFrame((msg) => {
+      if (msg.type === "notice") void push.load();
+    });
   });
 </script>
 

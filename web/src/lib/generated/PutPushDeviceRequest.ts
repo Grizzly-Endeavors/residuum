@@ -19,4 +19,12 @@ label?: string,
  * Preferences to set. A new device starts from the defaults; an existing
  * one from its current preferences.
  */
-preferences?: PushPreferencesPatch, };
+preferences?: PushPreferencesPatch, 
+/**
+ * The endpoint this browser's device was last registered under, when
+ * `subscription.endpoint` is a rotated replacement for it (the
+ * browser's `pushsubscriptionchange`). Matching on this instead of the
+ * new endpoint updates that device in place, keeping its id, label and
+ * preferences, rather than registering a second device.
+ */
+previous_endpoint?: string, };

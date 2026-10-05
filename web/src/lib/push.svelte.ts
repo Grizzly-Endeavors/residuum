@@ -150,6 +150,18 @@ export class PushStore {
     return manager;
   }
 
+  /**
+   * The worker told this page that it re-registered this browser's device
+   * under a new endpoint, after the browser rotated its subscription on its
+   * own. Keeping the stored endpoint in step means the next check here
+   * doesn't mistake the rotation for the browser dropping the subscription.
+   */
+  deviceRotated(endpoint: string): void {
+    if (this.deviceId === null) return;
+    this.#endpoint = endpoint;
+    this.#browser?.writeStored({ id: this.deviceId, endpoint });
+  }
+
   #forget(): void {
     this.deviceId = null;
     this.#endpoint = null;

@@ -77,7 +77,13 @@ interface Loaded {
   fetchEvent: (request: Partial<Request> & { url: string }) => Promise<Response | null>;
   /** Fire `type` with `event`; settles when the worker's `waitUntil` work has. */
   fire: (
-    type: "install" | "activate" | "message" | "push" | "notificationclick",
+    type:
+      | "install"
+      | "activate"
+      | "message"
+      | "push"
+      | "notificationclick"
+      | "pushsubscriptionchange",
     event?: object,
   ) => Promise<void>;
   /** The notifications the worker showed, in order. */
@@ -113,6 +119,8 @@ async function loadWorker(options: {
   version?: string;
   caches?: FakeCacheStorage;
   windows?: FakeWindow[];
+  /** Answers `self.registration.pushManager.subscribe`, for `pushsubscriptionchange`. */
+  subscribe?: () => Promise<{ toJSON: () => unknown }>;
 }): Promise<Loaded> {
   const listeners = new Map<string, Handler>();
   const storage = options.caches ?? new FakeCacheStorage();
@@ -139,6 +147,10 @@ async function loadWorker(options: {
       showNotification: (title: string, notificationOptions: NotificationOptions) => {
         shown.push({ title, options: notificationOptions });
         return Promise.resolve();
+      },
+      pushManager: {
+        subscribe:
+          options.subscribe ?? (() => Promise.reject(new Error("no subscribe stub given"))),
       },
     },
     navigator: {
@@ -570,5 +582,100 @@ describe("a notification click", () => {
     const click = clickOn("/home") as { notification: { close: () => void } };
     await worker.fire("notificationclick", click);
     expect(click.notification.close).toHaveBeenCalledOnce();
+  });
+});
+
+describe("a rotated subscription", () => {
+  interface Call {
+    url: string;
+    method: string;
+    body: unknown;
+  }
+
+  /** Answers the push key and device PUT routes, recording every call. */
+  function pushNetwork(calls: Call[], answers: { key?: Response; put?: Response } = {}): Network {
+    return (request, init) => {
+      const url = urlOf(request);
+      const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+      calls.push({ url, method: init?.method ?? "GET", body });
+      if (url === "/api/hub/push/key") {
+        return Promise.resolve(answers.key ?? ok('{"public_key":"a2V5"}'));
+      }
+      if (url === "/api/hub/push/devices") return Promise.resolve(answers.put ?? ok("{}"));
+      return Promise.resolve(ok());
+    };
+  }
+
+  const subscribed = (endpoint: string) => (): Promise<{ toJSON: () => unknown }> =>
+    Promise.resolve({ toJSON: () => ({ endpoint, keys: { p256dh: "p", auth: "a" } }) });
+
+  const rotate = (oldEndpoint?: string): object => ({
+    oldSubscription: oldEndpoint === undefined ? undefined : { endpoint: oldEndpoint },
+  });
+
+  it("resubscribes under the hub's key and sends the new subscription with the endpoint it replaces", async () => {
+    const calls: Call[] = [];
+    const window = new FakeWindow(true, "visible");
+    const worker = await loadWorker({
+      network: pushNetwork(calls),
+      subscribe: subscribed("https://push.example/new"),
+      windows: [window],
+    });
+
+    await worker.fire("pushsubscriptionchange", rotate("https://push.example/old"));
+
+    const put = calls.find((call) => call.url === "/api/hub/push/devices");
+    expect(put?.method).toBe("PUT");
+    expect(put?.body).toEqual({
+      subscription: { endpoint: "https://push.example/new", keys: { p256dh: "p", auth: "a" } },
+      previous_endpoint: "https://push.example/old",
+    });
+    expect(window.posted).toEqual([
+      { type: "endpoint-changed", endpoint: "https://push.example/new" },
+    ]);
+  });
+
+  it("carries no previous endpoint when the browser gives none", async () => {
+    const calls: Call[] = [];
+    const worker = await loadWorker({
+      network: pushNetwork(calls),
+      subscribe: subscribed("https://push.example/new"),
+    });
+
+    await worker.fire("pushsubscriptionchange", rotate());
+
+    const put = calls.find((call) => call.url === "/api/hub/push/devices");
+    expect(put?.body).toEqual({
+      subscription: { endpoint: "https://push.example/new", keys: { p256dh: "p", auth: "a" } },
+    });
+  });
+
+  it("does nothing further when resubscribing fails", async () => {
+    const calls: Call[] = [];
+    const window = new FakeWindow(true, "visible");
+    const worker = await loadWorker({
+      network: pushNetwork(calls),
+      subscribe: () => Promise.reject(new Error("the push service refused")),
+      windows: [window],
+    });
+
+    await worker.fire("pushsubscriptionchange", rotate("https://push.example/old"));
+
+    expect(calls.some((call) => call.url === "/api/hub/push/devices")).toBe(false);
+    expect(window.posted).toEqual([]);
+  });
+
+  it("does nothing further when the hub refuses the new subscription", async () => {
+    const calls: Call[] = [];
+    const window = new FakeWindow(true, "visible");
+    const worker = await loadWorker({
+      network: pushNetwork(calls, { put: ok("", { status: 400 }) }),
+      subscribe: subscribed("https://push.example/new"),
+      windows: [window],
+    });
+
+    await worker.fire("pushsubscriptionchange", rotate("https://push.example/old"));
+
+    expect(window.posted).toEqual([]);
   });
 });

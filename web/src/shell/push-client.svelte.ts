@@ -23,11 +23,18 @@ export function openNotificationTarget(target: string): Promise<boolean> {
   });
 }
 
-function followNotificationClicks(): () => void {
+/**
+ * Follow what the worker tells this page: a notification was clicked, so go
+ * where it leads, or `pushsubscriptionchange` rotated this device's
+ * subscription, so the stored record of it must follow.
+ */
+function followWorkerMessages(): () => void {
   if (!("serviceWorker" in navigator)) return () => undefined;
   const container = navigator.serviceWorker;
   const onMessage = (event: MessageEvent): void => {
-    if (isWorkerMessage(event.data)) void openNotificationTarget(event.data.target);
+    if (!isWorkerMessage(event.data)) return;
+    if (event.data.type === "open-target") void openNotificationTarget(event.data.target);
+    else push.deviceRotated(event.data.endpoint);
   };
   container.addEventListener("message", onMessage);
   container.startMessages();
@@ -57,10 +64,10 @@ export function startPushClient(): () => void {
       presence.setDevice(push.presenceDevice);
     });
   });
-  const stopClicks = followNotificationClicks();
+  const stopMessages = followWorkerMessages();
   return () => {
     stopFollowing();
     stopPresence();
-    stopClicks();
+    stopMessages();
   };
 }

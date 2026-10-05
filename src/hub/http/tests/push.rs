@@ -123,6 +123,36 @@ async fn put_is_idempotent_for_one_endpoint() {
 }
 
 #[tokio::test]
+async fn put_with_a_previous_endpoint_updates_the_device_that_had_it() {
+    let h = Harness::new();
+    let first = register(&h, "https://push.example.com/send/old", "Laptop").await;
+
+    let rotated = h
+        .expect(
+            Method::PUT,
+            "/api/hub/push/devices",
+            Some(json!({
+                "subscription": subscription(&h, "https://push.example.com/send/new").await,
+                "previous_endpoint": "https://push.example.com/send/old",
+            })),
+            StatusCode::OK,
+        )
+        .await;
+
+    assert_eq!(
+        rotated["device"]["id"], first["device"]["id"],
+        "the rotation keeps the device's id"
+    );
+    assert_eq!(rotated["device"]["label"], "Laptop", "and its label");
+    let listed = h.get_expect("/api/hub/push/devices", StatusCode::OK).await;
+    assert_eq!(
+        listed["devices"].as_array().unwrap().len(),
+        1,
+        "no second device is left behind"
+    );
+}
+
+#[tokio::test]
 async fn put_refuses_a_subscription_it_cannot_use() {
     let h = Harness::new();
     let good = subscription(&h, "https://push.example.com/send/abc").await;
@@ -273,6 +303,7 @@ async fn register_local(h: &Harness, server: &MockServer) -> PushDevice {
             },
             label: Some("Laptop".to_string()),
             preferences: None,
+            previous_endpoint: None,
         })
         .await
         .unwrap()

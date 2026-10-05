@@ -101,6 +101,8 @@ A **device** is one browser or installed app registered for notifications. The w
 
 A message is sent only to devices whose preference for its event is on. The test notification is the exception: it goes to the device that asked, whatever its preferences say.
 
+A browser can rotate a device's subscription on its own (a key expiring, its storage being cleared), which fires `pushsubscriptionchange` on the service worker. The worker subscribes again under the hub's key and sends the new subscription back with the endpoint it replaces, so the hub updates that device in place — same `id`, label and preferences — instead of registering a second one. Any open window of the app is told the endpoint changed, so its own record of this device stays in step. This only runs for a browser that supports the event; one that doesn't still falls back to the ordinary path below: the next delivery attempt against the stale endpoint gets 404 or 410, and the hub prunes the device and raises the notice described under Delivery.
+
 The device list is `hub/push-devices.json`, readable only by its owner because a subscription's address and secret let anyone who holds them send to that device. The API never returns the address or the keys. A file that can't be read is left alone and reported (an error from the routes and a log line) instead of being treated as empty, so a fault never turns into the loss of every registration.
 
 ### The signing key

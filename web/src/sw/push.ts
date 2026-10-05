@@ -5,6 +5,8 @@
 // nothing: Safari can revoke the subscription and Chrome shows a generic one.
 
 import type { PushPayload } from "../lib/generated/PushPayload";
+import type { PutPushDeviceRequest } from "../lib/generated/PutPushDeviceRequest";
+import { subscriptionBody } from "../lib/push-devices";
 
 /** Where a click goes when the push named nowhere the app can open. */
 const FALLBACK_TARGET = "/home";
@@ -73,6 +75,20 @@ export function clickTarget(data: unknown): string {
   const target =
     typeof data === "object" && data !== null ? (data as { target?: unknown }).target : null;
   return appTarget(target);
+}
+
+/**
+ * The hub's request for a browser-rotated subscription: the new subscription
+ * under the endpoint it replaces, so the hub updates the device in place
+ * instead of registering a second one. Null when the new subscription has no
+ * keys, which never happens in practice but `PushSubscriptionJSON` allows it.
+ */
+export function rotationRequest(
+  subscription: PushSubscriptionJSON,
+  previousEndpoint: string | undefined,
+): PutPushDeviceRequest | null {
+  const body = subscriptionBody(subscription);
+  return body === null ? null : { subscription: body, previous_endpoint: previousEndpoint };
 }
 
 /** The window a click brings forward: the focused one, else a visible one, else any; null when none is open. */
