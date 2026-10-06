@@ -172,7 +172,7 @@ web-coverage *args: _web-deps
 web-e2e-fast *args: _web-e2e-browsers
     cd web && npm run e2e:fast -- {{ args }}
 
-# The whole end-to-end suite: the fast specs on this machine, the visual comparisons in the Playwright container (needs Docker). Run it before reporting a frontend change, since pull requests don't run CI
+# The whole end-to-end suite: the fast specs on this machine, the visual comparisons in the Playwright container (needs Docker). Pull requests that change web/ run it in CI too
 [group('web')]
 web-e2e *args: _web-e2e-browsers
     scripts/with-playwright-container.sh npm --prefix web run e2e -- {{ args }}

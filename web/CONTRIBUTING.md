@@ -587,7 +587,7 @@ Tests sit in five layers. Use the lowest one that can show the behavior: a lower
 | Accessibility | axe-core, inside an end-to-end spec | Every place and overlay a change touches | `expectNoAxeViolations` in `e2e/support/axe.ts` |
 | Visual | Playwright screenshots, in the Playwright container | How a surface looks: a few baselines per surface, at desktop and phone size | `e2e/visual/` |
 
-The unit and component layers run in `npm test`, and the pre-commit hook runs them. The other three run through Playwright and are not part of the hook. Pull requests don't run CI, so a frontend change runs `just web-e2e` before it is reported, and the release workflow runs the end-to-end suite too.
+The unit and component layers run in `npm test`, and the pre-commit hook runs them. The other three run through Playwright and are not part of the hook. A pull request that changes `web/` runs the whole suite in CI (`.github/workflows/web-pr.yml`), and so does the release workflow; `just web-e2e` runs it locally first.
 
 ### Running the end-to-end suite
 
@@ -614,9 +614,9 @@ A spec runs in every project that matches its tag, so one spec covers both sizes
 
 ### Servers and state
 
-Playwright starts two mock servers and stops them when the run ends. One is the deterministic mock on the Vite dev server (port 5273, artifacts on 5280). The other is the production build, rebuilt first, served with the mock (port 4273, artifacts on 4280). They sit apart from `just web-mock` (5173) and `just web-mock-preview` (4173), so a mock you started yourself can stay up. Two suites at once on one machine, from two worktrees for instance, each set their own `E2E_DEV_PORT` and `E2E_PREVIEW_PORT`; a port that is already taken is an error, never a server to reuse.
+Playwright starts two mock servers for every worker and stops them when the run ends. One is the deterministic mock on the Vite dev server (the first worker's on port 5273, artifacts on 5280). The other is the production build, built once per run, served with the mock (the first worker's on port 4273, artifacts on 4280). Each further worker's pair sits 10 ports above the previous one (5283 and 4283, then 5293 and 4293, and so on). They sit apart from `just web-mock` (5173) and `just web-mock-preview` (4173), so a mock you started yourself can stay up. Two suites at once on one machine, from two worktrees for instance, each set their own `E2E_DEV_PORT` and `E2E_PREVIEW_PORT`, far enough apart for every worker's ports; a port that is already taken is an error, never a server to reuse.
 
-Every test shares one mock, whose state is global to its server, so the suite runs on one worker and each test starts with `POST /api/mock/reset`. Don't pass `--workers`, and don't rely on what another test did. Requests to anything but localhost are aborted, so the internet can't change a run (a web font fails fast and falls back the same way everywhere).
+A mock's state is global to its server, so every worker drives its own servers: the fixtures point `baseURL` (and with it `page.goto` and the `mock` controls) at the worker's dev or preview server, and `artifactsOrigin()` gives its artifacts listener. Each test starts with `POST /api/mock/reset` on its worker's mock, and tests run fully parallel, so don't rely on what another test did. The suite runs on `E2E_WORKERS` workers, by default one for every two CPUs up to six; set the variable rather than passing `--workers`, since the servers are started per worker. Requests to anything but localhost are aborted, so the internet can't change a run (a web font fails fast and falls back the same way everywhere).
 
 ### Writing a spec
 

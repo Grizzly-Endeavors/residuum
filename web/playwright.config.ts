@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 import type { E2EOptions } from "./e2e/support/fixtures";
-import { devServer, previewServer } from "./e2e/support/servers";
+import { workerCount, workerServers } from "./e2e/support/servers";
 
 /**
  * End-to-end, accessibility and visual tests against the mock server.
@@ -85,9 +85,9 @@ export default defineConfig<E2EOptions>({
   // Compiles the dev server's modules once, so no spec pays for the first compile of a page or a lazy chunk.
   globalSetup: "./e2e/support/warmup.ts",
 
-  // The mock's state is global to its server, and every test starts by resetting it.
-  workers: 1,
-  fullyParallel: false,
+  // Every worker drives its own mock servers (`e2e/support/servers.ts`), and every test starts by resetting its worker's mock, so any test can run on any worker.
+  workers: workerCount,
+  fullyParallel: true,
   forbidOnly: process.env.CI !== undefined,
   retries: 0,
 
@@ -100,7 +100,7 @@ export default defineConfig<E2EOptions>({
   },
 
   use: {
-    baseURL: devServer.url,
+    // `baseURL` is the worker's own dev or preview server, set by the fixtures from `mockServer`.
     locale: "en-US",
     timezoneId: "UTC",
     // A selector that matches nothing fails here, well before the test's own timeout.
@@ -130,13 +130,13 @@ export default defineConfig<E2EOptions>({
     },
     {
       name: "preview-desktop",
-      use: { ...desktop, ...chromiumBrowser, baseURL: previewServer.url },
+      use: { ...desktop, ...chromiumBrowser, mockServer: "preview" },
       grep: previewTag,
       grepInvert: visualTag,
     },
     {
       name: "preview-phone",
-      use: { ...phone, ...chromiumBrowser, baseURL: previewServer.url },
+      use: { ...phone, ...chromiumBrowser, mockServer: "preview" },
       grep: previewTag,
       grepInvert: visualTag,
     },
@@ -154,28 +154,29 @@ export default defineConfig<E2EOptions>({
     },
   ],
 
+  // Playwright starts these one after another, in this order, so the first preview server's build is in place before the others serve it.
   webServer: [
-    {
-      command: `npm run dev:mock -- --port ${devServer.port} --strictPort`,
-      url: devServer.url,
+    ...workerServers.map(({ dev }) => ({
+      command: `npm run dev:mock -- --port ${dev.port} --strictPort`,
+      url: dev.url,
       env: {
         MOCK_DETERMINISTIC: "1",
-        MOCK_ARTIFACTS_PORT: String(devServer.artifactsPort),
+        MOCK_ARTIFACTS_PORT: String(dev.artifactsPort),
       },
       // A server left over from another run would carry its state and its code into this one.
       reuseExistingServer: false,
       timeout: 60_000,
-    },
-    {
-      // The build is what the preview server serves, so it is rebuilt every run.
-      command: `npm run build && npm run preview:mock -- --port ${previewServer.port} --strictPort`,
-      url: previewServer.url,
+    })),
+    ...workerServers.map(({ preview }, index) => ({
+      // The build is what the preview servers serve, so it is rebuilt every run, once.
+      command: `${index === 0 ? "npm run build && " : ""}npm run preview:mock -- --port ${preview.port} --strictPort`,
+      url: preview.url,
       env: {
         MOCK_DETERMINISTIC: "1",
-        MOCK_ARTIFACTS_PORT: String(previewServer.artifactsPort),
+        MOCK_ARTIFACTS_PORT: String(preview.artifactsPort),
       },
       reuseExistingServer: false,
-      timeout: 180_000,
-    },
+      timeout: index === 0 ? 180_000 : 60_000,
+    })),
   ],
 });

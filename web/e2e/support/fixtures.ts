@@ -10,12 +10,13 @@
  * - skips, with the reason, what can't run here: visual specs outside the
  *   Playwright container, and the WebKit project on a machine that can't start WebKit.
  *
- * All tests share one mock server, whose state is global, so the suite runs on
- * one worker (see `playwright.config.ts`).
+ * - points `baseURL`, and with it `page.goto` and the `mock` controls, at the
+ *   worker's own dev or preview server (`servers.ts`), so workers never share a mock.
  */
 import { expect, test as base, webkit, type Page, type Response } from "@playwright/test";
 import { FIXED_START_MS } from "../../mock/env";
 import { hubReach, waitForApp } from "./app";
+import { serversOf, type MockServerKind } from "./servers";
 
 export { expect };
 
@@ -25,6 +26,8 @@ export interface E2EOptions {
   frozenClock: boolean;
   /** Only the Playwright container's browser may render this project's tests. */
   requiresContainer: boolean;
+  /** Which of the worker's mock servers the project drives. */
+  mockServer: MockServerKind;
 }
 
 /** The mock's test-control endpoints (`POST /api/mock/...`), for a spec that stages a situation. */
@@ -121,6 +124,11 @@ async function probeWebkit(): Promise<string | null> {
 export const test = base.extend<E2EFixtures & E2EOptions>({
   frozenClock: [false, { option: true }],
   requiresContainer: [false, { option: true }],
+  mockServer: ["dev", { option: true }],
+
+  baseURL: async ({ mockServer }, use, testInfo) => {
+    await use(serversOf(testInfo.parallelIndex)[mockServer].url);
+  },
 
   // Automatic fixtures are set up before the test's own, so the reset lands
   // before the page opens and connects.
@@ -187,3 +195,8 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
     await use(page);
   },
 });
+
+/** The origin of the running test's artifacts listener, on its worker's dev server. Call it from inside a test. */
+export function artifactsOrigin(): string {
+  return `http://localhost:${String(serversOf(test.info().parallelIndex).dev.artifactsPort)}`;
+}
