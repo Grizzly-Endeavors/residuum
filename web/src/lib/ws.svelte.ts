@@ -374,7 +374,7 @@ class WsCoordinator {
       ...(images !== undefined && images.length > 0 ? { images } : {}),
     };
     this.transport.send(msg);
-    this.store.pushUserMessage(content, images);
+    this.store.pushUserMessage(content, images, id);
   }
 
   /**
