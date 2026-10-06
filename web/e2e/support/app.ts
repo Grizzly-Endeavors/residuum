@@ -50,12 +50,13 @@ export interface AppReadyOptions {
 const APP_ROOT = ".shell, .setup-wizard, .gallery";
 
 /**
- * What the app shows while it fetches the code of something it was asked to
- * open: the shell's "Opening" (Settings, the palette) and the panel's "Loading
- * the file". The place that opens a lazy component shows one of these until the
- * component mounts.
+ * What the app shows while it fetches the code or the data of something it was
+ * asked to open: the shell's "Opening" (Settings, the palette), the Settings
+ * modal's "Loading settings" and the panel's "Loading the file". The place that
+ * opens a lazy component shows one of these until the component has mounted
+ * and loaded what it shows.
  */
-const LAZY_LOADING = /^(Opening|Loading the file)$/;
+const LAZY_LOADING = /^(Opening|Loading settings|Loading the file)$/;
 
 /** The part of a page that is being built while the app starts: the app's roots, the hub socket and what it brings, the lazy components the URL asked for. */
 async function appRendered(page: Page, hub: HubState): Promise<void> {
@@ -77,6 +78,13 @@ async function appRendered(page: Page, hub: HubState): Promise<void> {
       "loaded",
       { timeout: LOAD_TIMEOUT },
     );
+  }
+  // Between the Settings chunk arriving and the modal mounting, neither "Opening" nor "Loading settings" is up, so a settings URL waits for the modal itself.
+  if (new URL(page.url()).searchParams.has("settings")) {
+    await expect(
+      page.getByRole("dialog", { name: "Settings" }),
+      "the Settings modal the URL asks for should be open",
+    ).toBeVisible({ timeout: LOAD_TIMEOUT });
   }
   await expect(
     page.getByRole("status").filter({ hasText: LAZY_LOADING }),
