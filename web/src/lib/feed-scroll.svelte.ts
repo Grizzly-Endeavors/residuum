@@ -14,6 +14,13 @@ const FOLLOW_THRESHOLD_PX = 400;
 /** Input that means the reader is scrolling by hand. */
 const READER_SCROLL_EVENTS = ["wheel", "touchstart", "keydown", "pointerdown"] as const;
 
+/** End with no modifier: the reader asking for the newest content, as the pill does. */
+function isEndKey(event: Event): boolean {
+  if (event.type !== "keydown") return false;
+  const { key, altKey, ctrlKey, metaKey, shiftKey } = event as KeyboardEvent;
+  return key === "End" && !altKey && !ctrlKey && !metaKey && !shiftKey;
+}
+
 function isHidden(el: HTMLElement): boolean {
   return el.clientHeight === 0;
 }
@@ -42,9 +49,10 @@ export class FeedScroller {
   };
 
   // The reader taking over the scroll cancels a glide in progress.
-  private readonly onReaderScroll = (): void => {
+  private readonly onReaderScroll = (event: Event): void => {
     this.jumping = false;
     this.held = false;
+    if (isEndKey(event)) this.followFromEnd();
   };
 
   /**
@@ -121,6 +129,18 @@ export class FeedScroller {
     this.jumping = true;
     this.scrolledUp = false;
     el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }
+
+  /**
+   * The reader pressed End: follow the newest content again while the
+   * browser's own glide gets there. Content landing on the way (an older
+   * episode prepended at the top they just left) keeps them pinned to the
+   * bottom instead of holding them where the glide had reached.
+   */
+  private followFromEnd(): void {
+    this.following = true;
+    this.jumping = true;
+    this.scrolledUp = false;
   }
 
   private pinToBottom(): void {
