@@ -6,13 +6,11 @@
 import type { Page, Request, Route } from "@playwright/test";
 import { ARTIFACT_REFUSAL_MESSAGE } from "../../mock/artifacts-origin";
 import type { Frame, Sdk } from "../../src/test/workbench-sdk";
-import { expect, test, type MockControls } from "../support/fixtures";
-import { devServer } from "../support/servers";
+import { artifactsOrigin, expect, test, type MockControls } from "../support/fixtures";
 
 /** The page's window, with what the SDK and the tests put on it. */
 type ProbeWindow = Window & { residuum: Sdk; seen: Frame[]; marker?: string };
 
-const ORIGIN = `http://localhost:${String(devServer.artifactsPort)}`;
 const PROBE = "sdk-probe";
 const PROBE_FILE = `team/workbench/${PROBE}.html`;
 
@@ -39,7 +37,7 @@ async function connected(page: Page): Promise<void> {
 /** Open the probe artifact on the artifacts origin, connected to Residuum. */
 async function openProbe(page: Page, mock: MockControls): Promise<void> {
   await writeProbe(mock);
-  await page.goto(`${ORIGIN}/${PROBE}/`);
+  await page.goto(`${artifactsOrigin()}/${PROBE}/`);
   await connected(page);
 }
 
@@ -58,7 +56,7 @@ const pathOf = (request: Request): string => new URL(request.url()).pathname;
 const onProbeOrigin =
   (path: string) =>
   (url: URL): boolean =>
-    url.origin === ORIGIN && url.pathname === path;
+    url.origin === artifactsOrigin() && url.pathname === path;
 
 /** What the page's handlers collected in `window.seen`. */
 async function seen(page: Page): Promise<Frame[]> {
@@ -99,7 +97,7 @@ test.describe("residuum.fetch", () => {
       "/api/team/workbench/artifacts",
     ]);
     for (const request of calls) {
-      expect(new URL(request.url()).origin).toBe(ORIGIN);
+      expect(new URL(request.url()).origin).toBe(artifactsOrigin());
       expect(request.headers()["x-residuum-artifact"]).toBe(PROBE);
     }
   });
@@ -415,7 +413,7 @@ test.describe("residuum.sessions", () => {
     await page.clock.install();
     await writeProbe(mock);
     const sent = apiRequests(page);
-    await page.goto(`${ORIGIN}/${PROBE}/`);
+    await page.goto(`${artifactsOrigin()}/${PROBE}/`);
     const state = await page.evaluate(
       () =>
         new Promise<unknown>((resolve) => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FeedStore } from "./feed.svelte";
-import type { RecentHistorySegment, RecentMessage } from "./types";
+import type { RecentHistorySegment, RecentMessage, ServerMessage } from "./types";
 
 function historyMsg(
   role: RecentMessage["role"],
@@ -134,5 +134,103 @@ describe("FeedStore reloadHistory end-of-turn decision", () => {
     expect(store.isProcessing).toBe(false);
     expect(store.activeTurnId).toBeNull();
     expect(store.feed.at(-1)).toMatchObject({ kind: "user", content: "another message" });
+  });
+});
+
+describe("FeedStore catching up on a turn whose frames are still arriving", () => {
+  // History and the socket are separate connections: after a reconnect the
+  // catch-up fetch can bring back a turn that has finished on the agent while
+  // this page is still receiving its frames.
+  const frames: ServerMessage[] = [
+    { type: "turn_started", reply_to: "web-1" },
+    { type: "broadcast_response", content: "Looking first." },
+    { type: "tool_call", id: "c1", name: "memory_search", arguments: {}, server: null },
+    {
+      type: "tool_result",
+      tool_call_id: "c1",
+      name: "memory_search",
+      output: "found",
+      is_error: false,
+    },
+    { type: "response", reply_to: "web-1", content: "Here is what I found." },
+    { type: "turn_ended", reply_to: "web-1" },
+  ];
+
+  const recorded = segment([
+    historyMsg("user", "unrelated"),
+    historyMsg("assistant", "ack"),
+    historyMsg("user", "Are you there?", { turnId: "web-1" }),
+    {
+      ...historyMsg("assistant", "Looking first.", { turnId: "web-1" }),
+      tool_calls: [{ id: "c1", name: "memory_search", arguments: {}, server: null }],
+    },
+    { ...historyMsg("tool", "found", { turnId: "web-1" }), tool_call_id: "c1" },
+    historyMsg("assistant", "Here is what I found.", { turnId: "web-1" }),
+  ]);
+
+  function shown(store: FeedStore, content: string): number {
+    return store.feed.filter(
+      (item) => (item.kind === "user" || item.kind === "assistant") && item.content === content,
+    ).length;
+  }
+
+  for (let arrived = 0; arrived <= frames.length; arrived++) {
+    const after = arrived === 0 ? "before any frame" : `after ${frames[arrived - 1]?.type ?? ""}`;
+    for (const how of ["reconcileRecent", "reloadHistory"] as const) {
+      it(`shows the turn once when history arrives ${after} (${how})`, () => {
+        const store = storeWithSettledHistory();
+        store.pushUserMessage("Are you there?", undefined, "web-1");
+        for (const frame of frames.slice(0, arrived)) store.handleMessage(frame);
+
+        if (how === "reconcileRecent") expect(store.reconcileRecent(recorded)).toBe(true);
+        else store.reloadHistory(recorded);
+        for (const frame of frames.slice(arrived)) store.handleMessage(frame);
+
+        expect(shown(store, "Are you there?")).toBe(1);
+        expect(shown(store, "Looking first.")).toBe(1);
+        expect(shown(store, "Here is what I found.")).toBe(1);
+        expect(store.isProcessing).toBe(false);
+        expect(store.activeTurnId).toBeNull();
+      });
+    }
+  }
+
+  it("keeps a turn that ended live when history read before it was recorded arrives", () => {
+    const store = storeWithSettledHistory();
+    store.pushUserMessage("Are you there?", undefined, "web-1");
+    for (const frame of frames) store.handleMessage(frame);
+
+    const behind = segment([historyMsg("user", "unrelated"), historyMsg("assistant", "ack")]);
+    expect(store.reconcileRecent(behind)).toBe(true);
+
+    expect(shown(store, "Are you there?")).toBe(1);
+    expect(shown(store, "Here is what I found.")).toBe(1);
+  });
+
+  it("lets the next turn's frames through once the settled turn has ended", () => {
+    const store = storeWithSettledHistory();
+    store.pushUserMessage("Are you there?", undefined, "web-1");
+    store.handleMessage({ type: "turn_started", reply_to: "web-1" });
+    expect(store.reconcileRecent(recorded)).toBe(true);
+    for (const frame of frames.slice(1)) store.handleMessage(frame);
+
+    store.pushUserMessage("And now?", undefined, "web-2");
+    store.handleMessage({ type: "turn_started", reply_to: "web-2" });
+    store.handleMessage({ type: "broadcast_response", content: "Still here." });
+    store.handleMessage({ type: "turn_ended", reply_to: "web-2" });
+
+    expect(shown(store, "Still here.")).toBe(1);
+  });
+
+  it("lets a turn joined after another reconnect through, though the settled one never ended", () => {
+    const store = storeWithSettledHistory();
+    store.pushUserMessage("Are you there?", undefined, "web-1");
+    store.handleMessage({ type: "turn_started", reply_to: "web-1" });
+    expect(store.reconcileRecent(recorded)).toBe(true);
+
+    store.markReconnectGap();
+    store.handleMessage({ type: "broadcast_response", content: "A later turn." });
+
+    expect(shown(store, "A later turn.")).toBe(1);
   });
 });

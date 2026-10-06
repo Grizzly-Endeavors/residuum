@@ -13,8 +13,15 @@ import { deliverPush, fakePushService, shownNotifications } from "../support/pus
  */
 
 // Chromium's headless shell, the default, can't show notifications: it reports
-// them denied and crashes on a push. Full Chromium, headless, can.
-test.use({ channel: "chromium" });
+// them denied and crashes on a push. Full Chromium, headless, can, and on Linux
+// it hands them to the desktop's notification service, so a local run would
+// pop every test's notifications on the developer's screen. Without native
+// notifications it keeps them in its own notification center, which
+// `getNotifications()` still reads.
+test.use({
+  channel: "chromium",
+  launchOptions: { args: ["--disable-features=NativeNotifications,SystemNotifications"] },
+});
 
 const OVERLAY = "[data-overlay-host]";
 

@@ -27,12 +27,14 @@ interface FakeScroller {
   scrollTo: ReturnType<typeof vi.fn>;
   /** Move the scroll position the way the reader does, and tell the scroller. */
   scrollBy: (top: number) => void;
+  /** Press a key in the feed. */
+  press: (init: KeyboardEventInit) => void;
   geometry: { scrollHeight: number; clientHeight: number; scrollTop: number };
 }
 
 function fakeScroller(): FakeScroller {
   const geometry = { scrollHeight: 2000, clientHeight: 500, scrollTop: 1500 };
-  const listeners = new Map<string, () => void>();
+  const listeners = new Map<string, (event?: Event) => void>();
   const scrollTo = vi.fn((options: { top: number }) => {
     geometry.scrollTop = options.top;
   });
@@ -46,7 +48,8 @@ function fakeScroller(): FakeScroller {
     get scrollTop() {
       return geometry.scrollTop;
     },
-    addEventListener: (type: string, listener: () => void) => listeners.set(type, listener),
+    addEventListener: (type: string, listener: (event?: Event) => void) =>
+      listeners.set(type, listener),
     removeEventListener: (type: string) => listeners.delete(type),
     scrollTo,
   } as unknown as HTMLElement;
@@ -58,6 +61,9 @@ function fakeScroller(): FakeScroller {
     scrollBy: (top) => {
       geometry.scrollTop = top;
       listeners.get("scroll")?.();
+    },
+    press: (init) => {
+      listeners.get("keydown")?.({ type: "keydown", ...init } as unknown as Event);
     },
   };
 }
@@ -76,6 +82,32 @@ describe("FeedScroller", () => {
     if (observer === undefined) throw new Error("the scroller made no ResizeObserver");
     return { feed, observer };
   }
+
+  it("follows the newest content from End, though content lands at the top on the way", () => {
+    const { feed, observer } = attached();
+    // The reader went to the top, so the feed no longer follows.
+    feed.scrollBy(0);
+
+    feed.press({ key: "End" });
+    // The browser's glide is partway down when an older episode is prepended.
+    feed.scrollBy(600);
+    feed.geometry.scrollHeight = 3000;
+    observer.notify();
+
+    expect(feed.geometry.scrollTop).toBe(3000);
+  });
+
+  it("leaves End with a modifier, and other keys, to the browser alone", () => {
+    const { feed, observer } = attached();
+    feed.scrollBy(0);
+
+    feed.press({ key: "End", shiftKey: true });
+    feed.press({ key: "PageDown" });
+    feed.geometry.scrollHeight = 3000;
+    observer.notify();
+
+    expect(feed.geometry.scrollTop).toBe(0);
+  });
 
   it("watches the feed's content and its viewport", () => {
     const { feed, observer } = attached();

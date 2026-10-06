@@ -80,6 +80,9 @@ jobs:
         if: ${{ !inputs.visual }}
         env:
           E2E_ALL_IN_CONTAINER: '1'
+          # More workers don't finish sooner on the runner: eight took 15 minutes against
+          # four's 17, and specs started timing out under the load.
+          E2E_WORKERS: '4'
         run: scripts/with-playwright-container.sh npm --prefix web run e2e:fast
 
       - name: Web end-to-end and visual tests
@@ -87,6 +90,9 @@ jobs:
         if: ${{ inputs.visual }}
         env:
           E2E_ALL_IN_CONTAINER: '1'
+          # More workers don't finish sooner on the runner: eight took 15 minutes against
+          # four's 17, and specs started timing out under the load.
+          E2E_WORKERS: '4'
         run: scripts/with-playwright-container.sh npm --prefix web run e2e
 
       # Fails when the gzipped initial route outgrows its budget, which is set

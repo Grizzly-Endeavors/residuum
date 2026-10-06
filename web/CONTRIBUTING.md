@@ -563,7 +563,7 @@ npm run e2e:fast      # Playwright specs in Chromium, visual comparisons left ou
 
 `just web-size` builds and prints the size of the initial route: the scripts and stylesheets `dist/index.html` loads before the first screen, raw and gzipped (`scripts/web-initial-route-size.sh`). The release workflow adds the same table to its job summary. It is a report with no threshold.
 
-**TypeScript lint.** Every `.ts` module under `src/` and `e2e/`, including the rune store modules (`*.svelte.ts`), gets the strict type-aware ESLint rules. Only `.svelte` files get the relaxed set that fits runes. When a rule is wrong for one line, use a scoped `// eslint-disable-next-line <rule> -- <reason>`, never a blanket disable.
+**TypeScript lint.** Every `.ts` module under `src/` and `e2e/`, including the rune store modules (`*.svelte.ts`), gets the strict type-aware ESLint rules. Only `.svelte` files get the relaxed set that fits runes. When a rule is wrong for one line, use a scoped `// eslint-disable-next-line <rule> -- <reason>`, never a blanket disable. `npm run lint` runs ESLint in two passes, the `.svelte` files and then everything else, because one run over both kinds rebuilds the TypeScript program over and over and takes several minutes instead of about half a minute.
 
 **Style lint.** `npm run lint` also runs Stylelint over `src/**/*.css` and the `<style>` blocks of `.svelte` files. Outside the token file (`src/styles/tokens.css`, the design token set described in [AESTHETIC.md](./AESTHETIC.md)) it forbids literal colors (hex, named, `rgb()` and the like), raw `font-size` and `font` values, raw `z-index` values, literal durations and easing curves in `transition` and `animation`, and `transition: all`. Reference a token with `var(--…)` instead. Viewport media queries may use only the shell breakpoints, written as `min-width`/`max-width`; a component that needs its own responsive rule uses a container query. No stylesheet or component is exempt. When a value has no token, add a token to `tokens.css` rather than a literal.
 
@@ -587,7 +587,7 @@ Tests sit in five layers. Use the lowest one that can show the behavior: a lower
 | Accessibility | axe-core, inside an end-to-end spec | Every place and overlay a change touches | `expectNoAxeViolations` in `e2e/support/axe.ts` |
 | Visual | Playwright screenshots, in the Playwright container | How a surface looks: a few baselines per surface, at desktop and phone size | `e2e/visual/` |
 
-The unit and component layers run in `npm test`, and the pre-commit hook runs them. The other three run through Playwright and are not part of the hook. Pull requests don't run CI, so a frontend change runs `just web-e2e` before it is reported, and the release workflow runs the end-to-end suite too.
+The unit and component layers run in `npm test`, and the pre-commit hook runs them. The other three run through Playwright and are not part of the hook. A pull request that changes `web/` runs the whole suite in CI (`.github/workflows/web-pr.yml`), and so does the release workflow; `just web-e2e` runs it locally first.
 
 ### Running the end-to-end suite
 
@@ -614,9 +614,9 @@ A spec runs in every project that matches its tag, so one spec covers both sizes
 
 ### Servers and state
 
-Playwright starts two mock servers and stops them when the run ends. One is the deterministic mock on the Vite dev server (port 5273, artifacts on 5280). The other is the production build, rebuilt first, served with the mock (port 4273, artifacts on 4280). They sit apart from `just web-mock` (5173) and `just web-mock-preview` (4173), so a mock you started yourself can stay up. Two suites at once on one machine, from two worktrees for instance, each set their own `E2E_DEV_PORT` and `E2E_PREVIEW_PORT`; a port that is already taken is an error, never a server to reuse.
+Playwright starts two mock servers for every worker and stops them when the run ends. One is the deterministic mock on the Vite dev server (the first worker's on port 5273, artifacts on 5280). The other is the production build, built once per run, served with the mock (the first worker's on port 4273, artifacts on 4280). Each further worker's pair sits 10 ports above the previous one (5283 and 4283, then 5293 and 4293, and so on). They sit apart from `just web-mock` (5173) and `just web-mock-preview` (4173), so a mock you started yourself can stay up. Two suites at once on one machine, from two worktrees for instance, each set their own `E2E_DEV_PORT` and `E2E_PREVIEW_PORT`, far enough apart for every worker's ports; a port that is already taken is an error, never a server to reuse.
 
-Every test shares one mock, whose state is global to its server, so the suite runs on one worker and each test starts with `POST /api/mock/reset`. Don't pass `--workers`, and don't rely on what another test did. Requests to anything but localhost are aborted, so the internet can't change a run (a web font fails fast and falls back the same way everywhere).
+A mock's state is global to its server, so every worker drives its own servers: the fixtures point `baseURL` (and with it `page.goto` and the `mock` controls) at the worker's dev or preview server, and `artifactsOrigin()` gives its artifacts listener. Each test starts with `POST /api/mock/reset` on its worker's mock, and tests run fully parallel, so don't rely on what another test did. The suite runs on `E2E_WORKERS` workers, by default one for every two CPUs up to six; set the variable rather than passing `--workers`, since the servers are started per worker. Requests to anything but localhost are aborted, so the internet can't change a run (a web font fails fast and falls back the same way everywhere).
 
 ### Writing a spec
 
