@@ -80,6 +80,8 @@ jobs:
         if: ${{ !inputs.visual }}
         env:
           E2E_ALL_IN_CONTAINER: '1'
+          # The runner pod and its Docker daemon each have 8 CPUs, whatever node they land on.
+          E2E_WORKERS: '8'
         run: scripts/with-playwright-container.sh npm --prefix web run e2e:fast
 
       - name: Web end-to-end and visual tests
@@ -87,6 +89,8 @@ jobs:
         if: ${{ inputs.visual }}
         env:
           E2E_ALL_IN_CONTAINER: '1'
+          # The runner pod and its Docker daemon each have 8 CPUs, whatever node they land on.
+          E2E_WORKERS: '8'
         run: scripts/with-playwright-container.sh npm --prefix web run e2e
 
       # Fails when the gzipped initial route outgrows its budget, which is set
