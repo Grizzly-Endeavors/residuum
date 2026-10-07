@@ -4,6 +4,14 @@ With Residuum Cloud connected, you can use Residuum from any browser at your per
 
 You need Residuum Cloud connected first (Settings, All agents, Residuum Cloud). Opening Residuum on the machine it runs on never asks for pairing.
 
+## Check that the secure tunnel is ready
+
+When the relay supports it, Residuum connects over the secure tunnel and gets its own certificate for your addresses. Open Settings, All agents, Residuum Cloud, Remote access, or run `residuum remote status`. It says Ready once the certificate is installed. The first time takes a few minutes, because Residuum waits for a DNS record to appear.
+
+1. **Save the recovery code.** The first time, a recovery code is shown on the machine Residuum runs on. It is the only way to take your address back if every instance's certificate account is lost. Save it, then choose I've saved it (or run `residuum remote saved`). Residuum stops keeping it.
+2. **A second instance says it needs another instance.** An address belongs to the first instance that set it up. A later instance serves nothing remotely until it joins that one. To take the address over instead, choose Use a recovery code (or run `residuum remote reset-pins`).
+3. **A warning about an unrecognized certificate account** means an account this instance never approved can get certificates for your addresses. If you didn't add it, treat it as a sign someone else controls your relay account.
+
 ## Pair your first browser
 
 Do this on the machine Residuum runs on.

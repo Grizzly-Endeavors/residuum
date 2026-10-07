@@ -324,7 +324,7 @@ fn relay_config() -> FakeRelayConfig {
 
 fn names_in(certificate: &[u8]) -> Vec<String> {
     let (_, parsed) = x509_parser::parse_x509_certificate(certificate).unwrap();
-    parsed
+    let mut names: Vec<String> = parsed
         .subject_alternative_name()
         .unwrap()
         .map(|san| {
@@ -340,7 +340,9 @@ fn names_in(certificate: &[u8]) -> Vec<String> {
                 })
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    names.sort();
+    names
 }
 
 // ── Without a CA ─────────────────────────────────────────────────────

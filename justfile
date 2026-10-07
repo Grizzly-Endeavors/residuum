@@ -49,6 +49,11 @@ release: web-build
 test *args: _web-dist
     cargo test --quiet {{ args }}
 
+# Run the remote access tests that start Pebble (the Let's Encrypt test CA) in Docker
+[group('rust')]
+pebble: _web-dist
+    cargo test --quiet --lib -- --ignored pebble system_tests
+
 # Regenerate the TypeScript protocol types in web/src/lib/generated from the Rust types
 [group('rust')]
 types: _web-dist

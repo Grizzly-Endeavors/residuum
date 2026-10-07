@@ -179,6 +179,12 @@ jobs:
         id: test
         run: cargo test --quiet
 
+      # Remote access issuance against Pebble, the Let's Encrypt test CA, in
+      # Docker (see docs/systems-usage/secure-tunnel.md, "Tests").
+      - name: Pebble tests
+        id: pebble
+        run: cargo test --quiet --lib -- --ignored pebble system_tests
+
       # Regenerates web/src/lib/generated from the Rust protocol types and
       # fails on any difference from what is committed.
       - name: Generated types are up to date
@@ -200,6 +206,7 @@ jobs:
             echo "| Format | ${{ steps.fmt.outcome }} |"
             echo "| Clippy | ${{ steps.clippy.outcome }} |"
             echo "| Tests | ${{ steps.test.outcome }} |"
+            echo "| Pebble tests | ${{ steps.pebble.outcome }} |"
             echo "| Generated types | ${{ steps.types.outcome }} |"
             echo "| Deny | ${{ steps.deny.outcome }} |"
           } >> "$GITHUB_STEP_SUMMARY"
