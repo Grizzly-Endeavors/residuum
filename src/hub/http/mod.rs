@@ -9,7 +9,7 @@
 //!   its session relay in [`session_relay`]), every agent's user inbox
 //!   ([`inbox`]), the team event
 //!   log ([`events`]), the team overview ([`overview`]), Web Push devices
-//!   ([`push`]), and the routes that
+//!   ([`push`]), device pairing ([`pairing`]), and the routes that
 //!   exist once per process: hub config, secrets, keys, cloud, update,
 //!   shutdown, tracing, and the hub and team checkpoint repositories
 //!   ([`process`]).
@@ -19,7 +19,8 @@
 //!   ([`dispatch`]).
 //! - `/cloud/callback`, and the embedded web app for every other path.
 //!
-//! The cross-site guard covers the whole app. The remote-control guard covers
+//! The device gate refuses remote requests from browsers that aren't paired
+//! (see [`crate::pairing`]). The cross-site guard covers the whole app. The remote-control guard covers
 //! hub shutdown and cloud disconnect. Requests the artifacts listener forwards
 //! here are refused on the routes in [`artifacts_origin`].
 
@@ -31,6 +32,7 @@ mod events;
 mod inbox;
 mod lifecycle;
 mod overview;
+mod pairing;
 mod process;
 mod push;
 mod session_relay;
@@ -91,6 +93,7 @@ pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Rout
         }))
         .merge(events::routes(Arc::clone(&hub.team_events)))
         .merge(overview::routes(Arc::clone(&hub.overview)))
+        .merge(pairing::routes(hub.pairing.clone()))
         .merge(process::hub_config_routes(&hub))
         .merge(process::cloud_routes(&hub))
         .merge(process::update_routes(&hub))
@@ -105,6 +108,13 @@ pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Rout
         ))
         .layer(axum::middleware::from_fn(
             crate::gateway::cross_site::reject_cross_site_requests,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            crate::pairing::GateState {
+                pairing: hub.pairing.clone(),
+                surface: crate::pairing::Surface::Ui,
+            },
+            crate::pairing::device_gate,
         ));
     // The routers above hold their own clones of the handles they need.
     drop(hub);

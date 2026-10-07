@@ -95,6 +95,8 @@ tower-http = { version = "0.7.1", default-features = false, features = ["compres
 uuid = { version = "1", features = ["v4"] }
 url = "2"
 rust-embed = "8"
+# QR codes for pairing links (SVG for the web UI, Unicode blocks for the terminal)
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 mime_guess = "2"
 iana-time-zone = "0.1"
 

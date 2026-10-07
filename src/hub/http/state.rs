@@ -100,4 +100,6 @@ pub struct HubHttpState {
     /// The shared System 1 service. The hub WebSocket sends its status, and
     /// the decision-model routes list models and test configurations.
     pub system_one: Arc<SystemOneService>,
+    /// Which browsers may reach this install through Residuum Cloud.
+    pub pairing: crate::pairing::DevicePairing,
 }

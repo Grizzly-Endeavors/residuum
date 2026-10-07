@@ -17,6 +17,7 @@ pub mod interfaces;
 pub mod mcp;
 pub mod memory;
 pub mod notify;
+pub mod pairing;
 pub mod pulse;
 pub mod skills;
 pub mod subconscious;

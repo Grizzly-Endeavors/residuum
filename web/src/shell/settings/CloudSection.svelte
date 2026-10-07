@@ -16,6 +16,7 @@
     TextField,
   } from "../../lib/ui";
   import ConfigNumber from "./ConfigNumber.svelte";
+  import DevicesGroup from "./DevicesGroup.svelte";
   import { fieldError, type AllSectionProps } from "./sections";
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
@@ -212,6 +213,10 @@
       </Disclosure>
     {/if}
   </SettingsGroup>
+
+  {#if phase === "connected"}
+    <DevicesGroup />
+  {/if}
 
   <Disclosure summary="More options" bind:open={moreOpen}>
     <SettingsGroup

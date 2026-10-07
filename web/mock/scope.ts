@@ -23,7 +23,7 @@ const REPAIR_ROUTES = /^\/(config|providers|mcp|workspace|checkpoints|teams-setu
 const AGENT_ROUTES =
   /^\/(status|config|providers|mcp|workspace|checkpoints|chat|usage|inbox|agent-inbox|sessions|scheduled|files|memory|model|teams-setup|a2a\/(status|card|agents|outbound))(\/|$)/;
 const HUB_ROUTES =
-  /^\/(secrets|agent-keys|a2a\/keys|cloud|update|tracing|system|system-one|mcp-catalog|providers\/models|shutdown|checkpoints|push)(\/|$)/;
+  /^\/(secrets|agent-keys|a2a\/keys|cloud|update|tracing|system|system-one|mcp-catalog|providers\/models|shutdown|checkpoints|push|pairing|devices|remote-access)(\/|$)/;
 const TEAM_ROUTES = /^\/workbench(\/|$)/;
 
 function notInScope(path: string, owner: string): ScopeRefusal {

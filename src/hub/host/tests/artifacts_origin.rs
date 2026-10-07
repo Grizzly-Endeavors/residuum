@@ -26,7 +26,11 @@ async fn artifacts_port(hub: &Fixture) -> String {
     .unwrap();
     let api = HubApi::new();
     api.bind(app);
-    let router = crate::workbench::server::router(hub.root.path().join("team/workbench"), api);
+    let router = crate::workbench::server::router(
+        hub.root.path().join("team/workbench"),
+        api,
+        hub.services.pairing.clone(),
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
     crate::util::spawn_in_span(async move {

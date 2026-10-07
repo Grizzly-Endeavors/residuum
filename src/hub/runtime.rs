@@ -338,9 +338,12 @@ impl HubRuntime {
         let (tunnel_status_tx, tunnel_status_rx) = watch::channel(TunnelStatus::Disconnected);
         let tunnel_status_tx = Arc::new(tunnel_status_tx);
 
+        let pairing = crate::pairing::DevicePairing::open(&hub_dir);
+        pairing.track_identity(tunnel_status_rx.clone());
+
         let scan = scan_agents(root, &hub_cfg);
         let (workbench_serving, workbench_shutdown_tx, workbench_api) =
-            start_workbench_listener(root, &hub_cfg, &scan.teams_ports).await;
+            start_workbench_listener(root, &hub_cfg, &scan.teams_ports, &pairing).await;
         let services = HubServices::open(
             root,
             &hub_cfg,
@@ -351,6 +354,7 @@ impl HubRuntime {
                 shutdown_tx,
             },
             workbench_serving,
+            pairing,
             scan.team_embedding.as_ref().and_then(build_team_embedding),
         )
         .await?;
@@ -823,6 +827,7 @@ pub(super) fn build_app(
         overview: Arc::clone(overview),
         agent_changes: Arc::clone(host.agent_changes()),
         system_one: Arc::clone(&services.system_one),
+        pairing: services.pairing.clone(),
     };
     Ok(hub_router(
         Arc::clone(host) as Arc<dyn AgentDirectory>,
@@ -854,6 +859,7 @@ async fn start_workbench_listener(
     root: &Path,
     hub: &HubConfig,
     teams_ports: &[u16],
+    pairing: &crate::pairing::DevicePairing,
 ) -> (
     crate::workbench::server::WorkbenchServing,
     Option<watch::Sender<bool>>,
@@ -874,6 +880,7 @@ async fn start_workbench_listener(
         &reserved,
         workbench_dir,
         api.clone(),
+        pairing.clone(),
     )
     .await;
     (serving, shutdown_tx, api)

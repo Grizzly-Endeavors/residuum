@@ -32,6 +32,7 @@ use super::forward::{self, HubApi};
 use super::{
     ArtifactBody, ArtifactFileError, discover_artifacts, is_valid_artifact_name, read_artifact_file,
 };
+use crate::pairing::HANDOFF_PAGE_PATH;
 
 /// How many ports after the gateway's are tried before giving up.
 const PORT_SEARCH_ATTEMPTS: u16 = 10;
@@ -69,6 +70,7 @@ pub(crate) async fn start(
     reserved: &[u16],
     dir: PathBuf,
     api: HubApi,
+    pairing: crate::pairing::DevicePairing,
 ) -> (WorkbenchServing, Option<tokio::sync::watch::Sender<bool>>) {
     let (listener, port) = match bind_listener(bind, gateway_port, reserved).await {
         Ok(bound) => bound,
@@ -87,7 +89,7 @@ pub(crate) async fn start(
     tracing::info!(addr = %format!("{bind}:{port}"), "workbench artifacts listening");
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
-    let app = router(dir, api);
+    let app = router(dir, api, pairing);
     crate::util::spawn_monitored("workbench-listener", async move {
         if let Err(e) = axum::serve(listener, app)
             .with_graceful_shutdown(async move {
@@ -138,18 +140,88 @@ pub(crate) async fn bind_listener(
 
 /// Router for the artifacts listener, serving artifacts from `dir` and
 /// forwarding `/api` to the hub router bound to `api`.
-pub(crate) fn router(dir: PathBuf, api: HubApi) -> Router {
+pub(crate) fn router(dir: PathBuf, api: HubApi, pairing: crate::pairing::DevicePairing) -> Router {
     let artifacts = Router::new()
         .route("/", get(home))
+        .route(HANDOFF_PAGE_PATH, get(handoff_page))
         .route("/{name}", get(artifact_root))
         .route("/{name}/", get(artifact_index))
         .route("/{name}/{*rest}", get(artifact_file))
         .with_state(dir)
         .fallback(|| async { not_found("Nothing here.") });
-    forward::forwarding(artifacts, api).layer(axum::middleware::from_fn(
-        crate::gateway::cross_site::reject_cross_site_requests,
-    ))
+    forward::forwarding(artifacts, api)
+        .layer(axum::middleware::from_fn(
+            crate::gateway::cross_site::reject_cross_site_requests,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            crate::pairing::GateState {
+                pairing,
+                surface: crate::pairing::Surface::Workbench,
+            },
+            crate::pairing::device_gate,
+        ))
 }
+
+/// The page a paired browser lands on to bring its credential to this host.
+///
+/// The UI host mints a single-use token and sends the browser here with the
+/// token and the page to open next in the URL fragment, which the browser
+/// never sends anywhere. The script posts the token to this host, which
+/// answers with this host's own device cookie, then opens the page. It is
+/// served before the gate asks for a credential, since getting one is its
+/// whole purpose.
+async fn handoff_page() -> Response {
+    let mut resp = (StatusCode::OK, HANDOFF_PAGE_HTML).into_response();
+    let headers = resp.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    resp
+}
+
+const HANDOFF_PAGE_HTML: &str = r#"<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Opening workbench</title>
+<body style="font:14px sans-serif;color:#a8a29e;background:#12100e;padding:2rem">
+<p id="message">Opening the workbench...</p>
+<script>
+(function () {
+  var message = document.getElementById("message");
+  function fail(text) { message.textContent = text; }
+  var params = new URLSearchParams(location.hash.slice(1));
+  var token = params.get("token");
+  var next = params.get("next") || "/";
+  history.replaceState(null, "", location.pathname);
+  if (!token) {
+    fail("This link is missing its token. Open the workbench again from Residuum.");
+    return;
+  }
+  if (!/^\/[A-Za-z0-9._~\/-]*$/.test(next) || next.indexOf("//") === 0) next = "/";
+  fetch("/api/hub/pairing/handoff", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token: token })
+  }).then(function (response) {
+    if (response.ok) { location.replace(next); return; }
+    return response.json().then(function (body) {
+      fail(body && body.error ? body.error : "The workbench couldn't be opened. Open it again from Residuum.");
+    }, function () {
+      fail("The workbench couldn't be opened. Open it again from Residuum.");
+    });
+  }, function () {
+    fail("Couldn't reach Residuum. Check your connection, then open the workbench again.");
+  });
+})();
+</script>
+"#;
 
 async fn home() -> Response {
     page(
@@ -252,6 +324,11 @@ mod tests {
 
     use super::*;
 
+    /// Pairing state in a throwaway directory, so nothing remote is paired.
+    fn test_pairing(dir: &std::path::Path) -> crate::pairing::DevicePairing {
+        crate::pairing::DevicePairing::open(dir)
+    }
+
     fn write(path: &std::path::Path, content: &str) {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
@@ -260,7 +337,7 @@ mod tests {
     }
 
     async fn get_path(dir: &std::path::Path, path: &str) -> Response {
-        router(dir.to_path_buf(), HubApi::new())
+        router(dir.to_path_buf(), HubApi::new(), test_pairing(dir))
             .oneshot(Request::get(path).body(Body::empty()).unwrap())
             .await
             .unwrap()
@@ -288,7 +365,7 @@ mod tests {
     fn listener(dir: &std::path::Path) -> Router {
         let api = HubApi::new();
         api.bind(stand_in_hub());
-        router(dir.to_path_buf(), api)
+        router(dir.to_path_buf(), api, test_pairing(dir))
     }
 
     async fn send(app: Router, request: Request<Body>) -> (StatusCode, String) {
@@ -353,10 +430,14 @@ mod tests {
             assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{path}");
         }
 
-        let post = router(dir.path().to_path_buf(), HubApi::new())
-            .oneshot(Request::post("/graph/").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
+        let post = router(
+            dir.path().to_path_buf(),
+            HubApi::new(),
+            test_pairing(dir.path()),
+        )
+        .oneshot(Request::post("/graph/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
         assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 

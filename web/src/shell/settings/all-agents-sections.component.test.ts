@@ -442,6 +442,15 @@ describe("Residuum Cloud", () => {
       if (url === "/api/hub/cloud/status") {
         return statusReadable ? jsonResponse(status) : new Response("", { status: 502 });
       }
+      if (url === "/api/hub/devices") {
+        return jsonResponse({
+          devices: [],
+          pending: [],
+          recovery_codes_remaining: 0,
+          ui_origin: null,
+          remote: false,
+        });
+      }
       if (url === "/api/hub/cloud/disconnect" && method === "POST") {
         if (disconnectAnswer !== null) return disconnectAnswer;
         status = cloudStatus({ has_token: true, enabled: false });

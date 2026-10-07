@@ -17,6 +17,8 @@ import type { HubServerMessage, LiveSession } from "../../lib/hub-types";
 import { notifications } from "../../lib/notifications.svelte";
 import type { ArtifactSummary } from "../../lib/types";
 import { notifyWithUndo } from "../../lib/undo";
+import { handoffUrl } from "../../lib/pairing";
+import { createWorkbenchHandoff } from "../../lib/pairing-api";
 import { artifactUrl, resolveArtifactsOrigin, type ArtifactsOrigin } from "../../lib/workbench";
 
 /** How long an artifact reads "updating now" after an agent changes it. */
@@ -37,6 +39,8 @@ export class WorkbenchList {
   loadError = $state<string | null>(null);
   /** Where artifacts open, or why they can't. Null until the first read lands. */
   origin = $state<ArtifactsOrigin | null>(null);
+  /** This page is served through Residuum Cloud, where the workbench host wants its own credential. */
+  viaRelay = $state(false);
   /** Counts the reads that landed, so a view can act on a fresh list and not on its own edits. */
   generation = $state(0);
   /** Artifacts an agent changed in the last moment. */
@@ -81,6 +85,34 @@ export class WorkbenchList {
     return this.origin?.ok ? artifactUrl(this.origin.origin, name) : null;
   }
 
+  /**
+   * Open an artifact from a click on its link. Through Residuum Cloud the
+   * workbench host answers only a browser that holds its credential, which a
+   * paired browser brings with a handoff, so the click opens the handoff page
+   * and the artifact follows. Anywhere else the link works as it is.
+   */
+  open(event: MouseEvent, name: string): void {
+    const origin = this.origin;
+    if (!this.viaRelay || origin?.ok !== true) return;
+    event.preventDefault();
+    void this.openThroughHandoff(origin.origin, name);
+  }
+
+  private async openThroughHandoff(origin: string, name: string): Promise<void> {
+    // Opened inside the click, so the browser doesn't take it for a popup.
+    const tab = window.open("", "_blank");
+    if (tab !== null) tab.opener = null;
+    try {
+      const { token } = await createWorkbenchHandoff();
+      const url = handoffUrl(origin, name, token);
+      if (tab === null) window.location.assign(url);
+      else tab.location.href = url;
+    } catch (err) {
+      tab?.close();
+      notifications.surface("error", userErrorMessage(err, { action: "Couldn't open that page." }));
+    }
+  }
+
   /** Read the artifacts and where they open. A failure keeps the list as it was and lands in `loadError`. */
   async load(): Promise<void> {
     const request = ++this.request;
@@ -92,6 +124,7 @@ export class WorkbenchList {
       if (request !== this.request) return;
       this.artifacts = artifacts;
       this.origin = resolveArtifactsOrigin(info, this.source.page());
+      this.viaRelay = info.relay !== null && this.source.page().origin === info.relay.ui_origin;
       this.loadError = null;
       this.loaded = true;
       this.generation += 1;
