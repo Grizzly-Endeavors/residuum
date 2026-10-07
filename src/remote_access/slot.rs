@@ -183,3 +183,48 @@ impl RemoteAccessSlot {
         self.running()?.activate_instance(slug)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_relays_sibling_attestation_counts_only_off_the_secure_tunnel() {
+        let dir = tempfile::tempdir().unwrap();
+        let slot = RemoteAccessSlot::new(dir.path());
+        assert!(
+            !slot.on_secure_tunnel(),
+            "disabled: the older tunnel, if any"
+        );
+        slot.status_sender()
+            .send_modify(|s| s.state = RemoteAccessState::Legacy);
+        assert!(!slot.on_secure_tunnel());
+        for state in [
+            RemoteAccessState::Connecting,
+            RemoteAccessState::NeedsJoin,
+            RemoteAccessState::Ready,
+            RemoteAccessState::Error,
+        ] {
+            slot.status_sender().send_modify(|s| s.state = state);
+            assert!(slot.on_secure_tunnel(), "{state:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn actions_without_a_running_manager_say_the_tunnel_isnt_connected() {
+        let dir = tempfile::tempdir().unwrap();
+        let slot = RemoteAccessSlot::new(dir.path());
+        assert!(matches!(
+            slot.start_join("laptop").await,
+            Err(ActionError::NotConnected)
+        ));
+        assert!(matches!(
+            slot.activate_instance("laptop"),
+            Err(ActionError::NotConnected)
+        ));
+        assert!(matches!(
+            slot.deny_join("x"),
+            Err(ActionError::NotConnected)
+        ));
+    }
+}

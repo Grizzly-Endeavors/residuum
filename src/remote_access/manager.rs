@@ -1316,6 +1316,45 @@ impl SessionHandler for RemoteAccess {
 mod tests {
     use super::*;
 
+    fn instance(slug: &str) -> InstanceInfo {
+        InstanceInfo {
+            slug: slug.to_string(),
+            display_name: slug.to_string(),
+            active: false,
+            connected: true,
+        }
+    }
+
+    #[test]
+    fn only_pins_of_instances_the_relay_no_longer_lists_are_removable() {
+        let listed = [instance("laptop"), instance("desktop")];
+        assert!(is_removable(false, "old-box", &listed));
+        assert!(!is_removable(false, "desktop", &listed));
+        assert!(
+            !is_removable(true, "old-box", &listed),
+            "never the own account"
+        );
+        assert!(
+            !is_removable(false, "old-box", &[]),
+            "an unknown list removes nothing"
+        );
+    }
+
+    #[test]
+    fn relay_display_names_become_short_plain_text() {
+        assert_eq!(
+            clean_display_name("  Desk\u{1b}[2J\n top ", "d"),
+            "Desk[2J top"
+        );
+        assert_eq!(clean_display_name(" \n", "desk"), "desk");
+        assert_eq!(
+            clean_display_name(&"x".repeat(200), "d").chars().count(),
+            64
+        );
+        // Markup is text for the UI to escape, not something to strip here.
+        assert_eq!(clean_display_name("<b>x</b>", "d"), "<b>x</b>");
+    }
+
     #[test]
     fn retries_back_off_to_a_cap() {
         assert_eq!(retry_delay(1), Duration::from_secs(30));
