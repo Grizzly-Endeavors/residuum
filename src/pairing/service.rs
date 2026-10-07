@@ -823,17 +823,20 @@ mod tests {
             a2a_token: None,
         })
         .unwrap();
-        for _ in 0..50 {
-            if pairing.identity().slug.is_some() {
+        // The identity is set in memory first and saved after, so wait for the file.
+        let mut saved = None;
+        for _ in 0..250 {
+            saved = DevicePairing::open(dir.path()).identity().slug;
+            if saved.is_some() {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        assert_eq!(pairing.identity().slug.as_deref(), Some("laptop"));
         assert_eq!(
-            DevicePairing::open(dir.path()).identity().slug.as_deref(),
+            saved.as_deref(),
             Some("laptop"),
             "the announced identity is saved"
         );
+        assert_eq!(pairing.identity().slug.as_deref(), Some("laptop"));
     }
 }
