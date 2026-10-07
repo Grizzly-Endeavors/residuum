@@ -25,6 +25,7 @@ import type { MockOverview } from "./overview";
 import type { SessionEventFrame } from "./session-relay";
 import type { MockTeamEvents } from "./team-events";
 import type { MockCloud } from "./cloud";
+import { emptyPairing, type MockPairing } from "./pairing";
 import type { MockUpdateStatus } from "./update";
 
 /** An agent key as the mock stores it, value included. */
@@ -79,6 +80,8 @@ export interface MockState {
   cloud: MockCloud;
   /** The devices registered for Web Push, oldest first. Only the hub's state holds any. */
   pushDevices: MockPushDevice[];
+  /** The browsers paired for remote access, and the requests waiting. Only the hub's state holds any. */
+  pairing: MockPairing;
   /** The checkpoint histories this state holds: an agent's own, or the hub's. */
   checkpoints: MockCheckpoints;
   /**
@@ -350,6 +353,7 @@ export function createState(
     update: { latest: null, lastChecked: null },
     cloud: { tunnel: null, viaTunnel: false },
     pushDevices: [],
+    pairing: emptyPairing(),
     checkpoints: {},
     hasConversation: false,
     teamsSetupJob: null,

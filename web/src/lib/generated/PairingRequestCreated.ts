@@ -15,4 +15,4 @@ code: string,
 /**
  * Seconds until the request expires.
  */
-expires_in_secs: bigint, };
+expires_in_secs: number, };

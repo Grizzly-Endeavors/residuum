@@ -11,4 +11,4 @@ token: string,
 /**
  * Seconds until the token stops working.
  */
-expires_in_secs: bigint, };
+expires_in_secs: number, };

@@ -9,6 +9,7 @@ import { inboxRoutes } from "./inbox";
 import { lifecycleRoutes } from "./lifecycle";
 import { modelRoutes } from "./model";
 import { overviewRoutes } from "./overview";
+import { pairingRoutes } from "./pairing";
 import { pushRoutes } from "./push";
 import type { Route } from "./routes";
 import { scheduledRoutes } from "./scheduled";
@@ -28,6 +29,7 @@ export const apiRoutes: readonly Route[] = [
   ...inboxRoutes,
   ...hubInboxRoutes,
   ...pushRoutes,
+  ...pairingRoutes,
   ...teamEventRoutes,
   ...overviewRoutes,
   ...agentInboxRoutes,

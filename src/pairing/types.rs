@@ -34,6 +34,7 @@ pub struct PairingRequestCreated {
     /// The short code shown here and on the approving device, to match them.
     pub code: String,
     /// Seconds until the request expires.
+    #[ts(type = "number")]
     pub expires_in_secs: u64,
 }
 
@@ -167,6 +168,7 @@ pub struct PairLinkResponse {
     /// The same link as an SVG QR code.
     pub qr_svg: String,
     /// Seconds until the link stops working.
+    #[ts(type = "number")]
     pub expires_in_secs: u64,
     /// The recovery codes, only when this call created them. Shown once.
     pub recovery_codes: Option<Vec<String>>,
@@ -187,5 +189,6 @@ pub struct WorkbenchHandoffResponse {
     /// The single-use token to carry to the workbench host in a URL fragment.
     pub token: String,
     /// Seconds until the token stops working.
+    #[ts(type = "number")]
     pub expires_in_secs: u64,
 }

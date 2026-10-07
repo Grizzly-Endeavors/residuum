@@ -15,7 +15,7 @@ qr_svg: string,
 /**
  * Seconds until the link stops working.
  */
-expires_in_secs: bigint, 
+expires_in_secs: number, 
 /**
  * The recovery codes, only when this call created them. Shown once.
  */

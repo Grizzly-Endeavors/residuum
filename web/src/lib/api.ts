@@ -75,6 +75,7 @@ import type { PushDeviceResponse } from "./generated/PushDeviceResponse";
 import type { PushKeyResponse } from "./generated/PushKeyResponse";
 import { cachedFetch, invalidate } from "./cache";
 import { agentBase, agentPath, hubPath, requireAgent, teamPath } from "./paths";
+import { isDeviceRequiredBody, redirectToPairing } from "./pairing";
 
 // ── Cache keys ──────────────────────────────────────────────────────
 //
@@ -223,6 +224,9 @@ async function patchValidated(
 async function checkOk(resp: Response): Promise<Response> {
   if (!resp.ok) {
     const body = await resp.text();
+    // Through Residuum Cloud, a browser the gateway hasn't paired is sent to
+    // the pairing page; the call still fails for whoever made it.
+    if (resp.status === 401 && isDeviceRequiredBody(body)) redirectToPairing();
     throw new ApiError(resp.status, resp.statusText, body);
   }
   return resp;

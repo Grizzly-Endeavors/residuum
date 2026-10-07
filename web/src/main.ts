@@ -5,6 +5,7 @@ import { mount } from "svelte";
 import App from "./App.svelte";
 import { startServiceWorker } from "./lib/app-update.svelte";
 import { startConfigSync } from "./lib/config-sync";
+import { PAIRING_PATH } from "./lib/pairing";
 import { startInstallOffer } from "./shell/install-offer";
 import { startPushClient } from "./shell/push-client.svelte";
 
@@ -19,6 +20,12 @@ if (!target) throw new Error("missing #app element");
 if (__UI_GALLERY__ && window.location.pathname === UI_GALLERY_PATH) {
   void import("./lib/ui/gallery/Gallery.svelte").then(({ default: Gallery }) =>
     mount(Gallery, { target }),
+  );
+} else if (window.location.pathname === PAIRING_PATH) {
+  // An unpaired browser reaching Residuum through Residuum Cloud lands here.
+  // The page stands alone: nothing else in the app can load before pairing.
+  void import("./pairing/PairingPage.svelte").then(({ default: PairingPage }) =>
+    mount(PairingPage, { target }),
   );
 } else {
   // Config changes made outside this page reach the views that show them.
