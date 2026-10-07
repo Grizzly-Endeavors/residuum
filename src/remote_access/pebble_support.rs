@@ -367,6 +367,13 @@ fn free_dns_port() -> anyhow::Result<u16> {
 }
 
 /// The container runs as another user, so it must be able to read the mounted configuration.
+#[cfg_attr(
+    not(unix),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "mirrors the unix signature, where setting permissions can fail"
+    )
+)]
 fn set_world_readable(dir: &Path, file: &Path) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
