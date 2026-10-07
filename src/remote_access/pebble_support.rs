@@ -229,13 +229,13 @@ impl PebbleHarness {
         listener.set_nonblocking(true)?;
         let listener = tokio::net::TcpListener::from_std(listener)?;
         let acceptor = TlsAcceptor::from(resolver.server_config()?);
-        let task = tokio::spawn(async move {
+        let task = crate::util::spawn_in_span(async move {
             loop {
                 let Ok((stream, peer)) = listener.accept().await else {
                     return;
                 };
                 let acceptor = acceptor.clone();
-                tokio::spawn(async move {
+                crate::util::spawn_in_span(async move {
                     match acceptor.accept(stream).await {
                         Ok(_) => debug!(%peer, "TLS-ALPN-01 handshake served"),
                         Err(error) => debug!(%peer, %error, "TLS-ALPN-01 handshake failed"),

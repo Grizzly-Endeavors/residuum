@@ -73,7 +73,7 @@ impl FakePinService {
             .route("/v1/enroll", post(enroll))
             .route("/v1/reset", post(reset))
             .with_state(Arc::clone(&shared));
-        let task = tokio::spawn(async move {
+        let task = crate::util::spawn_in_span(async move {
             if let Err(e) = axum::serve(listener, app).await {
                 tracing::debug!(error = %e, "fake pin service ended");
             }
