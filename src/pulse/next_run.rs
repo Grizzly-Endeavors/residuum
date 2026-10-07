@@ -20,7 +20,8 @@ use crate::time::local_to_instant;
 ///
 /// That is the first moment at or after the later of `now` and the end of its
 /// schedule that falls inside its active hours. A pulse that has never run
-/// counts from `now`. A pulse that is due already is reported at the start of
+/// is first seen by the scheduler at `now` (or when its active hours next
+/// open) and runs one schedule duration after that. A pulse that is due already is reported at the start of
 /// the current minute, because the scheduler decides once a minute and a
 /// result that moved with every second would read as a change every time it
 /// was asked for.
@@ -49,7 +50,15 @@ pub fn next_run_at(
 
     let this_minute = now.duration_trunc(TimeDelta::minutes(1)).ok()?;
     let now_local = this_minute.with_timezone(&tz).naive_local();
-    let due = last_run.map_or(now_local, |last| (last + interval).max(now_local));
+    let due = match last_run {
+        Some(last) => (last + interval).max(now_local),
+        // The scheduler records a pulse as seen the first time it evaluates it
+        // inside its active hours and runs it one schedule later.
+        None => match window {
+            Some((start, end)) => next_active_moment(now_local, start, end)? + interval,
+            None => now_local + interval,
+        },
+    };
     let at = match window {
         Some((start, end)) => next_active_moment(due, start, end)?,
         None => due,
@@ -147,13 +156,28 @@ mod tests {
     #[test]
     fn a_pulse_that_is_due_already_is_reported_at_the_start_of_the_current_minute() {
         let now = Utc.with_ymd_and_hms(2026, 3, 1, 15, 42, 37).unwrap();
-        for last in [None, Some(local(1, 9, 0))] {
-            assert_eq!(
-                next_run_at(&pulse("1h", None), last, now, chrono_tz::UTC),
-                Some(utc(1, 15, 42)),
-                "last run {last:?}"
-            );
-        }
+        assert_eq!(
+            next_run_at(
+                &pulse("1h", None),
+                Some(local(1, 9, 0)),
+                now,
+                chrono_tz::UTC
+            ),
+            Some(utc(1, 15, 42))
+        );
+    }
+
+    #[test]
+    fn a_pulse_that_never_ran_first_runs_one_schedule_after_now() {
+        let now = Utc.with_ymd_and_hms(2026, 3, 1, 15, 42, 37).unwrap();
+        assert_eq!(
+            next_run_at(&pulse("1h", None), None, now, chrono_tz::UTC),
+            Some(utc(1, 16, 42))
+        );
+        assert_eq!(
+            next_run_at(&pulse("7d", None), None, now, chrono_tz::UTC),
+            Some(utc(8, 15, 42))
+        );
     }
 
     #[test]
@@ -187,14 +211,18 @@ mod tests {
     }
 
     #[test]
-    fn a_pulse_that_never_ran_waits_for_the_active_hours_to_open() {
+    fn a_pulse_that_never_ran_is_first_seen_when_the_active_hours_open() {
         let at = next_run_at(
             &pulse("1h", Some("09:00-17:00")),
             None,
             utc(1, 20, 0),
             chrono_tz::UTC,
         );
-        assert_eq!(at, Some(utc(2, 9, 0)));
+        assert_eq!(
+            at,
+            Some(utc(2, 10, 0)),
+            "first seen at 09:00 tomorrow, runs an hour later"
+        );
     }
 
     #[test]
@@ -202,13 +230,13 @@ mod tests {
         let window = Some("22:00-06:00");
         assert_eq!(
             next_run_at(&pulse("1h", window), None, utc(1, 14, 0), chrono_tz::UTC),
-            Some(utc(1, 22, 0)),
-            "in the afternoon, tonight's opening"
+            Some(utc(1, 23, 0)),
+            "in the afternoon, first seen at tonight's opening, runs an hour later"
         );
         assert_eq!(
             next_run_at(&pulse("1h", window), None, utc(1, 23, 0), chrono_tz::UTC),
-            Some(utc(1, 23, 0)),
-            "inside the window already"
+            Some(utc(2, 0, 0)),
+            "inside the window already, so first seen now"
         );
         assert_eq!(
             next_run_at(
@@ -277,8 +305,8 @@ mod tests {
         );
         assert_eq!(
             at,
-            Some(utc(2, 14, 0)),
-            "09:00 in New York is 14:00 UTC, the next morning there"
+            Some(utc(2, 15, 0)),
+            "first seen at 09:00 in New York (14:00 UTC) the next morning, runs an hour later"
         );
         let inside = next_run_at(
             &pulse("1h", Some("09:00-17:00")),
@@ -288,8 +316,8 @@ mod tests {
         );
         assert_eq!(
             inside,
-            Some(utc(1, 20, 7)),
-            "15:07 in New York is inside the window, so a pulse that never ran is due"
+            Some(utc(1, 21, 7)),
+            "15:07 in New York is inside the window, so it is first seen now and runs an hour later"
         );
     }
 

@@ -198,8 +198,8 @@ fn instant(text: &Value) -> DateTime<chrono::FixedOffset> {
 
 /// Check that each pulse the endpoint gives a next time is in `upcoming` at
 /// that time, and that a pulse it gives none is not there. A pulse that has
-/// never run is due now for both, each read at its own moment, so they may be
-/// a minute tick apart.
+/// never run is counted from now for both, each read at its own moment, so
+/// they may be a minute tick apart.
 fn assert_same_next_times(listed: &Value, upcoming: &Value) {
     for pulse in listed.as_array().unwrap() {
         let name = pulse["name"].as_str().unwrap();
@@ -260,7 +260,7 @@ async fn a_run_pushed_past_the_active_hours_is_listed_for_when_they_open() {
 }
 
 #[tokio::test]
-async fn a_pulse_that_has_never_run_is_due_at_the_start_of_the_current_minute() {
+async fn a_pulse_that_has_never_run_is_listed_one_schedule_after_the_current_minute() {
     let h = Harness::new();
     write_pulses(&h, "quiet", &[("first_light", "6h", None)]);
 
@@ -271,9 +271,10 @@ async fn a_pulse_that_has_never_run_is_due_at_the_start_of_the_current_minute() 
     assert_eq!(listed[0]["kind"], "pulse", "{listed}");
     assert_eq!(listed[0]["name"], "first_light", "{listed}");
     let at = DateTime::parse_from_rfc3339(listed[0]["at"].as_str().unwrap()).unwrap();
+    let six_hours = TimeDelta::hours(6);
     assert!(
-        at <= after && at > before - TimeDelta::seconds(61),
-        "due now, to the minute: {at} between {before} and {after}"
+        at <= after + six_hours && at > before + six_hours - TimeDelta::seconds(61),
+        "first seen now, runs six hours on, to the minute: {at} between {before} and {after}"
     );
     assert_eq!(chrono::Timelike::second(&at), 0, "{at}");
 }
