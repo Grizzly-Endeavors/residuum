@@ -65,6 +65,7 @@ fn always_blocked_paths(config_dir: &Path, hub_dir: &Path) -> HashSet<PathBuf> {
         hub.a2a_keys_lock(),
         hub.push_vapid_key(),
         hub.push_devices_json(),
+        hub.remote_access_json(),
     ];
     let templates = ["config.example.toml", "providers.example.toml"]
         .into_iter()
@@ -401,7 +402,7 @@ mod tests {
             &hub_dir,
         ));
 
-        for name in ["push-vapid.key", "push-devices.json"] {
+        for name in ["push-vapid.key", "push-devices.json", "remote-access.json"] {
             // Refused whether or not the file exists yet.
             let err = policy.check_write(&hub_dir.join(name)).unwrap_err();
             assert!(err.contains(name), "{err}");
@@ -424,6 +425,7 @@ mod tests {
             "a2a-keys.lock",
             "push-vapid.key",
             "push-devices.json",
+            "remote-access.json",
         ] {
             assert!(
                 blocked.contains(&hub_dir.join(name)),

@@ -21,17 +21,10 @@ use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
-use crate::tunnel::{TUNNEL_NONCE_HEADER, tunnel_nonce};
+use crate::tunnel::is_tunnel_forwarded;
 
 const REFUSAL_MESSAGE: &str = "Shutting down or disconnecting can't be done remotely, because \
 nothing could bring Residuum back. Do it on the machine running Residuum.";
-
-/// Whether `req` arrived through this instance's own tunnel connection.
-fn is_tunnel_forwarded(req: &Request) -> bool {
-    req.headers()
-        .get(TUNNEL_NONCE_HEADER)
-        .is_some_and(|v| v.as_bytes() == tunnel_nonce().as_bytes())
-}
 
 /// Refuse a tunnel-forwarded request to a route this guard is mounted on.
 ///
@@ -40,7 +33,7 @@ fn is_tunnel_forwarded(req: &Request) -> bool {
 /// `.layer(...)`, which would apply it to the whole router instead of just
 /// those routes.
 pub(crate) async fn reject_remote_shutdown_and_disconnect(req: Request, next: Next) -> Response {
-    if is_tunnel_forwarded(&req) {
+    if is_tunnel_forwarded(req.headers()) {
         tracing::warn!(
             path = %req.uri().path(),
             "refused a shutdown or cloud-disconnect request that arrived through the tunnel"
@@ -53,6 +46,7 @@ pub(crate) async fn reject_remote_shutdown_and_disconnect(req: Request, next: Ne
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tunnel::{TUNNEL_NONCE_HEADER, tunnel_nonce};
     use axum::Router;
     use axum::routing::post;
     use tower::ServiceExt;

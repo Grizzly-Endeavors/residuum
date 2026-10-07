@@ -49,6 +49,7 @@ mod events;
 mod inbox;
 mod overview;
 mod overview_schedule;
+mod pairing;
 mod push;
 mod session_relay;
 
@@ -440,6 +441,7 @@ struct Harness {
     app: Router,
     directory: Arc<FakeDirectory>,
     push: Arc<crate::hub::push::PushService>,
+    pairing: crate::pairing::DevicePairing,
     root: tempfile::TempDir,
     reload_rx: mpsc::UnboundedReceiver<ReloadSignal>,
     shutdown_rx: mpsc::Receiver<()>,
@@ -490,6 +492,7 @@ impl Harness {
         let overview =
             TeamOverview::with_window(TEST_BOOT_ID, Arc::clone(&shared), OVERVIEW_WINDOW);
         let push = crate::hub::push::PushService::new(&hub_dir, None);
+        let pairing = crate::pairing::DevicePairing::open(&hub_dir);
         let hub = HubHttpState {
             hub_dir: hub_dir.clone(),
             reload_tx,
@@ -528,12 +531,14 @@ impl Harness {
             overview: Arc::clone(&overview),
             agent_changes: Arc::clone(&changes),
             system_one: crate::inference::system_one::SystemOneService::new(None),
+            pairing: pairing.clone(),
         };
         let app = hub_router(shared, hub);
         Self {
             app,
             directory,
             push,
+            pairing,
             root,
             reload_rx,
             shutdown_rx,
@@ -1712,11 +1717,17 @@ fn cross_site(method: Method, uri: &str) -> Request<Body> {
         .unwrap()
 }
 
-fn through_the_tunnel(method: Method, uri: &str) -> Request<Body> {
+/// `method uri` as a paired browser's same-origin request arrives through
+/// the tunnel: with the tunnel's mark and the credential of a device paired
+/// just now.
+async fn through_the_tunnel(h: &Harness, method: Method, uri: &str) -> Request<Body> {
+    let (cookie, _workbench) = h.pairing.pair_device_for_tests("test browser").await;
     Request::builder()
         .method(method)
         .uri(uri)
         .header(TUNNEL_NONCE_HEADER, tunnel_nonce())
+        .header("sec-fetch-site", "same-origin")
+        .header("cookie", cookie)
         .body(Body::empty())
         .unwrap()
 }
@@ -1753,7 +1764,9 @@ async fn the_cross_site_guard_covers_the_whole_app() {
 async fn the_remote_control_guard_refuses_shutdown_and_disconnect_over_the_tunnel() {
     let mut h = Harness::new();
     for uri in ["/api/hub/shutdown", "/api/hub/cloud/disconnect"] {
-        let guarded_status = h.status(through_the_tunnel(Method::POST, uri)).await;
+        let guarded_status = h
+            .status(through_the_tunnel(&h, Method::POST, uri).await)
+            .await;
         assert_eq!(guarded_status, StatusCode::FORBIDDEN, "{uri}");
     }
     assert!(h.directory.calls().is_empty(), "no agent was stopped");
@@ -1761,10 +1774,7 @@ async fn the_remote_control_guard_refuses_shutdown_and_disconnect_over_the_tunne
 
     // Other lifecycle routes stay reachable remotely.
     let open_status = h
-        .status(through_the_tunnel(
-            Method::POST,
-            "/api/hub/agents/scout/stop",
-        ))
+        .status(through_the_tunnel(&h, Method::POST, "/api/hub/agents/scout/stop").await)
         .await;
     assert_eq!(open_status, StatusCode::OK);
 }
@@ -1773,7 +1783,7 @@ async fn the_remote_control_guard_refuses_shutdown_and_disconnect_over_the_tunne
 async fn stop_all_is_reachable_over_the_tunnel() {
     let h = Harness::new();
     let status = h
-        .status(through_the_tunnel(Method::POST, "/api/hub/stop-all"))
+        .status(through_the_tunnel(&h, Method::POST, "/api/hub/stop-all").await)
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(h.directory.calls(), ["stop scout"]);

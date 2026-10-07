@@ -128,6 +128,15 @@ fn build_capabilities_header(a2a_enabled: bool) -> String {
 /// cloud-disconnect (`gateway::remote_control_guard`).
 pub(crate) const TUNNEL_NONCE_HEADER: &str = "x-residuum-tunnel";
 
+/// Whether `headers` carry this process's own tunnel nonce, which only a
+/// request the tunnel forwarded can: see [`TUNNEL_NONCE_HEADER`].
+#[must_use]
+pub(crate) fn is_tunnel_forwarded(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(TUNNEL_NONCE_HEADER)
+        .is_some_and(|v| v.as_bytes() == tunnel_nonce().as_bytes())
+}
+
 /// Length, in characters, of the per-process tunnel nonce.
 const TUNNEL_NONCE_LEN: usize = 32;
 

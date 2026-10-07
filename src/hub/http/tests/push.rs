@@ -393,14 +393,11 @@ async fn the_push_routes_stay_open_over_the_tunnel() {
         (Method::GET, "/api/hub/push/key"),
         (Method::GET, "/api/hub/push/devices"),
     ] {
-        let status = h.status(through_the_tunnel(method, uri)).await;
+        let status = h.status(through_the_tunnel(&h, method, uri).await).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
     }
     let status = h
-        .status(through_the_tunnel(
-            Method::DELETE,
-            "/api/hub/push/devices/nope",
-        ))
+        .status(through_the_tunnel(&h, Method::DELETE, "/api/hub/push/devices/nope").await)
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "reached the route");
 }

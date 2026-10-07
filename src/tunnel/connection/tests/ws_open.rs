@@ -110,6 +110,8 @@ struct WsHarness {
     ws_events_tx: mpsc::Sender<WsChannelEvent>,
     ws_events_rx: mpsc::Receiver<WsChannelEvent>,
     main_connections: Arc<AtomicUsize>,
+    /// The `Cookie` value of a device paired on the workbench host.
+    workbench_cookie: String,
     _dir: tempfile::TempDir,
 }
 
@@ -117,6 +119,8 @@ async fn harness(artifacts_listener_running: bool) -> WsHarness {
     let dir = tempfile::tempdir().unwrap();
     let main_connections = Arc::new(AtomicUsize::new(0));
     let main = serve(counting_listener("main", &main_connections)).await;
+    let pairing = crate::pairing::DevicePairing::open(dir.path());
+    let (_, workbench_cookie) = pairing.pair_device_for_tests("test browser").await;
     let workbench = if artifacts_listener_running {
         let api = HubApi::new();
         api.bind(standin_routes("hub"));
@@ -124,6 +128,7 @@ async fn harness(artifacts_listener_running: bool) -> WsHarness {
             serve(crate::workbench::server::router(
                 dir.path().to_path_buf(),
                 api,
+                pairing.clone(),
             ))
             .await,
         )
@@ -143,6 +148,7 @@ async fn harness(artifacts_listener_running: bool) -> WsHarness {
         ws_events_tx,
         ws_events_rx,
         main_connections,
+        workbench_cookie,
         _dir: dir,
     }
 }
@@ -215,8 +221,13 @@ impl WsHarness {
         &mut self,
         surface: Option<Surface>,
         path: &str,
-        headers: HashMap<String, String>,
+        mut headers: HashMap<String, String>,
     ) -> Result<mpsc::Sender<String>, String> {
+        if surface == Some(Surface::Workbench) {
+            // What a paired browser's socket upgrade carries to the workbench host.
+            headers.insert("cookie".to_string(), self.workbench_cookie.clone());
+            headers.insert("sec-fetch-site".to_string(), "same-origin".to_string());
+        }
         self.send_open(TunnelFrame::WsOpen {
             channel_id: "ch-1".to_string(),
             path: path.to_string(),

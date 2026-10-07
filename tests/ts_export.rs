@@ -41,6 +41,12 @@ mod ts_export {
     };
     use residuum::inbox::InboxAttachment;
     use residuum::inference::ImageData;
+    use residuum::pairing::types::{
+        CreatePairingRequestBody, DeviceInfo, DeviceListResponse, HandoffBody, PairLinkResponse,
+        PairedResponse, PairingPollResponse, PairingRequestCreated, PairingRequestStatus,
+        PairingStateResponse, PendingPairingInfo, PollPairingBody, RecoveryCodeBody,
+        RecoveryCodesResponse, RedeemTokenBody, WorkbenchHandoffResponse,
+    };
 
     #[test]
     #[expect(
@@ -128,6 +134,36 @@ mod ts_export {
         InboxAttachment::export_all(&cfg).unwrap();
         HubInboxUnread::export_all(&cfg).unwrap();
         InboxStatus::export_all(&cfg).unwrap();
+
+        // Device pairing: `PairingStateResponse` answers `GET
+        // /api/hub/pairing/state`; `CreatePairingRequestBody` and
+        // `PairingRequestCreated` are the body and answer of `POST
+        // /api/hub/pairing/requests`; `PollPairingBody` and
+        // `PairingPollResponse` (with `PairingRequestStatus`) those of `POST
+        // .../requests/poll`; `RedeemTokenBody`, `RecoveryCodeBody` and
+        // `HandoffBody` are the bodies of the routes that pair with a token, a
+        // recovery code and a workbench handoff, all answered by
+        // `PairedResponse`. `DeviceListResponse` (with its `DeviceInfo` and
+        // `PendingPairingInfo` items) answers `GET /api/hub/devices`,
+        // `PairLinkResponse` `POST /api/hub/remote-access/pair-link`,
+        // `RecoveryCodesResponse` `POST /api/hub/devices/recovery-codes`, and
+        // `WorkbenchHandoffResponse` `POST /api/hub/devices/workbench-handoff`.
+        PairingStateResponse::export_all(&cfg).unwrap();
+        CreatePairingRequestBody::export_all(&cfg).unwrap();
+        PairingRequestCreated::export_all(&cfg).unwrap();
+        PollPairingBody::export_all(&cfg).unwrap();
+        PairingPollResponse::export_all(&cfg).unwrap();
+        PairingRequestStatus::export_all(&cfg).unwrap();
+        RedeemTokenBody::export_all(&cfg).unwrap();
+        RecoveryCodeBody::export_all(&cfg).unwrap();
+        HandoffBody::export_all(&cfg).unwrap();
+        PairedResponse::export_all(&cfg).unwrap();
+        DeviceListResponse::export_all(&cfg).unwrap();
+        DeviceInfo::export_all(&cfg).unwrap();
+        PendingPairingInfo::export_all(&cfg).unwrap();
+        PairLinkResponse::export_all(&cfg).unwrap();
+        RecoveryCodesResponse::export_all(&cfg).unwrap();
+        WorkbenchHandoffResponse::export_all(&cfg).unwrap();
 
         // Web Push: `PushKeyResponse` answers `GET /api/hub/push/key`,
         // `PushDeviceList` answers `GET /api/hub/push/devices` (with its
