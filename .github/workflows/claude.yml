@@ -129,7 +129,7 @@ jobs:
           # claude_args, so the mode stays tag and the comment stays the request.
           #
           # Sonnet unless the issue or PR carries the model:opus label.
-          # Claude Code model IDs: claude-sonnet-5, claude-opus-5-5.
+          # Claude Code model IDs: claude-sonnet-5-5, claude-opus-5-5.
           #
           # Bash timeouts cannot be job env. The pin's "Run Claude Code Action"
           # step sets its own env: block, which shadows the caller (see the
@@ -162,7 +162,7 @@ jobs:
             --model ${{
               contains(toJson(github.event.issue.labels || github.event.pull_request.labels), 'model:opus')
               && 'claude-opus-5-5'
-              || 'claude-sonnet-5'
+              || 'claude-sonnet-5-5'
             }}
             --allowedTools "Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git rev-parse:*),Bash(cargo fmt:*),Bash(cargo clippy:*),Bash(cargo test:*),Bash(cargo build:*),Bash(cargo check:*),Bash(cargo deny:*),Bash(npm ci),Bash(npm run:*),Bash(npm test:*),Bash(npm --prefix web ci),Bash(npm --prefix web run:*),Bash(npm --prefix web test:*)"
             --append-system-prompt "This is the Residuum repository. Follow CLAUDE.md at the repository root. When changing the Svelte app in web/, also follow web/CLAUDE.md. Nested CLAUDE.md files under src/ and docs/ apply to those directories. The git hooks from .githooks/ are installed; do not bypass them. The Rust toolchain pinned in rust-toolchain.toml is already installed. web/node_modules and web/dist are already built, so cargo fmt, cargo clippy --all-targets --all-features -- -D warnings, and cargo test --quiet can run from the repo root. Run web checks from the repo root as `npm --prefix web run lint`, `npm --prefix web run check`, and `npm --prefix web test`. git commit runs the full pre-commit gate and can take 20+ minutes on this cold checkout; run it in the foreground with a Bash timeout of 1800000 ms, never in the background, and don't finish until `git log -1` shows the commit and the push script has succeeded."
