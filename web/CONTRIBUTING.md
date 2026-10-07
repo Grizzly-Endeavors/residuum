@@ -133,6 +133,7 @@ web/
 │   │   └── schedule/         # An agent's Schedule: its pulses and scheduled actions, and the words they show
 │   ├── feed/                 # A conversation: the feed, its turns and their activity lines, and each kind of message in it, shared by Chat and session transcripts; path links
 │   ├── Setup.svelte          # Setup wizard, built into a chunk of its own
+│   ├── pairing/              # The pairing page an unpaired browser lands on through Residuum Cloud (`/pair`): a page of its own, mounted by `main.ts` in place of the app, in a chunk of its own; its state is `lib/pairing-flow.svelte.ts`, its API calls `lib/pairing-api.ts`
 │   ├── styles/               # Design tokens, bundled fonts, the base and reset styles, the shell breakpoints for scripts, and the contrast pairs the tokens are tested against
 │   ├── components/
 │   │   └── setup/                  # Setup wizard steps

@@ -2,7 +2,7 @@
 
 `~/.residuum/` holds `hub/` (hub-level state: never any one agent's workspace), `team/` (the shared team layer), and one directory per agent, each of which *is* that agent's workspace root.
 
-Hub-level settings live in `hub/config.toml`: the timezone (shared by every agent), the gateway bind/port, the cloud tunnel, the A2A listener's enablement/port/public URL, tracing, the Web Push contact, the decision model, and the shared background session budget and cross-agent hop limits. `hub/` also holds the encrypted secret store (`secrets.toml.enc`), the agent-key store (`agent-keys.toml.enc`), A2A caller keys (`a2a-keys.toml`), and the Web Push signing key and device list (`push-vapid.key`, `push-devices.json`; see [Notifications](notifications.md#web-push)) — all shared by every agent.
+Hub-level settings live in `hub/config.toml`: the timezone (shared by every agent), the gateway bind/port, the cloud tunnel, the A2A listener's enablement/port/public URL, tracing, the Web Push contact, the decision model, and the shared background session budget and cross-agent hop limits. `hub/` also holds the encrypted secret store (`secrets.toml.enc`), the agent-key store (`agent-keys.toml.enc`), A2A caller keys (`a2a-keys.toml`), the Web Push signing key and device list (`push-vapid.key`, `push-devices.json`; see [Notifications](notifications.md#web-push)), and the browsers paired for remote access (`remote-access.json`; see [Remote access](remote-access.md)) — all shared by every agent.
 
 Everything else lives in the agent's own `config/` directory (`~/.residuum/<agent-name>/config/`): `config.toml` (memory, pulse, subconscious, adapters, agent abilities, idle, `autostart`, this agent's A2A `visibility`, and more), `providers.toml` (provider credentials and `[models]` role assignments), plus the narrower per-system files `mcp.json`, `channels.toml`, `agent-card.json`, and `a2a.json` — see each system's own doc.
 
@@ -16,6 +16,7 @@ Everything else lives in the agent's own `config/` directory (`~/.residuum/<agen
 │   ├── agent-keys.toml.enc, agent-keys.key, agent-keys.lock
 │   ├── a2a-keys.toml, a2a-keys.lock
 │   ├── push-vapid.key, push-devices.json
+│   ├── remote-access.json
 │   ├── logs/, bin/, checkpoints/
 │   ├── residuum.pid, residuum.lock, residuum.ready, residuum.startup-error, crash.log
 │   └── *.last-known-good.toml (hub's and each agent's), update markers

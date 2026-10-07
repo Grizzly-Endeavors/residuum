@@ -38,6 +38,8 @@ The hub serves everything the backend offers from one router over its `AgentDire
 | `GET`/`POST /api/hub/agent-keys`, `DELETE /api/hub/agent-keys/{name}` | Agent keys (see [agent-keys.md](agent-keys.md)). |
 | `GET`/`POST /api/hub/a2a/keys`, `DELETE /api/hub/a2a/keys/{name}` | A2A caller keys (see [a2a.md](a2a.md)). |
 | `GET /api/hub/cloud/status`, `POST /api/hub/cloud/disconnect` | The relay tunnel (see [cloud-tunnel.md](cloud-tunnel.md)). |
+| `GET /api/hub/pairing/state`, `POST /api/hub/pairing/requests`, `.../requests/poll`, `.../redeem`, `.../recovery`, `.../handoff` | How a browser becomes a paired device. The only API an unpaired remote browser can reach (`handoff` on the workbench host only). See [remote-access.md](remote-access.md). |
+| `GET /api/hub/devices`, `DELETE /api/hub/devices/{id}`, `POST /api/hub/devices/pending/{id}/approve` and `/deny`, `POST /api/hub/devices/recovery-codes`, `POST /api/hub/devices/workbench-handoff`, `POST /api/hub/remote-access/pair-link` | Paired browsers, waiting requests, recovery codes, and the first device's pairing link (local requests only). See [remote-access.md](remote-access.md). |
 | `GET /api/hub/update/status`, `POST /api/hub/update/check`, `/apply`, `/restart` | Self-update (see [self-update.md](self-update.md)). |
 | `POST /api/hub/shutdown` | Graceful shutdown of the whole process. Refused over the tunnel. |
 | `GET /api/hub/tracing/status` and the rest of `/api/hub/tracing/...` | Tracing and diagnostics. |
@@ -142,9 +144,10 @@ A session runs on one agent, so an artifact names it (`residuum.sessions.start({
 
 ## Request guards
 
+- The **device gate** covers the main listener and the artifacts listener. A request that arrived through the relay tunnel (or any transport that marks requests remote) needs a paired device's credential, except the pairing page, its assets and the pairing API, and a state-changing request or socket upgrade must also pass the remote cross-site rule. Local requests are untouched. See [remote-access.md](remote-access.md).
 - The **cross-site guard** covers every route on both listeners: state-changing requests and WebSocket upgrades from another site are refused with `403` (see [workbench.md](workbench.md#security-model)).
 - The **remote-control guard** covers `POST /api/hub/shutdown` and `POST /api/hub/cloud/disconnect` (see [cloud-tunnel.md](cloud-tunnel.md)): a request that arrived through the relay tunnel is refused with `403`.
-- The **artifacts-origin block list** covers `/api/hub/shutdown`, `/api/hub/stop-all`, `/api/hub/update/check`, `/api/hub/update/apply`, `/api/hub/update/restart` and `/api/hub/config/complete-setup`. The artifacts listener serves `/api` by handing requests to this router in-process, marked by an internal request extension that a client can't send, and a marked request to one of these routes is refused with `403` and `{ "error" }`. A marked agent socket (`/api/agents/{name}/ws`) doesn't count as a client for the agent's unread count or connected state. The same routes work on the gateway. See [API forwarding](workbench.md#api-forwarding).
+- The **artifacts-origin block list** covers `/api/hub/shutdown`, `/api/hub/stop-all`, `/api/hub/update/check`, `/api/hub/update/apply`, `/api/hub/update/restart` and `/api/hub/config/complete-setup`, and everything at and under `/api/hub/devices` and `/api/hub/remote-access`. The artifacts listener serves `/api` by handing requests to this router in-process, marked by an internal request extension that a client can't send, and a marked request to one of these routes is refused with `403` and `{ "error" }`. A marked agent socket (`/api/agents/{name}/ws`) doesn't count as a client for the agent's unread count or connected state. The same routes work on the gateway. See [API forwarding](workbench.md#api-forwarding).
 
 ## Embedded web app
 
