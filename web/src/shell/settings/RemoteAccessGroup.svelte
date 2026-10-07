@@ -9,14 +9,20 @@
     resetPins,
     retryRemoteAccess,
   } from "../../lib/remote-access-api";
+  import { remoteAccess } from "../../lib/remote-access.svelte";
   import { toast } from "../../lib/toast.svelte";
   import type { BadgeTone } from "../../lib/ui";
   import { Badge, Banner, Button, Dialog, TextField } from "../../lib/ui";
+  import PendingJoins from "./PendingJoins.svelte";
+  import RemoteInstances from "./RemoteInstances.svelte";
+  import RemoteJoin from "./RemoteJoin.svelte";
   import SettingsGroup from "./SettingsGroup.svelte";
 
   // How Residuum Cloud reaches this install over the secure tunnel: whether it
   // is ready, its addresses and certificate, the recovery code that is shown
-  // until it is saved, and any certificate account nobody here approved. It
+  // until it is saved, any certificate account nobody here approved, joining
+  // other instances and approving theirs, and removing accounts of instances
+  // that no longer exist. It
   // polls while open because setup runs in the background for a few minutes.
   // Everything acts at once through the hub's endpoints and has no part in the
   // save bar.
@@ -56,8 +62,10 @@
 
   async function load(): Promise<void> {
     try {
-      status = await fetchRemoteAccess();
+      const next = await fetchRemoteAccess();
+      status = next;
       loadError = "";
+      remoteAccess.accept(next);
     } catch (err) {
       loadError = userErrorMessage(err, { action: "Couldn't load the remote access status." });
     }
@@ -147,6 +155,12 @@
         </Banner>
       {/if}
 
+      <PendingJoins joins={status.pending_joins} {busy} {act} />
+
+      {#if status.state === "needs_join"}
+        <RemoteJoin {status} {busy} {act} />
+      {/if}
+
       {#if status.recovery_code}
         <section class="ra-recovery" aria-label="Recovery code">
           <p class="ra-note">
@@ -185,6 +199,12 @@
           Certificate valid until {new Date(status.certificate.not_after).toLocaleDateString()}. It
           renews itself from {new Date(status.certificate.renews_at).toLocaleDateString()}.
         </p>
+      {/if}
+
+      <RemoteInstances siblings={status.siblings} pins={status.pins} {busy} {act} />
+
+      {#if status.state !== "needs_join" && status.user !== null}
+        <RemoteJoin {status} {busy} {act} />
       {/if}
 
       <div class="ra-actions">

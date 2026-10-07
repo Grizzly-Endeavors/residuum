@@ -112,10 +112,7 @@
     const status = cloud.status;
     if (!teamsOn || status?.status !== "connected") return null;
     if (status == null) return null;
-    const origin = status.origin;
-    const instance = status.instance;
-    if (origin == null || origin === "" || instance == null || instance === "") return null;
-    return teamsMessagingEndpoint(origin, instance, agent);
+    return teamsMessagingEndpoint(status, agent);
   });
 
   async function copyEndpoint(address: string): Promise<void> {
