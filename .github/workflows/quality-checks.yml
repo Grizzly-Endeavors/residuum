@@ -181,8 +181,11 @@ jobs:
 
       # Remote access issuance against Pebble, the Let's Encrypt test CA, in
       # Docker (see docs/systems-usage/secure-tunnel.md, "Tests").
+      # Does not fail the job: the runners' Docker setup (host networking to
+      # the test process) is unverified. The summary table shows its outcome.
       - name: Pebble tests
         id: pebble
+        continue-on-error: true
         run: cargo test --quiet --lib -- --ignored pebble system_tests
 
       # Regenerates web/src/lib/generated from the Rust protocol types and
