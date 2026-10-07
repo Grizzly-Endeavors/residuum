@@ -3,11 +3,12 @@
 //! Maintains a persistent WebSocket connection to the cloud relay, forwarding
 //! HTTP requests and WebSocket connections to the local residuum instance.
 
-mod connection;
+pub(crate) mod connection;
 mod forward_a2a;
 mod forward_http;
 mod forward_ws;
 pub(crate) mod protocol;
+pub(crate) mod v2;
 
 pub(crate) use connection::start_tunnel;
 
@@ -100,13 +101,17 @@ const AGENTS_CAPABILITY: &str = "agents";
 /// the tunnel. A hub that predates it is never sent the surface.
 const TEAMS_CAPABILITY: &str = "teams";
 
+/// Capability: this client speaks tunnel v2 and terminates TLS itself. Sent
+/// only on the v2 endpoint; the relay refuses v2 registration without it.
+const TLS_PASSTHROUGH_CAPABILITY: &str = "tls-passthrough";
+
 /// Build the `x-residuum-capabilities` header value: always
 /// `workbench-surface,workbench-sockets,http-streaming,agents,teams`, plus
-/// `a2a` when the hub's A2A listener is enabled. Each agent's visibility and
-/// Teams configuration travel in its [`protocol::AgentInfo`], not in a
-/// capability.
+/// `a2a` when the hub's A2A listener is enabled and `tls-passthrough` on the
+/// tunnel v2 endpoint. Each agent's visibility and Teams configuration travel
+/// in its [`protocol::AgentInfo`], not in a capability.
 #[must_use]
-fn build_capabilities_header(a2a_enabled: bool) -> String {
+fn build_capabilities_header(a2a_enabled: bool, tls_passthrough: bool) -> String {
     let mut capabilities = vec![
         WORKBENCH_SURFACE_CAPABILITY,
         WORKBENCH_SOCKETS_CAPABILITY,
@@ -116,6 +121,9 @@ fn build_capabilities_header(a2a_enabled: bool) -> String {
     ];
     if a2a_enabled {
         capabilities.push(A2A_CAPABILITY);
+    }
+    if tls_passthrough {
+        capabilities.push(TLS_PASSTHROUGH_CAPABILITY);
     }
     capabilities.join(",")
 }
@@ -251,7 +259,7 @@ mod tests {
     #[test]
     fn capabilities_header_without_a2a() {
         assert_eq!(
-            build_capabilities_header(false),
+            build_capabilities_header(false, false),
             "workbench-surface,workbench-sockets,http-streaming,agents,teams"
         );
     }
@@ -259,15 +267,27 @@ mod tests {
     #[test]
     fn capabilities_header_with_a2a() {
         assert_eq!(
-            build_capabilities_header(true),
+            build_capabilities_header(true, false),
             "workbench-surface,workbench-sockets,http-streaming,agents,teams,a2a"
+        );
+    }
+
+    #[test]
+    fn capabilities_header_adds_tls_passthrough_for_v2() {
+        assert_eq!(
+            build_capabilities_header(true, true),
+            "workbench-surface,workbench-sockets,http-streaming,agents,teams,a2a,tls-passthrough"
+        );
+        assert_eq!(
+            build_capabilities_header(false, true),
+            "workbench-surface,workbench-sockets,http-streaming,agents,teams,tls-passthrough"
         );
     }
 
     #[test]
     fn workbench_sockets_is_advertised_with_and_without_a2a() {
         for a2a_enabled in [false, true] {
-            let header = build_capabilities_header(a2a_enabled);
+            let header = build_capabilities_header(a2a_enabled, false);
             assert!(
                 header.split(',').any(|c| c == "workbench-sockets"),
                 "the relay gates workbench socket opens on this exact string: {header}"

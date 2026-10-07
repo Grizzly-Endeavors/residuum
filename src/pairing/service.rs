@@ -45,6 +45,9 @@ struct Inner {
     state: Mutex<State>,
     /// Seconds added to the clock. Zero outside tests, which move time with it.
     skew_secs: std::sync::atomic::AtomicI64,
+    /// Set once the identity comes from this install's own enrollment. From
+    /// then on what the relay announces is ignored.
+    identity_is_local: std::sync::atomic::AtomicBool,
 }
 
 /// Device pairing for this install: who may reach it remotely.
@@ -74,6 +77,7 @@ impl DevicePairing {
                 write_lock: tokio::sync::Mutex::new(()),
                 state: Mutex::new(State::new(persisted)),
                 skew_secs: std::sync::atomic::AtomicI64::new(0),
+                identity_is_local: std::sync::atomic::AtomicBool::new(false),
             }),
         }
     }
@@ -178,6 +182,30 @@ impl DevicePairing {
     /// # Errors
     /// Returns the storage error if the change couldn't be saved.
     pub(crate) async fn update_identity(&self, announced: Identity) -> Result<(), PairingError> {
+        if self
+            .inner
+            .identity_is_local
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Ok(());
+        }
+        self.apply_identity(announced).await
+    }
+
+    /// Record the identity this install derived from its own enrollment. It
+    /// replaces what the relay announced, and the relay's announcements are
+    /// ignored from now on.
+    ///
+    /// # Errors
+    /// Returns the storage error if the change couldn't be saved.
+    pub(crate) async fn set_local_identity(&self, identity: Identity) -> Result<(), PairingError> {
+        self.inner
+            .identity_is_local
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.apply_identity(identity).await
+    }
+
+    async fn apply_identity(&self, announced: Identity) -> Result<(), PairingError> {
         let changed = {
             let mut state = self.lock();
             let current = &mut state.persisted.identity;

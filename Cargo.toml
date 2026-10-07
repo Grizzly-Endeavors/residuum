@@ -86,7 +86,15 @@ rpassword = "7"
 # WebSocket gateway + web UI
 axum = { version = "0.8", features = ["ws"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
+# Remote access: ACME client, challenge certificates, public DNS lookups, TLS-terminated HTTP serving
+instant-acme = { version = "0.8.5", default-features = false, features = ["ring", "hyper-rustls", "rcgen", "time", "x509-parser"] }
+rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pem"] }
+hickory-resolver = { version = "0.26.3", default-features = false, features = ["tokio"] }
+hyper = { version = "1.12", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1.21", features = ["server-auto", "tokio", "service", "http1", "http2"] }
+x509-parser = "0.18.1"
 ring = "0.17"
 futures-util = "0.3"
 tower = { version = "0.5", features = ["util"] }
@@ -135,6 +143,8 @@ tauri-winrt-notification = "0.8.1"
 tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
 wiremock = "0.6"
+http-body-util = "0.1"
+hyper = { version = "1.12", features = ["client"] }
 
 # Lint configuration
 #

@@ -17,6 +17,7 @@ use super::forward_a2a;
 use super::forward_http;
 use super::forward_ws::{self, WsChannelEvent};
 use super::protocol::{AgentInfo, Surface, TunnelFrame};
+use super::v2::{self, ConnectOutcome, SessionEnd, SessionHandler};
 use super::{ForwardRequest, ForwardTargets, TunnelSink, send_frame};
 use crate::config::CloudConfig;
 
@@ -75,6 +76,10 @@ fn next_backoff(current: Duration) -> Duration {
 /// listener is enabled. The `a2a` capability is advertised on the upgrade
 /// exactly when `a2a_port` is `Some`.
 ///
+/// With `remote` set (and `cfg.remote.enabled`), every attempt tries tunnel v2
+/// first; a relay that answers 404 or 426 is served by the legacy client when
+/// the handler allows it. Without it, only the legacy tunnel runs.
+///
 /// `agents_rx` carries the hub's full agent list. It is sent to the relay
 /// after every (re)connect and again on every change; a failed send is
 /// logged and retried on the next change or reconnect.
@@ -84,6 +89,14 @@ fn next_backoff(current: Duration) -> Duration {
 /// This function runs until the shutdown signal is received. Transient
 /// connection errors are logged and retried automatically.
 #[tracing::instrument(skip_all, fields(relay_url = %cfg.relay_url))]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the tunnel's collaborators are separate watch channels owned by the hub; bundling them would only move the list"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the reconnect loop reads top to bottom as connect, handshake, run, back off"
+)]
 pub(crate) async fn start_tunnel(
     cfg: CloudConfig,
     workbench_port: Option<u16>,
@@ -92,6 +105,7 @@ pub(crate) async fn start_tunnel(
     mut agents_rx: watch::Receiver<Vec<AgentInfo>>,
     mut shutdown_rx: watch::Receiver<bool>,
     status_tx: Arc<watch::Sender<TunnelStatus>>,
+    remote: Option<Arc<dyn SessionHandler>>,
 ) {
     let targets = ForwardTargets {
         main: cfg.local_port,
@@ -124,6 +138,28 @@ pub(crate) async fn start_tunnel(
                 debug!("status receiver dropped");
             });
         debug!(url = %cfg.relay_url, "connecting to relay");
+
+        let v2_attempt = V2Attempt {
+            cfg: &cfg,
+            remote: remote.as_ref(),
+            a2a_enabled: a2a_port.is_some(),
+        };
+        match v2_attempt
+            .run(&mut agents_rx, &mut shutdown_rx, &status_tx)
+            .await
+        {
+            V2Step::Done => return,
+            V2Step::Reconnect => {
+                backoff = MIN_BACKOFF;
+                continue;
+            }
+            V2Step::Wait(wait) => {
+                sleep_unless_shutdown(wait.unwrap_or(backoff), &mut shutdown_rx).await;
+                backoff = next_backoff(backoff);
+                continue;
+            }
+            V2Step::UseV1 => {}
+        }
 
         let (write, mut read, user_id, keepalive_interval_secs, origins) =
             match connect_and_handshake(&cfg, a2a_port.is_some()).await {
@@ -188,6 +224,104 @@ pub(crate) async fn start_tunnel(
             LoopExit::Shutdown => return,
             LoopExit::Reconnect(reason, open_ws_channels) => {
                 warn!(reason = %reason, attempt, open_ws_channels, "disconnected from relay, reconnecting");
+            }
+        }
+    }
+}
+
+/// What to do after one tunnel v2 attempt.
+enum V2Step {
+    /// Shutdown was requested and handled.
+    Done,
+    /// The session ended after a successful connection; reconnect now.
+    Reconnect,
+    /// Wait (the given time, or the current backoff) and try again.
+    Wait(Option<Duration>),
+    /// The relay has no v2 endpoint and the handler allows the legacy tunnel.
+    UseV1,
+}
+
+/// Sleep for `wait`, or until shutdown is requested.
+async fn sleep_unless_shutdown(wait: Duration, shutdown_rx: &mut watch::Receiver<bool>) {
+    tokio::select! {
+        () = tokio::time::sleep(wait) => {}
+        _ = shutdown_rx.wait_for(|stop| *stop) => {}
+    }
+}
+
+/// What one attempt on the v2 endpoint needs to know.
+struct V2Attempt<'a> {
+    cfg: &'a CloudConfig,
+    remote: Option<&'a Arc<dyn SessionHandler>>,
+    a2a_enabled: bool,
+}
+
+impl V2Attempt<'_> {
+    /// Try the v2 endpoint once. Without a handler, with remote access
+    /// disabled, or for a relay URL that has no v2 form, the answer is
+    /// [`V2Step::UseV1`] and nothing is attempted.
+    async fn run(
+        &self,
+        agents_rx: &mut watch::Receiver<Vec<AgentInfo>>,
+        shutdown_rx: &mut watch::Receiver<bool>,
+        status_tx: &watch::Sender<TunnelStatus>,
+    ) -> V2Step {
+        let Some(handler) = self.remote.filter(|_| self.cfg.remote.enabled) else {
+            return V2Step::UseV1;
+        };
+        let Some(v2_url) = v2::register_url(&self.cfg.relay_url) else {
+            return V2Step::UseV1;
+        };
+        let request = match build_v2_ws_request(self.cfg, &v2_url, self.a2a_enabled) {
+            Ok(r) => r,
+            Err(e) => {
+                error!(error = %e, "failed to build WebSocket request");
+                return V2Step::Wait(None);
+            }
+        };
+        let ws = match v2::connect(request).await {
+            ConnectOutcome::Connected(ws) => *ws,
+            ConnectOutcome::Unsupported(status) => {
+                if handler.allow_v1_fallback() {
+                    info!(status, url = %v2_url, "relay has no tunnel v2 endpoint; using the legacy tunnel");
+                    return V2Step::UseV1;
+                }
+                error!(
+                    status,
+                    url = %v2_url,
+                    "the relay does not support end-to-end encrypted remote access and the legacy tunnel is not allowed; update the relay or allow the legacy tunnel"
+                );
+                status_tx.send(TunnelStatus::Disconnected).ok();
+                return V2Step::Wait(None);
+            }
+            ConnectOutcome::Failed(e) => {
+                warn!(error = %e, "failed to connect to relay, will retry");
+                return V2Step::Wait(None);
+            }
+        };
+        let end = v2::run_session(
+            ws,
+            v2::SessionInputs {
+                handler,
+                agents_rx,
+                shutdown_rx,
+                status_tx,
+            },
+        )
+        .await;
+        match end {
+            SessionEnd::Shutdown => V2Step::Done,
+            SessionEnd::Refused => {
+                status_tx.send(TunnelStatus::Disconnected).ok();
+                V2Step::Wait(Some(MAX_BACKOFF))
+            }
+            SessionEnd::Lost { reason, accepted } => {
+                warn!(reason = %reason, accepted, "disconnected from relay, reconnecting");
+                if accepted {
+                    V2Step::Reconnect
+                } else {
+                    V2Step::Wait(None)
+                }
             }
         }
     }
@@ -429,7 +563,26 @@ fn build_ws_request(
     cfg: &CloudConfig,
     a2a_enabled: bool,
 ) -> Result<ws_http::Request<()>, ws_http::Error> {
-    let host = url::Url::parse(&cfg.relay_url)
+    build_request(cfg, &cfg.relay_url, a2a_enabled, false)
+}
+
+/// Build the upgrade request for the tunnel v2 endpoint at `v2_url`, which
+/// additionally advertises `tls-passthrough`.
+fn build_v2_ws_request(
+    cfg: &CloudConfig,
+    v2_url: &str,
+    a2a_enabled: bool,
+) -> Result<ws_http::Request<()>, ws_http::Error> {
+    build_request(cfg, v2_url, a2a_enabled, true)
+}
+
+fn build_request(
+    cfg: &CloudConfig,
+    url: &str,
+    a2a_enabled: bool,
+    tls_passthrough: bool,
+) -> Result<ws_http::Request<()>, ws_http::Error> {
+    let host = url::Url::parse(url)
         .ok()
         .and_then(|u| {
             let h = u.host_str()?.to_string();
@@ -441,14 +594,17 @@ fn build_ws_request(
         .unwrap_or_else(|| "localhost".to_string());
     let host = host.as_str();
 
-    let mut request = super::build_ws_upgrade_request(&cfg.relay_url, host)?;
+    let mut request = super::build_ws_upgrade_request(url, host)?;
     request.headers_mut().insert(
         ws_http::header::AUTHORIZATION,
         ws_http::HeaderValue::from_str(&format!("Bearer {}", cfg.token))?,
     );
     request.headers_mut().insert(
         super::CAPABILITIES_HEADER,
-        ws_http::HeaderValue::from_str(&super::build_capabilities_header(a2a_enabled))?,
+        ws_http::HeaderValue::from_str(&super::build_capabilities_header(
+            a2a_enabled,
+            tls_passthrough,
+        ))?,
     );
     Ok(request)
 }
@@ -535,7 +691,7 @@ fn forward_port(targets: ForwardTargets, surface: Option<Surface>) -> Result<u16
 /// The hub's A2A listener has no root-level agent, so a request that names no
 /// agent has nowhere to go. The name is checked against the agent-name rules
 /// because it becomes a path segment on the local listener.
-fn a2a_listener_path(agent: Option<&str>, path: &str) -> Result<String, &'static str> {
+pub(crate) fn a2a_listener_path(agent: Option<&str>, path: &str) -> Result<String, &'static str> {
     let Some(agent) = agent else {
         return Err(
             "This A2A request didn't name an agent. Agents are reached at /a2a/{instance}/{agent}.",
@@ -1011,6 +1167,7 @@ mod tests {
             relay_url: "wss://relay.example.com/ws".to_string(),
             token: "tok".to_string(),
             local_port: 8080,
+            remote: crate::config::RemoteAccessSettings::default(),
         };
         let req = build_ws_request(&cfg, false).unwrap();
         assert_eq!(req.headers()["host"], "relay.example.com");
@@ -1022,6 +1179,7 @@ mod tests {
             relay_url: "ws://relay.example.com".to_string(),
             token: "tok".to_string(),
             local_port: 8080,
+            remote: crate::config::RemoteAccessSettings::default(),
         };
         let req = build_ws_request(&cfg, false).unwrap();
         assert_eq!(req.headers()["host"], "relay.example.com");
@@ -1033,6 +1191,7 @@ mod tests {
             relay_url: "ws://relay.example.com/some/path".to_string(),
             token: "tok".to_string(),
             local_port: 8080,
+            remote: crate::config::RemoteAccessSettings::default(),
         };
         let req = build_ws_request(&cfg, false).unwrap();
         assert_eq!(req.headers()["host"], "relay.example.com");
@@ -1044,6 +1203,7 @@ mod tests {
             relay_url: "not-a-url".to_string(),
             token: "tok".to_string(),
             local_port: 8080,
+            remote: crate::config::RemoteAccessSettings::default(),
         };
         let req = build_ws_request(&cfg, false).unwrap();
         assert_eq!(req.headers()["host"], "localhost");
@@ -1122,6 +1282,7 @@ mod tests {
             relay_url: "wss://agent-residuum.com/tunnel/register".to_string(),
             token: "rst_test".to_string(),
             local_port: 7700,
+            remote: crate::config::RemoteAccessSettings::default(),
         };
         let req = build_ws_request(&cfg, false).unwrap();
         assert_eq!(
@@ -1138,6 +1299,7 @@ mod tests {
             relay_url: "wss://agent-residuum.com/tunnel/register".to_string(),
             token: "rst_test".to_string(),
             local_port: 7700,
+            remote: crate::config::RemoteAccessSettings::default(),
         };
         let req = build_ws_request(&cfg, true).unwrap();
         assert_eq!(

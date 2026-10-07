@@ -8,20 +8,21 @@
 //! restart, update, and stopping agents (one or all), because the hub keeps
 //! running after those and any agent can be started again through the tunnel.
 //!
-//! Tunnel-forwarded requests carry [`crate::tunnel::TUNNEL_NONCE_HEADER`] set
-//! to this process's own nonce (see `tunnel::forward_http::forward`), the
-//! same mechanism the A2A listener uses to attest sibling requests. A local
-//! request never carries a value that matches: the nonce is generated fresh
-//! per process and never leaves it except over the loopback hop the tunnel
-//! forwarder itself makes, so nothing a client sends — over the tunnel or
-//! directly to a local port — can forge a match.
+//! A request is remote when a transport marked it (see `pairing::remote`).
+//! The legacy tunnel adds [`crate::tunnel::TUNNEL_NONCE_HEADER`] set to this
+//! process's own nonce (see `tunnel::forward_http::forward`), and the secure
+//! tunnel's engine adds a request extension no client can send. A local
+//! request carries neither: the nonce is generated fresh per process and never
+//! leaves it except over the loopback hop the tunnel forwarder itself makes, so
+//! nothing a client sends, over a tunnel or directly to a local port, can forge
+//! a match.
 
 use axum::extract::Request;
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
-use crate::tunnel::is_tunnel_forwarded;
+use crate::pairing::remote::remote_context;
 
 const REFUSAL_MESSAGE: &str = "Shutting down or disconnecting can't be done remotely, because \
 nothing could bring Residuum back. Do it on the machine running Residuum.";
@@ -33,7 +34,7 @@ nothing could bring Residuum back. Do it on the machine running Residuum.";
 /// `.layer(...)`, which would apply it to the whole router instead of just
 /// those routes.
 pub(crate) async fn reject_remote_shutdown_and_disconnect(req: Request, next: Next) -> Response {
-    if is_tunnel_forwarded(req.headers()) {
+    if remote_context(req.headers(), req.extensions()).is_some() {
         tracing::warn!(
             path = %req.uri().path(),
             "refused a shutdown or cloud-disconnect request that arrived through the tunnel"

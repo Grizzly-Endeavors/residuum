@@ -26,6 +26,7 @@ import type { SessionEventFrame } from "./session-relay";
 import type { MockTeamEvents } from "./team-events";
 import type { MockCloud } from "./cloud";
 import { emptyPairing, type MockPairing } from "./pairing";
+import { defaultRemoteAccess, type MockRemoteAccess } from "./remote-access";
 import type { MockUpdateStatus } from "./update";
 
 /** An agent key as the mock stores it, value included. */
@@ -82,6 +83,8 @@ export interface MockState {
   pushDevices: MockPushDevice[];
   /** The browsers paired for remote access, and the requests waiting. Only the hub's state holds any. */
   pairing: MockPairing;
+  /** The secure tunnel's status. Only the hub's state holds it. */
+  remoteAccess: MockRemoteAccess;
   /** The checkpoint histories this state holds: an agent's own, or the hub's. */
   checkpoints: MockCheckpoints;
   /**
@@ -354,6 +357,7 @@ export function createState(
     cloud: { tunnel: null, viaTunnel: false },
     pushDevices: [],
     pairing: emptyPairing(),
+    remoteAccess: defaultRemoteAccess(),
     checkpoints: {},
     hasConversation: false,
     teamsSetupJob: null,

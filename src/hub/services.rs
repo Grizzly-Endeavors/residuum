@@ -182,6 +182,9 @@ pub(crate) struct HubServices {
     /// Which browsers may reach this install through Residuum Cloud. The
     /// main router and the workbench listener share it.
     pub pairing: crate::pairing::DevicePairing,
+    /// Remote access over the secure tunnel: its status and actions. The
+    /// tunnel task installs the running manager into it.
+    pub remote_access: crate::remote_access::slot::RemoteAccessSlot,
 }
 
 impl HubServices {
@@ -246,6 +249,7 @@ impl HubServices {
             team_router: super::team::TeamRouter::new_shared(directory.clone()),
             directory,
             pairing,
+            remote_access: crate::remote_access::slot::RemoteAccessSlot::new(),
         })
     }
 

@@ -14,3 +14,4 @@ For how a system is *intended* to work rather than how to drive it, see `../syst
 - [Migrating to agent sessions](migrating-to-agent-sessions.md) — breaking changes and new behavior for anyone upgrading from before the agent sessions overhaul.
 - [Reach Residuum from your phone and other browsers](remote-access.md) — pair a browser for Residuum Cloud, approve another from a paired one, use a recovery code, and remove a browser.
 - [Migrating to device pairing](migrating-to-device-pairing.md) — what to do before and after updating to the version where Residuum Cloud answers only paired browsers.
+- [Migrating to the secure tunnel](migrating-to-secure-tunnel.md) — what changes when Residuum Cloud's relay supports end-to-end encrypted remote access: the certificate, the recovery code, and what to do with more than one instance.

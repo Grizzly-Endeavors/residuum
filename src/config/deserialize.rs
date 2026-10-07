@@ -522,6 +522,18 @@ pub(super) struct CloudConfigFile {
     pub(super) token: Option<String>,
     /// Local port to forward requests to.
     pub(super) local_port: Option<u16>,
+    /// Whether to try tunnel v2 (default true).
+    pub(super) remote_access: Option<bool>,
+    /// Domain hosts are derived under.
+    pub(super) base_domain: Option<String>,
+    /// `"production"`, `"staging"` or a directory URL.
+    pub(super) acme_directory: Option<String>,
+    /// Extra PEM root for the ACME directory's TLS certificate.
+    pub(super) acme_root_ca: Option<String>,
+    /// Pin service base URL.
+    pub(super) pin_service_url: Option<String>,
+    /// Public DNS resolver as `ip:port`.
+    pub(super) caa_resolver: Option<String>,
 }
 
 /// Raw TOML `[web_search]` section.

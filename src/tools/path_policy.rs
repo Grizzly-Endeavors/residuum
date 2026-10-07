@@ -66,6 +66,8 @@ fn always_blocked_paths(config_dir: &Path, hub_dir: &Path) -> HashSet<PathBuf> {
         hub.push_vapid_key(),
         hub.push_devices_json(),
         hub.remote_access_json(),
+        // A directory: everything under it is blocked (see `check_write`).
+        hub.remote_access_dir(),
     ];
     let templates = ["config.example.toml", "providers.example.toml"]
         .into_iter()
@@ -170,7 +172,11 @@ impl PathPolicy {
     pub fn check_write(&self, path: &Path) -> Result<(), String> {
         let canonical = canonicalize_for_check(path);
 
-        if self.blocked_paths.contains(&canonical) {
+        // A blocked directory blocks everything under it.
+        if canonical
+            .ancestors()
+            .any(|ancestor| self.blocked_paths.contains(ancestor))
+        {
             tracing::warn!(path = %path.display(), "write rejected: blocked path");
             let is_regenerated_template = path
                 .file_name()
@@ -412,6 +418,24 @@ mod tests {
     }
 
     #[test]
+    fn writes_under_the_remote_access_directory_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub_dir = dir.path().join("hub");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        let policy = PathPolicy::with_blocked_paths(always_blocked_paths(
+            &dir.path().join("config"),
+            &hub_dir,
+        ));
+        let file = hub_dir.join("remote-access").join("state.json");
+        assert!(policy.check_write(&file).is_err());
+        assert!(
+            policy
+                .check_write(&hub_dir.join("remote-access-notes.md"))
+                .is_ok()
+        );
+    }
+
+    #[test]
     fn blocked_write_paths_cover_every_hub_credential_store() {
         let hub_dir = Path::new("/hub");
         let blocked = always_blocked_paths(Path::new("/cfg"), hub_dir);
@@ -426,6 +450,7 @@ mod tests {
             "push-vapid.key",
             "push-devices.json",
             "remote-access.json",
+            "remote-access",
         ] {
             assert!(
                 blocked.contains(&hub_dir.join(name)),

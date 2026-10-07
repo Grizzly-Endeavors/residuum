@@ -4,14 +4,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
 use crate::config::secrets::SecretStore;
 use crate::gateway::types::ReloadSignal;
-use crate::tunnel::{TUNNEL_NONCE_HEADER, TunnelStatus, tunnel_nonce};
+use crate::tunnel::TunnelStatus;
 
 /// Shared state for cloud API endpoints.
 #[derive(Clone)]
@@ -48,12 +48,12 @@ pub(crate) struct CloudStatusResponse {
 
 impl CloudStatusResponse {
     /// The status of the tunnel `tunnel_status_rx` watches, with the cloud
-    /// settings read from the hub config in `hub_dir`, for a request carrying
-    /// `headers`.
+    /// settings read from the hub config in `hub_dir`; `viewed_via_tunnel` says
+    /// whether the request arrived through Residuum Cloud.
     pub(crate) fn current(
         hub_dir: &std::path::Path,
         tunnel_status_rx: &watch::Receiver<TunnelStatus>,
-        headers: &HeaderMap,
+        viewed_via_tunnel: bool,
     ) -> Self {
         let tunnel_status = tunnel_status_rx.borrow().clone();
 
@@ -80,10 +80,6 @@ impl CloudStatusResponse {
             Err(_) => (false, false),
         };
 
-        let viewed_via_tunnel = headers
-            .get(TUNNEL_NONCE_HEADER)
-            .is_some_and(|v| v.as_bytes() == tunnel_nonce().as_bytes());
-
         Self {
             status,
             user_id,
@@ -99,12 +95,12 @@ impl CloudStatusResponse {
 /// `GET /api/hub/cloud/status` — return current tunnel status.
 pub(crate) async fn api_cloud_status(
     State(state): State<CloudApiState>,
-    headers: HeaderMap,
+    parts: axum::http::request::Parts,
 ) -> Json<CloudStatusResponse> {
     Json(CloudStatusResponse::current(
         &state.hub_dir,
         &state.tunnel_status_rx,
-        &headers,
+        crate::pairing::remote::remote_context(&parts.headers, &parts.extensions).is_some(),
     ))
 }
 
@@ -322,6 +318,7 @@ const SUCCESS_HTML: &str = r#"<!DOCTYPE html>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tunnel::{TUNNEL_NONCE_HEADER, tunnel_nonce};
 
     #[test]
     fn parse_cloud_state_no_section() {

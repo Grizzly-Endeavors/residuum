@@ -122,6 +122,46 @@ pub struct CloudConfig {
     pub token: String,
     /// Local port to forward requests to.
     pub local_port: u16,
+    /// Settings for remote access over tunnel v2.
+    pub remote: RemoteAccessSettings,
+}
+
+/// Production Let's Encrypt directory.
+pub const ACME_PRODUCTION_DIRECTORY: &str = "https://acme-v02.api.letsencrypt.org/directory";
+
+/// Let's Encrypt staging directory.
+pub const ACME_STAGING_DIRECTORY: &str = "https://acme-staging-v02.api.letsencrypt.org/directory";
+
+/// Validated settings for end-to-end encrypted remote access (`[cloud]`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteAccessSettings {
+    /// Whether to try tunnel v2. When off, only the legacy tunnel is used.
+    pub enabled: bool,
+    /// Domain the relay serves hosts under; every host name is derived from
+    /// it and the stored user and slug.
+    pub base_domain: String,
+    /// ACME directory certificates are ordered from.
+    pub acme_directory: String,
+    /// Extra PEM root the ACME directory's TLS certificate may chain to, for
+    /// a private test CA.
+    pub acme_root_ca: Option<std::path::PathBuf>,
+    /// Base URL of the pin service.
+    pub pin_service_url: String,
+    /// Public DNS resolver used to see which CAA records the world sees.
+    pub caa_resolver: std::net::SocketAddr,
+}
+
+impl Default for RemoteAccessSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            base_domain: "agent-residuum.com".to_string(),
+            acme_directory: ACME_PRODUCTION_DIRECTORY.to_string(),
+            acme_root_ca: None,
+            pin_service_url: "https://pins.agent-residuum.com".to_string(),
+            caa_resolver: std::net::SocketAddr::from(([1, 1, 1, 1], 53)),
+        }
+    }
 }
 
 /// Validated Discord bot configuration.

@@ -1382,12 +1382,14 @@ mod tests {
             relay_url: "wss://example.com".to_string(),
             token: "old-token".to_string(),
             local_port: 7700,
+            remote: crate::config::RemoteAccessSettings::default(),
         });
         let mut new = old.clone();
         new.cloud = Some(CloudConfig {
             relay_url: "wss://example.com".to_string(),
             token: "new-token".to_string(),
             local_port: 7700,
+            remote: crate::config::RemoteAccessSettings::default(),
         });
 
         let diff = diff_config(&old, &new);
@@ -1404,6 +1406,7 @@ mod tests {
             relay_url: "wss://example.com".to_string(),
             token: "tok".to_string(),
             local_port: 7700,
+            remote: crate::config::RemoteAccessSettings::default(),
         });
 
         let diff = diff_config(&old, &new);
@@ -1417,6 +1420,7 @@ mod tests {
             relay_url: "wss://example.com".to_string(),
             token: "tok".to_string(),
             local_port: 7700,
+            remote: crate::config::RemoteAccessSettings::default(),
         });
         let mut new = old.clone();
         new.cloud = None;

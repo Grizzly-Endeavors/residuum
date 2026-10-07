@@ -11,6 +11,7 @@ import { modelRoutes } from "./model";
 import { overviewRoutes } from "./overview";
 import { pairingRoutes } from "./pairing";
 import { pushRoutes } from "./push";
+import { remoteAccessRoutes } from "./remote-access";
 import type { Route } from "./routes";
 import { scheduledRoutes } from "./scheduled";
 import { sessionRoutes } from "./sessions";
@@ -30,6 +31,7 @@ export const apiRoutes: readonly Route[] = [
   ...hubInboxRoutes,
   ...pushRoutes,
   ...pairingRoutes,
+  ...remoteAccessRoutes,
   ...teamEventRoutes,
   ...overviewRoutes,
   ...agentInboxRoutes,
