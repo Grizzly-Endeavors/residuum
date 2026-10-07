@@ -19,6 +19,7 @@ use rustls::pki_types::pem::PemObject as _;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tracing::{debug, info, warn};
 
+use super::jws::AccountSigner;
 use super::tls::{CertBundle, CertResolver, leaf_validity};
 use super::types::normalize_host;
 use crate::util::fs::atomic_write_owner_only;
@@ -193,22 +194,18 @@ impl AcmeAccount {
 
         Ok(Self { account, key })
     }
+}
 
-    /// The account URL (the `kid` in signed requests).
-    pub(crate) fn uri(&self) -> &str {
+impl AccountSigner for AcmeAccount {
+    fn uri(&self) -> &str {
         self.account.id()
     }
 
-    /// The account public key as a JWK (`kty`, `crv`, `x`, `y`).
-    pub(crate) fn jwk(&self) -> serde_json::Value {
+    fn jwk(&self) -> serde_json::Value {
         self.key.jwk()
     }
 
-    /// ES256 signature (raw `r || s`) over `message` with the account key.
-    ///
-    /// # Errors
-    /// Returns an error if the signing operation fails.
-    pub(crate) fn sign_es256(&self, message: &[u8]) -> anyhow::Result<[u8; 64]> {
+    fn sign_es256(&self, message: &[u8]) -> anyhow::Result<[u8; 64]> {
         self.key.sign_es256(message)
     }
 }

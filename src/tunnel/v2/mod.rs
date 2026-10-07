@@ -49,13 +49,29 @@ pub(crate) struct IncomingStream {
 }
 
 /// What the relay claimed in its first frame. Untrusted: the handler decides.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct ConnectedInfo {
     pub user: String,
     pub instance: String,
     /// The host names exactly as the relay claimed them.
     pub hosts: Hostnames,
     pub keepalive_interval_secs: u64,
+    /// The credential that lets this connection see the user's private agents
+    /// in the apex directory. Nothing else accepts it.
+    pub a2a_token: String,
+}
+
+/// `Debug` that never prints the directory token.
+impl std::fmt::Debug for ConnectedInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectedInfo")
+            .field("user", &self.user)
+            .field("instance", &self.instance)
+            .field("hosts", &self.hosts)
+            .field("keepalive_interval_secs", &self.keepalive_interval_secs)
+            .field("a2a_token", &"<redacted>")
+            .finish()
+    }
 }
 
 /// The handler's decision about a relay's `connected` frame.
@@ -66,6 +82,8 @@ pub(crate) enum Verdict {
         instance: String,
         ui_origin: Option<String>,
         workbench_origin: Option<String>,
+        /// Where this instance's A2A and Teams endpoints are, when known.
+        instance_origin: Option<String>,
     },
     /// Do not use this relay; the reason is logged.
     Refuse(String),
@@ -81,6 +99,9 @@ pub(crate) trait SessionHandler: Send + Sync {
 
     /// A new browser stream. Must not block.
     fn on_stream(&self, stream: IncomingStream);
+
+    /// The relay's current list of the user's instances. Untrusted text.
+    fn on_instances(&self, _instances: Vec<frames::InstanceSummary>) {}
 
     /// The session ended (any reason). Streams are already closed.
     fn on_disconnected(&self);

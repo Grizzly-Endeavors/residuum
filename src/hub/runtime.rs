@@ -293,6 +293,9 @@ fn start_remote_access(
             tunnel_status: Arc::clone(inputs.status_tx),
             status: wiring.slot.status_sender(),
             notify: Arc::clone(&wiring.notify),
+            siblings: wiring.slot.sibling_keys(),
+            discovery: wiring.slot.discovery_sender(),
+            sibling_channel: None,
         },
     );
     match built {
@@ -320,14 +323,22 @@ fn spawn_a2a_listener(
     services: &HubServices,
 ) -> A2aListenerTask {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    // The older tunnel's relay attests a calling sibling with this process's
+    // tunnel nonce. On the secure tunnel nothing the relay says names a caller:
+    // siblings present the keys they were issued when they joined.
+    let remote_access = services.remote_access.clone();
     let listener = crate::a2a::A2aListener::new(
         hub.gateway.bind.clone(),
         hub.a2a.port,
         Arc::clone(host) as Arc<dyn AgentDirectory>,
         Arc::clone(&services.a2a_keys),
-        Arc::new(|| Some(Arc::<str>::from(crate::tunnel::tunnel_nonce()))),
+        Arc::new(move || {
+            (!remote_access.on_secure_tunnel())
+                .then(|| Arc::<str>::from(crate::tunnel::tunnel_nonce()))
+        }),
         shutdown_rx,
-    );
+    )
+    .with_sibling_keys(services.remote_access.sibling_keys());
     let handle = crate::util::spawn_monitored("a2a", async move {
         if let Err(e) = listener.start().await {
             tracing::error!(error = %e, "a2a interface failed");

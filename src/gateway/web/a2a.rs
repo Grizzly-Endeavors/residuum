@@ -657,6 +657,7 @@ mod tests {
             workbench_origin: None,
             instance: Some("laptop".to_string()),
             a2a_token: None,
+            instance_origin: None,
         }
     }
 

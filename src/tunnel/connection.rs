@@ -184,6 +184,7 @@ pub(crate) async fn start_tunnel(
                 workbench_origin: origins.workbench_origin,
                 instance: origins.instance,
                 a2a_token: origins.a2a_token,
+                instance_origin: None,
             })
             .unwrap_or_else(|_| {
                 debug!("status receiver dropped");
@@ -1867,6 +1868,7 @@ mod tests {
             crate::a2a::AuthState {
                 keys: crate::a2a::A2aKeys::new_shared(dir.path()),
                 tunnel_nonce: Arc::new(|| Some(Arc::<str>::from(super::super::tunnel_nonce()))),
+                sibling_keys: Arc::new(crate::remote_access::siblings::NoSiblings),
             },
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

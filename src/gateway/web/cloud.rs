@@ -37,13 +37,17 @@ pub(crate) struct CloudStatusResponse {
     /// remote viewer should never see a button that can't work.
     viewed_via_tunnel: bool,
     /// Public origin of this hub through the relay, while connected and the
-    /// relay has announced one. The Teams messaging endpoint is
-    /// `{origin}/teams/{instance}/{agent}`.
+    /// relay has announced one. On the older tunnel the Teams messaging
+    /// endpoint is `{origin}/teams/{instance}/{agent}`.
     #[serde(skip_serializing_if = "Option::is_none")]
     origin: Option<String>,
     /// This hub's instance slug on the relay, while connected and announced.
     #[serde(skip_serializing_if = "Option::is_none")]
     instance: Option<String>,
+    /// This instance's own public address on the secure tunnel. The Teams
+    /// messaging endpoint is `{instance_origin}/teams/{agent}` there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instance_origin: Option<String>,
 }
 
 impl CloudStatusResponse {
@@ -57,19 +61,21 @@ impl CloudStatusResponse {
     ) -> Self {
         let tunnel_status = tunnel_status_rx.borrow().clone();
 
-        let (status, user_id, origin, instance) = match tunnel_status {
-            TunnelStatus::Disconnected => ("disconnected", None, None, None),
-            TunnelStatus::Connecting => ("connecting", None, None, None),
+        let (status, user_id, origin, instance, instance_origin) = match tunnel_status {
+            TunnelStatus::Disconnected => ("disconnected", None, None, None, None),
+            TunnelStatus::Connecting => ("connecting", None, None, None, None),
             TunnelStatus::Connected {
                 ref user_id,
                 ref origin,
                 ref instance,
+                ref instance_origin,
                 ..
             } => (
                 "connected",
                 Some(user_id.clone()),
                 origin.clone(),
                 instance.clone(),
+                instance_origin.clone(),
             ),
         };
 
@@ -88,6 +94,7 @@ impl CloudStatusResponse {
             viewed_via_tunnel,
             origin,
             instance,
+            instance_origin,
         }
     }
 }

@@ -29,6 +29,7 @@ use super::auth::{Admission, AuthState, TunnelNonceSource, authorize};
 use super::card::SharedCardState;
 use super::keys_runtime::SharedA2aKeys;
 use super::public_url::AGENTS_PATH_PREFIX;
+use crate::remote_access::siblings::{NoSiblings, SiblingKeyVerifier};
 
 /// A [`a2a_server::RequestHandler`] that refuses every operation with
 /// `A2AError::unsupported_operation`. Production wiring uses
@@ -290,9 +291,20 @@ impl A2aListener {
             bind,
             port,
             directory,
-            auth: AuthState { keys, tunnel_nonce },
+            auth: AuthState {
+                keys,
+                tunnel_nonce,
+                sibling_keys: Arc::new(NoSiblings),
+            },
             shutdown_rx,
         }
+    }
+
+    /// Accept the keys issued to joined siblings as calls from those siblings.
+    #[must_use]
+    pub fn with_sibling_keys(mut self, sibling_keys: Arc<dyn SiblingKeyVerifier>) -> Self {
+        self.auth.sibling_keys = sibling_keys;
+        self
     }
 
     /// Run until the shutdown signal fires.

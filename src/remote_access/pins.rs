@@ -16,7 +16,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::acme::AcmeAccount;
+use super::jws::{AccountSigner, sign_jws};
 
 /// Characters of a recovery code.
 pub(crate) const RECOVERY_CODE_LEN: usize = 20;
@@ -94,7 +94,7 @@ impl PinClient {
     /// `POST /v1/enroll`: pin `account` as the user's first account.
     pub(crate) async fn enroll(
         &self,
-        account: &AcmeAccount,
+        account: &dyn AccountSigner,
         enrollment: &Enrollment<'_>,
     ) -> Result<Vec<Pin>, PinError> {
         let payload = json!({
@@ -105,14 +105,15 @@ impl PinClient {
             "recovery_code_hash": recovery_code_hash(enrollment.recovery_code),
             "grant": enrollment.grant,
         });
-        self.post_signed(account, "/v1/enroll", payload).await
+        self.post_signed(account, KeyRef::Jwk, "/v1/enroll", payload)
+            .await
     }
 
     /// `POST /v1/reset`: replace every pin with `account`, proving ownership
     /// with the old recovery code, and store the hash of a new one.
     pub(crate) async fn reset(
         &self,
-        account: &AcmeAccount,
+        account: &dyn AccountSigner,
         enrollment: &Enrollment<'_>,
         old_recovery_code: &str,
     ) -> Result<Vec<Pin>, PinError> {
@@ -125,12 +126,50 @@ impl PinClient {
             "recovery_code_hash": recovery_code_hash(enrollment.recovery_code),
             "grant": enrollment.grant,
         });
-        self.post_signed(account, "/v1/reset", payload).await
+        self.post_signed(account, KeyRef::Jwk, "/v1/reset", payload)
+            .await
+    }
+
+    /// `POST /v1/pins/add`: pin `new_account` for `slug`, authorized by
+    /// `signer`, which must already be pinned.
+    pub(crate) async fn add(
+        &self,
+        signer: &dyn AccountSigner,
+        user: &str,
+        new_account: &NewPin<'_>,
+    ) -> Result<Vec<Pin>, PinError> {
+        let payload = json!({
+            "op": "add",
+            "user": user,
+            "slug": new_account.slug,
+            "account_uri": new_account.account_uri,
+            "jwk": new_account.jwk,
+        });
+        self.post_signed(signer, KeyRef::Kid, "/v1/pins/add", payload)
+            .await
+    }
+
+    /// `POST /v1/pins/remove`: stop allowing `account_uri` to get certificates,
+    /// authorized by `signer`, which must be pinned.
+    pub(crate) async fn remove(
+        &self,
+        signer: &dyn AccountSigner,
+        user: &str,
+        account_uri: &str,
+    ) -> Result<Vec<Pin>, PinError> {
+        let payload = json!({
+            "op": "remove",
+            "user": user,
+            "account_uri": account_uri,
+        });
+        self.post_signed(signer, KeyRef::Kid, "/v1/pins/remove", payload)
+            .await
     }
 
     async fn post_signed(
         &self,
-        account: &AcmeAccount,
+        account: &dyn AccountSigner,
+        key_ref: KeyRef,
         path: &str,
         mut payload: Value,
     ) -> Result<Vec<Pin>, PinError> {
@@ -142,7 +181,10 @@ impl PinClient {
                 json!(random_token().map_err(|e| PinError::Unavailable(e.to_string()))?),
             );
         }
-        let header = json!({ "alg": "ES256", "url": url, "jwk": account.jwk() });
+        let header = match key_ref {
+            KeyRef::Jwk => json!({ "alg": "ES256", "url": url, "jwk": account.jwk() }),
+            KeyRef::Kid => json!({ "alg": "ES256", "url": url, "kid": account.uri() }),
+        };
         let body = sign_jws(account, &header, &payload)
             .map_err(|e| PinError::Unavailable(format!("couldn't sign the request: {e:#}")))?;
         let response = self
@@ -154,6 +196,22 @@ impl PinClient {
             .map_err(|e| PinError::Unavailable(e.to_string()))?;
         parse_pins(response).await
     }
+}
+
+/// How a signed request names the key that signed it.
+#[derive(Clone, Copy)]
+enum KeyRef {
+    /// The public key travels in the request (enroll and reset: no account is pinned yet).
+    Jwk,
+    /// The signer's pinned account URL (add and remove).
+    Kid,
+}
+
+/// An account to pin next to the signer's own.
+pub(crate) struct NewPin<'a> {
+    pub(crate) slug: &'a str,
+    pub(crate) account_uri: &'a str,
+    pub(crate) jwk: &'a Value,
 }
 
 async fn parse_pins(response: reqwest::Response) -> Result<Vec<Pin>, PinError> {
@@ -175,18 +233,6 @@ async fn parse_pins(response: reqwest::Response) -> Result<Vec<Pin>, PinError> {
     serde_json::from_str::<PinList>(&text)
         .map(|list| list.pins)
         .map_err(|e| PinError::Unavailable(format!("the answer wasn't a pin list: {e}")))
-}
-
-/// A flattened JWS (`protected`, `payload`, `signature`) over `payload`.
-fn sign_jws(account: &AcmeAccount, header: &Value, payload: &Value) -> anyhow::Result<Value> {
-    let protected = URL_SAFE_NO_PAD.encode(serde_json::to_vec(header)?);
-    let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(payload)?);
-    let signature = account.sign_es256(format!("{protected}.{payload}").as_bytes())?;
-    Ok(json!({
-        "protected": protected,
-        "payload": payload,
-        "signature": URL_SAFE_NO_PAD.encode(signature),
-    }))
 }
 
 fn random_token() -> anyhow::Result<String> {

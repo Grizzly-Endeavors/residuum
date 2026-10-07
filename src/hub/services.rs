@@ -226,8 +226,13 @@ impl HubServices {
             })?;
         let team_feed = Arc::new(TeamChangeFeed::start(team_paths.root().to_path_buf()).await);
         let directory = super::directory::DirectoryHandle::unbound();
+        let remote_access = crate::remote_access::slot::RemoteAccessSlot::new(&hub_dir);
         let sibling_fanout = crate::a2a::SiblingFanout::new_shared();
-        crate::a2a::spawn_sibling_discovery(Arc::clone(&sibling_fanout), tunnel_status_rx.clone());
+        crate::a2a::spawn_sibling_discovery(
+            Arc::clone(&sibling_fanout),
+            tunnel_status_rx.clone(),
+            remote_access.discovery_receiver(),
+        );
         Ok(Self {
             root: root.to_path_buf(),
             a2a_keys: crate::a2a::A2aKeys::new_shared(&hub_dir),
@@ -249,7 +254,7 @@ impl HubServices {
             team_router: super::team::TeamRouter::new_shared(directory.clone()),
             directory,
             pairing,
-            remote_access: crate::remote_access::slot::RemoteAccessSlot::new(),
+            remote_access,
         })
     }
 

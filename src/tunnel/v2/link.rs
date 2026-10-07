@@ -203,6 +203,18 @@ impl RelayLink {
         });
     }
 
+    /// Ask the relay to make `slug` the user's active instance. The relay
+    /// answers with a new instance list, not with a reply to this.
+    pub(crate) fn activate_instance(&self, slug: &str) {
+        if self.shared.pending().closed {
+            tracing::debug!("instance switch skipped: the tunnel is gone");
+            return;
+        }
+        self.shared.outbox.send_control(&V2Frame::ActivateInstance {
+            slug: slug.to_string(),
+        });
+    }
+
     /// Whether the tunnel this link belongs to has ended.
     #[cfg(test)]
     pub(crate) fn is_closed(&self) -> bool {

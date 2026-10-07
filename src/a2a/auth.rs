@@ -18,6 +18,7 @@ use axum::response::{IntoResponse, Response};
 use crate::config::A2aVisibility;
 
 use super::keys_runtime::SharedA2aKeys;
+use crate::remote_access::siblings::SiblingKeyVerifier;
 
 /// Header the auth layer injects with the resolved caller identity
 /// (`key:<name>` or `sibling:<slug>`). Stripped from every incoming request
@@ -43,8 +44,10 @@ pub const AUTH_CHECK_PATH: &str = "/_a2a/auth-check";
 pub enum Caller {
     /// A caller key minted with `residuum a2a keys create`.
     Key(String),
-    /// Another of this user's instances, attested by this process's own
-    /// tunnel connection (never by anything a client can present directly).
+    /// Another of this user's instances: it presented a key issued to it when
+    /// it joined this one (the secure tunnel), or it was attested by this
+    /// process's own tunnel connection (the older tunnel, never by anything a
+    /// client can present directly).
     Sibling(String),
 }
 
@@ -98,8 +101,10 @@ where
 pub struct AuthState {
     /// Caller-key store, for verifying `Authorization: Bearer` tokens.
     pub keys: SharedA2aKeys,
-    /// Source of this process's tunnel nonce, for sibling attestation.
+    /// Source of this process's tunnel nonce, for the older tunnel's sibling attestation.
     pub tunnel_nonce: Arc<dyn TunnelNonceSource>,
+    /// Keys issued to joined siblings, each tagged with the sibling's slug.
+    pub sibling_keys: Arc<dyn SiblingKeyVerifier>,
 }
 
 /// Whether `req` is the public Agent Card GET, which stays open to everyone
@@ -128,8 +133,10 @@ async fn resolve_caller(
     }
 
     let token = authorization.and_then(|v| v.strip_prefix("Bearer "))?;
-    let name = state.keys.verify(token).await?;
-    Some(Caller::Key(name))
+    if let Some(name) = state.keys.verify(token).await {
+        return Some(Caller::Key(name));
+    }
+    state.sibling_keys.verify(token).map(Caller::Sibling)
 }
 
 /// The result of [`authorize`].
@@ -285,6 +292,7 @@ mod tests {
             AuthState {
                 keys: Arc::new(keys),
                 tunnel_nonce: Arc::new(NoTunnel),
+                sibling_keys: Arc::new(crate::remote_access::siblings::NoSiblings),
             },
             token,
         )
@@ -398,6 +406,7 @@ mod tests {
         let state = AuthState {
             keys: Arc::new(keys),
             tunnel_nonce: Arc::new(FixedNonce("real-nonce")),
+            sibling_keys: Arc::new(crate::remote_access::siblings::NoSiblings),
         };
         let req = Request::builder()
             .method("POST")
@@ -420,6 +429,7 @@ mod tests {
         let state = AuthState {
             keys: Arc::new(keys),
             tunnel_nonce: Arc::new(NoTunnel),
+            sibling_keys: Arc::new(crate::remote_access::siblings::NoSiblings),
         };
         let req = Request::builder()
             .method("POST")
@@ -442,6 +452,7 @@ mod tests {
         let state = AuthState {
             keys: Arc::new(keys),
             tunnel_nonce: Arc::new(FixedNonce("real-nonce")),
+            sibling_keys: Arc::new(crate::remote_access::siblings::NoSiblings),
         };
         let req = Request::builder()
             .method("POST")
@@ -466,6 +477,129 @@ mod tests {
             body,
             "sibling:alpha|sibling_hdr=false|tunnel_hdr=false|authorization_hdr=false"
         );
+    }
+
+    /// A hub whose only credential is a joined sibling's key.
+    async fn state_with_sibling_key(dir: &std::path::Path) -> (AuthState, String) {
+        let siblings = crate::remote_access::siblings::SiblingKeys::open(dir);
+        let inbound = crate::remote_access::siblings::keys::issue_key();
+        siblings
+            .upsert(crate::remote_access::siblings::keys::NewSibling {
+                slug: "desktop".to_string(),
+                display_name: "Desk".to_string(),
+                account_uri: "https://acme.test/acct/desktop".to_string(),
+                outbound_key: crate::remote_access::siblings::keys::issue_key(),
+                inbound_key: inbound.clone(),
+            })
+            .await
+            .unwrap();
+        (
+            AuthState {
+                keys: Arc::new(A2aKeys::new(dir.join("a2a"))),
+                tunnel_nonce: Arc::new(NoTunnel),
+                sibling_keys: Arc::new(siblings),
+            },
+            inbound,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_sibling_key_reaches_a_private_agent_as_that_sibling() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, key) = state_with_sibling_key(dir.path()).await;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/")
+            .header(header::AUTHORIZATION, format!("Bearer {key}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app(state, A2aVisibility::Private)
+            .oneshot(req)
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = String::from_utf8(
+            axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert_eq!(
+            body, "sibling:desktop|sibling_hdr=false|tunnel_hdr=false|authorization_hdr=false",
+            "the key is spent on authenticating and not passed on"
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_sibling_key_a_private_agent_does_not_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, key) = state_with_sibling_key(dir.path()).await;
+        let none = Request::builder()
+            .method("POST")
+            .uri("/")
+            .body(Body::empty())
+            .unwrap();
+        let without_key = app(state.clone(), A2aVisibility::Private)
+            .oneshot(none)
+            .await
+            .unwrap();
+        assert_eq!(without_key.status(), StatusCode::NOT_FOUND);
+
+        // A key that no sibling holds, and a real key with a character changed.
+        let mut wrong = key.clone();
+        wrong.replace_range(
+            wrong.len() - 1..,
+            if key.ends_with('a') { "b" } else { "a" },
+        );
+        for token in [crate::remote_access::siblings::keys::issue_key(), wrong] {
+            let req = Request::builder()
+                .method("POST")
+                .uri("/")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap();
+            let resp = app(state.clone(), A2aVisibility::Private)
+                .oneshot(req)
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_removed_sibling_key_stops_working_and_auth_check_follows_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let siblings = Arc::new(crate::remote_access::siblings::SiblingKeys::open(
+            dir.path(),
+        ));
+        let inbound = crate::remote_access::siblings::keys::issue_key();
+        siblings
+            .upsert(crate::remote_access::siblings::keys::NewSibling {
+                slug: "desktop".to_string(),
+                display_name: "Desk".to_string(),
+                account_uri: "https://acme.test/acct/desktop".to_string(),
+                outbound_key: crate::remote_access::siblings::keys::issue_key(),
+                inbound_key: inbound.clone(),
+            })
+            .await
+            .unwrap();
+        let state = AuthState {
+            keys: Arc::new(A2aKeys::new(dir.path().join("a2a"))),
+            tunnel_nonce: Arc::new(NoTunnel),
+            sibling_keys: Arc::clone(&siblings) as Arc<dyn SiblingKeyVerifier>,
+        };
+        let ok = app(state.clone(), A2aVisibility::Private)
+            .oneshot(get_req(AUTH_CHECK_PATH, Some(&inbound)))
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::NO_CONTENT);
+        siblings.remove("desktop").await.unwrap();
+        let gone = app(state, A2aVisibility::Private)
+            .oneshot(get_req(AUTH_CHECK_PATH, Some(&inbound)))
+            .await
+            .unwrap();
+        assert_eq!(gone.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

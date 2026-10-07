@@ -124,7 +124,7 @@ struct Stack {
 
 impl Stack {
     fn start(env: &Env, relay: &FakeRelay) -> Self {
-        let slot = RemoteAccessSlot::new();
+        let slot = RemoteAccessSlot::new(env.hub.path());
         let pairing = DevicePairing::open(env.hub.path());
         let (tunnel_status, _status_rx) = watch::channel(TunnelStatus::Disconnected);
         let tunnel_status = Arc::new(tunnel_status);
@@ -149,6 +149,9 @@ impl Stack {
                     .unwrap_or_else(PoisonError::into_inner)
                     .push(message);
             }),
+            siblings: slot.sibling_keys(),
+            discovery: slot.discovery_sender(),
+            sibling_channel: None,
         })
         .unwrap();
         remote.start_background();

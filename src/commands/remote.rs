@@ -1,6 +1,7 @@
-//! `remote` subcommand: pair browsers for remote access through Residuum Cloud.
+//! `remote` subcommand: pair browsers for remote access through Residuum Cloud,
+//! and join this instance to the user's other instances.
 //!
-//! Every subcommand is a client of the running hub's pairing routes. The first
+//! Every subcommand is a client of the running hub's pairing and remote access routes. The first
 //! device is paired from the machine Residuum runs on, never over the relay,
 //! so a server used only remotely is paired over SSH with `residuum remote pair`.
 
@@ -10,7 +11,7 @@ use reqwest::Method;
 
 use residuum::pairing::qr;
 use residuum::pairing::types::{DeviceListResponse, PairLinkResponse};
-use residuum::remote_access::status::{RemoteAccessState, RemoteAccessStatus};
+use residuum::remote_access::status::{JoinState, RemoteAccessState, RemoteAccessStatus};
 use residuum::util::FatalError;
 
 use super::hub_client::HubClient;
@@ -31,6 +32,23 @@ pub(super) enum RemoteCommand {
     Status,
     /// Tell Residuum the recovery code is saved, so it forgets it
     Saved,
+    /// Ask another of your instances to approve this one, so it can get a certificate and call it
+    Join {
+        /// The other instance's name, as shown in Residuum Cloud (for example `laptop`)
+        instance: String,
+    },
+    /// List the instances asking this one to approve them, with the codes to compare
+    Joins,
+    /// Approve an instance asking to join, after checking its code matches
+    Approve {
+        /// The request's id, from `residuum remote joins`
+        id: String,
+    },
+    /// Refuse an instance asking to join
+    Deny {
+        /// The request's id, from `residuum remote joins`
+        id: String,
+    },
     /// Take your address back after losing every instance's certificate account
     ResetPins {
         /// The recovery code from when remote access was first set up. Asked for when left out.
@@ -51,6 +69,10 @@ pub(super) async fn run_remote_command(
         RemoteCommand::Revoke { id } => revoke(&client, id).await,
         RemoteCommand::Status => status(&client).await,
         RemoteCommand::Saved => saved(&client).await,
+        RemoteCommand::Join { instance } => join(&client, instance).await,
+        RemoteCommand::Joins => joins(&client).await,
+        RemoteCommand::Approve { id } => decide(&client, id, "approve").await,
+        RemoteCommand::Deny { id } => decide(&client, id, "deny").await,
         RemoteCommand::ResetPins { recovery_code } => {
             reset_pins(&client, recovery_code.as_deref()).await
         }
@@ -176,6 +198,28 @@ fn status_report(status: &RemoteAccessStatus) -> String {
             _ = writeln!(out, "  {} (instance {})", pin.account_uri, pin.slug);
         }
     }
+    if !status.siblings.is_empty() {
+        out.push_str("\nJoined instances (they call each other's agents):\n");
+        for sibling in &status.siblings {
+            _ = writeln!(out, "  {}", sibling.slug);
+        }
+    }
+    let removable: Vec<_> = status.pins.iter().filter(|pin| pin.removable).collect();
+    if !removable.is_empty() {
+        out.push_str(
+            "\nThese certificate accounts belong to instances Residuum Cloud no longer lists. Remove them in Settings, Remote access:\n",
+        );
+        for pin in removable {
+            _ = writeln!(out, "  {} (instance {})", pin.account_uri, pin.slug);
+        }
+    }
+    if !status.pending_joins.is_empty() {
+        _ = writeln!(
+            out,
+            "\n{} instance(s) are asking to join. See `residuum remote joins`.",
+            status.pending_joins.len()
+        );
+    }
     if let Some(code) = &status.recovery_code {
         _ = write!(
             out,
@@ -198,6 +242,109 @@ fn state_summary(state: RemoteAccessState) -> &'static str {
         RemoteAccessState::Refused => "refused the relay's identity",
         RemoteAccessState::Error => "needs attention",
     }
+}
+
+/// How often `residuum remote join` looks at the join's progress.
+const JOIN_POLL: std::time::Duration = std::time::Duration::from_secs(2);
+
+async fn join(client: &HubClient, instance: &str) -> Result<(), FatalError> {
+    let body = serde_json::json!({ "instance": instance.trim() });
+    client
+        .send_no_content_with(Method::POST, "/api/hub/remote-access/join", &body)
+        .await?;
+    println!("Asking \"{}\" to approve this instance...", instance.trim());
+    let mut shown_code = false;
+    loop {
+        tokio::time::sleep(JOIN_POLL).await;
+        let status: RemoteAccessStatus = client
+            .send(Method::GET, "/api/hub/remote-access/status", None)
+            .await?;
+        let Some(progress) = status.join.filter(|p| p.instance == instance.trim()) else {
+            continue;
+        };
+        if let Some(code) = &progress.code
+            && !shown_code
+        {
+            shown_code = true;
+            println!(
+                "\nThe code is {code}. On \"{}\", open Settings, Remote access (or run `residuum remote joins`) and approve the request only if it shows the same code.\nWaiting for the approval...",
+                instance.trim()
+            );
+        }
+        match progress.state {
+            JoinState::Waiting => {}
+            JoinState::Approved => {
+                println!(
+                    "\nApproved. This instance is now a sibling of \"{}\".",
+                    instance.trim()
+                );
+                println!("Run `residuum remote status` to follow the certificate.");
+                return Ok(());
+            }
+            JoinState::Denied | JoinState::Failed => {
+                return Err(FatalError::Other(anyhow::anyhow!(
+                    progress
+                        .detail
+                        .unwrap_or_else(|| "The join did not complete.".to_string())
+                )));
+            }
+        }
+    }
+}
+
+async fn joins(client: &HubClient) -> Result<(), FatalError> {
+    let status: RemoteAccessStatus = client
+        .send(Method::GET, "/api/hub/remote-access/status", None)
+        .await?;
+    println!("{}", join_requests(&status));
+    Ok(())
+}
+
+/// What `residuum remote joins` prints.
+fn join_requests(status: &RemoteAccessStatus) -> String {
+    if status.pending_joins.is_empty() {
+        return "No instance is asking to join.".to_string();
+    }
+    let mut out = String::from(
+        "Instances asking to join. Approve one only if its code matches the code shown on that instance:\n",
+    );
+    for request in &status.pending_joins {
+        let hint = match request.in_relay_list {
+            Some(true) => "listed by Residuum Cloud",
+            Some(false) => "NOT listed by Residuum Cloud",
+            None => "Residuum Cloud's list is unknown",
+        };
+        _ = writeln!(
+            out,
+            "  {}  code {}  instance \"{}\" ({}) {hint}",
+            request.id,
+            request.code,
+            request.slug,
+            printable(&request.display_name),
+        );
+    }
+    out.push_str(
+        "\nApprove with `residuum remote approve <id>`, refuse with `residuum remote deny <id>`.",
+    );
+    out
+}
+
+/// Text from another instance with anything that could rewrite a terminal line removed.
+fn printable(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).collect()
+}
+
+async fn decide(client: &HubClient, id: &str, verb: &str) -> Result<(), FatalError> {
+    let path = format!("/api/hub/remote-access/joins/{}/{verb}", id.trim());
+    client.send_no_content(Method::POST, &path).await?;
+    if verb == "approve" {
+        println!(
+            "Approved. That instance can now get certificates for your addresses and call your agents."
+        );
+    } else {
+        println!("Denied.");
+    }
+    Ok(())
 }
 
 async fn saved(client: &HubClient) -> Result<(), FatalError> {
@@ -274,6 +421,7 @@ mod tests {
             slug: "stranger".into(),
             own: false,
             known: false,
+            removable: false,
         }];
         status.recovery_code = Some("ABCDEFGHIJKLMNOPQRST".into());
         let text = status_report(&status);
@@ -283,6 +431,40 @@ mod tests {
         assert!(text.contains("stranger"));
         assert!(text.contains("ABCDEFGHIJKLMNOPQRST"));
         assert!(text.contains("residuum remote saved"));
+    }
+
+    #[test]
+    fn join_requests_show_codes_hints_and_how_to_decide() {
+        use residuum::remote_access::status::PendingJoinInfo;
+        let mut status = RemoteAccessStatus::new(RemoteAccessState::Ready);
+        assert!(join_requests(&status).contains("No instance is asking"));
+        status.pending_joins = vec![
+            PendingJoinInfo {
+                id: "ab12cd34ef56".into(),
+                code: "482913".into(),
+                slug: "desktop".into(),
+                display_name: "Desk\u{1b}[2J top".into(),
+                in_relay_list: Some(true),
+                expires_at: "2026-01-01T00:00:00Z".into(),
+            },
+            PendingJoinInfo {
+                id: "ffffffffffff".into(),
+                code: "000111".into(),
+                slug: "ghost".into(),
+                display_name: "Ghost".into(),
+                in_relay_list: Some(false),
+                expires_at: "2026-01-01T00:00:00Z".into(),
+            },
+        ];
+        let text = join_requests(&status);
+        assert!(text.contains("ab12cd34ef56  code 482913"));
+        assert!(text.contains("listed by Residuum Cloud"));
+        assert!(text.contains("NOT listed by Residuum Cloud"));
+        assert!(
+            !text.contains('\u{1b}'),
+            "control characters from another instance never reach the terminal"
+        );
+        assert!(text.contains("residuum remote approve"));
     }
 
     #[test]

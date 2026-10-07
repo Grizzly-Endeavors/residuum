@@ -68,6 +68,7 @@ impl SessionHandler for TestHandler {
                 instance: connected.instance.clone(),
                 ui_origin: Some(format!("https://{}", connected.hosts.ui)),
                 workbench_origin: Some(format!("https://{}", connected.hosts.workbench)),
+                instance_origin: Some(format!("https://{}", connected.hosts.instance)),
             },
         }
     }
@@ -190,6 +191,7 @@ async fn accepted_session_publishes_connected_and_sends_agents() {
             workbench_origin: Some("https://bear.workbench.relay.test".to_string()),
             instance: Some("laptop".to_string()),
             a2a_token: None,
+            instance_origin: Some("https://laptop.bear.relay.test".to_string()),
         }
     );
     let info = outputs.infos.recv().await.unwrap();

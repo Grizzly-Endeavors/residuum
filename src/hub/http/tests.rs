@@ -532,7 +532,7 @@ impl Harness {
             agent_changes: Arc::clone(&changes),
             system_one: crate::inference::system_one::SystemOneService::new(None),
             pairing: pairing.clone(),
-            remote_access: crate::remote_access::slot::RemoteAccessSlot::new(),
+            remote_access: crate::remote_access::slot::RemoteAccessSlot::new(root.path()),
         };
         let app = hub_router(shared, hub);
         Self {

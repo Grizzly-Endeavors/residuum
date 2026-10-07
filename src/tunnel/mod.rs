@@ -222,6 +222,11 @@ pub enum TunnelStatus {
         /// This instance's slug, as the relay knows it. Combined with `origin`
         /// this builds the public A2A URL `{origin}/a2a/{instance}`.
         instance: Option<String>,
+        /// Public origin of this instance's own address,
+        /// `https://{slug}.{user}.{base}`, where the secure tunnel serves its A2A
+        /// and Teams endpoints. `None` on the older tunnel, which serves them
+        /// under `origin`.
+        instance_origin: Option<String>,
         /// Sibling credential minted for this connection, valid only while
         /// this tunnel is connected. Never logged: [`TunnelStatus`]'s `Debug`
         /// impl redacts it.
@@ -239,6 +244,7 @@ impl std::fmt::Debug for TunnelStatus {
                 origin,
                 workbench_origin,
                 instance,
+                instance_origin,
                 a2a_token,
             } => f
                 .debug_struct("Connected")
@@ -246,6 +252,7 @@ impl std::fmt::Debug for TunnelStatus {
                 .field("origin", origin)
                 .field("workbench_origin", workbench_origin)
                 .field("instance", instance)
+                .field("instance_origin", instance_origin)
                 .field("a2a_token", &a2a_token.as_ref().map(|_| "<redacted>"))
                 .finish(),
         }
@@ -315,6 +322,7 @@ mod tests {
             workbench_origin: None,
             instance: Some("laptop".to_string()),
             a2a_token: Some("rsa_super-secret-token".to_string()),
+            instance_origin: None,
         };
         let debug = format!("{status:?}");
         assert!(

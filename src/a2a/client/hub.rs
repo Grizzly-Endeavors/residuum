@@ -290,16 +290,18 @@ impl A2aClientHub {
     }
 
     async fn refresh_card(&self, name: &str) {
-        let Some((url, headers)) = ({
+        let Some((url, headers, source)) = ({
             let agents = self.agents.read().await;
             agents
                 .get(name)
-                .map(|rec| (rec.url.clone(), rec.headers.clone()))
+                .map(|rec| (rec.url.clone(), rec.headers.clone(), rec.source))
         }) else {
             return;
         };
 
-        let result = fetch_card(&url, &headers).await;
+        // A sibling's card is only ever read at the address its key was issued
+        // for; a configured agent's address may legitimately redirect.
+        let result = fetch_card(&url, &headers, source != AgentSource::Sibling).await;
         let mut agents = self.agents.write().await;
         let Some(rec) = agents.get_mut(name) else {
             return;
@@ -422,13 +424,17 @@ fn fresh_record(entry: A2aAgentEntry, source: AgentSource) -> AgentRecord {
 async fn fetch_card(
     url: &str,
     headers: &HashMap<String, String>,
+    follow_redirects: bool,
 ) -> Result<a2a::AgentCard, String> {
-    let client = headers_client(headers)?;
+    let client = headers_client(headers, follow_redirects)?;
     let resolver = a2a_client::agent_card::AgentCardResolver::new(Some(client));
     resolver.resolve(url).await.map_err(|e| e.to_string())
 }
 
-fn headers_client(headers: &HashMap<String, String>) -> Result<reqwest::Client, String> {
+fn headers_client(
+    headers: &HashMap<String, String>,
+    follow_redirects: bool,
+) -> Result<reqwest::Client, String> {
     let mut map = reqwest::header::HeaderMap::new();
     for (key, value) in headers {
         let name = reqwest::header::HeaderName::try_from(key.as_str())
@@ -437,8 +443,14 @@ fn headers_client(headers: &HashMap<String, String>) -> Result<reqwest::Client, 
             .map_err(|e| format!("invalid header value for '{key}': {e}"))?;
         map.insert(name, val);
     }
+    let redirects = if follow_redirects {
+        reqwest::redirect::Policy::default()
+    } else {
+        reqwest::redirect::Policy::none()
+    };
     reqwest::Client::builder()
         .default_headers(map)
+        .redirect(redirects)
         .build()
         .map_err(|e| format!("failed to build http client: {e}"))
 }

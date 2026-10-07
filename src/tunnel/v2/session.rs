@@ -85,6 +85,7 @@ struct ConnectedFrame {
     instance: String,
     keepalive_interval_secs: u64,
     hosts: WireHosts,
+    a2a_token: String,
 }
 
 async fn wait_for_connected(read: &mut SplitStream<WsStream>) -> Result<ConnectedFrame, String> {
@@ -96,6 +97,7 @@ async fn wait_for_connected(read: &mut SplitStream<WsStream>) -> Result<Connecte
                     instance,
                     keepalive_interval_secs,
                     hosts,
+                    a2a_token,
                     ..
                 }) => {
                     return Ok(ConnectedFrame {
@@ -103,6 +105,7 @@ async fn wait_for_connected(read: &mut SplitStream<WsStream>) -> Result<Connecte
                         instance,
                         keepalive_interval_secs,
                         hosts,
+                        a2a_token,
                     });
                 }
                 Ok(other) => debug!(frame = ?other, "ignoring frame before connected"),
@@ -217,6 +220,7 @@ impl Frames<'_> {
             }
             V2Frame::InstancesUpdate { instances } => {
                 debug!(count = instances.len(), "relay sent the instance list");
+                self.handler.on_instances(instances);
             }
             other @ (V2Frame::Connected { .. }
             | V2Frame::AgentsUpdate { .. }
@@ -314,6 +318,7 @@ fn publish_accepted(
             workbench_origin: verdict.workbench_origin,
             instance: Some(verdict.instance),
             a2a_token: None,
+            instance_origin: verdict.instance_origin,
         })
         .unwrap_or_else(|_| debug!("status receiver dropped"));
 }
@@ -323,6 +328,7 @@ struct AcceptedRelay {
     instance: String,
     ui_origin: Option<String>,
     workbench_origin: Option<String>,
+    instance_origin: Option<String>,
 }
 
 /// Tear a session down: fail waiters and streams, say goodbye when the end
@@ -370,6 +376,7 @@ fn connected_info(hello: ConnectedFrame) -> ConnectedInfo {
             instance: hello.hosts.instance,
         },
         keepalive_interval_secs: hello.keepalive_interval_secs,
+        a2a_token: hello.a2a_token,
     }
 }
 
@@ -429,12 +436,12 @@ pub(in crate::tunnel) async fn run_session(ws: WsStream, inputs: SessionInputs<'
                 decision = &mut verdict, if !verdict_done => {
                     verdict_done = true;
                     match decision {
-                        Verdict::Accept { user, instance, ui_origin, workbench_origin } => {
+                        Verdict::Accept { user, instance, ui_origin, workbench_origin, instance_origin } => {
                             frames.accepted = true;
                             publish_accepted(
                                 status_tx,
                                 &info,
-                                AcceptedRelay { user, instance, ui_origin, workbench_origin },
+                                AcceptedRelay { user, instance, ui_origin, workbench_origin, instance_origin },
                             );
                             send_agents_update(&outbox, agents_rx);
                         }

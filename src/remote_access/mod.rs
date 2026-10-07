@@ -13,11 +13,13 @@ mod engine_tests;
 #[cfg(test)]
 mod fake_pin_service;
 pub(crate) mod identity;
+pub(crate) mod jws;
 pub mod manager;
 #[cfg(test)]
 pub(crate) mod pebble_support;
 pub(crate) mod pins;
 pub(crate) mod proxy;
+pub mod siblings;
 pub mod slot;
 pub mod status;
 pub(crate) mod store;
