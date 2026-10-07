@@ -19,6 +19,7 @@ pub mod memory;
 pub mod notify;
 pub mod pairing;
 pub mod pulse;
+pub mod remote_access;
 pub mod skills;
 pub mod subconscious;
 pub mod time;

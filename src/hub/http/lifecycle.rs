@@ -5,7 +5,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, patch, post};
 use serde::Serialize;
@@ -184,7 +184,7 @@ async fn stop_all(State(state): State<LifecycleState>) -> Response {
 /// `GET /api/hub/status` — version, uptime, tunnel, and agent counts.
 async fn hub_status(
     State(state): State<LifecycleState>,
-    headers: HeaderMap,
+    parts: axum::http::request::Parts,
 ) -> Json<serde_json::Value> {
     let (mut starting, mut running, mut stopped, mut failed) = (0_u32, 0_u32, 0_u32, 0_u32);
     for agent in state.directory.list() {
@@ -195,7 +195,11 @@ async fn hub_status(
             AgentState::Failed => failed += 1,
         }
     }
-    let tunnel = CloudStatusResponse::current(&state.hub_dir, &state.tunnel_status_rx, &headers);
+    let tunnel = CloudStatusResponse::current(
+        &state.hub_dir,
+        &state.tunnel_status_rx,
+        crate::pairing::remote::remote_context(&parts.headers, &parts.extensions).is_some(),
+    );
     Json(json!({
         "version": crate::update::CURRENT_VERSION,
         "uptime_secs": state.started_at.elapsed().as_secs(),

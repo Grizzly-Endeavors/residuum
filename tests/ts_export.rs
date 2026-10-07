@@ -47,6 +47,9 @@ mod ts_export {
         PairingStateResponse, PendingPairingInfo, PollPairingBody, RecoveryCodeBody,
         RecoveryCodesResponse, RedeemTokenBody, WorkbenchHandoffResponse,
     };
+    use residuum::remote_access::status::{
+        CertificateInfo, PinInfo, RemoteAccessState, RemoteAccessStatus, RemoteHosts,
+    };
 
     #[test]
     #[expect(
@@ -164,6 +167,15 @@ mod ts_export {
         PairLinkResponse::export_all(&cfg).unwrap();
         RecoveryCodesResponse::export_all(&cfg).unwrap();
         WorkbenchHandoffResponse::export_all(&cfg).unwrap();
+
+        // Remote access: `RemoteAccessStatus` (with its `RemoteAccessState`,
+        // `RemoteHosts`, `CertificateInfo` and `PinInfo` parts) answers `GET
+        // /api/hub/remote-access/status`.
+        RemoteAccessStatus::export_all(&cfg).unwrap();
+        RemoteAccessState::export_all(&cfg).unwrap();
+        RemoteHosts::export_all(&cfg).unwrap();
+        CertificateInfo::export_all(&cfg).unwrap();
+        PinInfo::export_all(&cfg).unwrap();
 
         // Web Push: `PushKeyResponse` answers `GET /api/hub/push/key`,
         // `PushDeviceList` answers `GET /api/hub/push/devices` (with its

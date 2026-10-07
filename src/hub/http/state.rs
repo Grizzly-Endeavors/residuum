@@ -102,4 +102,6 @@ pub struct HubHttpState {
     pub system_one: Arc<SystemOneService>,
     /// Which browsers may reach this install through Residuum Cloud.
     pub pairing: crate::pairing::DevicePairing,
+    /// Remote access over the secure tunnel: its status and actions.
+    pub remote_access: crate::remote_access::slot::RemoteAccessSlot,
 }

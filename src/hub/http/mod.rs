@@ -35,6 +35,7 @@ mod overview;
 mod pairing;
 mod process;
 mod push;
+mod remote_access;
 mod session_relay;
 mod state;
 #[cfg(test)]
@@ -94,6 +95,7 @@ pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Rout
         .merge(events::routes(Arc::clone(&hub.team_events)))
         .merge(overview::routes(Arc::clone(&hub.overview)))
         .merge(pairing::routes(hub.pairing.clone()))
+        .merge(remote_access::routes(hub.remote_access.clone()))
         .merge(process::hub_config_routes(&hub))
         .merge(process::cloud_routes(&hub))
         .merge(process::update_routes(&hub))

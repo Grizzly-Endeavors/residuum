@@ -43,6 +43,17 @@ impl HubClient {
         self.execute(method, path, None).await.map(drop)
     }
 
+    /// Send a request with a JSON body that answers with no body when it
+    /// succeeds.
+    pub(super) async fn send_no_content_with(
+        &self,
+        method: Method,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), FatalError> {
+        self.execute(method, path, Some(body)).await.map(drop)
+    }
+
     /// Send a request and decode the JSON response body.
     ///
     /// Non-success statuses become an error carrying the server's message

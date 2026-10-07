@@ -43,7 +43,7 @@ pub use types::{
     A2aConfig, A2aVisibility, AgentAbilitiesConfig, AutoModeConfig, BackgroundConfig,
     BackgroundModelTier, BackgroundModelsConfig, CloudConfig, Config, DiscordConfig, GatewayConfig,
     IdleConfig, LearningConfig, LogLevel, MemoryConfig, OtelEndpoint, ProviderNativeSearchConfig,
-    RepeatCallGuardConfig, RoleOverrides, SearchConfig, SkillsConfig, StandaloneBackendConfig,
-    SubconsciousSettings, TeamsConfig, TelegramConfig, ToolsConfig, TracingConfig, WebSearchConfig,
-    WebhookEntry, WebhookFormat, WebhookRouting,
+    RemoteAccessSettings, RepeatCallGuardConfig, RoleOverrides, SearchConfig, SkillsConfig,
+    StandaloneBackendConfig, SubconsciousSettings, TeamsConfig, TelegramConfig, ToolsConfig,
+    TracingConfig, WebSearchConfig, WebhookEntry, WebhookFormat, WebhookRouting,
 };

@@ -58,7 +58,8 @@ impl WorkbenchServing {
 }
 
 /// Start the artifacts listener for `dir` beside the gateway on `bind`. Returns
-/// whether it is serving and, when it is, the switch that stops it. `api` is
+/// whether it is serving, the switch that stops it and its router (so another
+/// transport can serve the same pages in-process) when it is. `api` is
 /// where `/api` requests go once the hub router is bound to it.
 ///
 /// Failing to bind is not fatal: Residuum runs without the workbench and the
@@ -71,7 +72,11 @@ pub(crate) async fn start(
     dir: PathBuf,
     api: HubApi,
     pairing: crate::pairing::DevicePairing,
-) -> (WorkbenchServing, Option<tokio::sync::watch::Sender<bool>>) {
+) -> (
+    WorkbenchServing,
+    Option<tokio::sync::watch::Sender<bool>>,
+    Option<Router>,
+) {
     let (listener, port) = match bind_listener(bind, gateway_port, reserved).await {
         Ok(bound) => bound,
         Err(reason) => {
@@ -83,6 +88,7 @@ pub(crate) async fn start(
                     ),
                 },
                 None,
+                None,
             );
         }
     };
@@ -90,8 +96,9 @@ pub(crate) async fn start(
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
     let app = router(dir, api, pairing);
+    let served = app.clone();
     crate::util::spawn_monitored("workbench-listener", async move {
-        if let Err(e) = axum::serve(listener, app)
+        if let Err(e) = axum::serve(listener, served)
             .with_graceful_shutdown(async move {
                 shutdown_rx.wait_for(|stop| *stop).await.ok();
             })
@@ -100,7 +107,11 @@ pub(crate) async fn start(
             tracing::error!(error = %e, "workbench artifacts listener failed");
         }
     });
-    (WorkbenchServing::Running { port }, Some(shutdown_tx))
+    (
+        WorkbenchServing::Running { port },
+        Some(shutdown_tx),
+        Some(app),
+    )
 }
 
 /// Bind the artifacts listener on the first free port after `gateway_port`,
