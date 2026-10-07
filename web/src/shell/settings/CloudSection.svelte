@@ -17,6 +17,7 @@
   } from "../../lib/ui";
   import ConfigNumber from "./ConfigNumber.svelte";
   import DevicesGroup from "./DevicesGroup.svelte";
+  import RemoteAccessGroup from "./RemoteAccessGroup.svelte";
   import { fieldError, type AllSectionProps } from "./sections";
   import SettingsGroup from "./SettingsGroup.svelte";
   import SettingsSection from "./SettingsSection.svelte";
@@ -213,6 +214,8 @@
       </Disclosure>
     {/if}
   </SettingsGroup>
+
+  <RemoteAccessGroup />
 
   {#if phase === "connected"}
     <DevicesGroup />
