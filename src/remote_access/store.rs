@@ -86,6 +86,23 @@ impl StateStore {
         self.save().await
     }
 
+    /// Mark `account_uri` as approved here (a sibling that joined), then save.
+    pub(crate) async fn add_known(&self, account_uri: &str) -> anyhow::Result<()> {
+        {
+            let mut state = self.lock();
+            if !state.known_accounts.iter().any(|a| a == account_uri) {
+                state.known_accounts.push(account_uri.to_string());
+            }
+        }
+        self.save().await
+    }
+
+    /// Stop treating `account_uri` as approved (its pin was removed), then save.
+    pub(crate) async fn forget_known(&self, account_uri: &str) -> anyhow::Result<()> {
+        self.lock().known_accounts.retain(|a| a != account_uri);
+        self.save().await
+    }
+
     /// Keep `code` until the person has saved it.
     pub(crate) async fn set_pending_recovery_code(
         &self,
@@ -170,6 +187,21 @@ mod tests {
             reopened.pending_recovery_code().as_deref(),
             Some("ABCDEFGHIJKLMNOPQRST")
         );
+    }
+
+    #[tokio::test]
+    async fn approved_siblings_are_known_until_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StateStore::open(dir.path());
+        assert!(!store.is_known("https://acme.test/acct/2"));
+        store.add_known("https://acme.test/acct/2").await.unwrap();
+        store.add_known("https://acme.test/acct/2").await.unwrap();
+        assert!(StateStore::open(dir.path()).is_known("https://acme.test/acct/2"));
+        store
+            .forget_known("https://acme.test/acct/2")
+            .await
+            .unwrap();
+        assert!(!StateStore::open(dir.path()).is_known("https://acme.test/acct/2"));
     }
 
     #[test]

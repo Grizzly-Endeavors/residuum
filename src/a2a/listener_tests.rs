@@ -153,6 +153,8 @@ impl a2a_server::RequestHandler for AgentHandler {
 struct Fixture {
     port: u16,
     keys: SharedA2aKeys,
+    /// The keys of joined siblings the listener also accepts.
+    siblings: Arc<crate::remote_access::siblings::SiblingKeys>,
     directory: Arc<StaticAgentDirectory>,
     /// Released to let every agent's gated stream finish.
     gate: Arc<Notify>,
@@ -230,6 +232,9 @@ async fn fixture() -> Fixture {
             ),
     );
     let keys = A2aKeys::new_shared(dir.path());
+    let siblings = Arc::new(crate::remote_access::siblings::SiblingKeys::open(
+        &dir.path().join("remote-access"),
+    ));
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let listener = A2aListener::new(
         "127.0.0.1".to_string(),
@@ -238,6 +243,9 @@ async fn fixture() -> Fixture {
         Arc::clone(&keys),
         Arc::new(NoTunnel),
         shutdown_rx,
+    )
+    .with_sibling_keys(
+        Arc::clone(&siblings) as Arc<dyn crate::remote_access::siblings::SiblingKeyVerifier>
     );
     // `listener.start()` binds `port` for real; drop the reservation right
     // before spawning it so no other test process can take it first.
@@ -256,6 +264,7 @@ async fn fixture() -> Fixture {
     Fixture {
         port,
         keys,
+        siblings,
         directory,
         gate,
         shutdown_tx,
@@ -419,6 +428,77 @@ async fn a_private_agent_is_404_on_every_route_without_a_key_and_served_with_one
         .await
         .unwrap();
     assert_eq!(check.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn a_joined_siblings_key_reaches_a_private_agent_and_a_missing_key_does_not() {
+    use crate::remote_access::siblings::keys::{NewSibling, issue_key};
+    let fx = fixture().await;
+    let inbound = issue_key();
+    fx.siblings
+        .upsert(NewSibling {
+            slug: "desktop".to_string(),
+            display_name: "Desk".to_string(),
+            account_uri: "https://acme.test/acct/desktop".to_string(),
+            outbound_key: issue_key(),
+            inbound_key: inbound.clone(),
+        })
+        .await
+        .unwrap();
+    let http = reqwest::Client::new();
+    let card_url = fx.url("/agents/vault/.well-known/agent-card.json");
+
+    assert_eq!(
+        http.get(&card_url).send().await.unwrap().status(),
+        StatusCode::NOT_FOUND,
+        "no key"
+    );
+    assert_eq!(
+        http.get(&card_url)
+            .bearer_auth(issue_key())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND,
+        "a key nobody holds"
+    );
+    assert_eq!(
+        http.get(&card_url)
+            .bearer_auth(&inbound)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK,
+        "the sibling's key"
+    );
+    // The same key calls the agent: a real message round trip as `sibling:desktop`.
+    let client = client_for(&fx, "vault", &inbound).await;
+    let reply = tokio::time::timeout(
+        TEST_TIMEOUT,
+        client.send_message(&user_message("hello from the desktop")),
+    )
+    .await
+    .expect("timed out sending")
+    .unwrap();
+    assert!(
+        text_of(&reply).contains("vault"),
+        "the private agent answered: {}",
+        text_of(&reply)
+    );
+
+    // Revoking the join closes the door again.
+    fx.siblings.remove("desktop").await.unwrap();
+    assert_eq!(
+        http.get(&card_url)
+            .bearer_auth(&inbound)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
 }
 
 #[tokio::test]

@@ -6,6 +6,7 @@
   import { LazyComponent } from "../lib/lazy-component.svelte";
   import { notifications } from "../lib/notifications.svelte";
   import { overview } from "../lib/overview.svelte";
+  import { remoteAccess } from "../lib/remote-access.svelte";
   import { router } from "../lib/router.svelte";
   import { ws } from "../lib/ws.svelte";
   import { ALL_SCOPE } from "../lib/settings-sections";
@@ -145,6 +146,9 @@
       stopListening();
     };
   });
+
+  // The instance switcher in the rail follows the secure tunnel's status.
+  onMount(() => remoteAccess.follow());
 
   onMount(() => {
     // The drawer is the phone's rail; a wider window shows the rail itself.

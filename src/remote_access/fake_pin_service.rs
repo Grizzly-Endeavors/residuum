@@ -25,6 +25,8 @@ pub(crate) const TEST_GRANT: &str = "test.grant.jws";
 struct StoredPin {
     account_uri: String,
     slug: String,
+    /// The account's public key, which a `kid` signature is checked against.
+    jwk: Option<Value>,
 }
 
 #[derive(Default)]
@@ -72,6 +74,8 @@ impl FakePinService {
             .route("/v1/pins/{user}", get(list))
             .route("/v1/enroll", post(enroll))
             .route("/v1/reset", post(reset))
+            .route("/v1/pins/add", post(add))
+            .route("/v1/pins/remove", post(remove))
             .with_state(Arc::clone(&shared));
         let task = crate::util::spawn_in_span(async move {
             if let Err(e) = axum::serve(listener, app).await {
@@ -91,6 +95,16 @@ impl FakePinService {
         lock(&self.shared).pins.push(StoredPin {
             account_uri: account_uri.to_string(),
             slug: slug.to_string(),
+            jwk: None,
+        });
+    }
+
+    /// Pin `account_uri` with its public key, so it can sign `add` and `remove`.
+    pub(crate) fn preload_with_key(&self, account_uri: &str, slug: &str, jwk: Value) {
+        lock(&self.shared).pins.push(StoredPin {
+            account_uri: account_uri.to_string(),
+            slug: slug.to_string(),
+            jwk: Some(jwk),
         });
     }
 
@@ -157,9 +171,22 @@ fn verify(shared: &Shared, path: &str, body: &Value) -> Result<(Value, Value), R
     if protected.get("url").and_then(Value::as_str) != Some(&format!("{}{path}", shared.url)) {
         return Err(fail(StatusCode::UNAUTHORIZED, "url mismatch"));
     }
-    let jwk = protected
-        .get("jwk")
-        .ok_or_else(|| fail(StatusCode::BAD_REQUEST, "jwk required"))?;
+    let jwk = match (
+        protected.get("jwk"),
+        protected.get("kid").and_then(Value::as_str),
+    ) {
+        (Some(jwk), None) => jwk.clone(),
+        (None, Some(kid)) => lock(shared)
+            .pins
+            .iter()
+            .find(|pin| pin.account_uri == kid)
+            .ok_or_else(|| fail(StatusCode::FORBIDDEN, "signer is not pinned"))?
+            .jwk
+            .clone()
+            .ok_or_else(|| fail(StatusCode::FORBIDDEN, "signer has no known key"))?,
+        _ => return Err(fail(StatusCode::BAD_REQUEST, "exactly one of jwk and kid")),
+    };
+    let jwk = &jwk;
     let coordinate = |name: &str| {
         jwk.get(name)
             .and_then(Value::as_str)
@@ -224,7 +251,7 @@ async fn publish_caa(shared: &Shared, user: &str) {
 }
 
 async fn enroll(State(shared): State<Arc<Shared>>, Json(body): Json<Value>) -> Reply {
-    let (_, payload) = match verify(&shared, "/v1/enroll", &body) {
+    let (protected, payload) = match verify(&shared, "/v1/enroll", &body) {
         Ok(ok) => ok,
         Err(reply) => return reply,
     };
@@ -242,6 +269,7 @@ async fn enroll(State(shared): State<Arc<Shared>>, Json(body): Json<Value>) -> R
         state.pins.push(StoredPin {
             account_uri: field(&payload, "account_uri").to_string(),
             slug: field(&payload, "slug").to_string(),
+            jwk: protected.get("jwk").cloned(),
         });
         state.recovery_hash = Some(field(&payload, "recovery_code_hash").to_string());
         state.requests.push("enroll".to_string());
@@ -251,7 +279,7 @@ async fn enroll(State(shared): State<Arc<Shared>>, Json(body): Json<Value>) -> R
 }
 
 async fn reset(State(shared): State<Arc<Shared>>, Json(body): Json<Value>) -> Reply {
-    let (_, payload) = match verify(&shared, "/v1/reset", &body) {
+    let (protected, payload) = match verify(&shared, "/v1/reset", &body) {
         Ok(ok) => ok,
         Err(reply) => return reply,
     };
@@ -273,9 +301,55 @@ async fn reset(State(shared): State<Arc<Shared>>, Json(body): Json<Value>) -> Re
         state.pins = vec![StoredPin {
             account_uri: field(&payload, "account_uri").to_string(),
             slug: field(&payload, "slug").to_string(),
+            jwk: protected.get("jwk").cloned(),
         }];
         state.recovery_hash = Some(field(&payload, "recovery_code_hash").to_string());
         state.requests.push("reset".to_string());
+    }
+    publish_caa(&shared, field(&payload, "user")).await;
+    (StatusCode::OK, Json(pin_list(&shared)))
+}
+
+async fn add(State(shared): State<Arc<Shared>>, Json(body): Json<Value>) -> Reply {
+    let (_, payload) = match verify(&shared, "/v1/pins/add", &body) {
+        Ok(ok) => ok,
+        Err(reply) => return reply,
+    };
+    if field(&payload, "op") != "add" {
+        return fail(StatusCode::BAD_REQUEST, "op");
+    }
+    {
+        let mut state = lock(&shared);
+        let uri = field(&payload, "account_uri");
+        if !state.pins.iter().any(|pin| pin.account_uri == uri) {
+            state.pins.push(StoredPin {
+                account_uri: uri.to_string(),
+                slug: field(&payload, "slug").to_string(),
+                jwk: payload.get("jwk").cloned(),
+            });
+        }
+        state.requests.push("add".to_string());
+    }
+    publish_caa(&shared, field(&payload, "user")).await;
+    (StatusCode::OK, Json(pin_list(&shared)))
+}
+
+async fn remove(State(shared): State<Arc<Shared>>, Json(body): Json<Value>) -> Reply {
+    let (_, payload) = match verify(&shared, "/v1/pins/remove", &body) {
+        Ok(ok) => ok,
+        Err(reply) => return reply,
+    };
+    if field(&payload, "op") != "remove" {
+        return fail(StatusCode::BAD_REQUEST, "op");
+    }
+    {
+        let mut state = lock(&shared);
+        let uri = field(&payload, "account_uri");
+        if state.pins.len() < 2 || !state.pins.iter().any(|pin| pin.account_uri == uri) {
+            return fail(StatusCode::CONFLICT, "cannot remove that pin");
+        }
+        state.pins.retain(|pin| pin.account_uri != uri);
+        state.requests.push("remove".to_string());
     }
     publish_caa(&shared, field(&payload, "user")).await;
     (StatusCode::OK, Json(pin_list(&shared)))

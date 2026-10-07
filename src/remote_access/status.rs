@@ -63,6 +63,78 @@ pub struct PinInfo {
     /// Whether this instance pinned or approved it. An unknown pin is a
     /// certificate account this instance never agreed to.
     pub known: bool,
+    /// Whether the person may remove it here: not this instance's own account,
+    /// and its instance is no longer in the relay's list of instances.
+    pub removable: bool,
+}
+
+/// One of the user's instances, as the relay lists it. The relay is not
+/// trusted for this: the slug is checked before it is used, and the name is
+/// text to display, never markup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct InstanceInfo {
+    pub slug: String,
+    pub display_name: String,
+    /// Whether the user's address currently goes to this instance.
+    pub active: bool,
+    /// Whether the instance is connected to the relay now.
+    pub connected: bool,
+}
+
+/// An instance that completed a join with this one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SiblingInfo {
+    pub slug: String,
+    pub display_name: String,
+}
+
+/// Another instance asking this one to approve it, waiting for a decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PendingJoinInfo {
+    /// What approving or denying names. Not the id the requester polls with.
+    pub id: String,
+    /// The six digits that must match the code the requesting instance shows.
+    pub code: String,
+    /// The slug the request claims.
+    pub slug: String,
+    /// The name the request claims.
+    pub display_name: String,
+    /// Whether the relay lists that slug among the user's instances: `None`
+    /// when the relay's list isn't known. A hint from the relay, not proof.
+    pub in_relay_list: Option<bool>,
+    /// When the request expires, RFC 3339.
+    pub expires_at: String,
+}
+
+/// Where a join this instance started stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum JoinState {
+    /// Waiting for the person on the other instance to approve.
+    Waiting,
+    /// Approved and recorded.
+    Approved,
+    /// The other instance said no.
+    Denied,
+    /// It failed or expired; `detail` says why.
+    Failed,
+}
+
+/// A join this instance started.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct JoinProgress {
+    /// The instance being joined.
+    pub instance: String,
+    pub state: JoinState,
+    /// The six digits to compare with the other instance, once the request is sent.
+    pub code: Option<String>,
+    /// A plain-language explanation of `state`.
+    pub detail: Option<String>,
 }
 
 /// `GET /api/hub/remote-access/status`.
@@ -84,6 +156,14 @@ pub struct RemoteAccessStatus {
     /// in `recovery_code`, for requests made on the machine Residuum runs on.
     pub recovery_code_pending: bool,
     pub recovery_code: Option<String>,
+    /// The user's instances as the relay lists them, empty while unknown.
+    pub instances: Vec<InstanceInfo>,
+    /// Instances that completed a join with this one.
+    pub siblings: Vec<SiblingInfo>,
+    /// The join this instance started most recently, if any.
+    pub join: Option<JoinProgress>,
+    /// Instances waiting for this one to approve them.
+    pub pending_joins: Vec<PendingJoinInfo>,
 }
 
 impl RemoteAccessStatus {
@@ -100,6 +180,10 @@ impl RemoteAccessStatus {
             pins: Vec::new(),
             recovery_code_pending: false,
             recovery_code: None,
+            instances: Vec::new(),
+            siblings: Vec::new(),
+            join: None,
+            pending_joins: Vec::new(),
         }
     }
 

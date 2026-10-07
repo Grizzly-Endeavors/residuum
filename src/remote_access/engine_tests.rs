@@ -113,6 +113,17 @@ fn harness(a2a_port: Option<u16>, teams: BTreeMap<String, u16>, with_identity: b
             ui: ui_router(),
             workbench: workbench_router(),
         },
+        sibling_routes: Router::new().route(
+            "/_sibling/join/nonce",
+            get(|req: axum::extract::Request| async move {
+                let peer = req
+                    .extensions()
+                    .get::<crate::pairing::remote::RemoteTransport>()
+                    .and_then(|t| t.peer_ip.clone())
+                    .unwrap_or_default();
+                format!("sibling-routes peer={peer}")
+            }),
+        ),
         a2a_port,
         teams_ports: teams_rx,
     });
@@ -656,4 +667,27 @@ async fn teams_is_proxied_and_validated() {
 
     let bad = post_to("/teams/Bad_Name", Method::POST).await;
     assert_eq!(bad.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn sibling_join_paths_are_served_in_process_on_the_instance_host_only() {
+    let h = harness(Some(1), BTreeMap::new(), true);
+    let instance = h.names.instance.clone();
+    let reply = get_h1(&h, &instance, "/_sibling/join/nonce").await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert!(
+        reply.body.starts_with("sibling-routes peer="),
+        "{}",
+        reply.body
+    );
+    assert!(
+        !reply.body.ends_with("peer="),
+        "the join endpoints get the peer address the relay reported: {}",
+        reply.body
+    );
+
+    // The UI host has no such route, so the device gate's surface is unchanged.
+    let ui = h.names.ui.clone();
+    let on_ui = get_h1(&h, &ui, "/_sibling/join/nonce").await;
+    assert_eq!(on_ui.status, StatusCode::NOT_FOUND);
 }

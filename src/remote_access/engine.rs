@@ -79,6 +79,8 @@ pub(crate) struct EngineDeps {
     pub(crate) hostnames: watch::Receiver<Option<Hostnames>>,
     /// Routers for the UI and workbench hosts.
     pub(crate) routers: EngineRouters,
+    /// The join endpoints (`/_sibling/join/...`) served on the instance host.
+    pub(crate) sibling_routes: Router,
     /// The hub's A2A listener port, when it is running.
     pub(crate) a2a_port: Option<u16>,
     /// Each agent's Teams listener port.
@@ -90,6 +92,7 @@ pub(crate) struct Engine {
     resolver: Arc<CertResolver>,
     hostnames: watch::Receiver<Option<Hostnames>>,
     routers: EngineRouters,
+    sibling_routes: Router,
     a2a_port: Option<u16>,
     teams_ports: watch::Receiver<BTreeMap<String, u16>>,
     proxy: InstanceProxy,
@@ -103,6 +106,7 @@ impl Engine {
             resolver: deps.resolver,
             hostnames: deps.hostnames,
             routers: deps.routers,
+            sibling_routes: deps.sibling_routes,
             a2a_port: deps.a2a_port,
             teams_ports: deps.teams_ports,
             proxy: InstanceProxy::new(),
@@ -248,6 +252,9 @@ impl Engine {
             Some(HostKind::Workbench) => {
                 call_router(&self.routers.workbench, req, peer_ip, &host).await
             }
+            Some(HostKind::Instance) if is_sibling_path(req.uri().path()) => {
+                call_router(&self.sibling_routes, req, peer_ip, &host).await
+            }
             Some(HostKind::Instance) => {
                 let teams_ports = self.teams_ports.borrow().clone();
                 self.proxy
@@ -267,6 +274,12 @@ impl Engine {
             }
         }
     }
+}
+
+/// Whether the path belongs to the sibling join endpoints.
+fn is_sibling_path(path: &str) -> bool {
+    path == crate::remote_access::siblings::protocol::REQUEST_PATH
+        || path.starts_with("/_sibling/join/")
 }
 
 /// The host a request is for. The URI authority (HTTP/2 `:authority`, or an

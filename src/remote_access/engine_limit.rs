@@ -60,7 +60,8 @@ impl PeerRateLimiter {
         Self::with_rate(REFILL_PER_MINUTE, BURST, now)
     }
 
-    fn with_rate(per_minute: f64, burst: f64, now: Instant) -> Self {
+    /// A limiter allowing `per_minute` sustained requests and `burst` at once.
+    pub(crate) fn with_rate(per_minute: f64, burst: f64, now: Instant) -> Self {
         Self {
             buckets: HashMap::new(),
             per_second: per_minute / 60.0,

@@ -412,8 +412,9 @@ pub fn resolve_atk_paths(residuum_root: &Path, agent_name: &str) -> AtkPaths {
 
 /// Query the local gateway to derive the cloud Teams messaging endpoint for `agent_name`.
 ///
-/// Returns `Some(https://<origin>/teams/<instance>/<agent_name>)` if the hub is running and connected
-/// to Residuum Cloud, or `None` if unreachable or not connected.
+/// Returns `Some(https://<instance host>/teams/<agent_name>)` on the secure tunnel, or
+/// `Some(https://<origin>/teams/<instance>/<agent_name>)` on the older one, if the hub is
+/// running and connected to Residuum Cloud, or `None` if unreachable or not connected.
 pub async fn derive_cloud_teams_endpoint(residuum_root: &Path, agent_name: &str) -> Option<String> {
     let hub_path = hub_dir(residuum_root);
     let gateway_addr = HubConfig::load_at_for_start(&hub_path, residuum_root).map_or_else(
@@ -432,6 +433,7 @@ pub async fn derive_cloud_teams_endpoint_from_addr(
     struct CloudStatus {
         origin: Option<String>,
         instance: Option<String>,
+        instance_origin: Option<String>,
     }
 
     let client = reqwest::Client::builder()
@@ -444,11 +446,32 @@ pub async fn derive_cloud_teams_endpoint_from_addr(
         return None;
     }
     let status: CloudStatus = resp.json().await.ok()?;
-    let origin = status.origin?.trim().trim_end_matches('/').to_string();
-    let instance = status.instance?.trim().to_string();
-    if origin.is_empty() || instance.is_empty() {
-        return None;
+    cloud_teams_endpoint(
+        status.origin.as_deref(),
+        status.instance.as_deref(),
+        status.instance_origin.as_deref(),
+        agent_name,
+    )
+}
+
+/// The Teams messaging endpoint for `agent_name` from what the tunnel announced:
+/// the instance's own host on the secure tunnel, the relay's path on the older one.
+fn cloud_teams_endpoint(
+    origin: Option<&str>,
+    instance: Option<&str>,
+    instance_origin: Option<&str>,
+    agent_name: &str,
+) -> Option<String> {
+    let trimmed = |value: Option<&str>| {
+        value
+            .map(|v| v.trim().trim_end_matches('/'))
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    if let Some(instance_origin) = trimmed(instance_origin) {
+        return Some(format!("{instance_origin}/teams/{agent_name}"));
     }
+    let (origin, instance) = (trimmed(origin)?, trimmed(instance)?);
     Some(format!("{origin}/teams/{instance}/{agent_name}"))
 }
 
@@ -975,6 +998,35 @@ pub async fn forward_redirect(url_str: &str) -> Result<u16, FatalError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_secure_tunnel_teams_endpoint_is_on_the_instance_host() {
+        use super::cloud_teams_endpoint;
+        assert_eq!(
+            cloud_teams_endpoint(
+                Some("https://bear.agent-residuum.com"),
+                Some("laptop"),
+                Some("https://laptop.bear.agent-residuum.com/"),
+                "scout"
+            )
+            .as_deref(),
+            Some("https://laptop.bear.agent-residuum.com/teams/scout")
+        );
+        assert_eq!(
+            cloud_teams_endpoint(
+                Some("https://bear.agent-residuum.com/"),
+                Some("laptop"),
+                None,
+                "scout"
+            )
+            .as_deref(),
+            Some("https://bear.agent-residuum.com/teams/laptop/scout")
+        );
+        assert_eq!(
+            cloud_teams_endpoint(None, Some("laptop"), None, "scout"),
+            None
+        );
+    }
+
     use super::*;
 
     // Verified fixtures generated with pinned @microsoft/teamsfx-core@3.1.3:

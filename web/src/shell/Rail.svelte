@@ -20,11 +20,13 @@
     VisuallyHidden,
   } from "../lib/ui";
   import type { RailAccordion } from "./accordion.svelte";
+  import InstanceSwitcher from "./InstanceSwitcher.svelte";
   import { AGENT_PLACES, agentRowStatus } from "./rail-model";
   import type { ShellActions } from "./shell-actions";
 
   // The rail: the search row, Home and Inbox, every agent with its places in
-  // an accordion, the team's places, and a footer with help and Settings. At
+  // an accordion, the team's places, and a footer with help and Settings. When
+  // the user has more than one instance, a switcher sits above the search row. At
   // phone width the same rail opens in the drawer.
 
   interface Props {
@@ -114,6 +116,8 @@
       <IconButton icon="close" label="Close menu" data-overlay-close onclick={onclose} />
     {/if}
   </div>
+
+  <InstanceSwitcher />
 
   <button type="button" class="rail-search" aria-haspopup="dialog" onclick={actions.openSearch}>
     <Icon name="search" size={15} />

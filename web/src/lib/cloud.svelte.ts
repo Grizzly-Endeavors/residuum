@@ -22,10 +22,26 @@ const POLL_INTERVAL_MS = 3000;
 /** How long after the user starts signing in on the relay's page the section keeps looking for the result. */
 const EXPECT_WINDOW_MS = 120_000;
 
-/** The messaging endpoint Microsoft posts Teams activities to for one agent. */
-export function teamsMessagingEndpoint(origin: string, instance: string, agent: string): string {
-  const base = origin.endsWith("/") ? origin.slice(0, -1) : origin;
-  return `${base}/teams/${instance}/${agent}`;
+/** The parts of the Cloud status the Teams messaging endpoint is built from. */
+export type EndpointSource = Pick<CloudStatusResponse, "origin" | "instance" | "instance_origin">;
+
+function withoutTrailingSlash(origin: string): string {
+  return origin.endsWith("/") ? origin.slice(0, -1) : origin;
+}
+
+/**
+ * The messaging endpoint Microsoft posts Teams activities to for one agent:
+ * on the instance's own origin when the secure tunnel gives it one, otherwise
+ * under the shared origin with the instance in the path. Null while the status
+ * names neither.
+ */
+export function teamsMessagingEndpoint(source: EndpointSource, agent: string): string | null {
+  const { origin, instance, instance_origin: instanceOrigin } = source;
+  if (instanceOrigin != null && instanceOrigin !== "") {
+    return `${withoutTrailingSlash(instanceOrigin)}/teams/${agent}`;
+  }
+  if (origin == null || origin === "" || instance == null || instance === "") return null;
+  return `${withoutTrailingSlash(origin)}/teams/${instance}/${agent}`;
 }
 
 /** The relay's sign-in page for a gateway, and the host it is on. */

@@ -1,6 +1,6 @@
 import type { RemoteAccessStatus } from "../src/lib/generated/RemoteAccessStatus";
 import { json, readJsonObject, stringField } from "./http";
-import type { Route, RouteContext } from "./routes";
+import { decodedParam, type Route, type RouteContext } from "./routes";
 
 /** What the hub knows about the secure tunnel: its status and a recovery code not yet saved. */
 export interface MockRemoteAccess {
@@ -31,10 +31,71 @@ export function defaultRemoteAccess(): MockRemoteAccess {
           slug: "laptop",
           own: true,
           known: true,
+          removable: false,
         },
       ],
       recovery_code_pending: false,
       recovery_code: null,
+      instances: [],
+      siblings: [],
+      join: null,
+      pending_joins: [],
+    },
+  };
+}
+
+/**
+ * An install on the secure tunnel with the user's other instances around it:
+ * two instances (the desktop is active, this laptop is not), one instance
+ * asking to join, a join this one started and is waiting on, a joined
+ * sibling, and a certificate account whose instance is gone.
+ */
+export function clusterRemoteAccess(): MockRemoteAccess {
+  const base = defaultRemoteAccess().status;
+  return {
+    status: {
+      ...base,
+      state: "ready",
+      detail: null,
+      pins: [
+        {
+          account_uri: "https://acme-v02.api.letsencrypt.org/acme/acct/1",
+          slug: "laptop",
+          own: true,
+          known: true,
+          removable: false,
+        },
+        {
+          account_uri: "https://acme-v02.api.letsencrypt.org/acme/acct/2",
+          slug: "desktop",
+          own: false,
+          known: true,
+          removable: false,
+        },
+        {
+          account_uri: "https://acme-v02.api.letsencrypt.org/acme/acct/3",
+          slug: "old-box",
+          own: false,
+          known: true,
+          removable: true,
+        },
+      ],
+      instances: [
+        { slug: "laptop", display_name: "Laptop", active: false, connected: true },
+        { slug: "desktop", display_name: "Desktop", active: true, connected: true },
+      ],
+      siblings: [{ slug: "desktop", display_name: "Desktop" }],
+      join: { instance: "desktop", state: "waiting", code: "482916", detail: null },
+      pending_joins: [
+        {
+          id: "join-1",
+          code: "731504",
+          slug: "tablet",
+          display_name: "Tablet",
+          in_relay_list: false,
+          expires_at: "2026-12-01T00:10:00Z",
+        },
+      ],
     },
   };
 }
@@ -74,10 +135,88 @@ async function reset(ctx: RouteContext): Promise<void> {
   noContent(ctx);
 }
 
+/** `POST /api/hub/remote-access/join`: the other instance is asked, and its code shows while it waits. */
+async function join(ctx: RouteContext): Promise<void> {
+  const body = await readJsonObject(ctx.req).catch(() => ({}));
+  const instance = stringField(body, "instance");
+  if (instance === undefined || instance === "") {
+    json(ctx.res, 400, { error: "Name the instance to join." });
+    return;
+  }
+  held(ctx).status.join = { instance, state: "waiting", code: "482916", detail: null };
+  noContent(ctx);
+}
+
+/** `POST /api/hub/remote-access/joins/{id}/approve` and `.../deny`. */
+function answerJoin(ctx: RouteContext): void {
+  const id = decodedParam(ctx, 0);
+  const { status: current } = held(ctx);
+  if (!current.pending_joins.some((pending) => pending.id === id)) {
+    json(ctx.res, 404, { error: "No such join request." });
+    return;
+  }
+  current.pending_joins = current.pending_joins.filter((pending) => pending.id !== id);
+  noContent(ctx);
+}
+
+/** `POST /api/hub/remote-access/pins/remove`: only a removable account goes. */
+async function removeAccount(ctx: RouteContext): Promise<void> {
+  const body = await readJsonObject(ctx.req).catch(() => ({}));
+  const uri = stringField(body, "account_uri");
+  const { status: current } = held(ctx);
+  if (!current.pins.some((pin) => pin.account_uri === uri && pin.removable)) {
+    json(ctx.res, 400, { error: "That certificate account can't be removed." });
+    return;
+  }
+  current.pins = current.pins.filter((pin) => pin.account_uri !== uri);
+  noContent(ctx);
+}
+
+/** `POST /api/hub/remote-access/instances/{slug}/activate`. */
+function activate(ctx: RouteContext): void {
+  const slug = decodedParam(ctx, 0);
+  const { status: current } = held(ctx);
+  if (!current.instances.some((instance) => instance.slug === slug)) {
+    json(ctx.res, 404, { error: "No such instance." });
+    return;
+  }
+  current.instances = current.instances.map((instance) => ({
+    ...instance,
+    active: instance.slug === slug,
+  }));
+  noContent(ctx);
+}
+
+/** `POST /api/mock/remote-access` with `{ "scenario": "cluster" }`: the secure tunnel with other instances, joins and a removable account. Any other scenario is the older tunnel. */
+async function scenario(ctx: RouteContext): Promise<void> {
+  const body = await readJsonObject(ctx.req).catch(() => ({}));
+  ctx.hub.hubState.remoteAccess =
+    stringField(body, "scenario") === "cluster" ? clusterRemoteAccess() : defaultRemoteAccess();
+  noContent(ctx);
+}
+
 /** The remote access routes, in the unscoped `/api/...` spelling of the hub's `/api/hub/...`. */
 export const remoteAccessRoutes: readonly Route[] = [
   { method: "GET", pattern: "/api/remote-access/status", handler: status },
   { method: "POST", pattern: "/api/remote-access/retry", handler: noContent },
   { method: "POST", pattern: "/api/remote-access/recovery-code/saved", handler: saved },
   { method: "POST", pattern: "/api/remote-access/reset-pins", handler: reset },
+  { method: "POST", pattern: "/api/remote-access/join", handler: join },
+  {
+    method: "POST",
+    pattern: /^\/api\/remote-access\/joins\/([^/]+)\/approve$/,
+    handler: answerJoin,
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/remote-access\/joins\/([^/]+)\/deny$/,
+    handler: answerJoin,
+  },
+  { method: "POST", pattern: "/api/remote-access/pins/remove", handler: removeAccount },
+  {
+    method: "POST",
+    pattern: /^\/api\/remote-access\/instances\/([^/]+)\/activate$/,
+    handler: activate,
+  },
+  { method: "POST", pattern: "/api/mock/remote-access", handler: scenario },
 ];

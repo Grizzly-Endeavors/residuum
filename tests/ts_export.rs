@@ -48,7 +48,8 @@ mod ts_export {
         RecoveryCodesResponse, RedeemTokenBody, WorkbenchHandoffResponse,
     };
     use residuum::remote_access::status::{
-        CertificateInfo, PinInfo, RemoteAccessState, RemoteAccessStatus, RemoteHosts,
+        CertificateInfo, InstanceInfo, JoinProgress, JoinState, PendingJoinInfo, PinInfo,
+        RemoteAccessState, RemoteAccessStatus, RemoteHosts, SiblingInfo,
     };
 
     #[test]
@@ -169,13 +170,19 @@ mod ts_export {
         WorkbenchHandoffResponse::export_all(&cfg).unwrap();
 
         // Remote access: `RemoteAccessStatus` (with its `RemoteAccessState`,
-        // `RemoteHosts`, `CertificateInfo` and `PinInfo` parts) answers `GET
+        // `RemoteHosts`, `CertificateInfo`, `PinInfo`, `InstanceInfo`,
+        // `SiblingInfo`, `PendingJoinInfo` and `JoinProgress` parts) answers `GET
         // /api/hub/remote-access/status`.
         RemoteAccessStatus::export_all(&cfg).unwrap();
         RemoteAccessState::export_all(&cfg).unwrap();
         RemoteHosts::export_all(&cfg).unwrap();
         CertificateInfo::export_all(&cfg).unwrap();
         PinInfo::export_all(&cfg).unwrap();
+        InstanceInfo::export_all(&cfg).unwrap();
+        SiblingInfo::export_all(&cfg).unwrap();
+        PendingJoinInfo::export_all(&cfg).unwrap();
+        JoinState::export_all(&cfg).unwrap();
+        JoinProgress::export_all(&cfg).unwrap();
 
         // Web Push: `PushKeyResponse` answers `GET /api/hub/push/key`,
         // `PushDeviceList` answers `GET /api/hub/push/devices` (with its

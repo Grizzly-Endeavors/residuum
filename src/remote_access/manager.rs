@@ -22,19 +22,33 @@ use tokio::task::JoinHandle;
 use super::acme::{AcmeAccount, AcmeSettings, CertStore, CertificateOrder, renewal_window};
 use super::caa::{CaaSettings, CaaWaitError, wait_for_caa};
 use super::engine::{Engine, EngineDeps, EngineRouters};
-use super::identity::{IdentityError, verify_announcement};
+use super::identity::{IdentityError, is_valid_slug, verify_announcement};
+use super::jws::AccountSigner;
 use super::pins::{Enrollment, Pin, PinClient, PinError, generate_recovery_code, is_recovery_code};
-use super::status::{CertificateInfo, PinInfo, RemoteAccessState, RemoteAccessStatus, RemoteHosts};
+use super::siblings::SiblingKeys;
+use super::siblings::client::{HttpChannel, SiblingChannel};
+use super::siblings::discovery::SecureDiscovery;
+use super::siblings::host::{HostContext, JoinHost};
+use super::siblings::routes;
+use super::siblings::service::{ApproveError, Approver, Joiner, SiblingService};
+use super::slot::DiscoverySender;
+use super::status::{
+    CertificateInfo, InstanceInfo, JoinProgress, JoinState, PendingJoinInfo, PinInfo,
+    RemoteAccessState, RemoteAccessStatus, RemoteHosts, SiblingInfo,
+};
 use super::store::{LocalIdentity, StateStore};
 use super::tls::{CertBundle, CertResolver};
 use super::types::Hostnames;
 use crate::config::RemoteAccessSettings;
 use crate::pairing::{DevicePairing, Identity};
 use crate::tunnel::TunnelStatus;
+use crate::tunnel::v2::frames::InstanceSummary;
 use crate::tunnel::v2::{
     ClaimError, ConnectedInfo, IncomingStream, RelayLink, SessionHandler, Verdict,
 };
 
+/// The most characters of an instance's display name kept from the relay.
+const MAX_INSTANCE_NAME: usize = 64;
 /// How long the DNS record for the account may take to show up publicly.
 const CAA_WAIT: Duration = Duration::from_mins(10);
 const CAA_POLL: Duration = Duration::from_secs(10);
@@ -61,12 +75,21 @@ pub(crate) struct RemoteAccessInputs {
     pub(crate) tunnel_status: Arc<watch::Sender<TunnelStatus>>,
     pub(crate) status: Arc<watch::Sender<RemoteAccessStatus>>,
     pub(crate) notify: Notifier,
+    /// The keys of joined siblings, shared with the A2A listener.
+    pub(crate) siblings: Arc<SiblingKeys>,
+    /// Where sibling discovery hears about the directory and the joined siblings.
+    pub(crate) discovery: DiscoverySender,
+    /// How join requests reach a sibling. `None` uses HTTPS to the sibling's
+    /// derived host.
+    pub(crate) sibling_channel: Option<Arc<dyn SiblingChannel>>,
 }
 
 struct Session {
     link: RelayLink,
     user: String,
     slug: String,
+    /// What lets this connection see private agents in the apex directory.
+    directory_token: String,
     task: JoinHandle<()>,
 }
 
@@ -89,6 +112,10 @@ struct Inner {
     /// Wakes the session's driver early: a retry or a finished reset.
     kick: Notify,
     alerted_pins: Mutex<HashSet<String>>,
+    siblings: SiblingService,
+    discovery: DiscoverySender,
+    /// The join this instance started, while it runs.
+    join_task: Mutex<Option<JoinHandle<()>>>,
 }
 
 /// Remote access for this install.
@@ -114,6 +141,9 @@ impl RemoteAccess {
             tunnel_status,
             status,
             notify,
+            siblings,
+            discovery,
+            sibling_channel,
         } = inputs;
         let dir = crate::config::HubPaths::new(&hub_dir).remote_access_dir();
         let store = StateStore::open(&dir);
@@ -125,10 +155,16 @@ impl RemoteAccess {
         };
         let cert_store = CertStore::new(&dir, &settings.acme_directory);
         let (hostnames, hostnames_rx) = watch::channel(None);
+        let channel: Arc<dyn SiblingChannel> = match sibling_channel {
+            Some(channel) => channel,
+            None => Arc::new(HttpChannel::https(settings.acme_root_ca.as_deref())?),
+        };
+        let join_host = Arc::new(JoinHost::default());
         let engine = Engine::new(EngineDeps {
             resolver: Arc::clone(&resolver),
             hostnames: hostnames_rx,
             routers,
+            sibling_routes: routes::router(Arc::clone(&join_host)),
             a2a_port,
             teams_ports,
         });
@@ -152,6 +188,9 @@ impl RemoteAccess {
             session: Mutex::new(None),
             kick: Notify::new(),
             alerted_pins: Mutex::new(HashSet::new()),
+            siblings: SiblingService::new(join_host, siblings, channel),
+            discovery,
+            join_task: Mutex::new(None),
         });
         inner.load_stored();
         Ok(Self { inner })
@@ -200,6 +239,32 @@ impl RemoteAccess {
         Ok(())
     }
 
+    /// The join requests waiting for a decision, with `instances` (the
+    /// relay's list) as the hint for each.
+    pub(crate) fn pending_joins(&self, instances: &[InstanceInfo]) -> Vec<PendingJoinInfo> {
+        self.inner.pending_joins(instances)
+    }
+
+    pub(crate) async fn start_join(&self, target: &str) -> Result<(), ActionError> {
+        self.inner.start_join(target).await
+    }
+
+    pub(crate) async fn approve_join(&self, id: &str) -> Result<(), ActionError> {
+        self.inner.approve_join(id).await
+    }
+
+    pub(crate) fn deny_join(&self, id: &str) -> Result<(), ActionError> {
+        self.inner.deny_join(id)
+    }
+
+    pub(crate) async fn remove_pin(&self, account_uri: &str) -> Result<(), ActionError> {
+        self.inner.remove_pin(account_uri).await
+    }
+
+    pub(crate) fn activate_instance(&self, slug: &str) -> Result<(), ActionError> {
+        self.inner.activate_instance(slug)
+    }
+
     /// Replace every pin with this instance's account, proving ownership with
     /// the recovery code. Returns the new recovery code.
     ///
@@ -224,6 +289,26 @@ pub enum ResetError {
     Failed(String),
 }
 
+/// Why a sibling, pin or instance action didn't happen.
+#[derive(Debug, thiserror::Error)]
+pub enum ActionError {
+    /// The input isn't acceptable; the message says why.
+    #[error("{0}")]
+    Invalid(String),
+    /// The relay isn't connected on the secure tunnel.
+    #[error("Residuum Cloud isn't connected on the secure tunnel right now. Try again once it is.")]
+    NotConnected,
+    /// The action was refused or failed; the message says why.
+    #[error("{0}")]
+    Failed(String),
+}
+
+/// Whether a pin of `slug` may be removed from the UI: not this instance's own,
+/// and the relay's list (when known) doesn't include its instance.
+fn is_removable(own: bool, slug: &str, instances: &[InstanceInfo]) -> bool {
+    !own && !instances.is_empty() && !instances.iter().any(|i| i.slug == slug)
+}
+
 impl Inner {
     fn lock_session(&self) -> MutexGuard<'_, Option<Session>> {
         self.session.lock().unwrap_or_else(PoisonError::into_inner)
@@ -245,6 +330,7 @@ impl Inner {
         self.status.send_modify(|status| {
             status.recovery_code_pending = self.store.pending_recovery_code().is_some();
         });
+        self.refresh_sibling_status();
     }
 
     fn base(&self) -> &str {
@@ -254,9 +340,10 @@ impl Inner {
     fn apply_identity_sync(&self, identity: &LocalIdentity) {
         let hosts = Hostnames::derive(&identity.user, &identity.slug, self.base());
         self.hostnames.send_replace(Some(hosts.clone()));
-        let (ui, workbench) = (
+        let (ui, workbench, instance_origin) = (
             format!("https://{}", hosts.ui),
             format!("https://{}", hosts.workbench),
+            format!("https://{}", hosts.instance),
         );
         self.status.send_modify(|status| {
             status.user = Some(identity.user.clone());
@@ -273,12 +360,14 @@ impl Inner {
                 origin,
                 workbench_origin,
                 instance,
+                instance_origin: announced_instance_origin,
                 ..
             } = status
             {
                 *origin = Some(ui.clone());
                 *workbench_origin = Some(workbench.clone());
                 *instance = Some(slug.clone());
+                *announced_instance_origin = Some(instance_origin.clone());
             }
         });
     }
@@ -345,13 +434,18 @@ impl Inner {
             .await
             .as_ref()
             .map(|account| account.uri().to_string());
+        let instances = self.status.borrow().instances.clone();
         let infos: Vec<PinInfo> = pins
             .iter()
-            .map(|pin| PinInfo {
-                account_uri: pin.account_uri.clone(),
-                slug: pin.slug.clone(),
-                own: own.as_deref() == Some(pin.account_uri.as_str()),
-                known: self.store.is_known(&pin.account_uri),
+            .map(|pin| {
+                let is_own = own.as_deref() == Some(pin.account_uri.as_str());
+                PinInfo {
+                    account_uri: pin.account_uri.clone(),
+                    slug: pin.slug.clone(),
+                    own: is_own,
+                    known: self.store.is_known(&pin.account_uri),
+                    removable: is_removable(is_own, &pin.slug, &instances),
+                }
             })
             .collect();
         for pin in infos.iter().filter(|pin| !pin.known) {
@@ -373,7 +467,13 @@ impl Inner {
 
     // ── Sessions ─────────────────────────────────────────────────────
 
-    fn start_session(self: &Arc<Self>, link: RelayLink, user: String, slug: String) {
+    fn start_session(
+        self: &Arc<Self>,
+        link: RelayLink,
+        user: String,
+        slug: String,
+        directory_token: String,
+    ) {
         let driver = Arc::clone(self);
         let (driver_link, driver_user, driver_slug) = (link.clone(), user.clone(), slug.clone());
         let task = crate::util::spawn_monitored("remote-access-session", async move {
@@ -383,6 +483,7 @@ impl Inner {
             link,
             user,
             slug,
+            directory_token,
             task,
         }) {
             previous.task.abort();
@@ -457,9 +558,14 @@ impl Inner {
             }
             self.ensure_identity(user, slug, &account).await?;
             self.discard_unused_recovery_code(&pins, &account).await;
+            self.open_for_joins(user, slug, &account);
+            self.publish_discovery();
         } else if pins.is_empty() {
             self.enroll(link, &account, user, slug).await?;
+            self.open_for_joins(user, slug, &account);
+            self.publish_discovery();
         } else {
+            self.siblings.host.set_context(None);
             self.discard_unused_recovery_code(&pins, &account).await;
             self.set_state(
                 RemoteAccessState::NeedsJoin,
@@ -702,7 +808,7 @@ impl Inner {
         };
         match self
             .pin_client
-            .reset(&account, &enrollment, recovery_code)
+            .reset(account.as_ref(), &enrollment, recovery_code)
             .await
         {
             Ok(pins) => {
@@ -748,6 +854,359 @@ impl Inner {
         self.status
             .send_modify(|status| status.recovery_code_pending = false);
     }
+
+    // ── Siblings, pins and instances ─────────────────────────────────
+
+    /// Begin taking join requests: this instance is pinned and knows who it is.
+    fn open_for_joins(&self, user: &str, slug: &str, account: &Arc<AcmeAccount>) {
+        self.siblings.host.set_context(Some(Arc::new(HostContext {
+            user: user.to_string(),
+            slug: slug.to_string(),
+            base_domain: self.base().to_string(),
+            account: Arc::clone(account) as Arc<dyn AccountSigner>,
+        })));
+    }
+
+    fn refresh_sibling_status(&self) {
+        let joined: Vec<SiblingInfo> = self
+            .siblings
+            .keys
+            .joined()
+            .into_iter()
+            .map(|s| SiblingInfo {
+                slug: s.slug,
+                display_name: s.display_name,
+            })
+            .collect();
+        self.status.send_modify(|status| status.siblings = joined);
+    }
+
+    /// Tell sibling discovery where the directory is and whom to call, while
+    /// the secure tunnel is connected and this install has an identity.
+    fn publish_discovery(&self) {
+        let token = self
+            .lock_session()
+            .as_ref()
+            .map(|session| session.directory_token.clone());
+        let (Some(identity), Some(token)) = (self.store.identity(), token) else {
+            return;
+        };
+        let base = self.base().to_string();
+        let siblings = self
+            .siblings
+            .keys
+            .joined()
+            .into_iter()
+            .filter_map(|s| {
+                self.siblings
+                    .keys
+                    .outbound_key(&s.slug)
+                    .map(|key| (s.slug, key))
+            })
+            .collect();
+        let origin_base = base.clone();
+        let user = identity.user.clone();
+        self.discovery.send_replace(Some(Arc::new(SecureDiscovery {
+            own_slug: identity.slug,
+            directory_url: format!("https://{base}/a2a/{}/agents", identity.user),
+            directory_token: Some(token),
+            siblings,
+            origin_for: Arc::new(move |slug| format!("https://{slug}.{user}.{origin_base}")),
+        })));
+    }
+
+    fn pending_joins(&self, instances: &[InstanceInfo]) -> Vec<PendingJoinInfo> {
+        self.siblings
+            .host
+            .pending(Utc::now())
+            .into_iter()
+            .map(|pending| PendingJoinInfo {
+                id: pending.approval_id,
+                code: pending.code,
+                in_relay_list: (!instances.is_empty())
+                    .then(|| instances.iter().any(|i| i.slug == pending.slug)),
+                slug: pending.slug,
+                display_name: pending.display_name,
+                expires_at: pending.expires_at.to_rfc3339(),
+            })
+            .collect()
+    }
+
+    /// The user, slug and display name this instance joins as.
+    fn joining_as(&self) -> Result<(String, String, String), ActionError> {
+        let (user, slug) = if let Some(identity) = self.store.identity() {
+            (identity.user, identity.slug)
+        } else {
+            let session = self.lock_session();
+            let session = session.as_ref().ok_or(ActionError::NotConnected)?;
+            (session.user.clone(), session.slug.clone())
+        };
+        let display_name = self
+            .status
+            .borrow()
+            .instances
+            .iter()
+            .find(|i| i.slug == slug)
+            .map_or_else(|| slug.clone(), |i| i.display_name.clone());
+        Ok((user, slug, display_name))
+    }
+
+    async fn start_join(self: &Arc<Self>, target: &str) -> Result<(), ActionError> {
+        let target = target.trim().to_ascii_lowercase();
+        if !is_valid_slug(&target) {
+            return Err(ActionError::Invalid(
+                "An instance name is 1 to 24 lowercase letters, digits and hyphens.".to_string(),
+            ));
+        }
+        let (user, slug, display_name) = self.joining_as()?;
+        if target == slug {
+            return Err(ActionError::Invalid(
+                "This is that instance. Name another instance of yours to join.".to_string(),
+            ));
+        }
+        let account = self.account().await.map_err(|e| {
+            ActionError::Failed(format!(
+                "Residuum couldn't set up its certificate account: {e:#}"
+            ))
+        })?;
+        {
+            let mut running = self
+                .join_task
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if running.as_ref().is_some_and(|task| !task.is_finished()) {
+                return Err(ActionError::Invalid(
+                    "A join is already waiting for approval. Wait for it to finish first."
+                        .to_string(),
+                ));
+            }
+            self.status.send_modify(|status| {
+                status.join = Some(JoinProgress {
+                    instance: target.clone(),
+                    state: JoinState::Waiting,
+                    code: None,
+                    detail: Some(format!("Contacting \"{target}\".")),
+                });
+            });
+            let inner = Arc::clone(self);
+            *running = Some(crate::util::spawn_monitored("sibling-join", async move {
+                inner
+                    .run_join(account, user, slug, display_name, target)
+                    .await;
+            }));
+        }
+        Ok(())
+    }
+
+    async fn run_join(
+        &self,
+        account: Arc<AcmeAccount>,
+        user: String,
+        slug: String,
+        display_name: String,
+        target: String,
+    ) {
+        let status = Arc::clone(&self.status);
+        let progress = move |progress: JoinProgress| {
+            status.send_modify(|s| s.join = Some(progress));
+        };
+        let result = self
+            .siblings
+            .join(
+                &Joiner {
+                    signer: account.as_ref(),
+                    pins: &self.pin_client,
+                    store: &self.store,
+                    user: &user,
+                    own_slug: &slug,
+                    display_name: &display_name,
+                    base_domain: self.base(),
+                    target_slug: &target,
+                },
+                &progress,
+            )
+            .await;
+        match result {
+            Ok(()) => {
+                tracing::info!(sibling = %target, "joined a sibling instance");
+                self.refresh_sibling_status();
+                self.publish_discovery();
+                self.kick.notify_one();
+            }
+            Err(failure) => {
+                tracing::warn!(sibling = %target, error = %failure, "joining a sibling instance did not complete");
+            }
+        }
+    }
+
+    async fn approve_join(&self, id: &str) -> Result<(), ActionError> {
+        let identity = self.store.identity().ok_or_else(|| {
+            ActionError::Failed(
+                "This instance isn't set up for remote access yet, so it can't approve others."
+                    .to_string(),
+            )
+        })?;
+        let account = self.account().await.map_err(|e| {
+            ActionError::Failed(format!(
+                "Residuum couldn't set up its certificate account: {e:#}"
+            ))
+        })?;
+        let request = self
+            .siblings
+            .approve(
+                &Approver {
+                    signer: account.as_ref(),
+                    pins: &self.pin_client,
+                    store: &self.store,
+                    user: &identity.user,
+                },
+                id,
+            )
+            .await
+            .map_err(|e| match e {
+                ApproveError::Unknown => ActionError::Invalid(e.to_string()),
+                ApproveError::Pins(_) | ApproveError::Storage(_) => {
+                    ActionError::Failed(e.to_string())
+                }
+            })?;
+        tracing::info!(sibling = %request.slug, account = %request.account_uri, "approved a sibling join");
+        self.refresh_sibling_status();
+        self.publish_discovery();
+        self.refresh_pins().await;
+        Ok(())
+    }
+
+    fn deny_join(&self, id: &str) -> Result<(), ActionError> {
+        if self.siblings.host.deny(id, Utc::now()) {
+            Ok(())
+        } else {
+            Err(ActionError::Invalid(ApproveError::Unknown.to_string()))
+        }
+    }
+
+    async fn remove_pin(&self, account_uri: &str) -> Result<(), ActionError> {
+        let removable = self
+            .status
+            .borrow()
+            .pins
+            .iter()
+            .find(|pin| pin.account_uri == account_uri)
+            .map(|pin| pin.removable);
+        match removable {
+            None => {
+                return Err(ActionError::Invalid(
+                    "That certificate account isn't pinned any more.".to_string(),
+                ));
+            }
+            Some(false) => {
+                return Err(ActionError::Invalid(
+                    "Only accounts of instances that no longer exist in Residuum Cloud can be removed here."
+                        .to_string(),
+                ));
+            }
+            Some(true) => {}
+        }
+        let identity = self.store.identity().ok_or_else(|| {
+            ActionError::Failed("This instance isn't set up for remote access yet.".to_string())
+        })?;
+        let account = self.account().await.map_err(|e| {
+            ActionError::Failed(format!(
+                "Residuum couldn't set up its certificate account: {e:#}"
+            ))
+        })?;
+        match self
+            .pin_client
+            .remove(account.as_ref(), &identity.user, account_uri)
+            .await
+        {
+            Ok(pins) => {
+                if let Some(slug) = self.siblings.keys.slug_for_account(account_uri) {
+                    self.siblings.keys.remove(&slug).await.map_err(|e| {
+                        ActionError::Failed(format!("Residuum couldn't forget the sibling: {e:#}"))
+                    })?;
+                    self.refresh_sibling_status();
+                    self.publish_discovery();
+                }
+                if let Err(e) = self.store.forget_known(account_uri).await {
+                    tracing::warn!(error = %format!("{e:#}"), "couldn't forget a removed certificate account");
+                }
+                tracing::info!(account = %account_uri, "removed a pin for an instance that no longer exists");
+                self.record_pins(&pins).await;
+                Ok(())
+            }
+            Err(PinError::Rejected { status: 409, .. }) => Err(ActionError::Failed(
+                "The pin service wouldn't remove it: an address always needs at least one pinned account."
+                    .to_string(),
+            )),
+            Err(e) => Err(ActionError::Failed(format!("The pin wasn't removed: {e}"))),
+        }
+    }
+
+    fn activate_instance(&self, slug: &str) -> Result<(), ActionError> {
+        if !is_valid_slug(slug) {
+            return Err(ActionError::Invalid(
+                "That isn't a valid instance name.".to_string(),
+            ));
+        }
+        if !self
+            .status
+            .borrow()
+            .instances
+            .iter()
+            .any(|i| i.slug == slug)
+        {
+            return Err(ActionError::Invalid(
+                "Residuum Cloud doesn't list an instance with that name.".to_string(),
+            ));
+        }
+        let session = self.lock_session();
+        let session = session.as_ref().ok_or(ActionError::NotConnected)?;
+        session.link.activate_instance(slug);
+        Ok(())
+    }
+
+    /// Keep the relay's list of instances for the switcher, dropping any
+    /// entry whose slug isn't one the relay could have issued.
+    fn set_instances(&self, instances: Vec<InstanceSummary>) {
+        let kept: Vec<InstanceInfo> = instances
+            .into_iter()
+            .filter(|i| {
+                let ok = is_valid_slug(&i.slug);
+                if !ok {
+                    tracing::warn!("the relay listed an instance with an invalid name; ignored");
+                }
+                ok
+            })
+            .map(|i| InstanceInfo {
+                display_name: clean_display_name(&i.display_name, &i.slug),
+                slug: i.slug,
+                active: i.active,
+                connected: i.connected,
+            })
+            .collect();
+        self.status.send_modify(|status| {
+            for pin in &mut status.pins {
+                pin.removable = is_removable(pin.own, &pin.slug, &kept);
+            }
+            status.instances = kept;
+        });
+    }
+}
+
+/// A relay-supplied name as plain text of reasonable length; the slug stands
+/// in for an empty one.
+fn clean_display_name(name: &str, slug: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_INSTANCE_NAME)
+        .collect();
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() {
+        slug.to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn retry_delay(failures: u32) -> Duration {
@@ -780,20 +1239,28 @@ impl SessionHandler for RemoteAccess {
             (inner.notify)(detail);
             return Verdict::Refuse(e.to_string());
         }
-        let (ui_origin, workbench_origin) = stored.as_ref().map_or((None, None), |identity| {
-            let hosts = Hostnames::derive(&identity.user, &identity.slug, inner.base());
-            (
-                Some(format!("https://{}", hosts.ui)),
-                Some(format!("https://{}", hosts.workbench)),
-            )
-        });
+        let (ui_origin, workbench_origin, instance_origin) =
+            stored.as_ref().map_or((None, None, None), |identity| {
+                let hosts = Hostnames::derive(&identity.user, &identity.slug, inner.base());
+                (
+                    Some(format!("https://{}", hosts.ui)),
+                    Some(format!("https://{}", hosts.workbench)),
+                    Some(format!("https://{}", hosts.instance)),
+                )
+            });
         inner.set_state(RemoteAccessState::Connecting, None);
-        Arc::clone(inner).start_session(link, connected.user.clone(), connected.instance.clone());
+        Arc::clone(inner).start_session(
+            link,
+            connected.user.clone(),
+            connected.instance.clone(),
+            connected.a2a_token.clone(),
+        );
         Verdict::Accept {
             user: connected.user.clone(),
             instance: connected.instance.clone(),
             ui_origin,
             workbench_origin,
+            instance_origin,
         }
     }
 
@@ -804,11 +1271,18 @@ impl SessionHandler for RemoteAccess {
         });
     }
 
+    fn on_instances(&self, instances: Vec<InstanceSummary>) {
+        self.inner.set_instances(instances);
+    }
+
     fn on_disconnected(&self) {
         let inner = &self.inner;
         if let Some(session) = inner.lock_session().take() {
             session.task.abort();
         }
+        inner.siblings.host.set_context(None);
+        inner.discovery.send_replace(None);
+        inner.status.send_modify(|status| status.instances.clear());
         let refused = inner.status.borrow().state == RemoteAccessState::Refused;
         if !refused {
             inner.set_state(RemoteAccessState::Connecting, None);
@@ -841,6 +1315,45 @@ impl SessionHandler for RemoteAccess {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn instance(slug: &str) -> InstanceInfo {
+        InstanceInfo {
+            slug: slug.to_string(),
+            display_name: slug.to_string(),
+            active: false,
+            connected: true,
+        }
+    }
+
+    #[test]
+    fn only_pins_of_instances_the_relay_no_longer_lists_are_removable() {
+        let listed = [instance("laptop"), instance("desktop")];
+        assert!(is_removable(false, "old-box", &listed));
+        assert!(!is_removable(false, "desktop", &listed));
+        assert!(
+            !is_removable(true, "old-box", &listed),
+            "never the own account"
+        );
+        assert!(
+            !is_removable(false, "old-box", &[]),
+            "an unknown list removes nothing"
+        );
+    }
+
+    #[test]
+    fn relay_display_names_become_short_plain_text() {
+        assert_eq!(
+            clean_display_name("  Desk\u{1b}[2J\n top ", "d"),
+            "Desk[2J top"
+        );
+        assert_eq!(clean_display_name(" \n", "desk"), "desk");
+        assert_eq!(
+            clean_display_name(&"x".repeat(200), "d").chars().count(),
+            64
+        );
+        // Markup is text for the UI to escape, not something to strip here.
+        assert_eq!(clean_display_name("<b>x</b>", "d"), "<b>x</b>");
+    }
 
     #[test]
     fn retries_back_off_to_a_cap() {

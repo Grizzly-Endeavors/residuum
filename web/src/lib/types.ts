@@ -328,6 +328,8 @@ export interface CloudStatusResponse {
   origin?: string | null;
   /** This hub's instance slug on the relay, while connected and announced. */
   instance?: string | null;
+  /** The instance's own public origin on the secure tunnel, such as `https://laptop.bear.agent-residuum.com`, while it has one. */
+  instance_origin?: string;
 }
 
 export interface SettingsProviderEntry {

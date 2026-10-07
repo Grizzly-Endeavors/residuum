@@ -1,10 +1,17 @@
 //! Sibling discovery: on every tunnel (re)connect, and every
-//! [`REFRESH_INTERVAL`] while it stays connected, fetch the relay's per-user
-//! A2A directory (`GET {origin}/a2a/agents`) and register every agent of every
-//! *other* instance of the same user as a `Sibling`-sourced agent in every
-//! hosted agent's [`A2aClientHub`], per `docs/systems-usage/a2a.md`. A
-//! sibling is named `<instance>/<agent>` and lives at
-//! `{origin}/a2a/{instance}/{agent}`.
+//! [`REFRESH_INTERVAL`] while it stays connected, fetch the user's A2A
+//! directory and register agents of the user's *other* instances as
+//! `Sibling`-sourced agents in every hosted agent's [`A2aClientHub`], per
+//! `docs/systems-usage/a2a.md`. A sibling is named `<instance>/<agent>`.
+//!
+//! Two modes, chosen by which tunnel is up. On the older tunnel the relay's
+//! directory (`GET {origin}/a2a/agents`) is read with the sibling token the
+//! relay minted, every other instance is registered, and its agents live at
+//! `{origin}/a2a/{instance}/{agent}`. On the secure tunnel the directory is
+//! read at the apex address derived from the stored identity, only siblings
+//! that completed a join are registered, each at its locally derived host
+//! with the key exchanged in the join, and the directory's `card_url`s are
+//! ignored.
 //!
 //! Discovery runs once per hub process. [`SiblingFanout`] is the registry of
 //! the per-agent client hubs it fans each result out to. The hub's own
@@ -19,6 +26,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use tokio::sync::{Mutex, watch};
 
+use crate::remote_access::siblings::discovery::SecureDiscovery;
 use crate::tunnel::TunnelStatus;
 
 use super::hub::A2aClientHub;
@@ -183,19 +191,48 @@ impl SiblingFanout {
 pub(crate) fn spawn_sibling_discovery(
     fanout: Arc<SiblingFanout>,
     tunnel_status_rx: watch::Receiver<TunnelStatus>,
+    secure_rx: watch::Receiver<Option<Arc<SecureDiscovery>>>,
 ) {
     crate::util::spawn_monitored("a2a-sibling-discovery", async move {
-        run(fanout, tunnel_status_rx, DiscoveryTimings::default()).await;
+        run_with(
+            fanout,
+            tunnel_status_rx,
+            secure_rx,
+            DiscoveryTimings::default(),
+        )
+        .await;
     });
 }
 
+/// Resolves when the receiver's value changes; never resolves once its sender
+/// is gone, so a closed source doesn't spin the loop.
+async fn changed_or_pending<T>(rx: &mut watch::Receiver<T>) {
+    if rx.changed().await.is_err() {
+        std::future::pending::<()>().await;
+    }
+}
+
+#[cfg(test)]
 async fn run(
     fanout: Arc<SiblingFanout>,
+    tunnel_status_rx: watch::Receiver<TunnelStatus>,
+    timings: DiscoveryTimings,
+) {
+    let (_sender, secure_rx) = watch::channel(None);
+    run_with(fanout, tunnel_status_rx, secure_rx, timings).await;
+}
+
+async fn run_with(
+    fanout: Arc<SiblingFanout>,
     mut tunnel_status_rx: watch::Receiver<TunnelStatus>,
+    mut secure_rx: watch::Receiver<Option<Arc<SecureDiscovery>>>,
     timings: DiscoveryTimings,
 ) {
     let client = match reqwest::Client::builder()
         .timeout(timings.fetch_timeout)
+        // The sibling token and keys go to the address they were built for and
+        // nowhere a response points them.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
     {
         Ok(client) => client,
@@ -212,33 +249,42 @@ async fn run(
     let mut failing = false;
 
     loop {
+        let secure = secure_rx.borrow_and_update().clone();
         let current_connection = connection_from(&tunnel_status_rx.borrow());
-        let wait = if let Some(conn) = current_connection {
-            match discover_once(&client, &fanout, &conn).await {
-                Ok(()) => {
-                    if failing {
-                        tracing::info!(origin = %conn.origin, "a2a sibling discovery recovered");
-                    }
-                    failing = false;
-                    backoff = timings.min_backoff;
-                    timings.refresh
+        let pass = match (secure, current_connection) {
+            (Some(secure), _) => Some((
+                secure.directory_url.clone(),
+                discover_secure(&client, &fanout, &secure).await,
+            )),
+            (None, Some(conn)) => Some((
+                format!("{}/a2a/agents", conn.origin),
+                discover_once(&client, &fanout, &conn).await,
+            )),
+            (None, None) => None,
+        };
+        let wait = match pass {
+            Some((directory, Ok(()))) => {
+                if failing {
+                    tracing::info!(directory = %directory, "a2a sibling discovery recovered");
                 }
-                Err(e) => {
-                    if !failing {
-                        tracing::warn!(
-                            origin = %conn.origin,
-                            error = %e,
-                            "a2a sibling discovery failed, retrying with backoff"
-                        );
-                    }
-                    failing = true;
-                    let this_wait = backoff;
-                    backoff = (backoff * 2).min(timings.max_backoff);
-                    this_wait
-                }
+                failing = false;
+                backoff = timings.min_backoff;
+                timings.refresh
             }
-        } else {
-            timings.refresh
+            Some((directory, Err(e))) => {
+                if !failing {
+                    tracing::warn!(
+                        directory = %directory,
+                        error = %e,
+                        "a2a sibling discovery failed, retrying with backoff"
+                    );
+                }
+                failing = true;
+                let this_wait = backoff;
+                backoff = (backoff * 2).min(timings.max_backoff);
+                this_wait
+            }
+            None => timings.refresh,
         };
 
         tokio::select! {
@@ -249,6 +295,7 @@ async fn run(
                     return;
                 }
             }
+            () = changed_or_pending(&mut secure_rx) => {}
             () = tokio::time::sleep(wait) => {}
         }
     }
@@ -310,6 +357,61 @@ async fn discover_once(
     Ok(())
 }
 
+/// The secure tunnel's pass: read the directory at the address derived from
+/// the stored identity, keep only agents of joined siblings, and point each at
+/// its derived host with the key the join exchanged. `card_url`s are ignored.
+async fn discover_secure(
+    client: &reqwest::Client,
+    fanout: &SiblingFanout,
+    secure: &SecureDiscovery,
+) -> Result<(), String> {
+    let url = &secure.directory_url;
+    let mut request = client.get(url);
+    if let Some(token) = &secure.directory_token {
+        request = request.bearer_auth(token);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("request to {url} failed: {e}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("{url} returned {status}"));
+    }
+    let body: DirectoryResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("malformed a2a directory response from {url}: {e}"))?;
+
+    let siblings = body
+        .agents
+        .into_iter()
+        .filter(|entry| entry.instance != secure.own_slug)
+        .filter(|entry| secure.siblings.contains_key(&entry.instance))
+        .filter_map(|entry| {
+            if !is_valid_sibling_slug(&entry.instance) || !is_valid_sibling_slug(&entry.agent) {
+                tracing::warn!(
+                    instance = %entry.instance,
+                    agent = %entry.agent,
+                    "a2a directory returned a malformed sibling name, skipping"
+                );
+                return None;
+            }
+            let key = secure.siblings.get(&entry.instance)?;
+            let mut headers = HashMap::with_capacity(1);
+            headers.insert("Authorization".to_string(), format!("Bearer {key}"));
+            let origin = (secure.origin_for)(&entry.instance);
+            Some((
+                format!("{}/{}", entry.instance, entry.agent),
+                format!("{}/a2a/{}", origin.trim_end_matches('/'), entry.agent),
+                headers,
+            ))
+        })
+        .collect();
+    fanout.set_siblings(siblings).await;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap as StdHashMap;
@@ -351,9 +453,21 @@ mod tests {
         agents: Mutex<Vec<FakeEntry>>,
         card_auth_seen: Mutex<StdHashMap<String, String>>,
         card_fetch_should_fail: Mutex<bool>,
+        /// The `Authorization` header of every directory request.
+        directory_auth_seen: Mutex<Vec<String>>,
     }
 
-    async fn directory_handler(State(relay): State<Arc<FakeRelay>>) -> impl IntoResponse {
+    async fn directory_handler(
+        State(relay): State<Arc<FakeRelay>>,
+        headers: HeaderMap,
+    ) -> impl IntoResponse {
+        relay.directory_auth_seen.lock().unwrap().push(
+            headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_string(),
+        );
         let entries = relay.agents.lock().unwrap().clone();
         let agents: Vec<serde_json::Value> = entries
             .into_iter()
@@ -412,11 +526,18 @@ mod tests {
             agents: Mutex::new(initial_agents),
             card_auth_seen: Mutex::new(StdHashMap::new()),
             card_fetch_should_fail: Mutex::new(false),
+            directory_auth_seen: Mutex::new(Vec::new()),
         });
         let app = Router::new()
             .route("/a2a/agents", get(directory_handler))
             .route(
                 "/a2a/{instance}/{agent}/.well-known/agent-card.json",
+                get(card_handler),
+            )
+            // Where a sibling's own host answers on the secure tunnel: the test
+            // origin of a sibling is `{origin}/i/{slug}`.
+            .route(
+                "/i/{instance}/a2a/{agent}/.well-known/agent-card.json",
                 get(card_handler),
             )
             .with_state(Arc::clone(&relay));
@@ -435,6 +556,7 @@ mod tests {
             workbench_origin: None,
             instance: Some(instance.to_string()),
             a2a_token: Some(token.to_string()),
+            instance_origin: None,
         }
     }
 
@@ -753,5 +875,145 @@ mod tests {
         ] {
             assert!(!is_valid_sibling_slug(bad), "'{bad}' should be rejected");
         }
+    }
+
+    fn secure(origin: &str, own: &str, joined: &[(&str, &str)]) -> Arc<SecureDiscovery> {
+        let base = origin.to_string();
+        Arc::new(SecureDiscovery {
+            own_slug: own.to_string(),
+            directory_url: format!("{origin}/a2a/agents"),
+            directory_token: Some("rsa_directory".to_string()),
+            siblings: joined
+                .iter()
+                .map(|(slug, key)| ((*slug).to_string(), (*key).to_string()))
+                .collect(),
+            origin_for: Arc::new(move |slug| format!("{base}/i/{slug}")),
+        })
+    }
+
+    #[tokio::test]
+    async fn secure_discovery_registers_only_joined_siblings_at_derived_hosts_with_their_keys() {
+        // The directory lists a joined sibling, an unjoined one and this instance.
+        let (origin, relay) = spawn_fake_relay(vec![
+            ("alpha", "scout"),
+            ("beta", "atlas"),
+            ("gamma", "nova"),
+        ])
+        .await;
+        let hub = Arc::new(A2aClientHub::new());
+        let (_status_tx, status_rx) = watch::channel(TunnelStatus::Disconnected);
+        let (secure_tx, secure_rx) = watch::channel(None);
+        let task = crate::util::spawn_in_span(run_with(
+            fanout_of(&hub).await,
+            status_rx,
+            secure_rx,
+            FAST_TIMINGS,
+        ));
+
+        secure_tx
+            .send(Some(secure(
+                &origin,
+                "alpha",
+                &[("beta", "rsdm_sib_beta_key")],
+            )))
+            .ok();
+        wait_for(&hub, |snap| {
+            snap.len() == 1 && snap.iter().all(|a| matches!(a.status, AgentStatus::Ok(_)))
+        })
+        .await;
+
+        let snap = hub.snapshot().await;
+        assert_eq!(
+            sibling_names(&snap),
+            ["beta/atlas"],
+            "gamma never joined and alpha is this instance"
+        );
+        // The agent lives at the derived host, not at the directory's `card_url`
+        // (which points at `http://ignored`), and gets that sibling's own key.
+        let seen = relay.card_auth_seen.lock().unwrap().clone();
+        assert_eq!(
+            seen.get("beta/atlas").map(String::as_str),
+            Some("Bearer rsdm_sib_beta_key")
+        );
+        assert!(!seen.contains_key("gamma/nova"));
+        // The directory is read with the relay's directory token, only for visibility.
+        assert!(
+            relay
+                .directory_auth_seen
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|auth| auth == "Bearer rsa_directory")
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn secure_discovery_registers_nobody_until_a_join_exists_and_drops_a_removed_sibling() {
+        let (origin, _relay) = spawn_fake_relay(vec![("beta", "atlas")]).await;
+        let hub = Arc::new(A2aClientHub::new());
+        let (_status_tx, status_rx) = watch::channel(TunnelStatus::Disconnected);
+        let (secure_tx, secure_rx) = watch::channel(None);
+        let task = crate::util::spawn_in_span(run_with(
+            fanout_of(&hub).await,
+            status_rx,
+            secure_rx,
+            FAST_TIMINGS,
+        ));
+
+        secure_tx.send(Some(secure(&origin, "alpha", &[]))).ok();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(
+            hub.snapshot().await.is_empty(),
+            "an unjoined sibling is ignored"
+        );
+
+        secure_tx
+            .send(Some(secure(
+                &origin,
+                "alpha",
+                &[("beta", "rsdm_sib_beta_key")],
+            )))
+            .ok();
+        wait_for(&hub, |snap| snap.len() == 1).await;
+
+        secure_tx.send(Some(secure(&origin, "alpha", &[]))).ok();
+        wait_for(&hub, <[AgentSnapshot]>::is_empty).await;
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn secure_discovery_does_not_use_the_relay_minted_sibling_token_path() {
+        // The older tunnel's status is connected with a relay token, but the
+        // secure source takes over once it exists: nothing is sent to `origin`'s
+        // v1 directory with that token.
+        let (origin, relay) = spawn_fake_relay(vec![("beta", "atlas")]).await;
+        let hub = Arc::new(A2aClientHub::new());
+        let (status_tx, status_rx) = watch::channel(connected(&origin, "alpha", "relay-token"));
+        let (secure_tx, secure_rx) = watch::channel(None);
+        secure_tx
+            .send(Some(secure(
+                &origin,
+                "alpha",
+                &[("beta", "rsdm_sib_beta_key")],
+            )))
+            .ok();
+        let task = crate::util::spawn_in_span(run_with(
+            fanout_of(&hub).await,
+            status_rx,
+            secure_rx,
+            FAST_TIMINGS,
+        ));
+        wait_for(&hub, |snap| {
+            snap.len() == 1 && snap.iter().all(|a| matches!(a.status, AgentStatus::Ok(_)))
+        })
+        .await;
+        let seen = relay.card_auth_seen.lock().unwrap().clone();
+        assert_eq!(
+            seen.get("beta/atlas").map(String::as_str),
+            Some("Bearer rsdm_sib_beta_key")
+        );
+        drop(status_tx);
+        task.abort();
     }
 }

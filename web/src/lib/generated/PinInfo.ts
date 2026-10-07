@@ -20,4 +20,9 @@ own: boolean,
  * Whether this instance pinned or approved it. An unknown pin is a
  * certificate account this instance never agreed to.
  */
-known: boolean, };
+known: boolean, 
+/**
+ * Whether the person may remove it here: not this instance's own account,
+ * and its instance is no longer in the relay's list of instances.
+ */
+removable: boolean, };

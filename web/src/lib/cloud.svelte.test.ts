@@ -15,12 +15,45 @@ function status(overrides: Partial<CloudStatusResponse> = {}): CloudStatusRespon
 
 describe("teamsMessagingEndpoint", () => {
   it("builds the address pasted into the Teams developer portal", () => {
-    expect(teamsMessagingEndpoint("https://bear.agent-residuum.com", "laptop", "scout")).toBe(
+    const shared = { origin: "https://bear.agent-residuum.com", instance: "laptop" };
+    expect(teamsMessagingEndpoint(shared, "scout")).toBe(
       "https://bear.agent-residuum.com/teams/laptop/scout",
     );
-    expect(teamsMessagingEndpoint("https://bear.agent-residuum.com/", "laptop", "scout")).toBe(
+    expect(teamsMessagingEndpoint({ ...shared, origin: `${shared.origin}/` }, "scout")).toBe(
       "https://bear.agent-residuum.com/teams/laptop/scout",
     );
+  });
+
+  it("uses the instance's own origin on the secure tunnel", () => {
+    const source = {
+      origin: "https://bear.agent-residuum.com",
+      instance: "laptop",
+      instance_origin: "https://laptop.bear.agent-residuum.com",
+    };
+    expect(teamsMessagingEndpoint(source, "scout")).toBe(
+      "https://laptop.bear.agent-residuum.com/teams/scout",
+    );
+    expect(
+      teamsMessagingEndpoint(
+        { instance_origin: "https://laptop.bear.agent-residuum.com/" },
+        "scout",
+      ),
+    ).toBe("https://laptop.bear.agent-residuum.com/teams/scout");
+  });
+
+  it("falls back to the shared origin when the instance origin is empty", () => {
+    expect(
+      teamsMessagingEndpoint(
+        { origin: "https://bear.agent-residuum.com", instance: "laptop", instance_origin: "" },
+        "scout",
+      ),
+    ).toBe("https://bear.agent-residuum.com/teams/laptop/scout");
+  });
+
+  it("has no address until the status names one", () => {
+    expect(teamsMessagingEndpoint({}, "scout")).toBeNull();
+    expect(teamsMessagingEndpoint({ origin: "https://x.test", instance: "" }, "scout")).toBeNull();
+    expect(teamsMessagingEndpoint({ origin: null, instance: "laptop" }, "scout")).toBeNull();
   });
 });
 
