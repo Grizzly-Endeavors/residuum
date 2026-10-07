@@ -105,7 +105,7 @@ pub struct PairedResponse {
 }
 
 /// A paired browser, as the device list shows it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct DeviceInfo {
     /// Identifies the device for revoking. Not a credential.
@@ -123,7 +123,7 @@ pub struct DeviceInfo {
 }
 
 /// A browser waiting to be paired, as the approving device sees it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct PendingPairingInfo {
     /// Identifies the request for approving or refusing. Not the secret the
@@ -142,7 +142,7 @@ pub struct PendingPairingInfo {
 }
 
 /// Answer of `GET /api/hub/devices`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct DeviceListResponse {
     /// Every paired browser, oldest first.
@@ -159,7 +159,7 @@ pub struct DeviceListResponse {
 }
 
 /// Answer of `POST /api/hub/remote-access/pair-link`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct PairLinkResponse {
     /// The link to open on the device to pair. The token is in its fragment.

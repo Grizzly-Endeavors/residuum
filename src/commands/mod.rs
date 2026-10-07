@@ -7,6 +7,7 @@ mod bug_report;
 mod feedback;
 mod hub_client;
 mod logs;
+mod remote;
 mod secret;
 mod serve;
 mod setup;
@@ -76,6 +77,11 @@ enum Command {
         #[command(subcommand)]
         command: a2a::A2aCommand,
     },
+    /// Pair browsers for remote access through Residuum Cloud
+    Remote {
+        #[command(subcommand)]
+        command: remote::RemoteCommand,
+    },
     /// Manage encrypted secret storage
     Secret {
         #[command(subcommand)]
@@ -141,6 +147,11 @@ pub async fn run() -> Result<(), FatalError> {
             residuum::util::tracing_init::init_default_tracing();
             let gateway_addr = resolve_gateway_addr(&residuum::config::residuum_root()?);
             agent::run_agent_command(command, &gateway_addr).await
+        }
+        Command::Remote { ref command } => {
+            residuum::util::tracing_init::init_default_tracing();
+            let gateway_addr = resolve_gateway_addr(&residuum::config::residuum_root()?);
+            remote::run_remote_command(command, &gateway_addr).await
         }
         Command::Logs(ref args) => {
             residuum::util::tracing_init::init_default_tracing();
