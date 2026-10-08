@@ -16,7 +16,7 @@ concurrency:
 jobs:
   gate:
     name: Decide whether to cross-compile
-    runs-on: lab-runners
+    runs-on: lab-runners-light
 
     outputs:
       run: ${{ steps.decide.outputs.run }}
@@ -60,7 +60,7 @@ jobs:
     name: Clippy (${{ matrix.target }})
     needs: gate
     if: needs.gate.outputs.run == 'true'
-    runs-on: lab-runners
+    runs-on: lab-runners-wide
 
     strategy:
       fail-fast: false

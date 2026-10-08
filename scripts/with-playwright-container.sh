@@ -20,6 +20,9 @@
 # container mounts the installed playwright-core read-only to run its browser
 # server, so both ends are the same version by construction.
 #
+# PLAYWRIGHT_IMAGE_REGISTRY pulls the image from a mirror of mcr.microsoft.com
+# instead, such as the CI cluster's registry; the image path under it is the same.
+#
 # Baselines are made for linux/amd64 (the image is pulled for that platform on
 # any host), because rendering can differ between architectures.
 set -euo pipefail
@@ -37,7 +40,7 @@ if [ ! -f "$core/package.json" ]; then
     exit 1
 fi
 version="$(node -p "require('./$core/package.json').version")"
-image="mcr.microsoft.com/playwright:v${version}-noble"
+image="${PLAYWRIGHT_IMAGE_REGISTRY:-mcr.microsoft.com}/playwright:v${version}-noble"
 
 if [ "${E2E_ALL_IN_CONTAINER:-}" = "1" ]; then
     needs="E2E_ALL_IN_CONTAINER=1 runs every spec in the Playwright container."

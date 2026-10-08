@@ -2,6 +2,12 @@ name: Quality Checks
 
 # Also runnable by hand from the Actions tab, to try a change on the runners
 # without cutting a release.
+#
+# Every check is its own job so they run side by side. Each job names the
+# runner pool that suits it (grizzly-platform ADR-081): Rust jobs compile one
+# large crate, where per-core speed decides the time, so they run on
+# lab-runners-fast; the web jobs split well across runners, so they run on
+# lab-runners-wide.
 on:
   workflow_call:
     inputs:
@@ -36,7 +42,7 @@ jobs:
   web:
     name: Web Checks
     if: inputs.web
-    runs-on: lab-runners
+    runs-on: lab-runners-wide
 
     steps:
       - uses: actions/checkout@v7
@@ -66,52 +72,12 @@ jobs:
         id: web_build
         run: cd web && npm run build
 
-      # The end-to-end and accessibility specs drive a browser against the mock
-      # (web/CONTRIBUTING.md, "Testing"). The runner installs no browser: the
-      # download from cdn.playwright.dev stalls on the cluster's missing IPv6
-      # route. Instead every project drives the browser in the official
-      # Playwright container, which the Docker daemon beside the runner starts
-      # and the wrapper script stops. E2E_ALL_IN_CONTAINER sends the Chromium
-      # projects there, as the visual ones always go. The visual comparisons
-      # run unless the `visual` input is turned off, and then the summary says
-      # so.
-      - name: Web end-to-end tests
-        id: web_e2e
-        if: ${{ !inputs.visual }}
-        env:
-          E2E_ALL_IN_CONTAINER: '1'
-          # More workers don't finish sooner on the runner: eight took 15 minutes against
-          # four's 17, and specs started timing out under the load.
-          E2E_WORKERS: '4'
-        run: scripts/with-playwright-container.sh npm --prefix web run e2e:fast
-
-      - name: Web end-to-end and visual tests
-        id: web_e2e_visual
-        if: ${{ inputs.visual }}
-        env:
-          E2E_ALL_IN_CONTAINER: '1'
-          # More workers don't finish sooner on the runner: eight took 15 minutes against
-          # four's 17, and specs started timing out under the load.
-          E2E_WORKERS: '4'
-        run: scripts/with-playwright-container.sh npm --prefix web run e2e
-
       # Fails when the gzipped initial route outgrows its budget, which is set
-      # in the script. It runs after a successful build even when the end-to-end
-      # specs failed, so a size regression shows up beside a test failure.
+      # in the script.
       - name: Web initial-route budget
         id: web_size
         if: always() && steps.web_build.outcome == 'success'
         run: scripts/web-initial-route-size.sh web/dist
-
-      - name: Upload Playwright report and traces
-        if: always() && (steps.web_e2e.outcome == 'failure' || steps.web_e2e_visual.outcome == 'failure')
-        uses: actions/upload-artifact@v7
-        with:
-          name: playwright-report
-          path: |
-            web/playwright-report
-            web/test-results
-          retention-days: 14
 
       - name: Build summary
         if: always()
@@ -126,13 +92,9 @@ jobs:
             echo "| Types | ${{ steps.web_typecheck.outcome }} |"
             echo "| Tests | ${{ steps.web_test.outcome }} |"
             echo "| Build | ${{ steps.web_build.outcome }} |"
-            echo "| End-to-end and accessibility | ${{ inputs.visual && steps.web_e2e_visual.outcome || steps.web_e2e.outcome }} |"
-            if [ "${{ inputs.visual }}" = "true" ]; then
-              echo "| Visual comparisons | ${{ steps.web_e2e_visual.outcome }} |"
-            else
-              echo '| Visual comparisons | skipped: the `visual` input is off |'
-            fi
             echo "| Initial-route budget | ${{ steps.web_size.outcome }} |"
+            echo ''
+            echo 'The end-to-end, accessibility and visual results are in the Web End-to-End jobs.'
             if [ -f web/coverage/summary.txt ]; then
               echo ''
               echo '### Web test coverage'
@@ -150,10 +112,82 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-  rust:
-    name: Rust Checks
+  # The end-to-end and accessibility specs drive a browser against the mock
+  # (web/CONTRIBUTING.md, "Testing"), split into shards that run on separate
+  # runners. Playwright gives each shard a share of the individual tests.
+  # The runner installs no browser: the download from cdn.playwright.dev
+  # stalls on the cluster's missing IPv6 route. Instead every project drives
+  # the browser in the official Playwright container, which the Docker daemon
+  # beside the runner starts and the wrapper script stops. The image comes
+  # through the cluster registry's mirror of mcr.microsoft.com, so it is
+  # pulled over the LAN. E2E_ALL_IN_CONTAINER sends the Chromium projects
+  # there, as the visual ones always go. The visual comparisons run unless the
+  # `visual` input is turned off, and then the summary says so.
+  web-e2e:
+    name: Web End-to-End (${{ matrix.shard }}/4)
+    if: inputs.web
+    runs-on: lab-runners-wide
+
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+
+    env:
+      E2E_ALL_IN_CONTAINER: '1'
+      E2E_WORKERS: '4'
+      PLAYWRIGHT_IMAGE_REGISTRY: registry.registry.svc.cluster.local:5000/mcr
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install web dependencies
+        run: cd web && npm ci
+
+      # The preview projects run against the production build.
+      - name: Build web assets
+        run: cd web && npm run build
+
+      - name: Web end-to-end tests
+        id: web_e2e
+        if: ${{ !inputs.visual }}
+        run: scripts/with-playwright-container.sh npm --prefix web run e2e:fast -- --shard=${{ matrix.shard }}/4
+
+      - name: Web end-to-end and visual tests
+        id: web_e2e_visual
+        if: ${{ inputs.visual }}
+        run: scripts/with-playwright-container.sh npm --prefix web run e2e -- --shard=${{ matrix.shard }}/4
+
+      - name: Upload Playwright report and traces
+        if: always() && (steps.web_e2e.outcome == 'failure' || steps.web_e2e_visual.outcome == 'failure')
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-shard-${{ matrix.shard }}
+          path: |
+            web/playwright-report
+            web/test-results
+          retention-days: 14
+
+      - name: Build summary
+        if: always()
+        run: |
+          {
+            echo '## Web End-to-End Results (shard ${{ matrix.shard }} of 4)'
+            echo ''
+            echo '| Check | Status |'
+            echo '|-------|--------|'
+            echo "| End-to-end and accessibility | ${{ inputs.visual && steps.web_e2e_visual.outcome || steps.web_e2e.outcome }} |"
+            if [ "${{ inputs.visual }}" = "true" ]; then
+              echo "| Visual comparisons | ${{ steps.web_e2e_visual.outcome }} |"
+            else
+              echo '| Visual comparisons | skipped: the `visual` input is off |'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  rust-lint:
+    name: Rust Lint
     if: inputs.rust
-    runs-on: lab-runners
+    runs-on: lab-runners-fast
 
     steps:
       - uses: actions/checkout@v7
@@ -175,41 +209,79 @@ jobs:
         id: clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Tests
-        id: test
-        run: cargo test --quiet
-
-      # Remote access issuance against Pebble, the Let's Encrypt test CA, in
-      # Docker (see docs/systems-usage/secure-tunnel.md, "Tests").
-      # Does not fail the job: the runners' Docker setup (host networking to
-      # the test process) is unverified. The summary table shows its outcome.
-      - name: Pebble tests
-        id: pebble
-        continue-on-error: true
-        run: cargo test --quiet --lib -- --ignored pebble system_tests
-
-      # Regenerates web/src/lib/generated from the Rust protocol types and
-      # fails on any difference from what is committed.
-      - name: Generated types are up to date
-        id: types
-        run: scripts/check-generated-types.sh
-
       - name: Dependency audit
         id: deny
+        if: always() && steps.fmt.outcome != 'skipped'
         run: cargo deny check
 
       - name: Build summary
         if: always()
         run: |
           {
-            echo '## Rust Check Results'
+            echo '## Rust Lint Results'
             echo ''
             echo '| Check | Status |'
             echo '|-------|--------|'
             echo "| Format | ${{ steps.fmt.outcome }} |"
             echo "| Clippy | ${{ steps.clippy.outcome }} |"
+            echo "| Deny | ${{ steps.deny.outcome }} |"
+            echo ''
+            echo '### Compiler cache (sccache)'
+            echo ''
+            echo '```'
+            sccache --show-stats 2>&1 || echo 'sccache is not available on this runner'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  rust-test:
+    name: Rust Tests
+    if: inputs.rust
+    runs-on: lab-runners-fast
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
+
+      - name: Build web assets
+        run: cd web && npm ci && npm run build
+
+      - name: Tests
+        id: test
+        run: cargo test --quiet
+
+      # Remote access issuance against Pebble, the Let's Encrypt test CA, in
+      # Docker (see docs/systems-usage/secure-tunnel.md, "Tests"). The
+      # containers run on the Docker daemon beside the runner, which shares
+      # the runner's network.
+      - name: Pebble tests
+        id: pebble
+        if: always() && steps.test.outcome != 'skipped'
+        run: cargo test --quiet --lib -- --ignored pebble system_tests
+
+      # Regenerates web/src/lib/generated from the Rust protocol types and
+      # fails on any difference from what is committed.
+      - name: Generated types are up to date
+        id: types
+        if: always() && steps.test.outcome != 'skipped'
+        run: scripts/check-generated-types.sh
+
+      - name: Build summary
+        if: always()
+        run: |
+          {
+            echo '## Rust Test Results'
+            echo ''
+            echo '| Check | Status |'
+            echo '|-------|--------|'
             echo "| Tests | ${{ steps.test.outcome }} |"
             echo "| Pebble tests | ${{ steps.pebble.outcome }} |"
             echo "| Generated types | ${{ steps.types.outcome }} |"
-            echo "| Deny | ${{ steps.deny.outcome }} |"
+            echo ''
+            echo '### Compiler cache (sccache)'
+            echo ''
+            echo '```'
+            sccache --show-stats 2>&1 || echo 'sccache is not available on this runner'
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
