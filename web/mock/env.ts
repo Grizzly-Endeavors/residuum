@@ -100,9 +100,17 @@ export interface MockEnv {
   after: (ms: number, action: () => void) => () => void;
   /** Resolve after `ms` milliseconds of simulated time, or reject with `MockResetError` if the mock is reset first. */
   sleep: (ms: number) => Promise<void>;
+  /**
+   * While held, simulated turns don't end: each waits at its last step, so a
+   * test can look at a running turn for as long as it needs, however slowly
+   * the browser keeps up. Lifting the hold ends the waiting turns.
+   */
+  holdTurnEnds: (held: boolean) => void;
+  /** Run `action` now, or once turn ends are no longer held. Returns its cancel. */
+  whenTurnEndsReleased: (action: () => void) => () => void;
   /** The next number of a sequence that starts at 1 again on reset, for ids that have to differ. */
   nextId: () => number;
-  /** Cancel every pending timer, return the clock, the delays and the sequence to where they started. */
+  /** Cancel every pending timer and held turn end, return the clock, the delays, the hold and the sequence to where they started. */
   reset: () => void;
 }
 
@@ -113,6 +121,8 @@ export function createMockEnv(options: EnvOptions = {}): MockEnv {
   let scale = initialScale;
   let sequence = 0;
   const pending = new Set<{ timer: NodeJS.Timeout; abort: () => void }>();
+  let turnEndsHeld = false;
+  const heldTurnEnds = new Set<() => void>();
 
   return {
     deterministic,
@@ -148,6 +158,23 @@ export function createMockEnv(options: EnvOptions = {}): MockEnv {
         };
         pending.add(entry);
       }),
+    holdTurnEnds: (held) => {
+      turnEndsHeld = held;
+      if (held) return;
+      const released = [...heldTurnEnds];
+      heldTurnEnds.clear();
+      for (const action of released) action();
+    },
+    whenTurnEndsReleased: (action) => {
+      if (!turnEndsHeld) {
+        action();
+        return () => undefined;
+      }
+      heldTurnEnds.add(action);
+      return () => {
+        heldTurnEnds.delete(action);
+      };
+    },
     nextId: () => ++sequence,
     reset: () => {
       for (const entry of [...pending]) {
@@ -155,6 +182,8 @@ export function createMockEnv(options: EnvOptions = {}): MockEnv {
         entry.abort();
       }
       pending.clear();
+      heldTurnEnds.clear();
+      turnEndsHeld = false;
       scale = initialScale;
       sequence = 0;
       clock.reset();

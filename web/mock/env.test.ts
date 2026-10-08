@@ -91,4 +91,29 @@ describe("the mock environment", () => {
     expect(env.clock.now()).toBe(FIXED_START_MS);
     expect(env.delayScale()).toBe(0);
   });
+
+  it("ends a turn at once unless turn ends are held, then when the hold lifts", () => {
+    const env = createMockEnv({ deterministic: true });
+    const ended: string[] = [];
+    env.whenTurnEndsReleased(() => ended.push("free"));
+    env.holdTurnEnds(true);
+    env.whenTurnEndsReleased(() => ended.push("first"));
+    env.whenTurnEndsReleased(() => ended.push("second"));
+    expect(ended).toEqual(["free"]);
+    env.holdTurnEnds(false);
+    expect(ended).toEqual(["free", "first", "second"]);
+  });
+
+  it("drops a held turn end that was cancelled, or cut short by a reset", () => {
+    const env = createMockEnv({ deterministic: true });
+    const ended: string[] = [];
+    env.holdTurnEnds(true);
+    env.whenTurnEndsReleased(() => ended.push("cancelled"))();
+    env.whenTurnEndsReleased(() => ended.push("reset"));
+    env.reset();
+    env.holdTurnEnds(false);
+    expect(ended).toEqual([]);
+    env.whenTurnEndsReleased(() => ended.push("after reset"));
+    expect(ended).toEqual(["after reset"]);
+  });
 });
