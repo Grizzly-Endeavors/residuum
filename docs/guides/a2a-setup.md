@@ -10,7 +10,7 @@ The settings below are in **Settings**: the gear at the bottom of the left-hand 
 
 Every agent in your team has its own address, shown in **Settings → (agent) → Advanced → Agent-to-agent → Status** (with a **Copy address** button; the agent has to be running to show it). Which address you get depends on how your install is reachable:
 
-- **Through the Residuum relay**: once Residuum Cloud is connected, each running agent is reachable at `{origin}/a2a/{instance}/{agent name}`, where `{origin}` and `{instance}` are your relay's address and this install's name. Your other installs find it automatically. Anyone else needs a caller key. A stopped or failed agent is not listed and answers `404` until it runs again.
+- **Through Residuum Cloud**: once Residuum Cloud is connected, each running agent is reachable at `https://{instance}.{user}.agent-residuum.com/a2a/{agent name}`, this install's own address. Your other installs that joined this one find it. Anyone else needs a caller key. A stopped or failed agent is not listed and answers `404` until it runs again.
 - **On the same machine or network**: `http://<bind>:7702/agents/<agent name>`.
 - **Through your own tunnel or reverse proxy**: point it at the A2A port (`7702` by default), never at the gateway port (`7700`), which serves the settings API without a login. Then enter the tunnel's URL as **Your own address** in **Settings → All agents → Advanced → Agent-to-agent**, and choose **Save changes**, or set it in `hub/config.toml`:
 
@@ -69,7 +69,7 @@ Store the key the other agent gave you as an agent key first, in **Settings → 
 
 ## Link your own instances
 
-If you run several Residuum installs on the same relay account (a laptop and a server, for example), they find and trust each other automatically once their tunnels are connected. You don't need keys or `config/a2a.json` entries for them. Each agent of another install appears as `a2a:<instance>/<agent>`, marked "(your instance)" in `list_agents`. The agents inside one install are teammates and message each other directly, so they never appear as siblings.
+If you run several Residuum installs on the same relay account (a laptop and a server, for example), they find and trust each other once their tunnels are connected and each has joined the other (Settings → All agents → Residuum Cloud → Remote access, or `residuum remote join`). You don't need keys or `config/a2a.json` entries for them. Each agent of another install appears as `a2a:<instance>/<agent>`, marked "(your instance)" in `list_agents`. The agents inside one install are teammates and message each other directly, so they never appear as siblings.
 
 ## Check it works
 

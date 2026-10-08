@@ -1,25 +1,20 @@
 # Remote Access and Device Pairing
 
-Residuum reached through Residuum Cloud answers only browsers that have been paired with it. A browser that arrives through the relay carries a device credential, a cookie only that browser holds, or it is sent to the pairing page. Opening Residuum on the machine it runs on needs no pairing. The A2A and Teams listeners are not part of this and authenticate their own callers (see [A2A](a2a.md) and [Microsoft Teams](teams.md)).
+Residuum reached through Residuum Cloud answers only browsers that have been paired with it. A browser that arrives through Residuum Cloud carries a device credential, a cookie only that browser holds, or it is sent to the pairing page. Opening Residuum on the machine it runs on needs no pairing. The A2A and Teams listeners are not part of this and authenticate their own callers (see [A2A](a2a.md) and [Microsoft Teams](teams.md)).
 
 The code is in `src/pairing/`; the pairing routes are in `src/hub/http/pairing.rs`.
 
 ## What counts as remote
 
-A request is remote when a transport that carries traffic from Residuum Cloud marked it:
+A request is remote when the transport that terminates TLS inside Residuum marked it by adding a `RemoteTransport` extension (`pairing::remote`) to it before it enters a router. The extension carries the peer address the relay reported and the origin the browser used (`https://{host}`), and a client can't send one. The secure tunnel's engine ([Secure Tunnel and Certificates](secure-tunnel.md)) is that transport. The device gate, the cross-site rule and the remote-control guard all ask the same question, so they apply to every remote request alike. Nothing a client sends in a header makes a request remote or local. Everything else arrived on a local port and is not gated.
 
-- The relay tunnel marks every request and socket open it forwards with the process's tunnel nonce header (see [Residuum Cloud Tunnel](cloud-tunnel.md#telling-a-tunnel-forwarded-request-apart-from-a-local-one)). No client can forge it.
-- A transport that terminates TLS inside Residuum marks a request by adding a `RemoteTransport` extension (`pairing::remote`) to it before it enters a router. The extension carries the peer address and the origin the browser used, and a client can't send one.
-
-The secure tunnel's engine ([Secure Tunnel and Certificates](secure-tunnel.md)) is that second transport: it adds the extension with the peer address the relay reported and `https://{host}` as the origin. Both go through the same gate, so the rules below don't depend on the transport. Everything else arrived on a local port and is not gated.
-
-**The peer address** the rate limits use comes from the forwarding headers the relay's reverse proxy sets and the relay passes through the tunnel unchanged: `X-Real-IP` first, then the last entry of `X-Forwarded-For`. IPv4-mapped IPv6 addresses count as the IPv4 address. A request with neither shares one `unknown` bucket. The relay is trusted for this value, so a compromised relay can only dodge or trigger a rate limit.
+**The peer address** the rate limits use is the one the relay reported for the browser's connection. IPv4-mapped IPv6 addresses count as the IPv4 address. A compromised relay can name any address, which only lets it dodge or trigger a rate limit.
 
 ## The gate
 
 The device gate (`pairing::device_gate`) sits in front of the main gateway router and the workbench listener. For a remote request it checks, in order:
 
-1. **The cross-site rule**, for requests that change state (anything but `GET`, `HEAD` or `OPTIONS`) and for every WebSocket upgrade. `Sec-Fetch-Site` must be `same-origin` or `none`. A browser that doesn't send it must send an `Origin` equal to the origin Residuum Cloud announced for that host. A request with neither is refused with `403`. Other users' hosts are the same site as this one, so a `SameSite=Lax` cookie alone doesn't tell a request from this page from one from another user's page.
+1. **The cross-site rule**, for requests that change state (anything but `GET`, `HEAD` or `OPTIONS`) and for every WebSocket upgrade. `Sec-Fetch-Site` must be `same-origin` or `none`. A browser that doesn't send it must send an `Origin` equal to the origin of the host the request is for. A request with neither is refused with `403`. Other users' hosts are the same site as this one, so a `SameSite=Lax` cookie alone doesn't tell a request from this page from one from another user's page.
 2. **The pre-auth routes**, which answer without a credential.
 3. **The credential.** A valid device cookie for that host lets the request through. Without one, a browser navigation is redirected to `/pair` and anything else gets `401` with `{ "error", "code": "device_required" }`. The web app moves to the pairing page on that code.
 
@@ -31,7 +26,7 @@ On the workbench host an unpaired navigation to an artifact is redirected to the
 
 A paired browser holds a random 256-bit secret in a cookie named `__Host-residuum_device_{slug}`: `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`, `Max-Age` 400 days. The `__Host-` prefix keeps the cookie on the one host that set it. `{slug}` is this instance's slug, so cookies for several instances of one user coexist on the shared UI host; the active instance also receives the others' cookies and ignores them.
 
-With the secure tunnel, the slug and both origins come from the identity this install stored when it enrolled (see [Secure Tunnel and Certificates](secure-tunnel.md#identity-is-local)), and what the relay announces is ignored. Over the legacy tunnel the slug is the one Residuum Cloud announces in its `Connected` frame (lowercase letters, digits and hyphens, up to 24 characters). The hub keeps the last slug and the UI and workbench origins it was told in `hub/remote-access.json`, so cookies, pairing links and the cross-site rule keep working while the tunnel reconnects. When no slug has ever been announced (a relay that doesn't send one, or an install that has never connected) the name ends in `default`. A browser paired under one slug has to pair again if the slug later changes.
+The slug and both origins come from the identity this install stored when it enrolled (see [Secure Tunnel and Certificates](secure-tunnel.md#identity-is-local)), and what the relay announces is ignored once that identity exists (lowercase letters, digits and hyphens, up to 24 characters). The hub keeps the slug and the UI and workbench origins in `hub/remote-access.json`, so cookies, pairing links and the cross-site rule keep working while the tunnel reconnects. When no slug has ever been announced (an install that has never connected) the name ends in `default`. A browser paired under one slug has to pair again if the slug later changes.
 
 Only a SHA-256 of the secret is stored, with the device's name, when it was paired and when it was last seen. A device that makes no request for 400 days is no longer paired. Each use extends the cookie: it is set again on a response once a day. The UI host and the workbench host are different origins and each has its own credential; the workbench credentials belong to the same device, so revoking a device ends both.
 

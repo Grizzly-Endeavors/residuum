@@ -63,7 +63,7 @@ Saving reloads the config. The log shows `teams interface listening` with the ad
 
 ## 3. Set the messaging endpoint
 
-With Residuum Cloud connected, **Settings → (agent) → Connections → Microsoft Teams** shows a **Messaging endpoint** like `https://<you>.agent-residuum.com/teams/<instance>/<agent>`. Copy it. In the Developer Portal bot page, set **Endpoint address** to that URL and save. The relay delivers messages to this agent while the cloud connection is up. Teams messages can't arrive through it while Residuum Cloud is disconnected.
+With Residuum Cloud connected, **Settings → (agent) → Connections → Microsoft Teams** shows a **Messaging endpoint** like `https://<instance>.<you>.agent-residuum.com/teams/<agent>`. Copy it. In the Developer Portal bot page, set **Endpoint address** to that URL and save. Residuum delivers messages to this agent while the cloud connection is up. Teams messages can't arrive through it while Residuum Cloud is disconnected.
 
 To reach the bot without Residuum Cloud, point a tunnel at the **Teams port (7701)** only (the **Listener port** in the same **Microsoft Teams** group). Never expose the gateway port (7700): it serves the configuration and secrets API without a login. Everything that reaches port 7701 has to carry a valid Microsoft-signed token, or it's rejected. The endpoint is then `https://…/api/teams/messages`.
 

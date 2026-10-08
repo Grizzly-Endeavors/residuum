@@ -144,9 +144,9 @@ A session runs on one agent, so an artifact names it (`residuum.sessions.start({
 
 ## Request guards
 
-- The **device gate** covers the main listener and the artifacts listener. A request that arrived through the relay tunnel (or any transport that marks requests remote) needs a paired device's credential, except the pairing page, its assets and the pairing API, and a state-changing request or socket upgrade must also pass the remote cross-site rule. Local requests are untouched. See [remote-access.md](remote-access.md).
+- The **device gate** covers the main listener and the artifacts listener. A remote request (one the secure tunnel's engine marked) needs a paired device's credential, except the pairing page, its assets and the pairing API, and a state-changing request or socket upgrade must also pass the remote cross-site rule. Local requests are untouched. See [remote-access.md](remote-access.md).
 - The **cross-site guard** covers every route on both listeners: state-changing requests and WebSocket upgrades from another site are refused with `403` (see [workbench.md](workbench.md#security-model)).
-- The **remote-control guard** covers `POST /api/hub/shutdown` and `POST /api/hub/cloud/disconnect` (see [cloud-tunnel.md](cloud-tunnel.md)): a request that arrived through the relay tunnel is refused with `403`.
+- The **remote-control guard** covers `POST /api/hub/shutdown` and `POST /api/hub/cloud/disconnect` (see [cloud-tunnel.md](cloud-tunnel.md)): a remote request is refused with `403`.
 - The **artifacts-origin block list** covers `/api/hub/shutdown`, `/api/hub/stop-all`, `/api/hub/update/check`, `/api/hub/update/apply`, `/api/hub/update/restart` and `/api/hub/config/complete-setup`, and everything at and under `/api/hub/devices` and `/api/hub/remote-access`. The artifacts listener serves `/api` by handing requests to this router in-process, marked by an internal request extension that a client can't send, and a marked request to one of these routes is refused with `403` and `{ "error" }`. A marked agent socket (`/api/agents/{name}/ws`) doesn't count as a client for the agent's unread count or connected state. The same routes work on the gateway. See [API forwarding](workbench.md#api-forwarding).
 
 ## Embedded web app
@@ -165,7 +165,7 @@ JavaScript, CSS, JSON, SVG, and the web manifest are compressed with brotli or g
 
 The web app's service worker is the embedded file `/sw.js`. It is served from the root, so its scope is the whole app and the response needs no `Service-Worker-Allowed` header, and it is served as JavaScript with the `no-cache` and `ETag` of any other root file, which is how a browser sees that the app was rebuilt. A browser registers it only from a secure context (HTTPS, or localhost). It holds the app shell and never handles `/api`, the sockets, `/webhook` or `/cloud/callback`.
 
-Through Residuum Cloud the tunnel's loopback client passes the browser's `Accept-Encoding` and `If-None-Match` to this router unchanged and returns the answer's headers and body as received, without decompressing (see [Residuum Cloud Tunnel](cloud-tunnel.md)).
+Through Residuum Cloud the secure tunnel's engine serves this router in-process, so the browser's `Accept-Encoding` and `If-None-Match` reach it unchanged and the answer's headers and body go back as produced (see [Secure Tunnel and Certificates](secure-tunnel.md#the-engine)).
 
 ## Hub WebSocket
 

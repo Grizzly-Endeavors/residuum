@@ -10,8 +10,8 @@ For how a system is *intended* to work rather than how to drive it, see `../syst
 
 - [Work with more than one agent](multiple-agents.md) — create agents, switch between them, hand work from one to another, and delete or bring one back.
 - [Set up Residuum in Microsoft Teams](teams-setup.md) — register a Teams bot, expose it through a tunnel, and install it for DMs, group chats, and channels.
-- [Connect agents with A2A](a2a-setup.md) — let other agents delegate work to yours, reach other agents from yours, and link your own instances through the relay.
+- [Connect agents with A2A](a2a-setup.md) — let other agents delegate work to yours, reach other agents from yours, and link your own instances.
 - [Migrating to agent sessions](migrating-to-agent-sessions.md) — breaking changes and new behavior for anyone upgrading from before the agent sessions overhaul.
 - [Reach Residuum from your phone and other browsers](remote-access.md) — pair a browser for Residuum Cloud, approve another from a paired one, use a recovery code, and remove a browser.
 - [Migrating to device pairing](migrating-to-device-pairing.md) — what to do before and after updating to the version where Residuum Cloud answers only paired browsers.
-- [Migrating to the secure tunnel](migrating-to-secure-tunnel.md) — what changes when Residuum Cloud's relay supports end-to-end encrypted remote access: the certificate, the recovery code, and what to do with more than one instance.
+- [Migrating to the secure tunnel](migrating-to-secure-tunnel.md) — what changed when the older tunnel was removed and Residuum Cloud began serving every install end to end: the certificate, the recovery code, and what to do with more than one instance.

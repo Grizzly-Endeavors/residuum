@@ -1,6 +1,6 @@
 # Secure Tunnel and Certificates
 
-With the secure tunnel (tunnel v2), Residuum terminates TLS itself for its own addresses. The relay forwards raw encrypted bytes and sees only host names, IP addresses, timing and byte counts. The legacy tunnel ([Residuum Cloud Tunnel](cloud-tunnel.md)) is the fallback for a relay that doesn't offer it yet. Which browsers may use the secure tunnel is [Remote access](remote-access.md).
+Residuum terminates TLS itself for its own addresses. The relay forwards raw encrypted bytes and sees only host names, IP addresses, timing and byte counts. The connection to the relay is described in [Residuum Cloud Tunnel](cloud-tunnel.md). Which browsers may use the secure tunnel is [Remote access](remote-access.md).
 
 The code is in `src/remote_access/` (the manager, certificates, pin service client, engine) and `src/tunnel/v2/` (the tunnel client).
 
@@ -22,7 +22,7 @@ An install stores its user and slug in `hub/remote-access/state.json` when it en
 - Before the first enrollment the announced user and instance are taken once (trust on first use); enrolling is what stores them.
 - For each stream the engine reads the SNI from the ClientHello itself and closes the stream when it differs from `StreamOpen.host` or isn't one of the three names.
 - The pairing identity (cookie name and the origins in pairing links) comes from this local identity too, and what the relay announces is ignored once it exists.
-- An install that has a stored identity never falls back to the legacy tunnel when the relay answers `404` or `426` on `/tunnel/v2/register`: a relay that refused would otherwise read everything. The status says so and the client keeps retrying the secure tunnel. An install with no stored identity does fall back, and the status says `legacy`.
+- A relay that answers `404` or `426` on `/tunnel/v2/register` doesn't offer the secure tunnel. Nothing is served through it: the status says `error` with the reason and the client keeps retrying.
 
 ## Enrollment and the pin service
 
@@ -66,17 +66,16 @@ Renewal starts when one third of the certificate's lifetime remains, or earlier 
 
 ## The engine
 
-`src/remote_access/engine.rs` serves each tunnel stream: TLS with ALPN `h2`, `http/1.1` and `acme-tls/1`, then HTTP. It picks the handler by the request's Host (`:authority`), not the SNI, because browsers may reuse one connection for the UI and workbench names. Requests for the UI and workbench names go in-process to the same routers the local listeners serve, marked remote with the real peer address the relay reported, so the device gate and rate limits apply. An unknown Host gets `421 Misdirected Request`. On the instance name, `/a2a/{agent}/...` goes to the hub's A2A listener and `/teams/{agent}` to that agent's Teams listener. The tunnel and sibling attestation headers are removed from every inbound request, and the instance name's A2A path keeps the relay's old per-address limit of 300 requests a minute with a burst of 60.
+`src/remote_access/engine.rs` serves each tunnel stream: TLS with ALPN `h2`, `http/1.1` and `acme-tls/1`, then HTTP. It picks the handler by the request's Host (`:authority`), not the SNI, because browsers may reuse one connection for the UI and workbench names. Requests for the UI and workbench names go in-process to the same routers the local listeners serve, marked remote with the real peer address the relay reported, so the device gate and rate limits apply. An unknown Host gets `421 Misdirected Request`. On the instance name, `/a2a/{agent}/...` goes to the hub's A2A listener and `/teams/{agent}` to that agent's Teams listener. `x-residuum-a2a-caller`, `x-real-ip` and `x-forwarded-for` are removed from every inbound request, and the instance name's A2A path keeps the relay's old per-address limit of 300 requests a minute with a burst of 60.
 
 ## Status and settings
 
-`GET /api/hub/remote-access/status` reports `instances`, `siblings`, the join this instance started (`join`) and the requests waiting for it (`pending_joins`), besides `state` (`disabled`, `legacy`, `connecting`, `enrolling`, `needs_join`, `waiting_for_dns`, `ordering`, `ready`, `refused`, `error`), a plain-language `detail`, the user, slug and addresses, the certificate's expiry and renewal time, the pins, and whether a recovery code is waiting. `POST /api/hub/remote-access/retry` looks again now. The recovery code, `POST .../join`, `POST .../joins/{id}/approve|deny`, `POST .../pins/remove` and `POST .../instances/{slug}/activate` work from the paired browsers too. `POST .../recovery-code/saved` and `POST .../reset-pins` work only for requests made on the machine Residuum runs on.
+`GET /api/hub/remote-access/status` reports `instances`, `siblings`, the join this instance started (`join`) and the requests waiting for it (`pending_joins`), besides `state` (`disabled`, `connecting`, `enrolling`, `needs_join`, `waiting_for_dns`, `ordering`, `ready`, `refused`, `error`), a plain-language `detail` (`disabled` means Residuum Cloud isn't configured), the user, slug and addresses, the certificate's expiry and renewal time, the pins, and whether a recovery code is waiting. `POST /api/hub/remote-access/retry` looks again now. The recovery code, `POST .../join`, `POST .../joins/{id}/approve|deny`, `POST .../pins/remove` and `POST .../instances/{slug}/activate` work from the paired browsers too. `POST .../recovery-code/saved` and `POST .../reset-pins` work only for requests made on the machine Residuum runs on.
 
 `[cloud]` in `hub/config.toml`:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `remote_access` | `true` | Try the secure tunnel. `false` keeps the legacy tunnel only. |
 | `base_domain` | `agent-residuum.com` | Domain every host name is derived under. |
 | `acme_directory` | `production` | `production`, `staging` (Let's Encrypt staging), or a directory URL such as a local Pebble. |
 | `acme_root_ca` | none | PEM file with an extra root the directory's TLS certificate may chain to (a private test CA). Calls to sibling instances trust it too. |
