@@ -67,7 +67,7 @@ Free while in alpha. Core features stay free forever — Cloud expands what your
 ### Download
 
 ```bash
-curl -fsSL https://github.com/grizzly-endeavors/residuum/releases/latest/download/install.sh | sh
+curl -fsSL https://agent-residuum.com/install | sh
 ```
 
 The install script detects Linux and macOS automatically and never uses `sudo`: it installs to `/usr/local/bin` when that's writable, otherwise to `~/.local/bin` (adding it to your PATH), so Residuum can update itself. Set `RESIDUUM_INSTALL_DIR` to choose a different directory. Windows binaries are available on the [releases page](https://github.com/Grizzly-Endeavors/residuum/releases/latest).

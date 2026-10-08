@@ -549,7 +549,7 @@ fn running_exe_path() -> std::io::Result<PathBuf> {
 /// What the user sees when the binary lives in a directory this account
 /// can't write to, such as a `/usr/local/bin` that needs `sudo`.
 #[cfg(unix)]
-const INSTALL_DIR_NOT_WRITABLE: &str = "residuum can't update itself because it's installed in a folder this account can't write to. Rerun the installer to move it somewhere it can: curl -fsSL https://github.com/grizzly-endeavors/residuum/releases/latest/download/install.sh | sh";
+const INSTALL_DIR_NOT_WRITABLE: &str = "residuum can't update itself because it's installed in a folder this account can't write to. Rerun the installer to move it somewhere it can: curl -fsSL https://agent-residuum.com/install | sh";
 #[cfg(not(unix))]
 const INSTALL_DIR_NOT_WRITABLE: &str = "residuum can't update itself because it's installed in a folder this account can't write to. Move residuum.exe to a folder you own and run it from there.";
 

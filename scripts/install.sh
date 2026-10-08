@@ -1,6 +1,6 @@
 #!/bin/sh
 # Residuum installer
-# Usage: curl -fsSL https://github.com/grizzly-endeavors/residuum/releases/latest/download/install.sh | sh
+# Usage: curl -fsSL https://agent-residuum.com/install | sh
 set -eu
 
 REPO="grizzly-endeavors/residuum"
