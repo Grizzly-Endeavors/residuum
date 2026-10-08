@@ -230,7 +230,6 @@ impl HubServices {
         let sibling_fanout = crate::a2a::SiblingFanout::new_shared();
         crate::a2a::spawn_sibling_discovery(
             Arc::clone(&sibling_fanout),
-            tunnel_status_rx.clone(),
             remote_access.discovery_receiver(),
         );
         Ok(Self {

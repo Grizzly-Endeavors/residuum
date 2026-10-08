@@ -64,8 +64,7 @@ fn from_file_and_env_inner(
         Err(err) => return Err(err),
     };
     let gateway = gateway::resolve_gateway_config(file.and_then(|f| f.gateway.as_ref()));
-    let cloud =
-        gateway::resolve_cloud_config(file.and_then(|f| f.cloud.as_ref()), &secrets, &gateway);
+    let cloud = gateway::resolve_cloud_config(file.and_then(|f| f.cloud.as_ref()), &secrets);
     let tracing = tracing_config::resolve_tracing_config(file.and_then(|f| f.tracing.as_ref()))?;
     let (a2a_enabled, a2a_port, a2a_public_url) =
         super::a2a::resolve_hub_a2a_config(file.and_then(|f| f.a2a.as_ref()));
@@ -309,6 +308,27 @@ hop_hard_limit = 16
             cfg.cloud.as_ref().map(|c| c.token.as_str()),
             Some("env-cloud-token")
         );
+    }
+
+    #[test]
+    fn a_cloud_section_with_the_retired_keys_still_loads_and_connects() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        for retired in [
+            "remote_access = false",
+            "remote_access = true",
+            "local_port = 7700",
+            "remote_access = false\nlocal_port = 9000",
+        ] {
+            let file = parse(&format!(
+                "timezone = \"UTC\"\n\n[cloud]\ntoken = \"tok\"\n{retired}\n"
+            ));
+            let cfg = from_file_and_env(Some(&file), &test_dir()).unwrap();
+            assert_eq!(
+                cfg.cloud.as_ref().map(|c| c.token.as_str()),
+                Some("tok"),
+                "{retired}"
+            );
+        }
     }
 
     #[test]

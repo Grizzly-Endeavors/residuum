@@ -224,7 +224,6 @@ mod tests {
             origin: Some("https://bear.agent-residuum.com".into()),
             workbench_origin: Some("https://bear.workbench.agent-residuum.com".into()),
             instance: None,
-            a2a_token: None,
             instance_origin: None,
         };
         let resp = app(

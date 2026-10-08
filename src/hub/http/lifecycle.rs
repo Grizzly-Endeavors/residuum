@@ -198,7 +198,7 @@ async fn hub_status(
     let tunnel = CloudStatusResponse::current(
         &state.hub_dir,
         &state.tunnel_status_rx,
-        crate::pairing::remote::remote_context(&parts.headers, &parts.extensions).is_some(),
+        crate::pairing::remote::remote_context(&parts.extensions).is_some(),
     );
     Json(json!({
         "version": crate::update::CURRENT_VERSION,

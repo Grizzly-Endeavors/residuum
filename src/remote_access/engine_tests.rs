@@ -55,14 +55,9 @@ fn ui_router() -> Router {
                 .unwrap_or_default()
         )
     }
-    async fn tunnel_header(headers: HeaderMap) -> String {
-        let seen = [
-            "x-residuum-tunnel",
-            "x-residuum-sibling",
-            "x-residuum-a2a-caller",
-            "x-real-ip",
-        ]
-        .map(|name| format!("{name}={}", headers.contains_key(name)));
+    async fn internal_headers(headers: HeaderMap) -> String {
+        let seen = ["x-residuum-a2a-caller", "x-real-ip", "x-forwarded-for"]
+            .map(|name| format!("{name}={}", headers.contains_key(name)));
         seen.join(" ")
     }
     async fn ws(upgrade: WebSocketUpgrade) -> impl IntoResponse {
@@ -78,10 +73,23 @@ fn ui_router() -> Router {
             }
         })
     }
+    let guarded = Router::new()
+        .route(
+            "/api/hub/shutdown",
+            axum::routing::post(|| async { "shutting down" }),
+        )
+        .route(
+            "/api/hub/cloud/disconnect",
+            axum::routing::post(|| async { "disconnected" }),
+        )
+        .route_layer(axum::middleware::from_fn(
+            crate::gateway::remote_control_guard::reject_remote_shutdown_and_disconnect,
+        ));
     Router::new()
         .route("/whoami", get(whoami))
-        .route("/headers", get(tunnel_header))
+        .route("/headers", get(internal_headers))
         .route("/ws", get(ws))
+        .merge(guarded)
 }
 
 fn workbench_router() -> Router {
@@ -322,17 +330,43 @@ async fn forged_internal_headers_are_stripped() {
         &h.names.ui.clone(),
         "/headers",
         &[
-            ("x-residuum-tunnel", "forged"),
-            ("x-residuum-sibling", "evil"),
             ("x-residuum-a2a-caller", "key:root"),
             ("x-real-ip", "10.0.0.1"),
+            ("x-forwarded-for", "10.0.0.2"),
         ],
     )
     .await;
     assert_eq!(
         reply.body,
-        "x-residuum-tunnel=false x-residuum-sibling=false x-residuum-a2a-caller=false x-real-ip=false"
+        "x-residuum-a2a-caller=false x-real-ip=false x-forwarded-for=false"
     );
+}
+
+#[tokio::test]
+async fn a_remote_shutdown_or_disconnect_is_refused_through_the_engine() {
+    let h = harness(None, BTreeMap::new(), true);
+    let host = h.names.ui.clone();
+    for path in ["/api/hub/shutdown", "/api/hub/cloud/disconnect"] {
+        let client = h.connect(&host, &[b"http/1.1"]).await.expect("connect");
+        let reply = request(
+            client,
+            Method::POST,
+            &host,
+            path,
+            &[("sec-fetch-site", "same-origin")],
+        )
+        .await;
+        assert_eq!(reply.status, StatusCode::FORBIDDEN, "{path}");
+        assert!(
+            reply.body.contains("can't be done remotely"),
+            "{path}: {}",
+            reply.body
+        );
+    }
+    // The rest of the router stays reachable remotely.
+    let client = h.connect(&host, &[b"http/1.1"]).await.expect("connect");
+    let reply = request(client, Method::GET, &host, "/whoami", &[]).await;
+    assert_eq!(reply.status, StatusCode::OK);
 }
 
 #[tokio::test]
@@ -401,12 +435,11 @@ async fn websocket_upgrade_reaches_ui_router() {
 async fn spawn_upstream(release_second_chunk: Arc<Notify>) -> u16 {
     async fn echo(method: Method, uri: axum::http::Uri, headers: HeaderMap) -> impl IntoResponse {
         let body = format!(
-            "{method} {uri} host_is_proxy_host={} tunnel={} auth={}",
+            "{method} {uri} host_is_proxy_host={} auth={}",
             headers
                 .get(header::HOST)
                 .and_then(|v| v.to_str().ok())
                 .is_some_and(|v| v.contains("agent-residuum.com")),
-            headers.contains_key("x-residuum-tunnel"),
             headers
                 .get(header::AUTHORIZATION)
                 .and_then(|v| v.to_str().ok())
@@ -515,17 +548,14 @@ async fn a2a_proxy_rewrites_path_keeps_query_and_hardens() {
         Method::GET,
         &host,
         "/a2a/scout/rest/message:send?x=1&y=2",
-        &[
-            ("x-residuum-tunnel", "forged"),
-            ("authorization", "Bearer t"),
-        ],
+        &[("authorization", "Bearer t")],
     )
     .await;
     assert_eq!(reply.status, StatusCode::OK);
     assert!(reply.headers.get(header::SET_COOKIE).is_none());
     assert_eq!(
         reply.body,
-        "GET /agents/scout/rest/message:send?x=1&y=2 host_is_proxy_host=false tunnel=false auth=Bearer t"
+        "GET /agents/scout/rest/message:send?x=1&y=2 host_is_proxy_host=false auth=Bearer t"
     );
 }
 

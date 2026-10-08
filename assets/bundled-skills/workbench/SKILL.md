@@ -24,7 +24,6 @@ The workbench is the team's, shared by every agent, and lives in `team/workbench
    - Give the page a `<title>`: the workbench lists the artifact by it.
    - Set an explicit page `background` and text `color` on `body`. Unstyled pages render on white.
    - Load libraries from a CDN (jsdelivr, cdnjs, unpkg) or put them in the folder.
-   - Through Residuum Cloud, a file or response over 10 MB fails to load, so keep bundled data under that.
    - Use the global `residuum` object for anything that talks to Residuum. It is injected into every page; do not add a script for it.
 
 4. **Name the agent in every agent-specific call.** An artifact belongs to the team, not to an agent, so nothing defaults to one. Use `residuum.agent(name)` for an agent's live events and files, `{ agent }` in `residuum.ask` and `residuum.sessions.start`, and `/api/agents/<name>/...` paths for an agent's routes. A path that belongs to an agent but names none (`/api/status`) answers `400` without being sent. Name yourself unless the user asked for a teammate, and keep the name in one constant at the top of the page.
@@ -141,7 +140,7 @@ const result = await residuum.ask({
 render(result.json.sentiment);
 ```
 
-Reach for `residuum.ask` only for genuinely one-shot work. Anything that needs your judgment, your tools, or multiple turns belongs in an agent session (`residuum.sessions.start`), not a model call. Through Residuum Cloud a call that takes longer than 25 seconds fails, so keep prompts and `max_tokens` small enough to answer in that time.
+Reach for `residuum.ask` only for genuinely one-shot work. Anything that needs your judgment, your tools, or multiple turns belongs in an agent session (`residuum.sessions.start`), not a model call.
 
 ## Verification
 

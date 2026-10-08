@@ -72,7 +72,7 @@ fn surface_of(parts: &Parts) -> Surface {
 }
 
 fn remote_of(parts: &Parts) -> Option<RemoteContext> {
-    remote_context(&parts.headers, &parts.extensions)
+    remote_context(&parts.extensions)
 }
 
 fn cookie_header(headers: &HeaderMap) -> Option<&str> {

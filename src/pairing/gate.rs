@@ -67,7 +67,7 @@ pub(crate) async fn device_gate(
     mut req: Request,
     next: Next,
 ) -> Response {
-    let Some(remote) = remote_context(req.headers(), req.extensions()) else {
+    let Some(remote) = remote_context(req.extensions()) else {
         return next.run(req).await;
     };
     // The workbench listener already gated this request, on its own host's

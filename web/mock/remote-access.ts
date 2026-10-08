@@ -7,13 +7,12 @@ export interface MockRemoteAccess {
   status: RemoteAccessStatus;
 }
 
-/** An install on the older tunnel, where the remote access group stays hidden. */
+/** An install without Residuum Cloud set up, where the remote access group stays hidden. */
 export function defaultRemoteAccess(): MockRemoteAccess {
   return {
     status: {
-      state: "legacy",
-      detail:
-        "The relay doesn't offer the secure tunnel yet, so Residuum Cloud uses the older tunnel, which the relay can read.",
+      state: "disabled",
+      detail: "Residuum Cloud isn't set up on this install.",
       user: "mock-user",
       slug: "laptop",
       hosts: {

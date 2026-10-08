@@ -29,8 +29,7 @@ const PER_FILE_CONTENT_LIMIT_BYTES: u64 = 1024 * 1024;
 /// walking and sets `listing_truncated`.
 const TREE_ENTRY_LIMIT: usize = 20_000;
 
-/// Serialized response budget for bulk reads, in bytes (8 MiB). Leaves
-/// headroom under the relay tunnel's 10 MB response limit; once adding a
+/// Serialized response budget for bulk reads, in bytes (8 MiB). Once adding a
 /// file's content would push the response past this, the content is
 /// dropped (`skipped`/`error`: `"budget"`) but the entry's metadata stays.
 const RESPONSE_BUDGET_BYTES: usize = 8 * 1024 * 1024;

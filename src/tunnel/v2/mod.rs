@@ -22,19 +22,24 @@ pub(crate) use link::{ClaimError, RelayLink};
 pub(super) use session::{ConnectOutcome, SessionEnd, SessionInputs, connect, run_session};
 pub(crate) use stream::TunnelIo;
 
-/// Path of the v1 registration endpoint.
-const V1_REGISTER_PATH: &str = "/tunnel/register";
+/// Path of the registration endpoint.
+const REGISTER_PATH: &str = "/tunnel/v2/register";
 
-/// Path of the v2 registration endpoint.
-const V2_REGISTER_PATH: &str = "/tunnel/v2/register";
+/// Path an earlier configuration's `relay_url` ends in; the registration
+/// endpoint replaces it.
+const PREVIOUS_REGISTER_PATH: &str = "/tunnel/register";
 
-/// The v2 registration URL for a v1 relay URL, or `None` when the URL does
-/// not end in the v1 registration path (v2 is then not attempted).
+/// The registration URL for the relay URL in `[cloud] relay_url`, or `None`
+/// when it ends in neither `/tunnel/v2/register` nor `/tunnel/register`
+/// (the latter is rewritten to the former, keeping any prefix and query).
 #[must_use]
 pub(crate) fn register_url(relay_url: &str) -> Option<String> {
     let mut url = url::Url::parse(relay_url).ok()?;
-    let prefix = url.path().strip_suffix(V1_REGISTER_PATH)?.to_string();
-    url.set_path(&format!("{prefix}{V2_REGISTER_PATH}"));
+    if url.path().ends_with(REGISTER_PATH) {
+        return Some(url.to_string());
+    }
+    let prefix = url.path().strip_suffix(PREVIOUS_REGISTER_PATH)?.to_string();
+    url.set_path(&format!("{prefix}{REGISTER_PATH}"));
     Some(url.to_string())
 }
 
@@ -106,9 +111,10 @@ pub(crate) trait SessionHandler: Send + Sync {
     /// The session ended (any reason). Streams are already closed.
     fn on_disconnected(&self);
 
-    /// Whether a relay that answers 404/426 on the v2 endpoint may be served
-    /// by the v1 client.
-    fn allow_v1_fallback(&self) -> bool;
+    /// The relay answered 404 or 426 on the registration endpoint: it doesn't
+    /// offer the secure tunnel. The tunnel keeps retrying; this is where the
+    /// handler reports why remote access is down.
+    fn on_relay_unsupported(&self);
 }
 
 #[cfg(test)]
@@ -116,7 +122,15 @@ mod url_tests {
     use super::register_url;
 
     #[test]
-    fn v1_path_becomes_v2_path() {
+    fn the_registration_path_is_used_as_is() {
+        assert_eq!(
+            register_url("wss://agent-residuum.com/tunnel/v2/register").as_deref(),
+            Some("wss://agent-residuum.com/tunnel/v2/register")
+        );
+    }
+
+    #[test]
+    fn the_earlier_registration_path_becomes_the_current_one() {
         assert_eq!(
             register_url("wss://agent-residuum.com/tunnel/register").as_deref(),
             Some("wss://agent-residuum.com/tunnel/v2/register")
@@ -128,7 +142,7 @@ mod url_tests {
     }
 
     #[test]
-    fn other_paths_do_not_try_v2() {
+    fn other_paths_have_no_registration_url() {
         assert_eq!(register_url("wss://relay.example.com/ws"), None);
         assert_eq!(register_url("wss://relay.example.com"), None);
         assert_eq!(register_url("not a url"), None);

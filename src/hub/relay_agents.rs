@@ -1,7 +1,6 @@
 //! Keeps the relay's copy of the hub's agent list current.
 //!
-//! The relay routes `/a2a/{instance}/{agent}` requests and builds its A2A
-//! directory from the list the tunnel sends after every (re)connect. This
+//! The relay builds its A2A directory from the list the tunnel sends after every (re)connect. This
 //! module computes that list from the agent directory and republishes it
 //! whenever an agent is created or deleted, changes state, or changes A2A
 //! visibility, or the hub's `[a2a] enabled` flips. The tunnel sends whatever
@@ -26,7 +25,7 @@ use tokio::time::Instant;
 
 use super::directory::AgentDirectory;
 use super::types::{A2aVisibility, AgentState, AgentSummary, HubEvent};
-use crate::tunnel::protocol::AgentInfo;
+use crate::tunnel::v2::frames::AgentInfo;
 
 /// How long a burst of changes is allowed to gather before one update goes
 /// out. Creating an agent publishes a creation and then a start-up state
@@ -53,7 +52,6 @@ pub(crate) fn agent_infos(
                 && agent.state == AgentState::Running
                 && !stopping.contains(&agent.name),
             a2a_private: agent.a2a_visibility == A2aVisibility::Private,
-            teams_configured: agent.teams_configured,
         })
         .collect()
 }
@@ -253,16 +251,6 @@ mod tests {
                 .iter()
                 .all(|a| !a.a2a_enabled)
         );
-    }
-
-    #[test]
-    fn a_stopped_agent_with_teams_configured_stays_configured() {
-        let mut agent = summary("scout", AgentState::Stopped, A2aVisibility::Public);
-        agent.teams_configured = true;
-        let infos = agent_infos(&[agent], true, &HashSet::new());
-        let scout = infos.first().expect("scout");
-        assert!(scout.teams_configured);
-        assert!(!scout.a2a_enabled);
     }
 
     #[test]

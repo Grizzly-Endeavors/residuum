@@ -81,17 +81,6 @@ impl RemoteAccessSlot {
             .clone()
     }
 
-    /// Whether the hub is on the secure tunnel (or connecting to it). The older
-    /// tunnel's relay attestation of a calling sibling is only believed while
-    /// this is false.
-    #[must_use]
-    pub fn on_secure_tunnel(&self) -> bool {
-        !matches!(
-            self.status.borrow().state,
-            RemoteAccessState::Disabled | RemoteAccessState::Legacy
-        )
-    }
-
     /// The status. The recovery code waiting to be saved is included only
     /// when `include_recovery_code`, which the API sets for requests made on
     /// the machine Residuum runs on.
@@ -187,28 +176,6 @@ impl RemoteAccessSlot {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_relays_sibling_attestation_counts_only_off_the_secure_tunnel() {
-        let dir = tempfile::tempdir().unwrap();
-        let slot = RemoteAccessSlot::new(dir.path());
-        assert!(
-            !slot.on_secure_tunnel(),
-            "disabled: the older tunnel, if any"
-        );
-        slot.status_sender()
-            .send_modify(|s| s.state = RemoteAccessState::Legacy);
-        assert!(!slot.on_secure_tunnel());
-        for state in [
-            RemoteAccessState::Connecting,
-            RemoteAccessState::NeedsJoin,
-            RemoteAccessState::Ready,
-            RemoteAccessState::Error,
-        ] {
-            slot.status_sender().send_modify(|s| s.state = state);
-            assert!(slot.on_secure_tunnel(), "{state:?}");
-        }
-    }
 
     #[tokio::test]
     async fn actions_without_a_running_manager_say_the_tunnel_isnt_connected() {

@@ -89,7 +89,7 @@ test.describe("Residuum Cloud", () => {
     expect(await opened()).toEqual(["https://agent-residuum.com/connect?port=7700"]);
 
     await page.getByRole("button", { name: "More options" }).click();
-    await page.getByLabel("Relay URL").fill("ws://127.0.0.1:8080/tunnel/register");
+    await page.getByLabel("Relay URL").fill("ws://127.0.0.1:8080/tunnel/v2/register");
     await page.getByRole("button", { name: "Connect to Residuum Cloud" }).click();
     expect(await opened()).toEqual([
       "https://agent-residuum.com/connect?port=7700",

@@ -632,8 +632,8 @@ mod tests {
         assert_eq!(header_of(&plain, "etag"), header_of(&gzip, "etag"));
     }
 
-    /// The Residuum Cloud tunnel forwards requests with a `reqwest` client
-    /// that doesn't decompress, and hands the relay the raw body and headers.
+    /// A `reqwest` client that doesn't decompress gets the raw encoded body and
+    /// headers.
     #[tokio::test]
     async fn a_client_that_does_not_decompress_receives_the_encoded_body_and_headers() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

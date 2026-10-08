@@ -21,16 +21,26 @@ async fn announce(h: &Harness) {
         .unwrap();
 }
 
-/// A request as the relay tunnel delivers a browser's: marked with the
-/// process's tunnel nonce, with the peer address the relay passes along and the
-/// headers a same-origin fetch carries.
+/// A request as the secure tunnel delivers a browser's: marked with the
+/// transport extension no client can send, carrying the peer address, and with
+/// the headers a same-origin fetch carries.
 fn remote(method: Method, uri: &str) -> Builder {
-    Request::builder()
-        .method(method)
-        .uri(uri)
-        .header(TUNNEL_NONCE_HEADER, tunnel_nonce())
-        .header("x-real-ip", PEER)
-        .header("sec-fetch-site", "same-origin")
+    from_peer(
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("sec-fetch-site", "same-origin"),
+        PEER,
+    )
+}
+
+/// `builder` delivered by the transport as coming from `peer_ip`, replacing
+/// any peer it carried.
+fn from_peer(builder: Builder, peer_ip: &str) -> Builder {
+    builder.extension(crate::pairing::remote::RemoteTransport {
+        peer_ip: Some(peer_ip.to_string()),
+        origin: None,
+    })
 }
 
 /// `builder` with header `name` set to `value`, replacing any the builder
@@ -131,10 +141,12 @@ async fn a_tunneled_request_without_a_credential_is_refused_and_a_local_one_is_n
 }
 
 #[tokio::test]
-async fn a_forged_tunnel_marker_does_not_make_a_request_remote() {
+async fn headers_a_client_sends_do_not_make_a_request_remote() {
     let h = Harness::new();
     let request = Request::get("/api/hub/agents")
-        .header(TUNNEL_NONCE_HEADER, "not-the-nonce")
+        .header("x-residuum-tunnel", "anything")
+        .header("x-real-ip", PEER)
+        .header("x-forwarded-for", PEER)
         .body(Body::empty())
         .unwrap();
     assert_eq!(h.status(request).await, StatusCode::OK);
@@ -424,9 +436,8 @@ async fn an_eleventh_waiting_request_is_refused() {
     let h = Harness::new();
     // Different peers, so the per-address limit is not what refuses.
     for n in 0..10 {
-        let from_peer = set(
+        let from_peer = from_peer(
             remote(Method::POST, "/api/hub/pairing/requests"),
-            "x-real-ip",
             &format!("198.51.100.{n}"),
         );
         assert_eq!(
@@ -435,9 +446,8 @@ async fn an_eleventh_waiting_request_is_refused() {
             "request {n}"
         );
     }
-    let eleventh = set(
+    let eleventh = from_peer(
         remote(Method::POST, "/api/hub/pairing/requests"),
-        "x-real-ip",
         "198.51.100.99",
     );
     assert_eq!(
@@ -476,9 +486,8 @@ async fn recovery_entry_and_request_creation_are_rate_limited_per_address() {
         StatusCode::TOO_MANY_REQUESTS,
         "the same address shares one count across both operations"
     );
-    let other_address = set(
+    let other_address = from_peer(
         remote(Method::POST, "/api/hub/pairing/requests"),
-        "x-real-ip",
         "198.51.100.1",
     );
     assert_eq!(
@@ -493,9 +502,8 @@ async fn the_whole_install_is_limited_to_sixty_attempts_a_minute() {
     let h = Harness::new();
     let mut last = StatusCode::OK;
     for n in 0..61 {
-        let from_peer = set(
+        let from_peer = from_peer(
             remote(Method::POST, "/api/hub/pairing/recovery"),
-            "x-real-ip",
             &format!("192.0.2.{}", n + 1),
         );
         last = h
@@ -598,7 +606,10 @@ async fn without_fetch_metadata_the_origin_must_match_and_neither_header_is_a_re
         let mut builder = Request::builder()
             .method(Method::POST)
             .uri("/api/hub/devices/recovery-codes")
-            .header(TUNNEL_NONCE_HEADER, tunnel_nonce())
+            .extension(crate::pairing::remote::RemoteTransport {
+                peer_ip: Some(PEER.to_string()),
+                origin: None,
+            })
             .header("cookie", laptop.as_str());
         if let Some(sent) = origin {
             builder = builder.header("origin", sent);
@@ -679,23 +690,6 @@ async fn the_state_route_says_whether_a_browser_needs_to_pair() {
         )
         .await,
         json!({ "remote": true, "paired": true })
-    );
-}
-
-#[tokio::test]
-async fn a_transport_marker_extension_is_gated_like_the_tunnel() {
-    let h = Harness::new();
-    let mut request = Request::get("/api/hub/agents").body(Body::empty()).unwrap();
-    request
-        .extensions_mut()
-        .insert(crate::pairing::remote::RemoteTransport {
-            peer_ip: Some(PEER.to_string()),
-            origin: Some(UI_ORIGIN.to_string()),
-        });
-    assert_eq!(
-        h.status(request).await,
-        StatusCode::UNAUTHORIZED,
-        "a future transport marks requests through the same gate"
     );
 }
 

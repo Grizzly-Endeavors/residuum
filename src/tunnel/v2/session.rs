@@ -18,13 +18,12 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use super::frames::{V2Frame, WireHosts};
+use super::frames::{AgentInfo, V2Frame, WireHosts};
 use super::link::{LinkShared, RelayLink};
 use super::stream::{Outbox, OutboxReceivers, PushError, StreamTable};
 use super::{ConnectedInfo, IncomingStream, SessionHandler, Verdict};
 use crate::remote_access::types::Hostnames;
 use crate::tunnel::TunnelStatus;
-use crate::tunnel::protocol::AgentInfo;
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -37,18 +36,18 @@ const CLOSE_FLUSH: Duration = Duration::from_secs(2);
 /// How often idle streams are looked for.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Result of the websocket upgrade on the v2 endpoint.
+/// Result of the websocket upgrade on the registration endpoint.
 pub(in crate::tunnel) enum ConnectOutcome {
     /// The relay accepted the upgrade.
     Connected(Box<WsStream>),
-    /// The relay has no v2 endpoint or wants a capability this client lacks
+    /// The relay has no registration endpoint or wants a capability this client lacks
     /// (HTTP 404 or 426); the status is attached.
     Unsupported(u16),
     /// Any other failure (auth, network, TLS).
     Failed(WsError),
 }
 
-/// Open the v2 websocket.
+/// Open the tunnel websocket.
 pub(in crate::tunnel) async fn connect(
     request: tokio_tungstenite::tungstenite::http::Request<()>,
 ) -> ConnectOutcome {
@@ -310,14 +309,13 @@ fn publish_accepted(
     info: &ConnectedInfo,
     verdict: AcceptedRelay,
 ) {
-    info!(user = %verdict.user, instance = %verdict.instance, keepalive_interval_secs = info.keepalive_interval_secs, "tunnel connected (v2)");
+    info!(user = %verdict.user, instance = %verdict.instance, keepalive_interval_secs = info.keepalive_interval_secs, "tunnel connected");
     status_tx
         .send(TunnelStatus::Connected {
             user_id: verdict.user,
             origin: verdict.ui_origin,
             workbench_origin: verdict.workbench_origin,
             instance: Some(verdict.instance),
-            a2a_token: None,
             instance_origin: verdict.instance_origin,
         })
         .unwrap_or_else(|_| debug!("status receiver dropped"));

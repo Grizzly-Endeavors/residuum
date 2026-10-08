@@ -25,7 +25,7 @@ use tower::ServiceExt as _;
 use crate::config::A2aVisibility;
 use crate::hub::{self, AgentDirectory, LifecycleError};
 
-use super::auth::{Admission, AuthState, TunnelNonceSource, authorize};
+use super::auth::{Admission, AuthState, authorize};
 use super::card::SharedCardState;
 use super::keys_runtime::SharedA2aKeys;
 use super::public_url::AGENTS_PATH_PREFIX;
@@ -276,15 +276,14 @@ pub struct A2aListener {
 }
 
 impl A2aListener {
-    /// Create the listener. `bind` is the gateway's bind address; `keys` and
-    /// `tunnel_nonce` are the hub-level caller-key store and tunnel nonce.
+    /// Create the listener. `bind` is the gateway's bind address; `keys` is
+    /// the hub-level caller-key store.
     #[must_use]
     pub fn new(
         bind: String,
         port: u16,
         directory: Arc<dyn AgentDirectory>,
         keys: SharedA2aKeys,
-        tunnel_nonce: Arc<dyn TunnelNonceSource>,
         shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> Self {
         Self {
@@ -293,7 +292,6 @@ impl A2aListener {
             directory,
             auth: AuthState {
                 keys,
-                tunnel_nonce,
                 sibling_keys: Arc::new(NoSiblings),
             },
             shutdown_rx,

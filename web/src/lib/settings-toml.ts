@@ -116,7 +116,6 @@ export interface ConfigFields {
   cloud_enabled: boolean;
   cloud_token: string;
   cloud_relay_url: string;
-  cloud_local_port: string;
   // push
   push_contact: string;
   // decision model (hub)
@@ -219,7 +218,6 @@ export function defaultConfigFields(): ConfigFields {
     cloud_enabled: true,
     cloud_token: "",
     cloud_relay_url: "",
-    cloud_local_port: "",
     push_contact: "",
     system_one_provider: "",
     system_one_model: "",
@@ -447,7 +445,6 @@ export function parseConfigToml(raw: string, hubRaw = ""): ConfigFields {
     fields.cloud_enabled = bool(cloud.enabled, true);
     fields.cloud_token = str(cloud.token);
     fields.cloud_relay_url = str(cloud.relay_url);
-    fields.cloud_local_port = str(cloud.local_port);
   }
 
   const push = doc.push as Record<string, unknown> | undefined;
@@ -962,7 +959,6 @@ export const CONFIG_FIELD_MAP: readonly FieldSpec[] = [
   { key: "cloud_enabled", path: ["cloud", "enabled"], kind: "bool", default: true },
   { key: "cloud_token", path: ["cloud", "token"], kind: "string" },
   { key: "cloud_relay_url", path: ["cloud", "relay_url"], kind: "string" },
-  { key: "cloud_local_port", path: ["cloud", "local_port"], kind: "number" },
 
   { key: "push_contact", path: ["push", "contact"], kind: "string" },
 

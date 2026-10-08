@@ -101,7 +101,6 @@ pub(super) fn resolve_gateway_config(section: Option<&GatewayConfigFile>) -> Gat
 pub(super) fn resolve_cloud_config(
     section: Option<&CloudConfigFile>,
     secrets: &SecretStore,
-    gateway: &GatewayConfig,
 ) -> Option<CloudConfig> {
     let section = section?;
 
@@ -119,11 +118,10 @@ pub(super) fn resolve_cloud_config(
             .relay_url
             .clone()
             .unwrap_or_else(|| DEFAULT_CLOUD_RELAY_URL.to_string());
-        let local_port = section.local_port.unwrap_or(gateway.port);
+        warn_ignored_keys(section);
         Some(CloudConfig {
             relay_url,
             token: tok,
-            local_port,
             remote: resolve_remote_settings(section),
         })
     } else {
@@ -135,14 +133,26 @@ pub(super) fn resolve_cloud_config(
     }
 }
 
+/// Say so when the `[cloud]` section carries a key that no longer does
+/// anything, so a config that still has it isn't read as being obeyed.
+fn warn_ignored_keys(section: &CloudConfigFile) {
+    if section.remote_access == Some(false) {
+        tracing::warn!(
+            "[cloud] remote_access = false has no effect: Residuum Cloud always uses the end-to-end encrypted tunnel. Set enabled = false or remove the [cloud] section to stay off the cloud"
+        );
+    }
+    if section.local_port.is_some() {
+        tracing::warn!(
+            "[cloud] local_port has no effect and can be removed: Residuum serves remote traffic itself"
+        );
+    }
+}
+
 /// Resolve the remote-access settings of the `[cloud]` section. A value that
 /// can't be used is logged and replaced by its default, so a typo never takes
 /// the tunnel down.
 fn resolve_remote_settings(section: &CloudConfigFile) -> RemoteAccessSettings {
     let mut settings = RemoteAccessSettings::default();
-    if let Some(enabled) = section.remote_access {
-        settings.enabled = enabled;
-    }
     if let Some(base) = section.base_domain.as_deref().map(str::trim) {
         if is_valid_base_domain(base) {
             settings.base_domain = base.to_ascii_lowercase();
@@ -208,7 +218,6 @@ mod remote_settings_tests {
     fn an_empty_section_gets_the_production_defaults() {
         let settings = resolve_remote_settings(&section(""));
         assert_eq!(settings, RemoteAccessSettings::default());
-        assert!(settings.enabled);
         assert_eq!(settings.acme_directory, ACME_PRODUCTION_DIRECTORY);
     }
 
@@ -217,13 +226,12 @@ mod remote_settings_tests {
         let staging = resolve_remote_settings(&section("acme_directory = \"staging\""));
         assert_eq!(staging.acme_directory, ACME_STAGING_DIRECTORY);
         let custom = resolve_remote_settings(&section(
-            "acme_directory = \"https://localhost:14000/dir\"\nacme_root_ca = \"/tmp/pebble.pem\"\nbase_domain = \"Relay.Test\"\npin_service_url = \"http://127.0.0.1:9/\"\ncaa_resolver = \"127.0.0.1:8053\"\nremote_access = false",
+            "acme_directory = \"https://localhost:14000/dir\"\nacme_root_ca = \"/tmp/pebble.pem\"\nbase_domain = \"Relay.Test\"\npin_service_url = \"http://127.0.0.1:9/\"\ncaa_resolver = \"127.0.0.1:8053\"",
         ));
         assert_eq!(custom.acme_directory, "https://localhost:14000/dir");
         assert_eq!(custom.base_domain, "relay.test");
         assert_eq!(custom.pin_service_url, "http://127.0.0.1:9");
         assert_eq!(custom.caa_resolver.port(), 8053);
-        assert!(!custom.enabled);
     }
 
     #[test]

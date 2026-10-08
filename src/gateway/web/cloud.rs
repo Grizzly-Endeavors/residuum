@@ -36,16 +36,14 @@ pub(crate) struct CloudStatusResponse {
     /// is refused server-side (see `gateway::remote_control_guard`), so a
     /// remote viewer should never see a button that can't work.
     viewed_via_tunnel: bool,
-    /// Public origin of this hub through the relay, while connected and the
-    /// relay has announced one. On the older tunnel the Teams messaging
-    /// endpoint is `{origin}/teams/{instance}/{agent}`.
+    /// Public origin of this user's web UI through the relay, while connected.
     #[serde(skip_serializing_if = "Option::is_none")]
     origin: Option<String>,
-    /// This hub's instance slug on the relay, while connected and announced.
+    /// This hub's instance slug on the relay, while connected.
     #[serde(skip_serializing_if = "Option::is_none")]
     instance: Option<String>,
-    /// This instance's own public address on the secure tunnel. The Teams
-    /// messaging endpoint is `{instance_origin}/teams/{agent}` there.
+    /// This instance's own public address. The Teams messaging endpoint is
+    /// `{instance_origin}/teams/{agent}`.
     #[serde(skip_serializing_if = "Option::is_none")]
     instance_origin: Option<String>,
 }
@@ -107,7 +105,7 @@ pub(crate) async fn api_cloud_status(
     Json(CloudStatusResponse::current(
         &state.hub_dir,
         &state.tunnel_status_rx,
-        crate::pairing::remote::remote_context(&parts.headers, &parts.extensions).is_some(),
+        crate::pairing::remote::remote_context(&parts.extensions).is_some(),
     ))
 }
 
@@ -262,13 +260,10 @@ fn update_cloud_section(raw: &str, enable: bool) -> String {
             new_section.push("enabled = false".to_string());
         }
 
-        // Preserve token line, relay_url, and local_port from original
+        // Preserve token line and relay_url from original
         for line in lines.get(start + 1..end).unwrap_or_default() {
             let trimmed = line.trim();
-            if trimmed.starts_with("token")
-                || trimmed.starts_with("relay_url")
-                || trimmed.starts_with("local_port")
-            {
+            if trimmed.starts_with("token") || trimmed.starts_with("relay_url") {
                 new_section.push(line.clone());
             }
         }
@@ -325,7 +320,6 @@ const SUCCESS_HTML: &str = r#"<!DOCTYPE html>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tunnel::{TUNNEL_NONCE_HEADER, tunnel_nonce};
 
     #[test]
     fn parse_cloud_state_no_section() {
@@ -489,7 +483,7 @@ token = "secret:discord"
         use tower::ServiceExt;
 
         let req = axum::http::Request::get("/api/cloud/status")
-            .header(TUNNEL_NONCE_HEADER, tunnel_nonce())
+            .extension(crate::pairing::remote::RemoteTransport::default())
             .body(Body::empty())
             .unwrap();
         let resp = status_router().oneshot(req).await.unwrap();

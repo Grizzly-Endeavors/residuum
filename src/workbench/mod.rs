@@ -320,9 +320,7 @@ pub(crate) enum ArtifactFileError {
 /// HTML needs the SDK injected, so it's read fully and rewritten in memory.
 /// Everything else is streamed straight from disk, so serving a large local
 /// artifact file (an exported dataset, a video) doesn't buffer it whole —
-/// there is no size cap on serving it locally. A relay tunnel session
-/// forwarding this response applies its own size limit
-/// (`tunnel::forward_http::MAX_RESPONSE_SIZE`) on that path, not this one.
+/// there is no size cap on serving it.
 pub(crate) enum ArtifactBody {
     Bytes(Vec<u8>),
     File(tokio::fs::File),

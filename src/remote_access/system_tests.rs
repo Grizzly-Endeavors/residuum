@@ -74,7 +74,6 @@ impl Env {
                 acme_root_ca: Some(harness.root_ca_pem_path().to_path_buf()),
                 pin_service_url: pins.url().to_string(),
                 caa_resolver: harness.dns_addr(),
-                ..RemoteAccessSettings::default()
             },
         }
     }
@@ -159,24 +158,13 @@ impl Stack {
         let cfg = CloudConfig {
             relay_url: relay.ws_url(),
             token: "rst_test".to_string(),
-            local_port: 1,
             remote: env.settings.clone(),
         };
         let (shutdown, shutdown_rx) = watch::channel(false);
         let (agents_tx, agents_rx) = watch::channel(Vec::new());
         let handler: Arc<dyn SessionHandler> = Arc::new(remote.clone());
         let task = tokio::spawn(async move {
-            crate::tunnel::start_tunnel(
-                cfg,
-                None,
-                None,
-                teams_rx,
-                agents_rx,
-                shutdown_rx,
-                tunnel_status,
-                Some(handler),
-            )
-            .await;
+            crate::tunnel::start_tunnel(cfg, agents_rx, shutdown_rx, tunnel_status, handler).await;
             drop((teams_tx, agents_tx));
         });
         Self {
@@ -446,40 +434,26 @@ async fn announced_hosts_that_differ_from_the_derived_ones_are_refused() {
 }
 
 #[tokio::test]
-async fn a_relay_without_v2_leaves_a_new_install_on_the_legacy_tunnel() {
-    let env = Env::offline();
-    let relay = FakeRelay::start(FakeRelayConfig {
-        v2: V2Mode::Respond(404),
-        ..relay_config()
-    })
-    .await;
-    let stack = Stack::start(&env, &relay);
-    stack.wait_for_state(RemoteAccessState::Legacy).await;
-    assert_eq!(relay.v1_connections(), 1);
-    stack.stop().await;
-}
-
-#[tokio::test]
-async fn an_enrolled_install_never_falls_back_to_the_legacy_tunnel() {
-    let env = Env::offline();
-    env.seed_identity();
-    let relay = FakeRelay::start(FakeRelayConfig {
-        v2: V2Mode::Respond(426),
-        ..relay_config()
-    })
-    .await;
-    let stack = Stack::start(&env, &relay);
-    let status = stack.wait_for_state(RemoteAccessState::Error).await;
-    assert!(
-        status
-            .detail
-            .as_deref()
-            .unwrap_or_default()
-            .contains("won't fall back"),
-        "{status:?}"
-    );
-    assert_eq!(relay.v1_connections(), 0);
-    stack.stop().await;
+async fn a_relay_without_the_secure_tunnel_leaves_remote_access_down_and_retrying() {
+    for code in [404, 426] {
+        let env = Env::offline();
+        let relay = FakeRelay::start(FakeRelayConfig {
+            v2: V2Mode::Respond(code),
+            ..relay_config()
+        })
+        .await;
+        let stack = Stack::start(&env, &relay);
+        let status = stack.wait_for_state(RemoteAccessState::Error).await;
+        assert!(
+            status
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("doesn't offer the secure tunnel"),
+            "{status:?}"
+        );
+        stack.stop().await;
+    }
 }
 
 #[tokio::test]

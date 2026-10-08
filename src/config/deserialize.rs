@@ -520,9 +520,9 @@ pub(super) struct CloudConfigFile {
     pub(super) relay_url: Option<String>,
     /// Authentication token (supports `${ENV_VAR}` syntax).
     pub(super) token: Option<String>,
-    /// Local port to forward requests to.
+    /// Accepted so an existing config still loads; it has no effect.
     pub(super) local_port: Option<u16>,
-    /// Whether to try tunnel v2 (default true).
+    /// Accepted so an existing config still loads; it has no effect.
     pub(super) remote_access: Option<bool>,
     /// Domain hosts are derived under.
     pub(super) base_domain: Option<String>,

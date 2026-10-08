@@ -13,7 +13,7 @@ import { userErrorMessage } from "./errors";
 import type { CloudStatusResponse, ValidateResponse } from "./types";
 
 /** The relay Residuum Cloud's tunnel dials when `[cloud] relay_url` is empty. */
-export const DEFAULT_RELAY_URL = "wss://agent-residuum.com/tunnel/register";
+export const DEFAULT_RELAY_URL = "wss://agent-residuum.com/tunnel/v2/register";
 
 /** The port the gateway listens on when `[gateway] port` is empty. */
 const DEFAULT_GATEWAY_PORT = "7700";
@@ -23,25 +23,20 @@ const POLL_INTERVAL_MS = 3000;
 const EXPECT_WINDOW_MS = 120_000;
 
 /** The parts of the Cloud status the Teams messaging endpoint is built from. */
-export type EndpointSource = Pick<CloudStatusResponse, "origin" | "instance" | "instance_origin">;
+export type EndpointSource = Pick<CloudStatusResponse, "instance_origin">;
 
 function withoutTrailingSlash(origin: string): string {
   return origin.endsWith("/") ? origin.slice(0, -1) : origin;
 }
 
 /**
- * The messaging endpoint Microsoft posts Teams activities to for one agent:
- * on the instance's own origin when the secure tunnel gives it one, otherwise
- * under the shared origin with the instance in the path. Null while the status
- * names neither.
+ * The messaging endpoint Microsoft posts Teams activities to for one agent: on
+ * the instance's own origin. Null while the status has no instance origin.
  */
 export function teamsMessagingEndpoint(source: EndpointSource, agent: string): string | null {
-  const { origin, instance, instance_origin: instanceOrigin } = source;
-  if (instanceOrigin != null && instanceOrigin !== "") {
-    return `${withoutTrailingSlash(instanceOrigin)}/teams/${agent}`;
-  }
-  if (origin == null || origin === "" || instance == null || instance === "") return null;
-  return `${withoutTrailingSlash(origin)}/teams/${instance}/${agent}`;
+  const instanceOrigin = source.instance_origin;
+  if (instanceOrigin == null || instanceOrigin === "") return null;
+  return `${withoutTrailingSlash(instanceOrigin)}/teams/${agent}`;
 }
 
 /** The relay's sign-in page for a gateway, and the host it is on. */

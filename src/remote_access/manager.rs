@@ -1289,26 +1289,11 @@ impl SessionHandler for RemoteAccess {
         }
     }
 
-    fn allow_v1_fallback(&self) -> bool {
-        let inner = &self.inner;
-        // An install that already serves end to end never goes back to a
-        // tunnel the relay can read: a relay that refuses v2 would otherwise
-        // downgrade it.
-        if inner.store.identity().is_some() {
-            inner.set_state(
-                RemoteAccessState::Error,
-                Some("The relay doesn't offer the secure tunnel, and this install already uses end-to-end encryption, so it won't fall back to the older tunnel. Remote access is down until the relay supports it again.".to_string()),
-            );
-            tracing::error!(
-                "the relay refused the secure tunnel; not falling back to the legacy tunnel because this install is enrolled"
-            );
-            return false;
-        }
-        inner.set_state(
-            RemoteAccessState::Legacy,
-            Some("The relay doesn't offer the secure tunnel yet, so Residuum Cloud uses the older tunnel, which the relay can read.".to_string()),
+    fn on_relay_unsupported(&self) {
+        self.inner.set_state(
+            RemoteAccessState::Error,
+            Some("The relay doesn't offer the secure tunnel, so remote access is down until the relay supports it again. Residuum keeps trying.".to_string()),
         );
-        true
     }
 }
 

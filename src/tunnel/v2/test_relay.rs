@@ -1,5 +1,4 @@
-//! A fake relay for tests: a loopback server speaking tunnel v2 (and a
-//! minimal v1) plus a TCP front door that carries raw connections to the
+//! A fake relay for tests: a loopback server speaking the tunnel protocol plus a TCP front door that carries raw connections to the
 //! connected instance as v2 streams, with the same credit rules as the real
 //! relay.
 
@@ -23,7 +22,6 @@ use uuid::Uuid;
 
 use super::frames::{V2Frame, WireHosts};
 use crate::remote_access::types::{Hostnames, normalize_host};
-use crate::tunnel::protocol::TunnelFrame;
 use crate::util::spawn_in_span;
 
 const WINDOW: usize = 256 * 1024;
@@ -94,7 +92,6 @@ struct Shared {
     capabilities: Mutex<Vec<String>>,
     v2_connections: AtomicUsize,
     v2_attempts: AtomicUsize,
-    v1_connections: AtomicUsize,
     live_v2: AtomicUsize,
 }
 
@@ -129,12 +126,10 @@ impl FakeRelay {
             capabilities: Mutex::new(Vec::new()),
             v2_connections: AtomicUsize::new(0),
             v2_attempts: AtomicUsize::new(0),
-            v1_connections: AtomicUsize::new(0),
             live_v2: AtomicUsize::new(0),
         });
         let app = Router::new()
             .route("/tunnel/v2/register", get(v2_register))
-            .route("/tunnel/register", get(v1_register))
             .with_state(Arc::clone(&shared));
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind relay");
         let addr = listener.local_addr().expect("relay addr");
@@ -156,9 +151,9 @@ impl FakeRelay {
         }
     }
 
-    /// The v1 registration URL a tunnel client is configured with.
+    /// The registration URL a tunnel client is configured with.
     pub(crate) fn ws_url(&self) -> String {
-        format!("ws://{}/tunnel/register", self.addr)
+        format!("ws://{}/tunnel/v2/register", self.addr)
     }
 
     /// The port the TCP front door listens on.
@@ -179,11 +174,6 @@ impl FakeRelay {
     /// How many upgrade attempts reached the v2 endpoint (including refused).
     pub(crate) fn v2_attempts(&self) -> usize {
         self.shared.v2_attempts.load(Ordering::SeqCst)
-    }
-
-    /// How many v1 tunnels have connected.
-    pub(crate) fn v1_connections(&self) -> usize {
-        self.shared.v1_connections.load(Ordering::SeqCst)
     }
 
     /// The capabilities headers v2 upgrades presented.
@@ -284,32 +274,6 @@ async fn v2_register(
         return (StatusCode::UPGRADE_REQUIRED, "tls-passthrough required").into_response();
     }
     ws.on_upgrade(move |socket| serve_v2(shared, socket))
-}
-
-async fn v1_register(
-    State(shared): State<Arc<Shared>>,
-    headers: HeaderMap,
-    ws: WebSocketUpgrade,
-) -> Response {
-    if !authorized(&shared, &headers) {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
-    ws.on_upgrade(move |mut socket| async move {
-        shared.v1_connections.fetch_add(1, Ordering::SeqCst);
-        let connected = TunnelFrame::Connected {
-            user_id: format!("{}-v1", shared.config.user),
-            keepalive_interval_secs: 30,
-            origin: Some(format!("https://{}", shared.config.hosts.ui)),
-            workbench_origin: None,
-            instance: Some(shared.config.instance.clone()),
-            a2a_token: None,
-        };
-        let json = serde_json::to_string(&connected).expect("serialize v1 connected");
-        if socket.send(Message::text(json)).await.is_err() {
-            return;
-        }
-        while let Some(Ok(_)) = socket.recv().await {}
-    })
 }
 
 async fn serve_v2(shared: Arc<Shared>, socket: WebSocket) {

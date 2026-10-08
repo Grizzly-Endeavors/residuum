@@ -144,7 +144,7 @@ pub(crate) const DEFAULT_TEAMS_PORT: u16 = 7701;
 pub(crate) const DEFAULT_A2A_PORT: u16 = 7702;
 
 /// Default relay WebSocket URL.
-pub(super) const DEFAULT_CLOUD_RELAY_URL: &str = "wss://agent-residuum.com/tunnel/register";
+pub(super) const DEFAULT_CLOUD_RELAY_URL: &str = "wss://agent-residuum.com/tunnel/v2/register";
 
 /// Default consecutive identical tool-call count at which the repeat-call
 /// guard appends a steering note to the tool's result.

@@ -36,11 +36,11 @@ describe("the remote access routes", () => {
     await harness.close();
   });
 
-  it("reports the older tunnel by default", async () => {
+  it("reports remote access as off by default", async () => {
     const answer = await call("GET", "/api/hub/remote-access/status");
     expect(answer.status).toBe(200);
     const status = answer.body as RemoteAccessStatus;
-    expect(status.state).toBe("legacy");
+    expect(status.state).toBe("disabled");
     expect(status.hosts?.ui).toBe("mock-user.agent-residuum.com");
     expect(status.recovery_code).toBeNull();
   });

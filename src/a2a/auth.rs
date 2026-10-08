@@ -1,7 +1,7 @@
 //! Request authentication for the A2A listener.
 //!
-//! Every request is authenticated as either a caller-key holder or a sibling
-//! instance attested by this process's own tunnel connection, per
+//! Every request is authenticated as either a caller-key holder or a joined
+//! sibling instance presenting the key it was issued, per
 //! `docs/systems-usage/a2a.md`. The check runs per request, before the
 //! request is dispatched to an agent, with the target agent's visibility.
 //! The resolved caller is injected as [`CALLER_HEADER`] for the handler and
@@ -25,17 +25,8 @@ use crate::remote_access::siblings::SiblingKeyVerifier;
 /// before it is ever inspected, so a caller cannot forge it.
 pub const CALLER_HEADER: &str = "x-residuum-a2a-caller";
 
-/// Header the tunnel forwarder sets to this process's per-process nonce when
-/// forwarding a request that another of this user's instances sent as a
-/// sibling.
-const TUNNEL_HEADER: &str = "x-residuum-tunnel";
-
-/// Header naming the calling sibling's slug. Only trusted when
-/// [`TUNNEL_HEADER`] matches this process's own nonce.
-const SIBLING_HEADER: &str = "x-residuum-sibling";
-
 /// Path the relay's directory probes and local health checks use to test
-/// whether a bearer token or sibling attestation is currently valid, without
+/// whether a bearer token is currently valid, without
 /// needing a full A2A call.
 pub const AUTH_CHECK_PATH: &str = "/_a2a/auth-check";
 
@@ -45,9 +36,7 @@ pub enum Caller {
     /// A caller key minted with `residuum a2a keys create`.
     Key(String),
     /// Another of this user's instances: it presented a key issued to it when
-    /// it joined this one (the secure tunnel), or it was attested by this
-    /// process's own tunnel connection (the older tunnel, never by anything a
-    /// client can present directly).
+    /// it joined this one.
     Sibling(String),
 }
 
@@ -62,47 +51,12 @@ impl Caller {
     }
 }
 
-/// Supplies this process's current tunnel nonce, which authenticates a
-/// sibling-forwarded request as genuinely coming from this instance's own
-/// tunnel connection rather than a forged header from anywhere else.
-///
-/// A trait rather than a bare `Option<Arc<str>>` so the tunnel stream can
-/// hand over a value that changes across reconnects without the auth layer
-/// needing to be told about each rotation.
-pub trait TunnelNonceSource: Send + Sync {
-    /// The current nonce, or `None` if no tunnel is connected (sibling
-    /// requests are never trusted while this is `None`).
-    fn tunnel_nonce(&self) -> Option<Arc<str>>;
-}
-
-/// No tunnel is wired up: every sibling attestation is rejected. The
-/// listener's default until the tunnel stream supplies a real nonce source.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct NoTunnel;
-
-impl TunnelNonceSource for NoTunnel {
-    fn tunnel_nonce(&self) -> Option<Arc<str>> {
-        None
-    }
-}
-
-impl<F> TunnelNonceSource for F
-where
-    F: Fn() -> Option<Arc<str>> + Send + Sync,
-{
-    fn tunnel_nonce(&self) -> Option<Arc<str>> {
-        self()
-    }
-}
-
 /// Hub-level state for request authentication: the one caller-key store and
-/// the process's tunnel nonce, shared by every agent.
+/// the joined siblings' keys, shared by every agent.
 #[derive(Clone)]
 pub struct AuthState {
     /// Caller-key store, for verifying `Authorization: Bearer` tokens.
     pub keys: SharedA2aKeys,
-    /// Source of this process's tunnel nonce, for the older tunnel's sibling attestation.
-    pub tunnel_nonce: Arc<dyn TunnelNonceSource>,
     /// Keys issued to joined siblings, each tagged with the sibling's slug.
     pub sibling_keys: Arc<dyn SiblingKeyVerifier>,
 }
@@ -117,21 +71,9 @@ fn is_auth_check(req: &Request<Body>) -> bool {
     req.uri().path() == AUTH_CHECK_PATH
 }
 
-/// Resolve the caller from the (already-extracted) tunnel/sibling/bearer
-/// headers, per the precedence in the module doc comment.
-async fn resolve_caller(
-    state: &AuthState,
-    tunnel: Option<&str>,
-    sibling: Option<&str>,
-    authorization: Option<&str>,
-) -> Option<Caller> {
-    if let (Some(tunnel), Some(sibling)) = (tunnel, sibling)
-        && let Some(nonce) = state.tunnel_nonce.tunnel_nonce()
-        && crate::util::secrets_match(tunnel, &nonce)
-    {
-        return Some(Caller::Sibling(sibling.to_string()));
-    }
-
+/// Resolve the caller from the `Authorization` bearer token: a caller key, or
+/// the key a joined sibling was issued.
+async fn resolve_caller(state: &AuthState, authorization: Option<&str>) -> Option<Caller> {
     let token = authorization.and_then(|v| v.strip_prefix("Bearer "))?;
     if let Some(name) = state.keys.verify(token).await {
         return Some(Caller::Key(name));
@@ -151,7 +93,7 @@ pub enum Admission {
 
 /// Authenticate `req` against an agent with the given `visibility`.
 ///
-/// A caller key or sibling attestation admits the caller to any agent. With
+/// A caller key or a joined sibling's key admits the caller to any agent. With
 /// neither, a public agent serves only its Agent Card (everything else is
 /// `401`) and a private agent answers `404` to every route. The
 /// [`AUTH_CHECK_PATH`] probe is answered here: `204` when the caller is
@@ -164,31 +106,14 @@ pub async fn authorize(
     let headers = req.headers_mut();
     // Never trust a client-supplied caller header, in or out.
     headers.remove(CALLER_HEADER);
-    let tunnel = headers
-        .get(TUNNEL_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-    let sibling = headers
-        .get(SIBLING_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
     let authorization = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
-    // Stripped in every case, whether or not they led to a sibling caller.
-    headers.remove(TUNNEL_HEADER);
-    headers.remove(SIBLING_HEADER);
 
     let card_get = is_card_get(&req);
     let auth_check = is_auth_check(&req);
-    let caller = resolve_caller(
-        state,
-        tunnel.as_deref(),
-        sibling.as_deref(),
-        authorization.as_deref(),
-    )
-    .await;
+    let caller = resolve_caller(state, authorization.as_deref()).await;
 
     if auth_check {
         return Admission::Answered(if caller.is_some() {
@@ -244,22 +169,13 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("<none>")
             .to_string();
-        let sibling_present = req.headers().contains_key(SIBLING_HEADER);
-        let tunnel_present = req.headers().contains_key(TUNNEL_HEADER);
         let authorization_present = req.headers().contains_key(header::AUTHORIZATION);
         Response::builder()
             .status(StatusCode::OK)
             .body(Body::from(format!(
-                "{caller}|sibling_hdr={sibling_present}|tunnel_hdr={tunnel_present}|authorization_hdr={authorization_present}"
+                "{caller}|authorization_hdr={authorization_present}"
             )))
             .unwrap()
-    }
-
-    struct FixedNonce(&'static str);
-    impl TunnelNonceSource for FixedNonce {
-        fn tunnel_nonce(&self) -> Option<Arc<str>> {
-            Some(Arc::from(self.0))
-        }
     }
 
     /// The test stand-in for the hub listener: authorize, then hand the
@@ -291,7 +207,6 @@ mod tests {
         (
             AuthState {
                 keys: Arc::new(keys),
-                tunnel_nonce: Arc::new(NoTunnel),
                 sibling_keys: Arc::new(crate::remote_access::siblings::NoSiblings),
             },
             token,
@@ -400,19 +315,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forged_sibling_header_without_matching_nonce_is_rejected() {
+    async fn sibling_and_tunnel_headers_are_not_credentials() {
         let dir = tempfile::tempdir().unwrap();
-        let keys = A2aKeys::new(dir.path());
-        let state = AuthState {
-            keys: Arc::new(keys),
-            tunnel_nonce: Arc::new(FixedNonce("real-nonce")),
-            sibling_keys: Arc::new(crate::remote_access::siblings::NoSiblings),
-        };
+        let (state, _token) = state_with_key(dir.path()).await;
         let req = Request::builder()
             .method("POST")
             .uri("/")
-            .header(TUNNEL_HEADER, "wrong-nonce")
-            .header(SIBLING_HEADER, "alpha")
+            .header("x-residuum-tunnel", "anything")
+            .header("x-residuum-sibling", "alpha")
             .body(Body::empty())
             .unwrap();
         let resp = app(state, A2aVisibility::Public)
@@ -420,63 +330,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn sibling_header_with_no_tunnel_wired_is_rejected() {
-        let dir = tempfile::tempdir().unwrap();
-        let keys = A2aKeys::new(dir.path());
-        let state = AuthState {
-            keys: Arc::new(keys),
-            tunnel_nonce: Arc::new(NoTunnel),
-            sibling_keys: Arc::new(crate::remote_access::siblings::NoSiblings),
-        };
-        let req = Request::builder()
-            .method("POST")
-            .uri("/")
-            .header(TUNNEL_HEADER, "anything")
-            .header(SIBLING_HEADER, "alpha")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app(state, A2aVisibility::Public)
-            .oneshot(req)
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn matching_tunnel_nonce_authenticates_as_sibling_and_strips_headers() {
-        let dir = tempfile::tempdir().unwrap();
-        let keys = A2aKeys::new(dir.path());
-        let state = AuthState {
-            keys: Arc::new(keys),
-            tunnel_nonce: Arc::new(FixedNonce("real-nonce")),
-            sibling_keys: Arc::new(crate::remote_access::siblings::NoSiblings),
-        };
-        let req = Request::builder()
-            .method("POST")
-            .uri("/")
-            .header(TUNNEL_HEADER, "real-nonce")
-            .header(SIBLING_HEADER, "alpha")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app(state, A2aVisibility::Public)
-            .oneshot(req)
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = String::from_utf8(
-            axum::body::to_bytes(resp.into_body(), usize::MAX)
-                .await
-                .unwrap()
-                .to_vec(),
-        )
-        .unwrap();
-        assert_eq!(
-            body,
-            "sibling:alpha|sibling_hdr=false|tunnel_hdr=false|authorization_hdr=false"
-        );
     }
 
     /// A hub whose only credential is a joined sibling's key.
@@ -496,7 +349,6 @@ mod tests {
         (
             AuthState {
                 keys: Arc::new(A2aKeys::new(dir.join("a2a"))),
-                tunnel_nonce: Arc::new(NoTunnel),
                 sibling_keys: Arc::new(siblings),
             },
             inbound,
@@ -526,7 +378,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            body, "sibling:desktop|sibling_hdr=false|tunnel_hdr=false|authorization_hdr=false",
+            body, "sibling:desktop|authorization_hdr=false",
             "the key is spent on authenticating and not passed on"
         );
     }
@@ -586,7 +438,6 @@ mod tests {
             .unwrap();
         let state = AuthState {
             keys: Arc::new(A2aKeys::new(dir.path().join("a2a"))),
-            tunnel_nonce: Arc::new(NoTunnel),
             sibling_keys: Arc::clone(&siblings) as Arc<dyn SiblingKeyVerifier>,
         };
         let ok = app(state.clone(), A2aVisibility::Private)

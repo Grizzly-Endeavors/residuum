@@ -512,10 +512,10 @@ fn plain_card_error(e: &CardError) -> String {
 fn relay_access_note(has_own_address: bool, relay_connected: bool) -> &'static str {
     match (relay_connected, has_own_address) {
         (true, true) => {
-            "Reachable through the Residuum relay and at your own address. Your other Residuum installs find it automatically; anyone else needs a caller key."
+            "Reachable through the Residuum relay and at your own address. Your other Residuum installs that joined this one find it; anyone else needs a caller key."
         }
         (true, false) => {
-            "Reachable through the Residuum relay. Your other Residuum installs find it automatically; anyone else needs a caller key."
+            "Reachable through the Residuum relay. Your other Residuum installs that joined this one find it; anyone else needs a caller key."
         }
         (false, true) => {
             "Reachable locally and at your own address. Connect to the Residuum relay in Settings → All agents → Residuum Cloud to make it reachable through the relay too."
@@ -568,7 +568,7 @@ pub(crate) fn a2a_status_router(state: A2aStatusState) -> axum::Router {
 /// problem.
 ///
 /// `public_url` is the agent's address under the configured `[a2a]
-/// public_url` when set, else its relay address (`{origin}/a2a/{instance}/{name}`)
+/// public_url` when set, else its instance address (`{instance origin}/a2a/{name}`)
 /// while the tunnel is connected, and `null` otherwise; `local_url` is the
 /// address on the local listener.
 pub(super) async fn api_a2a_status(State(state): State<A2aStatusState>) -> Json<A2aStatusResponse> {
@@ -656,8 +656,7 @@ mod tests {
             origin: Some("https://bear.agent-residuum.com".to_string()),
             workbench_origin: None,
             instance: Some("laptop".to_string()),
-            a2a_token: None,
-            instance_origin: None,
+            instance_origin: Some("https://laptop.bear.agent-residuum.com".to_string()),
         }
     }
 
@@ -1255,7 +1254,7 @@ mod tests {
         let status = api_a2a_status(State(state)).await.0;
         assert_eq!(
             status.public_url.as_deref(),
-            Some("https://bear.agent-residuum.com/a2a/laptop/test-agent")
+            Some("https://laptop.bear.agent-residuum.com/a2a/test-agent")
         );
         assert!(status.relay_access);
         assert!(
@@ -1311,7 +1310,7 @@ mod tests {
         let first = card.supported_interfaces.first().unwrap();
         assert_eq!(
             first.url,
-            "https://bear.agent-residuum.com/a2a/laptop/test-agent"
+            "https://laptop.bear.agent-residuum.com/a2a/test-agent"
         );
     }
 }

@@ -14,22 +14,8 @@ function status(overrides: Partial<CloudStatusResponse> = {}): CloudStatusRespon
 }
 
 describe("teamsMessagingEndpoint", () => {
-  it("builds the address pasted into the Teams developer portal", () => {
-    const shared = { origin: "https://bear.agent-residuum.com", instance: "laptop" };
-    expect(teamsMessagingEndpoint(shared, "scout")).toBe(
-      "https://bear.agent-residuum.com/teams/laptop/scout",
-    );
-    expect(teamsMessagingEndpoint({ ...shared, origin: `${shared.origin}/` }, "scout")).toBe(
-      "https://bear.agent-residuum.com/teams/laptop/scout",
-    );
-  });
-
-  it("uses the instance's own origin on the secure tunnel", () => {
-    const source = {
-      origin: "https://bear.agent-residuum.com",
-      instance: "laptop",
-      instance_origin: "https://laptop.bear.agent-residuum.com",
-    };
+  it("builds the address pasted into the Teams developer portal on the instance's own origin", () => {
+    const source = { instance_origin: "https://laptop.bear.agent-residuum.com" };
     expect(teamsMessagingEndpoint(source, "scout")).toBe(
       "https://laptop.bear.agent-residuum.com/teams/scout",
     );
@@ -41,19 +27,9 @@ describe("teamsMessagingEndpoint", () => {
     ).toBe("https://laptop.bear.agent-residuum.com/teams/scout");
   });
 
-  it("falls back to the shared origin when the instance origin is empty", () => {
-    expect(
-      teamsMessagingEndpoint(
-        { origin: "https://bear.agent-residuum.com", instance: "laptop", instance_origin: "" },
-        "scout",
-      ),
-    ).toBe("https://bear.agent-residuum.com/teams/laptop/scout");
-  });
-
-  it("has no address until the status names one", () => {
+  it("has no address until the status names an instance origin", () => {
     expect(teamsMessagingEndpoint({}, "scout")).toBeNull();
-    expect(teamsMessagingEndpoint({ origin: "https://x.test", instance: "" }, "scout")).toBeNull();
-    expect(teamsMessagingEndpoint({ origin: null, instance: "laptop" }, "scout")).toBeNull();
+    expect(teamsMessagingEndpoint({ instance_origin: "" }, "scout")).toBeNull();
   });
 });
 
@@ -66,11 +42,11 @@ describe("connectTarget", () => {
   });
 
   it("follows the relay URL, so a relay on this machine is signed in to there", () => {
-    expect(connectTarget("ws://127.0.0.1:8080/tunnel/register", "7701")).toEqual({
+    expect(connectTarget("ws://127.0.0.1:8080/tunnel/v2/register", "7701")).toEqual({
       url: "http://127.0.0.1:8080/connect?port=7701",
       host: "127.0.0.1:8080",
     });
-    expect(connectTarget(" wss://relay.example.com/tunnel/register ", "7700")?.url).toBe(
+    expect(connectTarget(" wss://relay.example.com/tunnel/v2/register ", "7700")?.url).toBe(
       "https://relay.example.com/connect?port=7700",
     );
   });

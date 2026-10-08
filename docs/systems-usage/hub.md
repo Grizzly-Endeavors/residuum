@@ -63,7 +63,7 @@ The `autostart` and `a2a_visibility` an agent's summary reports come from the la
 - **Checkpoints**: the team and hub-config repositories are shared; each agent has its own workspace and config repositories. See [Checkpoints](checkpoints.md).
 - **Tunnel status, secrets, key stores, tracing**: one of each, passed to every agent.
 - **Team change feed**: one watcher over the team directory, publishing `team/...` paths on its own bus. The hub WebSocket, every agent's `/ws` (for clients that watch `team/...` prefixes), and every agent's artifact reload watcher read it, so a change to a team file is watched once however many agents run. The hub also watches the team workbench from this feed itself, with no agent involved, and publishes an event for every artifact added, changed or removed, which the hub WebSocket sends as `artifact_updated` and `artifact_removed` (see [Live reload](workbench.md#live-reload)). Each agent also has a feed over its own directory.
-- **Relay agent list**: the hub keeps the relay's copy of its agent list current from the hub bus (created, deleted, state and visibility changes), so each agent is reachable at `{origin}/a2a/{instance}/{agent}` while it runs. See [Cloud tunnel](cloud-tunnel.md#agents-on-the-relay).
+- **Relay agent list**: the hub keeps the relay's copy of its agent list current from the hub bus (created, deleted, state and visibility changes), so each agent is reachable at `https://{slug}.{user}.{base}/a2a/{agent}` while it runs. See [Cloud tunnel](cloud-tunnel.md#agents-on-the-relay).
 - **Sibling discovery**: one per hub, fanned out to every running agent's A2A client. See [A2A](a2a.md#siblings).
 
 ## Hub config reloads

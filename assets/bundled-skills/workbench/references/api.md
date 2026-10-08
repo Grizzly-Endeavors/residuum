@@ -61,7 +61,7 @@ Everything else the web UI can call, an artifact can call, including starting or
 
 ## Requests
 
-At most 8 requests and 4 model calls (`residuum.ask`, or `/api/agents/<agent>/model/complete`) run at once per page; the rest wait their turn in order, so firing many at once is safe. Through Residuum Cloud, a request the relay refuses as `agent overloaded` (`503`) is retried up to 3 times for you, and a response over 10 MB or a call over 25 seconds fails. A request that never reaches Residuum rejects with an `Error`; every other answer is a normal `Response`, so check `ok` or `status`.
+At most 8 requests and 4 model calls (`residuum.ask`, or `/api/agents/<agent>/model/complete`) run at once per page; the rest wait their turn in order, so firing many at once is safe. A request that never reaches Residuum rejects with an `Error`; every other answer is a normal `Response`, so check `ok` or `status`.
 
 ## Live Events
 

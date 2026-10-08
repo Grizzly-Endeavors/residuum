@@ -1,22 +1,17 @@
 //! Telling a remotely delivered request from a local one, and the checks only
 //! a remote request gets.
 //!
-//! A request is remote when a transport that carries traffic from Residuum
-//! Cloud marked it:
-//!
-//! - the relay tunnel marks every request it forwards with the process's
-//!   tunnel nonce header (`tunnel::is_tunnel_forwarded`), and the peer's
-//!   address comes from the forwarding headers the relay passes along;
-//! - a transport that terminates TLS inside Residuum marks the request itself,
-//!   by adding a [`RemoteTransport`] extension before the request enters the
-//!   router. The extension can't be sent by a client, so it needs no secret.
+//! A request is remote when the transport that terminates TLS inside
+//! Residuum marked it, by adding a [`RemoteTransport`] extension before the
+//! request enters the router. The extension can't be sent by a client, so it
+//! needs no secret.
 //!
 //! Anything else arrived on a local port and is not subject to the gate.
 
 use axum::http::{Extensions, HeaderMap, Method, header};
 
-/// Added to a request's extensions by a transport that delivers remote
-/// traffic in-process. Its fields override what the headers would say.
+/// Added to a request's extensions by the transport that delivers remote
+/// traffic in-process.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RemoteTransport {
     /// The browser's address, when the transport knows it.
@@ -28,7 +23,7 @@ pub(crate) struct RemoteTransport {
 /// What is known about a remotely delivered request.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct RemoteContext {
-    /// The browser's address as the relay reported it.
+    /// The browser's address, when the transport knows it.
     pub(crate) peer_ip: Option<String>,
     /// The origin the browser used, when the transport says. Otherwise the
     /// origin Residuum Cloud announced for the surface stands in for it.
@@ -37,46 +32,16 @@ pub(crate) struct RemoteContext {
 
 /// Whether the request was delivered remotely, and if so what is known of it.
 ///
-/// The peer address comes from `X-Real-IP`, which the relay's reverse proxy
-/// sets to the connecting address, or failing that the last entry of
-/// `X-Forwarded-For`. The relay passes both through the tunnel unchanged. A
-/// compromised relay can set them to anything, which only lets it dodge or
-/// trigger the per-address rate limit.
-pub(crate) fn remote_context(
-    headers: &HeaderMap,
-    extensions: &Extensions,
-) -> Option<RemoteContext> {
-    if let Some(transport) = extensions.get::<RemoteTransport>() {
-        return Some(RemoteContext {
+/// Only the [`RemoteTransport`] extension counts. Headers a client sends
+/// (`X-Real-IP`, `X-Forwarded-For`, anything naming the tunnel) never mark a
+/// request remote, and never name its peer.
+pub(crate) fn remote_context(extensions: &Extensions) -> Option<RemoteContext> {
+    extensions
+        .get::<RemoteTransport>()
+        .map(|transport| RemoteContext {
             peer_ip: transport.peer_ip.clone(),
             origin: transport.origin.clone(),
-        });
-    }
-    crate::tunnel::is_tunnel_forwarded(headers).then(|| RemoteContext {
-        peer_ip: peer_ip_from_headers(headers),
-        origin: None,
-    })
-}
-
-fn peer_ip_from_headers(headers: &HeaderMap) -> Option<String> {
-    let real_ip = headers
-        .get("x-real-ip")
-        .and_then(|v| v.to_str().ok())
-        .and_then(parse_ip);
-    real_ip.or_else(|| {
-        headers
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|list| list.rsplit(',').next())
-            .and_then(parse_ip)
-    })
-}
-
-fn parse_ip(text: &str) -> Option<String> {
-    text.trim()
-        .parse::<std::net::IpAddr>()
-        .ok()
-        .map(|ip| ip.to_canonical().to_string())
+        })
 }
 
 /// Whether the request changes state or opens a socket: anything but a plain
@@ -153,7 +118,6 @@ mod tests {
     use axum::http::HeaderValue;
 
     use super::*;
-    use crate::tunnel::{TUNNEL_NONCE_HEADER, tunnel_nonce};
 
     fn headers(pairs: &[(&'static str, &str)]) -> HeaderMap {
         let mut map = HeaderMap::new();
@@ -164,70 +128,20 @@ mod tests {
     }
 
     #[test]
-    fn a_request_with_the_tunnel_nonce_is_remote() {
-        let h = headers(&[(TUNNEL_NONCE_HEADER, tunnel_nonce())]);
-        assert!(remote_context(&h, &Extensions::new()).is_some());
+    fn a_request_without_the_transport_extension_is_local() {
+        assert!(remote_context(&Extensions::new()).is_none());
     }
 
     #[test]
-    fn a_request_without_the_nonce_or_with_a_forged_one_is_local() {
-        assert!(remote_context(&HeaderMap::new(), &Extensions::new()).is_none());
-        let forged = headers(&[(TUNNEL_NONCE_HEADER, "guess")]);
-        assert!(remote_context(&forged, &Extensions::new()).is_none());
-    }
-
-    #[test]
-    fn a_transport_extension_marks_a_request_remote_without_a_header() {
+    fn a_transport_extension_marks_a_request_remote() {
         let mut extensions = Extensions::new();
         extensions.insert(RemoteTransport {
             peer_ip: Some("203.0.113.9".to_string()),
             origin: Some("https://bear.example".to_string()),
         });
-        let context = remote_context(&HeaderMap::new(), &extensions).unwrap();
+        let context = remote_context(&extensions).unwrap();
         assert_eq!(context.peer_ip.as_deref(), Some("203.0.113.9"));
         assert_eq!(context.origin.as_deref(), Some("https://bear.example"));
-    }
-
-    #[test]
-    fn the_peer_address_prefers_x_real_ip_then_the_last_forwarded_entry() {
-        let both = headers(&[
-            (TUNNEL_NONCE_HEADER, tunnel_nonce()),
-            ("x-real-ip", "198.51.100.7"),
-            ("x-forwarded-for", "10.0.0.1, 198.51.100.8"),
-        ]);
-        assert_eq!(
-            remote_context(&both, &Extensions::new())
-                .unwrap()
-                .peer_ip
-                .as_deref(),
-            Some("198.51.100.7")
-        );
-        let forwarded_only = headers(&[
-            (TUNNEL_NONCE_HEADER, tunnel_nonce()),
-            ("x-forwarded-for", "10.0.0.1, 198.51.100.8"),
-        ]);
-        assert_eq!(
-            remote_context(&forwarded_only, &Extensions::new())
-                .unwrap()
-                .peer_ip
-                .as_deref(),
-            Some("198.51.100.8"),
-            "the entry nearest the relay is the one a client can't choose"
-        );
-        let junk = headers(&[
-            (TUNNEL_NONCE_HEADER, tunnel_nonce()),
-            ("x-real-ip", "not an ip"),
-        ]);
-        assert_eq!(
-            remote_context(&junk, &Extensions::new()).unwrap().peer_ip,
-            None
-        );
-    }
-
-    #[test]
-    fn ipv4_mapped_addresses_are_the_same_peer_as_plain_ipv4() {
-        assert_eq!(parse_ip("::ffff:192.0.2.1").as_deref(), Some("192.0.2.1"));
-        assert_eq!(parse_ip("2001:db8::1").as_deref(), Some("2001:db8::1"));
     }
 
     #[test]

@@ -1,8 +1,6 @@
 //! An agent's A2A base URL, in order of precedence: `[a2a] public_url` plus
 //! `/agents/<name>` when set; otherwise the tunnel's address for the hub while
-//! the tunnel is connected (`{instance origin}/a2a/<name>` on the secure
-//! tunnel, `{origin}/a2a/{instance}/<name>` through the relay on the older
-//! one); otherwise the local listener address plus `/agents/<name>`.
+//! the tunnel is connected (`{instance origin}/a2a/<name>`); otherwise the local listener address plus `/agents/<name>`.
 //! See `docs/systems-usage/a2a.md`.
 
 use crate::config::A2aConfig;
@@ -25,29 +23,18 @@ pub(crate) fn known_a2a_public_url(a2a: &A2aConfig, agent_name: &str) -> Option<
 }
 
 /// The address every agent of this hub is reachable under through the tunnel,
-/// once it is connected. On the secure tunnel that is the instance's own host,
-/// `{instance origin}/a2a`; on the older tunnel it is the relay's
-/// `{origin}/a2a/{instance}`, once the relay has announced both the origin and
-/// this hub's instance slug. An agent's own address appends `/<name>`.
+/// once it is connected: the instance's own host, `{instance origin}/a2a`. An
+/// agent's own address appends `/<name>`.
 #[must_use]
 pub(crate) fn relay_a2a_base(status: &TunnelStatus) -> Option<String> {
     let TunnelStatus::Connected {
-        origin,
-        instance,
-        instance_origin,
+        instance_origin: Some(instance_origin),
         ..
     } = status
     else {
         return None;
     };
-    if let Some(instance_origin) = instance_origin {
-        return Some(format!("{}/a2a", instance_origin.trim_end_matches('/')));
-    }
-    Some(format!(
-        "{}/a2a/{}",
-        origin.as_deref()?.trim_end_matches('/'),
-        instance.as_deref()?
-    ))
+    Some(format!("{}/a2a", instance_origin.trim_end_matches('/')))
 }
 
 /// `agent_name`'s address on the relay: `relay_base` (see
@@ -91,33 +78,22 @@ mod tests {
         }
     }
 
-    fn connected(origin: Option<&str>, instance: Option<&str>) -> TunnelStatus {
+    const RELAY_BASE: &str = "https://laptop.bear.agent-residuum.com/a2a";
+
+    fn connected(instance_origin: Option<&str>) -> TunnelStatus {
         TunnelStatus::Connected {
-            user_id: "bear".to_string(),
-            origin: origin.map(str::to_string),
-            workbench_origin: None,
-            instance: instance.map(str::to_string),
-            a2a_token: None,
-            instance_origin: None,
-        }
-    }
-
-    const RELAY_BASE: &str = "https://bear.agent-residuum.com/a2a/laptop";
-
-    #[test]
-    fn the_secure_tunnel_uses_the_instance_host() {
-        let status = TunnelStatus::Connected {
             user_id: "bear".to_string(),
             origin: Some("https://bear.agent-residuum.com".to_string()),
             workbench_origin: None,
             instance: Some("laptop".to_string()),
-            instance_origin: Some("https://laptop.bear.agent-residuum.com/".to_string()),
-            a2a_token: None,
-        };
-        assert_eq!(
-            relay_a2a_base(&status),
-            Some("https://laptop.bear.agent-residuum.com/a2a".to_string())
-        );
+            instance_origin: instance_origin.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn the_tunnel_uses_the_instance_host() {
+        let status = connected(Some("https://laptop.bear.agent-residuum.com/"));
+        assert_eq!(relay_a2a_base(&status), Some(RELAY_BASE.to_string()));
         let url = resolve_a2a_public_url(
             &cfg(None),
             "127.0.0.1",
@@ -159,7 +135,7 @@ mod tests {
     #[test]
     fn the_relay_address_is_used_when_no_public_url_is_set() {
         let url = resolve_a2a_public_url(&cfg(None), "127.0.0.1", "scout", Some(RELAY_BASE));
-        assert_eq!(url, "https://bear.agent-residuum.com/a2a/laptop/scout");
+        assert_eq!(url, "https://laptop.bear.agent-residuum.com/a2a/scout");
     }
 
     #[test]
@@ -174,20 +150,8 @@ mod tests {
     }
 
     #[test]
-    fn the_relay_base_needs_a_connected_tunnel_with_origin_and_instance() {
-        assert_eq!(
-            relay_a2a_base(&connected(
-                Some("https://bear.agent-residuum.com/"),
-                Some("laptop")
-            )),
-            Some(RELAY_BASE.to_string()),
-            "a trailing slash on the origin must not double up"
-        );
-        assert_eq!(relay_a2a_base(&connected(None, Some("laptop"))), None);
-        assert_eq!(
-            relay_a2a_base(&connected(Some("https://bear.agent-residuum.com"), None)),
-            None
-        );
+    fn the_relay_base_needs_a_connected_tunnel_with_an_instance_origin() {
+        assert_eq!(relay_a2a_base(&connected(None)), None);
         assert_eq!(relay_a2a_base(&TunnelStatus::Connecting), None);
         assert_eq!(relay_a2a_base(&TunnelStatus::Disconnected), None);
     }

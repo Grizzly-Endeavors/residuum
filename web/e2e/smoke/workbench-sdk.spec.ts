@@ -167,49 +167,6 @@ test.describe("residuum.fetch", () => {
       await route.fulfill({ json: {} });
     }
   });
-
-  test("retries the relay's overloaded 503, and gives up after three retries", async ({
-    page,
-    mock,
-  }) => {
-    await page.clock.install();
-    await openProbe(page, mock);
-    let overloaded = 2;
-    let calls = 0;
-    await page.route(onProbeOrigin("/api/agents/atlas/status"), async (route) => {
-      calls += 1;
-      if (overloaded > 0) {
-        overloaded -= 1;
-        await route.fulfill({ status: 503, body: "agent overloaded" });
-      } else {
-        await route.continue();
-      }
-    });
-    const status = (): Promise<number> =>
-      page.evaluate(
-        async () =>
-          (await (window as unknown as ProbeWindow).residuum.fetch("/api/agents/atlas/status"))
-            .status,
-      );
-
-    const recovered = status();
-    for (const attempts of [1, 2]) {
-      await expect.poll(() => calls).toBe(attempts);
-      await page.clock.runFor(2500);
-    }
-    expect(await recovered).toBe(200);
-    expect(calls).toBe(3);
-
-    overloaded = Infinity;
-    calls = 0;
-    const gaveUp = status();
-    for (const attempts of [1, 2, 3]) {
-      await expect.poll(() => calls).toBe(attempts);
-      await page.clock.runFor(5000);
-    }
-    expect(await gaveUp).toBe(503);
-    expect(calls).toBe(4);
-  });
 });
 
 test.describe("residuum.on and residuum.watch", () => {

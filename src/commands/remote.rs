@@ -232,7 +232,6 @@ fn status_report(status: &RemoteAccessStatus) -> String {
 fn state_summary(state: RemoteAccessState) -> &'static str {
     match state {
         RemoteAccessState::Disabled => "off",
-        RemoteAccessState::Legacy => "on the older tunnel (the relay can read the traffic)",
         RemoteAccessState::Connecting => "connecting",
         RemoteAccessState::Enrolling => "setting up",
         RemoteAccessState::NeedsJoin => "needs to join another of your instances",
