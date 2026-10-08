@@ -8,7 +8,7 @@
  * which the app reads push from as a build reads its own worker's. Nothing is
  * ever shown through it: a push reaches a build's worker through `deliverPush`.
  */
-import type { BrowserContext, Page } from "@playwright/test";
+import type { BrowserContext, Page, Worker } from "@playwright/test";
 import { MOCK_VAPID_PUBLIC_KEY } from "../../mock/push";
 
 /** The subscription's address, which the hub never shows. */
@@ -81,9 +81,66 @@ export async function fakePushService(
   );
 }
 
-/** Deliver `payload` to the page's service worker as its push service would, encrypted payload already opened. */
+/** How long the worker has to show the notification for a push before the delivery is called failed. */
+const SHOWN_TIMEOUT_MS = 10_000;
+
+/** The page's service worker, which Playwright reports once it has attached to it. */
+async function serviceWorkerOf(context: BrowserContext): Promise<Worker> {
+  return context.serviceWorkers()[0] ?? (await context.waitForEvent("serviceworker"));
+}
+
+/**
+ * Have the worker note when its next `showNotification` has resolved, which
+ * is when the browser has stored the notification and put it on display. The
+ * call itself is left as it was.
+ */
+function watchNextShown(worker: Worker, timeoutMs: number): Promise<void> {
+  return worker.evaluate((timeout) => {
+    // The worker's globals, which the page's types don't have.
+    const scope = self as unknown as {
+      registration: ServiceWorkerRegistration;
+      pushShown: Promise<void>;
+    };
+    const registration = scope.registration;
+    const original = registration.showNotification.bind(registration);
+    const restore = (): boolean => Reflect.deleteProperty(registration, "showNotification");
+    const shown = new Promise<void>((resolve, reject) => {
+      const gaveUp = setTimeout(() => {
+        restore();
+        reject(new Error("the worker showed no notification for the push"));
+      }, timeout);
+      registration.showNotification = (...args) => {
+        restore();
+        const result = original(...args);
+        result.then(resolve, reject).finally(() => {
+          clearTimeout(gaveUp);
+        });
+        return result;
+      };
+    });
+    shown.catch(() => undefined);
+    scope.pushShown = shown;
+  }, timeoutMs);
+}
+
+/**
+ * Deliver `payload` to the page's service worker as its push service would,
+ * encrypted payload already opened, and return once the worker has shown the
+ * notification for it.
+ *
+ * The wait is what keeps a read of the notifications from racing the
+ * display. Chromium's `getNotifications()` drops every stored notification
+ * the display doesn't list yet, and a notification is stored a moment before
+ * it is listed. A read in between deletes it for good while the worker's
+ * `showNotification` still resolves. `deliverPushMessage` returns before the
+ * worker has so much as received the push, so a spec that polls straight away
+ * lands in that gap now and then.
+ */
 export async function deliverPush(page: Page, payload: unknown): Promise<void> {
-  const cdp = await page.context().newCDPSession(page);
+  const context = page.context();
+  const worker = await serviceWorkerOf(context);
+  await watchNextShown(worker, SHOWN_TIMEOUT_MS);
+  const cdp = await context.newCDPSession(page);
   const registered = new Promise<string>((resolve) => {
     cdp.on("ServiceWorker.workerRegistrationUpdated", ({ registrations }) => {
       const found = registrations.find((r) => !r.isDeleted);
@@ -97,6 +154,7 @@ export async function deliverPush(page: Page, payload: unknown): Promise<void> {
     data: JSON.stringify(payload),
   });
   await cdp.detach();
+  await worker.evaluate(() => (self as unknown as { pushShown: Promise<void> }).pushShown);
 }
 
 /** The notifications the page's service worker is showing. */
