@@ -4174,10 +4174,9 @@ mod tests {
         let first = SessionAddress::from("spawned-slow-first-0001");
         runtime.spawn(
             sample_request(first.as_ref()),
-            Some(make_slow_resources(
-                "first done",
-                Duration::from_millis(400),
-            )),
+            // Long enough that a loaded machine still observes the second
+            // session queued before this one gives the permit back.
+            Some(make_slow_resources("first done", Duration::from_secs(3))),
         );
         wait_for(&runtime, &first, Duration::from_secs(1), |info| {
             info.state == SessionState::Running
@@ -4191,7 +4190,7 @@ mod tests {
             Some(make_resources("second done")),
         );
 
-        wait_for(&runtime, &second, Duration::from_millis(300), |info| {
+        wait_for(&runtime, &second, Duration::from_secs(2), |info| {
             info.state == SessionState::Queued
         })
         .await
@@ -4202,7 +4201,7 @@ mod tests {
 
         // Once the first session finishes and releases its permit, the
         // second should proceed to running rather than staying queued.
-        wait_for(&runtime, &second, Duration::from_secs(2), |info| {
+        wait_for(&runtime, &second, Duration::from_secs(5), |info| {
             info.state == SessionState::Running || info.state == SessionState::Idle
         })
         .await
