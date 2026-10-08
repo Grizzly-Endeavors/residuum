@@ -244,9 +244,9 @@ pub fn rejection_message(err: &anyhow::Error) -> Option<&'static str> {
 /// Download the latest release binary and install it, preserving the
 /// binary that was running so a failed restart can roll back to it.
 ///
-/// Downloads directly from GitHub Releases, avoiding the install script
-/// (which requires an interactive terminal for `sudo` on macOS). The
-/// download is checked against the release `SHA256SUMS` asset before the
+/// Downloads directly from GitHub Releases. Refuses before downloading
+/// when the binary's directory isn't writable by this account, since the
+/// swap could never succeed there. The download is checked against the release `SHA256SUMS` asset before the
 /// running binary is moved. A mismatch returns an error and leaves the
 /// current binary untouched. A release with no manifest still installs.
 ///
@@ -263,9 +263,10 @@ pub fn rejection_message(err: &anyhow::Error) -> Option<&'static str> {
 #[tracing::instrument(skip_all, fields(version = %version))]
 pub async fn download_and_install(version: &str) -> anyhow::Result<InstalledUpdate> {
     let asset = release_asset_name(std::env::consts::OS, std::env::consts::ARCH)?;
+    let exe_path = running_exe_path().context("failed to determine current executable path")?;
+    check_install_dir_writable(&exe_path)?;
     let bytes = download_release_bytes(version, asset).await?;
     let verification = verify_downloaded_asset(version, asset, &bytes).await;
-    let exe_path = running_exe_path().context("failed to determine current executable path")?;
     let installed = install_verified_bytes(&exe_path, &bytes, verification)?;
 
     tracing::info!(
@@ -545,6 +546,45 @@ fn running_exe_path() -> std::io::Result<PathBuf> {
     Ok(current_exe)
 }
 
+/// What the user sees when the binary lives in a directory this account
+/// can't write to, such as a `/usr/local/bin` that needs `sudo`.
+#[cfg(unix)]
+const INSTALL_DIR_NOT_WRITABLE: &str = "residuum can't update itself because it's installed in a folder this account can't write to. Rerun the installer to move it somewhere it can: curl -fsSL https://github.com/grizzly-endeavors/residuum/releases/latest/download/install.sh | sh";
+#[cfg(not(unix))]
+const INSTALL_DIR_NOT_WRITABLE: &str = "residuum can't update itself because it's installed in a folder this account can't write to. Move residuum.exe to a folder you own and run it from there.";
+
+/// Refuse the update when the directory holding `exe_path` can't be
+/// written, by creating and removing the temp file the swap will use.
+///
+/// # Errors
+///
+/// Returns a [`rejection_message`] error when the directory is read-only
+/// to this account, and a plain error for any other write failure.
+fn check_install_dir_writable(exe_path: &Path) -> anyhow::Result<()> {
+    let exe_dir = exe_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("current executable has no parent directory"))?;
+    let probe = exe_dir.join(".residuum-update.tmp");
+    match std::fs::File::create(&probe) {
+        Ok(_file) => {
+            if let Err(e) = std::fs::remove_file(&probe) {
+                tracing::warn!(error = %e, path = %probe.display(), "failed to remove the install-directory write check file");
+            }
+            Ok(())
+        }
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+            ) =>
+        {
+            tracing::warn!(error = %e, dir = %exe_dir.display(), "install directory is not writable, refusing update");
+            Err(rejected(INSTALL_DIR_NOT_WRITABLE))
+        }
+        Err(e) => Err(e).with_context(|| format!("failed to write to {}", exe_dir.display())),
+    }
+}
+
 /// Write `bytes` to a temp file beside `exe_path`, preserve the currently
 /// running binary at [`previous_binary_path`], then swap the new one into
 /// `exe_path`. Restores the original binary and returns an error if the
@@ -560,7 +600,9 @@ fn swap_in_new_binary(exe_path: &Path, bytes: &[u8]) -> anyhow::Result<PathBuf> 
         .ok_or_else(|| anyhow::anyhow!("current executable has no parent directory"))?;
     let tmp_path = exe_dir.join(".residuum-update.tmp");
     let cleanup = || {
-        if let Err(re) = std::fs::remove_file(&tmp_path) {
+        if let Err(re) = std::fs::remove_file(&tmp_path)
+            && re.kind() != std::io::ErrorKind::NotFound
+        {
             tracing::warn!(error = %re, path = %tmp_path.display(), "failed to remove temp file during cleanup");
         }
     };
@@ -1104,6 +1146,35 @@ not-a-hash  ignored
             !dir.path().join(".residuum-update.tmp").exists(),
             "a mismatched download must not leave a temp binary behind"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_only_install_dir_is_refused_before_download() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("residuum");
+        std::fs::write(&exe, b"current").unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result = check_install_dir_writable(&exe);
+        // Restore write access so the tempdir can be cleaned up.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let err = result.expect_err("a read-only install directory must refuse the update");
+        assert_eq!(rejection_message(&err), Some(INSTALL_DIR_NOT_WRITABLE));
+        assert!(!dir.path().join(".residuum-update.tmp").exists());
+    }
+
+    #[test]
+    fn writable_install_dir_passes_and_leaves_nothing_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("residuum");
+        std::fs::write(&exe, b"current").unwrap();
+
+        check_install_dir_writable(&exe).unwrap();
+        assert!(!dir.path().join(".residuum-update.tmp").exists());
     }
 
     #[test]

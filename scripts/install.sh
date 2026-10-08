@@ -5,7 +5,12 @@ set -eu
 
 REPO="grizzly-endeavors/residuum"
 BINARY_NAME="residuum"
-INSTALL_DIR="${RESIDUUM_INSTALL_DIR:-/usr/local/bin}"
+# Residuum updates itself in place, so it installs where this account can
+# write without sudo: RESIDUUM_INSTALL_DIR if set, else the directory of an
+# existing writable install, else /usr/local/bin when writable, else
+# ~/.local/bin.
+USER_BIN_DIR="${HOME}/.local/bin"
+PATH_MARKER="# added by the Residuum installer"
 
 # --- helpers ----------------------------------------------------------------
 
@@ -90,6 +95,73 @@ verify_checksum() {
   say "checksum verified"
 }
 
+# --- choose install directory -----------------------------------------------
+
+choose_install_dir() {
+  EXISTING="$(command -v "$BINARY_NAME" 2> /dev/null || true)"
+
+  if [ -n "${RESIDUUM_INSTALL_DIR:-}" ]; then
+    INSTALL_DIR="$RESIDUUM_INSTALL_DIR"
+    mkdir -p "$INSTALL_DIR" 2> /dev/null \
+      || err "can't create ${INSTALL_DIR} — choose a directory this account can write to"
+    [ -w "$INSTALL_DIR" ] \
+      || err "${INSTALL_DIR} isn't writable by this account, so residuum couldn't update itself there — choose another RESIDUUM_INSTALL_DIR"
+    return
+  fi
+
+  if [ -n "$EXISTING" ] && [ -w "$(dirname "$EXISTING")" ]; then
+    INSTALL_DIR="$(dirname "$EXISTING")"
+  elif [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
+    INSTALL_DIR="/usr/local/bin"
+  else
+    INSTALL_DIR="$USER_BIN_DIR"
+    mkdir -p "$INSTALL_DIR" || err "can't create ${INSTALL_DIR}"
+  fi
+}
+
+# --- PATH -------------------------------------------------------------------
+
+on_path() {
+  case ":${PATH}:" in
+    *":$1:"*) return 0 ;;
+    *)        return 1 ;;
+  esac
+}
+
+# Prepend INSTALL_DIR to PATH in the login shell's startup file, once.
+add_to_path() {
+  on_path "$INSTALL_DIR" && return 0
+
+  SHELL_NAME="$(basename "${SHELL:-sh}")"
+  case "$SHELL_NAME" in
+    zsh)
+      RC_FILE="${ZDOTDIR:-$HOME}/.zshrc"
+      LINE="export PATH=\"${INSTALL_DIR}:\$PATH\""
+      ;;
+    bash)
+      if [ "$OS" = "macos" ]; then RC_FILE="${HOME}/.bash_profile"; else RC_FILE="${HOME}/.bashrc"; fi
+      LINE="export PATH=\"${INSTALL_DIR}:\$PATH\""
+      ;;
+    fish)
+      RC_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/residuum.fish"
+      LINE="fish_add_path -g ${INSTALL_DIR}"
+      mkdir -p "$(dirname "$RC_FILE")"
+      ;;
+    *)
+      RC_FILE="${HOME}/.profile"
+      LINE="export PATH=\"${INSTALL_DIR}:\$PATH\""
+      ;;
+  esac
+
+  if [ -f "$RC_FILE" ] && grep -qF "$PATH_MARKER" "$RC_FILE"; then
+    PATH_NOTE="open a new terminal so ${INSTALL_DIR} is on your PATH."
+    return 0
+  fi
+
+  printf '\n%s\n%s\n' "$PATH_MARKER" "$LINE" >> "$RC_FILE"
+  PATH_NOTE="added ${INSTALL_DIR} to your PATH in ${RC_FILE} — open a new terminal to use it."
+}
+
 # --- download and install ---------------------------------------------------
 
 install() {
@@ -106,31 +178,33 @@ install() {
 
   chmod +x "${TMP}/${BINARY_NAME}"
 
-  # install to target directory; fresh macOS has no /usr/local/bin
-  if [ ! -d "$INSTALL_DIR" ]; then
-    mkdir -p "$INSTALL_DIR" 2> /dev/null || sudo mkdir -p "$INSTALL_DIR"
-  fi
-
-  if [ -w "$INSTALL_DIR" ]; then
-    mv "${TMP}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
-  else
-    say "installing to ${INSTALL_DIR} (requires sudo)..."
-    sudo mv "${TMP}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
-  fi
+  mv "${TMP}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
 }
 
 # --- verify -----------------------------------------------------------------
 
 verify() {
-  if command -v "$BINARY_NAME" > /dev/null 2>&1; then
-    INSTALLED_PATH="$(command -v "$BINARY_NAME")"
+  INSTALLED="${INSTALL_DIR}/${BINARY_NAME}"
+  say ""
+  say "installed: ${INSTALLED}"
+
+  if [ -n "${PATH_NOTE:-}" ]; then
+    say "$PATH_NOTE"
+  fi
+
+  # An older copy somewhere this account can't write can shadow the new
+  # one, and can never update itself.
+  if [ -n "$EXISTING" ] && [ "$EXISTING" != "$INSTALLED" ]; then
     say ""
-    say "installed: ${INSTALLED_PATH}"
-    say "run 'residuum serve' to start, or 'residuum init' to configure."
+    say "an older residuum is also installed at ${EXISTING}."
+    say "remove it so only the new one is used: sudo rm ${EXISTING}"
+  fi
+
+  say ""
+  if [ -n "$EXISTING" ]; then
+    say "if a gateway is running, stop it and start it again with 'residuum serve'."
   else
-    say ""
-    say "installed to ${INSTALL_DIR}/${BINARY_NAME}"
-    say "make sure ${INSTALL_DIR} is in your PATH."
+    say "run 'residuum serve' to start, or 'residuum init' to configure."
   fi
 }
 
@@ -143,7 +217,9 @@ main() {
 
   detect_platform
   get_latest_version
+  choose_install_dir
   install
+  add_to_path
   verify
 
   say ""
