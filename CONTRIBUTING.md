@@ -32,7 +32,7 @@ All changes go through pull requests.
 1. Create a feature branch from `main` with a descriptive name
 2. Make your changes and commit frequently
 3. Push your branch and open a PR against `main`
-4. The quality gate is the pre-commit hook, not CI: formatting, clippy, tests, dependency audit, and the web checks all run locally on every commit. A maintainer re-runs them locally before merging a contributor's PR.
+4. The pre-commit hook is the first quality gate: formatting, clippy, tests, dependency audit, and the web checks all run locally on every commit. CI then runs the full Rust checks on PRs that change Rust code and the full web checks on PRs that change `web/` (see [Quality Gates](#quality-gates)). CI runs on self-hosted runners, so PRs from forks don't run it; a maintainer re-runs the checks locally before merging a contributor's PR.
 5. Cross-platform checks (clippy for aarch64 Linux, Windows, and macOS, plus tests on Windows) are opt-in; see below
 
 ### Rust Toolchain
@@ -74,7 +74,7 @@ Pre-commit hooks run automatically:
 
 Do not bypass hooks. If a hook fails, fix the issue before committing.
 
-CI, which runs on release tags (and its web half on every pull request that changes `web/`), repeats these checks and adds three. It runs the whole web end-to-end, accessibility and visual suite against the mock, in the Playwright container's browser, so the runners need no Chromium of their own (`just web-e2e` runs it locally; `just web-e2e-fast` leaves out the visual comparisons and runs in your own Chromium; see [web/CONTRIBUTING.md](web/CONTRIBUTING.md#testing)). It regenerates the web's TypeScript protocol types from the Rust types and fails when `web/src/lib/generated/` differs from what is committed, so after changing an exported Rust type run `just types` and commit the result (`just types-check` runs the same check as CI). It also reports web test coverage in the job summary, with no threshold.
+CI repeats these checks and adds four. Its Rust half runs on every pull request that changes Rust code or what the build embeds (`src/`, `tests/`, `assets/`, the Cargo and lint configuration, the generated web types), its web half on every pull request that changes `web/`, and both on release tags. The Rust half runs the whole test suite, not only the touched modules', and the Pebble tests (`just pebble`), which issue certificates from the Let's Encrypt test CA in Docker. It runs the whole web end-to-end, accessibility and visual suite against the mock, in the Playwright container's browser, so the runners need no Chromium of their own (`just web-e2e` runs it locally; `just web-e2e-fast` leaves out the visual comparisons and runs in your own Chromium; see [web/CONTRIBUTING.md](web/CONTRIBUTING.md#testing)). It regenerates the web's TypeScript protocol types from the Rust types and fails when `web/src/lib/generated/` differs from what is committed, so after changing an exported Rust type run `just types` and commit the result (`just types-check` runs the same check as CI). It also reports web test coverage in the job summary, with no threshold.
 
 ### Style
 

@@ -86,7 +86,7 @@ A staging account is a different account from a production one, so it has its ow
 
 ## Tests
 
-`cargo test --quiet remote_access:: tunnel::v2` runs the tests that need nothing outside the process: a fake relay speaking tunnel v2 with a TCP front door, a fake pin service, and the engine behind both. The tests marked `#[ignore]` start Pebble, the Let's Encrypt test CA (images pinned in `src/remote_access/pebble_support.rs`), and its challenge test server in Docker with host networking. `just pebble` runs them, and CI runs them in the Rust job. They cover issuance and renewal through the tunnel, the recovery code reset, and the alert for an unknown pin.
+`cargo test --quiet remote_access:: tunnel::v2` runs the tests that need nothing outside the process: a fake relay speaking tunnel v2 with a TCP front door, a fake pin service, and the engine behind both. The tests marked `#[ignore]` start Pebble, the Let's Encrypt test CA (images pinned in `src/remote_access/pebble_support.rs`), and its challenge test server in Docker with host networking. `just pebble` runs them, and CI runs them in the Rust Tests job, on pull requests that change Rust code and on release tags. They cover issuance and renewal through the tunnel, the recovery code reset, and the alert for an unknown pin.
 
 ## Files
 
