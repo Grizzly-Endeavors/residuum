@@ -46,17 +46,6 @@ pub enum WorkbenchServing {
     Unavailable { reason: String },
 }
 
-impl WorkbenchServing {
-    /// The listener's port, when it is running.
-    #[must_use]
-    pub(crate) fn port(&self) -> Option<u16> {
-        match self {
-            Self::Running { port } => Some(*port),
-            Self::Unavailable { .. } => None,
-        }
-    }
-}
-
 /// Start the artifacts listener for `dir` beside the gateway on `bind`. Returns
 /// whether it is serving, the switch that stops it and its router (so another
 /// transport can serve the same pages in-process) when it is. `api` is

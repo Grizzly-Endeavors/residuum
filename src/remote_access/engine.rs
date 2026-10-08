@@ -51,16 +51,10 @@ const H2_KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 const ACME_TLS_ALPN: &[u8] = b"acme-tls/1";
 
 /// Headers only Residuum's own components may set. A browser-supplied copy
-/// would let it pose as the tunnel, a sibling instance or an authenticated
-/// A2A caller. Forwarding headers go too: the peer address is the one the
-/// engine was given, not one the peer names.
-const INTERNAL_HEADERS: [&str; 5] = [
-    "x-residuum-tunnel",
-    "x-residuum-sibling",
-    "x-residuum-a2a-caller",
-    "x-real-ip",
-    "x-forwarded-for",
-];
+/// would let it pose as an authenticated A2A caller. Forwarding headers go
+/// too: the peer address is the one the engine was given, not one the peer
+/// names.
+const INTERNAL_HEADERS: [&str; 3] = ["x-residuum-a2a-caller", "x-real-ip", "x-forwarded-for"];
 
 /// The routers for the two web-facing hosts.
 pub(crate) struct EngineRouters {

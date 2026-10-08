@@ -324,11 +324,11 @@ export interface CloudStatusResponse {
   enabled: boolean;
   /** True when this response was served to a browser viewing the gateway through the tunnel. */
   viewed_via_tunnel: boolean;
-  /** Public origin of this hub through the relay, while connected and announced. */
+  /** Public origin of this user's web UI through the relay, while connected. */
   origin?: string | null;
-  /** This hub's instance slug on the relay, while connected and announced. */
+  /** This hub's instance slug on the relay, while connected. */
   instance?: string | null;
-  /** The instance's own public origin on the secure tunnel, such as `https://laptop.bear.agent-residuum.com`, while it has one. */
+  /** The instance's own public origin, such as `https://laptop.bear.agent-residuum.com`, while connected. */
   instance_origin?: string;
 }
 

@@ -257,12 +257,13 @@ describe("Connections", () => {
       viewed_via_tunnel: false,
       origin: "https://bear.agent-residuum.com",
       instance: "laptop",
+      instance_origin: "https://laptop.bear.agent-residuum.com",
     };
     await open("connections", {
       config: '[teams]\napp_id = "app-1"\ntenant_id = "tenant-1"\napp_password = "secret:teams"\n',
     });
     const teams = group("Microsoft Teams");
-    expect(teams.getByText(`https://bear.agent-residuum.com/teams/laptop/${agent}`)).toBeTruthy();
+    expect(teams.getByText(`https://laptop.bear.agent-residuum.com/teams/${agent}`)).toBeTruthy();
     expect(teams.getByRole("button", { name: "Copy messaging endpoint" })).toBeTruthy();
   });
 

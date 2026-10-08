@@ -38,17 +38,14 @@ const HOP_BY_HOP: [&str; 8] = [
 ];
 
 /// Request headers the proxy never forwards: the peer's `Host` (the upstream
-/// gets its own), forwarding headers the peer could forge, and the internal
-/// trust markers the local listeners act on.
-const REQUEST_STRIP: [&str; 8] = [
+/// gets its own) and forwarding headers the peer could forge.
+const REQUEST_STRIP: [&str; 6] = [
     "host",
     "forwarded",
     "x-forwarded-for",
     "x-forwarded-host",
     "x-forwarded-proto",
     "x-real-ip",
-    "x-residuum-tunnel",
-    "x-residuum-sibling",
 ];
 
 /// Where the local listeners are right now.
@@ -148,11 +145,10 @@ impl InstanceProxy {
             Some(query) => format!("{tail}?{query}"),
             None => tail,
         };
-        let listener_path =
-            match crate::tunnel::connection::a2a_listener_path(Some(agent), &with_query) {
-                Ok(listener_path) => listener_path,
-                Err(message) => return text_response(StatusCode::NOT_FOUND, message),
-            };
+        let listener_path = match a2a_listener_path(Some(agent), &with_query) {
+            Ok(listener_path) => listener_path,
+            Err(message) => return text_response(StatusCode::NOT_FOUND, message),
+        };
         let Some(port) = a2a_port else {
             return text_response(
                 StatusCode::NOT_FOUND,
@@ -319,4 +315,149 @@ pub(crate) fn text_response(status: StatusCode, message: &str) -> Response<Body>
     );
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
+}
+
+/// The path on the hub's A2A listener for an A2A request on the instance host:
+/// `/agents/{agent}` followed by the path the request carried (which already
+/// includes any query string), or a plain-language reason the request can't be
+/// dispatched.
+///
+/// The hub's A2A listener has no root-level agent, so a request that names no
+/// agent has nowhere to go. The name is checked against the agent-name rules
+/// because it becomes a path segment on the local listener.
+fn a2a_listener_path(agent: Option<&str>, path: &str) -> Result<String, &'static str> {
+    let Some(agent) = agent else {
+        return Err("This A2A request didn't name an agent. Agents are reached at /a2a/{agent}.");
+    };
+    if crate::config::paths::validate_agent_name(agent).is_err() {
+        return Err("No agent with that name is available on this Residuum instance.");
+    }
+    if path_escapes_agent(path) {
+        return Err("This A2A request's path isn't valid.");
+    }
+    let separator = if path.starts_with('/') { "" } else { "/" };
+    Ok(format!(
+        "{}/{agent}{separator}{path}",
+        crate::a2a::public_url::AGENTS_PATH_PREFIX
+    ))
+}
+
+/// Whether a browser-supplied path could climb out of `/agents/{agent}` once
+/// the HTTP client normalizes it: any `.` or `..` segment, in plain or
+/// percent-encoded form (`%2e`, `%2E`, mixed), or any backslash. The relay
+/// gates access per agent, so a path that reaches a different agent's routes
+/// would bypass that gating (`/a2a/inst/scout/../vault/...` normalizes to
+/// vault's routes). The query string is not part of the path.
+fn path_escapes_agent(path: &str) -> bool {
+    let path_only = path.split(['?', '#']).next().unwrap_or_default();
+    let decoded = percent_decode(path_only);
+    decoded.contains('\\')
+        || decoded
+            .split('/')
+            .any(|segment| segment == "." || segment == "..")
+}
+
+/// Decode `%XX` escapes, leaving malformed ones as they are.
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while let Some(&byte) = bytes.get(i) {
+        let escaped = if byte == b'%' {
+            bytes
+                .get(i + 1..i + 3)
+                .and_then(|hex| std::str::from_utf8(hex).ok())
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+        } else {
+            None
+        };
+        if let Some(decoded) = escaped {
+            out.push(decoded);
+            i += 3;
+        } else {
+            out.push(byte);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_agent_request_maps_onto_the_agents_prefix() {
+        assert_eq!(
+            a2a_listener_path(Some("scout"), "/.well-known/agent-card.json").as_deref(),
+            Ok("/agents/scout/.well-known/agent-card.json")
+        );
+        assert_eq!(
+            a2a_listener_path(Some("scout"), "/rest/message:send?x=1").as_deref(),
+            Ok("/agents/scout/rest/message:send?x=1")
+        );
+        assert_eq!(
+            a2a_listener_path(Some("scout"), "/").as_deref(),
+            Ok("/agents/scout/")
+        );
+        assert_eq!(
+            a2a_listener_path(Some("scout"), "").as_deref(),
+            Ok("/agents/scout/")
+        );
+    }
+
+    #[test]
+    fn a_path_that_climbs_out_of_the_agent_is_refused() {
+        for bad in [
+            "/../vault/.well-known/agent-card.json",
+            "/./x",
+            "/..",
+            "/rest/../../vault/x",
+            "/%2e%2e/vault/x",
+            "/%2E%2E/vault/x",
+            "/%2e./vault/x",
+            "/.%2E/vault/x",
+            "/%2e/x",
+            "/..%2fvault/x",
+            "/%2e%2e%2fvault/x",
+            "/..\\vault/x",
+            "/%5cvault",
+            "/%5Cvault",
+            "/a\\b",
+            "..",
+            "/x/..?q=1",
+        ] {
+            assert!(
+                a2a_listener_path(Some("scout"), bad).is_err(),
+                "'{bad}' must not reach another agent's routes"
+            );
+        }
+    }
+
+    #[test]
+    fn dots_inside_names_and_the_query_string_are_not_traversal() {
+        for fine in [
+            "/.well-known/agent-card.json",
+            "/rest/a..b",
+            "/rest/message:send?next=../x",
+            "/v1/tasks/1.2.3",
+            "/%2e%2eabc/x",
+        ] {
+            assert!(
+                a2a_listener_path(Some("scout"), fine).is_ok(),
+                "'{fine}' is an ordinary path"
+            );
+        }
+    }
+
+    #[test]
+    fn a_request_without_a_usable_agent_is_refused() {
+        assert!(a2a_listener_path(None, "/").is_err());
+        for bad in ["", "../hub", "Scout", "a/b", "-x", "x y"] {
+            assert!(
+                a2a_listener_path(Some(bad), "/").is_err(),
+                "'{bad}' must not become a listener path"
+            );
+        }
+    }
 }

@@ -489,7 +489,7 @@ describe("Residuum Cloud", () => {
       "noopener",
     );
 
-    await type(screen.getByLabelText("Relay URL"), "ws://127.0.0.1:8080/tunnel/register");
+    await type(screen.getByLabelText("Relay URL"), "ws://127.0.0.1:8080/tunnel/v2/register");
     expect(screen.getByText(/Opens 127.0.0.1:8080 in a new tab/)).toBeInTheDocument();
     expect(screen.getByText(/Save your relay change first/)).toBeInTheDocument();
     await fireEvent.click(await button("Connect to Residuum Cloud"));

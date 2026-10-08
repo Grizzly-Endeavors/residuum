@@ -848,7 +848,6 @@ mod tests {
             origin: Some("https://bear.agent-residuum.com".to_string()),
             workbench_origin: Some("https://bear.workbench.agent-residuum.com".to_string()),
             instance: Some("laptop".to_string()),
-            a2a_token: None,
             instance_origin: None,
         })
         .unwrap();

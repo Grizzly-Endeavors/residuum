@@ -39,7 +39,7 @@ use crate::hub::{
     AgentSummary, CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError,
     RestoreAgentRequest,
 };
-use crate::tunnel::{TUNNEL_NONCE_HEADER, TunnelStatus, tunnel_nonce};
+use crate::tunnel::TunnelStatus;
 use crate::workspace::layout::WorkspaceLayout;
 use crate::workspace::team_files::TeamWriteCoordinator;
 use crate::workspace::watch::{WatchHealth, WorkspaceChange, WorkspaceChangeKind};
@@ -1719,14 +1719,17 @@ fn cross_site(method: Method, uri: &str) -> Request<Body> {
 }
 
 /// `method uri` as a paired browser's same-origin request arrives through
-/// the tunnel: with the tunnel's mark and the credential of a device paired
+/// the tunnel: with the transport's mark and the credential of a device paired
 /// just now.
 async fn through_the_tunnel(h: &Harness, method: Method, uri: &str) -> Request<Body> {
     let (cookie, _workbench) = h.pairing.pair_device_for_tests("test browser").await;
     Request::builder()
         .method(method)
         .uri(uri)
-        .header(TUNNEL_NONCE_HEADER, tunnel_nonce())
+        .extension(crate::pairing::remote::RemoteTransport {
+            peer_ip: Some("203.0.113.7".to_string()),
+            origin: None,
+        })
         .header("sec-fetch-site", "same-origin")
         .header("cookie", cookie)
         .body(Body::empty())

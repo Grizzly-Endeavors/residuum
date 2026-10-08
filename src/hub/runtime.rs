@@ -211,74 +211,52 @@ fn workbench_unavailable_router() -> axum::Router {
 /// The handles a relay tunnel is started with.
 struct TunnelInputs<'a> {
     remote: &'a RemoteWiring,
-    workbench_port: Option<u16>,
     status_tx: &'a Arc<watch::Sender<TunnelStatus>>,
     relay_agents: &'a RelayAgents,
     teams_ports: watch::Receiver<std::collections::BTreeMap<String, u16>>,
 }
 
-/// Start the relay tunnel for `cloud`. The tunnel forwards A2A requests to the
-/// hub's A2A listener when it is enabled, and keeps the relay's agent list
-/// current from `relay_agents`.
+/// Start the relay tunnel for `cloud`, which keeps the relay's agent list
+/// current from `relay_agents`. `None` when the secure tunnel's manager can't
+/// be built (logged, and reported through the remote access status).
 fn spawn_tunnel(
     hub: &HubConfig,
     cloud: &crate::config::CloudConfig,
     inputs: &TunnelInputs<'_>,
-) -> TunnelTask {
+) -> Option<TunnelTask> {
     let cloud = cloud.clone();
-    let workbench_port = inputs.workbench_port;
     let a2a_port = hub.a2a.enabled.then_some(hub.a2a.port);
     let agents_rx = inputs.relay_agents.subscribe();
-    let teams_ports = inputs.teams_ports.clone();
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let status_tx = Arc::clone(inputs.status_tx);
-    let remote = start_remote_access(hub, &cloud, a2a_port, &teams_ports, inputs);
+    let remote = start_remote_access(hub, &cloud, a2a_port, inputs)?;
     let handle = crate::util::spawn_monitored("tunnel", async move {
-        crate::tunnel::start_tunnel(
-            cloud,
-            workbench_port,
-            a2a_port,
-            teams_ports,
-            agents_rx,
-            shutdown_rx,
-            status_tx,
-            remote,
-        )
-        .await;
+        crate::tunnel::start_tunnel(cloud, agents_rx, shutdown_rx, status_tx, remote).await;
     });
-    TunnelTask {
+    Some(TunnelTask {
         handle,
         shutdown_tx,
-    }
+    })
 }
 
 /// Start the tunnel the hub config asks for at startup, if it asks for one.
 fn spawn_initial_tunnel(hub: &HubConfig, inputs: &TunnelInputs<'_>) -> Option<TunnelTask> {
     hub.cloud
         .as_ref()
-        .map(|cloud| spawn_tunnel(hub, cloud, inputs))
+        .and_then(|cloud| spawn_tunnel(hub, cloud, inputs))
 }
 
 /// Build the secure tunnel's manager for `cloud`, install it where the HTTP
-/// API finds it, and return it as the tunnel's session handler. `None` when
-/// the settings turn it off or it can't be built (logged), which leaves the
-/// legacy tunnel.
+/// API finds it, and return it as the tunnel's session handler. `None` when it
+/// can't be built (logged), which leaves remote access down.
 fn start_remote_access(
     hub: &HubConfig,
     cloud: &crate::config::CloudConfig,
     a2a_port: Option<u16>,
-    teams_ports: &watch::Receiver<std::collections::BTreeMap<String, u16>>,
     inputs: &TunnelInputs<'_>,
 ) -> Option<Arc<dyn crate::tunnel::v2::SessionHandler>> {
     use crate::remote_access::status::RemoteAccessState;
     let wiring = inputs.remote;
-    if !cloud.remote.enabled {
-        wiring.slot.clear(
-            RemoteAccessState::Disabled,
-            "The secure tunnel is turned off by remote_access = false in [cloud], so Residuum Cloud uses the older tunnel.",
-        );
-        return None;
-    }
     let built = crate::remote_access::manager::RemoteAccess::new(
         crate::remote_access::manager::RemoteAccessInputs {
             settings: cloud.remote.clone(),
@@ -288,7 +266,7 @@ fn start_remote_access(
                 workbench: wiring.workbench_router.clone(),
             },
             a2a_port,
-            teams_ports: teams_ports.clone(),
+            teams_ports: inputs.teams_ports.clone(),
             pairing: wiring.pairing.clone(),
             tunnel_status: Arc::clone(inputs.status_tx),
             status: wiring.slot.status_sender(),
@@ -305,10 +283,10 @@ fn start_remote_access(
             Some(Arc::new(remote))
         }
         Err(e) => {
-            tracing::error!(error = %format!("{e:#}"), "couldn't start the secure tunnel; Residuum Cloud uses the older tunnel");
+            tracing::error!(error = %format!("{e:#}"), "couldn't start the secure tunnel; Residuum Cloud is not connected");
             wiring.slot.clear(
                 RemoteAccessState::Error,
-                "Residuum couldn't start the secure tunnel, so Residuum Cloud uses the older tunnel. Check Residuum's logs.",
+                "Residuum couldn't start the secure tunnel, so Residuum Cloud is not connected. Check Residuum's logs.",
             );
             None
         }
@@ -323,19 +301,13 @@ fn spawn_a2a_listener(
     services: &HubServices,
 ) -> A2aListenerTask {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    // The older tunnel's relay attests a calling sibling with this process's
-    // tunnel nonce. On the secure tunnel nothing the relay says names a caller:
-    // siblings present the keys they were issued when they joined.
-    let remote_access = services.remote_access.clone();
+    // Nothing the relay says names a caller: siblings present the keys they
+    // were issued when they joined.
     let listener = crate::a2a::A2aListener::new(
         hub.gateway.bind.clone(),
         hub.a2a.port,
         Arc::clone(host) as Arc<dyn AgentDirectory>,
         Arc::clone(&services.a2a_keys),
-        Arc::new(move || {
-            (!remote_access.on_secure_tunnel())
-                .then(|| Arc::<str>::from(crate::tunnel::tunnel_nonce()))
-        }),
         shutdown_rx,
     )
     .with_sibling_keys(services.remote_access.sibling_keys());
@@ -514,7 +486,6 @@ impl HubRuntime {
             &hub_cfg,
             &TunnelInputs {
                 remote: &remote_wiring,
-                workbench_port: services.workbench_serving.port(),
                 status_tx: &tunnel_status_tx,
                 relay_agents: &relay_agents,
                 teams_ports: host.subscribe_teams_ports(),
@@ -651,18 +622,19 @@ impl HubRuntime {
             .await;
         self.tunnel_status_tx.send(TunnelStatus::Disconnected).ok();
         if let Some(cloud) = &self.hub_cfg.cloud {
-            self.tunnel = Some(spawn_tunnel(
+            self.tunnel = spawn_tunnel(
                 &self.hub_cfg,
                 cloud,
                 &TunnelInputs {
                     remote: &self.remote_wiring,
-                    workbench_port: self.services.workbench_serving.port(),
                     status_tx: &self.tunnel_status_tx,
                     relay_agents: &self.relay_agents,
                     teams_ports: self.host.subscribe_teams_ports(),
                 },
-            ));
-            tracing::info!("tunnel respawned after unexpected exit");
+            );
+            if self.tunnel.is_some() {
+                tracing::info!("tunnel respawned after unexpected exit");
+            }
         } else {
             self.tunnel = None;
         }
@@ -856,18 +828,19 @@ impl HubRuntime {
         }
         self.tunnel_status_tx.send(TunnelStatus::Disconnected).ok();
         if let Some(cloud) = &new_hub.cloud {
-            self.tunnel = Some(spawn_tunnel(
+            self.tunnel = spawn_tunnel(
                 new_hub,
                 cloud,
                 &TunnelInputs {
                     remote: &self.remote_wiring,
-                    workbench_port: self.services.workbench_serving.port(),
                     status_tx: &self.tunnel_status_tx,
                     relay_agents: &self.relay_agents,
                     teams_ports: self.host.subscribe_teams_ports(),
                 },
-            ));
-            tracing::info!("tunnel restarted with new config");
+            );
+            if self.tunnel.is_some() {
+                tracing::info!("tunnel restarted with new config");
+            }
         } else {
             self.remote_wiring.slot.clear(
                 crate::remote_access::status::RemoteAccessState::Disabled,

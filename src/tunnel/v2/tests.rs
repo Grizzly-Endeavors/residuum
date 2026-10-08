@@ -1,6 +1,5 @@
 //! End-to-end tests of the v2 client against the fake relay.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -11,18 +10,17 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
-use super::frames::V2Frame;
+use super::frames::{AgentInfo, V2Frame};
 use super::test_relay::{FakeRelay, FakeRelayConfig, V2Mode, client_hello};
 use super::{ClaimError, ConnectedInfo, IncomingStream, RelayLink, SessionHandler, Verdict};
 use crate::config::{CloudConfig, RemoteAccessSettings};
 use crate::tunnel::TunnelStatus;
-use crate::tunnel::protocol::AgentInfo;
 
 const WAIT: Duration = Duration::from_secs(10);
 
 struct TestHandler {
     refuse: Option<String>,
-    allow_v1: bool,
+    unsupported: AtomicUsize,
     streams: mpsc::UnboundedSender<IncomingStream>,
     infos: mpsc::UnboundedSender<ConnectedInfo>,
     links: mpsc::UnboundedSender<RelayLink>,
@@ -35,14 +33,14 @@ struct HandlerOutputs {
     links: mpsc::UnboundedReceiver<RelayLink>,
 }
 
-fn handler(refuse: Option<&str>, allow_v1: bool) -> (Arc<TestHandler>, HandlerOutputs) {
+fn handler(refuse: Option<&str>) -> (Arc<TestHandler>, HandlerOutputs) {
     let (streams_tx, streams) = mpsc::unbounded_channel();
     let (infos_tx, infos) = mpsc::unbounded_channel();
     let (links_tx, links) = mpsc::unbounded_channel();
     (
         Arc::new(TestHandler {
             refuse: refuse.map(str::to_string),
-            allow_v1,
+            unsupported: AtomicUsize::new(0),
             streams: streams_tx,
             infos: infos_tx,
             links: links_tx,
@@ -81,8 +79,8 @@ impl SessionHandler for TestHandler {
         self.disconnects.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn allow_v1_fallback(&self) -> bool {
-        self.allow_v1
+    fn on_relay_unsupported(&self) {
+        self.unsupported.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -93,33 +91,23 @@ struct Running {
     task: tokio::task::JoinHandle<()>,
 }
 
-fn start(relay: &FakeRelay, handler: &Arc<TestHandler>, remote_enabled: bool) -> Running {
+fn start(relay: &FakeRelay, handler: &Arc<TestHandler>) -> Running {
     let cfg = CloudConfig {
         relay_url: relay.ws_url(),
         token: "rst_test".to_string(),
-        local_port: 1,
-        remote: RemoteAccessSettings {
-            enabled: remote_enabled,
-            ..RemoteAccessSettings::default()
-        },
+        remote: RemoteAccessSettings::default(),
     };
     let (status_tx, status) = watch::channel(TunnelStatus::Disconnected);
     let (shutdown, shutdown_rx) = watch::channel(false);
     let (agents, agents_rx) = watch::channel(Vec::new());
-    let (teams_tx, teams_rx) = watch::channel(BTreeMap::new());
-    let remote: Arc<dyn SessionHandler> = Arc::clone(handler) as Arc<dyn SessionHandler>;
+    let handler: Arc<dyn SessionHandler> = Arc::clone(handler) as Arc<dyn SessionHandler>;
     let task = tokio::spawn(crate::tunnel::start_tunnel(
         cfg,
-        None,
-        None,
-        teams_rx,
         agents_rx,
         shutdown_rx,
         Arc::new(status_tx),
-        Some(remote),
+        handler,
     ));
-    // Dropping the sender only closes a channel the client never waits on.
-    drop(teams_tx);
     Running {
         status,
         shutdown,
@@ -172,15 +160,14 @@ fn agent(name: &str) -> AgentInfo {
         display_name: name.to_string(),
         a2a_enabled: false,
         a2a_private: false,
-        teams_configured: false,
     }
 }
 
 #[tokio::test]
 async fn accepted_session_publishes_connected_and_sends_agents() {
     let relay = FakeRelay::start(FakeRelayConfig::default()).await;
-    let (h, mut outputs) = handler(None, false);
-    let mut running = start(&relay, &h, true);
+    let (h, mut outputs) = handler(None);
+    let mut running = start(&relay, &h);
 
     let status = connected(&mut running).await;
     assert_eq!(
@@ -190,7 +177,6 @@ async fn accepted_session_publishes_connected_and_sends_agents() {
             origin: Some("https://bear.relay.test".to_string()),
             workbench_origin: Some("https://bear.workbench.relay.test".to_string()),
             instance: Some("laptop".to_string()),
-            a2a_token: None,
             instance_origin: Some("https://laptop.bear.relay.test".to_string()),
         }
     );
@@ -218,8 +204,8 @@ async fn accepted_session_publishes_connected_and_sends_agents() {
 #[tokio::test]
 async fn ping_is_answered_with_pong() {
     let relay = FakeRelay::start(FakeRelayConfig::default()).await;
-    let (h, _outputs) = handler(None, false);
-    let mut running = start(&relay, &h, true);
+    let (h, _outputs) = handler(None);
+    let mut running = start(&relay, &h);
     connected(&mut running).await;
     relay.send_frame(&V2Frame::Ping);
     relay.wait_frame(|f| matches!(f, V2Frame::Pong)).await;
@@ -229,8 +215,8 @@ async fn ping_is_answered_with_pong() {
 #[tokio::test]
 async fn refuse_closes_without_publishing_connected() {
     let relay = FakeRelay::start(FakeRelayConfig::default()).await;
-    let (h, _outputs) = handler(Some("wrong relay"), false);
-    let running = start(&relay, &h, true);
+    let (h, _outputs) = handler(Some("wrong relay"));
+    let running = start(&relay, &h);
 
     eventually("the relay to see the connection drop", || {
         relay.v2_connections() == 1 && relay.connected_instances() == 0
@@ -252,63 +238,91 @@ async fn refuse_closes_without_publishing_connected() {
 }
 
 #[tokio::test]
-async fn relay_without_v2_falls_back_to_v1_on_404_and_426() {
+async fn a_relay_without_the_endpoint_is_reported_and_retried() {
     for code in [404, 426] {
         let relay = FakeRelay::start(FakeRelayConfig {
             v2: V2Mode::Respond(code),
             ..FakeRelayConfig::default()
         })
         .await;
-        let (h, _outputs) = handler(None, true);
-        let mut running = start(&relay, &h, true);
-        let TunnelStatus::Connected { user_id, .. } = connected(&mut running).await else {
-            panic!("expected connected");
-        };
-        assert_eq!(user_id, "bear-v1", "status {code} should serve v1");
-        assert_eq!(relay.v1_connections(), 1);
-        stop(running).await;
-    }
-}
-
-#[tokio::test]
-async fn no_fallback_when_the_handler_forbids_it() {
-    for code in [404, 426] {
-        let relay = FakeRelay::start(FakeRelayConfig {
-            v2: V2Mode::Respond(code),
-            ..FakeRelayConfig::default()
+        let (h, _outputs) = handler(None);
+        let running = start(&relay, &h);
+        eventually("the handler to hear the relay is unsupported", || {
+            h.unsupported.load(Ordering::SeqCst) >= 1
         })
         .await;
-        let (h, _outputs) = handler(None, false);
-        let running = start(&relay, &h, true);
-        eventually("a v2 attempt", || relay.v2_attempts() >= 1).await;
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert_eq!(relay.v1_connections(), 0);
-        assert!(!matches!(
-            *running.status.borrow(),
-            TunnelStatus::Connected { .. }
-        ));
+        assert!(relay.v2_attempts() >= 1, "status {code}");
+        assert_eq!(relay.v2_connections(), 0);
+        assert_eq!(*running.status.borrow(), TunnelStatus::Disconnected);
         stop(running).await;
     }
 }
 
 #[tokio::test]
-async fn disabled_remote_access_uses_v1_only() {
+async fn a_relay_url_the_client_cannot_register_at_never_connects() {
     let relay = FakeRelay::start(FakeRelayConfig::default()).await;
-    let (h, _outputs) = handler(None, false);
-    let mut running = start(&relay, &h, false);
-    let TunnelStatus::Connected { user_id, .. } = connected(&mut running).await else {
-        panic!("expected connected");
+    let (h, _outputs) = handler(None);
+    let (status_tx, status) = watch::channel(TunnelStatus::Disconnected);
+    let (shutdown, shutdown_rx) = watch::channel(false);
+    let (_agents, agents_rx) = watch::channel(Vec::new());
+    let cfg = CloudConfig {
+        relay_url: relay.ws_url().replace("/tunnel/v2/register", "/elsewhere"),
+        token: "rst_test".to_string(),
+        remote: RemoteAccessSettings::default(),
     };
-    assert_eq!(user_id, "bear-v1");
+    let handler: Arc<dyn SessionHandler> = h;
+    let task = tokio::spawn(crate::tunnel::start_tunnel(
+        cfg,
+        agents_rx,
+        shutdown_rx,
+        Arc::new(status_tx),
+        handler,
+    ));
+    tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(relay.v2_attempts(), 0);
-    stop(running).await;
+    assert!(!matches!(*status.borrow(), TunnelStatus::Connected { .. }));
+    shutdown.send(true).ok();
+    tokio::time::timeout(WAIT, task).await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn the_earlier_registration_path_in_the_config_still_reaches_the_endpoint() {
+    let relay = FakeRelay::start(FakeRelayConfig::default()).await;
+    let (h, _outputs) = handler(None);
+    let (status_tx, mut status) = watch::channel(TunnelStatus::Disconnected);
+    let (shutdown, shutdown_rx) = watch::channel(false);
+    let (_agents, agents_rx) = watch::channel(Vec::new());
+    let cfg = CloudConfig {
+        relay_url: relay
+            .ws_url()
+            .replace("/tunnel/v2/register", "/tunnel/register"),
+        token: "rst_test".to_string(),
+        remote: RemoteAccessSettings::default(),
+    };
+    let handler: Arc<dyn SessionHandler> = h;
+    let task = tokio::spawn(crate::tunnel::start_tunnel(
+        cfg,
+        agents_rx,
+        shutdown_rx,
+        Arc::new(status_tx),
+        handler,
+    ));
+    tokio::time::timeout(
+        WAIT,
+        status.wait_for(|s| matches!(s, TunnelStatus::Connected { .. })),
+    )
+    .await
+    .expect("tunnel never connected")
+    .expect("status channel closed");
+    shutdown.send(true).ok();
+    tokio::time::timeout(WAIT, task).await.unwrap().unwrap();
 }
 
 #[tokio::test]
 async fn grant_and_claim_round_trips() {
     let relay = FakeRelay::start(FakeRelayConfig::default()).await;
-    let (h, mut outputs) = handler(None, false);
-    let mut running = start(&relay, &h, true);
+    let (h, mut outputs) = handler(None);
+    let mut running = start(&relay, &h);
     connected(&mut running).await;
     let link = outputs.links.recv().await.unwrap();
 
@@ -335,8 +349,8 @@ async fn busy_claims_and_refused_grants_report_why() {
         ..FakeRelayConfig::default()
     })
     .await;
-    let (h, mut outputs) = handler(None, false);
-    let mut running = start(&relay, &h, true);
+    let (h, mut outputs) = handler(None);
+    let mut running = start(&relay, &h);
     connected(&mut running).await;
     let link = outputs.links.recv().await.unwrap();
     assert_eq!(
@@ -353,8 +367,8 @@ async fn busy_claims_and_refused_grants_report_why() {
 #[tokio::test]
 async fn link_fails_fast_once_the_session_ended() {
     let relay = FakeRelay::start(FakeRelayConfig::default()).await;
-    let (h, mut outputs) = handler(None, false);
-    let mut running = start(&relay, &h, true);
+    let (h, mut outputs) = handler(None);
+    let mut running = start(&relay, &h);
     connected(&mut running).await;
     let link = outputs.links.recv().await.unwrap();
     relay.drop_connection();
@@ -370,8 +384,8 @@ async fn link_fails_fast_once_the_session_ended() {
 #[tokio::test]
 async fn relay_close_delivers_queued_data_then_eof() {
     let relay = FakeRelay::start(FakeRelayConfig::default()).await;
-    let (h, mut outputs) = handler(None, false);
-    let mut running = start(&relay, &h, true);
+    let (h, mut outputs) = handler(None);
+    let mut running = start(&relay, &h);
     connected(&mut running).await;
 
     let id = relay.open_raw_stream("Bear.Relay.Test", "203.0.113.7");
@@ -395,8 +409,8 @@ async fn relay_close_delivers_queued_data_then_eof() {
 #[tokio::test]
 async fn dropping_the_io_sends_one_stream_close() {
     let relay = FakeRelay::start(FakeRelayConfig::default()).await;
-    let (h, mut outputs) = handler(None, false);
-    let mut running = start(&relay, &h, true);
+    let (h, mut outputs) = handler(None);
+    let mut running = start(&relay, &h);
     connected(&mut running).await;
     let id = relay.open_raw_stream("bear.relay.test", "1.2.3.4");
     let incoming = next_stream(&mut outputs).await;
@@ -410,8 +424,8 @@ async fn dropping_the_io_sends_one_stream_close() {
 #[tokio::test]
 async fn data_for_an_unknown_stream_is_answered_with_a_close() {
     let relay = FakeRelay::start(FakeRelayConfig::default()).await;
-    let (h, _outputs) = handler(None, false);
-    let mut running = start(&relay, &h, true);
+    let (h, _outputs) = handler(None);
+    let mut running = start(&relay, &h);
     connected(&mut running).await;
     let ghost = Uuid::new_v4();
     relay.send_stream_data(ghost, b"hello");
@@ -432,8 +446,8 @@ async fn data_for_an_unknown_stream_is_answered_with_a_close() {
 #[tokio::test]
 async fn a_relay_that_exceeds_the_window_gets_the_stream_closed() {
     let relay = FakeRelay::start(FakeRelayConfig::default()).await;
-    let (h, mut outputs) = handler(None, false);
-    let mut running = start(&relay, &h, true);
+    let (h, mut outputs) = handler(None);
+    let mut running = start(&relay, &h);
     connected(&mut running).await;
     let id = relay.open_raw_stream("bear.relay.test", "1.2.3.4");
     let mut incoming = next_stream(&mut outputs).await;
@@ -453,8 +467,8 @@ async fn a_relay_that_exceeds_the_window_gets_the_stream_closed() {
 #[tokio::test]
 async fn oversized_data_messages_close_the_stream() {
     let relay = FakeRelay::start(FakeRelayConfig::default()).await;
-    let (h, mut outputs) = handler(None, false);
-    let mut running = start(&relay, &h, true);
+    let (h, mut outputs) = handler(None);
+    let mut running = start(&relay, &h);
     connected(&mut running).await;
     let id = relay.open_raw_stream("bear.relay.test", "1.2.3.4");
     let _incoming = next_stream(&mut outputs).await;
@@ -471,8 +485,8 @@ async fn oversized_data_messages_close_the_stream() {
 #[tokio::test]
 async fn the_257th_stream_is_refused() {
     let relay = FakeRelay::start(FakeRelayConfig::default()).await;
-    let (h, mut outputs) = handler(None, false);
-    let mut running = start(&relay, &h, true);
+    let (h, mut outputs) = handler(None);
+    let mut running = start(&relay, &h);
     connected(&mut running).await;
     let mut held = Vec::new();
     for _ in 0..256 {
@@ -551,8 +565,8 @@ async fn tls_serve(
 #[tokio::test]
 async fn tls_hello_world_flows_through_the_framing() {
     let relay = FakeRelay::start(FakeRelayConfig::default()).await;
-    let (h, mut outputs) = handler(None, false);
-    let mut running = start(&relay, &h, true);
+    let (h, mut outputs) = handler(None);
+    let mut running = start(&relay, &h);
     connected(&mut running).await;
     let (server, client) = tls_material();
 
@@ -582,8 +596,8 @@ async fn tls_hello_world_flows_through_the_framing() {
 #[tokio::test]
 async fn a_stalled_stream_does_not_stall_another() {
     let relay = FakeRelay::start(FakeRelayConfig::default()).await;
-    let (h, mut outputs) = handler(None, false);
-    let mut running = start(&relay, &h, true);
+    let (h, mut outputs) = handler(None);
+    let mut running = start(&relay, &h);
     connected(&mut running).await;
     let (server, client) = tls_material();
     let port = relay.front_door_port();

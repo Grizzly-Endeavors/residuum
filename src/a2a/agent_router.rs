@@ -85,7 +85,7 @@ pub struct AgentA2a {
 }
 
 impl AgentA2a {
-    /// The relay base (`{origin}/a2a/{instance}`) to build the card under
+    /// The instance's A2A base (`{instance origin}/a2a`) to build the card under
     /// right now, when the tunnel is connected.
     #[must_use]
     pub fn relay_base(&self) -> Option<String> {

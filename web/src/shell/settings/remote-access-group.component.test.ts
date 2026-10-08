@@ -62,8 +62,8 @@ describe("Remote access", () => {
     expect(screen.getByText(/Certificate valid until/)).toBeInTheDocument();
   });
 
-  it("stays out of the way when the secure tunnel isn't in use", async () => {
-    status = { ...ready(), state: "legacy", hosts: null };
+  it("stays out of the way when Residuum Cloud isn't set up", async () => {
+    status = { ...ready(), state: "disabled", hosts: null };
     render(RemoteAccessGroup);
     await settle();
     expect(screen.queryByText("Remote access")).not.toBeInTheDocument();

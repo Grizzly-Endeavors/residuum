@@ -47,7 +47,7 @@ pub(super) fn routes(slot: RemoteAccessSlot) -> Router {
 }
 
 fn is_remote(parts: &Parts) -> bool {
-    remote_context(&parts.headers, &parts.extensions).is_some()
+    remote_context(&parts.extensions).is_some()
 }
 
 fn no_store(response: impl IntoResponse) -> Response {

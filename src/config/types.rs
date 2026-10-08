@@ -120,9 +120,7 @@ pub struct CloudConfig {
     pub relay_url: String,
     /// Authentication token.
     pub token: String,
-    /// Local port to forward requests to.
-    pub local_port: u16,
-    /// Settings for remote access over tunnel v2.
+    /// Settings for end-to-end encrypted remote access.
     pub remote: RemoteAccessSettings,
 }
 
@@ -135,8 +133,6 @@ pub const ACME_STAGING_DIRECTORY: &str = "https://acme-staging-v02.api.letsencry
 /// Validated settings for end-to-end encrypted remote access (`[cloud]`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteAccessSettings {
-    /// Whether to try tunnel v2. When off, only the legacy tunnel is used.
-    pub enabled: bool,
     /// Domain the relay serves hosts under; every host name is derived from
     /// it and the stored user and slug.
     pub base_domain: String,
@@ -154,7 +150,6 @@ pub struct RemoteAccessSettings {
 impl Default for RemoteAccessSettings {
     fn default() -> Self {
         Self {
-            enabled: true,
             base_domain: "agent-residuum.com".to_string(),
             acme_directory: ACME_PRODUCTION_DIRECTORY.to_string(),
             acme_root_ca: None,
@@ -248,7 +243,7 @@ pub enum A2aVisibility {
     #[default]
     Public,
     /// Every route, including the Agent Card, answers a plain 404 to a
-    /// caller without a valid key or sibling attestation — indistinguishable
+    /// caller without a valid key — indistinguishable
     /// from an agent that doesn't exist.
     Private,
 }

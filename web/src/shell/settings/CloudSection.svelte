@@ -15,7 +15,6 @@
     Skeleton,
     TextField,
   } from "../../lib/ui";
-  import ConfigNumber from "./ConfigNumber.svelte";
   import DevicesGroup from "./DevicesGroup.svelte";
   import RemoteAccessGroup from "./RemoteAccessGroup.svelte";
   import { fieldError, type AllSectionProps } from "./sections";
@@ -24,7 +23,7 @@
 
   // Residuum Cloud: the tunnel's state and what can be done in each. Connect,
   // Cancel, Reconnect and Disconnect act at once (`CloudConnection`); the
-  // relay address and local port, and removing the account, are staged in the
+  // relay address and removing the account are staged in the
   // hub's config with the rest of the install-wide settings.
 
   let { scope, section }: AllSectionProps = $props();
@@ -49,9 +48,8 @@
   let token = $state("");
   let moreOpen = $state(false);
   const relayError = $derived(fieldError(scope, { kind: "config", field: "cloud_relay_url" }));
-  const portError = $derived(fieldError(scope, { kind: "config", field: "cloud_local_port" }));
   $effect(() => {
-    if (relayError !== undefined || portError !== undefined) moreOpen = true;
+    if (relayError !== undefined) moreOpen = true;
   });
 
   function openSignIn(): void {
@@ -224,7 +222,7 @@
   <Disclosure summary="More options" bind:open={moreOpen}>
     <SettingsGroup
       title="Relay"
-      lede="Where the tunnel connects. Leave both empty to use Residuum Cloud."
+      lede="Where the tunnel connects. Leave it empty to use Residuum Cloud."
     >
       <TextField
         label="Relay URL"
@@ -235,15 +233,6 @@
         code
         hint="Set this to run against a relay of your own, such as one on this machine while you develop. Signing in and connecting use it."
         error={relayError}
-      />
-      <ConfigNumber
-        {scope}
-        field="cloud_local_port"
-        label="Local port"
-        placeholder={scope.config.gateway_port || "7700"}
-        min={1}
-        max={65535}
-        hint="The port on this machine that the tunnel hands requests to. Leave it empty to use the gateway port."
       />
     </SettingsGroup>
   </Disclosure>

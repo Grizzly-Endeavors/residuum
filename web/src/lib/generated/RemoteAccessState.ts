@@ -3,4 +3,4 @@
 /**
  * Where remote access stands.
  */
-export type RemoteAccessState = "disabled" | "legacy" | "connecting" | "enrolling" | "needs_join" | "waiting_for_dns" | "ordering" | "ready" | "refused" | "error";
+export type RemoteAccessState = "disabled" | "connecting" | "enrolling" | "needs_join" | "waiting_for_dns" | "ordering" | "ready" | "refused" | "error";

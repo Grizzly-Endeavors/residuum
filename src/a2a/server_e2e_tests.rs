@@ -21,7 +21,6 @@ use async_trait::async_trait;
 use futures_util::StreamExt as _;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::a2a::auth::NoTunnel;
 use crate::a2a::card::{CardRuntime, CardState, SharedCardState};
 use crate::a2a::executor::SessionExecutor;
 use crate::a2a::handler::{ResiduumA2aHandler, resume_in_progress_tasks};
@@ -403,7 +402,6 @@ async fn start_a2a_listener(
         port,
         Arc::new(directory),
         Arc::clone(&keys),
-        Arc::new(NoTunnel),
         shutdown_rx,
     );
     // The listener below binds `port` for real; drop the reservation right

@@ -9,10 +9,8 @@ use ts_rs::TS;
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum RemoteAccessState {
-    /// Turned off in the configuration, or Residuum Cloud isn't configured.
+    /// Residuum Cloud isn't configured on this install.
     Disabled,
-    /// Residuum Cloud is connected over the older tunnel, which the relay can read.
-    Legacy,
     /// Waiting for the relay.
     Connecting,
     /// Setting up this instance's certificate account with the pin service.

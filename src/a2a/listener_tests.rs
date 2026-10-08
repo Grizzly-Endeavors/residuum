@@ -21,7 +21,6 @@ use futures_util::stream::BoxStream;
 use reqwest::StatusCode;
 use tokio::sync::Notify;
 
-use crate::a2a::auth::NoTunnel;
 use crate::a2a::card::{CardRuntime, CardState};
 use crate::a2a::keys_runtime::{A2aKeys, SharedA2aKeys};
 use crate::a2a::listener::{A2aListener, StubHandler, agent_handler_router};
@@ -241,7 +240,6 @@ async fn fixture() -> Fixture {
         port,
         Arc::<StaticAgentDirectory>::clone(&directory),
         Arc::clone(&keys),
-        Arc::new(NoTunnel),
         shutdown_rx,
     )
     .with_sibling_keys(

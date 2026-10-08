@@ -7,14 +7,27 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::tunnel::protocol::AgentInfo;
-
 /// The host names the relay claims this instance answers for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct WireHosts {
     pub ui: String,
     pub workbench: String,
     pub instance: String,
+}
+
+/// One agent this hub advertises to the relay in a [`V2Frame::AgentsUpdate`]
+/// frame.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct AgentInfo {
+    /// The agent's name: its identity and its A2A path segment.
+    pub name: String,
+    /// A human-readable label for the agent, shown in the relay's A2A
+    /// directory.
+    pub display_name: String,
+    /// Whether the agent answers A2A requests right now.
+    pub a2a_enabled: bool,
+    /// Whether the agent is gated by a caller key, rather than open to anyone.
+    pub a2a_private: bool,
 }
 
 /// One of the user's instances, as listed in [`V2Frame::InstancesUpdate`].

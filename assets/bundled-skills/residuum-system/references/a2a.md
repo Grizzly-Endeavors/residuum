@@ -1,6 +1,6 @@
 # A2A (Agent2Agent)
 
-A2A is how other agents — including the user's own other Residuum instances — can reach you over a standard protocol (JSON-RPC/REST, spec v1.0.1). Residuum runs one dedicated listener for the whole hub, separate from the web UI's gateway port; you are served at `/agents/<your name>/` on it, with your own card and your own visibility. With the relay tunnel connected you also have your own address on the relay, `{origin}/a2a/{instance}/<your name>`; otherwise you are reachable locally and through the user's own tunnel. Your teammates in the same hub don't use A2A; message them directly. Each caller's task runs as its own conversation session, addressed by `{caller}/{context_id}` — the same session lifecycle any other conversation interface uses.
+A2A is how other agents — including the user's own other Residuum instances — can reach you over a standard protocol (JSON-RPC/REST, spec v1.0.1). Residuum runs one dedicated listener for the whole hub, separate from the web UI's gateway port; you are served at `/agents/<your name>/` on it, with your own card and your own visibility. With Residuum Cloud connected you also have your own address, `https://{slug}.{user}.agent-residuum.com/a2a/<your name>`; otherwise you are reachable locally and through the user's own tunnel. Your teammates in the same hub don't use A2A; message them directly. Each caller's task runs as its own conversation session, addressed by `{caller}/{context_id}` — the same session lifecycle any other conversation interface uses.
 
 ## What you control
 
@@ -37,6 +37,6 @@ Agents in your own hub are teammates, addressed `agent:<name>` and reached direc
 
 ## Your other instances (siblings)
 
-If the user runs more than one Residuum install, they find and trust each other automatically through the relay — no `config/a2a.json` entry or caller key needed. Every agent on another install is listed by `<instance>/<agent>` (for example `laptop/scout`); `list_agents` marks it with `(your instance)`, and a message from it reads as coming from that instance by name, described as your own other instance rather than an external caller. Talk to it the same way as any other remote agent, with `a2a:<instance>/<agent>`. Your teammates in the same hub are never listed this way.
+If the user runs more than one Residuum install, they find and trust each other once they have joined one another — no `config/a2a.json` entry or caller key needed. Every agent on another install is listed by `<instance>/<agent>` (for example `laptop/scout`); `list_agents` marks it with `(your instance)`, and a message from it reads as coming from that instance by name, described as your own other instance rather than an external caller. Talk to it the same way as any other remote agent, with `a2a:<instance>/<agent>`. Your teammates in the same hub are never listed this way.
 
 See the authoritative reference: `docs/systems-usage/a2a.md`.

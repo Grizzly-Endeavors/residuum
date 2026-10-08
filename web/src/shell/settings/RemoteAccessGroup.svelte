@@ -22,8 +22,8 @@
   // is ready, its addresses and certificate, the recovery code that is shown
   // until it is saved, any certificate account nobody here approved, joining
   // other instances and approving theirs, and removing accounts of instances
-  // that no longer exist. It
-  // polls while open because setup runs in the background for a few minutes.
+  // that no longer exist. It polls while open because setup runs in the
+  // background for a few minutes.
   // Everything acts at once through the hub's endpoints and has no part in the
   // save bar.
 
@@ -31,7 +31,6 @@
 
   const LABELS: Record<RemoteAccessState, { text: string; tone: BadgeTone }> = {
     disabled: { text: "Off", tone: "neutral" },
-    legacy: { text: "Older tunnel", tone: "neutral" },
     connecting: { text: "Connecting", tone: "neutral" },
     enrolling: { text: "Setting up", tone: "accent" },
     needs_join: { text: "Needs another instance", tone: "accent" },
@@ -57,8 +56,8 @@
     status !== null &&
       ["error", "needs_join", "waiting_for_dns", "connecting"].includes(status.state),
   );
-  /** Whether setup is under way, so the group is worth a second look. */
-  const hidden = $derived(status?.state === "disabled" || status?.state === "legacy");
+  /** Whether Residuum Cloud isn't set up, so there is nothing to show. */
+  const hidden = $derived(status?.state === "disabled");
 
   async function load(): Promise<void> {
     try {
