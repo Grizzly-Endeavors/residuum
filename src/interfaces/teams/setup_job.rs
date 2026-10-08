@@ -1211,20 +1211,61 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// Write an executable fake tool at `path`, ready to exec on return.
+    ///
+    /// Writing in place and exec'ing straight away races with other test
+    /// threads: a thread that forks while the write fd is open hands the child
+    /// a copy, and exec of the script fails with "Text file busy" until that
+    /// child execs. So the script is written to a staging path, the fd is
+    /// closed, and the file is renamed into place; then the script is probed
+    /// until any stray copy of the fd is gone.
     #[cfg(unix)]
-    fn make_executable(path: &Path) {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(path).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(path, perms).unwrap();
+    fn make_script(path: &Path, content: &str) {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+
+        let file_name = path.file_name().unwrap().to_string_lossy();
+        let staging = path.with_file_name(format!(".{file_name}.staging"));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o755)
+            .open(&staging)
+            .unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+        drop(file);
+        std::fs::rename(&staging, path).unwrap();
+        wait_until_exec_ready(path);
     }
 
     #[cfg(not(unix))]
-    fn make_executable(_path: &Path) {}
-
     fn make_script(path: &Path, content: &str) {
         std::fs::write(path, content).unwrap();
-        make_executable(path);
+    }
+
+    #[cfg(unix)]
+    fn wait_until_exec_ready(path: &Path) {
+        use std::process::Stdio;
+
+        for _ in 0..250 {
+            let probe = std::process::Command::new(path)
+                .arg("--version")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            match probe {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(e) => panic!("fake tool {} could not be run: {e}", path.display()),
+                Ok(_) => return,
+            }
+        }
+        panic!(
+            "fake tool {} stayed busy (text file busy) for 5s after being written",
+            path.display()
+        );
     }
 
     const FAKE_ATK_UNIX: &str = r#"#!/bin/sh
@@ -1572,10 +1613,29 @@ exit 0
         let temp = tempfile::tempdir().unwrap();
         let (root, overrides) = setup_mock_env(&temp);
         let mgr = TeamsSetupJobManager::with_overrides(root, overrides);
-        let prereqs = mgr.get_prereqs("agent-1").await;
-        assert!(prereqs.node.found);
+        // Unit tests have no tracing subscriber, so capture the reason
+        // `detect_tool` logs when it reports a tool as not found.
+        let log = crate::hub::test_support::EventLog::default();
+        let prereqs = {
+            let _guard = log.capture();
+            mgr.get_prereqs("agent-1").await
+        };
+        let reasons: Vec<String> = log
+            .matching("reporting it as not found")
+            .into_iter()
+            .map(|event| event.text)
+            .collect();
+        assert!(
+            prereqs.node.found,
+            "node not found: {:?}; detect_tool logged: {reasons:?}",
+            prereqs.node
+        );
         assert_eq!(prereqs.node.version.as_deref(), Some("v20.11.0"));
-        assert!(prereqs.npm.found);
+        assert!(
+            prereqs.npm.found,
+            "npm not found: {:?}; detect_tool logged: {reasons:?}",
+            prereqs.npm
+        );
         assert_eq!(prereqs.npm.version.as_deref(), Some("10.2.4"));
         assert!(prereqs.atk.installed);
     }
