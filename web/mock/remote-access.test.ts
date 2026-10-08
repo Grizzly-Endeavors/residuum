@@ -45,6 +45,17 @@ describe("the remote access routes", () => {
     expect(status.recovery_code).toBeNull();
   });
 
+  it("emails a reset link and lets the waiting reset be cancelled once", async () => {
+    expect(await statusOf("POST", "/api/hub/remote-access/cancel-reset")).toBe(400);
+    const sent = await call("POST", "/api/hub/remote-access/email-reset");
+    expect(sent.body).toEqual({ email: "b***@example.com" });
+    const waiting = (await call("GET", "/api/hub/remote-access/status")).body as RemoteAccessStatus;
+    expect(waiting.pending_reset?.own).toBe(true);
+    expect(await statusOf("POST", "/api/hub/remote-access/cancel-reset")).toBe(204);
+    const cleared = (await call("GET", "/api/hub/remote-access/status")).body as RemoteAccessStatus;
+    expect(cleared.pending_reset).toBeNull();
+  });
+
   it("shows a recovery code after a reset until it is saved", async () => {
     expect(
       await statusOf("POST", "/api/hub/remote-access/reset-pins", { recovery_code: "short" }),

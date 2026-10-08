@@ -39,6 +39,7 @@ export function defaultRemoteAccess(): MockRemoteAccess {
       siblings: [],
       join: null,
       pending_joins: [],
+      pending_reset: null,
     },
   };
 }
@@ -134,6 +135,31 @@ async function reset(ctx: RouteContext): Promise<void> {
   noContent(ctx);
 }
 
+/** `POST /api/hub/remote-access/email-reset`: the reset link is "sent", and the reset waits for confirmation. */
+function emailReset(ctx: RouteContext): void {
+  const { status: current } = held(ctx);
+  current.pending_reset = {
+    slug: current.slug ?? "laptop",
+    account_uri: "https://acme-v02.api.letsencrypt.org/acme/acct/1",
+    own: true,
+    confirmed: false,
+    effective_at: null,
+    cancellable: false,
+  };
+  json(ctx.res, 200, { email: "b***@example.com" });
+}
+
+/** `POST /api/hub/remote-access/cancel-reset`: only a reset that is waiting can be cancelled. */
+function cancelReset(ctx: RouteContext): void {
+  const { status: current } = held(ctx);
+  if (current.pending_reset === null) {
+    json(ctx.res, 400, { error: "No reset is waiting any more." });
+    return;
+  }
+  current.pending_reset = null;
+  noContent(ctx);
+}
+
 /** `POST /api/hub/remote-access/join`: the other instance is asked, and its code shows while it waits. */
 async function join(ctx: RouteContext): Promise<void> {
   const body = await readJsonObject(ctx.req).catch(() => ({}));
@@ -200,6 +226,8 @@ export const remoteAccessRoutes: readonly Route[] = [
   { method: "POST", pattern: "/api/remote-access/retry", handler: noContent },
   { method: "POST", pattern: "/api/remote-access/recovery-code/saved", handler: saved },
   { method: "POST", pattern: "/api/remote-access/reset-pins", handler: reset },
+  { method: "POST", pattern: "/api/remote-access/email-reset", handler: emailReset },
+  { method: "POST", pattern: "/api/remote-access/cancel-reset", handler: cancelReset },
   { method: "POST", pattern: "/api/remote-access/join", handler: join },
   {
     method: "POST",

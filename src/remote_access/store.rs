@@ -19,6 +19,25 @@ pub(crate) struct LocalIdentity {
     pub(crate) slug: String,
 }
 
+/// A reset by email this install asked for and is waiting on. While it
+/// exists, the pending recovery code belongs to that reset and is neither
+/// shown nor discarded: it only becomes the recovery code once the reset takes
+/// effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct EmailReset {
+    /// When the request was made, in unix seconds.
+    pub(crate) requested_at: i64,
+    /// When the pin service last said the reset takes effect, in unix
+    /// seconds. Known once the person has confirmed the link.
+    #[serde(default)]
+    pub(crate) effective_at: Option<i64>,
+    /// Whether this install's account was already pinned when it asked. A
+    /// lone pin that is this install's account then means the reset took
+    /// effect only if the pin service said when.
+    #[serde(default)]
+    pub(crate) was_pinned: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Persisted {
     #[serde(default)]
@@ -26,6 +45,9 @@ struct Persisted {
     /// The pin recovery code, kept only until the person has saved it.
     #[serde(default)]
     pending_recovery_code: Option<String>,
+    /// The reset by email this install is waiting on, if any.
+    #[serde(default)]
+    email_reset: Option<EmailReset>,
     /// ACME account URIs this install pinned or approved.
     #[serde(default)]
     known_accounts: Vec<String>,
@@ -64,6 +86,10 @@ impl StateStore {
 
     pub(crate) fn pending_recovery_code(&self) -> Option<String> {
         self.lock().pending_recovery_code.clone()
+    }
+
+    pub(crate) fn email_reset(&self) -> Option<EmailReset> {
+        self.lock().email_reset
     }
 
     pub(crate) fn is_known(&self, account_uri: &str) -> bool {
@@ -109,6 +135,39 @@ impl StateStore {
         code: Option<String>,
     ) -> anyhow::Result<()> {
         self.lock().pending_recovery_code = code;
+        self.save().await
+    }
+
+    /// Set the pending recovery code and the reset it belongs to together, so
+    /// a crash never leaves one without the other.
+    pub(crate) async fn set_recovery_state(
+        &self,
+        code: Option<String>,
+        email_reset: Option<EmailReset>,
+    ) -> anyhow::Result<()> {
+        {
+            let mut state = self.lock();
+            state.pending_recovery_code = code;
+            state.email_reset = email_reset;
+        }
+        self.save().await
+    }
+
+    /// Record when the pin service says the pending reset takes effect.
+    pub(crate) async fn set_email_reset_effective_at(
+        &self,
+        effective_at: Option<i64>,
+    ) -> anyhow::Result<()> {
+        {
+            let mut state = self.lock();
+            let Some(reset) = state.email_reset.as_mut() else {
+                return Ok(());
+            };
+            if reset.effective_at == effective_at {
+                return Ok(());
+            }
+            reset.effective_at = effective_at;
+        }
         self.save().await
     }
 
@@ -187,6 +246,39 @@ mod tests {
             reopened.pending_recovery_code().as_deref(),
             Some("ABCDEFGHIJKLMNOPQRST")
         );
+    }
+
+    #[tokio::test]
+    async fn a_pending_email_reset_survives_a_reopen_with_its_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StateStore::open(dir.path());
+        store
+            .set_recovery_state(
+                Some("ABCDEFGHIJKLMNOPQRST".into()),
+                Some(EmailReset {
+                    requested_at: 100,
+                    effective_at: None,
+                    was_pinned: false,
+                }),
+            )
+            .await
+            .unwrap();
+        store.set_email_reset_effective_at(Some(200)).await.unwrap();
+        let reopened = StateStore::open(dir.path());
+        assert_eq!(
+            reopened.email_reset(),
+            Some(EmailReset {
+                requested_at: 100,
+                effective_at: Some(200),
+                was_pinned: false,
+            })
+        );
+        assert_eq!(
+            reopened.pending_recovery_code().as_deref(),
+            Some("ABCDEFGHIJKLMNOPQRST")
+        );
+        reopened.set_recovery_state(None, None).await.unwrap();
+        assert!(StateStore::open(dir.path()).email_reset().is_none());
     }
 
     #[tokio::test]

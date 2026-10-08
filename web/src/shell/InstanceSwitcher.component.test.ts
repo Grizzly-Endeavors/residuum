@@ -38,6 +38,7 @@ function statusWith(list: InstanceInfo[]): unknown {
     siblings: [],
     join: null,
     pending_joins: [],
+    pending_reset: null,
   };
 }
 

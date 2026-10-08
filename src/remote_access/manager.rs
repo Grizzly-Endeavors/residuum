@@ -24,7 +24,10 @@ use super::caa::{CaaSettings, CaaWaitError, wait_for_caa};
 use super::engine::{Engine, EngineDeps, EngineRouters};
 use super::identity::{IdentityError, is_valid_slug, verify_announcement};
 use super::jws::AccountSigner;
-use super::pins::{Enrollment, Pin, PinClient, PinError, generate_recovery_code, is_recovery_code};
+use super::pins::{
+    Enrollment, PendingReset, Pin, PinClient, PinError, PinState, generate_recovery_code,
+    is_recovery_code,
+};
 use super::siblings::SiblingKeys;
 use super::siblings::client::{HttpChannel, SiblingChannel};
 use super::siblings::discovery::SecureDiscovery;
@@ -33,10 +36,10 @@ use super::siblings::routes;
 use super::siblings::service::{ApproveError, Approver, Joiner, SiblingService};
 use super::slot::DiscoverySender;
 use super::status::{
-    CertificateInfo, InstanceInfo, JoinProgress, JoinState, PendingJoinInfo, PinInfo,
-    RemoteAccessState, RemoteAccessStatus, RemoteHosts, SiblingInfo,
+    CertificateInfo, InstanceInfo, JoinProgress, JoinState, PendingJoinInfo, PendingResetInfo,
+    PinInfo, RemoteAccessState, RemoteAccessStatus, RemoteHosts, SiblingInfo,
 };
-use super::store::{LocalIdentity, StateStore};
+use super::store::{EmailReset, LocalIdentity, StateStore};
 use super::tls::{CertBundle, CertResolver};
 use super::types::Hostnames;
 use crate::config::RemoteAccessSettings;
@@ -54,6 +57,13 @@ const CAA_WAIT: Duration = Duration::from_mins(10);
 const CAA_POLL: Duration = Duration::from_secs(10);
 /// How often the pin set is read to look for accounts nobody here agreed to.
 const PIN_CHECK_INTERVAL: Duration = Duration::from_hours(1);
+/// How often the pin set is read while this instance waits on its own reset by
+/// email, so the new recovery code shows soon after the reset takes effect.
+const RESET_CHECK_INTERVAL: Duration = Duration::from_mins(5);
+/// How long after asking for a reset by email its absence from the pin
+/// service's answer is not yet taken to mean it never happened: the answer may
+/// have been read just before the request committed.
+const RESET_VISIBILITY_GRACE_SECS: i64 = 300;
 /// How often a waiting join or a healthy certificate is looked at again.
 const NEEDS_JOIN_RECHECK: Duration = Duration::from_mins(5);
 const ARI_RECHECK: Duration = Duration::from_hours(6);
@@ -211,15 +221,22 @@ impl RemoteAccess {
             loop {
                 let Some(strong) = inner.upgrade() else { break };
                 strong.refresh_pins().await;
+                let interval = if strong.store.email_reset().is_some() {
+                    RESET_CHECK_INTERVAL
+                } else {
+                    PIN_CHECK_INTERVAL
+                };
                 drop(strong);
-                tokio::time::sleep(PIN_CHECK_INTERVAL).await;
+                tokio::time::sleep(interval).await;
             }
         });
     }
 
-    /// The recovery code waiting to be saved, if any.
+    /// The recovery code waiting to be saved, if any. A code made for a reset
+    /// by email isn't the recovery code until the reset takes effect, so it
+    /// isn't offered before.
     pub(crate) fn pending_recovery_code(&self) -> Option<String> {
-        self.inner.store.pending_recovery_code()
+        self.inner.savable_recovery_code()
     }
 
     /// Ask the session's driver to look again now.
@@ -232,6 +249,11 @@ impl RemoteAccess {
     /// # Errors
     /// Returns an error if the change couldn't be saved.
     pub(crate) async fn acknowledge_recovery_code(&self) -> anyhow::Result<()> {
+        if self.inner.store.email_reset().is_some() {
+            anyhow::bail!(
+                "the new recovery code can be saved once the reset by email takes effect"
+            );
+        }
         self.inner.store.set_pending_recovery_code(None).await?;
         self.inner.status.send_modify(|status| {
             status.recovery_code_pending = false;
@@ -273,6 +295,20 @@ impl RemoteAccess {
     pub(crate) async fn reset_pins(&self, recovery_code: &str) -> Result<(), ResetError> {
         self.inner.reset_pins(recovery_code.trim()).await
     }
+
+    /// Ask the pin service to email the user a link that replaces every pin
+    /// with this instance's account. Returns the masked address it went to.
+    ///
+    /// # Errors
+    /// Returns a plain-language reason the email wasn't sent.
+    pub(crate) async fn email_reset(&self) -> Result<String, ResetError> {
+        self.inner.email_reset().await
+    }
+
+    /// Cancel the reset by email that is waiting to take effect.
+    pub(crate) async fn cancel_reset(&self) -> Result<(), ActionError> {
+        self.inner.cancel_reset().await
+    }
 }
 
 /// Why a pin reset didn't happen.
@@ -303,6 +339,70 @@ pub enum ActionError {
     Failed(String),
 }
 
+/// What it means that the pin service no longer lists a reset this install asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnlistedReset {
+    /// This account replaced every pin.
+    TookEffect,
+    /// It was cancelled or expired.
+    Gone,
+    /// The request may have committed after the answer was read.
+    NotYetVisible,
+}
+
+/// Decide what became of a reset the pin service doesn't list. The only
+/// evidence it took effect is this account being the sole pin; a lone pinned
+/// instance that asked while already pinned needs the pin service's own
+/// effective time to tell it from a cancelled or expired reset.
+fn unlisted_reset_outcome(record: &EmailReset, sole_own_pin: bool, now: i64) -> UnlistedReset {
+    let took_effect = sole_own_pin
+        && match record.effective_at {
+            Some(at) => now >= at,
+            None => !record.was_pinned,
+        };
+    if took_effect {
+        UnlistedReset::TookEffect
+    } else if record.effective_at.is_none()
+        && now - record.requested_at < RESET_VISIBILITY_GRACE_SECS
+    {
+        UnlistedReset::NotYetVisible
+    } else {
+        UnlistedReset::Gone
+    }
+}
+
+/// A time in unix seconds as the person reads it.
+fn format_time(unix_seconds: i64) -> String {
+    chrono::DateTime::from_timestamp(unix_seconds, 0).map_or_else(
+        || "an unknown time".to_string(),
+        |at| at.format("%Y-%m-%d %H:%M UTC").to_string(),
+    )
+}
+
+/// What to tell the person when the pin service refused or failed a reset by email.
+fn email_reset_failure(error: &PinError) -> String {
+    match error {
+        PinError::Rejected { status: 409, message } if message.contains("already pending") => {
+            "A reset by email is already waiting out its hold period. Cancel it from an instance that is set up, or the cancel link in the email, before asking for another.".to_string()
+        }
+        PinError::Rejected { status: 409, message } if message.contains("no email") => {
+            "Residuum Cloud has no verified email address for your account, so there is nowhere to send a reset link. Verify your email address in your Residuum Cloud account, then try again.".to_string()
+        }
+        PinError::Rejected { status: 409, .. } => {
+            "There is nothing to reset: this address was never set up for remote access.".to_string()
+        }
+        PinError::Rejected { status: 429, .. } => {
+            "Too many reset emails were requested today. Try again tomorrow.".to_string()
+        }
+        PinError::Rejected { status: 502, .. } => {
+            "The reset email couldn't be sent. Try again in a few minutes.".to_string()
+        }
+        other @ (PinError::Rejected { .. } | PinError::Unavailable(_)) => {
+            format!("The reset email wasn't requested: {other}")
+        }
+    }
+}
+
 /// Whether a pin of `slug` may be removed from the UI: not this instance's own,
 /// and the relay's list (when known) doesn't include its instance.
 fn is_removable(own: bool, slug: &str, instances: &[InstanceInfo]) -> bool {
@@ -328,7 +428,7 @@ impl Inner {
             }
         }
         self.status.send_modify(|status| {
-            status.recovery_code_pending = self.store.pending_recovery_code().is_some();
+            status.recovery_code_pending = self.savable_recovery_code().is_some();
         });
         self.refresh_sibling_status();
     }
@@ -419,8 +519,8 @@ impl Inner {
         let Some(identity) = self.store.identity() else {
             return;
         };
-        match self.pin_client.list(&identity.user).await {
-            Ok(pins) => self.record_pins(&pins).await,
+        match self.pin_client.read(&identity.user).await {
+            Ok(state) => self.observe_pin_state(&state).await,
             Err(e) => {
                 tracing::warn!(error = %e, "couldn't read this user's pins; unknown certificate accounts can't be checked for until it works");
             }
@@ -543,10 +643,11 @@ impl Inner {
             .account()
             .await
             .map_err(|e| anyhow::anyhow!("Residuum couldn't set up its certificate account with the certificate authority: {e:#}"))?;
-        let pins = self.pin_client.list(user).await.map_err(|e| {
+        let state = self.pin_client.read(user).await.map_err(|e| {
             anyhow::anyhow!("Residuum couldn't read which certificate accounts are allowed for your address: {e}")
         })?;
-        self.record_pins(&pins).await;
+        self.observe_pin_state(&state).await;
+        let pins = state.pins;
 
         let own = pins.iter().find(|pin| pin.account_uri == account.uri());
         if let Some(pin) = own {
@@ -557,6 +658,9 @@ impl Inner {
                 );
             }
             self.ensure_identity(user, slug, &account).await?;
+            if !self.store.is_known(account.uri()) {
+                self.store.add_known(account.uri()).await?;
+            }
             self.discard_unused_recovery_code(&pins, &account).await;
             self.open_for_joins(user, slug, &account);
             self.publish_discovery();
@@ -601,9 +705,13 @@ impl Inner {
     }
 
     /// A pending recovery code belongs to an enrollment that happened. When
-    /// the pin set shows it didn't, the code protects nothing.
+    /// the pin set shows it didn't, the code protects nothing. The code of a
+    /// reset by email waiting to take effect is kept: the pin set doesn't show
+    /// that account until the reset does, and `track_email_reset` decides when
+    /// that code is no longer wanted.
     async fn discard_unused_recovery_code(&self, pins: &[Pin], account: &AcmeAccount) {
         if self.store.pending_recovery_code().is_some()
+            && self.store.email_reset().is_none()
             && !pins.iter().any(|pin| pin.account_uri == account.uri())
         {
             if let Err(e) = self.store.set_pending_recovery_code(None).await {
@@ -767,6 +875,12 @@ impl Inner {
     }
 
     async fn reset_pins(&self, recovery_code: &str) -> Result<(), ResetError> {
+        if self.store.email_reset().is_some() {
+            return Err(ResetError::Invalid(
+                "A reset by email is already waiting. Cancel it or let it finish before using a recovery code."
+                    .to_string(),
+            ));
+        }
         if !is_recovery_code(recovery_code) {
             return Err(ResetError::Invalid(
                 "A recovery code is 20 letters and digits (A to Z and 2 to 7).".to_string(),
@@ -853,6 +967,279 @@ impl Inner {
         }
         self.status
             .send_modify(|status| status.recovery_code_pending = false);
+    }
+
+    // ── Reset by email ───────────────────────────────────────────────
+
+    /// The pending recovery code, unless it belongs to a reset by email that
+    /// hasn't taken effect: until then the old recovery code is the valid one.
+    fn savable_recovery_code(&self) -> Option<String> {
+        if self.store.email_reset().is_some() {
+            return None;
+        }
+        self.store.pending_recovery_code()
+    }
+
+    fn sync_recovery_code_flag(&self) {
+        let pending = self.savable_recovery_code().is_some();
+        self.status
+            .send_modify(|status| status.recovery_code_pending = pending);
+    }
+
+    /// Record what the pin service reports: the pins, and the reset by email
+    /// waiting to take effect.
+    async fn observe_pin_state(&self, state: &PinState) {
+        self.record_pins(&state.pins).await;
+        self.track_pending_reset(state).await;
+    }
+
+    async fn track_pending_reset(&self, state: &PinState) {
+        let own = self
+            .account
+            .lock()
+            .await
+            .as_ref()
+            .map(|account| account.uri().to_string());
+        let pinned = own
+            .as_deref()
+            .is_some_and(|uri| state.pins.iter().any(|pin| pin.account_uri == uri));
+        let info = state.pending_reset.as_ref().map(|reset| {
+            let is_own = own.as_deref() == Some(reset.account_uri.as_str());
+            PendingResetInfo {
+                slug: reset.slug.clone(),
+                account_uri: reset.account_uri.clone(),
+                own: is_own,
+                confirmed: reset.confirmed,
+                effective_at: reset
+                    .effective_at
+                    .and_then(|at| chrono::DateTime::from_timestamp(at, 0))
+                    .map(|at| at.to_rfc3339()),
+                cancellable: pinned && !is_own,
+            }
+        });
+        if let (Some(info), Some(reset)) = (&info, &state.pending_reset)
+            && info.cancellable
+        {
+            self.alert_foreign_reset(reset);
+        }
+        self.status
+            .send_modify(|status| status.pending_reset = info);
+        self.settle_email_reset(state, own.as_deref(), pinned).await;
+    }
+
+    /// Tell the person, once per reset and state, that another instance asked
+    /// to take over the address.
+    fn alert_foreign_reset(&self, reset: &PendingReset) {
+        let key = format!("reset:{}:{}", reset.account_uri, reset.confirmed);
+        let first_time = self
+            .alerted_pins
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key);
+        if !first_time {
+            return;
+        }
+        tracing::warn!(account = %reset.account_uri, slug = %reset.slug, confirmed = reset.confirmed, "another instance asked to take over this address with a reset by email");
+        let when = match (reset.confirmed, reset.effective_at) {
+            (true, Some(at)) => {
+                format!("It was confirmed and takes effect at {}.", format_time(at))
+            }
+            _ => "It hasn't been confirmed yet.".to_string(),
+        };
+        (self.notify)(format!(
+            "A reset by email was requested for the instance \"{}\": if it goes through, that instance's certificate account replaces every other one for your address. {when} If this wasn't you, cancel it in Settings, Remote access, or run `residuum remote cancel-reset`.",
+            reset.slug
+        ));
+    }
+
+    /// Work out what became of a reset by email this install asked for, once
+    /// the pin service stops listing it: it took effect, or it was cancelled or
+    /// expired. Until then the code made for it is kept out of sight.
+    async fn settle_email_reset(&self, state: &PinState, own: Option<&str>, pinned: bool) {
+        let Some(record) = self.store.email_reset() else {
+            return;
+        };
+        let listed = state
+            .pending_reset
+            .as_ref()
+            .filter(|reset| own == Some(reset.account_uri.as_str()));
+        if let Some(reset) = listed {
+            if let Err(e) = self
+                .store
+                .set_email_reset_effective_at(reset.effective_at)
+                .await
+            {
+                tracing::warn!(error = %format!("{e:#}"), "couldn't save when the reset by email takes effect");
+            }
+            return;
+        }
+        let outcome = unlisted_reset_outcome(
+            &record,
+            pinned && state.pins.len() == 1,
+            Utc::now().timestamp(),
+        );
+        if outcome == UnlistedReset::NotYetVisible {
+            return;
+        }
+        let took_effect = outcome == UnlistedReset::TookEffect;
+        if took_effect {
+            if let Err(e) = self
+                .store
+                .set_recovery_state(self.store.pending_recovery_code(), None)
+                .await
+            {
+                tracing::error!(error = %format!("{e:#}"), "couldn't save that the reset by email took effect");
+                return;
+            }
+            if let Some(own) = own
+                && let Err(e) = self.store.reset_known(own).await
+            {
+                tracing::warn!(error = %format!("{e:#}"), "couldn't save the accounts the reset by email replaced");
+            }
+            self.sync_recovery_code_flag();
+            tracing::warn!("pins were reset by email");
+            (self.notify)(
+                "The reset by email took effect: this instance's certificate account is now the only one allowed for your address. Save the new recovery code shown in Settings, Remote access."
+                    .to_string(),
+            );
+        } else {
+            if let Err(e) = self.store.set_recovery_state(None, None).await {
+                tracing::error!(error = %format!("{e:#}"), "couldn't discard the recovery code of a reset by email that didn't happen");
+                return;
+            }
+            self.sync_recovery_code_flag();
+            tracing::warn!("the reset by email was cancelled or expired");
+            (self.notify)(
+                "The reset by email was cancelled or its link expired, so nothing changed: your address and your earlier recovery code are as they were."
+                    .to_string(),
+            );
+        }
+    }
+
+    async fn email_reset(&self) -> Result<String, ResetError> {
+        let (link, user, slug) = {
+            let session = self.lock_session();
+            let session = session.as_ref().ok_or(ResetError::NotConnected)?;
+            (
+                session.link.clone(),
+                session.user.clone(),
+                session.slug.clone(),
+            )
+        };
+        let account = self.account().await.map_err(|e| {
+            ResetError::Failed(format!(
+                "Residuum couldn't set up its certificate account: {e:#}"
+            ))
+        })?;
+        let new_code = generate_recovery_code().map_err(|e| {
+            ResetError::Failed(format!("Residuum couldn't make a recovery code: {e:#}"))
+        })?;
+        let previous_code = self.store.pending_recovery_code();
+        let previous_reset = self.store.email_reset();
+        let was_pinned = self.status.borrow().pins.iter().any(|pin| pin.own);
+        // Saved before the request, so a reset that is confirmed later always
+        // finds its recovery code here.
+        self.store
+            .set_recovery_state(
+                Some(new_code.clone()),
+                Some(EmailReset {
+                    requested_at: Utc::now().timestamp(),
+                    effective_at: None,
+                    was_pinned,
+                }),
+            )
+            .await
+            .map_err(|e| {
+                ResetError::Failed(format!(
+                    "Residuum couldn't save the new recovery code: {e:#}"
+                ))
+            })?;
+        self.sync_recovery_code_flag();
+        match self
+            .request_email_reset(&link, &account, &user, &slug, &new_code)
+            .await
+        {
+            Ok(masked) => {
+                tracing::info!(user = %user, slug = %slug, "asked the pin service to email a reset link");
+                if let Ok(state) = self.pin_client.read(&user).await {
+                    self.observe_pin_state(&state).await;
+                }
+                Ok(masked)
+            }
+            Err(e) => {
+                // Whatever was waiting before the request is still what the
+                // pin service holds, so it goes back rather than being lost.
+                if let Err(restore) = self
+                    .store
+                    .set_recovery_state(previous_code, previous_reset)
+                    .await
+                {
+                    tracing::warn!(error = %format!("{restore:#}"), "couldn't discard an unused recovery code");
+                }
+                self.sync_recovery_code_flag();
+                Err(e)
+            }
+        }
+    }
+
+    async fn request_email_reset(
+        &self,
+        link: &RelayLink,
+        account: &AcmeAccount,
+        user: &str,
+        slug: &str,
+        new_code: &str,
+    ) -> Result<String, ResetError> {
+        let grant = link.request_grant("email_reset").await.map_err(|reason| {
+            ResetError::Failed(format!("The relay wouldn't allow a reset: {reason}"))
+        })?;
+        let enrollment = Enrollment {
+            user,
+            slug,
+            grant: &grant,
+            recovery_code: new_code,
+        };
+        self.pin_client
+            .email_reset(account, &enrollment)
+            .await
+            .map_err(|e| ResetError::Failed(email_reset_failure(&e)))
+    }
+
+    async fn cancel_reset(&self) -> Result<(), ActionError> {
+        let pinned = self.status.borrow().pins.iter().any(|pin| pin.own);
+        let identity = self.store.identity().filter(|_| pinned).ok_or_else(|| {
+            ActionError::Invalid(
+                "Only an instance that is already set up for remote access can cancel a reset. Use the cancel link in the email instead."
+                    .to_string(),
+            )
+        })?;
+        let account = self.account().await.map_err(|e| {
+            ActionError::Failed(format!(
+                "Residuum couldn't set up its certificate account: {e:#}"
+            ))
+        })?;
+        match self
+            .pin_client
+            .cancel_reset(account.as_ref(), &identity.user)
+            .await
+        {
+            Ok(()) => {
+                tracing::warn!(user = %identity.user, "cancelled the pending reset by email");
+                self.status
+                    .send_modify(|status| status.pending_reset = None);
+                self.refresh_pins().await;
+                Ok(())
+            }
+            Err(PinError::Rejected { status: 409, .. }) => {
+                self.refresh_pins().await;
+                Err(ActionError::Invalid(
+                    "No reset is waiting any more.".to_string(),
+                ))
+            }
+            Err(e) => Err(ActionError::Failed(format!(
+                "The reset wasn't cancelled: {e}"
+            ))),
+        }
     }
 
     // ── Siblings, pins and instances ─────────────────────────────────
@@ -1338,6 +1725,50 @@ mod tests {
         );
         // Markup is text for the UI to escape, not something to strip here.
         assert_eq!(clean_display_name("<b>x</b>", "d"), "<b>x</b>");
+    }
+
+    #[test]
+    fn an_unlisted_reset_is_judged_by_the_pins_and_the_hold() {
+        let asked = |effective_at, was_pinned| EmailReset {
+            requested_at: 1_000,
+            effective_at,
+            was_pinned,
+        };
+        // An install that wasn't pinned and now is the only pin got the address.
+        assert_eq!(
+            unlisted_reset_outcome(&asked(None, false), true, 1_010),
+            UnlistedReset::TookEffect
+        );
+        // Other pins remain: it didn't happen, once the request had time to show.
+        assert_eq!(
+            unlisted_reset_outcome(&asked(None, false), false, 1_010),
+            UnlistedReset::NotYetVisible
+        );
+        assert_eq!(
+            unlisted_reset_outcome(
+                &asked(None, false),
+                false,
+                1_000 + RESET_VISIBILITY_GRACE_SECS
+            ),
+            UnlistedReset::Gone
+        );
+        // A lone pinned instance needs the effective time to have passed.
+        assert_eq!(
+            unlisted_reset_outcome(
+                &asked(None, true),
+                true,
+                1_000 + RESET_VISIBILITY_GRACE_SECS
+            ),
+            UnlistedReset::Gone
+        );
+        assert_eq!(
+            unlisted_reset_outcome(&asked(Some(5_000), true), true, 4_999),
+            UnlistedReset::Gone
+        );
+        assert_eq!(
+            unlisted_reset_outcome(&asked(Some(5_000), true), true, 5_000),
+            UnlistedReset::TookEffect
+        );
     }
 
     #[test]

@@ -10,7 +10,9 @@ Residuum connects over the secure tunnel and gets its own certificate for your a
 
 1. **Save the recovery code.** The first time, a recovery code is shown on the machine Residuum runs on. It is the only way to take your address back if every instance's certificate account is lost. Save it, then choose I've saved it (or run `residuum remote saved`). Residuum stops keeping it.
 2. **A second instance says it needs another instance.** An address belongs to the first instance that set it up. A later instance serves nothing remotely until it joins that one. To take the address over instead, choose Use a recovery code (or run `residuum remote reset-pins`).
+   If you lost the recovery code, choose Lost your recovery code? Email me a reset link in the same dialog (or run `residuum remote email-reset`). Residuum Cloud's pin service emails the address on your account; open the link and confirm. After a waiting period (24 hours), this instance's certificate account becomes the only one allowed and the new recovery code shows in Remote access. Until then nothing changes, and `residuum remote status` says when it completes. If you didn't ask for it, use the cancel link in the email.
 3. **A warning about an unrecognized certificate account** means an account this instance never approved can get certificates for your addresses. If you didn't add it, treat it as a sign someone else controls your relay account.
+4. **A warning about another instance's reset.** If another instance asks for a reset by email while this one is set up, Remote access says so, and you can choose Cancel the reset (or run `residuum remote cancel-reset`). Cancelling keeps your address where it is.
 
 ## Pair your first browser
 

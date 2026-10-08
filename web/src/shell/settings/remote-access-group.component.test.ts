@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { PendingResetInfo } from "../../lib/generated/PendingResetInfo";
 import type { RemoteAccessStatus } from "../../lib/generated/RemoteAccessStatus";
 import { toast } from "../../lib/toast.svelte";
 import { ConfirmHost } from "../../lib/ui";
@@ -29,6 +30,7 @@ function ready(): RemoteAccessStatus {
     siblings: [],
     join: null,
     pending_joins: [],
+    pending_reset: null,
   };
 }
 
@@ -37,14 +39,18 @@ beforeEach(() => {
   status = ready();
   calls = [];
   bodies = [];
-  mockFetch((url, init) => {
+  mockFetch(mockImpl());
+});
+
+function mockImpl(): (url: string, init?: RequestInit) => Response {
+  return (url, init) => {
     calls.push(`${init?.method ?? "GET"} ${url}`);
     if (typeof init?.body === "string") bodies.push(JSON.parse(init.body));
     if (url === "/api/hub/remote-access/status") return jsonResponse(status);
     if (url.startsWith("/api/hub/remote-access/")) return new Response(null, { status: 204 });
     return new Response("", { status: 404 });
-  });
-});
+  };
+}
 
 afterEach(() => {
   vi.useRealTimers();
@@ -123,6 +129,90 @@ describe("Remote access", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Reset" }));
     await settle();
     expect(calls).toContain("POST /api/hub/remote-access/reset-pins");
+  });
+
+  describe("reset by email", () => {
+    const pendingReset = (overrides: Partial<PendingResetInfo>): PendingResetInfo => ({
+      slug: "stranger",
+      account_uri: "https://acme.test/acct/9",
+      own: false,
+      confirmed: false,
+      effective_at: null,
+      cancellable: true,
+      ...overrides,
+    });
+
+    it("emails a reset link from the reset dialog and shows the masked address", async () => {
+      const base = mockImpl();
+      mockFetch((url, init) => {
+        if (url === "/api/hub/remote-access/email-reset") {
+          calls.push(`${init?.method ?? "GET"} ${url}`);
+          return jsonResponse({ email: "b***@gmail.com" });
+        }
+        return base(url, init);
+      });
+      render(RemoteAccessGroup);
+      await settle();
+      await fireEvent.click(screen.getByRole("button", { name: "Use a recovery code" }));
+      await settle();
+      await fireEvent.click(
+        screen.getByRole("button", { name: "Lost your recovery code? Email me a reset link" }),
+      );
+      await settle();
+      expect(calls).toContain("POST /api/hub/remote-access/email-reset");
+      expect(screen.getByText(/A reset link was sent to b\*\*\*@gmail\.com/)).toBeInTheDocument();
+    });
+
+    it("tells the instance that asked to check its email", async () => {
+      status = {
+        ...ready(),
+        pending_reset: pendingReset({ own: true, cancellable: false, slug: "laptop" }),
+      };
+      render(RemoteAccessGroup);
+      await settle();
+      expect(screen.getByText(/Check your email for the reset link/)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Cancel the reset" })).not.toBeInTheDocument();
+    });
+
+    it("says when a confirmed reset completes", async () => {
+      status = {
+        ...ready(),
+        pending_reset: pendingReset({
+          own: true,
+          cancellable: false,
+          confirmed: true,
+          effective_at: "2030-01-02T03:04:05Z",
+        }),
+      };
+      render(RemoteAccessGroup);
+      await settle();
+      expect(
+        screen.getByText(/Confirmed\. This instance takes over your address at/),
+      ).toBeInTheDocument();
+    });
+
+    it("warns a pinned instance about another instance's reset and cancels it", async () => {
+      status = { ...ready(), pending_reset: pendingReset({}) };
+      render(RemoteAccessGroup);
+      await settle();
+      expect(
+        screen.getByText("Another instance is trying to take over your address"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/The instance "stranger" asked for a reset by email/),
+      ).toBeInTheDocument();
+      await fireEvent.click(screen.getByRole("button", { name: "Cancel the reset" }));
+      await settle();
+      expect(calls).toContain("POST /api/hub/remote-access/cancel-reset");
+    });
+
+    it("offers no cancel to an instance that isn't set up yet", async () => {
+      status = { ...ready(), pending_reset: pendingReset({ cancellable: false }) };
+      render(RemoteAccessGroup);
+      await settle();
+      expect(screen.queryByRole("button", { name: "Cancel the reset" })).not.toBeInTheDocument();
+      expect(screen.getByText(/use the cancel link in the email/)).toBeInTheDocument();
+    });
   });
 
   describe("joining another instance", () => {

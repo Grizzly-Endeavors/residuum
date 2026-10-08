@@ -1,11 +1,13 @@
 //! Remote access status and the actions on it: the recovery code, a retry,
-//! a pin reset, joining and approving sibling instances, removing the pin of
+//! a pin reset (with the recovery code, or by email, and cancelling a reset by
+//! email), joining and approving sibling instances, removing the pin of
 //! an instance that no longer exists, and switching the active instance.
 //!
-//! The recovery code and the reset are for the machine Residuum runs on: a
-//! request that arrived through Residuum Cloud can read the status and act on
-//! siblings, pins and the switcher, but is refused those two. Pages on the artifacts origin are refused
-//! every route here (see `artifacts_origin`).
+//! The recovery code and the two ways to reset the pins are for the machine
+//! Residuum runs on: a request that arrived through Residuum Cloud can read
+//! the status, cancel a reset by email (which only protects the address), and
+//! act on siblings, pins and the switcher, but is refused those. Pages on the
+//! artifacts origin are refused every route here (see `artifacts_origin`).
 
 use axum::Json;
 use axum::Router;
@@ -32,6 +34,8 @@ pub(super) fn routes(slot: RemoteAccessSlot) -> Router {
             post(recovery_code_saved),
         )
         .route("/api/hub/remote-access/reset-pins", post(reset_pins))
+        .route("/api/hub/remote-access/email-reset", post(email_reset))
+        .route("/api/hub/remote-access/cancel-reset", post(cancel_reset))
         .route("/api/hub/remote-access/join", post(start_join))
         .route(
             "/api/hub/remote-access/joins/{id}/approve",
@@ -110,6 +114,28 @@ async fn reset_pins(
             json_error(StatusCode::CONFLICT, e.to_string())
         }
     }
+}
+
+/// `POST /api/hub/remote-access/email-reset`: have the pin service email a
+/// reset link. Answers with the masked address the mail went to.
+async fn email_reset(State(slot): State<RemoteAccessSlot>, parts: Parts) -> Response {
+    if is_remote(&parts) {
+        return json_error(StatusCode::FORBIDDEN, LOCAL_ONLY);
+    }
+    match slot.email_reset().await {
+        Ok(email) => no_store(Json(serde_json::json!({ "email": email }))),
+        Err(e @ ResetError::Invalid(_)) => json_error(StatusCode::BAD_REQUEST, e.to_string()),
+        Err(e @ (ResetError::NotConnected | ResetError::Failed(_))) => {
+            json_error(StatusCode::CONFLICT, e.to_string())
+        }
+    }
+}
+
+/// `POST /api/hub/remote-access/cancel-reset`: cancel the reset by email that
+/// is waiting to take effect. Allowed from paired devices too: cancelling only
+/// keeps the address where it is.
+async fn cancel_reset(State(slot): State<RemoteAccessSlot>) -> Response {
+    action_result(slot.cancel_reset().await)
 }
 
 fn action_result(result: Result<(), ActionError>) -> Response {

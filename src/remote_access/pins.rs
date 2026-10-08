@@ -30,10 +30,38 @@ pub(crate) struct Pin {
     pub(crate) slug: String,
 }
 
+/// A reset by email that has been requested and hasn't taken effect yet.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub(crate) struct PendingReset {
+    /// The instance that asked for it.
+    pub(crate) slug: String,
+    /// The certificate account that replaces every pin when it takes effect.
+    pub(crate) account_uri: String,
+    /// Whether the link in the email has been confirmed, which starts the hold.
+    pub(crate) confirmed: bool,
+    /// When it takes effect, in unix seconds. Known once it is confirmed.
+    #[serde(default)]
+    pub(crate) effective_at: Option<i64>,
+}
+
+/// What the public read of a user's pins returns.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub(crate) struct PinState {
+    #[serde(default)]
+    pub(crate) pins: Vec<Pin>,
+    #[serde(default)]
+    pub(crate) pending_reset: Option<PendingReset>,
+}
+
 #[derive(Deserialize)]
 struct PinList {
     #[serde(default)]
     pins: Vec<Pin>,
+}
+
+#[derive(Deserialize)]
+struct EmailSent {
+    email: String,
 }
 
 /// Why a pin service call didn't succeed.
@@ -79,8 +107,9 @@ impl PinClient {
         })
     }
 
-    /// `GET /v1/pins/{user}`: the pinned accounts. Empty for an unknown user.
-    pub(crate) async fn list(&self, user: &str) -> Result<Vec<Pin>, PinError> {
+    /// `GET /v1/pins/{user}`: the pinned accounts and any pending reset.
+    /// Empty for an unknown user.
+    pub(crate) async fn read(&self, user: &str) -> Result<PinState, PinError> {
         let url = format!("{}/v1/pins/{user}", self.base);
         let response = self
             .http
@@ -88,7 +117,14 @@ impl PinClient {
             .send()
             .await
             .map_err(|e| PinError::Unavailable(e.to_string()))?;
-        parse_pins(response).await
+        let text = read_success_body(response).await?;
+        serde_json::from_str::<PinState>(&text)
+            .map_err(|e| PinError::Unavailable(format!("the answer wasn't a pin list: {e}")))
+    }
+
+    /// The pinned accounts alone. Empty for an unknown user.
+    pub(crate) async fn list(&self, user: &str) -> Result<Vec<Pin>, PinError> {
+        self.read(user).await.map(|state| state.pins)
     }
 
     /// `POST /v1/enroll`: pin `account` as the user's first account.
@@ -128,6 +164,43 @@ impl PinClient {
         });
         self.post_signed(account, KeyRef::Jwk, "/v1/reset", payload)
             .await
+    }
+
+    /// `POST /v1/reset/email`: ask the pin service to email the user a link
+    /// that, once confirmed and after the hold, replaces every pin with
+    /// `account`. Returns the masked address the mail went to.
+    pub(crate) async fn email_reset(
+        &self,
+        account: &dyn AccountSigner,
+        enrollment: &Enrollment<'_>,
+    ) -> Result<String, PinError> {
+        let payload = json!({
+            "op": "email_reset",
+            "user": enrollment.user,
+            "slug": enrollment.slug,
+            "account_uri": account.uri(),
+            "recovery_code_hash": recovery_code_hash(enrollment.recovery_code),
+            "grant": enrollment.grant,
+        });
+        let text = self
+            .send_signed(account, KeyRef::Jwk, "/v1/reset/email", payload)
+            .await?;
+        serde_json::from_str::<EmailSent>(&text)
+            .map(|sent| sent.email)
+            .map_err(|e| PinError::Unavailable(format!("the answer wasn't an email receipt: {e}")))
+    }
+
+    /// `POST /v1/reset/cancel`: delete the pending reset, authorized by
+    /// `signer`, which must be pinned.
+    pub(crate) async fn cancel_reset(
+        &self,
+        signer: &dyn AccountSigner,
+        user: &str,
+    ) -> Result<(), PinError> {
+        let payload = json!({ "op": "cancel_reset", "user": user });
+        self.send_signed(signer, KeyRef::Kid, "/v1/reset/cancel", payload)
+            .await
+            .map(drop)
     }
 
     /// `POST /v1/pins/add`: pin `new_account` for `slug`, authorized by
@@ -171,8 +244,22 @@ impl PinClient {
         account: &dyn AccountSigner,
         key_ref: KeyRef,
         path: &str,
-        mut payload: Value,
+        payload: Value,
     ) -> Result<Vec<Pin>, PinError> {
+        let text = self.send_signed(account, key_ref, path, payload).await?;
+        serde_json::from_str::<PinList>(&text)
+            .map(|list| list.pins)
+            .map_err(|e| PinError::Unavailable(format!("the answer wasn't a pin list: {e}")))
+    }
+
+    /// Sign `payload` and post it; the body of a successful answer.
+    async fn send_signed(
+        &self,
+        account: &dyn AccountSigner,
+        key_ref: KeyRef,
+        path: &str,
+        mut payload: Value,
+    ) -> Result<String, PinError> {
         let url = format!("{}{path}", self.base);
         if let Some(object) = payload.as_object_mut() {
             object.insert("iat".into(), json!(chrono::Utc::now().timestamp()));
@@ -194,16 +281,16 @@ impl PinClient {
             .send()
             .await
             .map_err(|e| PinError::Unavailable(e.to_string()))?;
-        parse_pins(response).await
+        read_success_body(response).await
     }
 }
 
 /// How a signed request names the key that signed it.
 #[derive(Clone, Copy)]
 enum KeyRef {
-    /// The public key travels in the request (enroll and reset: no account is pinned yet).
+    /// The public key travels in the request (enroll, reset and email reset: no account need be pinned yet).
     Jwk,
-    /// The signer's pinned account URL (add and remove).
+    /// The signer's pinned account URL (add, remove and cancel reset).
     Kid,
 }
 
@@ -214,7 +301,7 @@ pub(crate) struct NewPin<'a> {
     pub(crate) jwk: &'a Value,
 }
 
-async fn parse_pins(response: reqwest::Response) -> Result<Vec<Pin>, PinError> {
+async fn read_success_body(response: reqwest::Response) -> Result<String, PinError> {
     let status = response.status();
     let text = response
         .text()
@@ -230,9 +317,7 @@ async fn parse_pins(response: reqwest::Response) -> Result<Vec<Pin>, PinError> {
             message,
         });
     }
-    serde_json::from_str::<PinList>(&text)
-        .map(|list| list.pins)
-        .map_err(|e| PinError::Unavailable(format!("the answer wasn't a pin list: {e}")))
+    Ok(text)
 }
 
 fn random_token() -> anyhow::Result<String> {
