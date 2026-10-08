@@ -378,16 +378,39 @@ pub async fn run_command_streaming(
 async fn detect_tool(bin: &Path, timeout: Duration, cancel: &CancellationToken) -> ToolStatus {
     let dummy_log = BoundedLog::new(10);
     match run_command_streaming(bin, &["--version"], None, timeout, cancel, &dummy_log).await {
-        Ok(out) if out.success => ToolStatus {
-            found: true,
-            version: Some(out.stdout.trim().to_string()),
-            path: Some(bin.display().to_string()),
-        },
-        _ => ToolStatus {
-            found: false,
-            version: None,
-            path: None,
-        },
+        Ok(out) if out.success => {
+            return ToolStatus {
+                found: true,
+                version: Some(out.stdout.trim().to_string()),
+                path: Some(bin.display().to_string()),
+            };
+        }
+        // Not installed is an expected answer; anything else means the tool
+        // may be there but couldn't be checked, which reads the same to the
+        // user, so the log says which it was.
+        Err(RunnerError::SpawnFailed(_, e)) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!(bin = %bin.display(), "tool is not installed");
+        }
+        Ok(out) => {
+            tracing::warn!(
+                bin = %bin.display(),
+                exit_code = ?out.exit_code,
+                stderr = %out.stderr.trim(),
+                "tool version check exited unsuccessfully; reporting it as not found"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                bin = %bin.display(),
+                error = %e,
+                "tool version check failed; reporting it as not found"
+            );
+        }
+    }
+    ToolStatus {
+        found: false,
+        version: None,
+        path: None,
     }
 }
 
