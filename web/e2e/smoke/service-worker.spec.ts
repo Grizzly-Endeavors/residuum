@@ -148,6 +148,7 @@ test.describe("the service worker", { tag: "@preview" }, () => {
     page,
     context,
   }) => {
+    await page.clock.install();
     await openWithWorker(page);
 
     await context.setOffline(true);
@@ -158,9 +159,14 @@ test.describe("the service worker", { tag: "@preview" }, () => {
     await expect(banner).toBeVisible();
     await expectNoAxeViolations(page);
 
-    // Back online, Retry reconnects and the banner goes.
+    // Back online, Retry reconnects and the banner goes. Hold the socket's own
+    // reconnect timer, which would otherwise race the click once the network
+    // is back, so only Retry can reconnect it.
+    await page.clock.pauseAt(Date.now() + 2_000);
+    const retry = banner.getByRole("button", { name: "Retry" });
+    await expect(retry).not.toHaveAttribute("aria-busy", "true");
     await context.setOffline(false);
-    await banner.getByRole("button", { name: "Retry" }).click();
+    await retry.click();
     await expect(banner).toBeHidden();
   });
 
