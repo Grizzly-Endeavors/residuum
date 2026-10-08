@@ -1153,7 +1153,9 @@ mod tests {
         let server = MockServer::start().await;
         accepts(&server, 503).await;
         let dir = tempfile::tempdir().unwrap();
-        let service = service_in(&dir, Duration::from_millis(400));
+        // The retry wait has to outlast noticing the first request and
+        // deleting the device, even on a loaded machine.
+        let service = service_in(&dir, Duration::from_secs(2));
         let device = register(&service, &server, "Laptop").await;
 
         service.notify(sample_message(PushEvent::InboxItem), HashSet::new());
@@ -1164,7 +1166,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         service.delete_device(&device.id).await.unwrap();
-        tokio::time::sleep(Duration::from_millis(800)).await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
 
         assert_eq!(
             requests_to(&server).await,
