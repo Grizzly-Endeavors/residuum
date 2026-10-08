@@ -254,6 +254,10 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     }
 
     later(turnLengthMs(drop, finishWhileDown), () => {
+      turn.cancels.push(env.whenTurnEndsReleased(endTurn));
+    });
+
+    function endTurn(): void {
       inFlight.delete(replyTo);
       const { usage } = state;
       state.usage = {
@@ -312,7 +316,7 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
         { role: "assistant", content: response, ...ofTurn },
       );
       hub.overview.changed(agent);
-    });
+    }
   }
 
   function cancel(replyTo: string): void {

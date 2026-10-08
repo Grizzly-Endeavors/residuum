@@ -127,6 +127,17 @@ async function setDelays({ req, res, hub }: RouteContext): Promise<void> {
   json(res, 200, { scale });
 }
 
+/** `{ held }`: while `true`, simulated turns wait at their last step instead of ending; `false` ends the waiting ones. Reset lifts it. */
+async function holdTurnEnds({ req, res, hub }: RouteContext): Promise<void> {
+  const { held } = await readJsonObject(req);
+  if (typeof held !== "boolean") {
+    json(res, 422, { error: "mock: `held` must be true or false" });
+    return;
+  }
+  hub.env.holdTurnEnds(held);
+  json(res, 200, { held });
+}
+
 /**
  * `{ path, content }`: an agent writes the team file at `path` (`team/workbench/tip-splitter.html`),
  * or removes it, folders included, when `content` is `null`. The mock's files change and its sockets
@@ -232,4 +243,5 @@ export const controlRoutes: readonly Route[] = [
   { method: "POST", pattern: "/api/mock/reset", handler: reset },
   { method: "POST", pattern: "/api/mock/clock/advance", handler: advanceClock },
   { method: "POST", pattern: "/api/mock/delays", handler: setDelays },
+  { method: "POST", pattern: "/api/mock/turn-hold", handler: holdTurnEnds },
 ];

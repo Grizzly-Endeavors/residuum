@@ -188,4 +188,4 @@ Use prefixed branch names:
 
 ### Releases
 
-Releases use **CalVer** (`YYYY.0M.0D`), not SemVer. Tags like `v2026.03.02`, with `-N` suffix for same-day follow-ups (`v2026.03.02-2`). Cargo.toml version is independent and not tied to release tags. The release workflow runs full CI checks before building artifacts.
+Releases use **CalVer** (`YYYY.0M.0D`), not SemVer. Tags like `v2026.03.02`, with `-N` suffix for same-day follow-ups (`v2026.03.02-2`). Cargo.toml version is independent and not tied to release tags. The release workflow runs the full CI checks alongside the artifact builds and publishes nothing unless both pass. Pull requests run the Rust checks when they change Rust code and the web checks when they change `web/`.

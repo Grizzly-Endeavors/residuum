@@ -11,7 +11,7 @@ permissions:
 jobs:
   version:
     name: Extract Version
-    runs-on: lab-runners
+    runs-on: lab-runners-light
 
     outputs:
       tag: ${{ steps.version.outputs.tag }}
@@ -43,25 +43,28 @@ jobs:
     name: Quality Checks
     uses: ./.github/workflows/quality-checks.yml
 
+  # The builds run beside the quality checks instead of after them. Nothing
+  # leaves the workflow until both pass: the Docker image and the GitHub
+  # release need the quality checks.
   build:
     name: Build (${{ matrix.artifact }})
-    needs: [version, quality]
+    needs: [version]
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            runner: '"lab-runners"'
+            runner: '"lab-runners-wide"'
             artifact: residuum-linux-x86_64
           - target: aarch64-unknown-linux-gnu
-            runner: '"lab-runners"'
+            runner: '"lab-runners-wide"'
             artifact: residuum-linux-aarch64
             cross: true
           - target: aarch64-apple-darwin
             runner: '"macos-15"'
             artifact: residuum-macos-aarch64
           - target: x86_64-pc-windows-gnu
-            runner: '"lab-runners"'
+            runner: '"lab-runners-wide"'
             artifact: residuum-windows-x86_64.exe
             cross: true
 
@@ -129,8 +132,8 @@ jobs:
 
   mac-check:
     name: Check mac/ changes
-    needs: [version, quality]
-    runs-on: lab-runners
+    needs: [version]
+    runs-on: lab-runners-light
 
     outputs:
       changed: ${{ steps.diff.outputs.changed }}
@@ -161,7 +164,7 @@ jobs:
 
   mac-app:
     name: Build macOS Chat App
-    needs: [version, quality, mac-check]
+    needs: [version, mac-check]
     if: needs.mac-check.outputs.changed == 'true'
     runs-on: macos-15
 
@@ -193,7 +196,7 @@ jobs:
   docker:
     name: Docker Image
     needs: [version, quality, build]
-    runs-on: lab-runners
+    runs-on: lab-runners-wide
 
     steps:
       - uses: actions/checkout@v7
@@ -235,6 +238,10 @@ jobs:
           file: docker/Dockerfile.release
           push: true
           platforms: linux/amd64,linux/arm64
+          # Each runner starts with an empty BuildKit, so without a cache the
+          # arm64 apt layer reruns under QEMU on every release.
+          cache-from: type=gha,scope=release-image
+          cache-to: type=gha,scope=release-image,mode=max
           tags: |
             ghcr.io/grizzly-endeavors/residuum:${{ needs.version.outputs.version }}
             bearflinn/residuum:${{ needs.version.outputs.version }}
@@ -245,7 +252,7 @@ jobs:
     name: Create Release
     needs: [version, quality, build, mac-app]
     if: always() && !failure() && !cancelled()
-    runs-on: lab-runners
+    runs-on: lab-runners-light
 
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

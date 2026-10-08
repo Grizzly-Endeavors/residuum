@@ -41,7 +41,9 @@ test.describe("a live turn", () => {
     await mock.post("/api/mock/delays", { data: { scale: 6 } });
   });
 
-  test("shows its steps as they run, then collapses to its summary", async ({ page }) => {
+  test("shows its steps as they run, then collapses to its summary", async ({ page, mock }) => {
+    // The turn stays running until the checks of its live line are done.
+    await mock.post("/api/mock/turn-hold", { data: { held: true } });
     await openAtlas(page);
     await send(page, "fail: check the wiki pages");
     const feed = conversation(page);
@@ -57,6 +59,7 @@ test.describe("a live turn", () => {
     await expect(feed.getByText("Looking through recent notes first.")).toBeVisible();
     await expectNoAxeViolations(page);
 
+    await mock.post("/api/mock/turn-hold", { data: { held: false } });
     const line = summary(feed, /^Searched memory, read 2 files · \d+s · 1 step failed$/);
     await expect(line).toBeVisible({ timeout: 20_000 });
     await expect(line).toHaveAttribute("aria-expanded", "false");
@@ -138,8 +141,10 @@ test.describe("connecting while a turn runs", () => {
     page,
     mock,
   }) => {
-    // The reads finish seconds apart, so the second page joins before the last steps.
+    // The reads finish seconds apart, so the second page joins before the last
+    // steps, and the turn is held open until that page has seen it running.
     await mock.post("/api/mock/delays", { data: { scale: 8 } });
+    await mock.post("/api/mock/turn-hold", { data: { held: true } });
     await openAtlas(page);
     await send(page, "Check the routing doc");
     await expect(
@@ -154,6 +159,7 @@ test.describe("connecting while a turn runs", () => {
     });
     await expect(feed.getByText("Working")).toBeVisible();
     await expectNoAxeViolations(other);
+    await mock.post("/api/mock/turn-hold", { data: { held: false } });
 
     // It saw no step start, so its line says only that the turn worked before it connected.
     await expect(summary(feed, /^Worked before this page connected/)).toBeVisible({

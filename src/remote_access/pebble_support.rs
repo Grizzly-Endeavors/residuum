@@ -90,7 +90,7 @@ impl PebbleHarness {
         let config_path = dir.path().join("pebble-config.json");
         std::fs::write(&config_path, serde_json::to_vec_pretty(&config)?)
             .context("failed to write the Pebble configuration")?;
-        set_world_readable(dir.path(), &config_path)?;
+        set_world_readable(&config_path)?;
 
         let sequence = CONTAINER_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let unique = format!(
@@ -111,7 +111,7 @@ impl PebbleHarness {
         let dns_bind = format!("127.0.0.1:{dns_port}");
         let management_bind = format!("127.0.0.1:{management_port}");
         // The test listens on the TLS-ALPN-01 port itself; the other challenge servers are off.
-        let challtestsrv = Self::run_container(
+        harness.run_container(
             &format!("{unique}-dns"),
             CHALLTESTSRV_IMAGE,
             &[],
@@ -131,24 +131,16 @@ impl PebbleHarness {
                 "-doh",
                 "",
             ],
+            &[],
         )?;
-        harness.containers.push(challtestsrv);
 
-        let mount = format!("{}:/pebble-config.json:ro", config_path.display());
-        let pebble = Self::run_container(
+        harness.run_container(
             &format!("{unique}-ca"),
             PEBBLE_IMAGE,
-            &[
-                "-e",
-                "PEBBLE_VA_NOSLEEP=1",
-                "-e",
-                "PEBBLE_AUTHZREUSE=0",
-                "-v",
-                &mount,
-            ],
+            &["-e", "PEBBLE_VA_NOSLEEP=1", "-e", "PEBBLE_AUTHZREUSE=0"],
             &["-config", "/pebble-config.json", "-dnsserver", &dns_bind],
+            &[(&config_path, "/pebble-config.json")],
         )?;
-        harness.containers.push(pebble);
 
         for (what, port) in [
             ("Pebble", acme_port),
@@ -246,25 +238,56 @@ impl PebbleHarness {
         Ok(TlsAlpnListener { task })
     }
 
+    /// Create a container, copy `files` (local path, path in the container) into
+    /// it, and start it.
+    ///
+    /// Files are copied rather than bind-mounted because the Docker daemon may not
+    /// share this process's filesystem: on the CI runners it is a sidecar that
+    /// sees only the job's work directory, and a bind mount of a path it lacks
+    /// becomes an empty directory. The network is shared, which host networking
+    /// relies on. Containers are not `--rm`, so a container that exits at
+    /// startup still has logs for [`Self::wait_for_port`] to report; `Drop`
+    /// removes them.
     fn run_container(
+        &mut self,
         name: &str,
         image: &str,
         docker_args: &[&str],
         app_args: &[&str],
-    ) -> anyhow::Result<String> {
-        let output = docker(
-            ["run", "-d", "--rm", "--name", name, "--network", "host"]
+        files: &[(&Path, &str)],
+    ) -> anyhow::Result<()> {
+        let created = docker(
+            ["create", "--name", name, "--network", "host"]
                 .into_iter()
                 .chain(docker_args.iter().copied())
                 .chain(std::iter::once(image))
                 .chain(app_args.iter().copied()),
         )?;
         anyhow::ensure!(
-            output.status.success(),
-            "docker run {image} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            created.status.success(),
+            "docker create {image} failed: {}",
+            String::from_utf8_lossy(&created.stderr)
         );
-        Ok(name.to_owned())
+        self.containers.push(name.to_owned());
+
+        for (source, destination) in files {
+            let source = source.to_string_lossy();
+            let target = format!("{name}:{destination}");
+            let copied = docker(["cp", source.as_ref(), target.as_str()])?;
+            anyhow::ensure!(
+                copied.status.success(),
+                "docker cp {source} into {name} failed: {}",
+                String::from_utf8_lossy(&copied.stderr)
+            );
+        }
+
+        let started = docker(["start", name])?;
+        anyhow::ensure!(
+            started.status.success(),
+            "docker start {name} failed: {}",
+            String::from_utf8_lossy(&started.stderr)
+        );
+        Ok(())
     }
 
     async fn wait_for_port(&self, what: &str, port: u16) -> anyhow::Result<()> {
@@ -366,7 +389,7 @@ fn free_dns_port() -> anyhow::Result<u16> {
     anyhow::bail!("no port free for both UDP and TCP")
 }
 
-/// The container runs as another user, so it must be able to read the mounted configuration.
+/// The container runs as another user, and `docker cp` keeps the file's mode, so the configuration must be readable by others.
 #[cfg_attr(
     not(unix),
     expect(
@@ -374,16 +397,15 @@ fn free_dns_port() -> anyhow::Result<u16> {
         reason = "mirrors the unix signature, where setting permissions can fail"
     )
 )]
-fn set_world_readable(dir: &Path, file: &Path) -> anyhow::Result<()> {
+fn set_world_readable(file: &Path) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))?;
         std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o644))?;
     }
     #[cfg(not(unix))]
     {
-        let _ = (dir, file);
+        let _ = file;
     }
     Ok(())
 }
