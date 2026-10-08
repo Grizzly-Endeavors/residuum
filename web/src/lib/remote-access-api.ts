@@ -38,6 +38,21 @@ export async function resetPins(recoveryCode: string): Promise<void> {
   });
 }
 
+/**
+ * Have the pin service email a link that takes the address back for this
+ * instance, for when the recovery code is lost. Resolves with the masked
+ * address the mail went to.
+ */
+export async function requestEmailReset(): Promise<string> {
+  const resp = await send(hubPath("/remote-access/email-reset"), { method: "POST" });
+  return ((await resp.json()) as { email: string }).email;
+}
+
+/** Cancel the reset by email that is waiting to take effect. */
+export async function cancelPendingReset(): Promise<void> {
+  await send(hubPath("/remote-access/cancel-reset"), { method: "POST" });
+}
+
 async function sendJson(path: string, body: unknown): Promise<void> {
   await send(path, {
     method: "POST",

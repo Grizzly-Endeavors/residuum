@@ -6,6 +6,7 @@
   import {
     acknowledgeRecoveryCode,
     fetchRemoteAccess,
+    requestEmailReset,
     resetPins,
     retryRemoteAccess,
   } from "../../lib/remote-access-api";
@@ -14,6 +15,7 @@
   import type { BadgeTone } from "../../lib/ui";
   import { Badge, Banner, Button, Dialog, TextField } from "../../lib/ui";
   import PendingJoins from "./PendingJoins.svelte";
+  import PendingReset from "./PendingReset.svelte";
   import RemoteInstances from "./RemoteInstances.svelte";
   import RemoteJoin from "./RemoteJoin.svelte";
   import SettingsGroup from "./SettingsGroup.svelte";
@@ -22,7 +24,8 @@
   // is ready, its addresses and certificate, the recovery code that is shown
   // until it is saved, any certificate account nobody here approved, joining
   // other instances and approving theirs, and removing accounts of instances
-  // that no longer exist. It polls while open because setup runs in the
+  // that no longer exist, and a reset by email that is waiting to take effect.
+  // It polls while open because setup runs in the
   // background for a few minutes.
   // Everything acts at once through the hub's endpoints and has no part in the
   // save bar.
@@ -46,6 +49,7 @@
   let busy = $state<string | null>(null);
   let resetOpen = $state(false);
   let resetCode = $state("");
+  let emailedTo = $state<string | null>(null);
   let copied = $state(false);
   let timer: ReturnType<typeof setInterval> | undefined;
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
@@ -112,6 +116,17 @@
     });
   }
 
+  function emailReset(): Promise<void> {
+    return act("email-reset", "Couldn't send the reset email.", async () => {
+      emailedTo = await requestEmailReset();
+    });
+  }
+
+  function openReset(): void {
+    emailedTo = null;
+    resetOpen = true;
+  }
+
   onMount(() => {
     void load();
     timer = setInterval(() => void load(), POLL_MS);
@@ -153,6 +168,8 @@
           If you didn't add it yourself, someone else may be able to impersonate your Residuum.
         </Banner>
       {/if}
+
+      <PendingReset reset={status.pending_reset} {busy} {act} />
 
       <PendingJoins joins={status.pending_joins} {busy} {act} />
 
@@ -216,7 +233,7 @@
             Try again now
           </Button>
         {/if}
-        <Button variant="quiet" onclick={() => (resetOpen = true)}>Use a recovery code</Button>
+        <Button variant="quiet" onclick={openReset}>Use a recovery code</Button>
       </div>
     {:else if loadError === ""}
       <p class="ra-note">Loading…</p>
@@ -236,6 +253,25 @@
       spellcheck={false}
       code
     />
+    <section class="ra-email" aria-label="Lost your recovery code?">
+      {#if emailedTo !== null}
+        <p class="ra-note" role="status">
+          A reset link was sent to {emailedTo}. Open it and confirm. After a waiting period, during
+          which your other instances can cancel it, this instance's certificate account becomes the
+          only one allowed for your addresses, and the new recovery code shows here.
+        </p>
+      {:else}
+        <p class="ra-note">
+          Lost your recovery code? Residuum Cloud can email the address on your account a link
+          instead.
+        </p>
+        <div class="ra-actions">
+          <Button loading={busy === "email-reset"} onclick={() => void emailReset()}>
+            Lost your recovery code? Email me a reset link
+          </Button>
+        </div>
+      {/if}
+    </section>
     {#snippet actions()}
       <Button onclick={() => (resetOpen = false)}>Cancel</Button>
       <Button
@@ -287,6 +323,15 @@
     letter-spacing: 0.12em;
     overflow-wrap: anywhere;
     user-select: all;
+  }
+
+  .ra-email {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-8);
+    margin-top: var(--space-12);
+    padding-top: var(--space-12);
+    border-top: 1px solid var(--color-line-soft);
   }
 
   .ra-hosts {
