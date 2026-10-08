@@ -67,7 +67,7 @@ Free while in alpha. Core features stay free forever — Cloud expands what your
 ### Download
 
 ```bash
-curl -fsSL https://agent-residuum.com/install | sh
+curl -fsSL https://github.com/grizzly-endeavors/residuum/releases/latest/download/install.sh | sh
 ```
 
 The install script detects Linux and macOS automatically. Windows binaries are available on the [releases page](https://github.com/Grizzly-Endeavors/residuum/releases/latest).
