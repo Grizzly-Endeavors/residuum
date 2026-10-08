@@ -493,6 +493,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_slow_approval_outlasts_the_join_rate_limit() {
+        // The requester keeps polling while the person decides; polls must
+        // not count against the per-peer limit on join requests.
+        let (laptop, desktop, _pins, client) = world().await;
+        let (_log, progress) = progress_log();
+        let asking = desktop.joiner(&client, "laptop");
+        let (outcome, approved) = tokio::join!(desktop.service.join(&asking, &progress), async {
+            let id = laptop.wait_for_pending().await;
+            // At the test poll interval this is well over ten polls.
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            laptop.service.approve(&laptop.approver(&client), &id).await
+        });
+        outcome.unwrap();
+        approved.unwrap();
+    }
+
+    #[tokio::test]
     async fn a_denied_join_stores_nothing_and_says_so() {
         let (laptop, desktop, pins, client) = world().await;
         let (log, progress) = progress_log();

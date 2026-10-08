@@ -42,12 +42,17 @@ pub(crate) fn router(host: Arc<JoinHost>) -> Router {
             Instant::now(),
         ))),
     };
-    Router::new()
+    // Only fetching a nonce and submitting a request are limited per peer. A
+    // poll is authenticated by the 128-bit join id only the requester knows,
+    // and a requester polls for as long as the approval takes.
+    let limited = Router::new()
         .route(NONCE_PATH, get(nonce))
         .route(REQUEST_PATH, axum::routing::post(submit))
+        .layer(middleware::from_fn_with_state(state.clone(), rate_limit));
+    Router::new()
         .route("/_sibling/join/{join_id}", get(poll))
+        .merge(limited)
         .layer(DefaultBodyLimit::max(MAX_BODY))
-        .layer(middleware::from_fn_with_state(state.clone(), rate_limit))
         .with_state(state)
 }
 
