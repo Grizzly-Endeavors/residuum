@@ -128,6 +128,25 @@ impl RemoteAccessSlot {
         }
     }
 
+    /// Ask the pin service to email a reset link. Returns the masked address.
+    ///
+    /// # Errors
+    /// Returns a plain-language reason the email wasn't requested.
+    pub async fn email_reset(&self) -> Result<String, ResetError> {
+        match self.current() {
+            Some(remote) => remote.email_reset().await,
+            None => Err(ResetError::NotConnected),
+        }
+    }
+
+    /// Cancel the reset by email that is waiting to take effect.
+    ///
+    /// # Errors
+    /// Returns a plain-language reason it wasn't cancelled.
+    pub async fn cancel_reset(&self) -> Result<(), ActionError> {
+        self.running()?.cancel_reset().await
+    }
+
     fn running(&self) -> Result<RemoteAccess, ActionError> {
         self.current().ok_or(ActionError::NotConnected)
     }

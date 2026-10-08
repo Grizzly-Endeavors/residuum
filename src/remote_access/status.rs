@@ -66,6 +66,25 @@ pub struct PinInfo {
     pub removable: bool,
 }
 
+/// A reset by email that was requested and hasn't taken effect. Once it does,
+/// the requesting instance's account is the only pin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PendingResetInfo {
+    /// The instance that asked for it.
+    pub slug: String,
+    /// The certificate account that would replace every pin.
+    pub account_uri: String,
+    /// Whether it was asked for by this instance.
+    pub own: bool,
+    /// Whether the link in the email has been confirmed, which starts the hold.
+    pub confirmed: bool,
+    /// When it takes effect, RFC 3339. Known once it is confirmed.
+    pub effective_at: Option<String>,
+    /// Whether this instance can cancel it: it is pinned, and didn't ask for it.
+    pub cancellable: bool,
+}
+
 /// One of the user's instances, as the relay lists it. The relay is not
 /// trusted for this: the slug is checked before it is used, and the name is
 /// text to display, never markup.
@@ -154,6 +173,8 @@ pub struct RemoteAccessStatus {
     /// in `recovery_code`, for requests made on the machine Residuum runs on.
     pub recovery_code_pending: bool,
     pub recovery_code: Option<String>,
+    /// The reset by email waiting to take effect, when the pin service reports one.
+    pub pending_reset: Option<PendingResetInfo>,
     /// The user's instances as the relay lists them, empty while unknown.
     pub instances: Vec<InstanceInfo>,
     /// Instances that completed a join with this one.
@@ -178,6 +199,7 @@ impl RemoteAccessStatus {
             pins: Vec::new(),
             recovery_code_pending: false,
             recovery_code: None,
+            pending_reset: None,
             instances: Vec::new(),
             siblings: Vec::new(),
             join: None,

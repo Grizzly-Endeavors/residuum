@@ -29,10 +29,24 @@ struct StoredPin {
     jwk: Option<Value>,
 }
 
+/// A reset by email the service is holding.
+struct StoredReset {
+    user: String,
+    pin: StoredPin,
+    recovery_hash: String,
+    confirmed: bool,
+    effective_at: Option<i64>,
+}
+
 #[derive(Default)]
 struct ServiceState {
     pins: Vec<StoredPin>,
     recovery_hash: Option<String>,
+    pending_reset: Option<StoredReset>,
+    /// A status that the next `email_reset` request fails with.
+    email_failure: Option<StatusCode>,
+    /// The `kid` of the account that signed the last accepted `cancel_reset`.
+    cancelled_by: Option<String>,
     seen_jtis: Vec<String>,
     requests: Vec<String>,
 }
@@ -74,6 +88,8 @@ impl FakePinService {
             .route("/v1/pins/{user}", get(list))
             .route("/v1/enroll", post(enroll))
             .route("/v1/reset", post(reset))
+            .route("/v1/reset/email", post(email_reset))
+            .route("/v1/reset/cancel", post(cancel_reset))
             .route("/v1/pins/add", post(add))
             .route("/v1/pins/remove", post(remove))
             .with_state(Arc::clone(&shared));
@@ -106,6 +122,69 @@ impl FakePinService {
             slug: slug.to_string(),
             jwk: Some(jwk),
         });
+    }
+
+    /// Hold a reset by email asked for by `account_uri`, as if its link had
+    /// been mailed to the user.
+    pub(crate) fn preload_pending_reset(
+        &self,
+        account_uri: &str,
+        slug: &str,
+        confirmed_effective_at: Option<i64>,
+    ) {
+        lock(&self.shared).pending_reset = Some(StoredReset {
+            user: "bear".to_string(),
+            pin: StoredPin {
+                account_uri: account_uri.to_string(),
+                slug: slug.to_string(),
+                jwk: None,
+            },
+            recovery_hash: "0".repeat(64),
+            confirmed: confirmed_effective_at.is_some(),
+            effective_at: confirmed_effective_at,
+        });
+    }
+
+    /// The person confirmed the emailed link: the hold ends at `effective_at`.
+    pub(crate) fn confirm_email_reset(&self, effective_at: i64) {
+        if let Some(reset) = lock(&self.shared).pending_reset.as_mut() {
+            reset.confirmed = true;
+            reset.effective_at = Some(effective_at);
+        }
+    }
+
+    /// The hold ended: the held reset replaces every pin.
+    pub(crate) async fn apply_email_reset(&self) {
+        let user = {
+            let mut state = lock(&self.shared);
+            let Some(reset) = state.pending_reset.take() else {
+                return;
+            };
+            state.pins = vec![reset.pin];
+            state.recovery_hash = Some(reset.recovery_hash);
+            reset.user
+        };
+        publish_caa(&self.shared, &user).await;
+    }
+
+    /// Make the next `email_reset` request fail with `status`.
+    pub(crate) fn fail_next_email_reset(&self, status: StatusCode) {
+        lock(&self.shared).email_failure = Some(status);
+    }
+
+    /// Whether a reset by email is being held.
+    pub(crate) fn has_pending_reset(&self) -> bool {
+        lock(&self.shared).pending_reset.is_some()
+    }
+
+    /// The recovery code hash the service holds.
+    pub(crate) fn recovery_hash(&self) -> Option<String> {
+        lock(&self.shared).recovery_hash.clone()
+    }
+
+    /// The `kid` that signed the last accepted `cancel_reset`.
+    pub(crate) fn cancelled_by(&self) -> Option<String> {
+        lock(&self.shared).cancelled_by.clone()
     }
 
     /// The pinned accounts, as `(account_uri, slug)`.
@@ -143,7 +222,17 @@ fn pin_list(shared: &Shared) -> Value {
 }
 
 async fn list(State(shared): State<Arc<Shared>>, Path(_user): Path<String>) -> Reply {
-    (StatusCode::OK, Json(pin_list(&shared)))
+    let pins = pin_list(&shared);
+    let pending = lock(&shared).pending_reset.as_ref().map(|reset| {
+        json!({
+            "slug": reset.pin.slug,
+            "account_uri": reset.pin.account_uri,
+            "confirmed": reset.confirmed,
+            "effective_at": reset.effective_at,
+        })
+    });
+    let body = json!({ "pins": pins.get("pins"), "pending_reset": pending });
+    (StatusCode::OK, Json(body))
 }
 
 /// Check the JWS the way the pin service does: ES256 over the protected
@@ -308,6 +397,65 @@ async fn reset(State(shared): State<Arc<Shared>>, Json(body): Json<Value>) -> Re
     }
     publish_caa(&shared, field(&payload, "user")).await;
     (StatusCode::OK, Json(pin_list(&shared)))
+}
+
+async fn email_reset(State(shared): State<Arc<Shared>>, Json(body): Json<Value>) -> Reply {
+    let (protected, payload) = match verify(&shared, "/v1/reset/email", &body) {
+        Ok(ok) => ok,
+        Err(reply) => return reply,
+    };
+    if field(&payload, "op") != "email_reset" || field(&payload, "grant") != TEST_GRANT {
+        return fail(StatusCode::UNAUTHORIZED, "bad grant");
+    }
+    if field(&payload, "recovery_code_hash").len() != 64 {
+        return fail(StatusCode::BAD_REQUEST, "recovery_code_hash");
+    }
+    let mut state = lock(&shared);
+    if state.pins.is_empty() {
+        return fail(StatusCode::CONFLICT, "user is not enrolled");
+    }
+    if state.pending_reset.as_ref().is_some_and(|r| r.confirmed) {
+        return fail(StatusCode::CONFLICT, "a reset is already pending");
+    }
+    if let Some(status) = state.email_failure.take() {
+        return fail(status, "could not send the reset email");
+    }
+    state.pending_reset = Some(StoredReset {
+        user: field(&payload, "user").to_string(),
+        pin: StoredPin {
+            account_uri: field(&payload, "account_uri").to_string(),
+            slug: field(&payload, "slug").to_string(),
+            jwk: protected.get("jwk").cloned(),
+        },
+        recovery_hash: field(&payload, "recovery_code_hash").to_string(),
+        confirmed: false,
+        effective_at: None,
+    });
+    state.requests.push("email_reset".to_string());
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({ "status": "email_sent", "email": "b***@example.test" })),
+    )
+}
+
+async fn cancel_reset(State(shared): State<Arc<Shared>>, Json(body): Json<Value>) -> Reply {
+    let (protected, payload) = match verify(&shared, "/v1/reset/cancel", &body) {
+        Ok(ok) => ok,
+        Err(reply) => return reply,
+    };
+    if field(&payload, "op") != "cancel_reset" {
+        return fail(StatusCode::BAD_REQUEST, "op");
+    }
+    let mut state = lock(&shared);
+    if state.pending_reset.take().is_none() {
+        return fail(StatusCode::CONFLICT, "no reset is pending");
+    }
+    state.cancelled_by = protected
+        .get("kid")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    state.requests.push("cancel_reset".to_string());
+    (StatusCode::OK, Json(json!({ "status": "cancelled" })))
 }
 
 async fn add(State(shared): State<Arc<Shared>>, Json(body): Json<Value>) -> Reply {

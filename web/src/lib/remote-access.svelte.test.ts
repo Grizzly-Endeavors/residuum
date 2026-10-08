@@ -19,6 +19,7 @@ function status(instances: InstanceInfo[]): RemoteAccessStatus {
     siblings: [],
     join: null,
     pending_joins: [],
+    pending_reset: null,
   };
 }
 

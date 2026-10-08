@@ -11,7 +11,9 @@ use reqwest::Method;
 
 use residuum::pairing::qr;
 use residuum::pairing::types::{DeviceListResponse, PairLinkResponse};
-use residuum::remote_access::status::{JoinState, RemoteAccessState, RemoteAccessStatus};
+use residuum::remote_access::status::{
+    JoinState, PendingResetInfo, RemoteAccessState, RemoteAccessStatus,
+};
 use residuum::util::FatalError;
 
 use super::hub_client::HubClient;
@@ -55,6 +57,10 @@ pub(super) enum RemoteCommand {
         #[arg(long)]
         recovery_code: Option<String>,
     },
+    /// Email yourself a link that takes your address back, when the recovery code is lost
+    EmailReset,
+    /// Cancel a reset by email that is waiting to take effect
+    CancelReset,
 }
 
 /// Run the `remote` subcommand against the hub at `gateway_addr`.
@@ -76,6 +82,8 @@ pub(super) async fn run_remote_command(
         RemoteCommand::ResetPins { recovery_code } => {
             reset_pins(&client, recovery_code.as_deref()).await
         }
+        RemoteCommand::EmailReset => email_reset(&client).await,
+        RemoteCommand::CancelReset => cancel_reset(&client).await,
     }
 }
 
@@ -220,6 +228,9 @@ fn status_report(status: &RemoteAccessStatus) -> String {
             status.pending_joins.len()
         );
     }
+    if let Some(reset) = &status.pending_reset {
+        out.push_str(&pending_reset_report(reset));
+    }
     if let Some(code) = &status.recovery_code {
         _ = write!(
             out,
@@ -227,6 +238,29 @@ fn status_report(status: &RemoteAccessStatus) -> String {
         );
     }
     out
+}
+
+/// What `residuum remote status` says about a reset by email waiting to take effect.
+fn pending_reset_report(reset: &PendingResetInfo) -> String {
+    let timing = match (&reset.effective_at, reset.confirmed) {
+        (Some(at), true) => format!("It was confirmed and takes effect at {at}."),
+        _ => "The link in the email hasn't been confirmed yet.".to_string(),
+    };
+    if reset.own {
+        format!(
+            "\nA reset by email was requested from this instance. {timing}\nUntil it takes effect, nothing changes and your earlier recovery code still works. Once it does, the new recovery code shows here.\n"
+        )
+    } else {
+        let cancel = if reset.cancellable {
+            "If this wasn't you, run `residuum remote cancel-reset`."
+        } else {
+            "This instance can't cancel it; use the cancel link in the email, or an instance that is already set up."
+        };
+        format!(
+            "\nWARNING: a reset by email was requested from the instance \"{}\". If it goes through, that instance's certificate account replaces every other one. {timing}\n{cancel}\n",
+            printable(&reset.slug)
+        )
+    }
 }
 
 fn state_summary(state: RemoteAccessState) -> &'static str {
@@ -371,6 +405,31 @@ async fn reset_pins(client: &HubClient, recovery_code: Option<&str>) -> Result<(
     Ok(())
 }
 
+/// The reply to `POST /api/hub/remote-access/email-reset`.
+#[derive(serde::Deserialize)]
+struct EmailResetReply {
+    email: String,
+}
+
+async fn email_reset(client: &HubClient) -> Result<(), FatalError> {
+    let reply: EmailResetReply = client
+        .send(Method::POST, "/api/hub/remote-access/email-reset", None)
+        .await?;
+    println!(
+        "A reset link was sent to {}. Open it from your email and confirm; your address then moves to this instance after a 24 hour hold, during which an instance that is already set up can cancel it. Run `residuum remote status` to follow it.",
+        printable(&reply.email)
+    );
+    Ok(())
+}
+
+async fn cancel_reset(client: &HubClient) -> Result<(), FatalError> {
+    client
+        .send_no_content(Method::POST, "/api/hub/remote-access/cancel-reset")
+        .await?;
+    println!("The reset was cancelled. Your address stays as it is.");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,6 +489,36 @@ mod tests {
         assert!(text.contains("stranger"));
         assert!(text.contains("ABCDEFGHIJKLMNOPQRST"));
         assert!(text.contains("residuum remote saved"));
+    }
+
+    #[test]
+    fn the_status_report_shows_a_pending_reset_with_how_to_cancel() {
+        let mut status = RemoteAccessStatus::new(RemoteAccessState::Ready);
+        status.pending_reset = Some(PendingResetInfo {
+            slug: "stranger".into(),
+            account_uri: "https://acme.test/acct/9".into(),
+            own: false,
+            confirmed: true,
+            effective_at: Some("2026-01-02T03:04:05+00:00".into()),
+            cancellable: true,
+        });
+        let foreign = status_report(&status);
+        assert!(foreign.contains("stranger"));
+        assert!(foreign.contains("2026-01-02T03:04:05"));
+        assert!(foreign.contains("residuum remote cancel-reset"));
+
+        status.pending_reset = Some(PendingResetInfo {
+            slug: "laptop".into(),
+            account_uri: "https://acme.test/acct/1".into(),
+            own: true,
+            confirmed: false,
+            effective_at: None,
+            cancellable: false,
+        });
+        let own = status_report(&status);
+        assert!(own.contains("requested from this instance"));
+        assert!(own.contains("hasn't been confirmed"));
+        assert!(!own.contains("cancel-reset"));
     }
 
     #[test]

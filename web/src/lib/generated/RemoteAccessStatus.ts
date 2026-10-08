@@ -3,6 +3,7 @@ import type { CertificateInfo } from "./CertificateInfo";
 import type { InstanceInfo } from "./InstanceInfo";
 import type { JoinProgress } from "./JoinProgress";
 import type { PendingJoinInfo } from "./PendingJoinInfo";
+import type { PendingResetInfo } from "./PendingResetInfo";
 import type { PinInfo } from "./PinInfo";
 import type { RemoteAccessState } from "./RemoteAccessState";
 import type { RemoteHosts } from "./RemoteHosts";
@@ -33,6 +34,10 @@ pins: Array<PinInfo>,
  * in `recovery_code`, for requests made on the machine Residuum runs on.
  */
 recovery_code_pending: boolean, recovery_code: string | null, 
+/**
+ * The reset by email waiting to take effect, when the pin service reports one.
+ */
+pending_reset: PendingResetInfo | null, 
 /**
  * The user's instances as the relay lists them, empty while unknown.
  */

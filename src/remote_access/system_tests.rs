@@ -615,3 +615,128 @@ async fn pebble_a_second_install_needs_a_join_and_a_recovery_code_resets_the_pin
     assert!(fetched.response.ends_with("ui-ok"), "{}", fetched.response);
     second.stop().await;
 }
+
+/// What the install stored about its pending recovery code.
+fn stored_recovery_code(env: &Env) -> Option<String> {
+    let text = std::fs::read_to_string(env.state_dir().join("state.json")).ok()?;
+    let state: serde_json::Value = serde_json::from_str(&text).ok()?;
+    state
+        .get("pending_recovery_code")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+#[tokio::test]
+#[ignore = "needs docker: runs Pebble"]
+async fn pebble_an_email_reset_keeps_its_recovery_code_until_the_reset_takes_effect() {
+    let (harness, pins, relay) = pebble_world().await;
+    let first_env = Env::pebble(&harness, &pins);
+    let first = Stack::start(&first_env, &relay);
+    first.wait_for_state(RemoteAccessState::Ready).await;
+    first.stop().await;
+
+    let second_env = Env::pebble(&harness, &pins);
+    let second = Stack::start(&second_env, &relay);
+    second.wait_for_state(RemoteAccessState::NeedsJoin).await;
+
+    let masked = second.remote.email_reset().await.unwrap();
+    assert_eq!(masked, "b***@example.test");
+    assert_eq!(pins.operations(), ["enroll", "email_reset"]);
+    let waiting = second
+        .wait_for("the pending reset", |s| s.pending_reset.is_some())
+        .await;
+    let reset = waiting.pending_reset.unwrap();
+    assert!(reset.own && !reset.confirmed && !reset.cancellable);
+    assert!(
+        waiting.recovery_code.is_none() && !waiting.recovery_code_pending,
+        "the new code isn't offered before the reset takes effect"
+    );
+    let kept = stored_recovery_code(&second_env).expect("the new code is stored");
+
+    // A pass through the needs-join path doesn't discard it.
+    second.remote.retry_now();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(second.status().state, RemoteAccessState::NeedsJoin);
+    assert_eq!(stored_recovery_code(&second_env).as_ref(), Some(&kept));
+
+    // Confirmed, then the hold ends.
+    let effective_at = Utc::now().timestamp() + 3600;
+    pins.confirm_email_reset(effective_at);
+    pins.apply_email_reset().await;
+    second.remote.retry_now();
+    let ready = second.wait_for_state(RemoteAccessState::Ready).await;
+    assert_eq!(ready.recovery_code.as_deref(), Some(kept.as_str()));
+    assert!(ready.recovery_code_pending);
+    assert!(ready.pending_reset.is_none());
+    assert_eq!(
+        pins.recovery_hash().as_deref(),
+        Some(super::pins::recovery_code_hash(&kept).as_str())
+    );
+    assert_eq!(pins.pins().len(), 1);
+    second.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "needs docker: runs Pebble"]
+async fn pebble_a_failed_email_reset_request_forgets_the_new_code() {
+    let (harness, pins, relay) = pebble_world().await;
+    let first_env = Env::pebble(&harness, &pins);
+    let first = Stack::start(&first_env, &relay);
+    first.wait_for_state(RemoteAccessState::Ready).await;
+    first.stop().await;
+
+    let second_env = Env::pebble(&harness, &pins);
+    let second = Stack::start(&second_env, &relay);
+    second.wait_for_state(RemoteAccessState::NeedsJoin).await;
+
+    pins.fail_next_email_reset(axum::http::StatusCode::BAD_GATEWAY);
+    let refused = second.remote.email_reset().await.unwrap_err();
+    assert!(
+        refused.to_string().contains("couldn't be sent"),
+        "{refused}"
+    );
+    assert!(stored_recovery_code(&second_env).is_none());
+    assert!(!second.status().recovery_code_pending);
+    assert!(!pins.has_pending_reset());
+    assert_eq!(pins.operations(), ["enroll"]);
+    second.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "needs docker: runs Pebble"]
+async fn pebble_a_pinned_instance_alerts_on_another_instances_reset_and_cancels_it() {
+    let (harness, pins, relay) = pebble_world().await;
+    let env = Env::pebble(&harness, &pins);
+    let stack = Stack::start(&env, &relay);
+    stack.wait_for_state(RemoteAccessState::Ready).await;
+    let own_account = pins.pins().first().map(|(uri, _)| uri.clone()).unwrap();
+
+    let effective_at = Utc::now().timestamp() + 86_400;
+    pins.preload_pending_reset(
+        "https://acme.test/acct/stranger",
+        "stranger",
+        Some(effective_at),
+    );
+    stack.remote.retry_now();
+    let alerted = stack
+        .wait_for("the pending reset", |s| s.pending_reset.is_some())
+        .await;
+    let reset = alerted.pending_reset.unwrap();
+    assert!(reset.cancellable && !reset.own && reset.confirmed);
+    assert_eq!(reset.slug, "stranger");
+    assert!(
+        stack
+            .notices()
+            .iter()
+            .any(|n| n.contains("stranger") && n.contains("UTC")),
+        "{:?}",
+        stack.notices()
+    );
+
+    stack.slot.cancel_reset().await.unwrap();
+    assert_eq!(pins.operations(), ["enroll", "cancel_reset"]);
+    assert_eq!(pins.cancelled_by().as_deref(), Some(own_account.as_str()));
+    assert!(!pins.has_pending_reset());
+    assert!(stack.status().pending_reset.is_none());
+    stack.stop().await;
+}
