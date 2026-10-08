@@ -278,6 +278,7 @@ jobs:
           if [ -f "release-artifacts/ResiduumChat-macos/ResiduumChat-macos.zip" ]; then
             ASSETS+=("release-artifacts/ResiduumChat-macos/ResiduumChat-macos.zip")
           fi
+          ASSETS+=("scripts/install.sh")
           # The updater hashes the download against this manifest before
           # replacing the running binary. Basename-only entries match the
           # asset names GitHub publishes from these paths.
