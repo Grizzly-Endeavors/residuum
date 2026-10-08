@@ -141,12 +141,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Playwright builds the app itself for the preview projects
+      # (web/playwright.config.ts, `webServer`).
       - name: Install web dependencies
         run: cd web && npm ci
-
-      # The preview projects run against the production build.
-      - name: Build web assets
-        run: cd web && npm run build
 
       - name: Web end-to-end tests
         id: web_e2e
