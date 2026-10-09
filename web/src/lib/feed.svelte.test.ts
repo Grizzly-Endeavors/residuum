@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { groupTurns } from "../feed/turns";
 import { FeedStore } from "./feed.svelte";
 import type { RecentHistorySegment, RecentMessage, ServerMessage } from "./types";
 
@@ -138,6 +139,374 @@ describe("FeedStore reloadHistory end-of-turn decision", () => {
     expect(store.isProcessing).toBe(false);
     expect(store.activeTurnId).toBeNull();
     expect(store.feed.at(-1)).toMatchObject({ kind: "user", content: "another message" });
+  });
+});
+
+describe("FeedStore dividers", () => {
+  it("names the day an episode ends on, and keeps its id apart", () => {
+    const store = new FeedStore();
+    store.prependEpisode({
+      kind: "episode",
+      episode_id: "ep-002",
+      date: "2026-03-13",
+      messages: [historyMsg("user", "Hi"), historyMsg("assistant", "Hello.")],
+      next_cursor: null,
+    });
+    expect(store.feed[0]).toMatchObject({
+      kind: "divider",
+      variant: "episode",
+      date: "2026-03-13",
+      episode: "ep-002",
+    });
+  });
+
+  it("puts a day divider where history crosses into another day", () => {
+    const store = new FeedStore();
+    store.loadHistory(
+      segment([
+        { ...historyMsg("user", "Late"), timestamp: "2026-03-13T23:50" },
+        { ...historyMsg("assistant", "Still up?"), timestamp: "2026-03-13T23:51" },
+        { ...historyMsg("user", "Morning"), timestamp: "2026-03-14T08:00" },
+      ]),
+    );
+    const dividers = store.feed.filter((item) => item.kind === "divider");
+    expect(dividers).toMatchObject([{ variant: "day", date: "2026-03-14" }]);
+  });
+});
+
+describe("FeedStore when a turn fails", () => {
+  const error = (replyTo: string | null, details: string | null = null): ServerMessage => ({
+    type: "error",
+    reply_to: replyTo,
+    message: "The model provider didn't answer.",
+    details,
+  });
+
+  function failingTurn(store: FeedStore, id = "web-a"): void {
+    store.pushUserMessage("Tidy the wiki index", undefined, id);
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: id,
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    store.handleMessage({
+      type: "broadcast_response",
+      reply_to: "t1",
+      call: 0,
+      content: "Looking first.",
+    });
+  }
+
+  it("leaves an account of it in the turn, with its cause and what to send again", () => {
+    const store = new FeedStore();
+    failingTurn(store);
+    store.handleMessage(error("web-a", "provider returned 503"));
+    store.handleMessage({ type: "turn_ended", reply_to: "web-a" });
+
+    expect(store.isProcessing).toBe(false);
+    expect(store.feed.at(-1)).toEqual({
+      id: expect.any(Number) as number,
+      kind: "turn-failure",
+      turnId: "web-a",
+      message: "The model provider didn't answer.",
+      details: "provider returned 503",
+      retry: { content: "Tidy the wiki index" },
+    });
+  });
+
+  it("keeps the images the user sent for Try again", () => {
+    const store = new FeedStore();
+    const image = { media_type: "image/png", data: "AAAA" };
+    store.pushUserMessage("What is this?", [image], "web-a");
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "web-a",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    store.handleMessage(error("web-a"));
+
+    expect(store.feed.at(-1)).toMatchObject({
+      retry: { content: "What is this?", images: [image] },
+    });
+  });
+
+  it("puts the failure inside its turn's block, so the turn ends on it", () => {
+    const store = new FeedStore();
+    failingTurn(store);
+    store.handleMessage(error("web-a"));
+
+    const entries = groupTurns(store.feed, store.activeTurnId);
+    const block = entries.at(-1);
+    if (block?.kind !== "turn") throw new Error("expected the turn's block");
+    expect(
+      block.parts.map((part) => (part.kind === "message" ? part.item.kind : part.kind)),
+    ).toEqual(["assistant", "turn-failure"]);
+  });
+
+  it("shows a turn that failed before it did anything", () => {
+    const store = new FeedStore();
+    store.pushUserMessage("Hello", undefined, "web-a");
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "web-a",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    store.handleMessage(error("web-a"));
+    store.handleMessage({ type: "turn_ended", reply_to: "web-a" });
+
+    const entries = groupTurns(store.feed, store.activeTurnId);
+    expect(entries.map((entry) => entry.kind)).toEqual(["single", "turn"]);
+    expect(store.feed.at(-1)).toMatchObject({ kind: "turn-failure" });
+  });
+
+  it("offers no retry for a message the page doesn't hold, or one that wasn't the user's own", () => {
+    const store = new FeedStore();
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t9",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    store.handleMessage(error("t9"));
+    expect(store.feed.at(-1)).not.toHaveProperty("retry");
+  });
+
+  it("keeps an error that names no turn to the toast", () => {
+    const store = new FeedStore();
+    failingTurn(store);
+    const before = store.feed.length;
+    store.handleMessage(error(null));
+    expect(store.feed).toHaveLength(before);
+    expect(store.isProcessing).toBe(false);
+  });
+
+  it("puts the failure in a turn the page joined partway", () => {
+    const store = new FeedStore();
+    store.handleMessage({
+      type: "broadcast_response",
+      reply_to: "t5",
+      call: 0,
+      content: "Working on it.",
+    });
+    store.handleMessage(error("t5"));
+    expect(store.activeTurnId).toBe("t5");
+    expect(store.feed.every((item) => item.turnId === "t5")).toBe(true);
+  });
+});
+
+describe("FeedStore announcements", () => {
+  function named(): FeedStore {
+    return new FeedStore(
+      () => null,
+      () => "atlas",
+    );
+  }
+
+  it("says the agent is working when a turn starts", () => {
+    const store = named();
+    expect(store.announcement).toBeNull();
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    expect(store.announcement?.text).toBe("atlas is working");
+  });
+
+  it("says the reply is complete, with the start of it, and not before", () => {
+    const store = named();
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    store.handleMessage({
+      type: "broadcast_response",
+      reply_to: "t1",
+      call: 0,
+      content: "Looking through the notes.",
+    });
+    expect(store.announcement?.text).toBe("atlas is working");
+
+    store.handleMessage({
+      type: "response",
+      reply_to: "t1",
+      endpoint: "ws",
+      content: "**Done.** Fixed the port.",
+    });
+    expect(store.announcement?.text).toBe("atlas replied: Done. Fixed the port.");
+  });
+
+  it("says nothing for a reply with no words, or the tools it ran", () => {
+    const store = named();
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    const started = store.announcement;
+    store.handleMessage({
+      type: "tool_call",
+      reply_to: "t1",
+      call: 0,
+      id: "c1",
+      name: "exec",
+      arguments: {},
+      server: null,
+    });
+    store.handleMessage({ type: "response", reply_to: "t1", endpoint: "ws", content: "" });
+    expect(store.announcement).toBe(started);
+  });
+
+  it("says the turn couldn't finish, for an error that names it", () => {
+    const store = named();
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    store.handleMessage({ type: "error", reply_to: "t1", message: "Nope.", details: null });
+    expect(store.announcement?.text).toBe("atlas couldn't finish");
+  });
+
+  it("leaves an error that names no turn to its toast", () => {
+    const store = named();
+    store.handleMessage({ type: "error", reply_to: null, message: "Bad frame.", details: null });
+    expect(store.announcement).toBeNull();
+  });
+
+  it("makes each announcement a new one, so the same words twice are both read", () => {
+    const store = named();
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    const first = store.announcement;
+    store.handleMessage({ type: "turn_ended", reply_to: "t1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t2",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    expect(store.announcement?.text).toBe(first?.text);
+    expect(store.announcement?.id).not.toBe(first?.id);
+  });
+
+  it("stays quiet about a turn history already showed", () => {
+    const store = named();
+    store.loadHistory(
+      segment([
+        historyMsg("user", "Are you there?", { turnId: "web-1" }),
+        historyMsg("assistant", "Here.", { turnId: "web-1" }),
+      ]),
+    );
+    store.pushUserMessage("Are you there?", undefined, "web-1");
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "web-1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    const before = store.announcement;
+    expect(
+      store.reconcileRecent(
+        segment([
+          historyMsg("user", "Are you there?", { turnId: "web-1" }),
+          historyMsg("assistant", "Here.", { turnId: "web-1" }),
+          historyMsg("user", "Are you there?", { turnId: "web-1" }),
+          historyMsg("assistant", "Still here.", { turnId: "web-1" }),
+        ]),
+      ),
+    ).toBe(true);
+    store.handleMessage({
+      type: "response",
+      reply_to: "web-1",
+      endpoint: "ws",
+      content: "Still here.",
+    });
+    expect(store.announcement).toBe(before);
+  });
+});
+
+describe("FeedStore with a turn id history already holds", () => {
+  // Every page load once counted its message ids from web-1 again, and the
+  // agent kept them as turn ids, so older history holds turns under ids a
+  // new turn can still reuse.
+  const earlier = [
+    historyMsg("user", "Earlier question", { turnId: "web-1" }),
+    historyMsg("assistant", "Earlier answer", { turnId: "web-1" }),
+  ];
+
+  function storeWithEarlierTurn(): FeedStore {
+    const store = new FeedStore();
+    store.loadHistory(segment(earlier));
+    store.pushUserMessage("New question", undefined, "web-1");
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "web-1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    return store;
+  }
+
+  for (const how of ["reconcileRecent", "reloadHistory"] as const) {
+    it(`keeps the new turn running while history holds only the earlier one (${how})`, () => {
+      const store = storeWithEarlierTurn();
+      const change = segment(earlier);
+      if (how === "reconcileRecent") expect(store.reconcileRecent(change)).toBe(true);
+      else store.reloadHistory(change);
+
+      expect(store.isProcessing).toBe(true);
+      expect(store.activeTurnId).toBe("web-1");
+      expect(store.feed.at(-1)).toMatchObject({ kind: "user", content: "New question" });
+    });
+
+    it(`settles the new turn once history holds more under the id (${how})`, () => {
+      const store = storeWithEarlierTurn();
+      const change = segment([
+        ...earlier,
+        historyMsg("user", "New question", { turnId: "web-1" }),
+        historyMsg("assistant", "New answer", { turnId: "web-1" }),
+      ]);
+      if (how === "reconcileRecent") expect(store.reconcileRecent(change)).toBe(true);
+      else store.reloadHistory(change);
+
+      expect(store.isProcessing).toBe(false);
+      expect(store.activeTurnId).toBeNull();
+      expect(store.feed.at(-1)).toMatchObject({ kind: "assistant", content: "New answer" });
+    });
+  }
+});
+
+describe("FeedStore flagging messages that reach a running turn", () => {
+  it("flags a user message sent while a turn runs, and not one that starts a turn", () => {
+    const store = storeWithSettledHistory();
+    store.pushUserMessage("Draft the post", undefined, "web-a");
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "web-a",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    store.pushUserMessage("Keep it short", undefined, "web-b");
+
+    const users = store.feed.filter((item) => item.kind === "user").slice(-2);
+    expect(users[0]).not.toHaveProperty("midTurn");
+    expect(users[1]).toMatchObject({ content: "Keep it short", turnId: "web-a", midTurn: true });
+  });
+
+  it("flags a session's message that arrives mid-turn", () => {
+    const store = storeWithSettledHistory();
+    store.pushAgentMessage("spawned-1", "run-1", "Done early", null);
+    store.pushUserMessage("Go", undefined, "web-a");
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "web-a",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    store.pushAgentMessage("spawned-1", "run-1", "Result", null);
+
+    const messages = store.feed.filter((item) => item.kind === "agent-message");
+    expect(messages[0]).not.toHaveProperty("midTurn");
+    expect(messages[1]).toMatchObject({ content: "Result", turnId: "web-a", midTurn: true });
   });
 });
 

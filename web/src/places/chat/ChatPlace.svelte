@@ -156,6 +156,7 @@
     liveTurnId={store.activeTurnId}
     observed={store.observed.get}
     onStop={() => ws.stop()}
+    announcement={store.announcement}
     dock={running ? composerDock : undefined}
   >
     {#snippet empty()}

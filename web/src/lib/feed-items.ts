@@ -43,6 +43,15 @@ function appendResult(call: ToolCallState, output: string): void {
   call.result = (call.result ? call.result + "\n" : "") + TOOL_RESULT_MARKER + output;
 }
 
+/** How many of `messages` carry each turn id. */
+export function countByTurn(messages: readonly RecentMessage[]): ReadonlyMap<string, number> {
+  const counts = new Map<string, number>();
+  for (const msg of messages) {
+    if (msg.turn_id !== undefined) counts.set(msg.turn_id, (counts.get(msg.turn_id) ?? 0) + 1);
+  }
+  return counts;
+}
+
 /**
  * Whether the background turn in progress at some point in main's history is
  * shown: `shown` when an agent message kicked it off (a session's relayed
@@ -80,6 +89,23 @@ export interface HistoryConversion {
   endTurn: BackgroundTurnState;
 }
 
+/**
+ * Whether `msg`, a user-role message, reached the agent while its turn ran.
+ * The agent takes such a message in at its checkpoint after a tool batch, so
+ * it follows a tool result of the same turn; a message that starts a turn
+ * follows the previous turn's last reply, whatever id it carries. Messages
+ * without turn ids (episodes, older records) can't be told apart this way,
+ * and each of their user messages starts a turn.
+ */
+function reachedAgentMidTurn(msg: RecentMessage, before: RecentMessage | undefined): boolean {
+  return (
+    msg.role === "user" &&
+    before?.role === "tool" &&
+    msg.turn_id !== undefined &&
+    before.turn_id === msg.turn_id
+  );
+}
+
 /** Convert chat-history-shaped messages into feed items. */
 export function convertHistory(
   messages: RecentMessage[],
@@ -89,8 +115,12 @@ export function convertHistory(
   const undecidedHead: RecentMessage[] = [];
   const toolCallItems = new Map<string, ToolCallState>();
   let turn: BackgroundTurnState = opts.carriedTurn ?? "unknown";
+  /** The message before this one, leaving out the agent's own notes to itself. */
+  let before: RecentMessage | undefined;
 
   for (const msg of messages) {
+    const midTurn = reachedAgentMidTurn(msg, before);
+    if (msg.role !== "system") before = msg;
     const agentMessage = historyAgentMessage(msg, opts.mode);
     if (opts.mode === "main") {
       if (msg.role === "user") turn = agentMessage ? "shown" : "hidden";
@@ -109,7 +139,10 @@ export function convertHistory(
     }
 
     const content = msg.content;
-    const ofTurn = msg.turn_id === undefined ? {} : { turnId: msg.turn_id };
+    const ofTurn = {
+      ...(msg.turn_id === undefined ? {} : { turnId: msg.turn_id }),
+      ...(midTurn ? { midTurn: true } : {}),
+    };
     switch (msg.role) {
       case "user": {
         if (agentMessage) {
@@ -150,6 +183,12 @@ export function convertHistory(
         break;
       }
       case "assistant": {
+        // What the model reasoned comes before the text and the tool calls it led to.
+        for (const thought of msg.thinking ?? []) {
+          if (thought.trim()) {
+            out.push({ id: nextFeedId(), kind: "thinking", content: thought, ...ofTurn });
+          }
+        }
         if (content.trim()) {
           out.push({ id: nextFeedId(), kind: "assistant", content, ...ofTurn });
         }
@@ -208,14 +247,16 @@ export function feedItemSignature(item: FeedItem): string | null {
 
 /**
  * Append a live tool call to `feed`, joining the tool group at the tail if
- * there is one of the same turn, and remember it in `pending` so its result
- * can find it. `turnId` is the turn in flight, when known.
+ * there is one of the same turn and the same model call, and remember it in
+ * `pending` so its result can find it. `turnId` is the turn in flight, and
+ * `modelCall` the model call that made the tool call, when known.
  */
 export function appendToolCall(
   feed: FeedItem[],
   pending: Map<string, ToolCallState>,
   call: { id: string; name: string; arguments: unknown; server?: string | null },
   turnId?: string,
+  modelCall?: number,
 ): void {
   const state: ToolCallState = {
     id: call.id,
@@ -223,9 +264,10 @@ export function appendToolCall(
     arguments: normalizeToolArgs(call.arguments),
     status: "running",
     server: call.server,
+    startedAt: Date.now(),
   };
   const last = feed[feed.length - 1];
-  if (last?.kind === "tool-group" && last.turnId === turnId) {
+  if (last?.kind === "tool-group" && last.turnId === turnId && last.call === modelCall) {
     last.calls.push(state);
   } else {
     feed.push({
@@ -233,6 +275,7 @@ export function appendToolCall(
       kind: "tool-group",
       calls: [state],
       ...(turnId === undefined ? {} : { turnId }),
+      ...(modelCall === undefined ? {} : { call: modelCall }),
     });
   }
   // Re-read through `feed` so a `$state` feed hands back its proxied call
@@ -251,7 +294,11 @@ export function settlePendingCalls(
   pending: Map<string, ToolCallState>,
   status: "done" | "stopped",
 ): void {
-  for (const call of pending.values()) call.status = status;
+  const at = Date.now();
+  for (const call of pending.values()) {
+    call.status = status;
+    call.endedAt = at;
+  }
   pending.clear();
 }
 
@@ -277,6 +324,7 @@ export function applyToolResult(
   const call = pending.get(result.tool_call_id);
   if (!call) return;
   call.status = result.is_error ? "error" : "done";
+  call.endedAt = Date.now();
   if (result.auto_mode) call.autoMode = result.auto_mode;
   if (result.output) appendResult(call, result.output);
   pending.delete(result.tool_call_id);

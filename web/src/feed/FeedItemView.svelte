@@ -1,12 +1,13 @@
 <script lang="ts">
   import type { FeedItem } from "../lib/types";
   import AgentMessageCard from "./AgentMessageCard.svelte";
+  import AssistantMessage from "./AssistantMessage.svelte";
   import CompressedMarker from "./CompressedMarker.svelte";
   import FeedDivider from "./FeedDivider.svelte";
   import FileAttachment from "./FileAttachment.svelte";
   import LocalNote from "./LocalNote.svelte";
-  import Prose from "./Prose.svelte";
   import StatusLine from "./StatusLine.svelte";
+  import TurnFailure from "./TurnFailure.svelte";
   import UserMessage from "./UserMessage.svelte";
 
   // One feed item, in the main chat or a session's transcript. `agent` is the
@@ -19,15 +20,17 @@
 {#if item.kind === "user"}
   <UserMessage {item} {agent} />
 {:else if item.kind === "assistant"}
-  <Prose content={item.content} {agent} />
+  <AssistantMessage {item} {agent} />
 {:else if item.kind === "agent-message"}
   <AgentMessageCard {item} {agent} />
 {:else if item.kind === "divider"}
-  <FeedDivider label={item.label} />
+  <FeedDivider label={item.label} date={item.date} episode={item.episode} />
 {:else if item.kind === "compressed-marker"}
   <CompressedMarker {agent} />
 {:else if item.kind === "file-attachment"}
   <FileAttachment {item} />
+{:else if item.kind === "turn-failure"}
+  <TurnFailure {item} {agent} />
 {:else if item.kind === "status"}
   <StatusLine tone={item.tone} content={item.content} details={item.details} />
 {:else if item.kind === "local-system"}

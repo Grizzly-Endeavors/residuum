@@ -40,6 +40,7 @@ export function createStubHub(env: MockEnv = createMockEnv()): MockHub {
         unread: 0,
         state: createState(name, (options.runState ?? "running") === "running", env),
         connectedClients: () => 0,
+        receiveMessage: () => undefined,
         dispose: () => undefined,
       };
       agents.set(name, agent);

@@ -84,7 +84,7 @@ describe("Feed", () => {
     expect(screen.queryByText("No messages yet")).toBeNull();
   });
 
-  it("puts a turn's activity line at the head of its block, before what it said", () => {
+  it("keeps a turn's activity line where it happened, between what the agent said", () => {
     const { container } = render(Feed, {
       agent: "atlas",
       items: [
@@ -105,7 +105,33 @@ describe("Feed", () => {
       ["assistant", true],
     ]);
     const block = container.querySelector(".feed-turn");
-    expect(block?.firstElementChild).toHaveTextContent("Searched memory");
+    expect(Array.from(block?.children ?? [], (el) => el.textContent.trim())).toEqual([
+      "Checking first.",
+      "Searched memory",
+      "Here is the plan.",
+    ]);
+  });
+
+  it("tells a screen reader what the agent is doing, from outside the scrolling region", async () => {
+    const view = render(Feed, {
+      agent: "atlas",
+      items: [reply],
+      label: "Conversation with atlas",
+      announcement: { id: 1, text: "atlas is working" },
+    });
+    const status = screen.getByText("atlas is working").closest('[role="status"]');
+    expect(status).not.toBeNull();
+    expect(screen.getByRole("region", { name: "Conversation with atlas" })).not.toContainElement(
+      status as HTMLElement,
+    );
+
+    await view.rerender({ announcement: { id: 2, text: "atlas replied: Done." } });
+    expect(status).toHaveTextContent(/^atlas replied: Done\.$/);
+  });
+
+  it("says nothing until there is something to say", () => {
+    render(Feed, { agent: "atlas", items: [reply], label: "Conversation with atlas" });
+    expect(screen.queryByText(/is working|replied|couldn't finish/)).toBeNull();
   });
 
   it("shows a turn that has only made tool calls as its line", () => {

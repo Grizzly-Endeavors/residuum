@@ -60,21 +60,21 @@ test("older episodes load as the reader nears the top, and what they read stays 
   await expect(feed.getByText(GREETING)).toBeInViewport();
 
   // The newest episode comes with recent history, so the marker shows from the start.
-  const newest = feed.getByRole("separator", { name: /^ep-003 · / });
+  const newest = feed.getByRole("separator", { name: /, ep-003$/ });
   await expect(newest).toBeAttached();
   await expect(feed.getByRole("note")).toHaveText(
     "Older messages are summarized. atlas remembers what was said, not the exact wording.",
   );
-  await expect(feed.getByRole("separator", { name: /^ep-002 · / })).toHaveCount(0);
+  await expect(feed.getByRole("separator", { name: /, ep-002$/ })).toHaveCount(0);
 
   await scrollToTop(feed);
-  await expect(feed.getByRole("separator", { name: /^ep-002 · / })).toBeAttached();
+  await expect(feed.getByRole("separator", { name: /, ep-002$/ })).toBeAttached();
   // The older part went in above: the divider the reader was at is still in view.
   await expect(newest).toBeInViewport();
 
   await expect(async () => {
     await scrollToTop(feed);
-    await expect(feed.getByRole("separator", { name: /^ep-001 · / })).toBeInViewport({
+    await expect(feed.getByRole("separator", { name: /, ep-001$/ })).toBeInViewport({
       timeout: 1000,
     });
   }).toPass();
@@ -218,7 +218,7 @@ test.describe("after the connection drops", () => {
     });
     await expect(page.getByRole("button", { name: "Jump to latest" })).toBeVisible();
 
-    await expect(feed.getByRole("separator", { name: /^ep-004 · / })).toBeAttached({
+    await expect(feed.getByRole("separator", { name: /, ep-004$/ })).toBeAttached({
       timeout: 15_000,
     });
     await expect(reading).toBeInViewport();

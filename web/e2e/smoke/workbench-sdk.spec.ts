@@ -270,11 +270,18 @@ test.describe("residuum.on and residuum.watch", () => {
           };
         }),
     );
+    // Not the pieces the model's text and reasoning stream in as.
     await expect
-      .poll(async () => (await seen(page)).map((frame) => frame.type))
+      .poll(async () =>
+        (await seen(page))
+          .map((frame) => frame.type)
+          .filter((type) => type !== "text_delta" && type !== "thinking_delta"),
+      )
       .toEqual([
         "connection",
+        "user_message",
         "turn_started",
+        "thinking",
         "broadcast_response",
         "tool_call",
         "tool_result",

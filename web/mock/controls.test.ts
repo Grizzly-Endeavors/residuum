@@ -172,6 +172,65 @@ describe("test controls", () => {
     });
   });
 
+  describe("telegram-message", () => {
+    const post = (path: string, body?: unknown): Promise<{ status: number; body: unknown }> =>
+      fetchJson(`${harness.baseUrl}/api/mock/${path}`, {
+        method: "POST",
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+
+    beforeEach(async () => {
+      // No waiting: the turn runs to its end at once.
+      await post("delays", { scale: 0 });
+    });
+
+    it("tells a connected page of the person's message, then runs a turn that answers on Telegram", async () => {
+      const socket = await harness.openSocket("/api/agents/atlas/ws");
+      expect(
+        await post("telegram-message?agent=atlas", { content: "Is the build green?", name: "Sam" }),
+      ).toEqual({ status: 200, body: { ok: true } });
+
+      const sender = {
+        name: "Sam",
+        id: "42",
+        interface: "telegram",
+        location: "direct message",
+      };
+      expect(await socket.nextOfType("user_message")).toMatchObject({
+        content: "Is the build green?",
+        sender,
+        endpoint: "telegram",
+      });
+      expect(await socket.nextOfType("turn_started")).toMatchObject({
+        origin: { endpoint: "telegram", sender, visibility: "user" },
+      });
+      expect(await socket.nextOfType("response")).toMatchObject({ endpoint: "telegram" });
+      await socket.nextOfType("turn_ended");
+
+      const messages = await recentMessages("atlas");
+      expect(messages.find((m) => m.content === "Is the build green?")).toMatchObject({
+        role: "user",
+        sender,
+      });
+    });
+
+    it("asks about the routing doc, from Alex, when told nothing", async () => {
+      const socket = await harness.openSocket("/api/agents/atlas/ws");
+      await post("telegram-message?agent=atlas");
+      expect(await socket.nextOfType("user_message")).toMatchObject({
+        content: expect.stringContaining("routing doc") as string,
+        sender: { name: "Alex" },
+      });
+    });
+
+    it("answers 404 without a known agent, and 422 for text that isn't", async () => {
+      const missing = { status: 404, body: { error: "mock: name an agent with ?agent=" } };
+      expect(await post("telegram-message")).toEqual(missing);
+      expect(await post("telegram-message?agent=ghost")).toEqual(missing);
+      expect((await post("telegram-message?agent=atlas", { content: 3 })).status).toBe(422);
+    });
+  });
+
   describe("reset", () => {
     const agentNames = async (): Promise<string[]> => {
       const res = await fetchJson(`${harness.baseUrl}/api/hub/agents`);

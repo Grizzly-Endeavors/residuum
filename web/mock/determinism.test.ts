@@ -69,8 +69,8 @@ async function chat(mock: MockServerHarness): Promise<Frame[]> {
   const socket: TestSocket = await mock.openSocket("/api/agents/scout/ws");
   socket.send({ type: "set_verbose", enabled: true });
   socket.send({ type: "send_message", id: "m1", content: "spawn look into the fallback" });
-  await socket.nextOfType("turn_ended");
   await socket.nextOfType("session_turn_ended");
+  await socket.nextOfType("turn_ended");
   await socket.close();
   return socket.frames;
 }
