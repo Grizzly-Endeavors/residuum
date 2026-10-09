@@ -466,8 +466,10 @@ impl AnthropicClient {
                     thinking: text,
                     signature,
                 } => {
-                    // A block with neither text nor a signature has nothing to
-                    // show and nothing to send back.
+                    // The API sends an empty signature for a block it has not
+                    // signed. A block with neither text nor a signature has
+                    // nothing to show and nothing to send back.
+                    let signature = signature.filter(|s| !s.is_empty());
                     if !text.is_empty() || signature.is_some() {
                         thinking.push(ThinkingBlock {
                             text,
@@ -3562,6 +3564,38 @@ mod tests {
             "the tool is named: {err:?}"
         );
         assert!(!err.is_retryable(), "garbage input will not improve");
+    }
+
+    #[tokio::test]
+    async fn thinking_block_that_streams_unsigned_is_kept_as_plain_thinking() {
+        let events = [
+            message_start(json!({"input_tokens": 5, "output_tokens": 1})),
+            block_start(
+                0,
+                json!({"type": "thinking", "thinking": "", "signature": ""}),
+            ),
+            delta(
+                0,
+                json!({"type": "thinking_delta", "thinking": "unsigned musing"}),
+            ),
+            block_stop(0),
+            block_start(
+                1,
+                json!({"type": "thinking", "thinking": "", "signature": ""}),
+            ),
+            block_stop(1),
+            block_start(2, json!({"type": "text", "text": ""})),
+            delta(2, json!({"type": "text_delta", "text": "Done."})),
+            block_stop(2),
+            message_end("end_turn", json!({"output_tokens": 8})),
+        ]
+        .concat();
+        let (result, _, _) = stream_from(sse_response(&[events]), test_client).await;
+        assert_eq!(
+            result.unwrap().thinking,
+            vec![ThinkingBlock::text("unsigned musing")],
+            "an empty signature is no signature, and a block with nothing in it is dropped"
+        );
     }
 
     #[tokio::test]

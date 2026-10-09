@@ -68,8 +68,9 @@ pub struct ThinkingBlock {
     pub redacted: Option<String>,
     /// Which part of the response the provider attached `signature` to, for
     /// a provider that signs individual parts (Gemini: the id of the tool
-    /// call it belongs to, absent when it belongs to the response's text).
-    /// Replayed so each signature goes back on the part it came with.
+    /// call it belongs to, or `text` for the response's text). Replayed so
+    /// each signature goes back on the part it came with. A block that names
+    /// a part is that provider's own, and no other provider replays it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part: Option<String>,
 }

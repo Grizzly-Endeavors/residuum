@@ -9,6 +9,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use super::{StreamDelta, StreamSink};
+use crate::util::spawn_in_span;
 
 /// A sink that keeps everything pushed to it.
 #[derive(Default)]
@@ -199,11 +200,11 @@ impl ScriptedServer {
         let uri = format!("http://{}", listener.local_addr().unwrap());
         let requests = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&requests);
-        tokio::spawn(async move {
+        spawn_in_span(async move {
             let mut scripts = responses.into_iter();
             while let Ok((socket, _)) = listener.accept().await {
                 let script = scripts.next();
-                tokio::spawn(serve(socket, script, Arc::clone(&recorded)));
+                spawn_in_span(serve(socket, script, Arc::clone(&recorded)));
             }
         });
         Self { uri, requests }
