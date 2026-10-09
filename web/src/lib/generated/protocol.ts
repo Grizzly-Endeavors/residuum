@@ -4,6 +4,9 @@
 export type { ClientMessage } from "./ClientMessage";
 export type { ServerMessage } from "./ServerMessage";
 export type { PostTurnActivityKind } from "./PostTurnActivityKind";
+export type { MessageSender } from "./MessageSender";
+export type { TurnOrigin } from "./TurnOrigin";
+export type { Visibility } from "./Visibility";
 export type { ImageAttachment } from "./ImageAttachment";
 export type { OutboundA2aTaskSummary } from "./OutboundA2aTaskSummary";
 export type { SessionCategory } from "./SessionCategory";

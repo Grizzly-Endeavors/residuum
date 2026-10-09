@@ -9,15 +9,16 @@ use crate::agent::Agent;
 use crate::agent::context::{PromptContext, SkillsContext};
 use crate::agent::interrupt::Interrupt;
 use crate::bus::{
-    EndpointCapabilities, EndpointId, EndpointName, ErrorEvent, MessageEvent, NotifyName,
-    Publisher, ResponseEvent, SYSTEM_CHANNEL, Subscriber, TurnLifecycleEvent, topics,
+    EndpointCapabilities, EndpointId, EndpointName, ErrorEvent, MainConversationEvent,
+    MessageEvent, NotifyName, Publisher, ResponseEvent, SYSTEM_CHANNEL, Subscriber,
+    TurnLifecycleEvent, TurnOrigin, topics,
 };
 
 use crate::config::Config;
 use crate::gateway::types::{AgentRuntime, StopRequest};
 use crate::hub::activity::ActivityTracker;
 use crate::inference::ImageData;
-use crate::interfaces::types::MessageOrigin;
+use crate::interfaces::types::{BACKGROUND_ENDPOINT, MessageOrigin};
 use crate::memory::types::Visibility;
 use crate::skills::SharedSkillState;
 use crate::tracing_service::TracingService;
@@ -530,14 +531,36 @@ async fn maybe_nudge_learner(rt: &mut AgentRuntime) {
 }
 
 /// Publish a `TurnLifecycleEvent::Ended` closing the turn on an endpoint.
-/// Publish `TurnLifecycleEvent::Started` (if there's an output endpoint)
-/// and spawn the turn-start checkpoint, which captures the workspace state
+/// Publish one event of the main agent's conversation.
+async fn publish_main_conversation(publisher: &Publisher, event: MainConversationEvent) {
+    if let Err(e) = publisher.publish(topics::MainConversation, event).await {
+        tracing::warn!(error = %e, "failed to publish main conversation event");
+    }
+}
+
+/// Announce a turn: its opening person's message and its start to the main
+/// conversation, whatever endpoint it is delivered to, and
+/// `TurnLifecycleEvent::Started` to the output endpoint (if there is one).
+/// Also spawns the turn-start checkpoint, which captures the workspace state
 /// before anything this turn does, attributed as an outside edit.
 async fn publish_turn_started(
     rt: &AgentRuntime,
     output_endpoint: Option<&EndpointName>,
-    correlation_id: &str,
+    message: &MessageEvent,
+    origin: TurnOrigin,
 ) {
+    let correlation_id = message.id.as_str();
+    if let Some(echo) = MainConversationEvent::user_message(message, correlation_id) {
+        publish_main_conversation(&rt.publisher, echo).await;
+    }
+    publish_main_conversation(
+        &rt.publisher,
+        MainConversationEvent::TurnStarted {
+            turn_id: correlation_id.to_string(),
+            origin,
+        },
+    )
+    .await;
     if let Some(ep) = output_endpoint
         && let Err(e) = rt
             .publisher
@@ -622,7 +645,12 @@ fn spawn_main_turn_end_checkpoint(
 /// On success, emits one `ResponseEvent` per reply text to the output endpoint,
 /// then closes the turn with `TurnLifecycleEvent::Ended`. When there is no output
 /// endpoint (e.g. a background turn with no prior user endpoint), success publishes
-/// nothing.
+/// nothing to an endpoint.
+///
+/// However the turn ended, the main conversation gets `TurnEnded` last: it
+/// follows every event the turn published there, and tells a client following
+/// the conversation that the turn is over, whichever endpoint it was
+/// delivered to.
 ///
 /// On failure, logs the error, auto-reports the failure through
 /// `tracing_service` (a no-op unless the user has enabled auto error
@@ -641,27 +669,26 @@ async fn publish_turn_outcome(
 ) {
     match turn_result {
         Ok(texts) => {
-            let Some(ep) = output_endpoint else {
-                return;
-            };
-            for text in &texts {
-                if let Err(e) = publisher
-                    .publish(
-                        topics::Endpoint(ep.clone()),
-                        ResponseEvent {
-                            correlation_id: correlation_id.to_string(),
-                            content: text.clone(),
-                            timestamp: crate::time::now_local(tz),
-                            attachment: None,
-                            conversation: None,
-                        },
-                    )
-                    .await
-                {
-                    tracing::warn!(error = %e, "failed to publish response event");
+            if let Some(ep) = output_endpoint {
+                for text in &texts {
+                    if let Err(e) = publisher
+                        .publish(
+                            topics::Endpoint(ep.clone()),
+                            ResponseEvent {
+                                correlation_id: correlation_id.to_string(),
+                                content: text.clone(),
+                                timestamp: crate::time::now_local(tz),
+                                attachment: None,
+                                conversation: None,
+                            },
+                        )
+                        .await
+                    {
+                        tracing::warn!(error = %e, "failed to publish response event");
+                    }
                 }
+                publish_turn_ended(publisher, ep, correlation_id).await;
             }
-            publish_turn_ended(publisher, ep, correlation_id).await;
         }
         Err(e) => {
             let described = crate::inference::describe_turn_failure(&e);
@@ -698,6 +725,13 @@ async fn publish_turn_outcome(
             }
         }
     }
+    publish_main_conversation(
+        publisher,
+        MainConversationEvent::TurnEnded {
+            turn_id: correlation_id.to_string(),
+        },
+    )
+    .await;
 }
 
 /// What a turn's result says about its replies, read before
@@ -776,6 +810,27 @@ async fn defer_late_messages(rt: &mut AgentRuntime, leftovers: Vec<Interrupt>, s
     }
 }
 
+/// Where a turn's replies go. Background turns go wherever `switch_endpoint`
+/// last pointed them, else the user's last endpoint; user turns derive from
+/// the origin and become the new last endpoint.
+fn resolve_output_endpoint(
+    rt: &mut AgentRuntime,
+    origin: &MessageOrigin,
+    is_background: bool,
+) -> Option<EndpointName> {
+    if is_background {
+        return background_output_endpoint(
+            rt.output_topic_override_tx.borrow().clone(),
+            rt.last_output_endpoint.as_ref(),
+        );
+    }
+    // Clear any switch_endpoint override so responses follow the user's endpoint.
+    rt.output_topic_override_tx.send_replace(None);
+    let ep = EndpointName::from(origin.endpoint.as_str());
+    rt.last_output_endpoint = Some(ep.clone());
+    Some(ep)
+}
+
 /// Handle an inbound user message: run agent turn, persist, observe, and process leftovers.
 ///
 /// Returns whether the hub's stop request interrupted this turn — the caller
@@ -792,23 +847,14 @@ pub async fn handle_inbound_message(
 ) -> bool {
     let reply_id = message.id.clone();
     let origin = message.origin.clone();
-    let is_background = origin.endpoint == "background";
-
-    // Determine output endpoint: background turns go wherever `switch_endpoint`
-    // last pointed them, else the user's last endpoint; user turns derive from
-    // the origin and become the new last endpoint.
-    let output_endpoint = if is_background {
-        background_output_endpoint(
-            rt.output_topic_override_tx.borrow().clone(),
-            rt.last_output_endpoint.as_ref(),
-        )
+    let is_background = origin.endpoint == BACKGROUND_ENDPOINT;
+    let visibility = if is_background {
+        Visibility::Background
     } else {
-        // Clear any switch_endpoint override so responses follow the user's endpoint.
-        rt.output_topic_override_tx.send_replace(None);
-        let ep = EndpointName::from(origin.endpoint.as_str());
-        rt.last_output_endpoint = Some(ep.clone());
-        Some(ep)
+        Visibility::User
     };
+
+    let output_endpoint = resolve_output_endpoint(rt, &origin, is_background);
 
     // Only publish tool-activity events to endpoints with STREAMING capability.
     let tool_activity_endpoint = output_endpoint.as_ref().filter(|ep| {
@@ -822,7 +868,13 @@ pub async fn handle_inbound_message(
     // ends, however the turn ends.
     let _busy = rt.activity.main_turn();
 
-    publish_turn_started(rt, output_endpoint.as_ref(), &reply_id).await;
+    publish_turn_started(
+        rt,
+        output_endpoint.as_ref(),
+        &message,
+        TurnOrigin::new(&origin, visibility.clone()),
+    )
+    .await;
 
     let before = rt.agent.message_count();
 
@@ -877,11 +929,6 @@ pub async fn handle_inbound_message(
     )
     .await;
 
-    let visibility = if is_background {
-        Visibility::Background
-    } else {
-        Visibility::User
-    };
     // A background turn was started by no user message.
     let user_message = (!is_background).then(|| message.content.clone());
     report_turn_end(&rt.activity, replies, user_message, visibility.clone());

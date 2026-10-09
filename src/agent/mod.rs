@@ -6,6 +6,7 @@ mod core;
 pub mod hop;
 pub mod interrupt;
 pub mod recent_messages;
+mod stream;
 mod think_tags;
 pub(crate) mod turn;
 pub mod usage;

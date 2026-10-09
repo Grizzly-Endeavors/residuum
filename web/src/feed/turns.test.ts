@@ -168,10 +168,21 @@ describe("live turns", () => {
   it("bound a turn by turn_started and turn_ended, and mark it live meanwhile", () => {
     const store = new FeedStore();
     store.pushUserMessage("Check the routing doc");
-    store.handleMessage({ type: "turn_started", reply_to: "m1" });
-    store.handleMessage({ type: "broadcast_response", content: "Looking first." });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "m1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    store.handleMessage({
+      type: "broadcast_response",
+      reply_to: "m1",
+      call: 0,
+      content: "Looking first.",
+    });
     store.handleMessage({
       type: "tool_call",
+      reply_to: "m1",
+      call: 0,
       id: "c1",
       name: "memory_search",
       arguments: "{}",
@@ -185,7 +196,12 @@ describe("live turns", () => {
     ]);
     expect(entries[1]).toMatchObject({ kind: "turn", turnId: "m1", live: true });
 
-    store.handleMessage({ type: "response", reply_to: "m1", content: "It's tidy." });
+    store.handleMessage({
+      type: "response",
+      reply_to: "m1",
+      endpoint: "ws",
+      content: "It's tidy.",
+    });
     store.handleMessage({ type: "turn_ended", reply_to: "m1" });
     entries = groupTurns(store.feed, store.activeTurnId);
     expect(describeEntries(entries)).toEqual([
@@ -198,9 +214,15 @@ describe("live turns", () => {
   it("keeps the next turn's tool calls out of the turn before it", () => {
     const store = new FeedStore();
     store.pushUserMessage("First");
-    store.handleMessage({ type: "turn_started", reply_to: "m1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "m1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     store.handleMessage({
       type: "tool_call",
+      reply_to: "m1",
+      call: 0,
       id: "c1",
       name: "read_file",
       arguments: "{}",
@@ -208,15 +230,23 @@ describe("live turns", () => {
     });
     store.handleMessage({
       type: "tool_call",
+      reply_to: "m1",
+      call: 0,
       id: "c1b",
       name: "list_dir",
       arguments: "{}",
       server: "files",
     });
     store.handleMessage({ type: "turn_ended", reply_to: "m1" });
-    store.handleMessage({ type: "turn_started", reply_to: "m2" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "m2",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     store.handleMessage({
       type: "tool_call",
+      reply_to: "m1",
+      call: 0,
       id: "c2",
       name: "write_file",
       arguments: "{}",
@@ -243,10 +273,24 @@ describe("live turns", () => {
   it("puts a message sent while the turn runs inside it", () => {
     const store = new FeedStore();
     store.pushUserMessage("Draft the post");
-    store.handleMessage({ type: "turn_started", reply_to: "m1" });
-    store.handleMessage({ type: "broadcast_response", content: "Drafting." });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "m1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    store.handleMessage({
+      type: "broadcast_response",
+      reply_to: "m1",
+      call: 0,
+      content: "Drafting.",
+    });
     store.pushUserMessage("Keep it short");
-    store.handleMessage({ type: "response", reply_to: "m1", content: "Done, and short." });
+    store.handleMessage({
+      type: "response",
+      reply_to: "m1",
+      endpoint: "ws",
+      content: "Done, and short.",
+    });
 
     expect(describeEntries(groupTurns(store.feed, store.activeTurnId))).toEqual([
       "user:Draft the post",
@@ -257,13 +301,19 @@ describe("live turns", () => {
   it("shows the turn in flight after its message before it has output, under one key", () => {
     const store = new FeedStore();
     store.pushUserMessage("Plan the week");
-    store.handleMessage({ type: "turn_started", reply_to: "m1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "m1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     let entries = groupTurns(store.feed, store.activeTurnId);
     expect(describeEntries(entries)).toEqual(["user:Plan the week", "turn[]()"]);
     expect(entries[1]).toMatchObject({ key: "turn:m1", live: true });
 
     store.handleMessage({
       type: "tool_call",
+      reply_to: "m1",
+      call: 0,
       id: "c1",
       name: "read_file",
       arguments: "{}",
@@ -276,7 +326,11 @@ describe("live turns", () => {
   it("keeps a block for a turn that ended with nothing to show only when asked", () => {
     const store = new FeedStore();
     store.pushUserMessage("Never mind");
-    store.handleMessage({ type: "turn_started", reply_to: "m1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "m1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     store.askStop();
     store.handleMessage({ type: "turn_ended", reply_to: "m1" });
     store.pushUserMessage("Something else");
@@ -296,10 +350,24 @@ describe("live turns", () => {
   it("marks only the latest block of the turn in flight live", () => {
     const store = new FeedStore();
     store.pushUserMessage("Go");
-    store.handleMessage({ type: "turn_started", reply_to: "m1" });
-    store.handleMessage({ type: "broadcast_response", content: "First part." });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "m1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    store.handleMessage({
+      type: "broadcast_response",
+      reply_to: "m1",
+      call: 0,
+      content: "First part.",
+    });
     store.pushLocalSystem("A note in between.");
-    store.handleMessage({ type: "broadcast_response", content: "Second part." });
+    store.handleMessage({
+      type: "broadcast_response",
+      reply_to: "m1",
+      call: 0,
+      content: "Second part.",
+    });
 
     const blocks = groupTurns(store.feed, store.activeTurnId).filter((e) => e.kind === "turn");
     expect(blocks.map((b) => b.live)).toEqual([false, true]);
@@ -308,8 +376,17 @@ describe("live turns", () => {
   it("ends a turn the agent stopped in the middle of", () => {
     const store = new FeedStore();
     store.pushUserMessage("Long job");
-    store.handleMessage({ type: "turn_started", reply_to: "m1" });
-    store.handleMessage({ type: "broadcast_response", content: "Starting." });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "m1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    store.handleMessage({
+      type: "broadcast_response",
+      reply_to: "m1",
+      call: 0,
+      content: "Starting.",
+    });
 
     store.abandonLiveTurn();
     expect(store.isProcessing).toBe(false);

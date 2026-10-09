@@ -1,10 +1,9 @@
 //! WebSocket bus subscriber — translates typed bus events to `ServerMessage` frames.
 
 use crate::bus::{
-    EndpointName, ErrorEvent, InlineOutputEvent, IntermediateEvent, NoticeEvent, NotifyName,
+    EndpointName, ErrorEvent, InlineOutputEvent, MainConversationEvent, NoticeEvent, NotifyName,
     OutboundA2aTaskEvent, PostTurnActivityEvent, PostTurnActivityKind, ResponseEvent, SessionEvent,
-    Subscriber, ToolActivityEvent, TurnLifecycleEvent, TurnUsageEvent, WorkbenchEvent,
-    WorkspaceEvent, topics,
+    Subscriber, TurnUsageEvent, WorkbenchEvent, WorkspaceEvent, topics,
 };
 use crate::gateway::file_server::FileRegistry;
 use crate::gateway::protocol::ServerMessage;
@@ -12,34 +11,99 @@ use crate::workspace::watch::{
     LIVE_UPDATES_OFF_MESSAGE, WatchSet, WatchedChanges, WorkspaceResyncReason,
 };
 
-/// The frame for a main-agent tool call or result.
-fn tool_activity_frame(activity: ToolActivityEvent) -> ServerMessage {
-    match activity {
-        ToolActivityEvent::Call(tc) => ServerMessage::ToolCall {
-            id: tc.tool_call_id,
-            name: tc.name,
-            arguments: tc.arguments,
-            server: tc.server,
-        },
-        ToolActivityEvent::Result(tr) => ServerMessage::ToolResult {
-            tool_call_id: tr.tool_call_id,
-            name: tr.name,
-            output: tr.output,
-            is_error: tr.is_error,
-            auto_mode: tr.auto_mode,
-        },
-    }
-}
-
-/// The frame for a main-agent turn lifecycle transition.
-fn turn_lifecycle_frame(event: TurnLifecycleEvent) -> ServerMessage {
+/// The frame for one event of the main agent's conversation.
+fn main_conversation_frame(event: MainConversationEvent) -> ServerMessage {
     match event {
-        TurnLifecycleEvent::Started { correlation_id } => ServerMessage::TurnStarted {
-            reply_to: correlation_id,
+        MainConversationEvent::TurnStarted { turn_id, origin } => ServerMessage::TurnStarted {
+            reply_to: turn_id,
+            origin,
         },
-        TurnLifecycleEvent::Ended { correlation_id } => ServerMessage::TurnEnded {
-            reply_to: correlation_id,
+        MainConversationEvent::TurnEnded { turn_id } => {
+            ServerMessage::TurnEnded { reply_to: turn_id }
+        }
+        MainConversationEvent::UserMessage {
+            id,
+            turn_id,
+            content,
+            images,
+            sender,
+            endpoint,
+        } => ServerMessage::UserMessage {
+            id,
+            turn_id,
+            content,
+            images,
+            sender,
+            endpoint,
         },
+        MainConversationEvent::ToolCall { call, event } => ServerMessage::ToolCall {
+            reply_to: event.correlation_id,
+            call,
+            id: event.tool_call_id,
+            name: event.name,
+            arguments: event.arguments,
+            server: event.server,
+        },
+        MainConversationEvent::ToolResult(result) => ServerMessage::ToolResult {
+            reply_to: result.correlation_id,
+            tool_call_id: result.tool_call_id,
+            name: result.name,
+            output: result.output,
+            is_error: result.is_error,
+            auto_mode: result.auto_mode,
+        },
+        MainConversationEvent::TextDelta {
+            turn_id,
+            call,
+            text,
+        } => ServerMessage::TextDelta {
+            reply_to: turn_id,
+            call,
+            text,
+        },
+        MainConversationEvent::ThinkingDelta {
+            turn_id,
+            call,
+            text,
+        } => ServerMessage::ThinkingDelta {
+            reply_to: turn_id,
+            call,
+            text,
+        },
+        MainConversationEvent::StreamRestart { turn_id, call } => ServerMessage::StreamRestart {
+            reply_to: turn_id,
+            call,
+        },
+        MainConversationEvent::Thinking {
+            turn_id,
+            call,
+            content,
+        } => ServerMessage::Thinking {
+            reply_to: turn_id,
+            call,
+            content,
+        },
+        MainConversationEvent::Intermediate {
+            turn_id,
+            call,
+            content,
+        } => ServerMessage::BroadcastResponse {
+            reply_to: turn_id,
+            call,
+            content,
+        },
+        MainConversationEvent::Response {
+            turn_id,
+            call,
+            endpoint,
+            content,
+        } => ServerMessage::Response {
+            reply_to: turn_id,
+            call,
+            endpoint,
+            content,
+        },
+        MainConversationEvent::TurnUsage(usage) => turn_usage_frame(usage),
     }
 }
 
@@ -92,13 +156,19 @@ pub(crate) fn workspace_frame(
     }
 }
 
-/// Convert a `ResponseEvent` into the appropriate `ServerMessage`.
+/// Convert a message the agent posted to this endpoint into the appropriate
+/// `ServerMessage`.
 ///
-/// If the response carries a file attachment, registers it with the file
+/// If the post carries a file attachment, registers it with the file
 /// registry and returns a `FileAttachment` frame; otherwise returns a plain
-/// `Response` frame. Extracted from `WsSubscribers::recv` to keep the select
-/// loop within clippy's `too_many_lines` budget.
-async fn response_to_server_message(registry: &FileRegistry, resp: ResponseEvent) -> ServerMessage {
+/// `Response` frame delivered to `endpoint`. Extracted from
+/// `WsSubscribers::recv` to keep the select loop within clippy's
+/// `too_many_lines` budget.
+async fn response_to_server_message(
+    registry: &FileRegistry,
+    endpoint: &str,
+    resp: ResponseEvent,
+) -> ServerMessage {
     if let Some(att) = resp.attachment {
         let url = registry
             .url_for(
@@ -123,6 +193,8 @@ async fn response_to_server_message(registry: &FileRegistry, resp: ResponseEvent
     } else {
         ServerMessage::Response {
             reply_to: resp.correlation_id,
+            call: None,
+            endpoint: endpoint.to_string(),
             content: resp.content,
         }
     }
@@ -130,14 +202,21 @@ async fn response_to_server_message(registry: &FileRegistry, resp: ResponseEvent
 
 /// Typed subscribers for a single WebSocket connection.
 pub struct WsSubscribers {
+    /// Every main-agent turn, whatever endpoint started it, in order: the
+    /// source of all the main conversation's frames — turn lifecycle, user
+    /// messages, tool activity, thinking, streamed text, intermediate text,
+    /// replies and usage.
+    pub main: Subscriber<MainConversationEvent>,
+    /// Messages posted to this endpoint with `send_message`. A turn's own
+    /// reply also reaches the endpoint that started it; it arrives through
+    /// `main` instead, and is told apart here by its correlation id (a post
+    /// has none).
     pub response: Subscriber<ResponseEvent>,
-    pub tool_activity: Subscriber<ToolActivityEvent>,
-    pub turn_lifecycle: Subscriber<TurnLifecycleEvent>,
-    pub turn_usage: Subscriber<TurnUsageEvent>,
+    /// The endpoint `response` listens on, named in the frames it yields.
+    endpoint: EndpointName,
     /// Background post-turn cycle start/finish, for the quiet activity
     /// indicator — see `crate::gateway::post_turn`.
     pub post_turn_activity: Subscriber<PostTurnActivityEvent>,
-    pub intermediate: Subscriber<IntermediateEvent>,
     pub notice: Subscriber<NoticeEvent>,
     pub inline_output: Subscriber<InlineOutputEvent>,
     pub error: Subscriber<ErrorEvent>,
@@ -174,11 +253,9 @@ impl WsSubscribers {
     ) -> Result<Self, crate::bus::BusError> {
         let system_topic = || topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL));
         Ok(Self {
+            main: bus_handle.subscribe(topics::MainConversation).await?,
             response: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
-            tool_activity: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
-            turn_lifecycle: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
-            turn_usage: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
-            intermediate: bus_handle.subscribe(topics::Endpoint(ep)).await?,
+            endpoint: ep,
             post_turn_activity: bus_handle.subscribe(system_topic()).await?,
             notice: bus_handle.subscribe(system_topic()).await?,
             inline_output: bus_handle.subscribe(system_topic()).await?,
@@ -199,32 +276,28 @@ impl WsSubscribers {
     pub async fn recv(&mut self) -> Option<ServerMessage> {
         loop {
             let msg = tokio::select! {
+                event = self.main.recv() => match event {
+                    Ok(Some(main_event)) => Some(main_conversation_frame(main_event)),
+                    _ => return None,
+                },
                 event = self.response.recv() => {
                     match event {
-                        Ok(Some(resp)) => Some(
-                            response_to_server_message(&self.file_registry, resp).await,
+                        // A turn's reply names its turn and arrives through
+                        // `main`; only a post carries no correlation id.
+                        Ok(Some(resp)) if resp.correlation_id.is_empty() => Some(
+                            response_to_server_message(
+                                &self.file_registry,
+                                self.endpoint.as_ref(),
+                                resp,
+                            )
+                            .await,
                         ),
+                        Ok(Some(_turn_reply)) => None,
                         _ => return None,
                     }
                 }
-                event = self.tool_activity.recv() => match event {
-                    Ok(Some(activity)) => Some(tool_activity_frame(activity)),
-                    _ => return None,
-                },
-                event = self.turn_lifecycle.recv() => match event {
-                    Ok(Some(lifecycle)) => Some(turn_lifecycle_frame(lifecycle)),
-                    _ => return None,
-                },
-                event = self.turn_usage.recv() => match event {
-                    Ok(Some(usage)) => Some(turn_usage_frame(usage)),
-                    _ => return None,
-                },
                 event = self.post_turn_activity.recv() => match event {
                     Ok(Some(activity)) => Some(post_turn_activity_frame(activity)),
-                    _ => return None,
-                },
-                event = self.intermediate.recv() => match event {
-                    Ok(Some(im)) => Some(ServerMessage::BroadcastResponse { content: im.content }),
                     _ => return None,
                 },
                 event = self.notice.recv() => match event {
@@ -302,9 +375,7 @@ mod tests {
     use chrono::NaiveDate;
 
     use super::*;
-    use crate::bus::{
-        IntermediateEvent, NotifyName, ResponseEvent, ToolCallEvent, ToolResultEvent,
-    };
+    use crate::bus::{ToolCallEvent, ToolResultEvent};
     use crate::workspace::watch::{WorkspaceChange, WorkspaceChangeKind};
 
     fn ts() -> chrono::NaiveDateTime {
@@ -314,289 +385,217 @@ mod tests {
             .unwrap()
     }
 
-    #[tokio::test]
-    async fn response_maps_to_server_message() {
+    /// A broker with a `WsSubscribers` on the `ws` endpoint.
+    async fn subscribed() -> (crate::bus::BusHandle, WsSubscribers) {
         let handle = crate::bus::spawn_broker();
-        let pub_ = handle.publisher();
-        let ep = EndpointName::from("ws");
-        let mut subs = WsSubscribers::new(
+        let subs = WsSubscribers::new(
             &handle,
             &handle,
-            ep.clone(),
+            EndpointName::from("ws"),
             crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
         .unwrap();
+        (handle, subs)
+    }
 
-        pub_.publish(
-            topics::Endpoint(ep),
-            ResponseEvent {
-                correlation_id: "c1".into(),
-                content: "hello".into(),
-                timestamp: ts(),
-                attachment: None,
-                conversation: None,
+    async fn publish_main(handle: &crate::bus::BusHandle, event: MainConversationEvent) {
+        handle
+            .publisher()
+            .publish(topics::MainConversation, event)
+            .await
+            .unwrap();
+    }
+
+    fn origin(endpoint: &str) -> crate::bus::TurnOrigin {
+        crate::bus::TurnOrigin {
+            endpoint: endpoint.into(),
+            sender: None,
+            visibility: crate::memory::types::Visibility::User,
+        }
+    }
+
+    /// A turn that started on Telegram, thought, spoke, called a tool and
+    /// replied, as the events its loop publishes.
+    fn a_telegram_turn() -> Vec<MainConversationEvent> {
+        vec![
+            MainConversationEvent::UserMessage {
+                id: "t1".into(),
+                turn_id: "t1".into(),
+                content: "what time is it".into(),
+                images: Vec::new(),
+                sender: None,
+                endpoint: "telegram".into(),
             },
-        )
-        .await
-        .unwrap();
-
-        let msg = subs.recv().await.unwrap();
-        assert!(matches!(
-            msg,
-            ServerMessage::Response { reply_to, content }
-                if reply_to == "c1" && content == "hello"
-        ));
-    }
-
-    #[tokio::test]
-    async fn tool_call_maps_to_server_message() {
-        let handle = crate::bus::spawn_broker();
-        let pub_ = handle.publisher();
-        let ep = EndpointName::from("ws");
-        let mut subs = WsSubscribers::new(
-            &handle,
-            &handle,
-            ep.clone(),
-            crate::gateway::file_server::FileRegistry::new("scout"),
-            no_watch_set(),
-        )
-        .await
-        .unwrap();
-
-        pub_.publish(
-            topics::Endpoint(ep),
-            ToolActivityEvent::Call(ToolCallEvent {
-                correlation_id: "c1".into(),
+            MainConversationEvent::TurnStarted {
+                turn_id: "t1".into(),
+                origin: origin("telegram"),
+            },
+            MainConversationEvent::TextDelta {
+                turn_id: "t1".into(),
+                call: 0,
+                text: "Let me ".into(),
+            },
+            MainConversationEvent::ThinkingDelta {
+                turn_id: "t1".into(),
+                call: 0,
+                text: "hm".into(),
+            },
+            MainConversationEvent::StreamRestart {
+                turn_id: "t1".into(),
+                call: 0,
+            },
+            MainConversationEvent::Thinking {
+                turn_id: "t1".into(),
+                call: 0,
+                content: "hmm".into(),
+            },
+            MainConversationEvent::Intermediate {
+                turn_id: "t1".into(),
+                call: 0,
+                content: "Checking the clock.".into(),
+            },
+            MainConversationEvent::ToolCall {
+                call: 0,
+                event: ToolCallEvent {
+                    correlation_id: "t1".into(),
+                    tool_call_id: "tc1".into(),
+                    name: "exec".into(),
+                    arguments: serde_json::json!({"command": "date"}),
+                    server: None,
+                },
+            },
+            MainConversationEvent::ToolResult(ToolResultEvent {
+                correlation_id: "t1".into(),
                 tool_call_id: "tc1".into(),
-                name: "search".into(),
-                arguments: serde_json::json!({"q": "test"}),
-                server: None,
-            }),
-        )
-        .await
-        .unwrap();
-
-        let msg = subs.recv().await.unwrap();
-        assert!(matches!(
-            msg,
-            ServerMessage::ToolCall { id, name, .. }
-                if id == "tc1" && name == "search"
-        ));
-    }
-
-    #[tokio::test]
-    async fn tool_result_maps_to_server_message() {
-        let handle = crate::bus::spawn_broker();
-        let pub_ = handle.publisher();
-        let ep = EndpointName::from("ws");
-        let mut subs = WsSubscribers::new(
-            &handle,
-            &handle,
-            ep.clone(),
-            crate::gateway::file_server::FileRegistry::new("scout"),
-            no_watch_set(),
-        )
-        .await
-        .unwrap();
-
-        pub_.publish(
-            topics::Endpoint(ep),
-            ToolActivityEvent::Result(ToolResultEvent {
-                correlation_id: "c1".into(),
-                tool_call_id: "tc1".into(),
-                name: "search".into(),
-                output: "found it".into(),
+                name: "exec".into(),
+                output: "noon".into(),
                 is_error: false,
                 auto_mode: None,
             }),
-        )
-        .await
-        .unwrap();
-
-        let msg = subs.recv().await.unwrap();
-        assert!(matches!(
-            msg,
-            ServerMessage::ToolResult { tool_call_id, name, output, is_error, .. }
-                if tool_call_id == "tc1" && name == "search" && output == "found it" && !is_error
-        ));
+            MainConversationEvent::Response {
+                turn_id: "t1".into(),
+                call: Some(1),
+                endpoint: "telegram".into(),
+                content: "It is noon.".into(),
+            },
+            MainConversationEvent::TurnEnded {
+                turn_id: "t1".into(),
+            },
+        ]
     }
 
     #[tokio::test]
-    async fn intermediate_maps_to_broadcast_response() {
-        let handle = crate::bus::spawn_broker();
-        let pub_ = handle.publisher();
-        let ep = EndpointName::from("ws");
-        let mut subs = WsSubscribers::new(
-            &handle,
-            &handle,
-            ep.clone(),
-            crate::gateway::file_server::FileRegistry::new("scout"),
-            no_watch_set(),
-        )
-        .await
-        .unwrap();
+    async fn a_turn_maps_to_its_frames_in_the_order_it_happened() {
+        let (handle, mut subs) = subscribed().await;
+        for event in a_telegram_turn() {
+            publish_main(&handle, event).await;
+        }
 
-        pub_.publish(
-            topics::Endpoint(ep),
-            IntermediateEvent {
-                correlation_id: "c1".into(),
-                content: "thinking...".into(),
-            },
-        )
-        .await
-        .unwrap();
-
-        let msg = subs.recv().await.unwrap();
-        assert!(matches!(
-            msg,
-            ServerMessage::BroadcastResponse { content }
-                if content == "thinking..."
-        ));
-    }
-
-    #[tokio::test]
-    async fn inline_output_maps_to_server_message() {
-        let handle = crate::bus::spawn_broker();
-        let pub_ = handle.publisher();
-        let ep = EndpointName::from("ws");
-        let mut subs = WsSubscribers::new(
-            &handle,
-            &handle,
-            ep,
-            crate::gateway::file_server::FileRegistry::new("scout"),
-            no_watch_set(),
-        )
-        .await
-        .unwrap();
-
-        pub_.publish(
-            topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL)),
-            crate::bus::InlineOutputEvent {
-                message: "[context]\n  identity: ~100 tokens".into(),
-            },
-        )
-        .await
-        .unwrap();
-
-        let msg = subs.recv().await.unwrap();
-        assert!(matches!(
-            msg,
-            ServerMessage::InlineOutput { message }
-                if message == "[context]\n  identity: ~100 tokens"
-        ));
-    }
-
-    #[tokio::test]
-    async fn notice_maps_to_server_message() {
-        let handle = crate::bus::spawn_broker();
-        let pub_ = handle.publisher();
-        let ep = EndpointName::from("ws");
-        let mut subs = WsSubscribers::new(
-            &handle,
-            &handle,
-            ep,
-            crate::gateway::file_server::FileRegistry::new("scout"),
-            no_watch_set(),
-        )
-        .await
-        .unwrap();
-
-        pub_.publish(
-            topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL)),
-            NoticeEvent {
-                message: "reloading".into(),
-            },
-        )
-        .await
-        .unwrap();
-
-        let msg = subs.recv().await.unwrap();
-        assert!(matches!(
-            msg,
-            ServerMessage::Notice { message }
-                if message == "reloading"
-        ));
-    }
-
-    #[tokio::test]
-    async fn turn_started_maps_to_server_message() {
-        let handle = crate::bus::spawn_broker();
-        let pub_ = handle.publisher();
-        let ep = EndpointName::from("ws");
-        let mut subs = WsSubscribers::new(
-            &handle,
-            &handle,
-            ep.clone(),
-            crate::gateway::file_server::FileRegistry::new("scout"),
-            no_watch_set(),
-        )
-        .await
-        .unwrap();
-
-        pub_.publish(
-            topics::Endpoint(ep),
-            TurnLifecycleEvent::Started {
-                correlation_id: "c1".into(),
-            },
-        )
-        .await
-        .unwrap();
-
-        let msg = subs.recv().await.unwrap();
-        assert!(matches!(
-            msg,
-            ServerMessage::TurnStarted { reply_to }
-                if reply_to == "c1"
-        ));
-    }
-
-    #[tokio::test]
-    async fn turn_ended_maps_to_server_message() {
-        let handle = crate::bus::spawn_broker();
-        let pub_ = handle.publisher();
-        let ep = EndpointName::from("ws");
-        let mut subs = WsSubscribers::new(
-            &handle,
-            &handle,
-            ep.clone(),
-            crate::gateway::file_server::FileRegistry::new("scout"),
-            no_watch_set(),
-        )
-        .await
-        .unwrap();
-
-        pub_.publish(
-            topics::Endpoint(ep),
-            TurnLifecycleEvent::Ended {
-                correlation_id: "c1".into(),
-            },
-        )
-        .await
-        .unwrap();
-
-        let msg = subs.recv().await.unwrap();
-        assert!(
-            matches!(msg, ServerMessage::TurnEnded { reply_to } if reply_to == "c1"),
-            "TurnEnded should map to ServerMessage::TurnEnded"
+        let mut frames = Vec::new();
+        for _ in 0..11 {
+            frames.push(subs.recv().await.unwrap());
+        }
+        let kinds: Vec<String> = frames
+            .iter()
+            .map(|frame| {
+                serde_json::to_value(frame)
+                    .unwrap()
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "user_message",
+                "turn_started",
+                "text_delta",
+                "thinking_delta",
+                "stream_restart",
+                "thinking",
+                "broadcast_response",
+                "tool_call",
+                "tool_result",
+                "response",
+                "turn_ended",
+            ],
+            "one channel keeps a turn's frames in the order they were published"
         );
     }
 
     #[tokio::test]
+    async fn a_turns_frames_carry_its_turn_call_and_origin() {
+        let (handle, mut subs) = subscribed().await;
+        for event in a_telegram_turn() {
+            publish_main(&handle, event).await;
+        }
+        let mut frames = Vec::new();
+        for _ in 0..11 {
+            frames.push(subs.recv().await.unwrap());
+        }
+        let [
+            user,
+            started,
+            _text,
+            _thinking_delta,
+            restart,
+            thinking,
+            intermediate,
+            tool_call,
+            tool_result,
+            response,
+            ended,
+        ] = <[ServerMessage; 11]>::try_from(frames).unwrap();
+
+        assert!(matches!(
+            user,
+            ServerMessage::UserMessage { id, turn_id, endpoint, .. }
+                if id == "t1" && turn_id == "t1" && endpoint == "telegram"
+        ));
+        assert!(matches!(
+            started,
+            ServerMessage::TurnStarted { reply_to, origin }
+                if reply_to == "t1" && origin.endpoint == "telegram"
+        ));
+        assert!(matches!(
+            restart,
+            ServerMessage::StreamRestart { reply_to, call: 0 } if reply_to == "t1"
+        ));
+        assert!(matches!(
+            thinking,
+            ServerMessage::Thinking { reply_to, call: 0, content }
+                if reply_to == "t1" && content == "hmm"
+        ));
+        assert!(matches!(
+            intermediate,
+            ServerMessage::BroadcastResponse { reply_to, call: 0, content }
+                if reply_to == "t1" && content == "Checking the clock."
+        ));
+        assert!(matches!(
+            tool_call,
+            ServerMessage::ToolCall { reply_to, call: 0, id, name, .. }
+                if reply_to == "t1" && id == "tc1" && name == "exec"
+        ));
+        assert!(matches!(
+            tool_result,
+            ServerMessage::ToolResult { reply_to, tool_call_id, output, is_error: false, .. }
+                if reply_to == "t1" && tool_call_id == "tc1" && output == "noon"
+        ));
+        assert!(matches!(
+            response,
+            ServerMessage::Response { reply_to, call: Some(1), endpoint, content }
+                if reply_to == "t1" && endpoint == "telegram" && content == "It is noon."
+        ));
+        assert!(matches!(ended, ServerMessage::TurnEnded { reply_to } if reply_to == "t1"));
+    }
+
+    #[tokio::test]
     async fn turn_usage_maps_to_server_message() {
-        let handle = crate::bus::spawn_broker();
-        let pub_ = handle.publisher();
-        let ep = EndpointName::from("ws");
-        let mut subs = WsSubscribers::new(
-            &handle,
-            &handle,
-            ep.clone(),
-            crate::gateway::file_server::FileRegistry::new("scout"),
-            no_watch_set(),
-        )
-        .await
-        .unwrap();
+        let (handle, mut subs) = subscribed().await;
 
         let mut totals = crate::agent::usage::SessionUsageTotals::default();
         totals.accumulate(Some(crate::inference::Usage {
@@ -606,18 +605,17 @@ mod tests {
             cache_read_tokens: None,
         }));
 
-        pub_.publish(
-            topics::Endpoint(ep),
-            crate::bus::TurnUsageEvent {
+        publish_main(
+            &handle,
+            MainConversationEvent::TurnUsage(crate::bus::TurnUsageEvent {
                 correlation_id: "c1".into(),
                 output_tokens: 20,
                 has_usage: true,
                 tool_calls: 4,
                 session_totals: Some(totals),
-            },
+            }),
         )
-        .await
-        .unwrap();
+        .await;
 
         let msg = subs.recv().await.unwrap();
         assert!(
@@ -631,30 +629,232 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn error_event_maps_to_server_message() {
-        let handle = crate::bus::spawn_broker();
-        let pub_ = handle.publisher();
-        let ep = EndpointName::from("ws");
-        let mut subs = WsSubscribers::new(
-            &handle,
-            &handle,
-            ep,
-            crate::gateway::file_server::FileRegistry::new("scout"),
-            no_watch_set(),
-        )
-        .await
-        .unwrap();
+    async fn a_message_posted_to_the_endpoint_maps_to_a_response_outside_any_turn() {
+        let (handle, mut subs) = subscribed().await;
 
-        pub_.publish(
-            topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL)),
-            ErrorEvent {
-                correlation_id: "c1".into(),
-                message: "something went wrong".into(),
-                details: None,
+        handle
+            .publisher()
+            .publish(
+                topics::Endpoint(EndpointName::from("ws")),
+                ResponseEvent {
+                    correlation_id: String::new(),
+                    content: "heads up".into(),
+                    timestamp: ts(),
+                    attachment: None,
+                    conversation: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let msg = subs.recv().await.unwrap();
+        assert!(
+            matches!(
+                &msg,
+                ServerMessage::Response { reply_to, call: None, endpoint, content }
+                    if reply_to.is_empty() && endpoint == "ws" && content == "heads up"
+            ),
+            "{msg:?}"
+        );
+    }
+
+    /// A turn's reply is published to its endpoint and to the main
+    /// conversation; a connection must show it once, from the conversation.
+    #[tokio::test]
+    async fn a_turns_reply_is_not_shown_twice_when_it_is_delivered_to_the_endpoint() {
+        let (handle, mut subs) = subscribed().await;
+        let publisher = handle.publisher();
+
+        publisher
+            .publish(
+                topics::Endpoint(EndpointName::from("ws")),
+                ResponseEvent {
+                    correlation_id: "t1".into(),
+                    content: "It is noon.".into(),
+                    timestamp: ts(),
+                    attachment: None,
+                    conversation: None,
+                },
+            )
+            .await
+            .unwrap();
+        publish_main(
+            &handle,
+            MainConversationEvent::Response {
+                turn_id: "t1".into(),
+                call: Some(0),
+                endpoint: "ws".into(),
+                content: "It is noon.".into(),
             },
         )
-        .await
-        .unwrap();
+        .await;
+        publisher
+            .publish(
+                topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL)),
+                NoticeEvent {
+                    message: "marker".into(),
+                },
+            )
+            .await
+            .unwrap();
+
+        // Frames from different subscriptions arrive in either order.
+        let frames = [subs.recv().await.unwrap(), subs.recv().await.unwrap()];
+        assert!(
+            frames
+                .iter()
+                .any(|f| matches!(f, ServerMessage::Response { call: Some(0), .. })),
+            "{frames:?}"
+        );
+        assert!(
+            frames
+                .iter()
+                .any(|f| matches!(f, ServerMessage::Notice { message } if message == "marker")),
+            "the endpoint's copy of the reply must not become a frame of its own: {frames:?}"
+        );
+        assert_no_frame(&mut subs).await;
+    }
+
+    /// Assert nothing more is on its way to the connection.
+    async fn assert_no_frame(subs: &mut WsSubscribers) {
+        let next = tokio::time::timeout(std::time::Duration::from_millis(100), subs.recv()).await;
+        assert!(next.is_err(), "unexpected frame: {next:?}");
+    }
+
+    /// The endpoint topic keeps carrying a turn's tool activity, lifecycle,
+    /// usage and intermediate text for the interfaces subscribed to it, but a
+    /// web connection takes those only from the main conversation.
+    #[tokio::test]
+    async fn per_endpoint_turn_events_do_not_become_frames() {
+        let (handle, mut subs) = subscribed().await;
+        let publisher = handle.publisher();
+        let ep = || topics::Endpoint(EndpointName::from("ws"));
+
+        publisher
+            .publish(
+                ep(),
+                crate::bus::TurnLifecycleEvent::Started {
+                    correlation_id: "t1".into(),
+                },
+            )
+            .await
+            .unwrap();
+        publisher
+            .publish(
+                ep(),
+                crate::bus::ToolActivityEvent::Call(ToolCallEvent {
+                    correlation_id: "t1".into(),
+                    tool_call_id: "tc1".into(),
+                    name: "search".into(),
+                    arguments: serde_json::json!({}),
+                    server: None,
+                }),
+            )
+            .await
+            .unwrap();
+        publisher
+            .publish(
+                ep(),
+                crate::bus::IntermediateEvent {
+                    correlation_id: "t1".into(),
+                    content: "working".into(),
+                },
+            )
+            .await
+            .unwrap();
+        publisher
+            .publish(
+                ep(),
+                crate::bus::TurnUsageEvent {
+                    correlation_id: "t1".into(),
+                    output_tokens: 1,
+                    has_usage: true,
+                    tool_calls: 0,
+                    session_totals: None,
+                },
+            )
+            .await
+            .unwrap();
+        publisher
+            .publish(
+                topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL)),
+                NoticeEvent {
+                    message: "marker".into(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let msg = subs.recv().await.unwrap();
+        assert!(
+            matches!(&msg, ServerMessage::Notice { message } if message == "marker"),
+            "{msg:?}"
+        );
+        assert_no_frame(&mut subs).await;
+    }
+
+    #[tokio::test]
+    async fn inline_output_maps_to_server_message() {
+        let (handle, mut subs) = subscribed().await;
+
+        handle
+            .publisher()
+            .publish(
+                topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL)),
+                crate::bus::InlineOutputEvent {
+                    message: "[context]\n  identity: ~100 tokens".into(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let msg = subs.recv().await.unwrap();
+        assert!(matches!(
+            msg,
+            ServerMessage::InlineOutput { message }
+                if message == "[context]\n  identity: ~100 tokens"
+        ));
+    }
+
+    #[tokio::test]
+    async fn notice_maps_to_server_message() {
+        let (handle, mut subs) = subscribed().await;
+
+        handle
+            .publisher()
+            .publish(
+                topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL)),
+                NoticeEvent {
+                    message: "reloading".into(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let msg = subs.recv().await.unwrap();
+        assert!(matches!(
+            msg,
+            ServerMessage::Notice { message }
+                if message == "reloading"
+        ));
+    }
+
+    #[tokio::test]
+    async fn error_event_maps_to_server_message() {
+        let (handle, mut subs) = subscribed().await;
+
+        handle
+            .publisher()
+            .publish(
+                topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL)),
+                ErrorEvent {
+                    correlation_id: "c1".into(),
+                    message: "something went wrong".into(),
+                    details: None,
+                },
+            )
+            .await
+            .unwrap();
 
         let msg = subs.recv().await.unwrap();
         assert!(matches!(

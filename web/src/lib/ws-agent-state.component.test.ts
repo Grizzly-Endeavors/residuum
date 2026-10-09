@@ -93,7 +93,11 @@ describe("the agent connection", () => {
     const socket = FakeWebSocket.last;
     socket.simulateOpen();
     ws.store.pushUserMessage("Long job");
-    ws.store.handleMessage({ type: "turn_started", reply_to: "m1" });
+    ws.store.handleMessage({
+      type: "turn_started",
+      reply_to: "m1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
 
     hub.handleFrame({ type: "agent_stopping", name: "atlas" });
     await settle();

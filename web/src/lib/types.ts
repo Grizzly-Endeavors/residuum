@@ -2,6 +2,7 @@
 
 import type {
   ImageAttachment as _ImageAttachment,
+  MessageSender,
   SessionSummary as _SessionSummary,
   RepoStats as _RepoStats,
 } from "./generated/protocol";
@@ -10,6 +11,9 @@ export type {
   ClientMessage,
   ServerMessage,
   PostTurnActivityKind,
+  MessageSender,
+  TurnOrigin,
+  Visibility,
   ImageAttachment,
   OutboundA2aTaskSummary,
   SessionCategory,
@@ -86,14 +90,6 @@ export interface ToolCallRecord {
   arguments: unknown;
   /** The MCP server (its name in `mcp.json`) that owns this tool; absent for a built-in. */
   server?: string | null;
-}
-
-/** Person behind a user message that arrived on a chat interface. */
-export interface MessageSender {
-  name: string;
-  id: string;
-  interface: string;
-  location?: string;
 }
 
 export interface RecentMessage {

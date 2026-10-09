@@ -185,7 +185,11 @@ describe("chat turns", () => {
   it("runs a turn: started, a note, a search, two reads, the reply, ended", () => {
     chat.send(message("hello there"));
     expect(types()).toEqual(["turn_started"]);
-    expect(frames[0]).toEqual({ type: "turn_started", reply_to: "m1" });
+    expect(frames[0]).toEqual({
+      type: "turn_started",
+      reply_to: "m1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
 
     vi.advanceTimersByTime(300);
     expect(types()).toEqual(["turn_started", "broadcast_response", "tool_call"]);
@@ -218,7 +222,13 @@ describe("chat turns", () => {
       name: "memory_search",
       is_error: false,
     });
-    expect(response).toEqual({ type: "response", reply_to: "m1", content: cannedResponses[0] });
+    expect(response).toEqual({
+      type: "response",
+      reply_to: "m1",
+      call: 2,
+      endpoint: "ws",
+      content: cannedResponses[0],
+    });
     const reads = frames.filter((f) => f.type === "tool_call" && f.name === "read_file");
     expect(reads.map((f) => f.type === "tool_call" && f.arguments)).toEqual([
       { path: "team/wiki/index.md" },

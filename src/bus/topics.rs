@@ -6,10 +6,10 @@
 
 use super::events::{
     A2aTaskSignalEvent, AgentResultEvent, ConversationTypingEvent, ErrorEvent, InlineOutputEvent,
-    IntermediateEvent, MessageEvent, NoticeEvent, NotificationEvent, OutboundA2aTaskEvent,
-    PostTurnActivityEvent, ResponseEvent, SessionEvent, SessionResponseEvent, SpawnRequestEvent,
-    ToolActivityEvent, TurnLifecycleEvent, TurnUsageEvent, UserInboxAddedEvent, WorkbenchEvent,
-    WorkspaceEvent,
+    IntermediateEvent, MainConversationEvent, MessageEvent, NoticeEvent, NotificationEvent,
+    OutboundA2aTaskEvent, PostTurnActivityEvent, ResponseEvent, SessionEvent, SessionResponseEvent,
+    SpawnRequestEvent, ToolActivityEvent, TurnLifecycleEvent, TurnUsageEvent, UserInboxAddedEvent,
+    WorkbenchEvent, WorkspaceEvent,
 };
 use super::types::{EndpointName, NotifyName, TopicId};
 
@@ -109,6 +109,28 @@ impl Carries<ConversationTypingEvent> for Endpoint {
 impl Carries<ErrorEvent> for Endpoint {
     // A turn's failure, sent back to the chat that started it in place of
     // the reply — dropping it leaves that chat with no answer and no reason.
+    const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
+}
+
+/// The main agent's conversation: every turn it runs, whatever endpoint
+/// started it, as one ordered stream.
+///
+/// [`Endpoint`] carries a turn only to the endpoint it is delivered to, which
+/// serves the chat interface that holds that conversation. This topic is the
+/// complete record for a surface that follows the conversation as a whole.
+pub struct MainConversation;
+
+impl Topic for MainConversation {
+    fn topic_id(&self) -> TopicId {
+        TopicId::MainConversation
+    }
+}
+
+impl Carries<MainConversationEvent> for MainConversation {
+    // One enum holds the whole ordered record of a turn: a dropped event
+    // would hide a message, a tool call, or the end of a turn, and the single
+    // channel is what keeps them in order. Streaming deltas ride in it too;
+    // they are coalesced upstream, so a lossless channel stays small.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
 
@@ -318,6 +340,11 @@ mod tests {
     }
 
     #[test]
+    fn main_conversation_topic_id() {
+        assert_eq!(MainConversation.topic_id(), TopicId::MainConversation);
+    }
+
+    #[test]
     fn background_topic_id() {
         assert_eq!(Background.topic_id(), TopicId::Background);
     }
@@ -376,6 +403,11 @@ mod tests {
         );
         assert_eq!(
             <Endpoint as Carries<ErrorEvent>>::DELIVERY_MODE,
+            DeliveryMode::Lossless
+        );
+
+        assert_eq!(
+            <MainConversation as Carries<MainConversationEvent>>::DELIVERY_MODE,
             DeliveryMode::Lossless
         );
 
