@@ -229,13 +229,17 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     });
     reads.forEach((read, i) => {
       later(900 + i * 300, () => {
-        live({
-          type: "tool_result",
-          tool_call_id: read.id,
-          name: "read_file",
-          output: read.output,
-          is_error: read.isError,
-        });
+        turn.cancels.push(
+          env.whenTurnReleased("results", () => {
+            live({
+              type: "tool_result",
+              tool_call_id: read.id,
+              name: "read_file",
+              output: read.output,
+              is_error: read.isError,
+            });
+          }),
+        );
       });
     });
 
@@ -254,7 +258,7 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     }
 
     later(turnLengthMs(drop, finishWhileDown), () => {
-      turn.cancels.push(env.whenTurnEndsReleased(endTurn));
+      turn.cancels.push(env.whenTurnReleased("end", endTurn));
     });
 
     function endTurn(): void {

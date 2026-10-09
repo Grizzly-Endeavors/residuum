@@ -1,3 +1,4 @@
+import type { TurnHold } from "./env";
 import { json, parseJsonObject, readBody, readJsonObject } from "./http";
 import { offeredModelsOnly } from "./provider-models";
 import type { Route, RouteContext } from "./routes";
@@ -127,15 +128,36 @@ async function setDelays({ req, res, hub }: RouteContext): Promise<void> {
   json(res, 200, { scale });
 }
 
-/** `{ held }`: while `true`, simulated turns wait at their last step instead of ending; `false` ends the waiting ones. Reset lifts it. */
-async function holdTurnEnds({ req, res, hub }: RouteContext): Promise<void> {
+/**
+ * `{ held }`: how far simulated turns may get. `true` stops each at its last
+ * step instead of ending it, `"steps"` stops each while its file reads are
+ * still running, and `false` lets them end. Easing the hold lets the waiting
+ * turns carry on. Reset lifts it.
+ */
+async function holdTurns({ req, res, hub }: RouteContext): Promise<void> {
   const { held } = await readJsonObject(req);
-  if (typeof held !== "boolean") {
-    json(res, 422, { error: "mock: `held` must be true or false" });
+  const holds = new Map<unknown, TurnHold>([
+    [true, "end"],
+    [false, "none"],
+    ["steps", "steps"],
+  ]);
+  const hold = holds.get(held);
+  if (hold === undefined) {
+    json(res, 422, { error: 'mock: `held` must be true, false or "steps"' });
     return;
   }
-  hub.env.holdTurnEnds(held);
+  hub.env.holdTurns(hold);
   json(res, 200, { held });
+}
+
+/** `GET ?agent=name`: how many pages have the agent's chat socket open right now, as `{ pages }`. */
+function connectedPages({ res, hub, query }: RouteContext): void {
+  const agent = hub.agents.get(query.get("agent") ?? "");
+  if (agent === undefined) {
+    json(res, 404, { error: "mock: no such agent" });
+    return;
+  }
+  json(res, 200, { pages: agent.connectedClients() });
 }
 
 /**
@@ -243,5 +265,6 @@ export const controlRoutes: readonly Route[] = [
   { method: "POST", pattern: "/api/mock/reset", handler: reset },
   { method: "POST", pattern: "/api/mock/clock/advance", handler: advanceClock },
   { method: "POST", pattern: "/api/mock/delays", handler: setDelays },
-  { method: "POST", pattern: "/api/mock/turn-hold", handler: holdTurnEnds },
+  { method: "POST", pattern: "/api/mock/turn-hold", handler: holdTurns },
+  { method: "GET", pattern: "/api/mock/connected-pages", handler: connectedPages },
 ];

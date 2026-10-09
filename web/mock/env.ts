@@ -101,17 +101,32 @@ export interface MockEnv {
   /** Resolve after `ms` milliseconds of simulated time, or reject with `MockResetError` if the mock is reset first. */
   sleep: (ms: number) => Promise<void>;
   /**
-   * While held, simulated turns don't end: each waits at its last step, so a
-   * test can look at a running turn for as long as it needs, however slowly
-   * the browser keeps up. Lifting the hold ends the waiting turns.
+   * How far simulated turns may get, so a test can look at a running turn for
+   * as long as it needs, however slowly the browser keeps up:
+   * - `"end"`: a turn runs through its steps, then waits instead of ending.
+   * - `"steps"`: a turn waits with its tool calls running, sending no more
+   *   frames, so a page that connects now sees nothing until the hold eases.
+   * - `"none"`: turns run to their end.
+   * Easing the hold lets the waiting turns carry on, in the order they waited.
    */
-  holdTurnEnds: (held: boolean) => void;
-  /** Run `action` now, or once turn ends are no longer held. Returns its cancel. */
-  whenTurnEndsReleased: (action: () => void) => () => void;
+  holdTurns: (hold: TurnHold) => void;
+  /** Run `action`, a turn's `stage`, now, or once the hold lets that stage through. Returns its cancel. */
+  whenTurnReleased: (stage: TurnStage, action: () => void) => () => void;
   /** The next number of a sequence that starts at 1 again on reset, for ids that have to differ. */
   nextId: () => number;
-  /** Cancel every pending timer and held turn end, return the clock, the delays, the hold and the sequence to where they started. */
+  /** Cancel every pending timer and held turn, return the clock, the delays, the hold and the sequence to where they started. */
   reset: () => void;
+}
+
+/** How far simulated turns may get: see `MockEnv.holdTurns`. */
+export type TurnHold = "none" | "end" | "steps";
+
+/** The part of a turn a hold can stop at: delivering its tool results, or ending it. */
+export type TurnStage = "results" | "end";
+
+/** Whether `hold` keeps a turn from carrying out `stage`. */
+function holds(hold: TurnHold, stage: TurnStage): boolean {
+  return stage === "end" ? hold !== "none" : hold === "steps";
 }
 
 export function createMockEnv(options: EnvOptions = {}): MockEnv {
@@ -121,8 +136,8 @@ export function createMockEnv(options: EnvOptions = {}): MockEnv {
   let scale = initialScale;
   let sequence = 0;
   const pending = new Set<{ timer: NodeJS.Timeout; abort: () => void }>();
-  let turnEndsHeld = false;
-  const heldTurnEnds = new Set<() => void>();
+  let turnHold: TurnHold = "none";
+  const heldTurns = new Set<{ stage: TurnStage; action: () => void }>();
 
   return {
     deterministic,
@@ -158,21 +173,23 @@ export function createMockEnv(options: EnvOptions = {}): MockEnv {
         };
         pending.add(entry);
       }),
-    holdTurnEnds: (held) => {
-      turnEndsHeld = held;
-      if (held) return;
-      const released = [...heldTurnEnds];
-      heldTurnEnds.clear();
-      for (const action of released) action();
+    holdTurns: (hold) => {
+      turnHold = hold;
+      for (const entry of [...heldTurns]) {
+        if (holds(turnHold, entry.stage)) continue;
+        heldTurns.delete(entry);
+        entry.action();
+      }
     },
-    whenTurnEndsReleased: (action) => {
-      if (!turnEndsHeld) {
+    whenTurnReleased: (stage, action) => {
+      if (!holds(turnHold, stage)) {
         action();
         return () => undefined;
       }
-      heldTurnEnds.add(action);
+      const entry = { stage, action };
+      heldTurns.add(entry);
       return () => {
-        heldTurnEnds.delete(action);
+        heldTurns.delete(entry);
       };
     },
     nextId: () => ++sequence,
@@ -182,8 +199,8 @@ export function createMockEnv(options: EnvOptions = {}): MockEnv {
         entry.abort();
       }
       pending.clear();
-      heldTurnEnds.clear();
-      turnEndsHeld = false;
+      heldTurns.clear();
+      turnHold = "none";
       scale = initialScale;
       sequence = 0;
       clock.reset();
