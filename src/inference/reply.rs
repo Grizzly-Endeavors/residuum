@@ -2,7 +2,9 @@
 //! separately or interleave them, whether the reply arrives whole or in
 //! pieces.
 
-use super::{StreamDelta, StreamSink, ThinkingBlock};
+use super::{
+    ReplayScope, StreamDelta, StreamSink, ThinkingBlock, ThinkingOrigin, blocks_produced_at,
+};
 
 const OPEN_TAG: &str = "<think>";
 const CLOSE_TAG: &str = "</think>";
@@ -103,14 +105,16 @@ fn partial_tag_len(text: &str, tag: &str) -> usize {
 }
 
 /// The readable reasoning of an assistant message that can go back to a host
-/// as plain text: the unsigned, unredacted blocks, not the signed or
-/// part-tagged ones another provider produced.
-pub(crate) fn plain_reasoning(thinking: &[ThinkingBlock]) -> Option<String> {
-    let text: Vec<&str> = thinking
-        .iter()
-        .filter(|b| b.signature.is_none() && b.redacted.is_none() && b.part.is_none())
-        .map(|b| b.text.as_str())
-        .filter(|t| !t.is_empty())
+/// as plain text: what the same provider API (`reader`) returned for it,
+/// joined by a blank line. Reasoning another provider produced is left out.
+pub(crate) fn plain_reasoning(
+    thinking: &[ThinkingBlock],
+    reader: &ThinkingOrigin,
+) -> Option<String> {
+    let text: Vec<&str> = blocks_produced_at(thinking, reader, ReplayScope::SameProvider)
+        .into_iter()
+        .map(|block| block.text.as_str())
+        .filter(|text| !text.is_empty())
         .collect();
     (!text.is_empty()).then(|| text.join("\n\n"))
 }

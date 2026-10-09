@@ -14,8 +14,9 @@ use crate::inference::retry::{RetryConfig, with_retry};
 use crate::inference::stream::{Flow, TrackedSink, read_ndjson};
 use crate::inference::types::current_exchange_start;
 use crate::inference::{
-    CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
-    ResponseFormat, StopReason, StreamSink, ThinkingConfig, ToolCall, ToolDefinition, Usage,
+    CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, ProviderApi,
+    ResponseFormat, StopReason, StreamSink, ThinkingConfig, ThinkingOrigin, ToolCall,
+    ToolDefinition, Usage,
 };
 
 /// Ollama API client implementing the [`InferenceProvider`] trait.
@@ -79,11 +80,19 @@ impl OllamaClient {
         }
     }
 
+    /// Who the reasoning this client returns is recorded as coming from, and
+    /// the only origin whose reasoning it sends back.
+    fn origin(&self) -> ThinkingOrigin {
+        ThinkingOrigin::new(ProviderApi::Ollama, &self.model)
+    }
+
     /// Build everything about a request that stays the same across retries.
+    /// Reasoning goes back only when `origin`'s provider produced it.
     fn prepare(
         messages: &[Message],
         tools: &[ToolDefinition],
         options: &CompletionOptions,
+        origin: &ThinkingOrigin,
     ) -> PreparedRequest {
         let ollama_tools: Vec<OllamaTool> = tools
             .iter()
@@ -103,7 +112,7 @@ impl OllamaClient {
         });
 
         PreparedRequest {
-            messages: to_ollama_messages(messages, think == Some(true)),
+            messages: to_ollama_messages(messages, (think == Some(true)).then_some(origin)),
             tools: (!ollama_tools.is_empty()).then_some(ollama_tools),
             format: match &options.response_format {
                 ResponseFormat::Text => None,
@@ -125,10 +134,11 @@ impl OllamaClient {
         options: &CompletionOptions,
         sink: Option<&dyn StreamSink>,
     ) -> Result<InferenceResponse, InferenceError> {
-        let prepared = Self::prepare(messages, tools, options);
+        let origin = self.origin();
+        let prepared = Self::prepare(messages, tools, options, &origin);
         let tracked = sink.map(TrackedSink::new);
 
-        with_retry(&self.retry, || async {
+        let response = with_retry(&self.retry, || async {
             let request = OllamaChatRequest {
                 model: &self.model,
                 messages: &prepared.messages,
@@ -147,7 +157,8 @@ impl OllamaClient {
             }
             result
         })
-        .await
+        .await?;
+        Ok(response.produced_at(&origin))
     }
 
     #[tracing::instrument(skip_all, fields(
@@ -433,11 +444,15 @@ struct OllamaMessage {
 /// tool-result message's `tool_name` from the most recent earlier assistant
 /// tool call with that id.
 ///
-/// With `replay_thinking`, the readable thinking behind the assistant
-/// messages of the tool-use exchange in progress goes back as
-/// `message.thinking`, so the model keeps its train of thought across tool
-/// calls. Earlier turns' thinking is not sent.
-fn to_ollama_messages(messages: &[Message], replay_thinking: bool) -> Vec<OllamaMessage> {
+/// With a `replay_thinking` origin (this client's own), the readable
+/// thinking that Ollama returned behind the assistant messages of the
+/// tool-use exchange in progress goes back as `message.thinking`, so the
+/// model keeps its train of thought across tool calls. Earlier turns'
+/// thinking is not sent, nor is thinking another provider produced.
+fn to_ollama_messages(
+    messages: &[Message],
+    replay_thinking: Option<&ThinkingOrigin>,
+) -> Vec<OllamaMessage> {
     let exchange_start = current_exchange_start(messages);
     // Filled in conversation order rather than up front: ids synthesized when
     // the server sends none (`call_0`, `call_1`, ...) repeat across turns, so
@@ -481,9 +496,9 @@ fn to_ollama_messages(messages: &[Message], replay_thinking: bool) -> Vec<Ollama
                 }),
                 tool_name,
                 tool_call_id,
-                thinking: (replay_thinking && index >= exchange_start)
-                    .then(|| plain_reasoning(&msg.thinking))
-                    .flatten(),
+                thinking: replay_thinking
+                    .filter(|_| index >= exchange_start)
+                    .and_then(|origin| plain_reasoning(&msg.thinking, origin)),
                 images: if msg.images.is_empty() {
                     None
                 } else {
@@ -770,7 +785,7 @@ mod tests {
     fn message_conversion() {
         let msg = Message::user("Hello");
 
-        let ollama_msgs = to_ollama_messages(&[msg], false);
+        let ollama_msgs = to_ollama_messages(&[msg], None);
         let ollama_msg = ollama_msgs.first().unwrap();
         assert_eq!(ollama_msg.role, "user", "role should be user");
         assert_eq!(
@@ -783,7 +798,7 @@ mod tests {
     #[test]
     fn message_conversion_tool_empty_content_is_none() {
         let msg = Message::tool("", "call_1");
-        let ollama_msgs = to_ollama_messages(&[msg], false);
+        let ollama_msgs = to_ollama_messages(&[msg], None);
         let ollama_msg = ollama_msgs.first().unwrap();
         assert_eq!(ollama_msg.role, "tool", "role should be tool");
         assert!(
@@ -803,7 +818,7 @@ mod tests {
                 server: None,
             }]),
         );
-        let ollama_msgs = to_ollama_messages(&[msg], false);
+        let ollama_msgs = to_ollama_messages(&[msg], None);
         let ollama_msg = ollama_msgs.first().unwrap();
         assert_eq!(ollama_msg.role, "assistant", "role should be assistant");
         assert_eq!(
@@ -843,7 +858,7 @@ mod tests {
             data: "base64data".to_string(),
         }];
         let msg = Message::user_with_images("look at this", images);
-        let ollama_msgs = to_ollama_messages(&[msg], false);
+        let ollama_msgs = to_ollama_messages(&[msg], None);
         let ollama_msg = ollama_msgs.first().unwrap();
         assert_eq!(ollama_msg.role, "user", "role should be user");
         let imgs = ollama_msg.images.clone().unwrap();
@@ -868,7 +883,7 @@ mod tests {
         );
         let tool_result = Message::tool("file1\nfile2", "call_0");
 
-        let ollama_msgs = to_ollama_messages(&[assistant, tool_result], false);
+        let ollama_msgs = to_ollama_messages(&[assistant, tool_result], None);
         let result_msg = ollama_msgs.get(1).expect("two messages were converted");
 
         let serialized = serde_json::to_value(result_msg).unwrap();
@@ -904,7 +919,7 @@ mod tests {
             Message::tool("file contents", "call_0"),
         ];
 
-        let names: Vec<Option<String>> = to_ollama_messages(&messages, false)
+        let names: Vec<Option<String>> = to_ollama_messages(&messages, None)
             .into_iter()
             .map(|m| m.tool_name)
             .collect();
@@ -941,7 +956,7 @@ mod tests {
         let result_0 = Message::tool("file1\nfile2", "call_0");
         let result_1 = Message::tool("contents", "call_1");
 
-        let ollama_msgs = to_ollama_messages(&[assistant, result_0, result_1], false);
+        let ollama_msgs = to_ollama_messages(&[assistant, result_0, result_1], None);
 
         let serialized_0 =
             serde_json::to_value(ollama_msgs.get(1).expect("three messages were converted"))
@@ -964,7 +979,7 @@ mod tests {
     #[test]
     fn tool_correlation_fields_omitted_when_absent() {
         let msg = Message::user("Hello");
-        let ollama_msgs = to_ollama_messages(&[msg], false);
+        let ollama_msgs = to_ollama_messages(&[msg], None);
         let serialized = serde_json::to_value(ollama_msgs.first().unwrap()).unwrap();
 
         assert!(
@@ -1521,7 +1536,10 @@ mod tests {
         assert_eq!(result.content, "Final answer", "content should match");
         assert_eq!(
             result.thinking,
-            vec![ThinkingBlock::text("step by step reasoning")],
+            vec![
+                ThinkingBlock::text("step by step reasoning")
+                    .from_origin(&ThinkingOrigin::new(ProviderApi::Ollama, "deepseek-r1"))
+            ],
             "thinking should be extracted from response"
         );
     }
@@ -1691,6 +1709,11 @@ mod tests {
 
     // --- Thinking replay ---
 
+    /// Where the reasoning of the clients in these tests comes from.
+    fn test_origin() -> ThinkingOrigin {
+        ThinkingOrigin::new(ProviderApi::Ollama, "m")
+    }
+
     fn exchange_with_thinking() -> Vec<Message> {
         let call = |id: &str| ToolCall {
             id: id.to_string(),
@@ -1698,22 +1721,28 @@ mod tests {
             arguments: json!({}),
             server: None,
         };
+        let anthropic = ThinkingOrigin::new(ProviderApi::Anthropic, "claude-opus-4-5");
+        let own = |text: &str| ThinkingBlock::text(text).from_origin(&test_origin());
         let mut old = Message::assistant("old", Some(vec![call("c0")]));
-        old.thinking = vec![ThinkingBlock::text("old thinking")];
+        old.thinking = vec![own("old thinking")];
         let mut plain = Message::assistant("done", None);
-        plain.thinking = vec![ThinkingBlock::text("wrap-up thinking")];
+        plain.thinking = vec![own("wrap-up thinking")];
         let mut current = Message::assistant("", Some(vec![call("c1")]));
         current.thinking = vec![
-            ThinkingBlock::text("current thinking"),
+            own("current thinking"),
+            ThinkingBlock::text("readable text from another provider").from_origin(&anthropic),
+            ThinkingBlock::text("readable text saved with no origin"),
             ThinkingBlock {
                 text: "signed elsewhere".to_string(),
                 signature: Some("sig".to_string()),
                 ..ThinkingBlock::default()
-            },
+            }
+            .from_origin(&anthropic),
             ThinkingBlock {
                 redacted: Some("ENC".to_string()),
                 ..ThinkingBlock::default()
-            },
+            }
+            .from_origin(&anthropic),
         ];
         vec![
             Message::user("one"),
@@ -1728,10 +1757,11 @@ mod tests {
 
     #[test]
     fn current_exchange_thinking_is_replayed_as_message_thinking() {
-        let thinking: Vec<Option<String>> = to_ollama_messages(&exchange_with_thinking(), true)
-            .into_iter()
-            .map(|m| m.thinking)
-            .collect();
+        let thinking: Vec<Option<String>> =
+            to_ollama_messages(&exchange_with_thinking(), Some(&test_origin()))
+                .into_iter()
+                .map(|m| m.thinking)
+                .collect();
         assert_eq!(
             thinking,
             vec![
@@ -1744,14 +1774,39 @@ mod tests {
                 None
             ],
             "only the tool-calling message of the exchange in progress carries thinking, and \
-             only its plain-text block"
+             only what Ollama itself returned for it: not another provider's text or signed \
+             blocks, nor text saved with no origin"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_response_records_the_model_that_produced_its_thinking() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "model": "m",
+                "message": {"role": "assistant", "content": "ok", "thinking": "hmm"},
+                "done": true,
+                "done_reason": "stop"
+            })))
+            .mount(&server)
+            .await;
+        let response = make_client(server.uri(), "m")
+            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            response.thinking,
+            vec![ThinkingBlock::text("hmm").from_origin(&test_origin())],
+            "the block names Ollama and the model that answered"
         );
     }
 
     #[test]
     fn thinking_is_not_replayed_when_the_request_has_thinking_off() {
         assert!(
-            to_ollama_messages(&exchange_with_thinking(), false)
+            to_ollama_messages(&exchange_with_thinking(), None)
                 .iter()
                 .all(|m| m.thinking.is_none()),
             "with thinking off nothing is replayed"
@@ -1904,7 +1959,7 @@ mod tests {
         assert_eq!(streamed.content, "Hello w\u{f6}rld \u{1f600}", "text");
         assert_eq!(
             streamed.thinking,
-            vec![ThinkingBlock::text("Let me think.")],
+            vec![ThinkingBlock::text("Let me think.").from_origin(&test_origin())],
             "thinking"
         );
         let ids: Vec<&str> = streamed.tool_calls.iter().map(|c| c.id.as_str()).collect();
@@ -2002,7 +2057,7 @@ mod tests {
         assert_eq!(result.content, "Answer", "no tags in the content");
         assert_eq!(
             result.thinking,
-            vec![ThinkingBlock::text("weigh it")],
+            vec![ThinkingBlock::text("weigh it").from_origin(&test_origin())],
             "tagged text is the thinking"
         );
         assert_eq!(sink.text(), "Answer", "only the answer streams as text");

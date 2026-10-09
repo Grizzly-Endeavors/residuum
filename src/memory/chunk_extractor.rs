@@ -392,6 +392,7 @@ mod tests {
                     signature: Some("sig-opaque-token".to_string()),
                     redacted: Some("encrypted-blob".to_string()),
                     part: None,
+                    origin: None,
                 }]),
             timestamp: chrono::NaiveDateTime::default(),
             visibility: Visibility::User,

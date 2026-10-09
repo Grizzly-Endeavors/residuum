@@ -229,18 +229,21 @@ mod tests {
                 signature: Some("sig-first-secret".to_string()),
                 redacted: None,
                 part: None,
+                origin: None,
             },
             ThinkingBlock {
                 text: String::new(),
                 signature: None,
                 redacted: Some("encrypted-secret".to_string()),
                 part: None,
+                origin: None,
             },
             ThinkingBlock {
                 text: "Then the arithmetic.".to_string(),
                 signature: Some("sig-second-secret".to_string()),
                 redacted: None,
                 part: None,
+                origin: None,
             },
         ])
     }

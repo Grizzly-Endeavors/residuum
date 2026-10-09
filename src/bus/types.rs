@@ -63,7 +63,7 @@ newtype_string!(
 /// Subscribers register interest in a specific `(TopicId, TypeId)` pair.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TopicId {
-    /// Interactive endpoint turn activity (responses, tool calls, lifecycle, intermediate text).
+    /// What is delivered to a named endpoint (a chat interface's turns, the web UI's posts).
     Endpoint(EndpointName),
     /// The main agent's whole conversation, one ordered stream for every turn.
     MainConversation,

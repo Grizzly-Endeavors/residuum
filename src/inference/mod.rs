@@ -24,7 +24,8 @@ pub(crate) use factory::{
 pub use http::{HttpClientConfig, SharedHttpClient};
 pub use types::{
     AgentSender, CompletionOptions, ImageData, InferenceProvider, InferenceResponse, Message,
-    MessageSender, ResponseFormat, Role, StopReason, StreamDelta, StreamSink, ThinkingBlock,
-    ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition, Usage, WebSearchNativeConfig,
-    joined_thinking_text, readable_thinking,
+    MessageSender, ProviderApi, ResponseFormat, Role, StopReason, StreamDelta, StreamSink,
+    ThinkingBlock, ThinkingConfig, ThinkingLevel, ThinkingOrigin, ToolCall, ToolDefinition, Usage,
+    WebSearchNativeConfig, joined_thinking_text, readable_thinking,
 };
+pub(crate) use types::{ReplayScope, blocks_produced_at};

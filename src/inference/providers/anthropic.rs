@@ -17,8 +17,9 @@ use crate::inference::stream::{Flow, SseEvent, TrackedSink, answered_whole, read
 use crate::inference::types::current_exchange_start;
 use crate::inference::{
     CompletionOptions, ImageData, InferenceError, InferenceProvider, InferenceResponse, Message,
-    ResponseFormat, Role, StopReason, StreamDelta, StreamSink, ThinkingBlock, ThinkingConfig,
-    ThinkingLevel, ToolCall, ToolDefinition, Usage,
+    ProviderApi, ReplayScope, ResponseFormat, Role, StopReason, StreamDelta, StreamSink,
+    ThinkingBlock, ThinkingConfig, ThinkingLevel, ThinkingOrigin, ToolCall, ToolDefinition, Usage,
+    blocks_produced_at,
 };
 
 /// Anthropic Messages API version header value.
@@ -95,20 +96,28 @@ impl AnthropicClient {
         format!("{}/v1/messages", self.base_url)
     }
 
+    /// Who the reasoning this client returns is recorded as coming from, and
+    /// the only origin whose reasoning it sends back.
+    fn origin(&self) -> ThinkingOrigin {
+        ThinkingOrigin::new(ProviderApi::Anthropic, &self.model)
+    }
+
     /// Convert our generic messages into Anthropic-specific format.
     ///
     /// System messages are extracted and returned separately as a concatenated
     /// string (Anthropic uses a top-level `system` field rather than putting
     /// system messages in the messages array).
     ///
-    /// With `replay_thinking`, the reasoning behind an assistant message that
-    /// made tool calls goes back ahead of its other blocks while the
-    /// tool-use exchange it belongs to is still going on, because the API
-    /// rejects the next request otherwise. Reasoning behind earlier replies
-    /// is not sent, and none is when the request has thinking off.
+    /// With a `replay_thinking` origin (this client's own), the reasoning
+    /// behind an assistant message that made tool calls goes back ahead of
+    /// its other blocks while the tool-use exchange it belongs to is still
+    /// going on, because the API rejects the next request otherwise. Only
+    /// blocks that origin produced go back (see [`replayable_thinking`]).
+    /// Reasoning behind earlier replies is not sent, and none is when the
+    /// request has thinking off (`None`).
     fn convert_messages(
         messages: &[Message],
-        replay_thinking: bool,
+        replay_thinking: Option<&ThinkingOrigin>,
     ) -> (Option<String>, Vec<AnthropicMessage>) {
         let mut system_parts: Vec<&str> = Vec::new();
         let mut api_messages: Vec<AnthropicMessage> = Vec::new();
@@ -147,8 +156,10 @@ impl AnthropicClient {
                 Role::Assistant => {
                     let mut blocks: Vec<AnthropicContentBlock> = Vec::new();
 
-                    if replay_thinking && index >= exchange_start {
-                        blocks.extend(replayable_thinking(&msg.thinking));
+                    if let Some(origin) = replay_thinking
+                        && index >= exchange_start
+                    {
+                        blocks.extend(replayable_thinking(&msg.thinking, origin));
                     }
 
                     if !msg.content.is_empty() {
@@ -247,7 +258,8 @@ impl AnthropicClient {
         let thinking_on = build_thinking(options.thinking.as_ref(), max_tokens, false)
             .thinking
             .is_some();
-        let (system, messages) = Self::convert_messages(messages, thinking_on);
+        let origin = self.origin();
+        let (system, messages) = Self::convert_messages(messages, thinking_on.then_some(&origin));
         let has_web_search = options.web_search.is_some();
         let tools = (!tools.is_empty() || has_web_search)
             .then(|| Self::convert_tools(tools, options.web_search.as_ref()));
@@ -301,7 +313,7 @@ impl AnthropicClient {
         let prepared = self.prepare(messages, tools, options);
         let tracked = sink.map(TrackedSink::new);
 
-        with_retry(&self.retry, || async {
+        let response = with_retry(&self.retry, || async {
             let result = self
                 .send_with_thinking_fallback(&prepared, tracked.as_ref())
                 .await;
@@ -312,7 +324,8 @@ impl AnthropicClient {
             }
             result
         })
-        .await
+        .await?;
+        Ok(response.produced_at(&self.origin()))
     }
 
     /// Send a request asking for adaptive thinking, and again with a manual
@@ -597,16 +610,24 @@ fn api_error(status: reqwest::StatusCode, body: &str) -> InferenceError {
 // ---------------------------------------------------------------------------
 
 /// The blocks of an assistant message's reasoning that the API accepts back:
-/// each readable block with its signature, and redacted blocks unchanged. A
-/// block without either (one from another provider after a failover, or a
-/// Gemini signature, which is tied to a part of its own response) would be
-/// rejected, so it is left out.
-fn replayable_thinking(thinking: &[ThinkingBlock]) -> impl Iterator<Item = AnthropicContentBlock> {
-    thinking.iter().filter_map(|block| {
-        if block.part.is_some() {
-            return None;
-        }
-        match (&block.redacted, &block.signature) {
+/// each readable block with its signature, and redacted blocks unchanged,
+/// provided `reader`'s own model produced them.
+///
+/// A signature is verified against the model that issued it, and on current
+/// models against the conversation before it too. A block another provider
+/// wrote (after a failover or a provider change) fails verification and the
+/// request with it. A block another Claude model wrote is one the answering
+/// model may or may not be able to read (which models read which depends on
+/// the generation), and the API drops one it cannot read; sending only the
+/// model's own blocks never depends on that. A block without a signature or
+/// encrypted data would be rejected, so it is left out too.
+fn replayable_thinking(
+    thinking: &[ThinkingBlock],
+    reader: &ThinkingOrigin,
+) -> Vec<AnthropicContentBlock> {
+    blocks_produced_at(thinking, reader, ReplayScope::SameModel)
+        .into_iter()
+        .filter_map(|block| match (&block.redacted, &block.signature) {
             (Some(data), _) => Some(AnthropicContentBlock::RedactedThinking { data: data.clone() }),
             (None, Some(signature)) if !signature.is_empty() => {
                 Some(AnthropicContentBlock::Thinking {
@@ -615,8 +636,8 @@ fn replayable_thinking(thinking: &[ThinkingBlock]) -> impl Iterator<Item = Anthr
                 })
             }
             (None, _) => None,
-        }
-    })
+        })
+        .collect()
 }
 
 /// How a request asks for thinking: the `thinking` field and the effort that
@@ -1358,6 +1379,13 @@ mod tests {
         sse_chunks, sse_response,
     };
 
+    const TEST_MODEL: &str = "claude-sonnet-4-20250514";
+
+    /// Where the test client's own reasoning comes from.
+    fn test_origin() -> ThinkingOrigin {
+        ThinkingOrigin::new(ProviderApi::Anthropic, TEST_MODEL)
+    }
+
     /// Create a test client pointing at the given mock server URL.
     fn test_client(base_url: &str) -> AnthropicClient {
         let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(5)).unwrap();
@@ -1365,7 +1393,7 @@ mod tests {
             http,
             base_url,
             "test-api-key",
-            "claude-sonnet-4-20250514",
+            TEST_MODEL,
             1024,
             RetryConfig::no_retry(),
         )
@@ -1520,7 +1548,7 @@ mod tests {
         assert!(result.is_ok(), "system message request should succeed");
 
         // Verify system was extracted properly by checking the conversion
-        let (system, api_msgs) = AnthropicClient::convert_messages(&messages, true);
+        let (system, api_msgs) = AnthropicClient::convert_messages(&messages, Some(&test_origin()));
         assert_eq!(
             system.as_deref(),
             Some("You are a helpful assistant."),
@@ -1604,7 +1632,7 @@ mod tests {
             Message::tool("Rust is a systems programming language.", "toolu_abc123"),
         ];
 
-        let (system, api_msgs) = AnthropicClient::convert_messages(&messages, true);
+        let (system, api_msgs) = AnthropicClient::convert_messages(&messages, Some(&test_origin()));
         assert!(system.is_none(), "no system message expected");
         assert_eq!(api_msgs.len(), 3, "should have 3 API messages");
 
@@ -1995,7 +2023,7 @@ mod tests {
         );
         assert_eq!(
             resp.thinking,
-            vec![ThinkingBlock::text("Let me reason about this...")],
+            vec![ThinkingBlock::text("Let me reason about this...").from_origin(&test_origin())],
             "thinking should be extracted separately"
         );
     }
@@ -2146,7 +2174,8 @@ mod tests {
             Message::tool("Result B", "tool_2"),
         ];
 
-        let (_system, api_msgs) = AnthropicClient::convert_messages(&messages, true);
+        let (_system, api_msgs) =
+            AnthropicClient::convert_messages(&messages, Some(&test_origin()));
 
         // user, assistant, merged-user (two tool results)
         assert_eq!(
@@ -2219,7 +2248,8 @@ mod tests {
             Message::user("Thanks, now do something else"),
         ];
 
-        let (_system, api_msgs) = AnthropicClient::convert_messages(&messages, true);
+        let (_system, api_msgs) =
+            AnthropicClient::convert_messages(&messages, Some(&test_origin()));
 
         // assistant, merged-user (tool_result + user text)
         assert_eq!(
@@ -2264,7 +2294,8 @@ mod tests {
             Message::user("Follow up"),
         ];
 
-        let (_system, api_msgs) = AnthropicClient::convert_messages(&messages, true);
+        let (_system, api_msgs) =
+            AnthropicClient::convert_messages(&messages, Some(&test_origin()));
 
         assert_eq!(api_msgs.len(), 3, "alternating roles should not be merged");
         assert_eq!(api_msgs.first().unwrap().role, "user");
@@ -2415,7 +2446,7 @@ mod tests {
             Message::user("Hello"),
         ];
 
-        let (system, api_msgs) = AnthropicClient::convert_messages(&messages, true);
+        let (system, api_msgs) = AnthropicClient::convert_messages(&messages, Some(&test_origin()));
         assert_eq!(
             system.as_deref(),
             Some("First instruction."),
@@ -2769,17 +2800,21 @@ mod tests {
         );
     }
 
+    /// A signed block the test client itself produced.
     fn signed(text: &str, signature: &str) -> ThinkingBlock {
         ThinkingBlock {
             text: text.to_string(),
             signature: Some(signature.to_string()),
+            origin: Some(test_origin()),
             ..ThinkingBlock::default()
         }
     }
 
+    /// An encrypted block the test client itself produced.
     fn redacted(data: &str) -> ThinkingBlock {
         ThinkingBlock {
             redacted: Some(data.to_string()),
+            origin: Some(test_origin()),
             ..ThinkingBlock::default()
         }
     }
@@ -2834,7 +2869,7 @@ mod tests {
             ),
             Message::tool("a.txt", "toolu_1"),
         ];
-        let (_, api) = AnthropicClient::convert_messages(&messages, true);
+        let (_, api) = AnthropicClient::convert_messages(&messages, Some(&test_origin()));
         assert_eq!(
             block_types(&api).get(1).unwrap(),
             "thinking,redacted_thinking,text,tool_use",
@@ -2872,7 +2907,7 @@ mod tests {
             ),
             Message::tool("ok", "toolu_1"),
         ];
-        let (_, api) = AnthropicClient::convert_messages(&messages, true);
+        let (_, api) = AnthropicClient::convert_messages(&messages, Some(&test_origin()));
         let types = block_types(&api);
         assert_eq!(
             types.get(1).unwrap(),
@@ -2900,7 +2935,7 @@ mod tests {
             assistant_with_thinking("", Some(vec![call("t2")]), vec![signed("two", "s2")]),
             Message::tool("r2", "t2"),
         ];
-        let (_, api) = AnthropicClient::convert_messages(&messages, true);
+        let (_, api) = AnthropicClient::convert_messages(&messages, Some(&test_origin()));
         let types = block_types(&api);
         assert_eq!(
             types.get(1).unwrap(),
@@ -2939,27 +2974,20 @@ mod tests {
 
     #[test]
     fn thinking_blocks_the_api_would_reject_are_never_sent() {
-        let foreign = ThinkingBlock {
-            text: String::new(),
-            signature: Some("gemini-signature".to_string()),
-            part: Some("call_0".to_string()),
-            ..ThinkingBlock::default()
-        };
         let messages = vec![
             Message::user("go"),
             assistant_with_thinking(
                 "",
                 Some(vec![call("t1")]),
                 vec![
-                    ThinkingBlock::text("unsigned summary from another provider"),
+                    ThinkingBlock::text("an unsigned summary").from_origin(&test_origin()),
                     signed("keeps a signature", ""),
-                    foreign,
                     signed("", "sig-empty-text"),
                 ],
             ),
             Message::tool("r1", "t1"),
         ];
-        let (_, api) = AnthropicClient::convert_messages(&messages, true);
+        let (_, api) = AnthropicClient::convert_messages(&messages, Some(&test_origin()));
         let blocks = serde_json::to_value(&api.get(1).unwrap().content).unwrap();
         assert_eq!(
             blocks,
@@ -2968,6 +2996,51 @@ mod tests {
                 {"type": "tool_use", "id": "t1", "name": "exec", "input": {"command": "ls"}}
             ]),
             "only a block with a real signature is sent, and empty text with a signature is valid"
+        );
+    }
+
+    #[test]
+    fn only_reasoning_this_model_produced_is_replayed() {
+        let from = |provider, model: &str| ThinkingOrigin::new(provider, model);
+        let signed_at = |origin: Option<ThinkingOrigin>, signature: &str| ThinkingBlock {
+            signature: Some(signature.to_string()),
+            origin,
+            ..ThinkingBlock::default()
+        };
+        let messages = vec![
+            Message::user("go"),
+            assistant_with_thinking(
+                "",
+                Some(vec![call("t1")]),
+                vec![
+                    signed_at(Some(from(ProviderApi::Gemini, TEST_MODEL)), "gemini-sig"),
+                    ThinkingBlock {
+                        redacted: Some("OTHER-HOST".to_string()),
+                        origin: Some(from(ProviderApi::OpenAiCompatible, TEST_MODEL)),
+                        ..ThinkingBlock::default()
+                    },
+                    signed_at(
+                        Some(from(ProviderApi::Anthropic, "claude-opus-other")),
+                        "other-model-sig",
+                    ),
+                    signed_at(None, "saved-before-origins-were-recorded"),
+                    signed("its own", "own-sig"),
+                ],
+            ),
+            Message::tool("r1", "t1"),
+        ];
+
+        let (_, api) = AnthropicClient::convert_messages(&messages, Some(&test_origin()));
+
+        let blocks = serde_json::to_value(&api.get(1).unwrap().content).unwrap();
+        assert_eq!(
+            blocks,
+            json!([
+                {"type": "thinking", "thinking": "its own", "signature": "own-sig"},
+                {"type": "tool_use", "id": "t1", "name": "exec", "input": {"command": "ls"}}
+            ]),
+            "a signature another provider or model issued, or one with no recorded origin, \
+             would fail verification, so only this model's own block goes back"
         );
     }
 
@@ -2985,7 +3058,7 @@ mod tests {
             "usage": {"input_tokens": 1, "output_tokens": 2}
         }))
         .unwrap();
-        let parsed = AnthropicClient::parse_response(response);
+        let parsed = AnthropicClient::parse_response(response).produced_at(&test_origin());
         assert_eq!(
             parsed.thinking,
             vec![
@@ -3615,7 +3688,7 @@ mod tests {
         let (result, _, _) = stream_from(sse_response(&[events]), test_client).await;
         assert_eq!(
             result.unwrap().thinking,
-            vec![ThinkingBlock::text("unsigned musing")],
+            vec![ThinkingBlock::text("unsigned musing").from_origin(&test_origin())],
             "an empty signature is no signature, and a block with nothing in it is dropped"
         );
     }

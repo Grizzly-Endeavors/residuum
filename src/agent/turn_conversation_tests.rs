@@ -1,6 +1,6 @@
 //! What a turn publishes to the main conversation: the order of its events,
 //! the streamed text and reasoning a provider pushes while a model call runs,
-//! and what stays on the endpoint topics for the chat interfaces.
+//! and what goes to the endpoint topic of the chat interface it is delivered to.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -17,7 +17,7 @@ use super::recent_messages::RecentMessages;
 use super::turn::{EventContext, EventTarget, TranscriptSink, TurnResources, execute_turn};
 use crate::bus::{
     AgentMessageEvent, EndpointName, IntermediateEvent, MainConversationEvent, MessageEvent,
-    SessionAddress, Subscriber, ToolActivityEvent, TurnUsageEvent, topics,
+    SessionAddress, Subscriber, topics,
 };
 use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
@@ -176,6 +176,8 @@ struct Options {
     stop_token: CancellationToken,
     /// Run as an agent session's turn instead of the main agent's.
     as_session: bool,
+    /// The endpoint the turn is delivered to; the web UI's when unset.
+    delivered_to: Option<&'static str>,
 }
 
 /// What a turn did, as the buses saw it.
@@ -186,9 +188,8 @@ struct Run {
     history: Vec<Message>,
     /// What the turn wrote to its durable transcript.
     transcript: Vec<Message>,
+    /// What reached the topic of the endpoint the turn was delivered to.
     endpoint_intermediate: Vec<IntermediateEvent>,
-    endpoint_tools: Vec<ToolActivityEvent>,
-    endpoint_usage: Vec<TurnUsageEvent>,
 }
 
 const TURN: &str = "turn-1";
@@ -222,14 +223,14 @@ async fn run_turn_with(steps: Vec<Step>, options: Options) -> Run {
 
     let bus = crate::bus::spawn_broker();
     let publisher = bus.publisher();
-    let ep = EndpointName::from("ws");
+    let ep = EndpointName::from(
+        options
+            .delivered_to
+            .unwrap_or(crate::interfaces::types::WEB_UI_ENDPOINT),
+    );
     let mut main: Subscriber<MainConversationEvent> =
         bus.subscribe(topics::MainConversation).await.unwrap();
     let mut intermediate: Subscriber<IntermediateEvent> =
-        bus.subscribe(topics::Endpoint(ep.clone())).await.unwrap();
-    let mut tool_activity: Subscriber<ToolActivityEvent> =
-        bus.subscribe(topics::Endpoint(ep.clone())).await.unwrap();
-    let mut usage: Subscriber<TurnUsageEvent> =
         bus.subscribe(topics::Endpoint(ep.clone())).await.unwrap();
     let session_address = SessionAddress::from("spawned-test-0001");
     let target = if options.as_session {
@@ -240,7 +241,6 @@ async fn run_turn_with(steps: Vec<Step>, options: Options) -> Run {
     } else {
         EventTarget::Endpoint {
             output_endpoint: Some(&ep),
-            tool_activity_endpoint: Some(&ep),
             correlation_id: TURN,
         }
     };
@@ -296,8 +296,6 @@ async fn run_turn_with(steps: Vec<Step>, options: Options) -> Run {
         history: recent.messages().to_vec(),
         transcript: sink.recorded.lock().unwrap().clone(),
         endpoint_intermediate: intermediate.drain(),
-        endpoint_tools: tool_activity.drain(),
-        endpoint_usage: usage.drain(),
     }
 }
 
@@ -413,11 +411,17 @@ async fn a_turns_events_name_the_turn_they_belong_to() {
 }
 
 #[tokio::test]
-async fn the_endpoint_topics_keep_carrying_what_the_chat_interfaces_read() {
-    let run = run_turn(vec![
-        Step::reply(tool_call_response("Checking.")),
-        Step::reply(text("All done.")),
-    ])
+async fn a_turn_delivered_to_a_chat_interface_gives_it_its_intermediate_text() {
+    let run = run_turn_with(
+        vec![
+            Step::reply(tool_call_response("Checking.")),
+            Step::reply(text("All done.")),
+        ],
+        Options {
+            delivered_to: Some("telegram"),
+            ..Options::default()
+        },
+    )
     .await;
 
     assert_eq!(
@@ -427,16 +431,26 @@ async fn the_endpoint_topics_keep_carrying_what_the_chat_interfaces_read() {
             .collect::<Vec<_>>(),
         ["Checking."]
     );
+}
+
+#[tokio::test]
+async fn a_turn_delivered_to_the_web_ui_publishes_nothing_to_its_endpoint_topic() {
+    let run = run_turn(vec![
+        Step::reply(tool_call_response("Checking.")),
+        Step::reply(text("All done.")),
+    ])
+    .await;
+
     assert!(
-        matches!(
-            run.endpoint_tools.as_slice(),
-            [ToolActivityEvent::Call(call), ToolActivityEvent::Result(result)]
-                if call.name == "echo" && result.output == "echoed"
-        ),
-        "{:?}",
-        run.endpoint_tools
+        run.endpoint_intermediate.is_empty(),
+        "the web follows the turn through the main conversation: {:?}",
+        run.endpoint_intermediate
     );
-    assert_eq!(run.endpoint_usage.len(), 2);
+    assert!(
+        shape(&run.main).contains(&"intermediate:0:Checking.".to_string()),
+        "and the main conversation has the text: {:?}",
+        shape(&run.main)
+    );
 }
 
 #[tokio::test]
@@ -459,7 +473,7 @@ async fn a_sessions_turn_is_not_part_of_the_main_conversation() {
         "a session's turn is not part of the main conversation: {:?}",
         shape(&run.main)
     );
-    assert!(run.endpoint_tools.is_empty() && run.endpoint_usage.is_empty());
+    assert!(run.endpoint_intermediate.is_empty());
 }
 
 #[tokio::test]
@@ -774,6 +788,7 @@ async fn a_calls_thinking_precedes_its_text_and_tool_calls_and_is_kept_in_histor
             signature: Some("sig-1".to_string()),
             redacted: None,
             part: None,
+            origin: None,
         }],
     );
     let second = with_thinking(
@@ -785,6 +800,7 @@ async fn a_calls_thinking_precedes_its_text_and_tool_calls_and_is_kept_in_histor
                 signature: None,
                 redacted: Some("encrypted".to_string()),
                 part: None,
+                origin: None,
             },
             ThinkingBlock::text("Say so."),
         ],
@@ -818,6 +834,7 @@ async fn a_calls_thinking_precedes_its_text_and_tool_calls_and_is_kept_in_histor
             signature: Some("sig-1".to_string()),
             redacted: None,
             part: None,
+            origin: None,
         }],
         "the intermediate assistant message keeps its blocks whole"
     );
@@ -837,6 +854,7 @@ async fn a_call_with_only_encrypted_reasoning_publishes_no_thinking_frame() {
             signature: None,
             redacted: Some("encrypted".to_string()),
             part: None,
+            origin: None,
         }],
     );
     let run = run_turn(vec![Step::reply(response)]).await;
@@ -856,6 +874,7 @@ async fn thinking_reaches_the_durable_transcript_with_the_message_it_belongs_to(
         signature: Some("sig-1".to_string()),
         redacted: None,
         part: None,
+        origin: None,
     }];
     let run = run_turn(vec![
         Step::reply(with_thinking(

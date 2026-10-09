@@ -8,8 +8,7 @@ use super::events::{
     A2aTaskSignalEvent, AgentResultEvent, ConversationTypingEvent, ErrorEvent, InlineOutputEvent,
     IntermediateEvent, MainConversationEvent, MessageEvent, NoticeEvent, NotificationEvent,
     OutboundA2aTaskEvent, PostTurnActivityEvent, ResponseEvent, SessionEvent, SessionResponseEvent,
-    SpawnRequestEvent, ToolActivityEvent, TurnLifecycleEvent, TurnUsageEvent, UserInboxAddedEvent,
-    WorkbenchEvent, WorkspaceEvent,
+    SpawnRequestEvent, TurnLifecycleEvent, UserInboxAddedEvent, WorkbenchEvent, WorkspaceEvent,
 };
 use super::types::{EndpointName, NotifyName, TopicId};
 
@@ -60,10 +59,14 @@ pub trait Carries<E: Clone + Send + Sync + 'static>: Topic {
 // Topic structs
 // ---------------------------------------------------------------------------
 
-/// Interactive endpoint turn activity.
+/// What is delivered to one named endpoint.
 ///
-/// Carries responses, tool call/result activity, turn lifecycle transitions,
-/// and intermediate model text for a specific named endpoint.
+/// For a chat interface (Telegram, Discord, Teams) it carries the turns that
+/// interface started: the reply, turn lifecycle transitions (its typing
+/// indicator), intermediate model text and a failure, plus conversation
+/// sessions' output and typing. The web UI's endpoint carries only what the
+/// agent posts to it with `send_message`; the web follows every turn through
+/// [`MainConversation`] instead.
 pub struct Endpoint(pub EndpointName);
 
 impl Topic for Endpoint {
@@ -77,19 +80,10 @@ impl Carries<ResponseEvent> for Endpoint {
     // agent's answer.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
-impl Carries<ToolActivityEvent> for Endpoint {
-    // Tool call/result activity the UI renders as it happens.
-    const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
-}
 impl Carries<TurnLifecycleEvent> for Endpoint {
     // Turn start/end drives visible turn state (e.g. the activity line of a running turn);
     // a dropped `Ended` would leave the UI showing a turn that never stops.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
-}
-impl Carries<TurnUsageEvent> for Endpoint {
-    // Cumulative token-count ticks for a running turn's progress — each one
-    // supersedes the last, so missing intermediate ticks is invisible.
-    const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossy;
 }
 impl Carries<IntermediateEvent> for Endpoint {
     // Pre-tool-call text the agent chose to say; each one is rendered as its
@@ -382,16 +376,8 @@ mod tests {
             DeliveryMode::Lossless
         );
         assert_eq!(
-            <Endpoint as Carries<ToolActivityEvent>>::DELIVERY_MODE,
-            DeliveryMode::Lossless
-        );
-        assert_eq!(
             <Endpoint as Carries<TurnLifecycleEvent>>::DELIVERY_MODE,
             DeliveryMode::Lossless
-        );
-        assert_eq!(
-            <Endpoint as Carries<TurnUsageEvent>>::DELIVERY_MODE,
-            DeliveryMode::Lossy
         );
         assert_eq!(
             <Endpoint as Carries<IntermediateEvent>>::DELIVERY_MODE,

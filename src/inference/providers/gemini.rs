@@ -19,15 +19,33 @@ use crate::inference::http::{
 };
 use crate::inference::retry::{RetryConfig, with_retry};
 use crate::inference::stream::{Flow, SseEvent, TrackedSink, answered_whole, read_sse};
+use crate::inference::types::current_exchange_start;
 use crate::inference::{
-    CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
-    ResponseFormat, Role, StopReason, StreamDelta, StreamSink, ThinkingBlock, ThinkingConfig,
-    ThinkingLevel, ToolCall, ToolDefinition, Usage,
+    CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, ProviderApi,
+    ReplayScope, ResponseFormat, Role, StopReason, StreamDelta, StreamSink, ThinkingBlock,
+    ThinkingConfig, ThinkingLevel, ThinkingOrigin, ToolCall, ToolDefinition, Usage,
+    blocks_produced_at,
 };
 
 /// The `part` of a [`ThinkingBlock`] whose signature belongs to the
 /// response's text rather than to a tool call.
 const TEXT_PART: &str = "text";
+
+/// The thought signature Google documents for a function call the model did
+/// not itself produce, such as one that another provider made earlier in the
+/// same tool-use exchange before a failover. Gemini 3 answers a request whose
+/// current turn holds a function call without a signature with a 400; this
+/// value makes it skip that check for the call. Google calls it a last
+/// resort because the model then reasons without the call's original
+/// thinking.
+const SKIP_SIGNATURE_VALIDATOR: &str = "skip_thought_signature_validator";
+
+/// Whether `model` rejects a request whose current-turn function calls lack
+/// thought signatures. Gemini 3 does; Gemini 2.5 treats them as optional, and
+/// is not sent a stand-in for a signature it does not require.
+fn requires_call_signatures(model: &str) -> bool {
+    model.starts_with("gemini-3")
+}
 
 /// Client for the Google Gemini `generateContent` API.
 pub(crate) struct GeminiClient {
@@ -194,19 +212,22 @@ impl GeminiClient {
     /// Tool result messages (`Role::Tool`) become `functionResponse` parts of a
     /// user-role message, one message for a run of results, named for the
     /// function whose call they answer. An assistant message goes back as the
-    /// model sent it: its thought signatures on the parts they came with, and
+    /// model sent it: its thought signatures on the parts they came with
+    /// (only those `reader`'s own model produced; see [`model_parts`]), and
     /// its function calls in their original order.
     fn convert_messages(
         messages: &[Message],
+        reader: &ThinkingOrigin,
     ) -> (Option<GeminiSystemInstruction>, Vec<GeminiContent>) {
         let mut system_parts: Vec<&str> = Vec::new();
         let mut contents: Vec<GeminiContent> = Vec::new();
+        let exchange_start = current_exchange_start(messages);
         // The function names of the latest assistant message's tool calls, by
         // id. Ids are synthesized per response, so a result is only matched
         // against the calls just before it.
         let mut call_names: HashMap<&str, &str> = HashMap::new();
 
-        for msg in messages {
+        for (index, msg) in messages.iter().enumerate() {
             match msg.role {
                 Role::System => {
                     if system_parts.is_empty() {
@@ -254,9 +275,14 @@ impl GeminiClient {
                         .flatten()
                         .map(|tc| (tc.id.as_str(), tc.name.as_str()))
                         .collect();
+                    let in_current_turn = index >= exchange_start;
                     contents.push(GeminiContent {
                         role: "model".to_string(),
-                        parts: model_parts(msg),
+                        parts: model_parts(
+                            msg,
+                            reader,
+                            in_current_turn && requires_call_signatures(&reader.model),
+                        ),
                     });
                 }
                 Role::Tool => {
@@ -306,7 +332,7 @@ impl GeminiClient {
         tools: &[ToolDefinition],
         options: &CompletionOptions,
     ) -> GeminiRequest {
-        let (system_instruction, contents) = Self::convert_messages(messages);
+        let (system_instruction, contents) = Self::convert_messages(messages, &self.origin());
         let has_web_search = options.web_search.is_some();
         let gemini_tools = (!tools.is_empty() || has_web_search).then(|| {
             let function_declarations = (!tools.is_empty()).then(|| {
@@ -375,7 +401,7 @@ impl GeminiClient {
         let request = self.prepare(messages, tools, options);
         let tracked = sink.map(TrackedSink::new);
 
-        with_retry(&self.retry, || async {
+        let response = with_retry(&self.retry, || async {
             let result = self.send(&request, tracked.as_ref()).await;
             if result.is_err()
                 && let Some(tracked) = &tracked
@@ -384,7 +410,14 @@ impl GeminiClient {
             }
             result
         })
-        .await
+        .await?;
+        Ok(response.produced_at(&self.origin()))
+    }
+
+    /// Who the reasoning this client returns is recorded as coming from, and
+    /// the only origin whose signatures it sends back.
+    fn origin(&self) -> ThinkingOrigin {
+        ThinkingOrigin::new(ProviderApi::Gemini, &self.model)
     }
 
     #[tracing::instrument(skip_all, fields(
@@ -476,12 +509,21 @@ fn text_signature(signature: String) -> ThinkingBlock {
 /// The parts an assistant message goes back as: its text, then its function
 /// calls in order, each carrying the thought signature Gemini attached to it.
 ///
-/// Gemini 3 refuses a request whose function calls lost their signatures, and
-/// recommends sending the others back too.
-fn model_parts(msg: &Message) -> Vec<GeminiPart> {
+/// Only signatures that `reader`'s own model produced go back; one from
+/// another provider or model would not verify. Gemini 3 refuses a request
+/// whose current-turn function calls lack signatures and recommends sending
+/// the others back too. With `needs_call_signature`, a message's first
+/// function call (the one Gemini checks) that has no signature of its own to
+/// send gets [`SKIP_SIGNATURE_VALIDATOR`] instead, so a tool-use exchange
+/// another provider began can carry on here.
+fn model_parts(
+    msg: &Message,
+    reader: &ThinkingOrigin,
+    needs_call_signature: bool,
+) -> Vec<GeminiPart> {
+    let own = blocks_produced_at(&msg.thinking, reader, ReplayScope::SameModel);
     let signature_for = |part: &str| {
-        msg.thinking
-            .iter()
+        own.iter()
             .rev()
             .find(|block| block.part.as_deref() == Some(part))
             .and_then(|block| block.signature.clone())
@@ -497,13 +539,16 @@ fn model_parts(msg: &Message) -> Vec<GeminiPart> {
             ..GeminiPart::default()
         });
     }
-    for tc in msg.tool_calls.iter().flatten() {
+    for (position, tc) in msg.tool_calls.iter().flatten().enumerate() {
+        let thought_signature = signature_for(&tc.id).or_else(|| {
+            (needs_call_signature && position == 0).then(|| SKIP_SIGNATURE_VALIDATOR.to_string())
+        });
         parts.push(GeminiPart {
             function_call: Some(GeminiFunctionCall {
                 name: tc.name.clone(),
                 args: tc.arguments.clone(),
             }),
-            thought_signature: signature_for(&tc.id),
+            thought_signature,
             ..GeminiPart::default()
         });
     }
@@ -1114,6 +1159,13 @@ mod tests {
     use wiremock::matchers::{method, path_regex, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    const TEST_MODEL: &str = "gemini-2.0-flash";
+
+    /// Where the test client's own reasoning comes from.
+    fn test_origin() -> ThinkingOrigin {
+        ThinkingOrigin::new(ProviderApi::Gemini, TEST_MODEL)
+    }
+
     fn make_client(base_url: &str) -> GeminiClient {
         let http =
             SharedHttpClient::new(&crate::inference::http::HttpClientConfig::with_timeout(60))
@@ -1122,7 +1174,7 @@ mod tests {
             http,
             base_url,
             "test-api-key",
-            "gemini-2.0-flash",
+            TEST_MODEL,
             8192,
             RetryConfig::no_retry(),
         )
@@ -1152,7 +1204,7 @@ mod tests {
     #[test]
     fn convert_messages_extracts_system() {
         let messages = vec![Message::system("You are helpful."), Message::user("Hello")];
-        let (system, contents) = GeminiClient::convert_messages(&messages);
+        let (system, contents) = GeminiClient::convert_messages(&messages, &test_origin());
 
         assert!(system.is_some(), "system instruction should be extracted");
         let sys = system.unwrap();
@@ -1175,7 +1227,7 @@ mod tests {
     #[test]
     fn convert_messages_tool_result_becomes_function_response() {
         let messages = vec![Message::tool("command output", "call_0")];
-        let (_, contents) = GeminiClient::convert_messages(&messages);
+        let (_, contents) = GeminiClient::convert_messages(&messages, &test_origin());
 
         assert_eq!(contents.len(), 1, "tool message becomes one content entry");
         let entry = contents.first().unwrap();
@@ -1204,7 +1256,7 @@ mod tests {
                 server: None,
             }]),
         )];
-        let (_, contents) = GeminiClient::convert_messages(&messages);
+        let (_, contents) = GeminiClient::convert_messages(&messages, &test_origin());
 
         let entry = contents.first().unwrap();
         assert_eq!(entry.role, "model", "assistant maps to model role");
@@ -1704,6 +1756,11 @@ mod tests {
         }
     }
 
+    /// A signature the test client itself received.
+    fn own_signature_block(signature: &str, part: &str) -> ThinkingBlock {
+        signature_block(signature, part).from_origin(&test_origin())
+    }
+
     fn assistant(content: &str, calls: Vec<ToolCall>, thinking: Vec<ThinkingBlock>) -> Message {
         let mut message = Message::assistant(content, (!calls.is_empty()).then_some(calls));
         message.thinking = thinking;
@@ -1859,14 +1916,14 @@ mod tests {
                 vec![call("call_0", "bash"), call("call_1", "read")],
                 vec![
                     ThinkingBlock::text("a summary that is not replayed"),
-                    signature_block("SIG-FC1", "call_0"),
-                    signature_block("SIG-TEXT", TEXT_PART),
+                    own_signature_block("SIG-FC1", "call_0"),
+                    own_signature_block("SIG-TEXT", TEXT_PART),
                 ],
             ),
             Message::tool("out-1", "call_0"),
             Message::tool("out-2", "call_1"),
         ];
-        let (_, contents) = GeminiClient::convert_messages(&messages);
+        let (_, contents) = GeminiClient::convert_messages(&messages, &test_origin());
         let wire = wire(&contents);
         assert_eq!(
             wire,
@@ -1897,7 +1954,7 @@ mod tests {
             assistant("", vec![call("call_0", "read")], vec![]),
             Message::tool("second", "call_0"),
         ];
-        let (_, contents) = GeminiClient::convert_messages(&messages);
+        let (_, contents) = GeminiClient::convert_messages(&messages, &test_origin());
         let wire = wire(&contents);
         assert_eq!(
             at(&wire, "/2/parts/0/functionResponse/name"),
@@ -1916,9 +1973,9 @@ mod tests {
         let messages = vec![assistant(
             "",
             vec![],
-            vec![signature_block("SIG-ONLY", TEXT_PART)],
+            vec![own_signature_block("SIG-ONLY", TEXT_PART)],
         )];
-        let (_, contents) = GeminiClient::convert_messages(&messages);
+        let (_, contents) = GeminiClient::convert_messages(&messages, &test_origin());
         assert_eq!(
             wire(&contents),
             json!([{"role": "model", "parts": [{"text": "", "thoughtSignature": "SIG-ONLY"}]}]),
@@ -1928,6 +1985,7 @@ mod tests {
 
     #[test]
     fn blocks_from_other_providers_are_not_replayed_as_signatures() {
+        let anthropic = ThinkingOrigin::new(ProviderApi::Anthropic, "claude-opus-4-5");
         let messages = vec![assistant(
             "Hi",
             vec![call("call_0", "bash")],
@@ -1936,18 +1994,183 @@ mod tests {
                     text: "anthropic".to_string(),
                     signature: Some("ANTHROPIC-SIG".to_string()),
                     ..ThinkingBlock::default()
-                },
+                }
+                .from_origin(&anthropic),
                 ThinkingBlock {
                     redacted: Some("ENC".to_string()),
                     ..ThinkingBlock::default()
-                },
+                }
+                .from_origin(&anthropic),
             ],
         )];
-        let (_, contents) = GeminiClient::convert_messages(&messages);
+        let (_, contents) = GeminiClient::convert_messages(&messages, &test_origin());
         let text = serde_json::to_string(&contents).unwrap();
         assert!(
             !text.contains("ANTHROPIC-SIG") && !text.contains("ENC"),
             "only Gemini's own part-tagged signatures go back: {text}"
+        );
+    }
+
+    #[test]
+    fn only_signatures_this_model_produced_go_back_on_their_parts() {
+        let other_model = ThinkingOrigin::new(ProviderApi::Gemini, "gemini-2.5-pro");
+        let messages = vec![
+            Message::user("go"),
+            assistant(
+                "Hi",
+                vec![call("call_0", "bash")],
+                vec![
+                    signature_block("OTHER-MODEL-TEXT", TEXT_PART).from_origin(&other_model),
+                    signature_block("LEGACY-CALL", "call_0"),
+                    own_signature_block("OWN-TEXT", TEXT_PART),
+                ],
+            ),
+        ];
+        let (_, contents) = GeminiClient::convert_messages(&messages, &test_origin());
+        assert_eq!(
+            wire(&contents),
+            json!([
+                {"role": "user", "parts": [{"text": "go"}]},
+                {"role": "model", "parts": [
+                    {"text": "Hi", "thoughtSignature": "OWN-TEXT"},
+                    {"functionCall": {"name": "bash", "args": {"command": "ls"}}}
+                ]}
+            ]),
+            "a signature from another Gemini model, or saved with no origin, does not verify, \
+             so only the model's own goes back"
+        );
+    }
+
+    /// A tool-use exchange another provider began: its tool-calling messages
+    /// carry that provider's reasoning, none of it usable by Gemini.
+    fn exchange_begun_elsewhere() -> Vec<Message> {
+        let anthropic = ThinkingOrigin::new(ProviderApi::Anthropic, "claude-opus-4-5");
+        vec![
+            Message::user("do two things"),
+            assistant(
+                "On it.",
+                vec![call("toolu_1", "bash"), call("toolu_2", "read")],
+                vec![
+                    ThinkingBlock {
+                        signature: Some("ANTHROPIC-SIG".to_string()),
+                        ..ThinkingBlock::default()
+                    }
+                    .from_origin(&anthropic),
+                ],
+            ),
+            Message::tool("out-1", "toolu_1"),
+            Message::tool("out-2", "toolu_2"),
+        ]
+    }
+
+    fn gemini_3() -> ThinkingOrigin {
+        ThinkingOrigin::new(ProviderApi::Gemini, "gemini-3-pro-preview")
+    }
+
+    #[test]
+    fn gemini_3_is_told_to_skip_the_signature_of_a_call_another_provider_made() {
+        let (_, contents) =
+            GeminiClient::convert_messages(&exchange_begun_elsewhere(), &gemini_3());
+        let wire = wire(&contents);
+        assert_eq!(
+            at(&wire, "/1/parts/1/thoughtSignature"),
+            &json!(SKIP_SIGNATURE_VALIDATOR),
+            "the first call of the step is the one Gemini 3 checks"
+        );
+        assert!(
+            at(&wire, "/1/parts/2").get("thoughtSignature").is_none(),
+            "a parallel call after the first carries none: {wire}"
+        );
+        assert!(
+            !wire.to_string().contains("ANTHROPIC-SIG"),
+            "the other provider's signature is never sent: {wire}"
+        );
+    }
+
+    #[test]
+    fn a_model_that_does_not_require_signatures_is_sent_no_stand_in() {
+        let (_, contents) =
+            GeminiClient::convert_messages(&exchange_begun_elsewhere(), &test_origin());
+        assert!(
+            !wire(&contents).to_string().contains("thoughtSignature"),
+            "{}",
+            wire(&contents)
+        );
+    }
+
+    #[test]
+    fn calls_before_the_current_exchange_are_sent_without_a_stand_in() {
+        let mut messages = vec![
+            Message::user("earlier"),
+            assistant("", vec![call("toolu_0", "bash")], vec![]),
+            Message::tool("done", "toolu_0"),
+            assistant("All done.", vec![], vec![]),
+        ];
+        messages.extend(exchange_begun_elsewhere());
+        let (_, contents) = GeminiClient::convert_messages(&messages, &gemini_3());
+        let wire = wire(&contents);
+        assert!(
+            at(&wire, "/1/parts/0").get("thoughtSignature").is_none(),
+            "Gemini checks only the current turn: {wire}"
+        );
+        assert_eq!(
+            at(&wire, "/5/parts/1/thoughtSignature"),
+            &json!(SKIP_SIGNATURE_VALIDATOR),
+            "the exchange in progress gets one"
+        );
+    }
+
+    #[test]
+    fn a_signature_the_model_produced_is_sent_instead_of_the_stand_in() {
+        let own = ThinkingOrigin::new(ProviderApi::Gemini, "gemini-3-pro-preview");
+        let messages = vec![
+            Message::user("go"),
+            assistant(
+                "",
+                vec![call("call_0", "bash"), call("call_1", "read")],
+                vec![signature_block("SIG-FC1", "call_0").from_origin(&own)],
+            ),
+            Message::tool("out", "call_0"),
+            Message::tool("out", "call_1"),
+        ];
+        let (_, contents) = GeminiClient::convert_messages(&messages, &own);
+        let wire = wire(&contents);
+        assert_eq!(
+            at(&wire, "/1/parts/0/thoughtSignature"),
+            &json!("SIG-FC1"),
+            "its own signature"
+        );
+        assert!(
+            at(&wire, "/1/parts/1").get("thoughtSignature").is_none(),
+            "{wire}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_response_records_the_model_that_produced_its_signatures() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex("/models/.+:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{"content": {"role": "model", "parts": [
+                    {"text": "Weighing it", "thought": true},
+                    {"functionCall": {"name": "bash", "args": {"command": "ls"}},
+                     "thoughtSignature": "SIG-FC1"}
+                ]}, "finishReason": "STOP"}]
+            })))
+            .mount(&mock_server)
+            .await;
+        let response = make_client(&mock_server.uri())
+            .complete(&[Message::user("ls")], &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            response.thinking,
+            vec![
+                ThinkingBlock::text("Weighing it").from_origin(&test_origin()),
+                own_signature_block("SIG-FC1", "call_0"),
+            ],
+            "every block names Gemini and the model that answered"
         );
     }
 
@@ -2100,9 +2323,9 @@ mod tests {
         assert_eq!(
             streamed.thinking,
             vec![
-                ThinkingBlock::text("Weighing it."),
-                signature_block("SIG-FC1", "call_0"),
-                signature_block("SIG-LATE", TEXT_PART),
+                ThinkingBlock::text("Weighing it.").from_origin(&test_origin()),
+                own_signature_block("SIG-FC1", "call_0"),
+                own_signature_block("SIG-LATE", TEXT_PART),
             ],
             "summary, the first call's signature, and the late text signature"
         );

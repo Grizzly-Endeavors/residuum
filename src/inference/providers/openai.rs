@@ -20,9 +20,9 @@ use crate::inference::retry::{RetryConfig, with_retry};
 use crate::inference::stream::{Flow, SseEvent, TrackedSink, answered_whole, read_sse};
 use crate::inference::types::current_exchange_start;
 use crate::inference::{
-    CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
-    ResponseFormat, StopReason, StreamSink, ThinkingConfig, ThinkingLevel, ToolCall,
-    ToolDefinition, Usage,
+    CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, ProviderApi,
+    ResponseFormat, StopReason, StreamSink, ThinkingConfig, ThinkingLevel, ThinkingOrigin,
+    ToolCall, ToolDefinition, Usage,
 };
 
 /// Fireworks response header carrying the prompt tokens served from cache.
@@ -145,20 +145,27 @@ impl OpenAiClient {
         }
     }
 
-    /// Convert a conversation to the wire format, replaying reasoning for
-    /// the assistant messages of the tool-use exchange in progress on a host
-    /// that wants it.
+    /// Who the reasoning this client returns is recorded as coming from, and
+    /// the only provider API whose reasoning it sends back.
+    fn origin(&self) -> ThinkingOrigin {
+        ThinkingOrigin::new(ProviderApi::OpenAiCompatible, &self.model)
+    }
+
+    /// Convert a conversation to the wire format, replaying the reasoning an
+    /// OpenAI-compatible API returned for the assistant messages of the
+    /// tool-use exchange in progress, on a host that wants it.
     fn convert_messages(&self, messages: &[Message]) -> Vec<OpenAiMessage> {
         let replay_from = self
             .replays_reasoning()
             .then(|| current_exchange_start(messages));
+        let origin = self.origin();
         messages
             .iter()
             .enumerate()
             .map(|(index, msg)| {
                 let mut converted = OpenAiMessage::from(msg);
                 if replay_from.is_some_and(|start| index >= start) {
-                    converted.reasoning_content = plain_reasoning(&msg.thinking);
+                    converted.reasoning_content = plain_reasoning(&msg.thinking, &origin);
                 }
                 converted
             })
@@ -230,7 +237,7 @@ impl OpenAiClient {
         let prepared = self.prepare(messages, tools, options);
         let tracked = sink.map(TrackedSink::new);
 
-        with_retry(&self.retry, || async {
+        let response = with_retry(&self.retry, || async {
             let request = prepared.request(&self.model, tracked.is_some());
             let result = self.send(&request, tracked.as_ref()).await;
             if result.is_err()
@@ -240,7 +247,8 @@ impl OpenAiClient {
             }
             result
         })
-        .await
+        .await?;
+        Ok(response.produced_at(&self.origin()))
     }
 
     /// Send a pre-built request to the OpenAI-compatible API and parse the response.
@@ -2284,6 +2292,14 @@ mod tests {
         make_client(url, "test-model")
     }
 
+    /// Reasoning text as `plain_client`'s model returns it.
+    fn test_model_text(text: &str) -> ThinkingBlock {
+        ThinkingBlock::text(text).from_origin(&ThinkingOrigin::new(
+            ProviderApi::OpenAiCompatible,
+            "test-model",
+        ))
+    }
+
     /// The same reply, streamed and whole.
     async fn whole_response(body: Value) -> InferenceResponse {
         let server = MockServer::start().await;
@@ -2524,7 +2540,7 @@ mod tests {
             let streamed = streamed.unwrap();
             assert_eq!(
                 streamed.thinking,
-                vec![ThinkingBlock::text("weigh it")],
+                vec![test_model_text("weigh it")],
                 "{label}: reasoning is captured once"
             );
             assert_eq!(sink.thinking(), "weigh it", "{label}: and streamed");
@@ -2545,7 +2561,7 @@ mod tests {
             let response = whole_response(json!({"choices": [{"message": message}]})).await;
             assert_eq!(
                 response.thinking,
-                vec![ThinkingBlock::text("because")],
+                vec![test_model_text("because")],
                 "reasoning comes through complete"
             );
         }
@@ -2568,7 +2584,7 @@ mod tests {
         assert_eq!(streamed.content, "The answer", "the content has no tags");
         assert_eq!(
             streamed.thinking,
-            vec![ThinkingBlock::text("plan it")],
+            vec![test_model_text("plan it")],
             "the tagged text is the thinking"
         );
         assert_eq!(sink.text(), "The answer", "only the answer streams as text");
@@ -2798,6 +2814,11 @@ mod tests {
 
     // --- Reasoning replay ---
 
+    /// Where the reasoning of the clients in these tests comes from.
+    fn test_origin() -> ThinkingOrigin {
+        ThinkingOrigin::new(ProviderApi::OpenAiCompatible, "m")
+    }
+
     fn reasoning_exchange() -> Vec<Message> {
         let call = |id: &str| ToolCall {
             id: id.to_string(),
@@ -2805,18 +2826,23 @@ mod tests {
             arguments: json!({}),
             server: None,
         };
+        let own = |text: &str| ThinkingBlock::text(text).from_origin(&test_origin());
+        let gemini = ThinkingOrigin::new(ProviderApi::Gemini, "gemini-3-pro-preview");
         let mut old = Message::assistant("old", Some(vec![call("c0")]));
-        old.thinking = vec![ThinkingBlock::text("old reasoning")];
+        old.thinking = vec![own("old reasoning")];
         let mut plain = Message::assistant("done", None);
-        plain.thinking = vec![ThinkingBlock::text("wrap-up reasoning")];
+        plain.thinking = vec![own("wrap-up reasoning")];
         let mut current = Message::assistant("", Some(vec![call("c1")]));
         current.thinking = vec![
-            ThinkingBlock::text("current reasoning"),
+            own("current reasoning"),
+            ThinkingBlock::text("readable text from another provider").from_origin(&gemini),
+            ThinkingBlock::text("readable text saved with no origin"),
             ThinkingBlock {
                 text: "signed elsewhere".to_string(),
                 signature: Some("sig".to_string()),
                 ..ThinkingBlock::default()
-            },
+            }
+            .from_origin(&gemini),
         ];
         vec![
             Message::user("one"),
@@ -2861,7 +2887,7 @@ mod tests {
                     None
                 ],
                 "{url}: only the tool-calling message of the exchange in progress carries reasoning, \
-                 and only its plain-text block"
+                 and only what an OpenAI-compatible API returned for it, not another provider's text"
             );
         }
     }
