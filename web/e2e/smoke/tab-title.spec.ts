@@ -1,4 +1,5 @@
 import type { Page } from "@playwright/test";
+import { sendFromComposer } from "../support/composer";
 import { expect, test } from "../support/fixtures";
 
 /**
@@ -31,9 +32,9 @@ test("the tab is titled with the agent or place the page is on", async ({ page }
 test("a hidden tab says the agent is working, then that it finished", async ({ page, mock }) => {
   await page.goto("/agent/atlas");
   await mock.post("/api/mock/turn-hold", { data: { held: true } });
-  const composer = page.getByRole("textbox", { name: "Message atlas" });
+  const composer = page.getByRole("combobox", { name: "Message atlas" });
   await composer.fill("Look into the wiki");
-  await composer.press("Enter");
+  await sendFromComposer(composer);
 
   // The mock's inbox holds two unread items, which lead a hidden tab's title.
   await setVisibility(page, "hidden");

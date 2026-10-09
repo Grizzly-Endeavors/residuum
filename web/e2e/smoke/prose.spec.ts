@@ -1,5 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
+import { sendFromComposer } from "../support/composer";
 import { expect, test } from "../support/fixtures";
 
 /**
@@ -19,9 +20,9 @@ async function showcase(page: Page): Promise<Locator> {
   await page.goto("/agent/atlas");
   const feed = conversation(page);
   await expect(feed.getByText(GREETING)).toBeVisible();
-  const box = page.getByRole("textbox", { name: "Message atlas" });
+  const box = page.getByRole("combobox", { name: "Message atlas" });
   await box.fill("markdown please");
-  await box.press("Enter");
+  await sendFromComposer(box);
   await expect(feed.getByRole("heading", { name: "Rollout notes" })).toBeVisible();
   return feed;
 }
