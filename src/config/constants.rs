@@ -38,7 +38,7 @@ pub(super) const DEFAULT_GATEWAY_PORT: u16 = 7700;
 pub(super) const DEFAULT_FEEDBACK_ENDPOINT: &str = "https://agent-residuum.com";
 
 /// Default max tokens for model responses.
-pub(super) const DEFAULT_MAX_TOKENS: u32 = 8192;
+pub(super) const DEFAULT_MAX_TOKENS: u32 = 16_384;
 
 /// Whether an agent's pulse system runs when its `config.toml` doesn't say.
 pub(crate) const DEFAULT_PULSE_ENABLED: bool = true;
