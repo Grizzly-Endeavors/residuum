@@ -94,11 +94,7 @@ pub(crate) async fn device_gate(
         return next.run(req).await;
     }
 
-    let cookie_header = req
-        .headers()
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
+    let cookie_header = super::cookie_header(req.headers());
     let Some((hit, secret)) = gate
         .pairing
         .authenticate(gate.surface, cookie_header.as_deref())
@@ -162,12 +158,15 @@ fn unauthorized(gate: &GateState, req: &Request) -> Response {
         path = %req.uri().path(),
         "refused a request through Residuum Cloud from a browser that isn't paired"
     );
+    let error = match gate.pairing.origin_of(Surface::Ui) {
+        Some(ui_origin) => format!(
+            "This browser isn't paired with Residuum yet. Pair it at {ui_origin}{PAIRING_PAGE_PATH}."
+        ),
+        None => "This browser isn't paired with Residuum yet. Open Residuum's address in this browser to pair it.".to_string(),
+    };
     (
         StatusCode::UNAUTHORIZED,
-        Json(json!({
-            "error": "This browser isn't paired with Residuum yet. Open Residuum's pairing page to pair it.",
-            "code": DEVICE_REQUIRED_CODE,
-        })),
+        Json(json!({ "error": error, "code": DEVICE_REQUIRED_CODE })),
     )
         .into_response()
 }
