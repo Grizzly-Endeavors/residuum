@@ -51,9 +51,9 @@ The buffer for that channel is emptied when it is delivered, so each message rea
 
 - A DM reply goes to the owner from the main agent's own conversation.
 - A server channel or thread's reply comes from that channel's own session and always goes back to that same channel. It never falls back to the owner's DM: if Discord refuses the post (the bot lacks permission there, or was removed), the output is dropped, the error is logged naming the session and channel, and main gets a notice so the owner can be told if it matters.
-- `send_message` with a `conversation` from `list_conversations` posts into that DM or channel, from whichever agent (main or a session) calls it. If Discord refuses the post, main's own send gets an error DM to the owner the same way it always has; a session's send is subject to the same never-falls-back rule as its own replies above.
+- `send_message` with a `conversation` from `list_conversations` posts into that DM or channel, from whichever agent (main or a session) calls it. If Discord refuses main's own send (or the conversation is unknown), the owner sees a notice in the web UI and main gets a `[Delivery Failed]` message; a session's send is subject to the same never-falls-back rule as its own replies above.
 - Other proactive output from main — `send_message` without a conversation, results routed through `idle_channel = "discord"`, background turns — goes to the owner's DM. Until an owner exists it is dropped with a warning in the log.
-- System notices and errors go only to the owner's DM, never into a server channel.
+- When a main-agent turn started from Discord fails, the plain-language error goes back where its reply would have. System notices and other errors are never sent to Discord; they appear in the web UI.
 
 Long replies are split into 2000-character messages. A typing indicator shows in the target channel while a turn runs — for the main agent's own turn, and equally for a group chat or non-owner DM's own conversation session turn (see [Conversation Routing](background-tasks.md#conversation-routing)), each driven by its own lifecycle signal so one doesn't depend on the other. Files the agent sends are uploaded as Discord attachments.
 
