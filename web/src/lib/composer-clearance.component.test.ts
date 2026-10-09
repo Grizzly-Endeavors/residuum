@@ -84,6 +84,21 @@ describe("composerClearance", () => {
     releaseChat();
   });
 
+  it("passes over a composer a modal layer made inert, and takes it back when the layer closes", async () => {
+    const { el } = composerAt(790);
+    const release = composerClearance.track(el);
+    expect(composerClearance.px).toBe(110);
+
+    document.body.setAttribute("inert", "");
+    await Promise.resolve();
+    expect(composerClearance.px).toBe(0);
+
+    document.body.removeAttribute("inert");
+    await Promise.resolve();
+    expect(composerClearance.px).toBe(110);
+    release();
+  });
+
   it("passes over a composer that isn't laid out", () => {
     const chat = composerAt(790);
     const hidden = composerAt(0);

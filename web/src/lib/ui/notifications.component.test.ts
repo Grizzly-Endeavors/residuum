@@ -73,8 +73,8 @@ describe("ToastRegion", () => {
       });
       render(NotificationsHarness);
       await act();
-      // A phone's bottom bar is the most it clears while no composer is up.
-      expect(region()).toHaveAttribute("data-clearance", "bar");
+      // With no composer to reach, a phone keeps clear of a sheet's footer above the bottom bar.
+      expect(region()).toHaveAttribute("data-clearance", "away");
 
       const composer = document.createElement("form");
       document.body.append(composer);
@@ -82,13 +82,13 @@ describe("ToastRegion", () => {
       composer.getClientRects = () => [{}] as unknown as DOMRectList;
       const release = composerClearance.track(composer);
       await act();
-      expect(region()).toHaveAttribute("data-clearance", "composer");
+      expect(region()).toHaveAttribute("data-clearance", "lifted");
       expect(region().style.getPropertyValue("--toast-lift")).toBe("200px");
 
       release();
       composer.remove();
       await act();
-      expect(region()).toHaveAttribute("data-clearance", "bar");
+      expect(region()).toHaveAttribute("data-clearance", "away");
     });
   });
 

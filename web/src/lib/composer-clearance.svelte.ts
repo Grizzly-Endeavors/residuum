@@ -27,9 +27,9 @@ class ComposerClearance {
     const mine: Reported = { key: Symbol("composer"), px: 0 };
     this.reports.push(mine);
     const report = (): void => {
-      // Not laid out (display: none): it covers nothing.
+      // Not laid out (display: none), or under a modal layer that made the page inert: it covers nothing the user can reach.
       mine.px =
-        el.getClientRects().length === 0
+        el.getClientRects().length === 0 || el.closest("[inert]") !== null
           ? 0
           : Math.max(
               0,
@@ -39,10 +39,18 @@ class ComposerClearance {
     };
     const resizes = new ResizeObserver(report);
     resizes.observe(el);
+    // A modal layer marks what is under it `inert`, on an ancestor of the composer.
+    const inertness = new MutationObserver(report);
+    inertness.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["inert"],
+      subtree: true,
+    });
     window.addEventListener("resize", report);
     report();
     return () => {
       resizes.disconnect();
+      inertness.disconnect();
       window.removeEventListener("resize", report);
       this.reports = this.reports.filter((entry) => entry !== mine);
       this.settle();
