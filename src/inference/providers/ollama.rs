@@ -9,9 +9,10 @@ use crate::inference::http::{
     SharedHttpClient, map_request_error, map_stream_request_error, read_error_body,
     warn_if_insecure_remote,
 };
-use crate::inference::reply::ReplyAssembler;
+use crate::inference::reply::{ReplyAssembler, plain_reasoning};
 use crate::inference::retry::{RetryConfig, with_retry};
 use crate::inference::stream::{Flow, TrackedSink, read_ndjson};
+use crate::inference::types::current_exchange_start;
 use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
     ResponseFormat, StopReason, StreamSink, ThinkingConfig, ToolCall, ToolDefinition, Usage,
@@ -96,8 +97,13 @@ impl OllamaClient {
             })
             .collect();
 
+        let think = options.thinking.as_ref().map(|tc| match tc {
+            ThinkingConfig::Toggle(val) => *val,
+            ThinkingConfig::Level(_) => true,
+        });
+
         PreparedRequest {
-            messages: to_ollama_messages(messages),
+            messages: to_ollama_messages(messages, think == Some(true)),
             tools: (!ollama_tools.is_empty()).then_some(ollama_tools),
             format: match &options.response_format {
                 ResponseFormat::Text => None,
@@ -106,10 +112,7 @@ impl OllamaClient {
             options: options.temperature.map(|t| OllamaModelOptions {
                 temperature: Some(t),
             }),
-            think: options.thinking.as_ref().map(|tc| match tc {
-                ThinkingConfig::Toggle(val) => *val,
-                ThinkingConfig::Level(_) => true,
-            }),
+            think,
         }
     }
 
@@ -419,6 +422,9 @@ struct OllamaMessage {
     /// ID of the tool call a result message answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
+    /// The reasoning behind an assistant message that made tool calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    thinking: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     images: Option<Vec<String>>,
 }
@@ -426,7 +432,13 @@ struct OllamaMessage {
 /// Convert a full conversation into Ollama's wire format, resolving each
 /// tool-result message's `tool_name` from the most recent earlier assistant
 /// tool call with that id.
-fn to_ollama_messages(messages: &[Message]) -> Vec<OllamaMessage> {
+///
+/// With `replay_thinking`, the readable thinking behind the assistant
+/// messages of the tool-use exchange in progress goes back as
+/// `message.thinking`, so the model keeps its train of thought across tool
+/// calls. Earlier turns' thinking is not sent.
+fn to_ollama_messages(messages: &[Message], replay_thinking: bool) -> Vec<OllamaMessage> {
+    let exchange_start = current_exchange_start(messages);
     // Filled in conversation order rather than up front: ids synthesized when
     // the server sends none (`call_0`, `call_1`, ...) repeat across turns, so
     // a result must resolve against the calls that preceded it.
@@ -435,7 +447,8 @@ fn to_ollama_messages(messages: &[Message]) -> Vec<OllamaMessage> {
 
     messages
         .iter()
-        .map(|msg| {
+        .enumerate()
+        .map(|(index, msg)| {
             if let Some(calls) = &msg.tool_calls {
                 for tc in calls {
                     tool_names_by_id.insert(&tc.id, &tc.name);
@@ -468,6 +481,9 @@ fn to_ollama_messages(messages: &[Message]) -> Vec<OllamaMessage> {
                 }),
                 tool_name,
                 tool_call_id,
+                thinking: (replay_thinking && index >= exchange_start)
+                    .then(|| plain_reasoning(&msg.thinking))
+                    .flatten(),
                 images: if msg.images.is_empty() {
                     None
                 } else {
@@ -754,7 +770,7 @@ mod tests {
     fn message_conversion() {
         let msg = Message::user("Hello");
 
-        let ollama_msgs = to_ollama_messages(&[msg]);
+        let ollama_msgs = to_ollama_messages(&[msg], false);
         let ollama_msg = ollama_msgs.first().unwrap();
         assert_eq!(ollama_msg.role, "user", "role should be user");
         assert_eq!(
@@ -767,7 +783,7 @@ mod tests {
     #[test]
     fn message_conversion_tool_empty_content_is_none() {
         let msg = Message::tool("", "call_1");
-        let ollama_msgs = to_ollama_messages(&[msg]);
+        let ollama_msgs = to_ollama_messages(&[msg], false);
         let ollama_msg = ollama_msgs.first().unwrap();
         assert_eq!(ollama_msg.role, "tool", "role should be tool");
         assert!(
@@ -787,7 +803,7 @@ mod tests {
                 server: None,
             }]),
         );
-        let ollama_msgs = to_ollama_messages(&[msg]);
+        let ollama_msgs = to_ollama_messages(&[msg], false);
         let ollama_msg = ollama_msgs.first().unwrap();
         assert_eq!(ollama_msg.role, "assistant", "role should be assistant");
         assert_eq!(
@@ -827,7 +843,7 @@ mod tests {
             data: "base64data".to_string(),
         }];
         let msg = Message::user_with_images("look at this", images);
-        let ollama_msgs = to_ollama_messages(&[msg]);
+        let ollama_msgs = to_ollama_messages(&[msg], false);
         let ollama_msg = ollama_msgs.first().unwrap();
         assert_eq!(ollama_msg.role, "user", "role should be user");
         let imgs = ollama_msg.images.clone().unwrap();
@@ -852,7 +868,7 @@ mod tests {
         );
         let tool_result = Message::tool("file1\nfile2", "call_0");
 
-        let ollama_msgs = to_ollama_messages(&[assistant, tool_result]);
+        let ollama_msgs = to_ollama_messages(&[assistant, tool_result], false);
         let result_msg = ollama_msgs.get(1).expect("two messages were converted");
 
         let serialized = serde_json::to_value(result_msg).unwrap();
@@ -888,7 +904,7 @@ mod tests {
             Message::tool("file contents", "call_0"),
         ];
 
-        let names: Vec<Option<String>> = to_ollama_messages(&messages)
+        let names: Vec<Option<String>> = to_ollama_messages(&messages, false)
             .into_iter()
             .map(|m| m.tool_name)
             .collect();
@@ -925,7 +941,7 @@ mod tests {
         let result_0 = Message::tool("file1\nfile2", "call_0");
         let result_1 = Message::tool("contents", "call_1");
 
-        let ollama_msgs = to_ollama_messages(&[assistant, result_0, result_1]);
+        let ollama_msgs = to_ollama_messages(&[assistant, result_0, result_1], false);
 
         let serialized_0 =
             serde_json::to_value(ollama_msgs.get(1).expect("three messages were converted"))
@@ -948,7 +964,7 @@ mod tests {
     #[test]
     fn tool_correlation_fields_omitted_when_absent() {
         let msg = Message::user("Hello");
-        let ollama_msgs = to_ollama_messages(&[msg]);
+        let ollama_msgs = to_ollama_messages(&[msg], false);
         let serialized = serde_json::to_value(ollama_msgs.first().unwrap()).unwrap();
 
         assert!(
@@ -1670,6 +1686,114 @@ mod tests {
         assert!(
             err.contains("no data"),
             "error should mention no data: {err}"
+        );
+    }
+
+    // --- Thinking replay ---
+
+    fn exchange_with_thinking() -> Vec<Message> {
+        let call = |id: &str| ToolCall {
+            id: id.to_string(),
+            name: "exec".to_string(),
+            arguments: json!({}),
+            server: None,
+        };
+        let mut old = Message::assistant("old", Some(vec![call("c0")]));
+        old.thinking = vec![ThinkingBlock::text("old thinking")];
+        let mut plain = Message::assistant("done", None);
+        plain.thinking = vec![ThinkingBlock::text("wrap-up thinking")];
+        let mut current = Message::assistant("", Some(vec![call("c1")]));
+        current.thinking = vec![
+            ThinkingBlock::text("current thinking"),
+            ThinkingBlock {
+                text: "signed elsewhere".to_string(),
+                signature: Some("sig".to_string()),
+                ..ThinkingBlock::default()
+            },
+            ThinkingBlock {
+                redacted: Some("ENC".to_string()),
+                ..ThinkingBlock::default()
+            },
+        ];
+        vec![
+            Message::user("one"),
+            old,
+            Message::tool("r0", "c0"),
+            plain,
+            Message::user("two"),
+            current,
+            Message::tool("r1", "c1"),
+        ]
+    }
+
+    #[test]
+    fn current_exchange_thinking_is_replayed_as_message_thinking() {
+        let thinking: Vec<Option<String>> = to_ollama_messages(&exchange_with_thinking(), true)
+            .into_iter()
+            .map(|m| m.thinking)
+            .collect();
+        assert_eq!(
+            thinking,
+            vec![
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some("current thinking".to_string()),
+                None
+            ],
+            "only the tool-calling message of the exchange in progress carries thinking, and \
+             only its plain-text block"
+        );
+    }
+
+    #[test]
+    fn thinking_is_not_replayed_when_the_request_has_thinking_off() {
+        assert!(
+            to_ollama_messages(&exchange_with_thinking(), false)
+                .iter()
+                .all(|m| m.thinking.is_none()),
+            "with thinking off nothing is replayed"
+        );
+    }
+
+    #[tokio::test]
+    async fn replayed_thinking_reaches_the_wire_only_when_thinking_is_on() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(full_response_body()))
+            .mount(&server)
+            .await;
+        let client = make_client(server.uri(), "m");
+        for thinking in [Some(ThinkingConfig::Toggle(true)), None] {
+            let options = CompletionOptions {
+                thinking,
+                ..CompletionOptions::default()
+            };
+            client
+                .complete(&exchange_with_thinking(), &[], &options)
+                .await
+                .unwrap();
+        }
+        let requests = server.received_requests().await.unwrap();
+        let on: serde_json::Value =
+            serde_json::from_slice(&requests.first().unwrap().body).unwrap();
+        let off: serde_json::Value =
+            serde_json::from_slice(&requests.last().unwrap().body).unwrap();
+        assert_eq!(
+            at(&on, "/messages/5/thinking"),
+            &json!("current thinking"),
+            "thinking goes back on the assistant message that made the tool call"
+        );
+        assert!(
+            on.pointer("/messages/1/thinking").is_none(),
+            "and not on an earlier exchange's"
+        );
+        assert!(
+            off.pointer("/messages/5/thinking").is_none(),
+            "a request with thinking off carries none"
         );
     }
 

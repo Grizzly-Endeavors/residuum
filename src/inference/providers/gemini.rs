@@ -150,9 +150,14 @@ impl GeminiClient {
             }
         }
 
+        // Thought tokens are billed as output but reported apart from the
+        // candidates' own, so they are added in, as Anthropic's and
+        // OpenAI's output counts already include theirs.
         let usage = gemini_response.usage_metadata.map(|u| Usage {
             input_tokens: u.prompt_token_count,
-            output_tokens: u.candidates_token_count,
+            output_tokens: u
+                .candidates_token_count
+                .saturating_add(u.thoughts_token_count),
             cache_creation_tokens: None,
             cache_read_tokens: u.cached_content_token_count,
         });
@@ -850,6 +855,8 @@ struct GeminiUsageMetadata {
     prompt_token_count: u32,
     #[serde(default, rename = "candidatesTokenCount")]
     candidates_token_count: u32,
+    #[serde(default, rename = "thoughtsTokenCount")]
+    thoughts_token_count: u32,
     #[serde(default, rename = "cachedContentTokenCount")]
     cached_content_token_count: Option<u32>,
 }
@@ -2007,7 +2014,8 @@ mod tests {
                 "candidates": [{"content": {"role": "model", "parts": parts},
                     "finishReason": "STOP", "index": 0}],
                 "usageMetadata": {"promptTokenCount": 21, "candidatesTokenCount": 9,
-                    "totalTokenCount": 30, "cachedContentTokenCount": 4}
+                    "thoughtsTokenCount": 5, "totalTokenCount": 35,
+                    "cachedContentTokenCount": 4}
             })
         )
     }
@@ -2043,7 +2051,8 @@ mod tests {
                 {"text": "", "thoughtSignature": "SIG-LATE"}
             ]}, "finishReason": "STOP"}],
             "usageMetadata": {"promptTokenCount": 21, "candidatesTokenCount": 9,
-                "totalTokenCount": 30, "cachedContentTokenCount": 4}
+                "thoughtsTokenCount": 5, "totalTokenCount": 35,
+                "cachedContentTokenCount": 4}
         })
     }
 
@@ -2110,8 +2119,8 @@ mod tests {
                 usage.output_tokens,
                 usage.cache_read_tokens
             ),
-            (21, 9, Some(4)),
-            "usage from the last event"
+            (21, 14, Some(4)),
+            "usage from the last event, with the 5 thought tokens counted as output"
         );
         assert_eq!(
             streamed.stop_reason,
@@ -2299,6 +2308,32 @@ mod tests {
         );
         assert!(err.is_retryable(), "429 is retried");
         assert!(sink.deltas().is_empty(), "nothing streamed");
+    }
+
+    #[tokio::test]
+    async fn thought_tokens_count_as_output_without_a_stream_too() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{"content": {"role": "model", "parts": [{"text": "ok"}]},
+                    "finishReason": "STOP"}],
+                "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 3,
+                    "thoughtsTokenCount": 40, "totalTokenCount": 53}
+            })))
+            .mount(&mock_server)
+            .await;
+        let usage = make_client(&mock_server.uri())
+            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+            .await
+            .unwrap()
+            .usage
+            .unwrap();
+        assert_eq!(usage.input_tokens, 10, "input tokens unchanged");
+        assert_eq!(
+            usage.output_tokens, 43,
+            "the 40 thought tokens are output tokens beside the 3 of the answer"
+        );
     }
 
     #[tokio::test]

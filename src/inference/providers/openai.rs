@@ -15,13 +15,13 @@ use crate::inference::http::{
     SharedHttpClient, map_request_error, map_stream_request_error, read_error_body,
     warn_if_insecure_remote,
 };
-use crate::inference::reply::ReplyAssembler;
+use crate::inference::reply::{ReplyAssembler, plain_reasoning};
 use crate::inference::retry::{RetryConfig, with_retry};
 use crate::inference::stream::{Flow, SseEvent, TrackedSink, read_sse};
 use crate::inference::types::current_exchange_start;
 use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
-    ResponseFormat, StopReason, StreamSink, ThinkingBlock, ThinkingConfig, ThinkingLevel, ToolCall,
+    ResponseFormat, StopReason, StreamSink, ThinkingConfig, ThinkingLevel, ToolCall,
     ToolDefinition, Usage,
 };
 
@@ -158,7 +158,7 @@ impl OpenAiClient {
             .map(|(index, msg)| {
                 let mut converted = OpenAiMessage::from(msg);
                 if replay_from.is_some_and(|start| index >= start) {
-                    converted.reasoning_content = replayable_reasoning(&msg.thinking);
+                    converted.reasoning_content = plain_reasoning(&msg.thinking);
                 }
                 converted
             })
@@ -435,19 +435,6 @@ fn build_tool_calls(
         }
     }
     Ok(calls)
-}
-
-/// The reasoning text of an assistant message that can go back to a host as
-/// `reasoning_content`: the plain-text blocks, not the signed or redacted
-/// ones another provider produced.
-fn replayable_reasoning(thinking: &[ThinkingBlock]) -> Option<String> {
-    let text: Vec<&str> = thinking
-        .iter()
-        .filter(|b| b.signature.is_none() && b.redacted.is_none() && b.part.is_none())
-        .map(|b| b.text.as_str())
-        .filter(|t| !t.is_empty())
-        .collect();
-    (!text.is_empty()).then(|| text.join("\n\n"))
 }
 
 /// Whether `host` is `OpenAI`'s own service, which accepts only the fields
@@ -1130,13 +1117,13 @@ impl EmbeddingProvider for OpenAiEmbeddingClient {
 mod tests {
     use super::*;
     use crate::inference::CompletionOptions;
-    use crate::inference::StreamDelta;
     use crate::inference::http::{HttpClientConfig, SharedHttpClient};
     use crate::inference::retry::RetryConfig;
     use crate::inference::test_support::{
         RecordingSink, ScriptedServer, Step, assert_same_response, at, json_response, split_bytes,
         sse_chunks, sse_response,
     };
+    use crate::inference::{StreamDelta, ThinkingBlock};
     use serde_json::{Value, json};
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
