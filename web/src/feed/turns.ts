@@ -51,10 +51,13 @@ function emptyBlock(turnId: string): FeedTurn {
  * Group `items` by turn. `liveTurnId` is the turn in flight, if any.
  *
  * Turns are bounded by a change of turn id where items carry one, and
- * otherwise by the next user message or agent message. A message that
- * carries the id of the turn whose output came before it reached the agent
- * mid-turn, and stays inside that turn. Dividers and notes stand between
- * turns, so output after one starts a new block.
+ * otherwise by the next user message or agent message. A message flagged
+ * `midTurn` reached the agent while a turn ran, and stays inside that turn's
+ * block. Any other user or agent message starts a turn, whatever its id:
+ * ids repeat in older history, where every page load counted from `web-1`
+ * again, so an id alone can't say that two messages belong to one turn.
+ * Dividers and notes stand between turns, so output after one starts a new
+ * block.
  *
  * A turn with no output still gets a block, just after the message that
  * began it, while it runs and when `keepEmpty` says it has something to
@@ -107,15 +110,17 @@ export function groupTurns(
       if (item.kind === "tool-group") turn.block.calls.push(...item.calls);
       else turn.block.items.push(item);
     } else if (isTurnMessage(item)) {
-      if (turn?.block && item.turnId !== undefined && item.turnId === turn.id) {
+      if (item.midTurn === true && turn?.block) {
         turn.block.items.push(item);
+      } else if (turn?.block === null && item.turnId !== undefined && turn.id === item.turnId) {
+        // Another message before the turn's first output: still the same turn.
+        entries.push({ kind: "single", key: item.id, item });
+        if (begun.turn?.id === item.turnId) begun.turn.at = entries.length;
       } else {
-        if (begun.turn?.id !== item.turnId) placeBegun();
+        placeBegun();
         entries.push({ kind: "single", key: item.id, item });
         turn = { id: item.turnId, block: null };
-        if (item.turnId !== undefined && begun.turn === null) {
-          begun.turn = { id: item.turnId, at: entries.length };
-        }
+        if (item.turnId !== undefined) begun.turn = { id: item.turnId, at: entries.length };
       }
     } else {
       entries.push({ kind: "single", key: item.id, item });

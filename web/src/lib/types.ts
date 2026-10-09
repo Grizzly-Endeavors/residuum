@@ -532,6 +532,12 @@ interface FeedItemBase {
    * the live turn it arrived in. Episodes carry none.
    */
   turnId?: string;
+  /**
+   * A user or agent message that reached the agent while its turn ran, so it
+   * belongs inside that turn's block. Every other user or agent message
+   * starts a turn, even when its `turnId` repeats an earlier turn's.
+   */
+  midTurn?: boolean;
 }
 
 /**

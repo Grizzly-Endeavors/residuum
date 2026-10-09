@@ -87,13 +87,18 @@ describe("turns in recent history", () => {
     ]);
   });
 
-  it("keeps a message sent mid-turn inside the turn it reached", () => {
+  it("keeps a message the agent took in mid-turn inside the turn it reached", () => {
     const items = convertHistoryMessages(
       [
         message("user", "Draft the post", { turn_id: "t1" }),
-        message("assistant", "Drafting now.", { turn_id: "t1" }),
+        // The agent takes a waiting message in at its checkpoint after a tool batch.
+        message("assistant", "Drafting now.", {
+          turn_id: "t1",
+          tool_calls: [{ id: "a", name: "write_file", arguments: {} }],
+        }),
+        message("tool", "done", { tool_call_id: "a", turn_id: "t1" }),
+        message("system", "A note from the subconscious.", { turn_id: "t1" }),
         message("user", "Keep it short", { turn_id: "t1" }),
-        ...toolCall("a", "write_file", "t1"),
         message("assistant", "Saved a short draft.", { turn_id: "t1" }),
       ],
       { mode: "main" },
@@ -101,6 +106,78 @@ describe("turns in recent history", () => {
     expect(describeEntries(groupTurns(items, null))).toEqual([
       "user:Draft the post",
       "turn[write_file](assistant:Drafting now. | user:Keep it short | assistant:Saved a short draft.)",
+    ]);
+  });
+
+  it("keeps an agent's message that reached the turn mid-way inside it too", () => {
+    const items = convertHistoryMessages(
+      [
+        message("user", "Look into it", { turn_id: "t1" }),
+        ...toolCall("a", "memory_search", "t1"),
+        message("user", "Result of the research", {
+          turn_id: "t1",
+          agent_sender: { address: "spawned-1", category: "spawned" },
+        }),
+        message("assistant", "Thanks, that settles it.", { turn_id: "t1" }),
+      ],
+      { mode: "main" },
+    );
+    expect(describeEntries(groupTurns(items, null))).toEqual([
+      "user:Look into it",
+      "turn[memory_search](agent-message:Result of the research | assistant:Thanks, that settles it.)",
+    ]);
+  });
+
+  it("starts a new block at each message that starts a turn, though ids repeat", () => {
+    // Every page load once counted its message ids from web-1 again, and the
+    // agent kept them as turn ids.
+    const items = convertHistoryMessages(
+      [
+        message("user", "First visit", { turn_id: "web-1" }),
+        ...toolCall("a", "memory_search", "web-1"),
+        message("assistant", "Found it.", { turn_id: "web-1" }),
+        message("user", "Second visit", { turn_id: "web-1" }),
+        message("assistant", "Welcome back.", { turn_id: "web-1" }),
+        message("user", "And once more", { turn_id: "web-1" }),
+        ...toolCall("b", "read_file", "web-1"),
+        message("assistant", "Here it is.", { turn_id: "web-1" }),
+      ],
+      { mode: "main" },
+    );
+    const entries = groupTurns(items, null);
+    expect(describeEntries(entries)).toEqual([
+      "user:First visit",
+      "turn[memory_search](assistant:Found it.)",
+      "user:Second visit",
+      "turn[](assistant:Welcome back.)",
+      "user:And once more",
+      "turn[read_file](assistant:Here it is.)",
+    ]);
+    const keys = entries.map((entry) => entry.key);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it("keeps a repeated id's turn apart from the live turn that reuses it", () => {
+    const store = new FeedStore();
+    store.loadHistory({
+      kind: "recent",
+      messages: [
+        message("user", "Earlier", { turn_id: "web-1" }),
+        message("assistant", "Earlier reply.", { turn_id: "web-1" }),
+      ],
+      next_cursor: null,
+    });
+    store.pushUserMessage("Now", undefined, "web-1");
+    store.handleMessage({ type: "turn_started", reply_to: "web-1" });
+    store.handleMessage({ type: "broadcast_response", content: "Looking." });
+    const shown = describeEntries(groupTurns(store.feed, store.activeTurnId)).filter(
+      (entry) => !entry.startsWith("divider:"),
+    );
+    expect(shown).toEqual([
+      "user:Earlier",
+      "turn[](assistant:Earlier reply.)",
+      "user:Now",
+      "turn[](assistant:Looking.)",
     ]);
   });
 

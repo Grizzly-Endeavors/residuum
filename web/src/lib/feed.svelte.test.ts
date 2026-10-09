@@ -137,6 +137,77 @@ describe("FeedStore reloadHistory end-of-turn decision", () => {
   });
 });
 
+describe("FeedStore with a turn id history already holds", () => {
+  // Every page load once counted its message ids from web-1 again, and the
+  // agent kept them as turn ids, so older history holds turns under ids a
+  // new turn can still reuse.
+  const earlier = [
+    historyMsg("user", "Earlier question", { turnId: "web-1" }),
+    historyMsg("assistant", "Earlier answer", { turnId: "web-1" }),
+  ];
+
+  function storeWithEarlierTurn(): FeedStore {
+    const store = new FeedStore();
+    store.loadHistory(segment(earlier));
+    store.pushUserMessage("New question", undefined, "web-1");
+    store.handleMessage({ type: "turn_started", reply_to: "web-1" });
+    return store;
+  }
+
+  for (const how of ["reconcileRecent", "reloadHistory"] as const) {
+    it(`keeps the new turn running while history holds only the earlier one (${how})`, () => {
+      const store = storeWithEarlierTurn();
+      const change = segment(earlier);
+      if (how === "reconcileRecent") expect(store.reconcileRecent(change)).toBe(true);
+      else store.reloadHistory(change);
+
+      expect(store.isProcessing).toBe(true);
+      expect(store.activeTurnId).toBe("web-1");
+      expect(store.feed.at(-1)).toMatchObject({ kind: "user", content: "New question" });
+    });
+
+    it(`settles the new turn once history holds more under the id (${how})`, () => {
+      const store = storeWithEarlierTurn();
+      const change = segment([
+        ...earlier,
+        historyMsg("user", "New question", { turnId: "web-1" }),
+        historyMsg("assistant", "New answer", { turnId: "web-1" }),
+      ]);
+      if (how === "reconcileRecent") expect(store.reconcileRecent(change)).toBe(true);
+      else store.reloadHistory(change);
+
+      expect(store.isProcessing).toBe(false);
+      expect(store.activeTurnId).toBeNull();
+      expect(store.feed.at(-1)).toMatchObject({ kind: "assistant", content: "New answer" });
+    });
+  }
+});
+
+describe("FeedStore flagging messages that reach a running turn", () => {
+  it("flags a user message sent while a turn runs, and not one that starts a turn", () => {
+    const store = storeWithSettledHistory();
+    store.pushUserMessage("Draft the post", undefined, "web-a");
+    store.handleMessage({ type: "turn_started", reply_to: "web-a" });
+    store.pushUserMessage("Keep it short", undefined, "web-b");
+
+    const users = store.feed.filter((item) => item.kind === "user").slice(-2);
+    expect(users[0]).not.toHaveProperty("midTurn");
+    expect(users[1]).toMatchObject({ content: "Keep it short", turnId: "web-a", midTurn: true });
+  });
+
+  it("flags a session's message that arrives mid-turn", () => {
+    const store = storeWithSettledHistory();
+    store.pushAgentMessage("spawned-1", "run-1", "Done early", null);
+    store.pushUserMessage("Go", undefined, "web-a");
+    store.handleMessage({ type: "turn_started", reply_to: "web-a" });
+    store.pushAgentMessage("spawned-1", "run-1", "Result", null);
+
+    const messages = store.feed.filter((item) => item.kind === "agent-message");
+    expect(messages[0]).not.toHaveProperty("midTurn");
+    expect(messages[1]).toMatchObject({ content: "Result", turnId: "web-a", midTurn: true });
+  });
+});
+
 describe("FeedStore catching up on a turn whose frames are still arriving", () => {
   // History and the socket are separate connections: after a reconnect the
   // catch-up fetch can bring back a turn that has finished on the agent while

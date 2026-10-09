@@ -80,6 +80,23 @@ export interface HistoryConversion {
   endTurn: BackgroundTurnState;
 }
 
+/**
+ * Whether `msg`, a user-role message, reached the agent while its turn ran.
+ * The agent takes such a message in at its checkpoint after a tool batch, so
+ * it follows a tool result of the same turn; a message that starts a turn
+ * follows the previous turn's last reply, whatever id it carries. Messages
+ * without turn ids (episodes, older records) can't be told apart this way,
+ * and each of their user messages starts a turn.
+ */
+function reachedAgentMidTurn(msg: RecentMessage, before: RecentMessage | undefined): boolean {
+  return (
+    msg.role === "user" &&
+    before?.role === "tool" &&
+    msg.turn_id !== undefined &&
+    before.turn_id === msg.turn_id
+  );
+}
+
 /** Convert chat-history-shaped messages into feed items. */
 export function convertHistory(
   messages: RecentMessage[],
@@ -89,8 +106,12 @@ export function convertHistory(
   const undecidedHead: RecentMessage[] = [];
   const toolCallItems = new Map<string, ToolCallState>();
   let turn: BackgroundTurnState = opts.carriedTurn ?? "unknown";
+  /** The message before this one, leaving out the agent's own notes to itself. */
+  let before: RecentMessage | undefined;
 
   for (const msg of messages) {
+    const midTurn = reachedAgentMidTurn(msg, before);
+    if (msg.role !== "system") before = msg;
     const agentMessage = historyAgentMessage(msg, opts.mode);
     if (opts.mode === "main") {
       if (msg.role === "user") turn = agentMessage ? "shown" : "hidden";
@@ -109,7 +130,10 @@ export function convertHistory(
     }
 
     const content = msg.content;
-    const ofTurn = msg.turn_id === undefined ? {} : { turnId: msg.turn_id };
+    const ofTurn = {
+      ...(msg.turn_id === undefined ? {} : { turnId: msg.turn_id }),
+      ...(midTurn ? { midTurn: true } : {}),
+    };
     switch (msg.role) {
       case "user": {
         if (agentMessage) {
