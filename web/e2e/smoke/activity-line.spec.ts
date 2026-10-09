@@ -30,6 +30,16 @@ function summary(scope: Locator, text: string | RegExp): Locator {
   return scope.getByRole("button", { name: text });
 }
 
+/** How many pages have atlas's chat socket open, by the mock's count. */
+async function connectedPages(page: Page): Promise<number> {
+  const answer = (await (
+    await page.request.get("/api/mock/connected-pages?agent=atlas")
+  ).json()) as {
+    pages: number;
+  };
+  return answer.pages;
+}
+
 async function openAtlas(page: Page): Promise<void> {
   await page.goto("/agent/atlas");
   await expect(conversation(page).getByText(GREETING)).toBeVisible();
@@ -141,22 +151,25 @@ test.describe("connecting while a turn runs", () => {
     page,
     mock,
   }) => {
-    // The reads finish seconds apart, so the second page joins before the last
-    // steps, and the turn is held open until that page has seen it running.
-    await mock.post("/api/mock/delays", { data: { scale: 8 } });
-    await mock.post("/api/mock/turn-hold", { data: { held: true } });
+    // The turn sits with its two file reads running, sending nothing more, so the
+    // second page can finish connecting however slowly it loads. Letting the
+    // reads finish is then the first thing it hears of the turn.
+    await mock.post("/api/mock/turn-hold", { data: { held: "steps" } });
     await openAtlas(page);
     await send(page, "Check the routing doc");
     await expect(
       conversation(page).getByRole("button", { name: /^Reading team\/wiki\/index\.md/ }),
-    ).toBeVisible({ timeout: 15_000 });
+    ).toBeVisible();
 
     const other = await page.context().newPage();
     await other.goto("/agent/atlas");
     const feed = conversation(other);
-    await expect(feed.getByText("Earlier steps happened before this page connected")).toBeVisible({
-      timeout: 15_000,
-    });
+    await expect(feed.getByText(GREETING)).toBeVisible();
+    await expect.poll(() => connectedPages(page)).toBe(2);
+
+    // The turn's end is still held, so it is seen running.
+    await mock.post("/api/mock/turn-hold", { data: { held: true } });
+    await expect(feed.getByText("Earlier steps happened before this page connected")).toBeVisible();
     await expect(feed.getByText("Working")).toBeVisible();
     await expectNoAxeViolations(other);
     await mock.post("/api/mock/turn-hold", { data: { held: false } });

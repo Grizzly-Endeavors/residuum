@@ -95,25 +95,40 @@ describe("the mock environment", () => {
   it("ends a turn at once unless turn ends are held, then when the hold lifts", () => {
     const env = createMockEnv({ deterministic: true });
     const ended: string[] = [];
-    env.whenTurnEndsReleased(() => ended.push("free"));
-    env.holdTurnEnds(true);
-    env.whenTurnEndsReleased(() => ended.push("first"));
-    env.whenTurnEndsReleased(() => ended.push("second"));
+    env.whenTurnReleased("end", () => ended.push("free"));
+    env.holdTurns("end");
+    env.whenTurnReleased("end", () => ended.push("first"));
+    env.whenTurnReleased("end", () => ended.push("second"));
     expect(ended).toEqual(["free"]);
-    env.holdTurnEnds(false);
+    env.holdTurns("none");
     expect(ended).toEqual(["free", "first", "second"]);
+  });
+
+  it('holds a turn\'s results as well as its end at "steps", and lets the results out first as the hold eases', () => {
+    const env = createMockEnv({ deterministic: true });
+    const stages: string[] = [];
+    env.holdTurns("steps");
+    env.whenTurnReleased("results", () => stages.push("results"));
+    env.whenTurnReleased("end", () => stages.push("end"));
+    expect(stages).toEqual([]);
+    env.holdTurns("end");
+    expect(stages).toEqual(["results"]);
+    env.whenTurnReleased("results", () => stages.push("late results"));
+    expect(stages).toEqual(["results", "late results"]);
+    env.holdTurns("none");
+    expect(stages).toEqual(["results", "late results", "end"]);
   });
 
   it("drops a held turn end that was cancelled, or cut short by a reset", () => {
     const env = createMockEnv({ deterministic: true });
     const ended: string[] = [];
-    env.holdTurnEnds(true);
-    env.whenTurnEndsReleased(() => ended.push("cancelled"))();
-    env.whenTurnEndsReleased(() => ended.push("reset"));
+    env.holdTurns("end");
+    env.whenTurnReleased("end", () => ended.push("cancelled"))();
+    env.whenTurnReleased("end", () => ended.push("reset"));
     env.reset();
-    env.holdTurnEnds(false);
+    env.holdTurns("none");
     expect(ended).toEqual([]);
-    env.whenTurnEndsReleased(() => ended.push("after reset"));
+    env.whenTurnReleased("end", () => ended.push("after reset"));
     expect(ended).toEqual(["after reset"]);
   });
 });
