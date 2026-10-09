@@ -113,6 +113,17 @@ pub(crate) fn sse_chunks<T: AsRef<[u8]>>(chunks: &[T]) -> Vec<Step> {
     script
 }
 
+/// A complete NDJSON stream: each line its own network chunk.
+pub(crate) fn ndjson_response<T: AsRef<[u8]>>(lines: &[T]) -> Vec<Step> {
+    let mut script = vec![Step::head(200, "application/x-ndjson")];
+    for line in lines {
+        script.push(Step::chunk(line));
+        script.push(Step::pause(Duration::from_millis(2)));
+    }
+    script.push(Step::end());
+    script
+}
+
 /// Split a stream's text into network chunks of `size` bytes, ignoring
 /// character boundaries as the network does.
 pub(crate) fn split_bytes(text: &str, size: usize) -> Vec<Vec<u8>> {

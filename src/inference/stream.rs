@@ -191,6 +191,31 @@ pub(crate) async fn read_sse(
     Ok(())
 }
 
+/// Read a newline-delimited response to its end, handing each non-blank
+/// line to `on_line` as it completes. Errors are as for [`read_sse`].
+pub(crate) async fn read_ndjson(
+    response: reqwest::Response,
+    idle_secs: u64,
+    mut on_line: impl FnMut(&str) -> Result<Flow, InferenceError>,
+) -> Result<(), InferenceError> {
+    let mut body = response.bytes_stream();
+    let mut buffer = LineBuffer::default();
+    while let Some(chunk) = body.next().await {
+        let bytes = chunk.map_err(|e| map_stream_read_error(&e, idle_secs))?;
+        for line in buffer.push(&bytes) {
+            if !line.trim().is_empty() && matches!(on_line(&line)?, Flow::Done) {
+                return Ok(());
+            }
+        }
+    }
+    if let Some(line) = buffer.finish()
+        && !line.trim().is_empty()
+    {
+        on_line(&line)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
