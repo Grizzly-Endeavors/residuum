@@ -530,7 +530,6 @@ async fn maybe_nudge_learner(rt: &mut AgentRuntime) {
     }
 }
 
-/// Publish a `TurnLifecycleEvent::Ended` closing the turn on an endpoint.
 /// Publish one event of the main agent's conversation.
 async fn publish_main_conversation(publisher: &Publisher, event: MainConversationEvent) {
     if let Err(e) = publisher.publish(topics::MainConversation, event).await {
@@ -582,6 +581,7 @@ async fn publish_turn_started(
         ));
 }
 
+/// Publish a `TurnLifecycleEvent::Ended` closing the turn on an endpoint.
 async fn publish_turn_ended(publisher: &Publisher, endpoint: &EndpointName, correlation_id: &str) {
     if let Err(e) = publisher
         .publish(

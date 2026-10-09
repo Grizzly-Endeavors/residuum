@@ -282,16 +282,21 @@ impl WsSubscribers {
                 },
                 event = self.response.recv() => {
                     match event {
-                        // A turn's reply names its turn and arrives through
-                        // `main`; only a post carries no correlation id.
-                        Ok(Some(resp)) if resp.correlation_id.is_empty() => Some(
-                            response_to_server_message(
-                                &self.file_registry,
-                                self.endpoint.as_ref(),
-                                resp,
+                        // A turn's reply names its turn, carries no file, and
+                        // arrives through `main`; a post has no turn, and a
+                        // file is only ever sent as a post.
+                        Ok(Some(resp))
+                            if resp.correlation_id.is_empty() || resp.attachment.is_some() =>
+                        {
+                            Some(
+                                response_to_server_message(
+                                    &self.file_registry,
+                                    self.endpoint.as_ref(),
+                                    resp,
+                                )
+                                .await,
                             )
-                            .await,
-                        ),
+                        }
                         Ok(Some(_turn_reply)) => None,
                         _ => return None,
                     }
