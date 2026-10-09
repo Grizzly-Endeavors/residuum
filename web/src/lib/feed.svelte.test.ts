@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { groupTurns } from "../feed/turns";
 import { FeedStore } from "./feed.svelte";
 import type { RecentHistorySegment, RecentMessage, ServerMessage } from "./types";
 
@@ -166,6 +167,99 @@ describe("FeedStore dividers", () => {
     );
     const dividers = store.feed.filter((item) => item.kind === "divider");
     expect(dividers).toMatchObject([{ variant: "day", date: "2026-03-14" }]);
+  });
+});
+
+describe("FeedStore when a turn fails", () => {
+  const error = (replyTo: string | null, details: string | null = null): ServerMessage => ({
+    type: "error",
+    reply_to: replyTo,
+    message: "The model provider didn't answer.",
+    details,
+  });
+
+  function failingTurn(store: FeedStore, id = "web-a"): void {
+    store.pushUserMessage("Tidy the wiki index", undefined, id);
+    store.handleMessage({ type: "turn_started", reply_to: id });
+    store.handleMessage({ type: "broadcast_response", content: "Looking first." });
+  }
+
+  it("leaves an account of it in the turn, with its cause and what to send again", () => {
+    const store = new FeedStore();
+    failingTurn(store);
+    store.handleMessage(error("web-a", "provider returned 503"));
+    store.handleMessage({ type: "turn_ended", reply_to: "web-a" });
+
+    expect(store.isProcessing).toBe(false);
+    expect(store.feed.at(-1)).toEqual({
+      id: expect.any(Number) as number,
+      kind: "turn-failure",
+      turnId: "web-a",
+      message: "The model provider didn't answer.",
+      details: "provider returned 503",
+      retry: { content: "Tidy the wiki index" },
+    });
+  });
+
+  it("keeps the images the user sent for Try again", () => {
+    const store = new FeedStore();
+    const image = { media_type: "image/png", data: "AAAA" };
+    store.pushUserMessage("What is this?", [image], "web-a");
+    store.handleMessage({ type: "turn_started", reply_to: "web-a" });
+    store.handleMessage(error("web-a"));
+
+    expect(store.feed.at(-1)).toMatchObject({
+      retry: { content: "What is this?", images: [image] },
+    });
+  });
+
+  it("puts the failure inside its turn's block, so the turn ends on it", () => {
+    const store = new FeedStore();
+    failingTurn(store);
+    store.handleMessage(error("web-a"));
+
+    const entries = groupTurns(store.feed, store.activeTurnId);
+    const block = entries.at(-1);
+    if (block?.kind !== "turn") throw new Error("expected the turn's block");
+    expect(
+      block.parts.map((part) => (part.kind === "message" ? part.item.kind : part.kind)),
+    ).toEqual(["assistant", "turn-failure"]);
+  });
+
+  it("shows a turn that failed before it did anything", () => {
+    const store = new FeedStore();
+    store.pushUserMessage("Hello", undefined, "web-a");
+    store.handleMessage({ type: "turn_started", reply_to: "web-a" });
+    store.handleMessage(error("web-a"));
+    store.handleMessage({ type: "turn_ended", reply_to: "web-a" });
+
+    const entries = groupTurns(store.feed, store.activeTurnId);
+    expect(entries.map((entry) => entry.kind)).toEqual(["single", "turn"]);
+    expect(store.feed.at(-1)).toMatchObject({ kind: "turn-failure" });
+  });
+
+  it("offers no retry for a message the page doesn't hold, or one that wasn't the user's own", () => {
+    const store = new FeedStore();
+    store.handleMessage({ type: "turn_started", reply_to: "t9" });
+    store.handleMessage(error("t9"));
+    expect(store.feed.at(-1)).not.toHaveProperty("retry");
+  });
+
+  it("keeps an error that names no turn to the toast", () => {
+    const store = new FeedStore();
+    failingTurn(store);
+    const before = store.feed.length;
+    store.handleMessage(error(null));
+    expect(store.feed).toHaveLength(before);
+    expect(store.isProcessing).toBe(false);
+  });
+
+  it("names a turn joined partway by the error that names it", () => {
+    const store = new FeedStore();
+    store.handleMessage({ type: "broadcast_response", content: "Working on it." });
+    store.handleMessage(error("t5"));
+    expect(store.activeTurnId).toBe("t5");
+    expect(store.feed.every((item) => item.turnId === "t5")).toBe(true);
   });
 });
 

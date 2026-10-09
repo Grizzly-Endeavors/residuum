@@ -195,6 +195,21 @@ describe("a turn that ended", () => {
     expect(screen.getByRole("button", { name: /^Ran 1 command/ })).toBeVisible();
   });
 
+  it("ends a failed turn on its failure, not on how long it worked", () => {
+    const failure: TurnPart = {
+      kind: "message",
+      key: "item-failure",
+      item: { id: 900, kind: "turn-failure", turnId: "t1", message: "The provider didn't answer." },
+    };
+    render(FeedTurn, {
+      agent: "atlas",
+      turn: turn([steps(0, { name: "exec" }), failure], false),
+      observed: watched(),
+    });
+    expect(screen.getByText("atlas couldn't finish this reply")).toBeVisible();
+    expect(screen.queryByText(/^Worked for/)).toBeNull();
+  });
+
   it("notes steps the page missed in the run they belong to", async () => {
     render(FeedTurn, {
       agent: "atlas",

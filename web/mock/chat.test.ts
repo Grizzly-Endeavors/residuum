@@ -399,6 +399,120 @@ describe("chat turns", () => {
     });
   });
 
+  describe("scripted turns", () => {
+    const SEGMENTS_MS = 3000;
+    const ERROR_MS = 1000;
+
+    /** The kinds of frame a turn sent, with a text's first words where it sent one. */
+    function outline(): string[] {
+      return frames.map((f) => {
+        if (f.type === "broadcast_response") return `text:${f.content.split(" ")[0] ?? ""}`;
+        if (f.type === "tool_call") return `call:${f.name}`;
+        if (f.type === "tool_result") return `result:${f.name}`;
+        return f.type;
+      });
+    }
+
+    it("segments: works in three rounds, each after a text, then replies", () => {
+      chat.send(message("segments please"));
+      vi.advanceTimersByTime(SEGMENTS_MS);
+      expect(outline()).toEqual([
+        "turn_started",
+        "text:Let",
+        "call:read_file",
+        "call:read_file",
+        "call:read_file",
+        "result:read_file",
+        "result:read_file",
+        "result:read_file",
+        "text:The",
+        "call:exec",
+        "call:exec",
+        "result:exec",
+        "result:exec",
+        "text:One",
+        "call:edit_file",
+        "result:edit_file",
+        "turn_usage",
+        "response",
+        "turn_ended",
+      ]);
+      expect(frames.find((f) => f.type === "turn_usage")).toMatchObject({ tool_calls: 6 });
+    });
+
+    it("segments: records every round in history as the agent made it", () => {
+      chat.send(message("segments please"));
+      vi.advanceTimersByTime(SEGMENTS_MS);
+      expect(recorded().map((m) => m.role)).toEqual([
+        "user",
+        "assistant",
+        "tool",
+        "tool",
+        "tool",
+        "assistant",
+        "tool",
+        "tool",
+        "assistant",
+        "tool",
+        "assistant",
+      ]);
+      expect(recorded()[1]).toMatchObject({
+        content: "Let me check the config first.",
+        tool_calls: [{ name: "read_file" }, { name: "read_file" }, { name: "read_file" }],
+      });
+      expect(recorded().at(-1)?.tool_calls).toBeUndefined();
+      expect(new Set(recorded().map((m) => m.turn_id))).toEqual(new Set(["m1"]));
+      expect(state.usage.tool_calls).toBeGreaterThanOrEqual(6);
+    });
+
+    it("segments: waits at its last step while turns are held", () => {
+      hub.env.holdTurns("end");
+      chat.send(message("segments please"));
+      vi.advanceTimersByTime(SEGMENTS_MS + 5000);
+      expect(types()).not.toContain("turn_ended");
+      hub.env.holdTurns("none");
+      expect(types().at(-1)).toBe("turn_ended");
+    });
+
+    it("error: fails after a search with a plain message and its cause", () => {
+      chat.send(message("error please"));
+      vi.advanceTimersByTime(ERROR_MS);
+      expect(outline()).toEqual([
+        "turn_started",
+        "text:Looking",
+        "call:memory_search",
+        "result:memory_search",
+        "turn_usage",
+        "error",
+        "turn_ended",
+      ]);
+      expect(frames.find((f) => f.type === "error")).toMatchObject({
+        reply_to: "m1",
+        message: expect.stringContaining("didn't answer") as string,
+        details: expect.stringContaining("503") as string,
+      });
+    });
+
+    it("error: keeps only the user's message, and doesn't count a reply unread", () => {
+      connected = 0;
+      chat.send(message("error please"));
+      vi.advanceTimersByTime(ERROR_MS);
+      expect(recorded().map((m) => m.content)).toEqual(["error please"]);
+      expect(unread).toBe(0);
+      expect(busy).toEqual([true, false]);
+    });
+
+    it("can be stopped like any turn", () => {
+      chat.send(message("segments please"));
+      vi.advanceTimersByTime(500);
+      chat.cancel("m1");
+      expect(frames.at(-1)).toEqual({ type: "turn_ended", reply_to: "m1" });
+      vi.advanceTimersByTime(SEGMENTS_MS);
+      expect(types().filter((t) => t === "turn_ended")).toHaveLength(1);
+      expect(types()).not.toContain("response");
+    });
+  });
+
   describe("cancel", () => {
     it("ends a running turn early, with no reply", () => {
       chat.send(message("stop me"));

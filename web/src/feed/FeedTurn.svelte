@@ -28,7 +28,13 @@
   const parts = $derived(drawnParts(turn, gaps));
   /** Where the newest run of steps is, which is the only one shown open while the turn runs. */
   const lastActivity = $derived(parts.findLastIndex((part) => part.kind === "activity"));
-  const ending = $derived(turn.live ? null : turnEndingLine(observed, turnCallCount(turn) > 0));
+  /** The turn ended in a failure, which says so itself and needs no "Worked for". */
+  const failed = $derived(
+    turn.parts.some((part) => part.kind === "message" && part.item.kind === "turn-failure"),
+  );
+  const ending = $derived(
+    turn.live ? null : turnEndingLine(observed, turnCallCount(turn) > 0 && !failed),
+  );
 
   // The head goes when the turn ends: focus that was on its Stop moves to the
   // newest summary, not to the page.

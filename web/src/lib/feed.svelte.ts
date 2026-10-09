@@ -18,6 +18,7 @@ import type {
   ServerMessage,
   RecentMessage,
   FeedItem,
+  UserFeedItem,
   DividerFeedItem,
   ToolCallState,
   ImageAttachment,
@@ -310,6 +311,9 @@ export class FeedStore {
         // goes back to Send). The notification surface itself is
         // dispatched by WsCoordinator before this runs.
         this.isProcessing = false;
+        // An error that names a turn is that turn failing: it leaves its
+        // account in the feed after the toast is gone.
+        if (msg.reply_to !== null) this.recordFailure(msg.reply_to, msg.message, msg.details);
         break;
 
       case "notice":
@@ -628,6 +632,32 @@ export class FeedStore {
     if (turnId !== undefined) this.captureBaseline(turnId);
     this.turnStart = this.feed.length;
     this.isProcessing = true;
+  }
+
+  /**
+   * Show that the turn `turnId` couldn't finish, as the last thing in it. When
+   * the user's own message began the turn, it is kept for Try again.
+   */
+  private recordFailure(turnId: string, message: string, details: string | null): void {
+    this.nameJoinedTurn(turnId);
+    const asked = this.feed.findLast(
+      (item): item is UserFeedItem =>
+        item.kind === "user" &&
+        item.turnId === turnId &&
+        item.midTurn !== true &&
+        item.sender === undefined,
+    );
+    const images = asked?.images === undefined ? [] : $state.snapshot(asked.images);
+    this.feed.push({
+      id: nextFeedId(),
+      kind: "turn-failure",
+      turnId,
+      message,
+      ...(details === null || details === "" ? {} : { details }),
+      ...(asked === undefined
+        ? {}
+        : { retry: { content: asked.content, ...(images.length > 0 ? { images } : {}) } }),
+    });
   }
 
   /** A frame named the turn in flight, joined under a stand-in id: tag its items with the real one. */

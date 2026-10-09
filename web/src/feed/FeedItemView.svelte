@@ -7,6 +7,7 @@
   import LocalNote from "./LocalNote.svelte";
   import Prose from "./Prose.svelte";
   import StatusLine from "./StatusLine.svelte";
+  import TurnFailure from "./TurnFailure.svelte";
   import UserMessage from "./UserMessage.svelte";
 
   // One feed item, in the main chat or a session's transcript. `agent` is the
@@ -28,6 +29,8 @@
   <CompressedMarker {agent} />
 {:else if item.kind === "file-attachment"}
   <FileAttachment {item} />
+{:else if item.kind === "turn-failure"}
+  <TurnFailure {item} {agent} />
 {:else if item.kind === "status"}
   <StatusLine tone={item.tone} content={item.content} details={item.details} />
 {:else if item.kind === "local-system"}

@@ -56,7 +56,12 @@ export type FeedEntry = FeedSingle | FeedTurn;
 
 /** What the agent produces in a turn. */
 function isOutput(item: FeedItem): boolean {
-  return item.kind === "assistant" || item.kind === "tool-group" || item.kind === "file-attachment";
+  return (
+    item.kind === "assistant" ||
+    item.kind === "tool-group" ||
+    item.kind === "file-attachment" ||
+    item.kind === "turn-failure"
+  );
 }
 
 /** A message that starts a turn when it arrives outside one. */

@@ -639,7 +639,26 @@ export interface StatusFeedItem extends FeedItemBase {
   details?: string;
 }
 
+/**
+ * The end of a turn that couldn't finish, kept in the feed after its toast is
+ * gone: what went wrong in plain words, the technical detail behind a
+ * toggle, and a way to send the user's message again.
+ */
+export interface TurnFailureFeedItem extends FeedItemBase {
+  kind: "turn-failure";
+  /** The agent's plain-language account of what went wrong. */
+  message: string;
+  /** The full technical cause chain, when there is one. */
+  details?: string;
+  /**
+   * What the user sent to start the turn, for Try again. Absent when the page
+   * doesn't hold that message or it wasn't the user's own.
+   */
+  retry?: { content: string; images?: ImageAttachment[] };
+}
+
 export type FeedItem =
+  | TurnFailureFeedItem
   | AgentMessageFeedItem
   | StatusFeedItem
   | UserFeedItem

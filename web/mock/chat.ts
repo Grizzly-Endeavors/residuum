@@ -1,5 +1,6 @@
 import type { ClientMessage, ServerMessage } from "../src/lib/generated/protocol";
 import type { ChatHistorySegment } from "../src/lib/types";
+import { scenarioFor, type Scenario } from "./chat-scenarios";
 import { cannedResponses, sampleEpisodes, sampleRecentMessages } from "./data/chat";
 import { json } from "./http";
 import type { Route } from "./routes";
@@ -148,9 +149,104 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     });
   }
 
+  /** Add a turn's model calls and tools to the conversation's totals. */
+  function addUsage(tools: number): void {
+    const { usage } = state;
+    state.usage = {
+      input_tokens: usage.input_tokens + TURN_USAGE.input,
+      output_tokens: usage.output_tokens + TURN_USAGE.output,
+      context_tokens: (usage.context_tokens ?? TURN_USAGE.context) + TURN_USAGE.growth,
+      tool_calls: usage.tool_calls + tools,
+    };
+  }
+
+  /** Run a scripted turn: its frames at their times, then its ending, held where a test holds turns. */
+  function runScenario(replyTo: string, content: string, scenario: Scenario): void {
+    const turn: TurnInFlight = { content, cancels: [] };
+    inFlight.set(replyTo, turn);
+    const later = (ms: number, action: () => void): void => {
+      turn.cancels.push(env.after(ms, action));
+    };
+    const emit = (frames: ServerMessage[]): void => {
+      for (const frame of frames) state.broadcast(frame);
+    };
+
+    emit([{ type: "turn_started", reply_to: replyTo }]);
+    hub.setBusy(agent, true);
+    for (const step of scenario.steps) {
+      const onlyResults = step.frames.every((frame) => frame.type === "tool_result");
+      later(step.at, () => {
+        if (!onlyResults) {
+          emit(step.frames);
+          return;
+        }
+        turn.cancels.push(
+          env.whenTurnReleased("results", () => {
+            emit(step.frames);
+          }),
+        );
+      });
+    }
+    later(scenario.endAt, () => {
+      turn.cancels.push(
+        env.whenTurnReleased("end", () => {
+          inFlight.delete(replyTo);
+          addUsage(scenario.toolCalls);
+          emit([
+            {
+              type: "turn_usage",
+              reply_to: replyTo,
+              output_tokens: TURN_USAGE.output,
+              has_usage: true,
+              tool_calls: scenario.toolCalls,
+              session_totals: state.usage,
+            },
+          ]);
+          if (scenario.failure !== null) {
+            emit([
+              {
+                type: "error",
+                reply_to: replyTo,
+                message: scenario.failure.message,
+                details: scenario.failure.details,
+              },
+            ]);
+          } else if (scenario.reply !== null) {
+            emit([{ type: "response", reply_to: replyTo, content: scenario.reply }]);
+          }
+          emit([{ type: "turn_ended", reply_to: replyTo }]);
+          hub.setBusy(agent, false);
+          if (scenario.failure === null) {
+            hub.teamEvents.agentReplied(agent);
+            if (agent.connectedClients() === 0) hub.addUnread(agent);
+          }
+          if (scenario.recorded.length === 0) {
+            recordUserMessage(content);
+          } else {
+            const ofTurn = {
+              timestamp: env.clock.iso(),
+              visibility: "user",
+              turn_id: replyTo,
+            } as const;
+            state.extraRecent.push(
+              { role: "user", content, ...ofTurn },
+              ...scenario.recorded.map((message) => ({ ...message, ...ofTurn })),
+            );
+          }
+          hub.overview.changed(agent);
+        }),
+      );
+    });
+  }
+
   function send(msg: SendMessage): void {
     const replyTo = msg.id;
     const { content } = msg;
+    const scenario = scenarioFor(content, env.nextId);
+    if (scenario !== null) {
+      runScenario(replyTo, content, scenario);
+      return;
+    }
     const lower = content.toLowerCase();
     const drop = lower.startsWith("drop");
     const finishWhileDown = lower.startsWith("drop finish");
@@ -263,13 +359,7 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
 
     function endTurn(): void {
       inFlight.delete(replyTo);
-      const { usage } = state;
-      state.usage = {
-        input_tokens: usage.input_tokens + TURN_USAGE.input,
-        output_tokens: usage.output_tokens + TURN_USAGE.output,
-        context_tokens: (usage.context_tokens ?? TURN_USAGE.context) + TURN_USAGE.growth,
-        tool_calls: usage.tool_calls + TURN_USAGE.tools,
-      };
+      addUsage(TURN_USAGE.tools);
       live({
         type: "turn_usage",
         reply_to: replyTo,
