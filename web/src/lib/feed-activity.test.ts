@@ -185,17 +185,9 @@ describe("a turn the page joined already running", () => {
     ).toEqual(["assistant", "activity"]);
   });
 
-  it("takes the turn's id from the first frame that names it", () => {
+  it("takes the turn's id from the first frame it sees, which every one of its frames carries", () => {
     const store = new FeedStore();
-    store.handleMessage(toolCall("c1"));
-    store.handleMessage({
-      type: "turn_usage",
-      reply_to: "t9",
-      output_tokens: 1,
-      has_usage: true,
-      tool_calls: 1,
-      session_totals: null,
-    });
+    store.handleMessage({ ...toolCall("c1"), reply_to: "t9" } as ServerMessage);
     expect(store.activeTurnId).toBe("t9");
     expect(store.feed.every((item) => item.turnId === "t9")).toBe(true);
     expect(store.observed.get("t9")?.gaps).toEqual([0]);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cardSender } from "./feed-words";
+import { cardSender, endpointName } from "./feed-words";
 
 describe("cardSender", () => {
   it("names a session by its kind and address, and lets it be opened", () => {
@@ -43,5 +43,17 @@ describe("cardSender", () => {
       sender: "atlas",
       isSession: false,
     });
+  });
+});
+
+describe("endpointName", () => {
+  it("names the chat interfaces as people write them", () => {
+    expect(endpointName("telegram")).toBe("Telegram");
+    expect(endpointName("discord")).toBe("Discord");
+    expect(endpointName("teams")).toBe("Teams");
+  });
+
+  it("capitalizes any other", () => {
+    expect(endpointName("matrix")).toBe("Matrix");
   });
 });

@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { render, screen } from "../test/component";
 import type { ObservedTurn } from "../lib/observed-turns.svelte";
 import type { AssistantFeedItem, ToolCallState } from "../lib/types";
+import { callSteps } from "./activity";
 import FeedTurn from "./FeedTurn.svelte";
 import type { FeedTurn as Turn, TurnPart } from "./turns";
 
@@ -23,16 +24,18 @@ function steps(
   callsBefore: number,
   ...more: Array<Partial<ToolCallState> & { name: string }>
 ): TurnPart {
+  const calls = more.map((call) => ({
+    id: `c${String(++ids)}`,
+    arguments: {},
+    status: "done" as const,
+    ...call,
+  }));
   return {
     kind: "activity",
     key: `activity-${String(++ids)}`,
     callsBefore,
-    calls: more.map((call) => ({
-      id: `c${String(++ids)}`,
-      arguments: {},
-      status: "done" as const,
-      ...call,
-    })),
+    steps: callSteps(calls),
+    calls,
   };
 }
 
@@ -41,7 +44,15 @@ function turn(parts: TurnPart[], live: boolean): Turn {
 }
 
 function watched(more: Partial<ObservedTurn> = {}): ObservedTurn {
-  return { startedAt: 0, endedAt: 14_000, ending: "finished", stopAsked: false, gaps: [], ...more };
+  return {
+    startedAt: 0,
+    endedAt: 14_000,
+    ending: "finished",
+    stopAsked: false,
+    retrying: false,
+    gaps: [],
+    ...more,
+  };
 }
 
 const running = (more: Partial<ObservedTurn> = {}): ObservedTurn =>
@@ -98,6 +109,25 @@ describe("a running turn", () => {
     expect(screen.getByText("5s")).toBeInTheDocument();
     // Without a way to stop it here, it offers none.
     expect(screen.queryByRole("button", { name: "Stop the reply" })).toBeNull();
+  });
+
+  it("says it is retrying, quietly, while a stream starts over", () => {
+    const view = render(FeedTurn, {
+      agent: "atlas",
+      turn: turn([say("Let me look.")], true),
+      observed: running({ retrying: true }),
+    });
+    expect(screen.getByText("Retrying…")).toBeVisible();
+    // Beside the working mark, not in place of it.
+    expect(screen.getByText("Working")).toBeVisible();
+    view.unmount();
+
+    render(FeedTurn, {
+      agent: "atlas",
+      turn: turn([say("Let me look.")], true),
+      observed: running(),
+    });
+    expect(screen.queryByText("Retrying…")).toBeNull();
   });
 
   it("stops the turn from the head", async () => {

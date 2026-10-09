@@ -5,7 +5,7 @@
   import ActivityLine from "./ActivityLine.svelte";
   import FeedItemView from "./FeedItemView.svelte";
   import TurnHead from "./TurnHead.svelte";
-  import { drawnParts, gapsWithin, turnCallCount, type FeedTurn } from "./turns";
+  import { drawnParts, gapsWithin, type FeedTurn } from "./turns";
 
   // One turn's output as one block, in the order it happened: runs of tool
   // calls as activity lines between what the agent said. A running turn ends
@@ -25,6 +25,8 @@
   let { turn, agent, observed, onStop }: Props = $props();
 
   const gaps = $derived(observed?.gaps ?? []);
+  /** The turn did work: it made tool calls, or thought. */
+  const worked = $derived(turn.parts.some((part) => part.kind === "activity"));
   const parts = $derived(drawnParts(turn, gaps));
   /** Where the newest run of steps is, which is the only one shown open while the turn runs. */
   const lastActivity = $derived(parts.findLastIndex((part) => part.kind === "activity"));
@@ -32,9 +34,7 @@
   const failed = $derived(
     turn.parts.some((part) => part.kind === "message" && part.item.kind === "turn-failure"),
   );
-  const ending = $derived(
-    turn.live ? null : turnEndingLine(observed, turnCallCount(turn) > 0 && !failed),
-  );
+  const ending = $derived(turn.live ? null : turnEndingLine(observed, worked && !failed));
 
   // The head goes when the turn ends: focus that was on its Stop moves to the
   // newest summary, not to the page.
@@ -63,7 +63,7 @@
     {#if part.kind === "activity"}
       <ActivityLine
         {agent}
-        calls={part.calls}
+        steps={part.steps}
         live={turn.live && index === parts.length - 1}
         gaps={gapsWithin(gaps, part, { first: index === 0, last: index === lastActivity })}
       />

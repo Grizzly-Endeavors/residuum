@@ -7,7 +7,7 @@ import { formatElapsed } from "../lib/format-usage";
 import type { IconName } from "../lib/icons";
 import { isWorkspacePath } from "../lib/markdown";
 import type { ObservedTurn, TurnEnding } from "../lib/observed-turns.svelte";
-import type { ToolCallState } from "../lib/types";
+import type { ThinkingFeedItem, ToolCallState } from "../lib/types";
 
 /** A tool call as the line reads it. `server` names the tool server a tool came from, when known. */
 export interface StepCall extends ToolCallState {
@@ -439,21 +439,78 @@ export function durationWords(ms: number): string | null {
   return ms >= 1000 ? formatElapsed(ms) : null;
 }
 
+/** One step of an activity segment: a tool call, or the agent's reasoning. */
+export type SegmentStep =
+  | { kind: "call"; call: StepCall }
+  | { kind: "thought"; item: ThinkingFeedItem };
+
+/** `calls` as the steps of a segment. */
+export function callSteps(calls: readonly StepCall[]): SegmentStep[] {
+  return calls.map((call) => ({ kind: "call", call }));
+}
+
+/** The tool calls among `steps`. */
+export function callsOf(steps: readonly SegmentStep[]): StepCall[] {
+  return steps.flatMap((step) => (step.kind === "call" ? [step.call] : []));
+}
+
+function thoughtsOf(steps: readonly SegmentStep[]): ThinkingFeedItem[] {
+  return steps.flatMap((step) => (step.kind === "thought" ? [step.item] : []));
+}
+
+/** How long a thought took, in milliseconds, for one the page watched. */
+function thoughtMs(item: ThinkingFeedItem): number | null {
+  return item.startedAt === undefined || item.endedAt === undefined
+    ? null
+    : item.endedAt - item.startedAt;
+}
+
+/** A thought's line: "Thinking" while it streams, then "Thought for 6s", or "Thought" when no time is known or it was brief. */
+export function thoughtLabel(item: ThinkingFeedItem): string {
+  if (item.streaming === true) return "Thinking";
+  const ms = thoughtMs(item);
+  const took = ms === null ? null : durationWords(ms);
+  return took === null ? "Thought" : `Thought for ${took}`;
+}
+
+/**
+ * The thoughts of a segment in one phrase: "thought 6s" after its tool calls,
+ * or "Thought for 6s" when the segment holds nothing else. The time is the
+ * total, left out when any of them wasn't watched or it came to under a second.
+ */
+function thoughtsPhrase(thoughts: readonly ThinkingFeedItem[], alone: boolean): string {
+  const times = thoughts.map(thoughtMs);
+  const total = times.every((ms): ms is number => ms !== null)
+    ? times.reduce((sum, ms) => sum + ms, 0)
+    : null;
+  const took = total === null ? null : durationWords(total);
+  if (alone) return took === null ? "Thought" : `Thought for ${took}`;
+  return took === null ? "thought" : `thought ${took}`;
+}
+
 /**
  * How long a segment's steps took, from the first starting to the last
  * ending, for steps the page watched. Null when any step wasn't (history
  * records no timing), or when it came to under a second.
  */
-export function segmentDuration(calls: readonly StepCall[]): string | null {
-  if (calls.length === 0) return null;
+export function segmentDuration(steps: readonly SegmentStep[]): string | null {
+  if (steps.length === 0) return null;
   let started = Infinity;
   let ended = -Infinity;
-  for (const call of calls) {
-    if (call.startedAt === undefined || call.endedAt === undefined) return null;
-    started = Math.min(started, call.startedAt);
-    ended = Math.max(ended, call.endedAt);
+  for (const step of steps) {
+    const timed = step.kind === "call" ? step.call : step.item;
+    if (timed.startedAt === undefined || timed.endedAt === undefined) return null;
+    started = Math.min(started, timed.startedAt);
+    ended = Math.max(ended, timed.endedAt);
   }
   return durationWords(ended - started);
+}
+
+/** What a segment did, in one phrase: its tool calls, then its reasoning. */
+function segmentText(calls: readonly StepCall[], thoughts: readonly ThinkingFeedItem[]): string {
+  if (calls.length === 0) return thoughtsPhrase(thoughts, true);
+  if (thoughts.length === 0) return stepsPhrase(calls);
+  return `${stepsPhrase(calls)}, ${thoughtsPhrase(thoughts, false)}`;
 }
 
 /**
@@ -461,14 +518,18 @@ export function segmentDuration(calls: readonly StepCall[]): string | null {
  * in it. Null when there is nothing to show: no steps, and no gap to note.
  */
 export function summarizeSegment(
-  calls: readonly StepCall[],
+  steps: readonly SegmentStep[],
   missed: boolean,
 ): ActivitySummary | null {
+  const calls = callsOf(steps);
+  const thoughts = thoughtsOf(steps);
   const failed = calls.filter((call) => call.status === "error").length;
   const failures =
     failed === 0 ? null : `${String(failed)} ${failed === 1 ? "step" : "steps"} failed`;
-  if (calls.length > 0) {
-    return { text: stepsPhrase(calls), duration: segmentDuration(calls), failures };
+  if (steps.length > 0) {
+    // A segment of reasoning alone says how long it took in its words already.
+    const duration = calls.length === 0 ? null : segmentDuration(steps);
+    return { text: segmentText(calls, thoughts), duration, failures };
   }
   if (missed) return { text: "Worked before this page connected", duration: null, failures };
   return null;

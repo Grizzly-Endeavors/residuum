@@ -279,11 +279,11 @@ describe("FeedStore when a turn fails", () => {
     expect(store.isProcessing).toBe(false);
   });
 
-  it("names a turn joined partway by the error that names it", () => {
+  it("puts the failure in a turn the page joined partway", () => {
     const store = new FeedStore();
     store.handleMessage({
       type: "broadcast_response",
-      reply_to: "t9",
+      reply_to: "t5",
       call: 0,
       content: "Working on it.",
     });

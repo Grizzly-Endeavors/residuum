@@ -1,10 +1,11 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { Icon } from "../lib/icons";
-  import { activitySteps, gapNote, summarizeSegment, type StepCall } from "./activity";
+  import { activitySteps, callsOf, gapNote, summarizeSegment, type SegmentStep } from "./activity";
   import ActivityStep from "./ActivityStep.svelte";
+  import ThoughtStep from "./ThoughtStep.svelte";
 
-  // One run of a turn's tool calls, at its place among what the agent said.
+  // One run of a turn's tool calls and reasoning, at its place among what the agent said.
   // While it is the newest thing in a running turn its steps show as they
   // arrive. Once the agent has said something after it, or the turn ends, it
   // collapses to one summary, which opens to the steps, and a step opens to
@@ -13,7 +14,8 @@
   interface Props {
     /** The agent the conversation belongs to: its paths and sessions are what targets open. */
     agent: string;
-    calls: StepCall[];
+    /** What the segment holds, in the order it happened. */
+    steps: readonly SegmentStep[];
     /** The segment is the newest thing in a running turn. */
     live: boolean;
     /**
@@ -23,11 +25,21 @@
     gaps?: readonly number[];
   }
 
-  let { agent, calls, live, gaps = [] }: Props = $props();
+  let { agent, steps, live, gaps = [] }: Props = $props();
 
   const uid = $props.id();
-  const steps = $derived(activitySteps(calls));
-  const summary = $derived(live ? null : summarizeSegment(calls, gaps.length > 0));
+  const calls = $derived(callsOf(steps));
+  const callRows = $derived(activitySteps(calls));
+  /** Each step as a row: a call's number among the calls is where a gap note before it goes. */
+  const rows = $derived.by(() => {
+    let ordinal = 0;
+    return steps.map((step) =>
+      step.kind === "call"
+        ? { kind: "call" as const, step: callRows[ordinal], at: ordinal++ }
+        : { kind: "thought" as const, item: step.item },
+    );
+  });
+  const summary = $derived(live ? null : summarizeSegment(steps, gaps.length > 0));
   /** What follows the summary: how long it took, what failed. */
   const meta = $derived(
     summary === null
@@ -58,7 +70,7 @@
     });
   });
 
-  /** The gap notes that go before step `index`. */
+  /** The gap notes that go before the call numbered `index`. */
   function gapsAt(index: number): number[] {
     return gaps.filter((at) => at === index);
   }
@@ -66,20 +78,24 @@
 
 {#snippet stepList(id?: string)}
   <ol class="activity-steps" {id}>
-    {#each steps as step, index (step.id)}
-      {#each gapsAt(index) as at, n (n)}
-        <li class="activity-gap">{gapNote(at)}</li>
-      {/each}
-      <ActivityStep {step} {agent} />
+    {#each rows as row (row.kind === "call" ? row.step?.id : `thought-${String(row.item.id)}`)}
+      {#if row.kind === "call" && row.step}
+        {#each gapsAt(row.at) as at, n (n)}
+          <li class="activity-gap">{gapNote(at)}</li>
+        {/each}
+        <ActivityStep step={row.step} {agent} />
+      {:else if row.kind === "thought"}
+        <ThoughtStep item={row.item} bare={!live && rows.length === 1} />
+      {/if}
     {/each}
-    {#each gapsAt(steps.length) as at, n (n)}
+    {#each gapsAt(calls.length) as at, n (n)}
       <li class="activity-gap">{gapNote(at)}</li>
     {/each}
   </ol>
 {/snippet}
 
 {#if live}
-  {#if steps.length > 0 || gaps.length > 0}
+  {#if rows.length > 0 || gaps.length > 0}
     <div class="activity" data-live bind:this={liveEl}>
       {@render stepList()}
     </div>

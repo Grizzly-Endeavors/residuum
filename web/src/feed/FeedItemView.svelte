@@ -1,11 +1,11 @@
 <script lang="ts">
   import type { FeedItem } from "../lib/types";
   import AgentMessageCard from "./AgentMessageCard.svelte";
+  import AssistantMessage from "./AssistantMessage.svelte";
   import CompressedMarker from "./CompressedMarker.svelte";
   import FeedDivider from "./FeedDivider.svelte";
   import FileAttachment from "./FileAttachment.svelte";
   import LocalNote from "./LocalNote.svelte";
-  import Prose from "./Prose.svelte";
   import StatusLine from "./StatusLine.svelte";
   import TurnFailure from "./TurnFailure.svelte";
   import UserMessage from "./UserMessage.svelte";
@@ -20,7 +20,7 @@
 {#if item.kind === "user"}
   <UserMessage {item} {agent} />
 {:else if item.kind === "assistant"}
-  <Prose content={item.content} {agent} />
+  <AssistantMessage {item} {agent} />
 {:else if item.kind === "agent-message"}
   <AgentMessageCard {item} {agent} />
 {:else if item.kind === "divider"}

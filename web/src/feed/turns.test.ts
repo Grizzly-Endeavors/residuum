@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FeedStore } from "../lib/feed.svelte";
+import { callSteps } from "./activity";
 import { convertHistoryMessages } from "../lib/feed-items";
 import type { FeedItem, RecentMessage, ToolCallState } from "../lib/types";
 import {
@@ -21,7 +22,7 @@ function describeEntries(entries: FeedEntry[]): string[] {
   };
   const describePart = (part: TurnPart): string =>
     part.kind === "activity"
-      ? `[${part.calls.map((call) => call.name).join(",")}]`
+      ? `[${part.steps.map((step) => (step.kind === "call" ? step.call.name : "thought")).join(",")}]`
       : text(part.item);
   return entries.map((entry) =>
     entry.kind === "single"
@@ -602,21 +603,25 @@ describe("activity segments", () => {
     expect(drawnParts(block, [2]).map((part) => part.kind)).toEqual(["message"]);
     const drawn = drawnParts(block, [0]);
     expect(drawn.map((part) => part.kind)).toEqual(["activity", "message"]);
-    expect(drawn[0]).toMatchObject({ calls: [], callsBefore: 0 });
+    expect(drawn[0]).toMatchObject({ steps: [], calls: [], callsBefore: 0 });
   });
 
   it("places the notes for missed steps in the segments they fall in", () => {
-    const segment = (callsBefore: number, count: number): ActivitySegment => ({
-      kind: "activity",
-      key: `s${String(callsBefore)}`,
-      callsBefore,
-      calls: Array.from({ length: count }, (_, i) => ({
+    const segment = (callsBefore: number, count: number): ActivitySegment => {
+      const calls = Array.from({ length: count }, (_, i) => ({
         id: `c${String(callsBefore + i)}`,
         name: "exec",
         arguments: {},
         status: "done" as const,
-      })),
-    });
+      }));
+      return {
+        kind: "activity",
+        key: `s${String(callsBefore)}`,
+        callsBefore,
+        steps: callSteps(calls),
+        calls,
+      };
+    };
     const first = segment(0, 2);
     const second = segment(2, 3);
     const gaps = [0, 1, 2, 4, 5];
@@ -628,5 +633,83 @@ describe("activity segments", () => {
     // A gap past the last step still lands on the last segment.
     expect(gapsWithin([9], second, { first: false, last: true })).toEqual([3]);
     expect(gapsWithin([9], first, { first: true, last: false })).toEqual([]);
+  });
+});
+
+describe("reasoning in turns", () => {
+  it("joins the activity segment of the call that did it, before that call's text and tools", () => {
+    const items = convertHistoryMessages(
+      [
+        message("user", "Fix the port", { turn_id: "t1" }),
+        message("assistant", "Reading the config.", {
+          turn_id: "t1",
+          thinking: ["The port is probably set twice."],
+          tool_calls: [{ id: "a", name: "read_file", arguments: {} }],
+        }),
+        message("tool", "done", { tool_call_id: "a", turn_id: "t1" }),
+        message("assistant", "It is.", {
+          turn_id: "t1",
+          thinking: ["Two lines set it.", "I should say which."],
+        }),
+      ],
+      { mode: "main" },
+    );
+    expect(describeEntries(groupTurns(items, null))).toEqual([
+      "user:Fix the port",
+      "turn([thought] | assistant:Reading the config. | [read_file,thought,thought] | assistant:It is.)",
+    ]);
+  });
+
+  it("leaves out reasoning that holds nothing readable", () => {
+    const items = convertHistoryMessages(
+      [
+        message("user", "Hi", { turn_id: "t1" }),
+        message("assistant", "Hello.", { turn_id: "t1", thinking: ["  ", ""] }),
+      ],
+      { mode: "main" },
+    );
+    expect(items.map((item) => item.kind)).toEqual(["user", "assistant"]);
+  });
+
+  it("makes one segment of live reasoning and the tools after it", () => {
+    const store = new FeedStore();
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "m1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    store.handleMessage({
+      type: "thinking",
+      reply_to: "m1",
+      call: 0,
+      content: "Check the config.",
+    });
+    store.handleMessage({
+      type: "tool_call",
+      reply_to: "m1",
+      call: 0,
+      id: "c1",
+      name: "read_file",
+      arguments: {},
+      server: null,
+    });
+    store.handleMessage({
+      type: "tool_call",
+      reply_to: "m1",
+      call: 1,
+      id: "c2",
+      name: "exec",
+      arguments: {},
+      server: null,
+    });
+    expect(describeEntries(groupTurns(store.feed, store.activeTurnId))).toEqual([
+      "turn([thought,read_file,exec])",
+    ]);
+    const block = groupTurns(store.feed, store.activeTurnId).at(-1);
+    if (block?.kind !== "turn") throw new Error("expected the turn's block");
+    expect(block).toMatchObject({ live: true });
+    // Only the tool calls count where steps may be missing.
+    expect(block.parts[0]).toMatchObject({ callsBefore: 0 });
+    expect(block.parts[0]?.kind === "activity" ? block.parts[0].calls : []).toHaveLength(2);
   });
 });

@@ -3,7 +3,8 @@ import { within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { render, screen } from "../test/component";
 import { router } from "../lib/router.svelte";
-import type { StepCall } from "./activity";
+import type { ThinkingFeedItem } from "../lib/types";
+import { callSteps, type SegmentStep, type StepCall } from "./activity";
 import ActivityLine from "./ActivityLine.svelte";
 
 const calls: StepCall[] = [
@@ -46,7 +47,7 @@ function fromHistory(): StepCall[] {
 
 describe("a finished run of steps", () => {
   it("is one summary at first, with its time and failures when the page watched it", () => {
-    render(ActivityLine, { agent: "atlas", calls, live: false });
+    render(ActivityLine, { agent: "atlas", steps: callSteps(calls), live: false });
     const summary = screen.getByRole("button", { name: /^Searched memory, read 2 files/ });
     expect(summary).toHaveAttribute("aria-expanded", "false");
     expect(summary).toHaveTextContent("Searched memory, read 2 files · 14s · 1 step failed");
@@ -54,7 +55,7 @@ describe("a finished run of steps", () => {
   });
 
   it("shows no time or failures for steps from history", () => {
-    render(ActivityLine, { agent: "atlas", calls: fromHistory(), live: false });
+    render(ActivityLine, { agent: "atlas", steps: callSteps(fromHistory()), live: false });
     expect(screen.getByRole("button", { name: /^Searched memory/ })).toHaveTextContent(
       /^Searched memory, read 2 files$/,
     );
@@ -64,7 +65,7 @@ describe("a finished run of steps", () => {
     const quick: StepCall[] = [
       { id: "q", name: "exec", arguments: {}, status: "done", startedAt: 1_000, endedAt: 1_300 },
     ];
-    render(ActivityLine, { agent: "atlas", calls: quick, live: false });
+    render(ActivityLine, { agent: "atlas", steps: callSteps(quick), live: false });
     expect(screen.getByRole("button", { name: /^Ran 1 command/ })).toHaveTextContent(
       /^Ran 1 command$/,
     );
@@ -72,7 +73,7 @@ describe("a finished run of steps", () => {
 
   it("opens to its steps, each with what it acted on, and paths link into the panel", async () => {
     const openPlace = vi.spyOn(router, "openPlace").mockResolvedValue(true);
-    render(ActivityLine, { agent: "atlas", calls, live: false });
+    render(ActivityLine, { agent: "atlas", steps: callSteps(calls), live: false });
     await userEvent.click(screen.getByRole("button", { name: /^Searched memory, read 2 files/ }));
 
     const steps = within(screen.getByRole("list")).getAllByRole("listitem");
@@ -95,7 +96,7 @@ describe("a finished run of steps", () => {
   });
 
   it("opens a step to its arguments and its formatted result", async () => {
-    render(ActivityLine, { agent: "atlas", calls, live: false });
+    render(ActivityLine, { agent: "atlas", steps: callSteps(calls), live: false });
     await userEvent.click(screen.getByRole("button", { name: /^Searched memory/ }));
     const step = screen.getByRole("button", { name: "Read team/wiki/on-call.md" });
     expect(step).toHaveAttribute("aria-expanded", "false");
@@ -108,13 +109,13 @@ describe("a finished run of steps", () => {
   });
 
   it("shows nothing when it holds no steps and nothing was missed", () => {
-    const { container } = render(ActivityLine, { agent: "atlas", calls: [], live: false });
+    const { container } = render(ActivityLine, { agent: "atlas", steps: [], live: false });
     expect(container.textContent).toBe("");
     expect(screen.queryByRole("button")).toBeNull();
   });
 
   it("says the page missed it when it holds no steps but a gap", async () => {
-    render(ActivityLine, { agent: "atlas", calls: [], live: false, gaps: [0] });
+    render(ActivityLine, { agent: "atlas", steps: [], live: false, gaps: [0] });
     const summary = screen.getByRole("button", { name: "Worked before this page connected" });
     await userEvent.click(summary);
     expect(screen.getByRole("listitem")).toHaveTextContent(
@@ -130,18 +131,18 @@ describe("the newest run of steps in a running turn", () => {
   ];
 
   it("is open: each step as it arrives, with its status, and no summary", () => {
-    render(ActivityLine, { agent: "atlas", calls: running, live: true });
+    render(ActivityLine, { agent: "atlas", steps: callSteps(running), live: true });
     expect(screen.getByRole("button", { name: "Running git status, running" })).toBeVisible();
     expect(screen.getByRole("button", { name: /^Searched memory for/ })).toBeVisible();
     expect(screen.queryByRole("button", { name: /^Searched memory, / })).toBeNull();
   });
 
   it("collapses to its summary once it gives way, keeping focus from a step on the line", async () => {
-    const view = render(ActivityLine, { agent: "atlas", calls: running, live: true });
+    const view = render(ActivityLine, { agent: "atlas", steps: callSteps(running), live: true });
     screen.getByRole("button", { name: "Running git status, running" }).focus();
     await view.rerender({
       live: false,
-      calls: [calls[0] as StepCall, { ...running[1], status: "done" } as StepCall],
+      steps: callSteps([calls[0] as StepCall, { ...running[1], status: "done" } as StepCall]),
     });
     expect(screen.getByRole("button", { name: /^Searched memory, ran 1 command/ })).toHaveFocus();
   });
@@ -149,7 +150,7 @@ describe("the newest run of steps in a running turn", () => {
   it("notes the steps it may have missed, where it missed them", () => {
     render(ActivityLine, {
       agent: "atlas",
-      calls: [calls[0] as StepCall],
+      steps: callSteps([calls[0] as StepCall]),
       live: true,
       gaps: [0, 1],
     });
@@ -159,5 +160,81 @@ describe("the newest run of steps in a running turn", () => {
     expect(items[2]).toHaveTextContent(
       "Steps taken while this page was reconnecting may be missing",
     );
+  });
+});
+
+describe("reasoning in a run of steps", () => {
+  const thought = (more: Partial<ThinkingFeedItem> = {}): SegmentStep => ({
+    kind: "thought",
+    item: { id: 1, kind: "thinking", content: "The port is set twice.", ...more },
+  });
+
+  it("shows live reasoning as it streams, as a step of the open line", () => {
+    render(ActivityLine, {
+      agent: "atlas",
+      steps: [thought({ streaming: true, content: "The service must restart" })],
+      live: true,
+    });
+    expect(screen.getByText("Thinking")).toBeVisible();
+    expect(screen.getByText("The service must restart")).toBeVisible();
+  });
+
+  it("puts a thought where it happened among the calls", () => {
+    render(ActivityLine, {
+      agent: "atlas",
+      steps: [
+        ...callSteps([calls[0] as StepCall]),
+        thought({ startedAt: 1_000, endedAt: 7_000 }),
+        ...callSteps([calls[2] as StepCall]),
+      ],
+      live: true,
+    });
+    const items = within(screen.getByRole("list")).getAllByRole("listitem");
+    expect(items.map((item) => item.textContent.replace(/\s+/g, " ").trim())).toEqual([
+      "Searched memory for “notification routing”",
+      "Thought for 6s",
+      "Read team/wiki/on-call.md",
+    ]);
+  });
+
+  it("is named in the summary, with how long it thought", () => {
+    render(ActivityLine, {
+      agent: "atlas",
+      steps: [
+        ...callSteps([{ ...(calls[2] as StepCall), startedAt: 1_000, endedAt: 3_000 }]),
+        thought({ startedAt: 3_000, endedAt: 9_000 }),
+      ],
+      live: false,
+    });
+    expect(screen.getByRole("button", { name: /^Read 1 file, thought 6s/ })).toHaveTextContent(
+      "Read 1 file, thought 6s · 8s",
+    );
+  });
+
+  it("opens a segment of reasoning alone to the reasoning itself, not to a line that opens to it", async () => {
+    render(ActivityLine, {
+      agent: "atlas",
+      steps: [thought({ content: "The port is set twice." })],
+      live: false,
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Thought" }));
+    expect(screen.getByText("The port is set twice.")).toBeVisible();
+  });
+
+  it("opens reasoning among other steps as a line, so it doesn't crowd them", async () => {
+    render(ActivityLine, {
+      agent: "atlas",
+      steps: [...callSteps([calls[0] as StepCall]), thought({ content: "The port is set twice." })],
+      live: false,
+    });
+    await userEvent.click(screen.getByRole("button", { name: /^Searched memory, thought/ }));
+    expect(screen.queryByText("The port is set twice.")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Thought" }));
+    expect(screen.getByText("The port is set twice.")).toBeVisible();
+  });
+
+  it("says Thought for a segment of reasoning alone, with no time from history", () => {
+    render(ActivityLine, { agent: "atlas", steps: [thought()], live: false });
+    expect(screen.getByRole("button", { name: "Thought" })).toBeVisible();
   });
 });

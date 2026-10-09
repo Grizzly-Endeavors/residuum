@@ -34,6 +34,9 @@
   {#if elapsed !== null}
     <span class="turn-time">{elapsed}</span>
   {/if}
+  {#if observed?.retrying}
+    <span class="turn-retry">Retrying…</span>
+  {/if}
   {#if onStop}
     <Button
       variant="secondary"
@@ -58,7 +61,8 @@
     font-size: var(--font-size-sm);
   }
 
-  .turn-time {
+  .turn-time,
+  .turn-retry {
     color: var(--color-text-3);
     font-variant-numeric: tabular-nums;
   }

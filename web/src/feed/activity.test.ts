@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 import type { ObservedTurn } from "../lib/observed-turns.svelte";
 import {
   activitySteps,
+  callSteps,
   gapNote,
   stepText,
   stepsPhrase,
   segmentDuration,
   summarizeSegment,
+  thoughtLabel,
+  type SegmentStep,
   turnEndingLine,
   type StepCall,
 } from "./activity";
@@ -27,6 +30,7 @@ function watched(more: Partial<ObservedTurn> = {}): ObservedTurn {
     endedAt: 15_000,
     ending: "finished",
     stopAsked: false,
+    retrying: false,
     gaps: [],
     ...more,
   };
@@ -160,7 +164,7 @@ describe("the summary", () => {
       call("memory_search", { query: "x" }, { startedAt: 1_000, endedAt: 4_000 }),
       call("read_file", { path: "a/b.md" }, { status: "error", startedAt: 3_000, endedAt: 15_000 }),
     ];
-    expect(summarizeSegment(calls, false)).toEqual({
+    expect(summarizeSegment(callSteps(calls), false)).toEqual({
       text: "Searched memory, read 1 file",
       duration: "14s",
       failures: "1 step failed",
@@ -168,7 +172,7 @@ describe("the summary", () => {
   });
 
   it("shows no timing for steps from history", () => {
-    expect(summarizeSegment([call("read_file", { path: "a/b.md" })], false)).toEqual({
+    expect(summarizeSegment(callSteps([call("read_file", { path: "a/b.md" })]), false)).toEqual({
       text: "Read 1 file",
       duration: null,
       failures: null,
@@ -177,8 +181,10 @@ describe("the summary", () => {
 
   it("leaves out a time under a second", () => {
     const quick = [call("exec", {}, { startedAt: 5_000, endedAt: 5_400 })];
-    expect(summarizeSegment(quick, false)?.duration).toBeNull();
-    expect(segmentDuration([call("exec", {}, { startedAt: 5_000, endedAt: 6_000 })])).toBe("1s");
+    expect(summarizeSegment(callSteps(quick), false)?.duration).toBeNull();
+    expect(
+      segmentDuration(callSteps([call("exec", {}, { startedAt: 5_000, endedAt: 6_000 })])),
+    ).toBe("1s");
   });
 
   it("leaves out a time it can't tell because a step wasn't watched", () => {
@@ -186,12 +192,73 @@ describe("the summary", () => {
       call("exec", {}, { startedAt: 1_000, endedAt: 9_000 }),
       call("exec", {}, { startedAt: 2_000 }),
     ];
-    expect(segmentDuration(calls)).toBeNull();
+    expect(segmentDuration(callSteps(calls))).toBeNull();
   });
 
   it("says the page missed a segment that holds no steps", () => {
     expect(summarizeSegment([], true)?.text).toBe("Worked before this page connected");
     expect(summarizeSegment([], false)).toBeNull();
+  });
+});
+
+describe("reasoning in a segment's summary", () => {
+  const thought = (startedAt?: number, endedAt?: number): SegmentStep => ({
+    kind: "thought",
+    item: {
+      id: 1,
+      kind: "thinking",
+      content: "hm",
+      ...(startedAt === undefined ? {} : { startedAt }),
+      ...(endedAt === undefined ? {} : { endedAt }),
+    },
+  });
+
+  it("follows the tool calls, with how long it thought", () => {
+    const steps = [
+      ...callSteps([
+        call("read_file", { path: "a.md" }, { startedAt: 1_000, endedAt: 3_000 }),
+        call("read_file", { path: "b.md" }, { startedAt: 1_000, endedAt: 4_000 }),
+      ]),
+      thought(4_000, 10_000),
+    ];
+    expect(summarizeSegment(steps, false)).toEqual({
+      text: "Read 2 files, thought 6s",
+      duration: "9s",
+      failures: null,
+    });
+  });
+
+  it("adds up several thoughts", () => {
+    const steps = [
+      thought(0, 2_000),
+      ...callSteps([call("exec", {}, { startedAt: 2_000, endedAt: 3_000 })]),
+      thought(3_000, 6_000),
+    ];
+    expect(summarizeSegment(steps, false)?.text).toBe("Ran 1 command, thought 5s");
+  });
+
+  it("says thought without a time when history holds none, or it was brief", () => {
+    expect(summarizeSegment([...callSteps([call("exec")]), thought()], false)?.text).toBe(
+      "Ran 1 command, thought",
+    );
+    expect(summarizeSegment([...callSteps([call("exec")]), thought(0, 300)], false)?.text).toBe(
+      "Ran 1 command, thought",
+    );
+  });
+
+  it("stands alone as Thought for a segment with no tool calls", () => {
+    expect(summarizeSegment([thought(0, 6_000)], false)).toMatchObject({
+      text: "Thought for 6s",
+      duration: null,
+    });
+    expect(summarizeSegment([thought()], false)?.text).toBe("Thought");
+  });
+
+  it("labels a thought as it streams, and once it is done", () => {
+    const item = { id: 1, kind: "thinking", content: "hm" } as const;
+    expect(thoughtLabel({ ...item, streaming: true })).toBe("Thinking");
+    expect(thoughtLabel({ ...item, startedAt: 0, endedAt: 6_000 })).toBe("Thought for 6s");
+    expect(thoughtLabel(item)).toBe("Thought");
   });
 });
 

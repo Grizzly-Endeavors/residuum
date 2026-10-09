@@ -1,19 +1,23 @@
 // A conversation's items grouped by turn: each turn's output shows as one
-// block, in the order it happened. A run of tool calls is one activity
-// segment between the agent's messages, so what the agent said stays beside
-// the work it said it about. Shared by the main chat and session transcripts,
+// block, in the order it happened. A run of tool calls and reasoning is one
+// activity segment between the agent's messages, so what the agent said
+// stays beside the work it said it about. Shared by the main chat and session transcripts,
 // which tag their items with turn ids the same way.
 
 import type { FeedItem, ToolCallState } from "../lib/types";
+import { callSteps, type SegmentStep } from "./activity";
 
 /**
- * A run of tool calls with no message of the agent's between them, shown as
- * one activity line at its place in the turn.
+ * A run of tool calls and reasoning with no message of the agent's between
+ * them, shown as one activity line at its place in the turn.
  */
 export interface ActivitySegment {
   kind: "activity";
   /** Stable for keyed lists: taken from the segment's first tool group. */
   key: string;
+  /** What the segment holds, in the order it happened. */
+  steps: SegmentStep[];
+  /** The tool calls among `steps`. */
   calls: ToolCallState[];
   /** How many of the turn's tool calls came before this segment's. */
   callsBefore: number;
@@ -60,7 +64,8 @@ function isOutput(item: FeedItem): boolean {
     item.kind === "assistant" ||
     item.kind === "tool-group" ||
     item.kind === "file-attachment" ||
-    item.kind === "turn-failure"
+    item.kind === "turn-failure" ||
+    item.kind === "thinking"
   );
 }
 
@@ -80,21 +85,32 @@ export function turnCallCount(turn: FeedTurn): number {
   return count;
 }
 
-/** Add `item` to the end of `turn`, joining a trailing run of tool calls. */
+/** The steps `item` adds to an activity segment, or none when it isn't one. */
+function stepsOf(item: FeedItem): SegmentStep[] | null {
+  if (item.kind === "tool-group") return callSteps(item.calls);
+  if (item.kind === "thinking") return [{ kind: "thought", item }];
+  return null;
+}
+
+/** Add `item` to the end of `turn`, joining a trailing run of tool calls and reasoning. */
 function addToTurn(turn: FeedTurn, item: FeedItem): void {
-  if (item.kind !== "tool-group") {
+  const steps = stepsOf(item);
+  if (steps === null) {
     turn.parts.push({ kind: "message", key: `item-${String(item.id)}`, item });
     return;
   }
+  const calls = item.kind === "tool-group" ? item.calls : [];
   const last = turn.parts.at(-1);
   if (last?.kind === "activity") {
-    last.calls.push(...item.calls);
+    last.steps.push(...steps);
+    last.calls.push(...calls);
     return;
   }
   turn.parts.push({
     kind: "activity",
     key: `activity-${String(item.id)}`,
-    calls: [...item.calls],
+    steps,
+    calls: [...calls],
     callsBefore: turnCallCount(turn),
   });
 }
@@ -108,7 +124,10 @@ function addToTurn(turn: FeedTurn, item: FeedItem): void {
 export function drawnParts(turn: FeedTurn, gaps: readonly number[]): TurnPart[] {
   const first = turn.parts[0];
   if (!gaps.includes(0) || first?.kind === "activity") return turn.parts;
-  return [{ kind: "activity", key: `${turn.key}:lead`, calls: [], callsBefore: 0 }, ...turn.parts];
+  return [
+    { kind: "activity", key: `${turn.key}:lead`, steps: [], calls: [], callsBefore: 0 },
+    ...turn.parts,
+  ];
 }
 
 /**

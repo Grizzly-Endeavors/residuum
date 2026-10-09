@@ -569,6 +569,30 @@ export interface UserFeedItem extends FeedItemBase {
 export interface AssistantFeedItem extends FeedItemBase {
   kind: "assistant";
   content: string;
+  /** The model call that wrote it, counting from zero within its turn, for text the agent sent on the live socket. */
+  call?: number;
+  /** The text is still arriving: `content` is what has so far. */
+  streaming?: boolean;
+  /** The turn ended before the text was complete, because the user stopped it or the agent did. */
+  cut?: "stopped" | "interrupted";
+  /** The chat interface the reply was delivered to, when that wasn't this page. */
+  deliveredTo?: string;
+}
+
+/**
+ * The agent's reasoning for one model call, which shows as a step of an
+ * activity line. Live it streams in; history keeps only the readable text.
+ */
+export interface ThinkingFeedItem extends FeedItemBase {
+  kind: "thinking";
+  content: string;
+  /** The model call that thought it, counting from zero within its turn, for reasoning from the live socket. */
+  call?: number;
+  /** The reasoning is still arriving. */
+  streaming?: boolean;
+  /** `Date.now()` when the page saw it start, and when it ended; history doesn't keep them. */
+  startedAt?: number;
+  endedAt?: number;
 }
 
 export interface DividerFeedItem extends FeedItemBase {
@@ -589,6 +613,8 @@ export interface CompressedMarkerFeedItem extends FeedItemBase {
 export interface ToolGroupFeedItem extends FeedItemBase {
   kind: "tool-group";
   calls: ToolCallState[];
+  /** The model call that made these tool calls, for calls from the live socket. */
+  call?: number;
 }
 
 export interface FileAttachmentFeedItem extends FeedItemBase {
@@ -659,6 +685,7 @@ export interface TurnFailureFeedItem extends FeedItemBase {
 }
 
 export type FeedItem =
+  | ThinkingFeedItem
   | TurnFailureFeedItem
   | AgentMessageFeedItem
   | StatusFeedItem
