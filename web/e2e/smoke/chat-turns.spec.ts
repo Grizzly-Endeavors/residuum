@@ -200,6 +200,16 @@ test.describe("text and reasoning streaming in", () => {
     await expect(feed.getByText("Would you like me to adjust any of these values?")).toHaveCount(0);
     await expect(feed.locator("[data-streaming]")).toHaveCount(1);
     await expect(feed.getByText("Working", { exact: true })).toBeVisible();
+    // The caret is drawn after the last word so far: on the last paragraph, or the last list item.
+    await expect
+      .poll(() =>
+        feed.locator(".prose[data-caret] .prose-body").evaluate((body) => {
+          const last = body.lastElementChild;
+          const target = last?.matches("ul, ol") ? last.lastElementChild : last;
+          return target === null ? "none" : getComputedStyle(target, "::after").content;
+        }),
+      )
+      .toBe('""');
     await expectNoAxeViolations(page);
 
     await expect(feed.getByText("Would you like me to adjust any of these values?")).toBeVisible({
