@@ -20,6 +20,6 @@ pub(crate) use factory::{
 pub use http::{HttpClientConfig, SharedHttpClient};
 pub use types::{
     AgentSender, CompletionOptions, ImageData, InferenceProvider, InferenceResponse, Message,
-    MessageSender, ResponseFormat, Role, StopReason, ThinkingConfig, ThinkingLevel, ToolCall,
-    ToolDefinition, Usage, WebSearchNativeConfig,
+    MessageSender, ResponseFormat, Role, StopReason, StreamDelta, StreamSink, ThinkingBlock,
+    ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition, Usage, WebSearchNativeConfig,
 };

@@ -42,6 +42,41 @@ pub struct Message {
     /// the header in its text, which anyone can type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_sender: Option<AgentSender>,
+    /// The model's reasoning behind an assistant message, as its provider
+    /// returned it. Kept so the conversation's readers can show it and so a
+    /// provider that requires its reasoning back within a tool-use exchange
+    /// gets it unchanged. Providers decide which of it they replay.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thinking: Vec<ThinkingBlock>,
+}
+
+/// One piece of a model's reasoning, as its provider returned it.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ThinkingBlock {
+    /// The readable reasoning. Some providers return a summary of it rather
+    /// than the full text; empty when the provider withheld it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
+    /// Opaque token the provider requires back, unchanged, when the
+    /// conversation continues (Anthropic's `signature`, Gemini's
+    /// `thoughtSignature`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    /// Encrypted reasoning returned in place of readable text (Anthropic's
+    /// `redacted_thinking`), replayed unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redacted: Option<String>,
+}
+
+impl ThinkingBlock {
+    /// A block holding readable reasoning and nothing to replay.
+    #[must_use]
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            ..Self::default()
+        }
+    }
 }
 
 /// The person behind a user message and where they sent it from.
@@ -94,6 +129,7 @@ impl Message {
             images: Vec::new(),
             sender: None,
             agent_sender: None,
+            thinking: Vec::new(),
         }
     }
 
@@ -108,6 +144,7 @@ impl Message {
             images,
             sender: None,
             agent_sender: None,
+            thinking: Vec::new(),
         }
     }
 
@@ -122,6 +159,7 @@ impl Message {
             images: Vec::new(),
             sender: None,
             agent_sender: None,
+            thinking: Vec::new(),
         }
     }
 
@@ -136,6 +174,7 @@ impl Message {
             images: Vec::new(),
             sender: None,
             agent_sender: None,
+            thinking: Vec::new(),
         }
     }
 
@@ -150,6 +189,7 @@ impl Message {
             images: Vec::new(),
             sender: None,
             agent_sender: None,
+            thinking: Vec::new(),
         }
     }
 
@@ -168,6 +208,7 @@ impl Message {
             images,
             sender: None,
             agent_sender: None,
+            thinking: Vec::new(),
         }
     }
 
@@ -308,8 +349,8 @@ pub struct InferenceResponse {
     pub tool_calls: Vec<ToolCall>,
     /// Token usage information, if the provider reports it.
     pub usage: Option<Usage>,
-    /// Thinking/reasoning text from the model (not sent back in context).
-    pub thinking: Option<String>,
+    /// The model's reasoning for this response, in the order it was returned.
+    pub thinking: Vec<ThinkingBlock>,
     /// Why generation ended, if the provider reports it.
     pub stop_reason: Option<StopReason>,
 }
@@ -322,7 +363,7 @@ impl InferenceResponse {
             content,
             tool_calls,
             usage: None,
-            thinking: None,
+            thinking: Vec::new(),
             stop_reason: None,
         }
     }
@@ -405,6 +446,27 @@ pub struct CompletionOptions {
     pub web_search: Option<WebSearchNativeConfig>,
 }
 
+/// A piece of a model response that arrived while the call is still running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamDelta {
+    /// More of the response's text.
+    Text(String),
+    /// More of the model's readable reasoning.
+    Thinking(String),
+    /// Everything streamed so far for this call is void: the request is
+    /// being sent again (a retry, or the next provider in a failover chain),
+    /// and what follows starts over from the beginning.
+    Restart,
+}
+
+/// Receives a response's pieces as they stream in.
+///
+/// `push` must not block: providers call it from inside their read loop.
+pub trait StreamSink: Send + Sync {
+    /// Take the next piece of the response.
+    fn push(&self, delta: StreamDelta);
+}
+
 /// Trait for model provider implementations.
 #[async_trait]
 pub trait InferenceProvider: Send + Sync {
@@ -418,6 +480,24 @@ pub trait InferenceProvider: Send + Sync {
         tools: &[ToolDefinition],
         options: &CompletionOptions,
     ) -> Result<InferenceResponse, InferenceError>;
+
+    /// Like [`complete`](Self::complete), also handing the response's text
+    /// and reasoning to `sink` as they arrive. The returned response is
+    /// complete and authoritative; what the sink received previews it. A
+    /// provider that can't stream keeps this default, which streams nothing.
+    ///
+    /// # Errors
+    /// Returns `InferenceError` if the request fails, times out, or the response is malformed.
+    async fn complete_streaming(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+        sink: &dyn StreamSink,
+    ) -> Result<InferenceResponse, InferenceError> {
+        let _ = sink;
+        self.complete(messages, tools, options).await
+    }
 
     /// Get the model identifier.
     fn model_name(&self) -> &str;

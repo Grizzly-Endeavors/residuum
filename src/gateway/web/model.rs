@@ -226,6 +226,7 @@ fn build_request(
                 images: m.images.clone(),
                 sender: None,
                 agent_sender: None,
+                thinking: Vec::new(),
             });
         }
     } else {
@@ -596,7 +597,7 @@ mod tests {
             content: content.to_string(),
             tool_calls: vec![],
             usage: Some(usage),
-            thinking: None,
+            thinking: Vec::new(),
             stop_reason: None,
         }
     }

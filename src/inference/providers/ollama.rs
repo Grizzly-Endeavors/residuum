@@ -11,7 +11,7 @@ use crate::inference::http::{
 use crate::inference::retry::{RetryConfig, with_retry};
 use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
-    ResponseFormat, StopReason, ThinkingConfig, ToolCall, ToolDefinition,
+    ResponseFormat, StopReason, ThinkingBlock, ThinkingConfig, ToolCall, ToolDefinition,
 };
 
 /// Ollama API client implementing the [`InferenceProvider`] trait.
@@ -145,7 +145,12 @@ impl OllamaClient {
             .collect();
 
         let mut resp = InferenceResponse::new(content, tool_calls);
-        resp.thinking = chat_response.message.thinking;
+        resp.thinking = chat_response
+            .message
+            .thinking
+            .map(ThinkingBlock::text)
+            .into_iter()
+            .collect();
         resp.stop_reason = done_reason.as_deref().map(map_stop_reason);
         info!(
             model = %request.model,
@@ -1311,8 +1316,8 @@ mod tests {
 
         assert_eq!(result.content, "Final answer", "content should match");
         assert_eq!(
-            result.thinking.as_deref(),
-            Some("step by step reasoning"),
+            result.thinking,
+            vec![ThinkingBlock::text("step by step reasoning")],
             "thinking should be extracted from response"
         );
     }

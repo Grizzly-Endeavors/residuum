@@ -11,8 +11,8 @@ use crate::inference::http::{
 use crate::inference::retry::{RetryConfig, with_retry};
 use crate::inference::{
     CompletionOptions, ImageData, InferenceError, InferenceProvider, InferenceResponse, Message,
-    ResponseFormat, Role, StopReason, ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition,
-    Usage,
+    ResponseFormat, Role, StopReason, ThinkingBlock, ThinkingConfig, ThinkingLevel, ToolCall,
+    ToolDefinition, Usage,
 };
 
 /// Anthropic Messages API version header value.
@@ -367,7 +367,7 @@ impl AnthropicClient {
 
         let mut resp = InferenceResponse::new(content, tool_calls);
         resp.usage = usage;
-        resp.thinking = thinking_text;
+        resp.thinking = thinking_text.map(ThinkingBlock::text).into_iter().collect();
         resp.stop_reason = response.stop_reason.as_deref().map(map_stop_reason);
         resp
     }
@@ -1376,8 +1376,8 @@ mod tests {
             "content should only contain text blocks"
         );
         assert_eq!(
-            resp.thinking.as_deref(),
-            Some("Let me reason about this..."),
+            resp.thinking,
+            vec![ThinkingBlock::text("Let me reason about this...")],
             "thinking should be extracted separately"
         );
     }

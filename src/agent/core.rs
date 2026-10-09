@@ -608,7 +608,7 @@ mod tests {
                     cache_creation_tokens: None,
                     cache_read_tokens: None,
                 }),
-                thinking: None,
+                thinking: Vec::new(),
                 stop_reason: None,
             },
             InferenceResponse {
@@ -620,7 +620,7 @@ mod tests {
                     cache_creation_tokens: None,
                     cache_read_tokens: None,
                 }),
-                thinking: None,
+                thinking: Vec::new(),
                 stop_reason: None,
             },
         ]);

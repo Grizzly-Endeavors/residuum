@@ -457,9 +457,13 @@ pub(crate) async fn execute_turn(
             }
         };
 
-        if let Some(ref thinking) = response.thinking {
+        if !response.thinking.is_empty() {
             tracing::debug!(
-                thinking_len = thinking.len(),
+                thinking_len = response
+                    .thinking
+                    .iter()
+                    .map(|block| block.text.len())
+                    .sum::<usize>(),
                 "structured thinking received"
             );
         }
