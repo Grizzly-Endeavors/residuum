@@ -22,7 +22,7 @@ provision:
       teamsAppId: TEAMS_APP_ID
       teamsAppTenantId: TEAMS_APP_TENANT_ID
 
-  - uses: teamsApp/validateAppPackage
+  - uses: teamsApp/validateManifest
     with:
       manifestPath: ./appPackage/manifest.json
 
@@ -31,6 +31,10 @@ provision:
       manifestPath: ./appPackage/manifest.json
       outputZipPath: ./appPackage/build/appPackage.${{TEAMSFX_ENV}}.zip
       outputFolder: ./appPackage/build
+
+  - uses: teamsApp/validateAppPackage
+    with:
+      appPackagePath: ./appPackage/build/appPackage.${{TEAMSFX_ENV}}.zip
 
   - uses: teamsApp/update
     with:

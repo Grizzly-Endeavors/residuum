@@ -577,11 +577,11 @@ async fn write_teams_setup_skill(skills_root: &std::path::Path) -> Result<(), Fa
         ))
     })?;
     write_if_missing(&teams_dir.join("SKILL.md"), TEAMS_SETUP_SKILL_MD).await?;
-    write_if_missing(
-        &teams_templates.join("m365agents.yml"),
-        TEAMS_SETUP_M365AGENTS_YML,
-    )
-    .await?;
+    let m365agents_path = teams_templates.join("m365agents.yml");
+    write_if_missing(&m365agents_path, TEAMS_SETUP_M365AGENTS_YML).await?;
+    crate::interfaces::teams::atk::repair_m365agents_yml_file(&m365agents_path)
+        .await
+        .map_err(|e| FatalError::Workspace(e.to_string()))?;
     write_if_missing(&teams_pkg.join("manifest.json"), TEAMS_SETUP_MANIFEST_JSON).await?;
     write_if_missing(&teams_pkg.join("color.png"), TEAMS_SETUP_COLOR_PNG).await?;
     write_if_missing(&teams_pkg.join("outline.png"), TEAMS_SETUP_OUTLINE_PNG).await?;
@@ -697,6 +697,30 @@ mod tests {
         assert!(
             files.iter().all(|(path, _)| *path != layout.bootstrap_md()),
             "created agents never get BOOTSTRAP.md"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_team_m365agents_template_with_the_stale_validate_step_is_repaired() {
+        use crate::interfaces::teams::atk::{
+            M365AGENTS_VALIDATE_STEPS, STALE_M365AGENTS_VALIDATE_STEPS,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let templates = dir.path().join("teams-setup/templates");
+        tokio::fs::create_dir_all(&templates).await.unwrap();
+        let stale = TEAMS_SETUP_M365AGENTS_YML
+            .replace(M365AGENTS_VALIDATE_STEPS, STALE_M365AGENTS_VALIDATE_STEPS);
+        tokio::fs::write(templates.join("m365agents.yml"), &stale)
+            .await
+            .unwrap();
+
+        write_teams_setup_skill(dir.path()).await.unwrap();
+
+        assert_eq!(
+            tokio::fs::read_to_string(templates.join("m365agents.yml"))
+                .await
+                .unwrap(),
+            TEAMS_SETUP_M365AGENTS_YML
         );
     }
 

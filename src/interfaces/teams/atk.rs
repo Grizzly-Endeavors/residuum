@@ -501,14 +501,82 @@ pub struct ScaffoldAtkResult {
     pub endpoint: String,
 }
 
-/// Scaffold a Microsoft 365 Agents Toolkit project for an agent.
+/// A `validateAppPackage` step given a manifest path and placed before the zip step. The toolkit
+/// rejects it as `ConfigManager.InvalidYamlSchemaError` before provisioning anything. Team
+/// template copies and scaffolded projects written from the bundled template can still carry it.
+pub(crate) const STALE_M365AGENTS_VALIDATE_STEPS: &str = "  - uses: teamsApp/validateAppPackage
+    with:
+      manifestPath: ./appPackage/manifest.json
+
+  - uses: teamsApp/zipAppPackage
+    with:
+      manifestPath: ./appPackage/manifest.json
+      outputZipPath: ./appPackage/build/appPackage.${{TEAMSFX_ENV}}.zip
+      outputFolder: ./appPackage/build
+";
+
+pub(crate) const M365AGENTS_VALIDATE_STEPS: &str = "  - uses: teamsApp/validateManifest
+    with:
+      manifestPath: ./appPackage/manifest.json
+
+  - uses: teamsApp/zipAppPackage
+    with:
+      manifestPath: ./appPackage/manifest.json
+      outputZipPath: ./appPackage/build/appPackage.${{TEAMSFX_ENV}}.zip
+      outputFolder: ./appPackage/build
+
+  - uses: teamsApp/validateAppPackage
+    with:
+      appPackagePath: ./appPackage/build/appPackage.${{TEAMSFX_ENV}}.zip
+";
+
+/// Replace the stale validate steps in an `m365agents.yml` with the ones the toolkit accepts.
+/// Returns `None` when the content does not carry them, so edited files are left as they are.
+#[must_use]
+pub fn repaired_m365agents_yml(content: &str) -> Option<String> {
+    let stale_crlf = STALE_M365AGENTS_VALIDATE_STEPS.replace('\n', "\r\n");
+    let updated = content
+        .replace(
+            &stale_crlf,
+            &M365AGENTS_VALIDATE_STEPS.replace('\n', "\r\n"),
+        )
+        .replace(STALE_M365AGENTS_VALIDATE_STEPS, M365AGENTS_VALIDATE_STEPS);
+    (updated != content).then_some(updated)
+}
+
+/// Rewrite the `m365agents.yml` at `path` when it carries the stale validate steps.
 ///
-/// Copies templates from `<team>/skills/teams-setup/templates/` falling back to embedded templates,
-/// generates `.env.residuum` with properly escaped values, validates PNG icons, and verifies
-/// that existing files are not overwritten unless `force` is set.
+/// Returns whether the file was changed. A missing file is not an error.
 ///
 /// # Errors
 ///
+/// Returns [`FatalError::Config`] if the file exists but cannot be read or rewritten.
+pub async fn repair_m365agents_yml_file(path: &Path) -> Result<bool, FatalError> {
+    let existing = match tokio::fs::read_to_string(path).await {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(FatalError::Config(format!(
+                "failed to read {}: {error}",
+                path.display()
+            )));
+        }
+    };
+    let Some(updated) = repaired_m365agents_yml(&existing) else {
+        return Ok(false);
+    };
+    crate::util::fs::atomic_write(path, &updated)
+        .await
+        .map_err(|error| {
+            FatalError::Config(format!("failed to rewrite {}: {error:#}", path.display()))
+        })?;
+    tracing::info!(
+        path = %path.display(),
+        "replaced the validateAppPackage step the Agents Toolkit rejects in m365agents.yml"
+    );
+    Ok(true)
+}
+
 async fn resolve_template_text(
     team_path: &Path,
     embedded: &str,
@@ -614,13 +682,6 @@ fn build_scaffold_env(options: &AtkScaffoldOptions) -> Result<String, FatalError
     Ok(format!("{}\n", lines.join("\n")))
 }
 
-/// Scaffold a Microsoft 365 Agents Toolkit project for an agent.
-///
-/// Copies templates from `<team>/skills/teams-setup/templates/` falling back to embedded templates,
-/// generates `.env.residuum` with properly escaped values, validates PNG icons, and verifies
-/// that existing files are not overwritten unless `force` is set.
-///
-/// # Errors
 fn check_overwrite_safety(
     project_dir: &Path,
     target_files: &[PathBuf],
@@ -991,6 +1052,68 @@ mod tests {
     }
 
     use super::*;
+
+    fn m365agents_schema_errors(yml: &str) -> Vec<String> {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/m365agents-v1.13.yaml.schema.json"
+        ))
+        .unwrap();
+        let validator = jsonschema::draft7::new(&schema).unwrap();
+        let doc: serde_json::Value = serde_yaml_ng::from_str(yml).unwrap();
+        validator
+            .iter_errors(&doc)
+            .map(|e| format!("{}: {e}", e.instance_path()))
+            .collect()
+    }
+
+    fn stale_bundled_m365agents() -> String {
+        TEAMS_SETUP_M365AGENTS_YML
+            .replace(M365AGENTS_VALIDATE_STEPS, STALE_M365AGENTS_VALIDATE_STEPS)
+    }
+
+    #[test]
+    fn the_bundled_m365agents_template_matches_the_toolkit_schema() {
+        assert_eq!(
+            m365agents_schema_errors(TEAMS_SETUP_M365AGENTS_YML),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_stale_m365agents_file_is_rewritten_to_match_the_toolkit_schema() {
+        let stale = stale_bundled_m365agents();
+        assert_ne!(stale, TEAMS_SETUP_M365AGENTS_YML);
+        assert!(!m365agents_schema_errors(&stale).is_empty());
+
+        assert_eq!(
+            repaired_m365agents_yml(&stale).as_deref(),
+            Some(TEAMS_SETUP_M365AGENTS_YML)
+        );
+        let stale_crlf = stale.replace('\n', "\r\n");
+        assert_eq!(
+            repaired_m365agents_yml(&stale_crlf),
+            Some(TEAMS_SETUP_M365AGENTS_YML.replace('\n', "\r\n"))
+        );
+        assert!(repaired_m365agents_yml(TEAMS_SETUP_M365AGENTS_YML).is_none());
+        assert!(repaired_m365agents_yml("provision: []\n").is_none());
+    }
+
+    #[tokio::test]
+    async fn repairing_an_m365agents_file_rewrites_only_stale_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m365agents.yml");
+        assert!(!repair_m365agents_yml_file(&path).await.unwrap());
+
+        tokio::fs::write(&path, stale_bundled_m365agents())
+            .await
+            .unwrap();
+        assert!(repair_m365agents_yml_file(&path).await.unwrap());
+        assert_eq!(
+            tokio::fs::read_to_string(&path).await.unwrap(),
+            TEAMS_SETUP_M365AGENTS_YML
+        );
+        assert!(!repair_m365agents_yml_file(&path).await.unwrap());
+    }
 
     // Verified fixtures generated with pinned @microsoft/teamsfx-core@3.1.3:
     // Plaintext: "TestBotPassword123!"

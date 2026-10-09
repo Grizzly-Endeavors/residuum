@@ -145,6 +145,7 @@ tokio = { version = "1", features = ["test-util"] }
 wiremock = "0.6"
 http-body-util = "0.1"
 hyper = { version = "1.12", features = ["client"] }
+jsonschema = { version = "0.58.6", default-features = false }
 
 # Lint configuration
 #

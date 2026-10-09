@@ -15,8 +15,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::paths::{agent_dir, hub_dir};
 use crate::interfaces::teams::atk::{
-    ATK_CLI_VERSION, AtkScaffoldOptions, import_atk_project, resolve_atk_paths,
-    scaffold_atk_project, validate_png_dimensions,
+    ATK_CLI_VERSION, AtkScaffoldOptions, import_atk_project, repair_m365agents_yml_file,
+    resolve_atk_paths, scaffold_atk_project, validate_png_dimensions,
 };
 use crate::interfaces::teams::atk_runner::{
     AtkRunnerOverrides, BoundedLog, check_signed_in, detect_prereqs,
@@ -960,6 +960,26 @@ impl TeamsSetupJobManager {
             let lock = session.lock().await;
             lock.log.clone()
         };
+
+        let m365agents_path = paths.project_dir.join("m365agents.yml");
+        match repair_m365agents_yml_file(&m365agents_path).await {
+            Ok(true) => {
+                log.push(
+                    LogStream::Info,
+                    "Updated m365agents.yml: replaced a validation step the Agents Toolkit rejects."
+                        .to_string(),
+                );
+            }
+            Ok(false) => {}
+            Err(e) => {
+                return Err(SetupError {
+                    phase: TeamsSetupPhase::Provision,
+                    message: "Couldn't update the Teams project file before provisioning."
+                        .to_string(),
+                    detail: Some(e.to_string()),
+                });
+            }
+        }
 
         log.push(
             LogStream::Info,
