@@ -809,15 +809,6 @@ pub enum SessionEventKind {
 // Typed topic event enums
 // ---------------------------------------------------------------------------
 
-/// Tool activity during a turn (call or result).
-#[derive(Debug, Clone)]
-pub enum ToolActivityEvent {
-    /// A tool was invoked by the agent.
-    Call(ToolCallEvent),
-    /// A tool execution completed.
-    Result(ToolResultEvent),
-}
-
 /// Turn lifecycle transitions.
 #[derive(Debug, Clone)]
 pub enum TurnLifecycleEvent {
@@ -836,9 +827,10 @@ pub enum TurnLifecycleEvent {
 /// Token usage and tool-call progress for a turn still running: this
 /// turn's own output tokens and executed tool calls so far (for the
 /// activity line) and, when the caller tracks cumulative session
-/// totals, the updated totals (for the conversation size). Published after every
-/// model call and after every tool-call batch; never delivered to the
-/// agent itself. See `docs/systems-usage/turn-control.md`.
+/// totals, the updated totals (for the conversation size). Published to the
+/// main conversation (as [`MainConversationEvent::TurnUsage`]) after every
+/// model call and after every tool-call batch; never delivered to the agent
+/// itself. See `docs/systems-usage/turn-control.md`.
 #[derive(Debug, Clone)]
 pub struct TurnUsageEvent {
     /// Links back to the originating message.

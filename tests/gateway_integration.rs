@@ -282,7 +282,8 @@ mod gateway_integration {
             let reply_id = inbound.id.clone();
 
             // The message and the turn's start (normally published by the
-            // event loop), to the main conversation and the endpoint.
+            // event loop), to the main conversation. The web UI takes a turn
+            // from there alone.
             for event in [
                 MainConversationEvent::UserMessage {
                     id: reply_id.clone(),
@@ -303,16 +304,6 @@ mod gateway_integration {
             ] {
                 drop(publisher.publish(topics::MainConversation, event).await);
             }
-            drop(
-                publisher
-                    .publish(
-                        topics::Endpoint(ep.clone()),
-                        residuum::bus::TurnLifecycleEvent::Started {
-                            correlation_id: reply_id.clone(),
-                        },
-                    )
-                    .await,
-            );
 
             let mut irx = interrupt::dead_interrupt_rx();
             let outcome = agent
@@ -320,7 +311,6 @@ mod gateway_integration {
                     &inbound.content,
                     &publisher,
                     Some(&ep),
-                    None,
                     &reply_id,
                     None,
                     &PromptContext::default(),
@@ -330,37 +320,16 @@ mod gateway_integration {
                     &CancellationToken::new(),
                 )
                 .await;
-            match outcome {
-                Ok(texts) => {
-                    for text in &texts {
-                        drop(
-                            publisher
-                                .publish(
-                                    topics::Endpoint(ep.clone()),
-                                    residuum::bus::ResponseEvent {
-                                        correlation_id: reply_id.clone(),
-                                        content: text.clone(),
-                                        timestamp: chrono::NaiveDateTime::default(),
-                                        attachment: None,
-                                        conversation: None,
-                                    },
-                                )
-                                .await,
-                        );
-                    }
-                }
-                Err(e) => {
-                    if broadcast_tx
-                        .send(ServerMessage::Error {
-                            reply_to: Some(reply_id.clone()),
-                            message: e.to_string(),
-                            details: None,
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
+            if let Err(e) = outcome
+                && broadcast_tx
+                    .send(ServerMessage::Error {
+                        reply_to: Some(reply_id.clone()),
+                        message: e.to_string(),
+                        details: None,
+                    })
+                    .is_err()
+            {
+                break;
             }
             drop(
                 publisher

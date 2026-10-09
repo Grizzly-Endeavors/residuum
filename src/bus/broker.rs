@@ -286,7 +286,7 @@ mod tests {
 
     use super::*;
     use crate::bus::events::{
-        MessageEvent, NoticeEvent, ResponseEvent, TurnLifecycleEvent, TurnUsageEvent,
+        MessageEvent, NoticeEvent, ResponseEvent, TurnLifecycleEvent, WorkbenchEvent,
     };
     use crate::bus::handle::ErasedEvent;
     use crate::bus::topics;
@@ -316,16 +316,10 @@ mod tests {
         }
     }
 
-    /// A `TurnUsageEvent` on `Endpoint`, a [`DeliveryMode::Lossy`] route,
+    /// A `WorkbenchEvent` on `Workbench`, a [`DeliveryMode::Lossy`] route,
     /// for tests exercising drop/backpressure behavior.
-    fn test_turn_usage(output_tokens: u32) -> TurnUsageEvent {
-        TurnUsageEvent {
-            correlation_id: "c1".into(),
-            output_tokens,
-            has_usage: true,
-            tool_calls: 0,
-            session_totals: None,
-        }
+    fn test_artifact_update(name: &str) -> WorkbenchEvent {
+        WorkbenchEvent::Updated { name: name.into() }
     }
 
     #[tokio::test]
@@ -531,27 +525,22 @@ mod tests {
         assert_eq!(notice.message, "config reloaded");
     }
 
-    /// `TurnUsageEvent` on `Endpoint` is a lossy (latest-wins) route: a
-    /// subscriber that falls behind past its capacity drops the overflow
-    /// instead of blocking the broker, and catches up once drained.
+    /// `WorkbenchEvent` on `Workbench` is a lossy route: a subscriber that
+    /// falls behind past its capacity drops the overflow instead of blocking
+    /// the broker, and catches up once drained.
     #[tokio::test]
     async fn backpressure_drops_and_recovers() {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
-        let ep = EndpointName::from("ws");
-        let mut sub: Subscriber<TurnUsageEvent> = handle
-            .subscribe(topics::Endpoint(ep.clone()))
-            .await
-            .unwrap();
+        let mut sub: Subscriber<WorkbenchEvent> =
+            handle.subscribe(topics::Workbench).await.unwrap();
         // sync_sub confirms the broker has processed each publish before we proceed.
-        let mut sync_sub: Subscriber<TurnUsageEvent> = handle
-            .subscribe(topics::Endpoint(ep.clone()))
-            .await
-            .unwrap();
+        let mut sync_sub: Subscriber<WorkbenchEvent> =
+            handle.subscribe(topics::Workbench).await.unwrap();
 
         // Fill sub's channel to capacity.
         for _ in 0..LOSSY_SUBSCRIBER_CAPACITY {
-            pub_.publish(topics::Endpoint(ep.clone()), test_turn_usage(0))
+            pub_.publish(topics::Workbench, test_artifact_update("fill"))
                 .await
                 .unwrap();
         }
@@ -560,7 +549,7 @@ mod tests {
         }
 
         // Sub's channel is full — overflow message should be dropped for sub.
-        pub_.publish(topics::Endpoint(ep.clone()), test_turn_usage(u32::MAX))
+        pub_.publish(topics::Workbench, test_artifact_update("overflow"))
             .await
             .unwrap();
         sync_sub.recv().await.unwrap().unwrap();
@@ -578,11 +567,11 @@ mod tests {
         );
 
         // After recovery, subsequent publishes are received.
-        pub_.publish(topics::Endpoint(ep), test_turn_usage(999))
+        pub_.publish(topics::Workbench, test_artifact_update("after"))
             .await
             .unwrap();
         let msg = sub.recv().await.unwrap().unwrap();
-        assert_eq!(msg.output_tokens, 999);
+        assert_eq!(msg, test_artifact_update("after"));
     }
 
     /// `MessageEvent` on `UserMessage` is a lossless route: a subscriber

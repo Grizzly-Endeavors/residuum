@@ -64,7 +64,7 @@ A message that arrives after the turn's last drain, during the model call that p
 
 ## The Main Conversation Stream
 
-Every main-agent turn is published to one ordered stream that web clients follow over the agent's WebSocket, whichever interface started it: the web, a Telegram, Discord or Teams message from the owner, or no person at all (a background turn). The chat interfaces keep receiving only what is delivered to their own endpoint, as before. A web client therefore sees a turn that began on Telegram, with its tool calls and its end, instead of finding out only after a reload. A turn's frames arrive in the order they happened, on one channel, so no two of them race.
+Every main-agent turn is published to one ordered stream that web clients follow over the agent's WebSocket, whichever interface started it: the web, a Telegram, Discord or Teams message from the owner, or no person at all (a background turn). A chat interface (Telegram, Discord, Teams) receives only the turns delivered to its own endpoint: the reply, the start and end of the turn for its typing indicator, the text written alongside tool calls, and a failure. Tool activity and progress figures go to the main conversation alone. The web takes everything from the main conversation and the system channel; the only thing delivered to its own endpoint is what the agent posts to it with `send_message`, files included. A web client therefore sees a turn that began on Telegram, with its tool calls and its end, instead of finding out only after a reload. A turn's frames arrive in the order they happened, on one channel, so no two of them race.
 
 | Frame | Fields | Meaning |
 |-------|--------|---------|

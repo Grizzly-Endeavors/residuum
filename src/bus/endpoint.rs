@@ -11,8 +11,6 @@ pub struct EndpointCapabilities(u8);
 impl EndpointCapabilities {
     /// Bidirectional conversation.
     pub const INTERACTIVE: Self = Self(0b0001);
-    /// Supports streaming events (typing indicators, tool calls).
-    pub const STREAMING: Self = Self(0b0010);
     /// Output-only push (notifications).
     pub const NOTIFY_ONLY: Self = Self(0b0100);
 
@@ -47,24 +45,21 @@ mod tests {
     fn capabilities_empty_contains_nothing() {
         let empty = EndpointCapabilities::empty();
         assert!(!empty.contains(EndpointCapabilities::INTERACTIVE));
-        assert!(!empty.contains(EndpointCapabilities::STREAMING));
         assert!(!empty.contains(EndpointCapabilities::NOTIFY_ONLY));
     }
 
     #[test]
     fn capabilities_union_and_contains() {
-        let caps = EndpointCapabilities::INTERACTIVE.union(EndpointCapabilities::STREAMING);
+        let caps = EndpointCapabilities::INTERACTIVE.union(EndpointCapabilities::NOTIFY_ONLY);
         assert!(caps.contains(EndpointCapabilities::INTERACTIVE));
-        assert!(caps.contains(EndpointCapabilities::STREAMING));
-        assert!(!caps.contains(EndpointCapabilities::NOTIFY_ONLY));
+        assert!(caps.contains(EndpointCapabilities::NOTIFY_ONLY));
+        assert!(!EndpointCapabilities::INTERACTIVE.contains(EndpointCapabilities::NOTIFY_ONLY));
     }
 
     #[test]
     fn all_flags_are_distinct() {
         use super::EndpointCapabilities as C;
-        assert_ne!(C::INTERACTIVE, C::STREAMING);
         assert_ne!(C::INTERACTIVE, C::NOTIFY_ONLY);
-        assert_ne!(C::STREAMING, C::NOTIFY_ONLY);
     }
 
     #[test]

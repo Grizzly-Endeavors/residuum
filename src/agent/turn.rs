@@ -8,13 +8,14 @@ use tokio_util::sync::CancellationToken;
 
 use crate::bus::{
     EndpointName, MainConversationEvent, MessageEvent, NoticeEvent, NotifyName, Publisher,
-    SYSTEM_CHANNEL, SessionAddress, SessionEventKind, SessionResponseEvent, ToolActivityEvent,
-    ToolCallEvent, ToolResultEvent, TurnUsageEvent, topics,
+    SYSTEM_CHANNEL, SessionAddress, SessionEventKind, SessionResponseEvent, ToolCallEvent,
+    ToolResultEvent, TurnUsageEvent, topics,
 };
 use crate::inference::{
     CompletionOptions, InferenceProvider, InferenceResponse, Message, StreamSink, ToolCall,
     ToolDefinition, joined_thinking_text,
 };
+use crate::interfaces::types::chat_interface_endpoint;
 use crate::mcp::SharedMcpRegistry;
 use crate::tools::{
     CANCELLED_BEFORE_START, CANCELLED_WHILE_RUNNING, ToolError, ToolRegistry, ToolResult,
@@ -45,14 +46,22 @@ pub(crate) struct EventContext<'a> {
     pub session_conversation: Option<SessionConversationTarget<'a>>,
 }
 
+/// A tool call or its result, as a turn publishes it.
+enum ToolActivity {
+    /// A tool was invoked by the agent.
+    Call(ToolCallEvent),
+    /// A tool execution completed.
+    Result(ToolResultEvent),
+}
+
 /// Where a turn's streaming events (tool activity, intermediate text) go.
 pub(crate) enum EventTarget<'a> {
-    /// The main agent: interactive endpoint topics, correlated to the
-    /// message that started the turn. Either endpoint may be absent (e.g. a
+    /// The main agent: the main conversation, and for a turn delivered to a
+    /// chat interface that interface's endpoint topic, correlated to the
+    /// message that started the turn. The endpoint may be absent (e.g. a
     /// background turn with nowhere to show its output).
     Endpoint {
         output_endpoint: Option<&'a EndpointName>,
-        tool_activity_endpoint: Option<&'a EndpointName>,
         correlation_id: &'a str,
     },
     /// An agent session: the sessions topic, tagged with the session's
@@ -106,35 +115,25 @@ impl EventContext<'_> {
         }
     }
 
-    async fn publish_tool_activity(&self, event: ToolActivityEvent, tool_name: &str, call: u32) {
+    /// Publish a tool call or result of model call `call`: to the main
+    /// conversation for the main agent, to the session stream for a session.
+    /// No endpoint topic carries it.
+    async fn publish_tool_activity(&self, event: ToolActivity, call: u32) {
         match self.target {
-            EventTarget::Endpoint {
-                tool_activity_endpoint,
-                ..
-            } => {
-                self.publish_main(|_| match &event {
-                    ToolActivityEvent::Call(tool_call) => MainConversationEvent::ToolCall {
+            EventTarget::Endpoint { .. } => {
+                self.publish_main(|_| match event {
+                    ToolActivity::Call(tool_call) => MainConversationEvent::ToolCall {
                         call,
-                        event: tool_call.clone(),
+                        event: tool_call,
                     },
-                    ToolActivityEvent::Result(result) => {
-                        MainConversationEvent::ToolResult(result.clone())
-                    }
+                    ToolActivity::Result(result) => MainConversationEvent::ToolResult(result),
                 })
                 .await;
-                if let Some(ep) = tool_activity_endpoint
-                    && let Err(e) = self
-                        .publisher
-                        .publish(topics::Endpoint(ep.clone()), event)
-                        .await
-                {
-                    tracing::debug!(error = %e, tool_name = %tool_name, "failed to publish tool activity event");
-                }
             }
             EventTarget::Session { address, run_id } => {
                 let kind = match event {
-                    ToolActivityEvent::Call(tool_call) => SessionEventKind::ToolCall(tool_call),
-                    ToolActivityEvent::Result(result) => SessionEventKind::ToolResult(result),
+                    ToolActivity::Call(tool_call) => SessionEventKind::ToolCall(tool_call),
+                    ToolActivity::Result(result) => SessionEventKind::ToolResult(result),
                 };
                 crate::background::events::publish_session_event(
                     self.publisher,
@@ -148,7 +147,8 @@ impl EventContext<'_> {
     }
 
     /// Publish this turn's intermediate (pre-tool-call) text from model call
-    /// `call`: to the main conversation and the output endpoint's topic for
+    /// `call`: to the main conversation and, when the turn is delivered to a
+    /// chat interface, that interface's endpoint topic for
     /// [`EventTarget::Endpoint`], or the session-stream topic for
     /// [`EventTarget::Session`]; and — when [`Self::session_conversation`]
     /// is set — additionally as a [`SessionResponseEvent`] to the
@@ -167,7 +167,7 @@ impl EventContext<'_> {
                     content: content.to_owned(),
                 })
                 .await;
-                if let Some(ep) = output_endpoint
+                if let Some(ep) = chat_interface_endpoint(output_endpoint)
                     && let Err(e) = self
                         .publisher
                         .publish(
@@ -292,11 +292,7 @@ impl EventContext<'_> {
     /// `docs/systems-usage/turn-control.md`.
     async fn publish_usage(&self, turn: TurnUsage, session_totals: Option<SessionUsageTotals>) {
         match self.target {
-            EventTarget::Endpoint {
-                output_endpoint,
-                correlation_id,
-                ..
-            } => {
+            EventTarget::Endpoint { correlation_id, .. } => {
                 let event = TurnUsageEvent {
                     correlation_id: correlation_id.to_owned(),
                     output_tokens: turn.output_tokens,
@@ -304,16 +300,8 @@ impl EventContext<'_> {
                     tool_calls: turn.tool_calls,
                     session_totals,
                 };
-                self.publish_main(|_| MainConversationEvent::TurnUsage(event.clone()))
+                self.publish_main(|_| MainConversationEvent::TurnUsage(event))
                     .await;
-                if let Some(ep) = output_endpoint
-                    && let Err(e) = self
-                        .publisher
-                        .publish(topics::Endpoint(ep.clone()), event)
-                        .await
-                {
-                    tracing::debug!(error = %e, "failed to publish turn usage event");
-                }
             }
             EventTarget::Session { address, run_id } => {
                 crate::background::events::publish_session_event(
@@ -1292,14 +1280,13 @@ async fn execute_tool(
 ) {
     events
         .publish_tool_activity(
-            ToolActivityEvent::Call(ToolCallEvent {
+            ToolActivity::Call(ToolCallEvent {
                 correlation_id: events.correlation_id().to_owned(),
                 tool_call_id: tool_call.id.clone(),
                 name: tool_call.name.clone(),
                 arguments: tool_call.arguments.clone(),
                 server: tool_call.server.clone(),
             }),
-            &tool_call.name,
             call,
         )
         .await;
@@ -1358,7 +1345,7 @@ async fn execute_tool(
 
     events
         .publish_tool_activity(
-            ToolActivityEvent::Result(ToolResultEvent {
+            ToolActivity::Result(ToolResultEvent {
                 correlation_id: events.correlation_id().to_owned(),
                 tool_call_id: tool_call.id.clone(),
                 name: tool_call.name.clone(),
@@ -1366,7 +1353,6 @@ async fn execute_tool(
                 is_error,
                 auto_mode,
             }),
-            &tool_call.name,
             call,
         )
         .await;
@@ -1394,14 +1380,13 @@ async fn record_cancelled_tool_call(
 ) {
     events
         .publish_tool_activity(
-            ToolActivityEvent::Call(ToolCallEvent {
+            ToolActivity::Call(ToolCallEvent {
                 correlation_id: events.correlation_id().to_owned(),
                 tool_call_id: tool_call.id.clone(),
                 name: tool_call.name.clone(),
                 arguments: tool_call.arguments.clone(),
                 server: tool_call.server.clone(),
             }),
-            &tool_call.name,
             call,
         )
         .await;
@@ -1410,7 +1395,7 @@ async fn record_cancelled_tool_call(
 
     events
         .publish_tool_activity(
-            ToolActivityEvent::Result(ToolResultEvent {
+            ToolActivity::Result(ToolResultEvent {
                 correlation_id: events.correlation_id().to_owned(),
                 tool_call_id: tool_call.id.clone(),
                 name: tool_call.name.clone(),
@@ -1418,7 +1403,6 @@ async fn record_cancelled_tool_call(
                 is_error: result.is_error,
                 auto_mode: None,
             }),
-            &tool_call.name,
             call,
         )
         .await;
@@ -1528,7 +1512,6 @@ mod tests {
             publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "turn-1",
             },
             session_conversation: None,
@@ -1767,7 +1750,7 @@ mod tests {
     async fn publish_intermediate_without_a_session_conversation_uses_intermediate_event() {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
-        let ep = EndpointName::from("ws");
+        let ep = EndpointName::from("telegram");
         let mut sub: crate::bus::Subscriber<crate::bus::IntermediateEvent> = bus_handle
             .subscribe(topics::Endpoint(ep.clone()))
             .await
@@ -1777,7 +1760,6 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -1795,6 +1777,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn publish_intermediate_for_the_web_ui_reaches_only_the_main_conversation() {
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let ep = EndpointName::from(crate::interfaces::types::WEB_UI_ENDPOINT);
+        let mut endpoint_sub: crate::bus::Subscriber<crate::bus::IntermediateEvent> = bus_handle
+            .subscribe(topics::Endpoint(ep.clone()))
+            .await
+            .unwrap();
+        let mut main_sub: crate::bus::Subscriber<MainConversationEvent> = bus_handle
+            .subscribe(topics::MainConversation)
+            .await
+            .unwrap();
+
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: Some(&ep),
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+        events.publish_intermediate("thinking...", 0).await;
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), main_sub.recv())
+            .await
+            .expect("the main conversation should get the text promptly")
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                &event,
+                MainConversationEvent::Intermediate { turn_id, call: 0, content }
+                    if turn_id == "corr-1" && content == "thinking..."
+            ),
+            "{event:?}"
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), endpoint_sub.recv())
+                .await
+                .is_err(),
+            "the web UI's endpoint topic has no subscriber for a turn's intermediate text"
+        );
+    }
+
+    #[tokio::test]
     async fn publish_intermediate_with_no_output_endpoint_is_a_noop() {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
@@ -1806,7 +1833,6 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -1860,7 +1886,6 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -1950,7 +1975,6 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2059,7 +2083,6 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2160,7 +2183,6 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2231,7 +2253,6 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2323,7 +2344,6 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2545,21 +2565,46 @@ mod tests {
         }
     }
 
+    /// The usage progress a turn publishes to the main conversation, which is
+    /// the only place it goes.
+    struct UsageFeed(crate::bus::Subscriber<MainConversationEvent>);
+
+    impl UsageFeed {
+        async fn follow(bus_handle: &crate::bus::BusHandle) -> Self {
+            Self(
+                bus_handle
+                    .subscribe(topics::MainConversation)
+                    .await
+                    .unwrap(),
+            )
+        }
+
+        /// The next usage event, passing over the conversation's other events.
+        async fn next(&mut self) -> TurnUsageEvent {
+            loop {
+                let event = tokio::time::timeout(std::time::Duration::from_secs(1), self.0.recv())
+                    .await
+                    .expect("a usage event should be published promptly")
+                    .unwrap()
+                    .unwrap();
+                if let MainConversationEvent::TurnUsage(usage) = event {
+                    return usage;
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn publish_usage_for_endpoint_target_maps_to_turn_usage_event() {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let ep = EndpointName::from("ws");
-        let mut sub: crate::bus::Subscriber<TurnUsageEvent> = bus_handle
-            .subscribe(topics::Endpoint(ep.clone()))
-            .await
-            .unwrap();
+        let mut sub = UsageFeed::follow(&bus_handle).await;
 
         let events = EventContext {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2578,11 +2623,7 @@ mod tests {
             )
             .await;
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
-            .await
-            .expect("a TurnUsageEvent should be published promptly")
-            .unwrap()
-            .unwrap();
+        let event = sub.next().await;
         assert_eq!(event.correlation_id, "corr-1");
         assert_eq!(event.output_tokens, 20);
         assert!(event.has_usage);
@@ -2591,30 +2632,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publish_usage_with_no_output_endpoint_is_a_noop() {
+    async fn publish_usage_with_no_output_endpoint_still_reports_to_the_main_conversation() {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
-        let ep = EndpointName::from("ws");
-        let mut sub: crate::bus::Subscriber<TurnUsageEvent> =
-            bus_handle.subscribe(topics::Endpoint(ep)).await.unwrap();
+        let mut sub = UsageFeed::follow(&bus_handle).await;
 
         let events = EventContext {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
         };
         events.publish_usage(TurnUsage::default(), None).await;
 
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), sub.recv())
-                .await
-                .is_err(),
-            "with no output endpoint there is nowhere to publish turn usage"
-        );
+        let event = sub.next().await;
+        assert_eq!(event.correlation_id, "corr-1");
+        assert!(!event.has_usage);
     }
 
     #[tokio::test]
@@ -2673,15 +2708,11 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let ep = EndpointName::from("ws");
-        let mut sub: crate::bus::Subscriber<TurnUsageEvent> = bus_handle
-            .subscribe(topics::Endpoint(ep.clone()))
-            .await
-            .unwrap();
+        let mut sub = UsageFeed::follow(&bus_handle).await;
         let events = EventContext {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2711,11 +2742,7 @@ mod tests {
             "the sink should receive exactly this batch's executed tool-call count"
         );
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
-            .await
-            .expect("a TurnUsageEvent should be published promptly")
-            .unwrap()
-            .unwrap();
+        let event = sub.next().await;
         assert_eq!(event.output_tokens, 20);
         assert_eq!(event.tool_calls, 2);
         assert_eq!(event.session_totals.map(|t| t.input_tokens), Some(100));
@@ -2732,7 +2759,6 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2758,15 +2784,11 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let ep = EndpointName::from("ws");
-        let mut sub: crate::bus::Subscriber<TurnUsageEvent> = bus_handle
-            .subscribe(topics::Endpoint(ep.clone()))
-            .await
-            .unwrap();
+        let mut sub = UsageFeed::follow(&bus_handle).await;
         let events = EventContext {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2777,11 +2799,7 @@ mod tests {
         response.usage = Some(usage(50, 5));
         update_and_publish_usage(&response, 0, &mut turn_usage, None, &events).await;
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
-            .await
-            .expect("a TurnUsageEvent should be published promptly")
-            .unwrap()
-            .unwrap();
+        let event = sub.next().await;
         assert_eq!(event.output_tokens, 5);
         assert_eq!(
             event.session_totals, None,
@@ -2795,15 +2813,11 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let ep = EndpointName::from("ws");
-        let mut sub: crate::bus::Subscriber<TurnUsageEvent> = bus_handle
-            .subscribe(topics::Endpoint(ep.clone()))
-            .await
-            .unwrap();
+        let mut sub = UsageFeed::follow(&bus_handle).await;
         let events = EventContext {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2817,11 +2831,7 @@ mod tests {
             !turn_usage.has_usage,
             "a provider reporting no usage must not flip has_usage"
         );
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
-            .await
-            .expect("a TurnUsageEvent should still be published so the indicator keeps ticking")
-            .unwrap()
-            .unwrap();
+        let event = sub.next().await;
         assert!(!event.has_usage);
         assert_eq!(event.output_tokens, 0);
     }
@@ -2875,15 +2885,11 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let ep = EndpointName::from("ws");
-        let mut sub: crate::bus::Subscriber<TurnUsageEvent> = bus_handle
-            .subscribe(topics::Endpoint(ep.clone()))
-            .await
-            .unwrap();
+        let mut sub = UsageFeed::follow(&bus_handle).await;
         let events = EventContext {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2911,11 +2917,7 @@ mod tests {
         .unwrap();
         assert_eq!(texts, vec!["hello".to_string()]);
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
-            .await
-            .expect("a TurnUsageEvent should be published promptly")
-            .unwrap()
-            .unwrap();
+        let event = sub.next().await;
         assert_eq!(
             event.tool_calls, 0,
             "a turn with no tool calls should report a zero tool-call count, not omit it"
@@ -3012,15 +3014,11 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let ep = EndpointName::from("ws");
-        let mut sub: crate::bus::Subscriber<TurnUsageEvent> = bus_handle
-            .subscribe(topics::Endpoint(ep.clone()))
-            .await
-            .unwrap();
+        let mut sub = UsageFeed::follow(&bus_handle).await;
         let events = EventContext {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -3055,11 +3053,7 @@ mod tests {
 
         // First TurnUsageEvent, published right after the tool batch: the
         // three parallel calls should already be reflected.
-        let after_batch = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
-            .await
-            .expect("a TurnUsageEvent should be published after the tool batch")
-            .unwrap()
-            .unwrap();
+        let after_batch = sub.next().await;
         assert_eq!(
             after_batch.tool_calls, 3,
             "every parallel call in the batch should count individually"
@@ -3067,11 +3061,7 @@ mod tests {
 
         // Second TurnUsageEvent, published after the final text-only
         // response: the count must not be reset or double-counted.
-        let after_final = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
-            .await
-            .expect("a TurnUsageEvent should be published after the final response")
-            .unwrap()
-            .unwrap();
+        let after_final = sub.next().await;
         assert_eq!(
             after_final.tool_calls, 3,
             "the tool-call count must carry over unchanged into the turn's final response"
@@ -3120,7 +3110,6 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -3209,7 +3198,6 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -3297,7 +3285,6 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -3384,7 +3371,6 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -3477,7 +3463,6 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,

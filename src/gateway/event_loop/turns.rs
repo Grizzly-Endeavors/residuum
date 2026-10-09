@@ -9,16 +9,15 @@ use crate::agent::Agent;
 use crate::agent::context::{PromptContext, SkillsContext};
 use crate::agent::interrupt::Interrupt;
 use crate::bus::{
-    EndpointCapabilities, EndpointId, EndpointName, ErrorEvent, MainConversationEvent,
-    MessageEvent, NotifyName, Publisher, ResponseEvent, SYSTEM_CHANNEL, Subscriber,
-    TurnLifecycleEvent, TurnOrigin, topics,
+    EndpointName, ErrorEvent, MainConversationEvent, MessageEvent, NotifyName, Publisher,
+    ResponseEvent, SYSTEM_CHANNEL, Subscriber, TurnLifecycleEvent, TurnOrigin, topics,
 };
 
 use crate::config::Config;
 use crate::gateway::types::{AgentRuntime, StopRequest};
 use crate::hub::activity::ActivityTracker;
 use crate::inference::ImageData;
-use crate::interfaces::types::{BACKGROUND_ENDPOINT, MessageOrigin};
+use crate::interfaces::types::{BACKGROUND_ENDPOINT, MessageOrigin, chat_interface_endpoint};
 use crate::memory::types::Visibility;
 use crate::skills::SharedSkillState;
 use crate::tracing_service::TracingService;
@@ -395,7 +394,6 @@ async fn run_agent_turn_with_interrupts(
     content: &str,
     publisher: &Publisher,
     output_endpoint: Option<&EndpointName>,
-    tool_activity_endpoint: Option<&EndpointName>,
     correlation_id: &str,
     origin: Option<&MessageOrigin>,
     prompt_ctx: &PromptContext<'_>,
@@ -446,7 +444,6 @@ async fn run_agent_turn_with_interrupts(
             content,
             publisher,
             output_endpoint,
-            tool_activity_endpoint,
             correlation_id,
             origin,
             prompt_ctx,
@@ -539,7 +536,8 @@ async fn publish_main_conversation(publisher: &Publisher, event: MainConversatio
 
 /// Announce a turn: its opening person's message and its start to the main
 /// conversation, whatever endpoint it is delivered to, and
-/// `TurnLifecycleEvent::Started` to the output endpoint (if there is one).
+/// `TurnLifecycleEvent::Started` to the output endpoint when that is a chat
+/// interface (see [`chat_interface_endpoint`]).
 /// Also spawns the turn-start checkpoint, which captures the workspace state
 /// before anything this turn does, attributed as an outside edit.
 async fn publish_turn_started(
@@ -560,9 +558,25 @@ async fn publish_turn_started(
         },
     )
     .await;
-    if let Some(ep) = output_endpoint
-        && let Err(e) = rt
-            .publisher
+    publish_turn_started_to_chat_interface(&rt.publisher, output_endpoint, correlation_id).await;
+    rt.checkpoints
+        .spawn_turn_start_checkpoint(main_turn_checkpoint_context(
+            correlation_id,
+            crate::checkpoints::CheckpointTrigger::TurnStart,
+            "outside edit before turn start".to_string(),
+        ));
+}
+
+/// Publish a `TurnLifecycleEvent::Started` to the chat interface a turn is
+/// delivered to, for its typing indicator. Nothing is published when the turn
+/// is delivered to the web UI or nowhere (see [`chat_interface_endpoint`]).
+async fn publish_turn_started_to_chat_interface(
+    publisher: &Publisher,
+    output_endpoint: Option<&EndpointName>,
+    correlation_id: &str,
+) {
+    if let Some(ep) = chat_interface_endpoint(output_endpoint)
+        && let Err(e) = publisher
             .publish(
                 topics::Endpoint(ep.clone()),
                 TurnLifecycleEvent::Started {
@@ -573,12 +587,6 @@ async fn publish_turn_started(
     {
         tracing::warn!(error = %e, "failed to publish turn started event");
     }
-    rt.checkpoints
-        .spawn_turn_start_checkpoint(main_turn_checkpoint_context(
-            correlation_id,
-            crate::checkpoints::CheckpointTrigger::TurnStart,
-            "outside edit before turn start".to_string(),
-        ));
 }
 
 /// Publish a `TurnLifecycleEvent::Ended` closing the turn on an endpoint.
@@ -645,7 +653,10 @@ fn spawn_main_turn_end_checkpoint(
 /// On success, emits one `ResponseEvent` per reply text to the output endpoint,
 /// then closes the turn with `TurnLifecycleEvent::Ended`. When there is no output
 /// endpoint (e.g. a background turn with no prior user endpoint), success publishes
-/// nothing to an endpoint.
+/// nothing to an endpoint. The web UI's endpoint is no output endpoint for this
+/// purpose: it has no subscriber to a turn's events, and reads the reply, a failure
+/// and the end of the turn from the main conversation and the system channel (see
+/// [`chat_interface_endpoint`]).
 ///
 /// However the turn ended, the main conversation gets `TurnEnded` last: it
 /// follows every event the turn published there, and tells a client following
@@ -654,10 +665,10 @@ fn spawn_main_turn_end_checkpoint(
 ///
 /// On failure, logs the error, auto-reports the failure through
 /// `tracing_service` (a no-op unless the user has enabled auto error
-/// reporting), and publishes an `ErrorEvent` twice: to the output endpoint, so
-/// a chat interface can answer the conversation that started the turn, and on
-/// the system notification channel regardless of output endpoint, for the web
-/// UI. If there is an output endpoint it still closes the turn with `Ended`.
+/// reporting), and publishes an `ErrorEvent` to the output endpoint, so a chat
+/// interface can answer the conversation that started the turn, and on the
+/// system notification channel regardless of output endpoint, for the web UI.
+/// If there is an output endpoint it still closes the turn with `Ended`.
 async fn publish_turn_outcome(
     turn_result: anyhow::Result<Vec<String>>,
     publisher: &Publisher,
@@ -667,6 +678,7 @@ async fn publish_turn_outcome(
     tracing_service: &TracingService,
     cfg: &Config,
 ) {
+    let output_endpoint = chat_interface_endpoint(output_endpoint);
     match turn_result {
         Ok(texts) => {
             if let Some(ep) = output_endpoint {
@@ -856,14 +868,6 @@ pub async fn handle_inbound_message(
 
     let output_endpoint = resolve_output_endpoint(rt, &origin, is_background);
 
-    // Only publish tool-activity events to endpoints with STREAMING capability.
-    let tool_activity_endpoint = output_endpoint.as_ref().filter(|ep| {
-        let endpoint_id = EndpointId::from(ep.as_ref());
-        rt.endpoint_registry
-            .get(&endpoint_id)
-            .is_some_and(|entry| entry.capabilities.contains(EndpointCapabilities::STREAMING))
-    });
-
     // Held for the whole turn, so the rail and Home show it busy until it
     // ends, however the turn ends.
     let _busy = rt.activity.main_turn();
@@ -902,7 +906,6 @@ pub async fn handle_inbound_message(
             &message.content,
             &rt.publisher,
             output_endpoint.as_ref(),
-            tool_activity_endpoint,
             &reply_id,
             Some(&origin),
             &prompt_ctx,
@@ -975,8 +978,9 @@ mod tests {
 
     const TEST_TZ: chrono_tz::Tz = chrono_tz::Tz::UTC;
 
+    /// A chat interface's endpoint: the kind a turn's events are published to.
     fn endpoint() -> EndpointName {
-        EndpointName::from("ws")
+        EndpointName::from("telegram")
     }
 
     /// Build a minimal test config; only `tracing` is meaningful to
@@ -1167,6 +1171,92 @@ mod tests {
 
         assert_no_event(&mut responses).await;
         assert_no_event(&mut lifecycle).await;
+    }
+
+    #[tokio::test]
+    async fn a_turn_start_goes_to_a_chat_interface_but_not_to_the_web_ui() {
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let ws = EndpointName::from(crate::interfaces::types::WEB_UI_ENDPOINT);
+        let mut chat: Subscriber<TurnLifecycleEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+        let mut web: Subscriber<TurnLifecycleEvent> = handle
+            .subscribe(topics::Endpoint(ws.clone()))
+            .await
+            .unwrap();
+
+        publish_turn_started_to_chat_interface(&publisher, Some(&ws), "corr-web").await;
+        publish_turn_started_to_chat_interface(&publisher, None, "corr-none").await;
+        publish_turn_started_to_chat_interface(&publisher, Some(&endpoint()), "corr-chat").await;
+
+        let started = chat.recv().await.unwrap().unwrap();
+        assert!(
+            matches!(started, TurnLifecycleEvent::Started { correlation_id } if correlation_id == "corr-chat"),
+            "the chat interface hears its turn start, and only its own"
+        );
+        assert_no_event(&mut web).await;
+    }
+
+    /// The web UI follows a turn through the main conversation and the system
+    /// channel, so nothing is published to its endpoint topic, where no
+    /// subscriber reads a turn's events.
+    #[tokio::test]
+    async fn a_turn_delivered_to_the_web_ui_publishes_nothing_to_its_endpoint_topic() {
+        let ws = EndpointName::from(crate::interfaces::types::WEB_UI_ENDPOINT);
+        for outcome in [Ok(vec!["reply".to_string()]), Err(anyhow::anyhow!("boom"))] {
+            let failed = outcome.is_err();
+            let handle = crate::bus::spawn_broker();
+            let publisher = handle.publisher();
+            let mut responses: Subscriber<ResponseEvent> = handle
+                .subscribe(topics::Endpoint(ws.clone()))
+                .await
+                .unwrap();
+            let mut lifecycle: Subscriber<TurnLifecycleEvent> = handle
+                .subscribe(topics::Endpoint(ws.clone()))
+                .await
+                .unwrap();
+            let mut endpoint_errors: Subscriber<ErrorEvent> = handle
+                .subscribe(topics::Endpoint(ws.clone()))
+                .await
+                .unwrap();
+            let mut system_errors: Subscriber<ErrorEvent> = handle
+                .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+                .await
+                .unwrap();
+            let mut main: Subscriber<MainConversationEvent> =
+                handle.subscribe(topics::MainConversation).await.unwrap();
+
+            publish_turn_outcome(
+                outcome,
+                &publisher,
+                Some(&ws),
+                "corr-web",
+                TEST_TZ,
+                &test_tracing_service(),
+                &test_config(),
+            )
+            .await;
+
+            assert_no_event(&mut responses).await;
+            assert_no_event(&mut lifecycle).await;
+            assert_no_event(&mut endpoint_errors).await;
+            let ended = main.recv().await.unwrap().unwrap();
+            assert!(
+                matches!(&ended, MainConversationEvent::TurnEnded { turn_id } if turn_id == "corr-web"),
+                "the main conversation still ends the turn: {ended:?}"
+            );
+            if failed {
+                let error = system_errors.recv().await.unwrap().unwrap();
+                assert_eq!(
+                    error.correlation_id, "corr-web",
+                    "the web hears of a failure on the system channel"
+                );
+            } else {
+                assert_no_event(&mut system_errors).await;
+            }
+        }
     }
 
     /// Run `outcome` through `publish_turn_outcome` and say which turn the
@@ -1536,7 +1626,6 @@ mod tests {
                 "hello",
                 &publisher,
                 None,
-                None,
                 "corr-hop",
                 None,
                 &prompt_ctx,
@@ -1648,7 +1737,6 @@ mod tests {
             "hello",
             &publisher,
             None,
-            None,
             "corr-stale-stop",
             None,
             &prompt_ctx,
@@ -1741,7 +1829,6 @@ mod tests {
                 &turn_conversation_router,
                 "hello",
                 &publisher,
-                None,
                 None,
                 "corr-route",
                 None,
@@ -2208,7 +2295,6 @@ mod tests {
                 content,
                 &self.publisher,
                 None,
-                None,
                 correlation_id,
                 origin,
                 &prompt_ctx,
@@ -2368,7 +2454,6 @@ mod tests {
                 &conversation_router,
                 "hello",
                 &publisher,
-                None,
                 None,
                 "corr-shutdown",
                 None,

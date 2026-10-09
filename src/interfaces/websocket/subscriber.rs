@@ -207,10 +207,9 @@ pub struct WsSubscribers {
     /// messages, tool activity, thinking, streamed text, intermediate text,
     /// replies and usage.
     pub main: Subscriber<MainConversationEvent>,
-    /// Messages posted to this endpoint with `send_message`. A turn's own
-    /// reply also reaches the endpoint that started it; it arrives through
-    /// `main` instead, and is told apart here by its correlation id (a post
-    /// has none).
+    /// Messages posted to this endpoint with `send_message`, files included.
+    /// Nothing else is published to the web UI's endpoint: a turn's reply
+    /// arrives through `main`.
     pub response: Subscriber<ResponseEvent>,
     /// The endpoint `response` listens on, named in the frames it yields.
     endpoint: EndpointName,
@@ -282,22 +281,14 @@ impl WsSubscribers {
                 },
                 event = self.response.recv() => {
                     match event {
-                        // A turn's reply names its turn, carries no file, and
-                        // arrives through `main`; a post has no turn, and a
-                        // file is only ever sent as a post.
-                        Ok(Some(resp))
-                            if resp.correlation_id.is_empty() || resp.attachment.is_some() =>
-                        {
-                            Some(
-                                response_to_server_message(
-                                    &self.file_registry,
-                                    self.endpoint.as_ref(),
-                                    resp,
-                                )
-                                .await,
+                        Ok(Some(resp)) => Some(
+                            response_to_server_message(
+                                &self.file_registry,
+                                self.endpoint.as_ref(),
+                                resp,
                             )
-                        }
-                        Ok(Some(_turn_reply)) => None,
+                            .await,
+                        ),
                         _ => return None,
                     }
                 }
@@ -661,141 +652,6 @@ mod tests {
             ),
             "{msg:?}"
         );
-    }
-
-    /// A turn's reply is published to its endpoint and to the main
-    /// conversation; a connection must show it once, from the conversation.
-    #[tokio::test]
-    async fn a_turns_reply_is_not_shown_twice_when_it_is_delivered_to_the_endpoint() {
-        let (handle, mut subs) = subscribed().await;
-        let publisher = handle.publisher();
-
-        publisher
-            .publish(
-                topics::Endpoint(EndpointName::from("ws")),
-                ResponseEvent {
-                    correlation_id: "t1".into(),
-                    content: "It is noon.".into(),
-                    timestamp: ts(),
-                    attachment: None,
-                    conversation: None,
-                },
-            )
-            .await
-            .unwrap();
-        publish_main(
-            &handle,
-            MainConversationEvent::Response {
-                turn_id: "t1".into(),
-                call: Some(0),
-                endpoint: "ws".into(),
-                content: "It is noon.".into(),
-            },
-        )
-        .await;
-        publisher
-            .publish(
-                topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL)),
-                NoticeEvent {
-                    message: "marker".into(),
-                },
-            )
-            .await
-            .unwrap();
-
-        // Frames from different subscriptions arrive in either order.
-        let frames = [subs.recv().await.unwrap(), subs.recv().await.unwrap()];
-        assert!(
-            frames
-                .iter()
-                .any(|f| matches!(f, ServerMessage::Response { call: Some(0), .. })),
-            "{frames:?}"
-        );
-        assert!(
-            frames
-                .iter()
-                .any(|f| matches!(f, ServerMessage::Notice { message } if message == "marker")),
-            "the endpoint's copy of the reply must not become a frame of its own: {frames:?}"
-        );
-        assert_no_frame(&mut subs).await;
-    }
-
-    /// Assert nothing more is on its way to the connection.
-    async fn assert_no_frame(subs: &mut WsSubscribers) {
-        let next = tokio::time::timeout(std::time::Duration::from_millis(100), subs.recv()).await;
-        assert!(next.is_err(), "unexpected frame: {next:?}");
-    }
-
-    /// The endpoint topic keeps carrying a turn's tool activity, lifecycle,
-    /// usage and intermediate text for the interfaces subscribed to it, but a
-    /// web connection takes those only from the main conversation.
-    #[tokio::test]
-    async fn per_endpoint_turn_events_do_not_become_frames() {
-        let (handle, mut subs) = subscribed().await;
-        let publisher = handle.publisher();
-        let ep = || topics::Endpoint(EndpointName::from("ws"));
-
-        publisher
-            .publish(
-                ep(),
-                crate::bus::TurnLifecycleEvent::Started {
-                    correlation_id: "t1".into(),
-                },
-            )
-            .await
-            .unwrap();
-        publisher
-            .publish(
-                ep(),
-                crate::bus::ToolActivityEvent::Call(ToolCallEvent {
-                    correlation_id: "t1".into(),
-                    tool_call_id: "tc1".into(),
-                    name: "search".into(),
-                    arguments: serde_json::json!({}),
-                    server: None,
-                }),
-            )
-            .await
-            .unwrap();
-        publisher
-            .publish(
-                ep(),
-                crate::bus::IntermediateEvent {
-                    correlation_id: "t1".into(),
-                    content: "working".into(),
-                },
-            )
-            .await
-            .unwrap();
-        publisher
-            .publish(
-                ep(),
-                crate::bus::TurnUsageEvent {
-                    correlation_id: "t1".into(),
-                    output_tokens: 1,
-                    has_usage: true,
-                    tool_calls: 0,
-                    session_totals: None,
-                },
-            )
-            .await
-            .unwrap();
-        publisher
-            .publish(
-                topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL)),
-                NoticeEvent {
-                    message: "marker".into(),
-                },
-            )
-            .await
-            .unwrap();
-
-        let msg = subs.recv().await.unwrap();
-        assert!(
-            matches!(&msg, ServerMessage::Notice { message } if message == "marker"),
-            "{msg:?}"
-        );
-        assert_no_frame(&mut subs).await;
     }
 
     #[tokio::test]

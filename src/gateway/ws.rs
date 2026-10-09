@@ -14,7 +14,7 @@ use crate::bus::EndpointName;
 use crate::gateway::protocol::{ClientMessage, ServerMessage};
 use crate::gateway::types::GatewayState;
 use crate::inference::ImageData;
-use crate::interfaces::types::MessageOrigin;
+use crate::interfaces::types::{MessageOrigin, WEB_UI_ENDPOINT};
 use crate::interfaces::websocket::subscriber::WsSubscribers;
 use crate::workbench::forward::ArtifactsOrigin;
 use crate::workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchHealth, WatchSet};
@@ -64,7 +64,7 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
     let mut subs = match WsSubscribers::new(
         &state.bus_handle,
         &state.team_feed.bus,
-        EndpointName::from("ws"),
+        EndpointName::from(WEB_UI_ENDPOINT),
         state.file_registry.clone(),
         watch_set_rx,
     )
@@ -235,7 +235,7 @@ async fn handle_client_message(
             }
 
             let origin = MessageOrigin {
-                endpoint: "ws".to_string(),
+                endpoint: WEB_UI_ENDPOINT.to_string(),
                 sender: None,
                 conversation: None,
                 agent_sender: None,
