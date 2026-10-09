@@ -106,6 +106,11 @@ impl Carries<ConversationTypingEvent> for Endpoint {
     // indicator stuck on, same reasoning as `TurnLifecycleEvent`.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
+impl Carries<ErrorEvent> for Endpoint {
+    // A turn's failure, sent back to the chat that started it in place of
+    // the reply — dropping it leaves that chat with no answer and no reason.
+    const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
+}
 
 /// Background task orchestration: spawn requests and task results.
 pub struct Background;
@@ -367,6 +372,10 @@ mod tests {
         );
         assert_eq!(
             <Endpoint as Carries<SessionResponseEvent>>::DELIVERY_MODE,
+            DeliveryMode::Lossless
+        );
+        assert_eq!(
+            <Endpoint as Carries<ErrorEvent>>::DELIVERY_MODE,
             DeliveryMode::Lossless
         );
 

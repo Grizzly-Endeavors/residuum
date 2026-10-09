@@ -51,9 +51,9 @@ The buffer for that group is emptied when it is delivered, so each message reach
 
 - A private-chat reply goes to the owner from the main agent's own conversation.
 - A group's reply comes from that group's own session and always goes back to that same group. It never falls back to the owner's chat: if Telegram refuses the post (the bot was removed, or can't write there), the output is dropped, the error is logged naming the session and chat, and main gets a notice so the owner can be told if it matters.
-- `send_message` with a `conversation` from `list_conversations` posts into that private chat or group, from whichever agent (main or a session) calls it. If Telegram refuses the post, main's own send gets an error message to the owner the same way it always has; a session's send is subject to the same never-falls-back rule as its own replies above.
+- `send_message` with a `conversation` from `list_conversations` posts into that private chat or group, from whichever agent (main or a session) calls it. If Telegram refuses main's own send (or the conversation is unknown), the owner sees a notice in the web UI and main gets a `[Delivery Failed]` message; a session's send is subject to the same never-falls-back rule as its own replies above.
 - Other proactive output from main — `send_message` without a conversation, results routed through `idle_channel = "telegram"`, background turns — goes to the owner's chat. Until an owner exists it is dropped with a warning in the log.
-- System notices and errors go only to the owner's chat, never into a group.
+- When a main-agent turn started from Telegram fails, the plain-language error goes back where its reply would have. System notices and other errors are never sent to Telegram; they appear in the web UI.
 
 Long replies are split into 4096-character messages. A typing indicator shows while a turn runs — for the main agent's own turn, and equally for a group chat or non-owner DM's own conversation session turn (see [Conversation Routing](background-tasks.md#conversation-routing)), each driven by its own lifecycle signal so one doesn't depend on the other. Files the agent sends go out as photos, audio, or documents by type; captions longer than Telegram's 1024-character limit are followed by the full text.
 

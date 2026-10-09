@@ -66,10 +66,6 @@ impl ChatOutbound for TelegramOutbound {
         parse_chat_id(conversation_id)
     }
 
-    async fn owner(&self) -> Option<ChatId> {
-        self.state.owner_dm().await
-    }
-
     async fn describe(&self, conversation_id: &str, _target: &ChatId) -> String {
         self.state
             .store

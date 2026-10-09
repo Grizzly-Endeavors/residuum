@@ -53,10 +53,6 @@ impl ChatOutbound for Arc<TeamsRuntime> {
         self.store.conversation(conversation_id).await
     }
 
-    async fn owner(&self) -> Option<ConversationRef> {
-        self.owner_dm().await
-    }
-
     async fn describe(&self, _conversation_id: &str, target: &ConversationRef) -> String {
         target.label.clone()
     }
