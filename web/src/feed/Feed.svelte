@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick, untrack, type Snippet } from "svelte";
+  import { flushSync, tick, untrack, type Snippet } from "svelte";
   import { FeedScroller } from "../lib/feed-scroll.svelte";
   import { Icon } from "../lib/icons";
   import type { ObservedTurnLookup } from "../lib/observed-turns.svelte";
@@ -111,7 +111,15 @@
     const measure = (): void => {
       scrollbarWidth = area.offsetWidth - area.clientWidth;
       dockHeight = floating?.offsetHeight ?? 0;
+      const appeared = reservedHeight === 0 && dockHeight > 0;
       reservedHeight = Math.max(reservedHeight, dockHeight);
+      // A dock that has just appeared (the feed opened, or the agent started
+      // and its composer came in) isn't the composer resizing: a reader at the
+      // end stays at the end, with the room for it below the last line.
+      if (appeared) {
+        flushSync();
+        scroller.contentChanged();
+      }
     };
     const observer = new ResizeObserver(measure);
     observer.observe(area);
@@ -253,6 +261,8 @@
     if (changed) {
       void tick().then(() => {
         reservedHeight = dockHeight;
+        // The room is in the page before the pin measures the bottom.
+        flushSync();
         scroller.contentChanged(force, arrived);
       });
     }

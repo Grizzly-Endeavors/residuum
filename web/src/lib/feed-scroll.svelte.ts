@@ -105,6 +105,16 @@ export class FeedScroller {
   /** Where the content ended and how tall the area was when last looked at. */
   private lastEnd = 0;
   private lastViewport = 0;
+  /** The room reserved under the last line when the scroller last looked. */
+  private lastRoom = 0;
+  /**
+   * How much floated over the foot when the scroller last pinned the reader
+   * to the bottom. Room that grows while that is unchanged is the page
+   * catching up with the room the pin was meant to include (some browsers
+   * restyle the column a frame after the room changes), not the composer
+   * growing, so it keeps the reader at the bottom.
+   */
+  private pinnedCovered: number | null = null;
   /** An expand or collapse control to keep where it was, for a moment. */
   private keeping: PlaceToKeep | null = null;
   private keepingTimer: ReturnType<typeof setTimeout> | undefined;
@@ -166,16 +176,19 @@ export class FeedScroller {
     if (!el || isHidden(el)) return;
     const end = this.contentEnd();
     const viewport = el.clientHeight;
+    const room = this.bottomRoom();
     const reshaped = Math.abs(end - this.lastEnd) >= 1 || viewport !== this.lastViewport;
+    const roomCaughtUp = room > this.lastRoom && this.covered() === this.pinnedCovered;
     this.lastEnd = end;
     this.lastViewport = viewport;
+    this.lastRoom = room;
     this.restorePlace();
     if (this.following) {
       // Content growing, or the area changing size, keeps a following reader
       // at the bottom. Only the reserved room changing (the composer growing
       // or shrinking) leaves the thread where it is, unless the last line
       // would end up under what floats over the foot.
-      if (reshaped) this.pinToBottom();
+      if (reshaped || roomCaughtUp) this.pinToBottom();
       else this.keepLastLineClear();
     } else if (!this.held) {
       this.refreshPill();
@@ -192,7 +205,8 @@ export class FeedScroller {
     this.el = el;
     this.content = content;
     const resizes = new ResizeObserver(this.onResize);
-    resizes.observe(content);
+    // The border box: the room reserved under the last line is padding.
+    resizes.observe(content, { box: "border-box" });
     resizes.observe(el);
     el.addEventListener("scroll", this.onScroll, { passive: true });
     for (const type of READER_SCROLL_EVENTS) {
@@ -202,6 +216,7 @@ export class FeedScroller {
     el.addEventListener("click", this.onPress, true);
     this.lastEnd = this.contentEnd();
     this.lastViewport = el.clientHeight;
+    this.lastRoom = this.bottomRoom();
     this.measure();
     return () => {
       resizes.disconnect();
@@ -292,6 +307,7 @@ export class FeedScroller {
     // Instant, not smooth: a smooth scroll still in flight when more content
     // lands stops short of the new bottom.
     this.scrollInstantly(el.scrollHeight);
+    this.pinnedCovered = this.covered();
     this.scrolledUp = false;
     this.unseen = false;
   }

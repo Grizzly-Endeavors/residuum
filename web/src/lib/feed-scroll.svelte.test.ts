@@ -201,6 +201,22 @@ describe("FeedScroller", () => {
       expect(scroller.scrolledUp).toBe(false);
     });
 
+    it("keeps a pinned reader at the bottom when the room for an unchanged composer lands late", () => {
+      // The feed pinned the reader with the composer's 109px already measured,
+      // but the browser restyled the column with its room a frame later.
+      const { feed, observer, scroller } = attached({ covered: () => 109 });
+      feed.geometry.padding = 212;
+      observer.notify();
+      scroller.contentChanged(true);
+      expect(feed.geometry.scrollTop).toBe(2000);
+
+      feed.scrollTo.mockClear();
+      feed.geometry.padding = 321;
+      feed.geometry.scrollHeight = 2109;
+      observer.notify();
+      expect(feed.scrollTo).toHaveBeenCalledWith({ top: 2109, behavior: "instant" });
+    });
+
     it("doesn't take the late event of its own scroll for the reader leaving the end", () => {
       // Seen on a phone while reconnecting: the composer covers 137px and the
       // room under the last line is still 48px.
