@@ -577,15 +577,18 @@ async fn write_teams_setup_skill(skills_root: &std::path::Path) -> Result<(), Fa
         ))
     })?;
     write_if_missing(&teams_dir.join("SKILL.md"), TEAMS_SETUP_SKILL_MD).await?;
-    let m365agents_path = teams_templates.join("m365agents.yml");
-    write_if_missing(&m365agents_path, TEAMS_SETUP_M365AGENTS_YML).await?;
-    crate::interfaces::teams::atk::repair_m365agents_yml_file(&m365agents_path)
-        .await
-        .map_err(|e| FatalError::Workspace(e.to_string()))?;
+    write_if_missing(
+        &teams_templates.join("m365agents.yml"),
+        TEAMS_SETUP_M365AGENTS_YML,
+    )
+    .await?;
     write_if_missing(&teams_pkg.join("manifest.json"), TEAMS_SETUP_MANIFEST_JSON).await?;
     write_if_missing(&teams_pkg.join("color.png"), TEAMS_SETUP_COLOR_PNG).await?;
     write_if_missing(&teams_pkg.join("outline.png"), TEAMS_SETUP_OUTLINE_PNG).await?;
     write_if_missing(&teams_env.join(".env.residuum"), TEAMS_SETUP_ENV_RESIDUUM).await?;
+    crate::interfaces::teams::atk::repair_stale_teams_template_files(&teams_templates)
+        .await
+        .map_err(|e| FatalError::Workspace(e.to_string()))?;
     Ok(())
 }
 
@@ -701,27 +704,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_team_m365agents_template_with_the_stale_validate_step_is_repaired() {
-        use crate::interfaces::teams::atk::{
-            M365AGENTS_VALIDATE_STEPS, STALE_M365AGENTS_VALIDATE_STEPS,
+    async fn stale_team_teams_templates_are_repaired() {
+        use crate::interfaces::teams::atk::STALE_TEAMS_TEMPLATE_TEXT;
+        use crate::interfaces::teams::atk::tests::{
+            bundled_teams_template, stale_bundled_teams_template,
         };
         let dir = tempfile::tempdir().unwrap();
         let templates = dir.path().join("teams-setup/templates");
-        tokio::fs::create_dir_all(&templates).await.unwrap();
-        let stale = TEAMS_SETUP_M365AGENTS_YML
-            .replace(M365AGENTS_VALIDATE_STEPS, STALE_M365AGENTS_VALIDATE_STEPS);
-        tokio::fs::write(templates.join("m365agents.yml"), &stale)
+        tokio::fs::create_dir_all(templates.join("appPackage"))
             .await
             .unwrap();
+        for entry in STALE_TEAMS_TEMPLATE_TEXT {
+            tokio::fs::write(
+                templates.join(entry.file),
+                stale_bundled_teams_template(entry),
+            )
+            .await
+            .unwrap();
+        }
 
         write_teams_setup_skill(dir.path()).await.unwrap();
 
-        assert_eq!(
-            tokio::fs::read_to_string(templates.join("m365agents.yml"))
-                .await
-                .unwrap(),
-            TEAMS_SETUP_M365AGENTS_YML
-        );
+        for entry in STALE_TEAMS_TEMPLATE_TEXT {
+            assert_eq!(
+                tokio::fs::read_to_string(templates.join(entry.file))
+                    .await
+                    .unwrap(),
+                bundled_teams_template(entry.file)
+            );
+        }
     }
 
     #[test]
