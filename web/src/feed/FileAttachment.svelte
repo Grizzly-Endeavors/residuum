@@ -19,7 +19,7 @@
   {#if isImage}
     <img class="attachment-image" src={item.url} alt={item.caption ?? item.filename} />
   {:else if isAudio}
-    <audio class="attachment-audio" controls src={item.url}>
+    <audio class="attachment-audio" controls src={item.url} aria-label={item.filename}>
       <track kind="captions" />
     </audio>
   {/if}

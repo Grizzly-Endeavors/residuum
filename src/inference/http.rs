@@ -10,7 +10,10 @@ use super::InferenceError;
 /// Configuration for HTTP client connection pooling.
 #[derive(Debug, Clone)]
 pub struct HttpClientConfig {
-    /// Request timeout in seconds.
+    /// Request timeout in seconds. Bounds a whole request/response exchange;
+    /// for a streaming response it bounds how long the stream may go without
+    /// delivering a byte instead, so a long answer is never cut off for its
+    /// length.
     pub timeout_secs: u64,
     /// Maximum idle connections per host (default: 10).
     pub pool_max_idle_per_host: usize,
@@ -46,6 +49,7 @@ impl HttpClientConfig {
 #[derive(Clone)]
 pub struct SharedHttpClient {
     client: Arc<Client>,
+    stream_client: Arc<Client>,
     timeout_secs: u64,
 }
 
@@ -55,22 +59,37 @@ impl SharedHttpClient {
     /// # Errors
     /// Returns `InferenceError::Request` if the HTTP client cannot be built.
     pub fn new(config: &HttpClientConfig) -> Result<Self, InferenceError> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(config.timeout_secs))
-            .pool_max_idle_per_host(config.pool_max_idle_per_host)
-            .http2_keep_alive_interval(Duration::from_secs(config.http2_keep_alive_secs))
-            .build()?;
+        let pooled = || {
+            Client::builder()
+                .pool_max_idle_per_host(config.pool_max_idle_per_host)
+                .http2_keep_alive_interval(Duration::from_secs(config.http2_keep_alive_secs))
+        };
+        let timeout = Duration::from_secs(config.timeout_secs);
+        // A streaming answer can legitimately run for minutes, so it gets a
+        // read timeout (reset by every byte, and covering the wait for the
+        // response to begin) where a whole-request answer gets a total one.
+        let client = pooled().timeout(timeout).build()?;
+        let stream_client = pooled().read_timeout(timeout).build()?;
 
         Ok(Self {
             client: Arc::new(client),
+            stream_client: Arc::new(stream_client),
             timeout_secs: config.timeout_secs,
         })
     }
 
-    /// Get a reference to the underlying HTTP client.
+    /// Get a reference to the underlying HTTP client, whose requests time
+    /// out as a whole after the configured timeout.
     #[must_use]
     pub fn client(&self) -> &Client {
         &self.client
+    }
+
+    /// Get the HTTP client for streaming requests. It has no total timeout:
+    /// a request fails only when no bytes arrive for the configured timeout.
+    #[must_use]
+    pub fn streaming_client(&self) -> &Client {
+        &self.stream_client
     }
 
     /// Get the configured timeout in seconds.
@@ -108,6 +127,38 @@ pub fn map_request_error(e: reqwest::Error, timeout_secs: u64) -> InferenceError
     }
 }
 
+/// Map an error from sending a streaming request to a [`InferenceError`].
+pub fn map_stream_request_error(e: reqwest::Error, idle_secs: u64) -> InferenceError {
+    if e.is_timeout() {
+        InferenceError::Stalled(idle_secs)
+    } else {
+        InferenceError::Request(e)
+    }
+}
+
+/// Map an error from reading a streaming response body: the model going
+/// quiet is a stall, anything else (a dropped connection, a body that ends
+/// mid-chunk) an interrupted stream.
+pub fn map_stream_read_error(e: &reqwest::Error, idle_secs: u64) -> InferenceError {
+    if e.is_timeout() {
+        InferenceError::Stalled(idle_secs)
+    } else {
+        InferenceError::StreamInterrupted(error_chain(e))
+    }
+}
+
+/// An error and its sources on one line, outermost first.
+fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut text = e.to_string();
+    let mut source = e.source();
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
+}
+
 /// Read the body of an error response, falling back to a placeholder if reading fails.
 pub async fn read_error_body(response: reqwest::Response) -> String {
     match response.text().await {
@@ -122,6 +173,7 @@ pub async fn read_error_body(response: reqwest::Response) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::test_support::{ScriptedServer, Step};
 
     #[test]
     fn insecure_url_detection_remote() {
@@ -202,6 +254,66 @@ mod tests {
         assert!(
             Arc::ptr_eq(&client1.client, &client2.client),
             "clones should share underlying Arc"
+        );
+    }
+
+    /// A response that sends a chunk every 600ms for about 1.8 seconds.
+    fn slow_steady_response() -> Vec<Step> {
+        let mut script = vec![Step::head(200, "text/event-stream")];
+        for _ in 0..3 {
+            script.push(Step::chunk("tick"));
+            script.push(Step::pause(Duration::from_millis(600)));
+        }
+        script.push(Step::end());
+        script
+    }
+
+    #[tokio::test]
+    async fn streaming_client_bounds_silence_not_total_time() {
+        let server =
+            ScriptedServer::start(vec![slow_steady_response(), slow_steady_response()]).await;
+        let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(1)).unwrap();
+
+        let streamed = http
+            .streaming_client()
+            .get(server.uri())
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert_eq!(
+            streamed, "tickticktick",
+            "a body that keeps arriving outlives the timeout"
+        );
+
+        let whole = async { http.client().get(server.uri()).send().await?.text().await }.await;
+        assert!(
+            whole.is_err_and(|e| e.is_timeout()),
+            "the same exchange through the whole-request client times out"
+        );
+    }
+
+    #[tokio::test]
+    async fn broken_stream_body_reads_as_an_interrupted_stream() {
+        let mut script = vec![Step::head(200, "text/event-stream")];
+        script.push(Step::chunk("partial"));
+        let server = ScriptedServer::start(vec![script]).await;
+        let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(5)).unwrap();
+
+        let body = http
+            .streaming_client()
+            .get(server.uri())
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await;
+        let error = map_stream_read_error(&body.unwrap_err(), 5);
+        assert!(
+            matches!(&error, InferenceError::StreamInterrupted(detail) if !detail.is_empty()),
+            "a body cut off mid-chunk is an interrupted stream with a reason: {error:?}"
         );
     }
 }

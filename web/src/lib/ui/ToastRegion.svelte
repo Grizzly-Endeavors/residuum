@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { composerClearance } from "../composer-clearance.svelte";
   import { Icon, type IconName } from "../icons";
   import { toast, type Toast, type ToastKind } from "../toast.svelte";
   import IconButton from "./IconButton.svelte";
@@ -12,8 +13,10 @@
 
   interface Props {
     /**
-     * What toasts keep clear of at phone width: the bottom bar and a composer
-     * above it, the bottom bar alone, or just the screen's edge (no bar).
+     * What toasts keep clear of: the composer they can reach, wherever it is
+     * and however tall it is now (`composerClearance`), and while a layer
+     * covers it, or there is none, a sheet's footer above the phone's bottom
+     * bar; the phone's bottom bar alone; or just the screen's edge (no bar).
      */
     clearance?: "composer" | "bar" | "edge";
   }
@@ -27,6 +30,13 @@
   };
 
   const toasts = $derived([...toast.toasts.values()]);
+  /** From the foot of the screen to the top of the composer showing, when there is one. */
+  const lift = $derived(clearance === "composer" ? composerClearance.px : 0);
+  // "lifted" is above a composer that is measured; "away" is a composer's place with none to reach.
+  const keptClear = $derived.by(() => {
+    if (clearance !== "composer") return clearance;
+    return lift > 0 ? "lifted" : "away";
+  });
   const errors = $derived(toasts.filter((item) => item.kind === "error"));
   const others = $derived(toasts.filter((item) => item.kind !== "error"));
 </script>
@@ -53,7 +63,7 @@
 
 <!-- The region moves into the overlay host; these hold its place in the block. -->
 <template></template>
-<div class="ui-toasts" data-clearance={clearance} {@attach portal}>
+<div class="ui-toasts" data-clearance={keptClear} style:--toast-lift="{lift}px" {@attach portal}>
   <!-- Errors interrupt; everything else is read at the next pause. Each new toast is read alone. -->
   <div class="ui-toast-group" role="alert" aria-atomic="false">
     {#each errors as item (item.id)}
@@ -150,8 +160,14 @@
     }
   }
 
+  /* Above the composer's top edge, however tall it is now. */
+  .ui-toasts[data-clearance="lifted"] {
+    bottom: calc(var(--toast-lift) + var(--space-12));
+  }
+
   @media (max-width: 760px) {
-    .ui-toasts[data-clearance="composer"] {
+    /* No composer to reach (a layer covers it): above the bar, clear of the footer of a sheet. */
+    .ui-toasts[data-clearance="away"] {
       bottom: calc(var(--layout-bottom-bar-offset) + 96px);
     }
 

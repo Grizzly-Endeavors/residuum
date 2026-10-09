@@ -6,12 +6,16 @@ use tracing::{debug, info, warn};
 
 use crate::inference::embedding::{EmbeddingProvider, EmbeddingResponse};
 use crate::inference::http::{
-    SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote,
+    SharedHttpClient, map_request_error, map_stream_request_error, read_error_body,
+    warn_if_insecure_remote,
 };
+use crate::inference::reply::{ReplyAssembler, plain_reasoning};
 use crate::inference::retry::{RetryConfig, with_retry};
+use crate::inference::stream::{Flow, TrackedSink, read_ndjson};
+use crate::inference::types::current_exchange_start;
 use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
-    ResponseFormat, StopReason, ThinkingBlock, ThinkingConfig, ToolCall, ToolDefinition,
+    ResponseFormat, StopReason, StreamSink, ThinkingConfig, ToolCall, ToolDefinition, Usage,
 };
 
 /// Ollama API client implementing the [`InferenceProvider`] trait.
@@ -75,35 +79,116 @@ impl OllamaClient {
         }
     }
 
+    /// Build everything about a request that stays the same across retries.
+    fn prepare(
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+    ) -> PreparedRequest {
+        let ollama_tools: Vec<OllamaTool> = tools
+            .iter()
+            .map(|t| OllamaTool {
+                r#type: "function".to_string(),
+                function: OllamaFunction {
+                    name: t.name.clone(),
+                    description: t.description.clone(),
+                    parameters: t.parameters.clone(),
+                },
+            })
+            .collect();
+
+        let think = options.thinking.as_ref().map(|tc| match tc {
+            ThinkingConfig::Toggle(val) => *val,
+            ThinkingConfig::Level(_) => true,
+        });
+
+        PreparedRequest {
+            messages: to_ollama_messages(messages, think == Some(true)),
+            tools: (!ollama_tools.is_empty()).then_some(ollama_tools),
+            format: match &options.response_format {
+                ResponseFormat::Text => None,
+                ResponseFormat::JsonSchema { schema, .. } => Some(schema.clone()),
+            },
+            options: options.temperature.map(|t| OllamaModelOptions {
+                temperature: Some(t),
+            }),
+            think,
+        }
+    }
+
+    /// Run a prepared request to completion: retrying transient failures,
+    /// and streaming the response into `sink` when there is one.
+    async fn run(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+        sink: Option<&dyn StreamSink>,
+    ) -> Result<InferenceResponse, InferenceError> {
+        let prepared = Self::prepare(messages, tools, options);
+        let tracked = sink.map(TrackedSink::new);
+
+        with_retry(&self.retry, || async {
+            let request = OllamaChatRequest {
+                model: &self.model,
+                messages: &prepared.messages,
+                tools: prepared.tools.as_deref(),
+                stream: tracked.is_some(),
+                format: prepared.format.as_ref(),
+                options: prepared.options.as_ref(),
+                keep_alive: self.keep_alive.as_deref(),
+                think: prepared.think,
+            };
+            let result = self.send(&request, tracked.as_ref()).await;
+            if result.is_err()
+                && let Some(tracked) = &tracked
+            {
+                tracked.restart_if_needed();
+            }
+            result
+        })
+        .await
+    }
+
     #[tracing::instrument(skip_all, fields(
         model = %request.model,
         message_count = request.messages.len(),
-        tool_count = request.tools.as_ref().map_or(0, Vec::len),
+        tool_count = request.tools.map_or(0, <[OllamaTool]>::len),
+        streaming = sink.is_some(),
     ))]
-    async fn send_completion(
-        http: &SharedHttpClient,
-        url: &str,
-        api_key: Option<&str>,
+    async fn send(
+        &self,
         request: &OllamaChatRequest<'_>,
+        sink: Option<&TrackedSink<'_>>,
     ) -> Result<InferenceResponse, InferenceError> {
-        let timeout_secs = http.timeout_secs();
+        let timeout_secs = self.http.timeout_secs();
 
         debug!(
             model = %request.model,
             message_count = request.messages.len(),
-            tool_count = request.tools.as_ref().map_or(0, Vec::len),
+            tool_count = request.tools.map_or(0, <[OllamaTool]>::len),
             "sending ollama completion request"
         );
 
-        let mut req_builder = http.client().post(url).json(request);
-        if let Some(key) = api_key {
+        let client = if sink.is_some() {
+            self.http.streaming_client()
+        } else {
+            self.http.client()
+        };
+        let mut req_builder = client
+            .post(format!("{}/api/chat", self.base_url))
+            .json(request);
+        if let Some(key) = &self.api_key {
             req_builder = req_builder.header("Authorization", format!("Bearer {key}"));
         }
 
-        let response = req_builder
-            .send()
-            .await
-            .map_err(|e| map_request_error(e, timeout_secs))?;
+        let response = req_builder.send().await.map_err(|e| {
+            if sink.is_some() {
+                map_stream_request_error(e, timeout_secs)
+            } else {
+                map_request_error(e, timeout_secs)
+            }
+        })?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -118,40 +203,32 @@ impl OllamaClient {
             return Err(InferenceError::Api(error_msg));
         }
 
-        let body = response
-            .text()
-            .await
-            .map_err(|e| map_request_error(e, timeout_secs))?;
-        let chat_response: OllamaChatResponse = serde_json::from_str(&body)
-            .map_err(|e| InferenceError::Parse(format!("failed to parse ollama response: {e}")))?;
-
-        let done_reason = chat_response.done_reason;
-        let content = chat_response.message.content.unwrap_or_default();
-        let tool_calls = chat_response
-            .message
-            .tool_calls
-            .unwrap_or_default()
-            .into_iter()
-            .enumerate()
-            .map(|(i, tc)| ToolCall {
-                id: tc
-                    .id
-                    .filter(|id| !id.is_empty())
-                    .unwrap_or_else(|| format!("call_{i}")),
-                name: tc.function.name,
-                arguments: tc.function.arguments,
-                server: None,
-            })
-            .collect();
-
-        let mut resp = InferenceResponse::new(content, tool_calls);
-        resp.thinking = chat_response
-            .message
-            .thinking
-            .map(ThinkingBlock::text)
-            .into_iter()
-            .collect();
-        resp.stop_reason = done_reason.as_deref().map(map_stop_reason);
+        let resp = if let Some(sink) = sink {
+            read_stream(response, timeout_secs, sink).await?
+        } else {
+            let body = response
+                .text()
+                .await
+                .map_err(|e| map_request_error(e, timeout_secs))?;
+            let chat_response: OllamaChatResponse = serde_json::from_str(&body).map_err(|e| {
+                InferenceError::Parse(format!("failed to parse ollama response: {e}"))
+            })?;
+            let mut reply = ReplyAssembler::new(None);
+            reply.reasoning(
+                chat_response
+                    .message
+                    .thinking
+                    .as_deref()
+                    .unwrap_or_default(),
+            );
+            reply.content(chat_response.message.content.as_deref().unwrap_or_default());
+            build_response(
+                reply,
+                chat_response.message.tool_calls.unwrap_or_default(),
+                chat_response.done_reason.as_deref(),
+                chat_response.counts,
+            )
+        };
         info!(
             model = %request.model,
             content_len = resp.content.len(),
@@ -159,6 +236,106 @@ impl OllamaClient {
             "ollama completion received"
         );
         Ok(resp)
+    }
+}
+
+/// Turn a finished reply into an `InferenceResponse`.
+fn build_response(
+    reply: ReplyAssembler<'_>,
+    tool_calls: Vec<OllamaToolCall>,
+    done_reason: Option<&str>,
+    counts: TokenCounts,
+) -> InferenceResponse {
+    let tool_calls = tool_calls
+        .into_iter()
+        .enumerate()
+        .map(|(i, tc)| ToolCall {
+            id: tc
+                .id
+                .filter(|id| !id.is_empty())
+                .unwrap_or_else(|| format!("call_{i}")),
+            name: tc.function.name,
+            arguments: tc.function.arguments,
+            server: None,
+        })
+        .collect();
+
+    let (content, thinking) = reply.finish();
+    let mut resp = InferenceResponse::new(content, tool_calls);
+    resp.thinking = thinking;
+    resp.stop_reason = done_reason.map(map_stop_reason);
+    resp.usage = counts.usage();
+    resp
+}
+
+// --- Streaming ---
+
+/// Read a streamed chat to its end, pushing text and thinking to `sink` as
+/// they arrive, and return it as the response a non-streaming request would
+/// have returned.
+async fn read_stream(
+    response: reqwest::Response,
+    idle_secs: u64,
+    sink: &dyn StreamSink,
+) -> Result<InferenceResponse, InferenceError> {
+    let mut assembler = StreamAssembler {
+        reply: ReplyAssembler::new(Some(sink)),
+        tool_calls: Vec::new(),
+        done_reason: None,
+        counts: TokenCounts::default(),
+        done: false,
+    };
+    read_ndjson(response, idle_secs, |line| assembler.handle(line)).await?;
+    assembler.finish()
+}
+
+struct StreamAssembler<'a> {
+    reply: ReplyAssembler<'a>,
+    tool_calls: Vec<OllamaToolCall>,
+    done_reason: Option<String>,
+    counts: TokenCounts,
+    /// The final chunk, the one marked `done`, has arrived.
+    done: bool,
+}
+
+impl StreamAssembler<'_> {
+    fn handle(&mut self, line: &str) -> Result<Flow, InferenceError> {
+        let chunk: OllamaStreamChunk = serde_json::from_str(line).map_err(|e| {
+            InferenceError::Parse(format!("failed to parse ollama stream line: {e}"))
+        })?;
+        if let Some(error) = chunk.error {
+            return Err(InferenceError::Api(error));
+        }
+        if let Some(message) = chunk.message {
+            self.reply
+                .reasoning(message.thinking.as_deref().unwrap_or_default());
+            self.reply
+                .content(message.content.as_deref().unwrap_or_default());
+            self.tool_calls
+                .extend(message.tool_calls.unwrap_or_default());
+        }
+        if chunk.done {
+            self.done = true;
+            self.done_reason = chunk.done_reason;
+            self.counts = chunk.counts;
+            return Ok(Flow::Done);
+        }
+        Ok(Flow::Continue)
+    }
+
+    /// Fails when the stream stopped short of its final chunk.
+    fn finish(self) -> Result<InferenceResponse, InferenceError> {
+        if !self.done {
+            return Err(InferenceError::StreamInterrupted(
+                "the stream ended before the response was complete".to_string(),
+            ));
+        }
+        Ok(build_response(
+            self.reply,
+            self.tool_calls,
+            self.done_reason.as_deref(),
+            self.counts,
+        ))
     }
 }
 
@@ -171,64 +348,25 @@ impl InferenceProvider for OllamaClient {
         tools: &[ToolDefinition],
         options: &CompletionOptions,
     ) -> Result<InferenceResponse, InferenceError> {
-        let url = format!("{}/api/chat", self.base_url);
-        let ollama_messages = to_ollama_messages(messages);
-        let ollama_tools: Vec<OllamaTool> = tools
-            .iter()
-            .map(|t| OllamaTool {
-                r#type: "function".to_string(),
-                function: OllamaFunction {
-                    name: t.name.clone(),
-                    description: t.description.clone(),
-                    parameters: t.parameters.clone(),
-                },
-            })
-            .collect();
-        let has_tools = !ollama_tools.is_empty();
-        let model = self.model.clone();
-        let api_key = self.api_key.clone();
-        let keep_alive = self.keep_alive.clone();
-        let http = self.http.clone();
+        self.run(messages, tools, options, None).await
+    }
 
-        let format = match &options.response_format {
-            ResponseFormat::Text => None,
-            ResponseFormat::JsonSchema { schema, .. } => Some(schema.clone()),
-        };
-        let model_options = options.temperature.map(|t| OllamaModelOptions {
-            temperature: Some(t),
-        });
-
-        let think = options.thinking.as_ref().map(|tc| match tc {
-            ThinkingConfig::Toggle(val) => *val,
-            ThinkingConfig::Level(_) => true,
-        });
-
-        with_retry(&self.retry, || {
-            let url = url.clone();
-            let ollama_messages = ollama_messages.clone();
-            let ollama_tools = ollama_tools.clone();
-            let model = model.clone();
-            let api_key = api_key.clone();
-            let keep_alive = keep_alive.clone();
-            let http = http.clone();
-            let format = format.clone();
-            let model_options = model_options.clone();
-
-            async move {
-                let request = OllamaChatRequest {
-                    model: &model,
-                    messages: ollama_messages,
-                    tools: has_tools.then_some(ollama_tools),
-                    stream: false,
-                    format,
-                    options: model_options,
-                    keep_alive,
-                    think,
-                };
-                Self::send_completion(&http, &url, api_key.as_deref(), &request).await
-            }
-        })
-        .await
+    /// Like `complete`, streaming the response's text and thinking into
+    /// `sink` as they arrive.
+    ///
+    /// # Errors
+    /// Returns the errors `complete` does, plus `InferenceError::Stalled`
+    /// when the stream goes quiet for the configured timeout and
+    /// `InferenceError::StreamInterrupted` when it breaks or ends early.
+    #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
+    async fn complete_streaming(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+        sink: &dyn StreamSink,
+    ) -> Result<InferenceResponse, InferenceError> {
+        self.run(messages, tools, options, Some(sink)).await
     }
 
     fn model_name(&self) -> &str {
@@ -245,19 +383,28 @@ struct OllamaModelOptions {
     temperature: Option<f32>,
 }
 
+/// What stays the same across a request's attempts.
+struct PreparedRequest {
+    messages: Vec<OllamaMessage>,
+    tools: Option<Vec<OllamaTool>>,
+    format: Option<serde_json::Value>,
+    options: Option<OllamaModelOptions>,
+    think: Option<bool>,
+}
+
 #[derive(Serialize)]
 struct OllamaChatRequest<'a> {
     model: &'a str,
-    messages: Vec<OllamaMessage>,
+    messages: &'a [OllamaMessage],
     #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<OllamaTool>>,
+    tools: Option<&'a [OllamaTool]>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    format: Option<serde_json::Value>,
+    format: Option<&'a serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    options: Option<OllamaModelOptions>,
+    options: Option<&'a OllamaModelOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    keep_alive: Option<String>,
+    keep_alive: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     think: Option<bool>,
 }
@@ -275,6 +422,9 @@ struct OllamaMessage {
     /// ID of the tool call a result message answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
+    /// The reasoning behind an assistant message that made tool calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    thinking: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     images: Option<Vec<String>>,
 }
@@ -282,7 +432,13 @@ struct OllamaMessage {
 /// Convert a full conversation into Ollama's wire format, resolving each
 /// tool-result message's `tool_name` from the most recent earlier assistant
 /// tool call with that id.
-fn to_ollama_messages(messages: &[Message]) -> Vec<OllamaMessage> {
+///
+/// With `replay_thinking`, the readable thinking behind the assistant
+/// messages of the tool-use exchange in progress goes back as
+/// `message.thinking`, so the model keeps its train of thought across tool
+/// calls. Earlier turns' thinking is not sent.
+fn to_ollama_messages(messages: &[Message], replay_thinking: bool) -> Vec<OllamaMessage> {
+    let exchange_start = current_exchange_start(messages);
     // Filled in conversation order rather than up front: ids synthesized when
     // the server sends none (`call_0`, `call_1`, ...) repeat across turns, so
     // a result must resolve against the calls that preceded it.
@@ -291,7 +447,8 @@ fn to_ollama_messages(messages: &[Message]) -> Vec<OllamaMessage> {
 
     messages
         .iter()
-        .map(|msg| {
+        .enumerate()
+        .map(|(index, msg)| {
             if let Some(calls) = &msg.tool_calls {
                 for tc in calls {
                     tool_names_by_id.insert(&tc.id, &tc.name);
@@ -324,6 +481,9 @@ fn to_ollama_messages(messages: &[Message]) -> Vec<OllamaMessage> {
                 }),
                 tool_name,
                 tool_call_id,
+                thinking: (replay_thinking && index >= exchange_start)
+                    .then(|| plain_reasoning(&msg.thinking))
+                    .flatten(),
                 images: if msg.images.is_empty() {
                     None
                 } else {
@@ -365,6 +525,44 @@ struct OllamaChatResponse {
     message: OllamaResponseMessage,
     #[serde(default)]
     done_reason: Option<String>,
+    #[serde(flatten)]
+    counts: TokenCounts,
+}
+
+/// One line of a streamed chat: a piece of the message, or on the last line
+/// (`done`) the reason it ended and the token counts.
+#[derive(Deserialize)]
+struct OllamaStreamChunk {
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    message: Option<OllamaResponseMessage>,
+    #[serde(default)]
+    done: bool,
+    #[serde(default)]
+    done_reason: Option<String>,
+    #[serde(flatten)]
+    counts: TokenCounts,
+}
+
+/// The token counts Ollama reports when a response is done.
+#[derive(Deserialize, Default, Clone, Copy)]
+struct TokenCounts {
+    #[serde(default)]
+    prompt_eval_count: Option<u32>,
+    #[serde(default)]
+    eval_count: Option<u32>,
+}
+
+impl TokenCounts {
+    fn usage(self) -> Option<Usage> {
+        (self.prompt_eval_count.is_some() || self.eval_count.is_some()).then(|| Usage {
+            input_tokens: self.prompt_eval_count.unwrap_or(0),
+            output_tokens: self.eval_count.unwrap_or(0),
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
+        })
+    }
 }
 
 /// Map Ollama's `done_reason` to the provider-agnostic [`StopReason`].
@@ -549,6 +747,12 @@ mod tests {
     use crate::inference::CompletionOptions;
     use crate::inference::http::{HttpClientConfig, SharedHttpClient};
     use crate::inference::retry::RetryConfig;
+    use crate::inference::test_support::{
+        RecordingSink, ScriptedServer, Step, assert_same_response, at, json_response,
+        ndjson_response, split_bytes, sse_chunks,
+    };
+    use crate::inference::{StreamDelta, ThinkingBlock};
+    use serde_json::json;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -566,7 +770,7 @@ mod tests {
     fn message_conversion() {
         let msg = Message::user("Hello");
 
-        let ollama_msgs = to_ollama_messages(&[msg]);
+        let ollama_msgs = to_ollama_messages(&[msg], false);
         let ollama_msg = ollama_msgs.first().unwrap();
         assert_eq!(ollama_msg.role, "user", "role should be user");
         assert_eq!(
@@ -579,7 +783,7 @@ mod tests {
     #[test]
     fn message_conversion_tool_empty_content_is_none() {
         let msg = Message::tool("", "call_1");
-        let ollama_msgs = to_ollama_messages(&[msg]);
+        let ollama_msgs = to_ollama_messages(&[msg], false);
         let ollama_msg = ollama_msgs.first().unwrap();
         assert_eq!(ollama_msg.role, "tool", "role should be tool");
         assert!(
@@ -599,7 +803,7 @@ mod tests {
                 server: None,
             }]),
         );
-        let ollama_msgs = to_ollama_messages(&[msg]);
+        let ollama_msgs = to_ollama_messages(&[msg], false);
         let ollama_msg = ollama_msgs.first().unwrap();
         assert_eq!(ollama_msg.role, "assistant", "role should be assistant");
         assert_eq!(
@@ -639,7 +843,7 @@ mod tests {
             data: "base64data".to_string(),
         }];
         let msg = Message::user_with_images("look at this", images);
-        let ollama_msgs = to_ollama_messages(&[msg]);
+        let ollama_msgs = to_ollama_messages(&[msg], false);
         let ollama_msg = ollama_msgs.first().unwrap();
         assert_eq!(ollama_msg.role, "user", "role should be user");
         let imgs = ollama_msg.images.clone().unwrap();
@@ -664,7 +868,7 @@ mod tests {
         );
         let tool_result = Message::tool("file1\nfile2", "call_0");
 
-        let ollama_msgs = to_ollama_messages(&[assistant, tool_result]);
+        let ollama_msgs = to_ollama_messages(&[assistant, tool_result], false);
         let result_msg = ollama_msgs.get(1).expect("two messages were converted");
 
         let serialized = serde_json::to_value(result_msg).unwrap();
@@ -700,7 +904,7 @@ mod tests {
             Message::tool("file contents", "call_0"),
         ];
 
-        let names: Vec<Option<String>> = to_ollama_messages(&messages)
+        let names: Vec<Option<String>> = to_ollama_messages(&messages, false)
             .into_iter()
             .map(|m| m.tool_name)
             .collect();
@@ -737,7 +941,7 @@ mod tests {
         let result_0 = Message::tool("file1\nfile2", "call_0");
         let result_1 = Message::tool("contents", "call_1");
 
-        let ollama_msgs = to_ollama_messages(&[assistant, result_0, result_1]);
+        let ollama_msgs = to_ollama_messages(&[assistant, result_0, result_1], false);
 
         let serialized_0 =
             serde_json::to_value(ollama_msgs.get(1).expect("three messages were converted"))
@@ -760,7 +964,7 @@ mod tests {
     #[test]
     fn tool_correlation_fields_omitted_when_absent() {
         let msg = Message::user("Hello");
-        let ollama_msgs = to_ollama_messages(&[msg]);
+        let ollama_msgs = to_ollama_messages(&[msg], false);
         let serialized = serde_json::to_value(ollama_msgs.first().unwrap()).unwrap();
 
         assert!(
@@ -1482,6 +1686,477 @@ mod tests {
         assert!(
             err.contains("no data"),
             "error should mention no data: {err}"
+        );
+    }
+
+    // --- Thinking replay ---
+
+    fn exchange_with_thinking() -> Vec<Message> {
+        let call = |id: &str| ToolCall {
+            id: id.to_string(),
+            name: "exec".to_string(),
+            arguments: json!({}),
+            server: None,
+        };
+        let mut old = Message::assistant("old", Some(vec![call("c0")]));
+        old.thinking = vec![ThinkingBlock::text("old thinking")];
+        let mut plain = Message::assistant("done", None);
+        plain.thinking = vec![ThinkingBlock::text("wrap-up thinking")];
+        let mut current = Message::assistant("", Some(vec![call("c1")]));
+        current.thinking = vec![
+            ThinkingBlock::text("current thinking"),
+            ThinkingBlock {
+                text: "signed elsewhere".to_string(),
+                signature: Some("sig".to_string()),
+                ..ThinkingBlock::default()
+            },
+            ThinkingBlock {
+                redacted: Some("ENC".to_string()),
+                ..ThinkingBlock::default()
+            },
+        ];
+        vec![
+            Message::user("one"),
+            old,
+            Message::tool("r0", "c0"),
+            plain,
+            Message::user("two"),
+            current,
+            Message::tool("r1", "c1"),
+        ]
+    }
+
+    #[test]
+    fn current_exchange_thinking_is_replayed_as_message_thinking() {
+        let thinking: Vec<Option<String>> = to_ollama_messages(&exchange_with_thinking(), true)
+            .into_iter()
+            .map(|m| m.thinking)
+            .collect();
+        assert_eq!(
+            thinking,
+            vec![
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some("current thinking".to_string()),
+                None
+            ],
+            "only the tool-calling message of the exchange in progress carries thinking, and \
+             only its plain-text block"
+        );
+    }
+
+    #[test]
+    fn thinking_is_not_replayed_when_the_request_has_thinking_off() {
+        assert!(
+            to_ollama_messages(&exchange_with_thinking(), false)
+                .iter()
+                .all(|m| m.thinking.is_none()),
+            "with thinking off nothing is replayed"
+        );
+    }
+
+    #[tokio::test]
+    async fn replayed_thinking_reaches_the_wire_only_when_thinking_is_on() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(full_response_body()))
+            .mount(&server)
+            .await;
+        let client = make_client(server.uri(), "m");
+        for thinking in [Some(ThinkingConfig::Toggle(true)), None] {
+            let options = CompletionOptions {
+                thinking,
+                ..CompletionOptions::default()
+            };
+            client
+                .complete(&exchange_with_thinking(), &[], &options)
+                .await
+                .unwrap();
+        }
+        let requests = server.received_requests().await.unwrap();
+        let on: serde_json::Value =
+            serde_json::from_slice(&requests.first().unwrap().body).unwrap();
+        let off: serde_json::Value =
+            serde_json::from_slice(&requests.last().unwrap().body).unwrap();
+        assert_eq!(
+            at(&on, "/messages/5/thinking"),
+            &json!("current thinking"),
+            "thinking goes back on the assistant message that made the tool call"
+        );
+        assert!(
+            on.pointer("/messages/1/thinking").is_none(),
+            "and not on an earlier exchange's"
+        );
+        assert!(
+            off.pointer("/messages/5/thinking").is_none(),
+            "a request with thinking off carries none"
+        );
+    }
+
+    // --- Streaming ---
+
+    fn line(value: impl Into<serde_json::Value>) -> String {
+        let value: serde_json::Value = value.into();
+        format!("{value}\n")
+    }
+
+    fn piece(message: impl Into<serde_json::Value>) -> String {
+        let message: serde_json::Value = message.into();
+        line(json!({"model": "m", "message": message, "done": false}))
+    }
+
+    fn last_line() -> String {
+        line(json!({
+            "model": "m",
+            "message": {"role": "assistant", "content": ""},
+            "done": true,
+            "done_reason": "stop",
+            "prompt_eval_count": 26,
+            "eval_count": 12
+        }))
+    }
+
+    /// A reply with thinking, text and a tool call, as Ollama streams it.
+    fn full_stream() -> String {
+        [
+            piece(json!({"role": "assistant", "content": "", "thinking": "Let me "})),
+            piece(json!({"role": "assistant", "content": "", "thinking": "think."})),
+            piece(json!({"role": "assistant", "content": "Hello w"})),
+            piece(json!({"role": "assistant", "content": "\u{f6}rld \u{1f600}"})),
+            piece(json!({"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "exec", "arguments": {"command": "ls"}}}
+            ]})),
+            piece(json!({"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "read", "arguments": {"path": "a.txt"}}}
+            ]})),
+            last_line(),
+        ]
+        .concat()
+    }
+
+    fn full_response_body() -> serde_json::Value {
+        json!({
+            "model": "m",
+            "message": {
+                "role": "assistant",
+                "content": "Hello w\u{f6}rld \u{1f600}",
+                "thinking": "Let me think.",
+                "tool_calls": [
+                    {"function": {"name": "exec", "arguments": {"command": "ls"}}},
+                    {"function": {"name": "read", "arguments": {"path": "a.txt"}}}
+                ]
+            },
+            "done": true,
+            "done_reason": "stop",
+            "prompt_eval_count": 26,
+            "eval_count": 12
+        })
+    }
+
+    async fn stream_from(
+        script: Vec<Step>,
+        client: impl FnOnce(String) -> OllamaClient,
+    ) -> (
+        Result<InferenceResponse, InferenceError>,
+        RecordingSink,
+        ScriptedServer,
+    ) {
+        let server = ScriptedServer::start(vec![script]).await;
+        let client = client(server.uri());
+        let sink = RecordingSink::default();
+        let result = client
+            .complete_streaming(
+                &[Message::user("hi")],
+                &[],
+                &CompletionOptions::default(),
+                &sink,
+            )
+            .await;
+        (result, sink, server)
+    }
+
+    fn plain_client(url: String) -> OllamaClient {
+        make_client(url, "m")
+    }
+
+    #[tokio::test]
+    async fn streamed_response_matches_the_non_streaming_one() {
+        let (streamed, sink, server) =
+            stream_from(ndjson_response(&[full_stream()]), plain_client).await;
+        let streamed = streamed.unwrap();
+
+        let whole_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(full_response_body()))
+            .mount(&whole_server)
+            .await;
+        let whole = make_client(whole_server.uri(), "m")
+            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+
+        assert_same_response(&streamed, &whole);
+        assert_eq!(streamed.content, "Hello w\u{f6}rld \u{1f600}", "text");
+        assert_eq!(
+            streamed.thinking,
+            vec![ThinkingBlock::text("Let me think.")],
+            "thinking"
+        );
+        let ids: Vec<&str> = streamed.tool_calls.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["call_0", "call_1"],
+            "calls from different chunks get ids by position"
+        );
+        let usage = streamed.usage.unwrap();
+        assert_eq!(
+            (usage.input_tokens, usage.output_tokens),
+            (26, 12),
+            "usage comes from the final line's counts"
+        );
+        assert_eq!(
+            streamed.stop_reason,
+            Some(StopReason::EndTurn),
+            "done_reason"
+        );
+        assert_eq!(sink.text(), "Hello w\u{f6}rld \u{1f600}", "text streamed");
+        assert_eq!(sink.thinking(), "Let me think.", "thinking streamed");
+
+        let requests = server.requests();
+        assert_eq!(
+            at(&requests.first().unwrap().json(), "/stream"),
+            &json!(true),
+            "the request asks for a stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_asks_for_a_whole_response() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(full_response_body()))
+            .mount(&server)
+            .await;
+        make_client(server.uri(), "m")
+            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&requests.first().unwrap().body).unwrap();
+        assert_eq!(
+            at(&body, "/stream"),
+            &json!(false),
+            "complete does not stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_parses_at_every_chunk_boundary_including_inside_characters() {
+        let stream = full_stream();
+        let (whole, _, _) =
+            stream_from(ndjson_response(std::slice::from_ref(&stream)), plain_client).await;
+        let whole = whole.unwrap();
+        for size in [1, 2, 3, 7, 40] {
+            let chunks = split_bytes(&stream, size);
+            let (result, sink, _) = stream_from(ndjson_response(&chunks), plain_client).await;
+            let result = result.unwrap();
+            assert_same_response(&result, &whole);
+            assert_eq!(
+                sink.text(),
+                "Hello w\u{f6}rld \u{1f600}",
+                "chunks of {size} bytes keep characters whole"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn final_line_without_a_newline_is_still_read() {
+        let stream = full_stream();
+        let trimmed = stream.trim_end().to_string();
+        let (result, _, _) = stream_from(ndjson_response(&[trimmed]), plain_client).await;
+        assert_eq!(
+            result.unwrap().content,
+            "Hello w\u{f6}rld \u{1f600}",
+            "a stream whose last line has no terminator is complete"
+        );
+    }
+
+    #[tokio::test]
+    async fn inline_think_blocks_in_streamed_content_become_thinking() {
+        let stream = [
+            piece(json!({"content": "<think>weigh"})),
+            piece(json!({"content": " it</thi"})),
+            piece(json!({"content": "nk>\n\nAnswer"})),
+            last_line(),
+        ]
+        .concat();
+        let (result, sink, _) = stream_from(ndjson_response(&[stream]), plain_client).await;
+        let result = result.unwrap();
+        assert_eq!(result.content, "Answer", "no tags in the content");
+        assert_eq!(
+            result.thinking,
+            vec![ThinkingBlock::text("weigh it")],
+            "tagged text is the thinking"
+        );
+        assert_eq!(sink.text(), "Answer", "only the answer streams as text");
+    }
+
+    #[tokio::test]
+    async fn stream_without_its_done_line_is_interrupted() {
+        let partial = piece(json!({"content": "half an ans"}));
+        let (clean_end, _, _) = stream_from(
+            ndjson_response(std::slice::from_ref(&partial)),
+            plain_client,
+        )
+        .await;
+        let err = clean_end.unwrap_err();
+        assert!(
+            matches!(err, InferenceError::StreamInterrupted(_)) && err.is_retryable(),
+            "ending before `done` is an interrupted stream: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dropped_connection_voids_what_streamed() {
+        let (result, sink, _) = stream_from(
+            sse_chunks(&[piece(json!({"content": "half an ans"}))]),
+            plain_client,
+        )
+        .await;
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, InferenceError::StreamInterrupted(_)),
+            "a body cut off mid-stream is interrupted: {err:?}"
+        );
+        assert_eq!(sink.text(), "", "the partial answer is voided");
+    }
+
+    #[tokio::test]
+    async fn error_line_in_the_stream_surfaces_its_message() {
+        let stream = [
+            piece(json!({"content": "partial"})),
+            line(json!({"error": "model runner has unexpectedly stopped"})),
+        ]
+        .concat();
+        let (result, _, _) = stream_from(ndjson_response(&[stream]), plain_client).await;
+        let err = result.unwrap_err();
+        assert!(
+            matches!(&err, InferenceError::Api(m) if m.contains("unexpectedly stopped")),
+            "the server's message is kept: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stalled_stream_fails_after_the_idle_timeout() {
+        let mut script = sse_chunks(&[piece(json!({"content": "partial"}))]);
+        script.push(Step::pause(std::time::Duration::from_secs(5)));
+        let (result, _, _) = stream_from(script, |url| make_client_with_timeout(url, "m", 1)).await;
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, InferenceError::Stalled(1)),
+            "a silent stream is a stall: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_longer_than_the_timeout_completes_while_bytes_keep_arriving() {
+        let mut script = vec![Step::head(200, "application/x-ndjson")];
+        for word in ["one ", "two ", "three ", "four "] {
+            script.push(Step::chunk(piece(json!({"content": word}))));
+            script.push(Step::pause(std::time::Duration::from_millis(600)));
+        }
+        script.push(Step::chunk(last_line()));
+        script.push(Step::end());
+        let (result, _, _) = stream_from(script, |url| make_client_with_timeout(url, "m", 1)).await;
+        assert_eq!(
+            result.unwrap().content,
+            "one two three four ",
+            "the idle timeout does not cap the whole stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_after_partial_output_restarts_the_stream() {
+        let second = [piece(json!({"content": "whole answer"})), last_line()].concat();
+        let server = ScriptedServer::start(vec![
+            sse_chunks(&[piece(json!({"content": "par"}))]),
+            ndjson_response(&[second]),
+        ])
+        .await;
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        let client = OllamaClient::with_http_client(
+            http,
+            server.uri(),
+            "m",
+            None,
+            RetryConfig {
+                max_retries: 1,
+                initial_delay: std::time::Duration::from_millis(5),
+                max_delay: std::time::Duration::from_millis(5),
+                backoff_multiplier: 1.0,
+            },
+        );
+        let sink = RecordingSink::default();
+        let response = client
+            .complete_streaming(
+                &[Message::user("hi")],
+                &[],
+                &CompletionOptions::default(),
+                &sink,
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.content, "whole answer", "the retry's answer");
+        assert_eq!(
+            sink.deltas(),
+            vec![
+                StreamDelta::Text("par".to_string()),
+                StreamDelta::Restart,
+                StreamDelta::Text("whole answer".to_string()),
+            ],
+            "the partial text is voided before the retry streams"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_errors_before_the_stream_surface_the_servers_message() {
+        let (result, sink, _) = stream_from(
+            json_response(404, r#"{"error":"model 'm' not found"}"#),
+            plain_client,
+        )
+        .await;
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("not found"),
+            "the server's message is kept: {err}"
+        );
+        assert!(sink.deltas().is_empty(), "nothing streamed");
+    }
+
+    #[tokio::test]
+    async fn non_streaming_usage_comes_from_the_counts() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(full_response_body()))
+            .mount(&server)
+            .await;
+        let response = make_client(server.uri(), "m")
+            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+        let usage = response.usage.unwrap();
+        assert_eq!(
+            (usage.input_tokens, usage.output_tokens),
+            (26, 12),
+            "complete reports usage too"
         );
     }
 }

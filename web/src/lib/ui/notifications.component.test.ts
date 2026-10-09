@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "../../test/component";
 import NotificationsHarness from "../../test/ui/NotificationsHarness.svelte";
+import { composerClearance } from "../composer-clearance.svelte";
 import { notifications } from "../notifications.svelte";
 import { router } from "../router.svelte";
 import { toast } from "../toast.svelte";
@@ -49,6 +50,46 @@ describe("ToastRegion", () => {
     expect(politeRegion()).toHaveTextContent("Saved.");
     expect(errorRegion()).toHaveAttribute("aria-atomic", "false");
     expect(politeRegion().closest("[data-overlay-host]")).not.toBeNull();
+  });
+
+  describe("clearing the composer", () => {
+    function region(): HTMLElement {
+      const found = document.querySelector<HTMLElement>(".ui-toasts");
+      if (found === null) throw new Error("no toast region");
+      return found;
+    }
+
+    it("rides above the composer's top edge, wherever it is, and drops back without one", async () => {
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          observe(): void {}
+          disconnect(): void {}
+        },
+      );
+      Object.defineProperty(document.documentElement, "clientHeight", {
+        configurable: true,
+        get: () => 900,
+      });
+      render(NotificationsHarness);
+      await act();
+      // With no composer to reach, a phone keeps clear of a sheet's footer above the bottom bar.
+      expect(region()).toHaveAttribute("data-clearance", "away");
+
+      const composer = document.createElement("form");
+      document.body.append(composer);
+      composer.getBoundingClientRect = () => ({ top: 700 }) as DOMRect;
+      composer.getClientRects = () => [{}] as unknown as DOMRectList;
+      const release = composerClearance.track(composer);
+      await act();
+      expect(region()).toHaveAttribute("data-clearance", "lifted");
+      expect(region().style.getPropertyValue("--toast-lift")).toBe("200px");
+
+      release();
+      composer.remove();
+      await act();
+      expect(region()).toHaveAttribute("data-clearance", "away");
+    });
   });
 
   it("keeps the store's timings: 4 seconds, 10 with an action, errors until dismissed", async () => {

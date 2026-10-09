@@ -1,10 +1,12 @@
 <script lang="ts">
-  import { renderMarkdown } from "../lib/markdown";
+  import { COPY_LABEL, COPY_NAME, renderMarkdown } from "../lib/markdown";
+  import { VisuallyHidden } from "../lib/ui";
   import { openPathInPanel, pathHref } from "./feed-links";
 
   // Message text as sanitized Markdown. Each code block has a Copy button,
   // and inline code that is a whole workspace path opens that file in the
-  // context panel, in `agent`'s workspace.
+  // context panel, in `agent`'s workspace. Other links open in a new tab,
+  // so following one never takes the app away.
 
   interface Props {
     content: string;
@@ -22,19 +24,26 @@
     node.replaceChildren(renderMarkdown(content, { pathHref: (path) => pathHref(agent, path) }));
   }
 
-  const COPY_LABEL = "Copy";
   const COPY_FEEDBACK_MS = 2000;
+
+  /** What the Copy button just did, said politely: a button that is pressed doesn't announce its new label. */
+  let copyResult = $state("");
 
   async function copyCode(button: HTMLButtonElement): Promise<void> {
     const code = button.parentElement?.querySelector("code")?.textContent ?? "";
     try {
       await navigator.clipboard.writeText(code.replace(/\n$/, ""));
-      button.textContent = "Copied";
+      copyResult = "Copied";
     } catch {
-      button.textContent = "Couldn't copy";
+      copyResult = "Couldn't copy";
     }
+    // The name follows the label, so what is read matches what is shown.
+    button.textContent = copyResult;
+    button.setAttribute("aria-label", copyResult);
     window.setTimeout(() => {
       button.textContent = COPY_LABEL;
+      button.setAttribute("aria-label", COPY_NAME);
+      copyResult = "";
     }, COPY_FEEDBACK_MS);
   }
 
@@ -60,7 +69,10 @@
   }
 </script>
 
-<div class="prose" data-size={size} {@attach render} {@attach handleClicks}></div>
+<div class="prose" data-size={size} {@attach handleClicks}>
+  <div class="prose-body" {@attach render}></div>
+  <VisuallyHidden><span role="status">{copyResult}</span></VisuallyHidden>
+</div>
 
 <style>
   /* The color comes from where the text sits: a feed's, or a quieter one. */
@@ -77,26 +89,27 @@
 
   /* The rendered nodes carry no scoping class, so everything under the root is global. */
   .prose :global {
-    :is(p, ul, ol, blockquote, .prose-code, table, hr) {
+    :is(p, ul, ol, blockquote, .prose-code, .prose-table, hr) {
       margin-bottom: var(--space-10);
     }
 
-    > :last-child {
+    > .prose-body > :last-child {
       margin-bottom: 0;
     }
 
-    :is(h1, h2, h3, h4, h5, h6) {
+    /* Headings sit two levels below the page's own (see `renderMarkdown`): a reply's # is an h3, its ## an h4. */
+    :is(h3, h4, h5, h6) {
       margin: var(--space-14) 0 var(--space-6);
       font-size: var(--font-size-message);
       font-weight: var(--font-weight-semibold);
       line-height: var(--line-height-tight);
     }
 
-    :is(h1, h2) {
+    :is(h3, h4) {
       font-size: var(--font-size-heading);
     }
 
-    > :first-child {
+    > .prose-body > :first-child {
       margin-top: 0;
     }
 
@@ -110,6 +123,56 @@
 
     li::marker {
       color: var(--color-text-3);
+    }
+
+    /* A task item has a glyph where a bullet would be, and says its state to assistive technology in words. */
+    li.prose-task {
+      position: relative;
+      list-style: none;
+    }
+
+    .prose-check {
+      position: absolute;
+      top: calc((1lh - var(--space-14)) / 2);
+      left: calc(-1 * var(--space-20));
+      width: var(--space-14);
+      height: var(--space-14);
+    }
+
+    .prose-check::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border: 1px solid var(--color-control-border);
+      border-radius: var(--corner-sm);
+    }
+
+    .prose-check[data-done="true"]::before {
+      border-color: var(--color-vein);
+      background: var(--color-vein-tint);
+    }
+
+    .prose-check[data-done="true"]::after {
+      content: "";
+      position: absolute;
+      top: 1px;
+      left: 4px;
+      box-sizing: border-box;
+      width: 5px;
+      height: 9px;
+      border: solid var(--color-vein-bright);
+      border-width: 0 2px 2px 0;
+      transform: rotate(45deg);
+    }
+
+    .prose-sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
     }
 
     :is(strong, b) {
@@ -169,18 +232,25 @@
       border-radius: var(--corner-md);
     }
 
-    table {
-      display: block;
+    /* A table keeps its words whole: a column never narrows below its longest word, and a table wider than the message scrolls in its group. */
+    .prose-table {
       max-width: 100%;
       overflow-x: auto;
+      border-radius: var(--corner-sm);
+    }
+
+    table {
       border-collapse: collapse;
       font-size: var(--font-size-sm);
     }
 
     :is(th, td) {
+      min-width: 9ch;
       padding: var(--space-6) var(--space-12);
       border-bottom: 1px solid var(--color-line-soft);
+      overflow-wrap: normal;
       text-align: left;
+      vertical-align: top;
     }
 
     th {
@@ -218,7 +288,8 @@
       padding: 0 var(--space-8);
       border: 0;
       border-radius: var(--corner-sm);
-      background: none;
+      /* Opaque, so a long line scrolled under the button doesn't show through it. */
+      background: var(--color-stone-2);
       color: var(--color-text-2);
       cursor: pointer;
       font-family: var(--font-ui);

@@ -1,5 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
+import { sendFromComposer } from "../support/composer";
 import { expect, test } from "../support/fixtures";
 
 /**
@@ -14,12 +15,12 @@ function conversation(page: Page): Locator {
 }
 
 function composer(page: Page): Locator {
-  return page.getByRole("textbox", { name: "Message atlas" });
+  return page.getByRole("combobox", { name: "Message atlas" });
 }
 
 async function send(page: Page, text: string): Promise<void> {
   await composer(page).fill(text);
-  await composer(page).press("Enter");
+  await sendFromComposer(composer(page));
 }
 
 async function openAtlas(page: Page): Promise<void> {

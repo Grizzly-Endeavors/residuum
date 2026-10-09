@@ -13,7 +13,12 @@ import {
   type Scenario,
   type ScenarioStep,
 } from "./chat-scenarios";
-import { cannedResponses, sampleEpisodes, sampleRecentMessages } from "./data/chat";
+import {
+  cannedResponses,
+  markdownShowcase,
+  sampleEpisodes,
+  sampleRecentMessages,
+} from "./data/chat";
 import { json } from "./http";
 import type { Route } from "./routes";
 import type { MockAgent, MockHub, MockState } from "./state";
@@ -166,6 +171,8 @@ export interface ChatSimulator {
  * Each turn reports its usage, and adds it to the conversation's totals. A
  * message starting with "remember" is followed by two seconds of memory work.
  * Other prefixes run the scripted turns of `chat-scenarios.ts`.
+ * A message starting with "markdown" is answered with `markdownShowcase`
+ * instead of the next canned reply, which keeps its place.
  */
 export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulator {
   const { state } = agent;
@@ -365,8 +372,11 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
           : `   1\t# ${path}\n   2\t(the page as it is today)`,
       isError: i === 1 && lower.startsWith("fail"),
     }));
-    const response = cannedResponses[responseIndex % cannedResponses.length] ?? "";
-    responseIndex++;
+    const showcase = lower.startsWith("markdown");
+    const response = showcase
+      ? markdownShowcase
+      : (cannedResponses[responseIndex % cannedResponses.length] ?? "");
+    if (!showcase) responseIndex++;
 
     const turn: TurnInFlight = { content, source, cancels: [] };
     inFlight.set(replyTo, turn);

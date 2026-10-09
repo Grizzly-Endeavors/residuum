@@ -195,6 +195,11 @@ export class SessionsStore {
     return this.deps.agent;
   }
 
+  /** What the agent has running: its live sessions and the tasks it has open on remote agents. */
+  get runningCount(): number {
+    return this.live.length + this.outbound.length;
+  }
+
   // ── Listing ──────────────────────────────────────────────────────
 
   /**

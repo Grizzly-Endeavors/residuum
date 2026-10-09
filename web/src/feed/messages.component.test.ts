@@ -166,7 +166,6 @@ describe("dividers and markers", () => {
       episode: "ep-003",
     });
     const divider = screen.getByRole("separator", { name: "Yesterday, ep-003" });
-    expect(divider).toHaveAttribute("data-divider-label", "Yesterday, ep-003");
     expect(divider).toHaveTextContent(/^Yesterday\s*ep-003$/);
   });
 
@@ -217,6 +216,7 @@ describe("a file the agent sent", () => {
       agent: "atlas",
     });
     expect(container.querySelector("audio")).toHaveAttribute("src", "/files/memo.ogg");
+    expect(container.querySelector("audio")).toHaveAccessibleName("memo.ogg");
     expect(screen.queryByRole("img")).toBeNull();
   });
 

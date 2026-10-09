@@ -1,4 +1,5 @@
 import type { Locator, Page } from "@playwright/test";
+import { sendFromComposer } from "../support/composer";
 import { expect, test } from "../support/fixtures";
 import { expectScreenshot } from "../support/screenshot";
 
@@ -105,8 +106,8 @@ test.describe("chat feed", { tag: "@visual" }, () => {
     await page.goto("/agent/atlas");
     const feed = conversation(page);
     await expect(feed.getByText(GREETING)).toBeInViewport();
-    await page.getByRole("textbox", { name: "Message atlas" }).fill("Check the wiki index");
-    await page.getByRole("textbox", { name: "Message atlas" }).press("Enter");
+    await page.getByRole("combobox", { name: "Message atlas" }).fill("Check the wiki index");
+    await sendFromComposer(page.getByRole("combobox", { name: "Message atlas" }));
     await expect(feed.getByRole("button", { name: "Read team/wiki/index.md" })).toBeVisible({
       timeout: 30_000,
     });
@@ -137,8 +138,8 @@ test.describe("a turn in the chat", { tag: "@visual" }, () => {
     await page.goto("/agent/atlas");
     const feed = conversation(page);
     await expect(feed.getByText(GREETING)).toBeInViewport();
-    await page.getByRole("textbox", { name: "Message atlas" }).fill("segments: fix the port");
-    await page.getByRole("textbox", { name: "Message atlas" }).press("Enter");
+    await page.getByRole("combobox", { name: "Message atlas" }).fill("segments: fix the port");
+    await sendFromComposer(page.getByRole("combobox", { name: "Message atlas" }));
     await expect(
       feed.getByRole("button", { name: /^Edited team\/wiki\/config\.toml/ }),
     ).toBeVisible();
@@ -151,8 +152,8 @@ test.describe("a turn in the chat", { tag: "@visual" }, () => {
     await page.goto("/agent/atlas");
     const feed = conversation(page);
     await expect(feed.getByText(GREETING)).toBeInViewport();
-    await page.getByRole("textbox", { name: "Message atlas" }).fill("segments: fix the port");
-    await page.getByRole("textbox", { name: "Message atlas" }).press("Enter");
+    await page.getByRole("combobox", { name: "Message atlas" }).fill("segments: fix the port");
+    await sendFromComposer(page.getByRole("combobox", { name: "Message atlas" }));
     await expect(feed.getByText("Done. The port is set once now")).toBeVisible();
     await expect(feed.getByText("Working", { exact: true })).toHaveCount(0);
     await page.mouse.move(0, 0);
@@ -164,9 +165,9 @@ test.describe("a turn in the chat", { tag: "@visual" }, () => {
     const feed = conversation(page);
     await expect(feed.getByText(GREETING)).toBeInViewport();
     await page
-      .getByRole("textbox", { name: "Message atlas" })
+      .getByRole("combobox", { name: "Message atlas" })
       .fill("think about the fallback order");
-    await page.getByRole("textbox", { name: "Message atlas" }).press("Enter");
+    await sendFromComposer(page.getByRole("combobox", { name: "Message atlas" }));
     await expect(feed.getByText(/^Retry three times with backoff/)).toBeVisible();
     await feed.getByRole("button", { name: "Thought" }).click();
     await expect(feed.getByText(/I should answer with that order/)).toBeVisible();
@@ -178,8 +179,8 @@ test.describe("a turn in the chat", { tag: "@visual" }, () => {
     await page.goto("/agent/atlas");
     const feed = conversation(page);
     await expect(feed.getByText(GREETING)).toBeInViewport();
-    await page.getByRole("textbox", { name: "Message atlas" }).fill("error: check the wiki");
-    await page.getByRole("textbox", { name: "Message atlas" }).press("Enter");
+    await page.getByRole("combobox", { name: "Message atlas" }).fill("error: check the wiki");
+    await sendFromComposer(page.getByRole("combobox", { name: "Message atlas" }));
     await expect(feed.getByText("atlas couldn't finish this reply")).toBeVisible();
     // The toast for the same failure would stand over the shot.
     await page
@@ -212,7 +213,7 @@ test.describe("composer", { tag: "@visual" }, () => {
       .locator('input[type="file"]')
       .setInputFiles({ name: "shot.png", mimeType: "image/png", buffer: PNG });
     await expect(page.getByRole("img", { name: "Image 1" })).toBeVisible();
-    const box = page.getByRole("textbox", { name: "Message atlas" });
+    const box = page.getByRole("combobox", { name: "Message atlas" });
     await box.click();
     await page.keyboard.type("/");
     await expect(page.getByRole("listbox", { name: "Chat actions" })).toBeVisible();
@@ -235,9 +236,9 @@ test.describe("composer", { tag: "@visual" }, () => {
     });
     await page.goto("/agent/atlas");
     await expect(conversation(page).getByText(GREETING)).toBeInViewport();
-    const box = page.getByRole("textbox", { name: "Message atlas" });
+    const box = page.getByRole("combobox", { name: "Message atlas" });
     await box.fill("Are you there?");
-    await box.press("Enter");
+    await sendFromComposer(box);
     await expect(
       page.getByText("Reconnecting — 1 message will send once back online."),
     ).toBeVisible();

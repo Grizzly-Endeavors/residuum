@@ -20,18 +20,28 @@ pub enum InferenceError {
     /// Request timed out
     #[error("request timed out after {0} seconds")]
     Timeout(u64),
+
+    /// A streaming response went quiet: no bytes arrived for this many seconds
+    #[error("the model stopped responding for {0}s")]
+    Stalled(u64),
+
+    /// A streaming response ended or broke before it was complete
+    #[error("the response stream was interrupted: {0}")]
+    StreamInterrupted(String),
 }
 
 impl InferenceError {
     /// Whether this error is likely to succeed on retry.
     ///
-    /// - Request/Timeout: transient network failures
+    /// - Request/Timeout/Stalled/StreamInterrupted: transient network failures
     /// - Parse: permanent -- malformed response won't improve
     /// - Api: retryable only when the message indicates rate-limiting or overload
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         match self {
-            Self::Request(_) | Self::Timeout(_) => true,
+            Self::Request(_) | Self::Timeout(_) | Self::Stalled(_) | Self::StreamInterrupted(_) => {
+                true
+            }
             Self::Parse(_) => false,
             Self::Api(msg) => {
                 let lower = msg.to_lowercase();
@@ -43,6 +53,7 @@ impl InferenceError {
                     || lower.contains("500")
                     || lower.contains("502")
                     || lower.contains("503")
+                    || has_server_error_type(&lower)
             }
         }
     }
@@ -52,7 +63,8 @@ impl InferenceError {
     /// provider's own error string means.
     fn category(&self) -> FailureCategory {
         match self {
-            Self::Timeout(_) => FailureCategory::Timeout,
+            Self::Timeout(_) | Self::Stalled(_) => FailureCategory::Timeout,
+            Self::StreamInterrupted(_) => FailureCategory::ConnectionLost,
             Self::Request(_) => FailureCategory::NetworkUnreachable,
             Self::Parse(_) => FailureCategory::Unclassified,
             Self::Api(msg) => FailureCategory::from_api_message(msg),
@@ -77,6 +89,15 @@ impl InferenceError {
     }
 }
 
+/// Whether a lowercased provider error names a server-side failure by its
+/// error type rather than an HTTP status. A streaming response reports a
+/// failure after its `200` status has gone out, so the error type
+/// (Anthropic's `api_error`, `OpenAI`'s `server_error`) is all there is to
+/// classify it by.
+fn has_server_error_type(lower: &str) -> bool {
+    lower.contains("api_error") || lower.contains("server_error")
+}
+
 /// A plain-language bucket for an [`InferenceError`], independent of which
 /// provider produced it. Providers today collapse their own status code and
 /// error body into `InferenceError::Api`'s single string (see
@@ -90,6 +111,7 @@ enum FailureCategory {
     ModelNotFound,
     ProviderOutage,
     NetworkUnreachable,
+    ConnectionLost,
     Timeout,
     Unclassified,
 }
@@ -132,6 +154,7 @@ impl FailureCategory {
         {
             Self::ModelNotFound
         } else if has_status(&["500", "502", "503", "504"])
+            || has_server_error_type(&lower)
             || lower.contains("overloaded_error")
             || lower.contains("overload")
             || lower.contains("capacity")
@@ -154,6 +177,7 @@ impl FailureCategory {
             Self::ModelNotFound => "the configured model being unavailable",
             Self::ProviderOutage => "a server error at the provider",
             Self::NetworkUnreachable => "a network problem",
+            Self::ConnectionLost => "a dropped connection",
             Self::Timeout => "a timeout",
             Self::Unclassified => "an error talking to the AI provider",
         }
@@ -182,11 +206,20 @@ impl FailureCategory {
             Self::NetworkUnreachable => "Residuum couldn't reach the AI provider. Check your \
                 internet connection and try again."
                 .to_string(),
+            Self::ConnectionLost => "The connection to the AI provider dropped before the answer \
+                finished. Try again."
+                .to_string(),
             Self::Timeout => {
                 if let InferenceError::Timeout(secs) = err {
                     format!(
                         "The request to the AI provider timed out after {secs} seconds. Try \
                          again — if it keeps happening, the provider may be slow or overloaded."
+                    )
+                } else if let InferenceError::Stalled(secs) = err {
+                    format!(
+                        "The AI provider stopped responding for {secs} seconds before it \
+                         finished its answer. Try again — if it keeps happening, the provider \
+                         may be slow or overloaded."
                     )
                 } else {
                     "The request to the AI provider timed out. Try again — if it keeps \
@@ -299,6 +332,63 @@ mod tests {
         assert!(
             !InferenceError::Api("invalid api key".to_string()).is_retryable(),
             "auth error should not be retryable"
+        );
+    }
+
+    #[test]
+    fn stalled_stream_reads_plainly_and_is_retryable() {
+        let err = InferenceError::Stalled(60);
+        assert_eq!(
+            err.to_string(),
+            "the model stopped responding for 60s",
+            "a stalled stream names how long it was quiet"
+        );
+        assert!(err.is_retryable(), "a stalled stream is worth retrying");
+        assert!(
+            err.user_message().contains("60 seconds"),
+            "the user is told how long the provider was quiet: {}",
+            err.user_message()
+        );
+    }
+
+    #[test]
+    fn interrupted_stream_is_retryable_and_described_for_the_user() {
+        let err = InferenceError::StreamInterrupted("connection reset".to_string());
+        assert!(err.is_retryable(), "a dropped stream is worth retrying");
+        assert!(
+            err.user_message().contains("dropped"),
+            "the user is told the connection dropped: {}",
+            err.user_message()
+        );
+        assert_eq!(
+            err.cause_phrase(),
+            "a dropped connection",
+            "a failover notice names the dropped connection"
+        );
+    }
+
+    #[test]
+    fn in_stream_server_error_types_are_retryable() {
+        assert!(
+            InferenceError::Api("anthropic stream error (api_error): Internal server error".into())
+                .is_retryable(),
+            "Anthropic's api_error is a server-side failure"
+        );
+        assert!(
+            InferenceError::Api("server_error: The server had an error".into()).is_retryable(),
+            "OpenAI's server_error is a server-side failure"
+        );
+        assert!(
+            InferenceError::Api("anthropic stream error (overloaded_error): Overloaded".into())
+                .is_retryable(),
+            "overloaded_error is retryable"
+        );
+        assert!(
+            !InferenceError::Api(
+                "anthropic stream error (invalid_request_error): bad input".into()
+            )
+            .is_retryable(),
+            "a rejected request is not retryable"
         );
     }
 }

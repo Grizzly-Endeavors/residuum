@@ -881,6 +881,7 @@ mod tests {
                             text: "plan first".to_string(),
                             signature: Some("sig-secret".to_string()),
                             redacted: None,
+                            part: None,
                         },
                     ]),
                 ],

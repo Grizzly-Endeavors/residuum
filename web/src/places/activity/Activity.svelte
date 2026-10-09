@@ -41,7 +41,7 @@
   const running = $derived(agentState === "running" || agentState === "stopping");
   const finished = $derived(sessions.finished[sessions.finishedKind]);
   const shownRun = $derived(router.panel?.kind === "session" ? router.panel.runId : null);
-  const liveCount = $derived(sessions.live.length + sessions.outbound.length);
+  const liveCount = $derived(sessions.runningCount);
 
   const KINDS: readonly Choice<FinishedKind>[] = [
     { value: "all", label: "Every kind" },

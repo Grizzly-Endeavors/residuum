@@ -4,8 +4,7 @@
 
   // A day's start, or above a loaded episode the day it ends on and, quietly,
   // its id. Days are named from today ("Today", "Yesterday", "Oct 6") and
-  // renamed as the days pass. The feed's Jump to latest pill reads the label
-  // of the divider at the top of the view.
+  // renamed as the days pass.
 
   let {
     label,
@@ -24,7 +23,7 @@
   const named = $derived(episode === undefined ? text : `${text}, ${episode}`);
 </script>
 
-<div class="feed-divider" role="separator" aria-label={named} data-divider-label={named}>
+<div class="feed-divider" role="separator" aria-label={named}>
   <span>{text}</span>
   {#if episode !== undefined}
     <span class="feed-divider-episode">{episode}</span>
