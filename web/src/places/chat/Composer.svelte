@@ -56,7 +56,6 @@
   let text = $state(untrack(() => readDraft(agent)));
   let images = $state<ImageAttachment[]>(untrack(() => readDraftImages(agent)));
   let problem = $state<string | null>(null);
-  let dragging = $state(false);
   let field = $state<HTMLTextAreaElement>();
   let filePicker = $state<HTMLInputElement>();
 
@@ -201,7 +200,8 @@
 
   // ── Images ─────────────────────────────────────────────────────────
 
-  async function attach(files: Iterable<File>): Promise<void> {
+  /** Attach the images among `files`, such as ones dropped on the chat; names any it can't. */
+  export async function attach(files: Iterable<File>): Promise<void> {
     const read = await readImages(files);
     images = [...images, ...read.images];
     problem = read.problem;
@@ -212,27 +212,6 @@
     if (pasted.length === 0) return;
     event.preventDefault();
     void attach(pasted);
-  }
-
-  const carriesFiles = (event: DragEvent): boolean =>
-    event.dataTransfer?.types.includes("Files") ?? false;
-
-  function ondragover(event: DragEvent): void {
-    if (!carriesFiles(event)) return;
-    event.preventDefault();
-    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
-    dragging = true;
-  }
-
-  function ondragleave(event: DragEvent & { currentTarget: HTMLElement }): void {
-    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) dragging = false;
-  }
-
-  function ondrop(event: DragEvent): void {
-    if (!carriesFiles(event)) return;
-    event.preventDefault();
-    dragging = false;
-    void attach(event.dataTransfer?.files ?? []);
   }
 
   // ── Sending ────────────────────────────────────────────────────────
@@ -278,16 +257,7 @@
   );
 </script>
 
-<form
-  class="composer"
-  data-dragging={dragging || undefined}
-  {onsubmit}
-  {ondragover}
-  {ondragleave}
-  {ondrop}
-  {onfocusout}
-  {@attach watchKeys}
->
+<form class="composer" {onsubmit} {onfocusout} {@attach watchKeys}>
   {#if showMenu}
     <SlashMenu
       id={menuId}
@@ -394,8 +364,7 @@
     box-shadow: inset 0 0 0 1px var(--color-control-border);
     transition: box-shadow var(--duration-fast) var(--ease-out);
 
-    &:focus-within,
-    &[data-dragging] {
+    &:focus-within {
       box-shadow:
         inset 0 0 0 2px var(--color-vein),
         0 0 0 3px var(--color-vein-faint);

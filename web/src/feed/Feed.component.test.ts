@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "../test/component";
+import { render, screen, settle } from "../test/component";
 import { htmlSnippet } from "../test/snippets";
 import type { FeedItem } from "../lib/types";
 import type { FeedHistory } from "./feed-history";
@@ -176,5 +176,132 @@ describe("Feed", () => {
     // The observer and the history's change each try once; a failure doesn't chain into more.
     expect(loadOlder.mock.calls.length).toBeGreaterThan(0);
     expect(loadOlder.mock.calls.length).toBeLessThanOrEqual(2);
+  });
+});
+
+/** Gives the scrolling region a size and position, which jsdom doesn't lay out. */
+function sizeRegion(
+  region: HTMLElement,
+  geometry: { scrollHeight: number; clientHeight: number; scrollTop: number },
+): ReturnType<typeof vi.fn> {
+  Object.defineProperty(region, "scrollHeight", { get: () => geometry.scrollHeight });
+  Object.defineProperty(region, "clientHeight", { get: () => geometry.clientHeight });
+  Object.defineProperty(region, "scrollTop", { get: () => geometry.scrollTop });
+  const scrollTo = vi.fn((options: { top: number }) => {
+    geometry.scrollTop = options.top;
+  });
+  region.scrollTo = scrollTo as unknown as typeof region.scrollTo;
+  return scrollTo;
+}
+
+function scrollReader(region: HTMLElement, geometry: { scrollTop: number }, top: number): void {
+  geometry.scrollTop = top;
+  region.dispatchEvent(new Event("scroll"));
+}
+
+describe("Jump to latest", () => {
+  const items: FeedItem[] = [
+    { id: 1, kind: "user", content: "First" },
+    { id: 2, kind: "assistant", content: "Second" },
+  ];
+
+  async function reading(): Promise<{
+    region: HTMLElement;
+    geometry: { scrollHeight: number; clientHeight: number; scrollTop: number };
+    scrolled: ReturnType<typeof vi.fn>;
+    rerender: (props: { items: FeedItem[] }) => Promise<void>;
+  }> {
+    const { rerender } = render(Feed, {
+      agent: "atlas",
+      items,
+      label: "Conversation with atlas",
+    });
+    const region = screen.getByRole("region", { name: "Conversation with atlas" });
+    const geometry = { scrollHeight: 2000, clientHeight: 500, scrollTop: 1500 };
+    const scrolled = sizeRegion(region, geometry);
+    await settle();
+    return { region, geometry, scrolled, rerender: (props) => rerender(props) };
+  }
+
+  it("shows nothing while the reader is at the end, and a pill once they scroll away", async () => {
+    const { region, geometry } = await reading();
+    scrollReader(region, geometry, 1500);
+    await settle();
+    expect(screen.queryByRole("button", { name: /Jump to latest/ })).toBeNull();
+
+    scrollReader(region, geometry, 100);
+    await settle();
+    const pill = screen.getByRole("button", { name: "Jump to latest" });
+    // An arrow pointing down, and no reading of where the reader is.
+    expect(pill.querySelector("svg")).not.toBeNull();
+    expect(pill).not.toHaveAttribute("aria-describedby");
+    expect(pill.closest("[role=status]")).not.toBeNull();
+  });
+
+  it("says when a new item has landed below the reader, and clears when they are back", async () => {
+    const { region, geometry, rerender } = await reading();
+    scrollReader(region, geometry, 100);
+    await settle();
+    expect(screen.getByRole("button", { name: "Jump to latest" })).toHaveTextContent(
+      "Jump to latest",
+    );
+
+    await rerender({ items: [...items, { id: 3, kind: "assistant", content: "Third" }] });
+    await settle();
+    const fresh = screen.getByRole("button", { name: "New reply, jump to latest" });
+    expect(fresh).toHaveTextContent("New reply");
+    expect(fresh).toHaveAttribute("data-new");
+
+    scrollReader(region, geometry, 1500);
+    await settle();
+    expect(screen.queryByRole("button", { name: /Jump to latest|New reply/ })).toBeNull();
+  });
+
+  it("takes the reader to the newest content and drops the pill", async () => {
+    const { region, geometry, scrolled } = await reading();
+    scrollReader(region, geometry, 100);
+    await settle();
+    screen.getByRole("button", { name: "Jump to latest" }).click();
+    await settle();
+    expect(scrolled).toHaveBeenCalledWith({ top: 2000, behavior: "smooth" });
+    expect(screen.queryByRole("button", { name: /Jump to latest/ })).toBeNull();
+  });
+
+  it("jumps without gliding when the reader asks for less motion", async () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query === "(prefers-reduced-motion: reduce)",
+    }));
+    const { region, geometry, scrolled } = await reading();
+    scrollReader(region, geometry, 100);
+    await settle();
+    screen.getByRole("button", { name: "Jump to latest" }).click();
+    expect(scrolled).toHaveBeenCalledWith({ top: 2000, behavior: "instant" });
+  });
+});
+
+describe("a dock over the foot of the feed", () => {
+  it("floats beside the scrolling region, outside it, and tells the feed it is docked", () => {
+    const { container } = render(Feed, {
+      agent: "atlas",
+      items: [reply],
+      label: "Conversation with atlas",
+      dock: htmlSnippet('<form aria-label="Composer"></form>'),
+    });
+    const feed = container.querySelector(".feed");
+    expect(feed).toHaveAttribute("data-docked");
+    const region = screen.getByRole("region", { name: "Conversation with atlas" });
+    const composer = screen.getByRole("form", { name: "Composer" });
+    expect(region.contains(composer)).toBe(false);
+    expect(composer.closest(".feed-dock")?.parentElement).toBe(feed);
+  });
+
+  it("is plain without one", () => {
+    const { container } = render(Feed, {
+      agent: "atlas",
+      items: [reply],
+      label: "Conversation with atlas",
+    });
+    expect(container.querySelector(".feed")).not.toHaveAttribute("data-docked");
+    expect(container.querySelector(".feed-dock")).toBeNull();
   });
 });

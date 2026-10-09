@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import {
+  fireEvent,
   jsonResponse,
   mockFetch,
   render,
@@ -10,7 +11,7 @@ import {
 } from "../../test/component";
 import { snapshot } from "../../test/hub-frames";
 import { actionRegistry } from "../../lib/action-registry.svelte";
-import { saveDraft } from "../../lib/composer-drafts";
+import { saveDraft, saveDraftImages } from "../../lib/composer-drafts";
 import { hub } from "../../lib/hub.svelte";
 import { notifications } from "../../lib/notifications.svelte";
 import type { AgentSummary } from "../../lib/hub-types";
@@ -370,5 +371,105 @@ describe("sending a line", () => {
     expect(sendChat).not.toHaveBeenCalled();
     expect(surface).toHaveBeenCalledWith("error", expect.stringMatching(/^Couldn't run \/stop: /));
     expect(box).toHaveValue("/stop now");
+  });
+});
+
+describe("loading the history", () => {
+  afterEach(() => {
+    ws.historyError = null;
+  });
+
+  it("stands in for the conversation with a skeleton until it has loaded", async () => {
+    setViewedAgent("atlas");
+    render(ChatPlace, { agent: "atlas", actions: shell });
+    await settle();
+    expect(screen.getByText("Loading the conversation")).toBeInTheDocument();
+    expect(screen.queryByText("No messages yet")).toBeNull();
+
+    ws.store.loadHistory({ kind: "recent", messages: [], next_cursor: null });
+    await settle();
+    expect(screen.queryByText("Loading the conversation")).toBeNull();
+  });
+
+  it("says why it didn't load, in the conversation, and offers Retry", async () => {
+    setViewedAgent("atlas");
+    ws.historyError = "Residuum ran into a problem on its end.";
+    const load = vi.spyOn(ws, "loadMainHistory").mockResolvedValue();
+    render(ChatPlace, { agent: "atlas", actions: shell });
+    await settle();
+
+    const conversation = screen.getByRole("region", { name: "Conversation with atlas" });
+    expect(conversation).toHaveTextContent("Couldn't load the conversation");
+    expect(conversation).toHaveTextContent("Residuum ran into a problem on its end.");
+    expect(screen.queryByText("Loading the conversation")).toBeNull();
+    expect(screen.queryByText("No messages yet")).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(load).toHaveBeenCalledOnce();
+  });
+});
+
+describe("dropping images", () => {
+  const png = (name: string): File => new File(["png"], name, { type: "image/png" });
+  const carrying = (...files: File[]): { dataTransfer: Partial<DataTransfer> } => ({
+    dataTransfer: { types: ["Files"], files: files as unknown as FileList },
+  });
+
+  afterEach(() => {
+    saveDraftImages("atlas", []);
+  });
+
+  it("takes images dropped anywhere on the place, with an overlay while they are over it", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    setViewedAgent("atlas");
+    render(ChatPlace, { agent: "atlas", actions: shell });
+    await settle();
+    const header = screen.getByRole("heading", { level: 1, name: "atlas" });
+    expect(screen.queryByText("Drop images to attach")).toBeNull();
+
+    // Over the header, which is nowhere near the composer.
+    const taken = !(await fireEvent.dragOver(header, carrying(png("a.png"))));
+    expect(taken).toBe(true);
+    await settle();
+    expect(screen.getByText("Drop images to attach")).toBeInTheDocument();
+
+    await fireEvent.drop(header, carrying(png("a.png")));
+    await settle();
+    expect(screen.queryByText("Drop images to attach")).toBeNull();
+    expect(await screen.findByRole("img", { name: "Image 1" })).toBeInTheDocument();
+  });
+
+  it("drops the overlay when the files leave the place", async () => {
+    setViewedAgent("atlas");
+    render(ChatPlace, { agent: "atlas", actions: shell });
+    await settle();
+    const header = screen.getByRole("heading", { level: 1, name: "atlas" });
+    await fireEvent.dragOver(header, carrying(png("a.png")));
+    await settle();
+    expect(screen.getByText("Drop images to attach")).toBeInTheDocument();
+
+    await fireEvent.dragLeave(header, { relatedTarget: null });
+    await settle();
+    expect(screen.queryByText("Drop images to attach")).toBeNull();
+  });
+
+  it("ignores a drag that isn't carrying files", async () => {
+    setViewedAgent("atlas");
+    render(ChatPlace, { agent: "atlas", actions: shell });
+    await settle();
+    const header = screen.getByRole("heading", { level: 1, name: "atlas" });
+    const taken = !(await fireEvent.dragOver(header, { dataTransfer: { types: ["text/plain"] } }));
+    expect(taken).toBe(false);
+    expect(screen.queryByText("Drop images to attach")).toBeNull();
+  });
+
+  it("takes nothing while the agent has no composer, and leaves the drop for the app to refuse", async () => {
+    setViewedAgent("drifter");
+    render(ChatPlace, { agent: "drifter", actions: shell });
+    await settle();
+    const header = screen.getByRole("heading", { level: 1, name: "drifter" });
+    const taken = !(await fireEvent.dragOver(header, carrying(png("a.png"))));
+    expect(taken).toBe(false);
+    expect(screen.queryByText("Drop images to attach")).toBeNull();
   });
 });

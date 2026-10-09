@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick, untrack, type Snippet } from "svelte";
   import { FeedScroller } from "../lib/feed-scroll.svelte";
+  import { Icon } from "../lib/icons";
   import type { ObservedTurnLookup } from "../lib/observed-turns.svelte";
   import type { FeedItem } from "../lib/types";
   import { keyboardScrollable, Spinner } from "../lib/ui";
@@ -12,8 +13,17 @@
   // A conversation in the reading column: the main chat, or a session's
   // transcript, with each turn's output grouped (`turns.ts`). It follows new
   // content while the reader is at the bottom, offers Jump to latest once
-  // they scroll up, and with `history` loads older parts as they near the
-  // top, keeping what they were reading in place.
+  // they scroll up (and says when something new has landed below them), and
+  // with `history` loads older parts as they near the top, keeping what they
+  // were reading in place. Opening or closing something in it leaves the
+  // control that was pressed where it was.
+  //
+  // The scrolling area runs the whole height of the feed, so its scrollbar
+  // does too. A `dock`, such as the chat's composer, floats over the foot of
+  // it; the column keeps its last lines clear of the dock, and, beside the
+  // dock, leaves room below them: about a quarter of the view on a wide
+  // screen, so the end of the newest reply sits near eye level while the
+  // reader follows it, and a little on a phone.
 
   interface Props {
     /** The agent the conversation belongs to. */
@@ -36,6 +46,8 @@
     empty?: Snippet;
     /** Live content after the items, such as the turn in progress. */
     tail?: Snippet;
+    /** Content floating over the foot of the feed, such as a composer; the feed measures it. */
+    dock?: Snippet;
   }
 
   let {
@@ -50,6 +62,7 @@
     onStop,
     empty,
     tail,
+    dock,
   }: Props = $props();
 
   // A turn that ended before it did anything still shows how it ended.
@@ -64,52 +77,70 @@
   let scrollEl = $state<HTMLDivElement>();
   let innerEl = $state<HTMLDivElement>();
   let topSentinel = $state<HTMLDivElement>();
+  let dockEl = $state<HTMLDivElement>();
 
-  const uid = $props.id();
+  /** The dock's height now. */
+  let dockHeight = $state(0);
   /**
-   * Near enough the bottom to keep following. The composer sits under the
-   * feed rather than over it, so only a reader who has scrolled away stops.
+   * The room the column keeps for the dock. It follows the dock up at once
+   * and down only when that can't move what the reader is looking at: while
+   * they sit at the true bottom, a dock that shrinks (a sent message empties
+   * the composer) would otherwise pull the whole thread down after it.
    */
-  const FOLLOW_WITHIN_PX = 120;
-  const scroller = new FeedScroller(FOLLOW_WITHIN_PX);
-  let anchorLabel = $state("");
+  let reservedHeight = $state(0);
+  /** The width the area's scrollbar takes, which the dock and the pill stay clear of. */
+  let scrollbarWidth = $state(0);
+
+  const scroller = new FeedScroller({ covered: () => dockHeight });
 
   $effect(() => {
     if (!scrollEl || !innerEl) return;
     return scroller.attach(scrollEl, innerEl);
   });
 
+  $effect(() => {
+    const area = scrollEl;
+    const floating = dockEl;
+    if (!area) return;
+    const measure = (): void => {
+      scrollbarWidth = area.offsetWidth - area.clientWidth;
+      dockHeight = floating?.offsetHeight ?? 0;
+      reservedHeight = Math.max(reservedHeight, dockHeight);
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(area);
+    if (floating) observer.observe(floating);
+    untrack(measure);
+    return () => {
+      observer.disconnect();
+      if (!floating) return;
+      dockHeight = 0;
+      reservedHeight = 0;
+    };
+  });
+
+  // Room kept for a dock that has shrunk is given back once the reader has
+  // moved far enough from the bottom for that to go unseen, and with new content.
+  function releaseSpareRoom(): void {
+    const area = scrollEl;
+    if (!area || reservedHeight === dockHeight) return;
+    const spare = reservedHeight - dockHeight;
+    if (area.scrollHeight - area.scrollTop - area.clientHeight >= spare) {
+      reservedHeight = dockHeight;
+    }
+  }
+
+  $effect(() => {
+    const area = scrollEl;
+    if (!area) return;
+    area.addEventListener("scroll", releaseSpareRoom, { passive: true });
+    return () => area.removeEventListener("scroll", releaseSpareRoom);
+  });
+
   /** Where `el` sits below the top of the scrolling area. */
   function offsetIn(scroll: HTMLElement, el: HTMLElement): number {
     return el.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
   }
-
-  // The pill names the topmost divider in view, or else the last one above it.
-  function updateAnchorLabel(): void {
-    const el = scrollEl;
-    if (!el || !scroller.scrolledUp) {
-      anchorLabel = "";
-      return;
-    }
-    let found = "";
-    for (const divider of el.querySelectorAll<HTMLElement>("[data-divider-label]")) {
-      const top = offsetIn(el, divider);
-      const text = divider.dataset.dividerLabel ?? "";
-      if (top >= 0) {
-        if (top < el.clientHeight) found = text;
-        break;
-      }
-      found = text;
-    }
-    anchorLabel = found;
-  }
-
-  $effect(() => {
-    const el = scrollEl;
-    if (!el) return;
-    el.addEventListener("scroll", updateAnchorLabel, { passive: true });
-    return () => el.removeEventListener("scroll", updateAnchorLabel);
-  });
 
   // ── Older history ──────────────────────────────────────────────────
 
@@ -189,23 +220,34 @@
   let lastTailId: number | undefined;
   let lastLength = 0;
   let lastLive = false;
+  let lastGeneration = 0;
 
   // A reader at the bottom stays there as the feed grows, at the tail or by
   // a prepend at the head. Their own message, and the first items, always
-  // scroll to the bottom.
+  // scroll to the bottom. A new item at the tail of a feed whose reader is
+  // elsewhere is told to the pill.
   $effect(() => {
     const tailItem = items.at(-1);
+    const generation = history?.generation ?? 0;
     const tailChanged = tailItem?.id !== lastTailId;
     const force =
       (tailChanged && tailItem?.kind === "user" && !tailItem.sender) ||
       (lastTailId === undefined && tailItem !== undefined);
+    // A reload replaces every item, so its new tail isn't something that arrived.
+    const arrived =
+      tailChanged &&
+      tailItem !== undefined &&
+      lastTailId !== undefined &&
+      generation === lastGeneration;
     const changed = tailChanged || items.length !== lastLength || live !== lastLive;
     lastTailId = tailItem?.id;
     lastLength = items.length;
     lastLive = live;
+    lastGeneration = generation;
     if (changed) {
       void tick().then(() => {
-        scroller.contentChanged(force);
+        reservedHeight = dockHeight;
+        scroller.contentChanged(force, arrived);
       });
     }
   });
@@ -284,19 +326,28 @@
   });
 </script>
 
-<div class="feed">
+<div
+  class="feed"
+  data-docked={dock !== undefined || undefined}
+  style:--feed-dock-height="{dockHeight}px"
+  style:--feed-reserved="{reservedHeight}px"
+  style:--feed-scrollbar="{scrollbarWidth}px"
+>
   {#if scroller.scrolledUp}
-    <div class="feed-pill">
-      {#if anchorLabel}
-        <span class="feed-pill-label" id="{uid}-where">{anchorLabel}</span>
-      {/if}
+    <!-- A status region, so the pill turning into "New reply" is announced. -->
+    <div class="feed-pill" role="status">
       <button
         type="button"
         class="feed-pill-jump"
-        aria-describedby={anchorLabel ? `${uid}-where` : undefined}
+        data-new={scroller.unseen || undefined}
+        aria-label={scroller.unseen ? "New reply, jump to latest" : undefined}
         onclick={() => scroller.jumpToLatest()}
       >
-        Jump to latest
+        {#if scroller.unseen}
+          <span class="feed-pill-dot" aria-hidden="true"></span>
+        {/if}
+        <Icon name="arrow-down" size={14} />
+        {scroller.unseen ? "New reply" : "Jump to latest"}
       </button>
     </div>
   {/if}
@@ -338,6 +389,11 @@
       {@render tail?.()}
     </div>
   </div>
+  {#if dock}
+    <div class="feed-dock" bind:this={dockEl}>
+      {@render dock()}
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -366,6 +422,11 @@
     }
   }
 
+  /* The column sizes the room under its last line by the view's height. */
+  .feed[data-docked] .feed-scroll {
+    container-type: size;
+  }
+
   .feed-column {
     display: flex;
     flex-direction: column;
@@ -379,6 +440,11 @@
       min-height: 100%;
       justify-content: center;
     }
+  }
+
+  /* Under a dock the column keeps the dock's room, and a little more. */
+  .feed[data-docked] .feed-column {
+    padding-bottom: calc(var(--feed-reserved) + var(--space-48));
   }
 
   .feed-sentinel {
@@ -401,49 +467,84 @@
     min-width: 0;
   }
 
-  /* Centered over the feed, as wide as its label needs and no wider than the feed. */
+  /* Floats over the foot of the feed, beside the scrollbar, and takes up the dock's height. */
+  .feed-dock {
+    position: absolute;
+    right: var(--feed-scrollbar);
+    bottom: 0;
+    left: 0;
+    z-index: var(--z-sticky);
+    background: var(--color-stone-0);
+
+    /* The lines scrolling under the dock fade out above it, so they don't stop at its edge. */
+    &::before {
+      content: "";
+      position: absolute;
+      right: 0;
+      bottom: 100%;
+      left: 0;
+      height: var(--space-24);
+      background: linear-gradient(to top, var(--color-stone-0), transparent);
+      pointer-events: none;
+    }
+  }
+
+  /* Centered above the dock, as wide as its label needs. */
   .feed-pill {
     position: absolute;
-    top: var(--space-12);
-    right: var(--space-16);
-    left: var(--space-16);
+    right: var(--feed-scrollbar);
+    bottom: calc(var(--feed-dock-height) + var(--space-12));
+    left: 0;
     z-index: var(--z-sticky);
     display: flex;
-    align-items: center;
-    gap: var(--space-10);
-    width: fit-content;
-    margin-inline: auto;
-    padding: var(--space-2) var(--space-2) var(--space-2) var(--space-12);
-    border-radius: var(--corner-pill);
-    background: var(--color-stone-3);
-    box-shadow: var(--shadow-float);
-    font-size: var(--font-size-xs);
-  }
-
-  .feed-pill-label {
-    min-width: 0;
-    overflow: hidden;
-    color: var(--color-text-2);
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .feed-pill:not(:has(.feed-pill-label)) {
-    padding-left: var(--space-2);
+    justify-content: center;
+    pointer-events: none;
   }
 
   .feed-pill-jump {
-    flex: none;
-    min-height: 28px;
-    padding: 0 var(--space-12);
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-8);
+    min-height: 32px;
+    padding: 0 var(--space-14) 0 var(--space-12);
     border-radius: var(--corner-pill);
-    background: var(--color-vein-tint);
-    color: var(--color-vein-bright);
+    background: var(--color-stone-3);
+    box-shadow: var(--shadow-float);
+    color: var(--color-text-2);
+    font-size: var(--font-size-sm);
     font-weight: var(--font-weight-medium);
-    transition: background var(--duration-fast) var(--ease-out);
+    pointer-events: auto;
+    transition:
+      background-color var(--duration-fast) var(--ease-out),
+      color var(--duration-fast) var(--ease-out);
 
     &:hover {
-      background: var(--color-vein-line);
+      background: var(--color-stone-4);
+      color: var(--color-text);
+    }
+
+    &[data-new] {
+      color: var(--color-text);
+
+      & :global(svg) {
+        color: var(--color-vein-bright);
+      }
+    }
+  }
+
+  /* Something landed below: a vein mark before the arrow. */
+  .feed-pill-dot {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--color-vein-bright);
+  }
+
+  /* On a wide screen the end of the newest reply rests about a quarter of the view above the foot. */
+  @media (min-width: 761px) {
+    .feed[data-docked] .feed-column:not(.centered) {
+      padding-bottom: calc(var(--feed-reserved) + var(--layout-feed-buffer));
     }
   }
 

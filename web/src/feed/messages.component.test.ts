@@ -153,10 +153,11 @@ describe("a message from a session or a teammate", () => {
 });
 
 describe("dividers and markers", () => {
-  it("labels a divider for the Jump to latest pill", () => {
+  it("names a divider by its text", () => {
     show({ id: 1, kind: "divider", variant: "episode", label: "ep-003 · 2026-03-11" });
-    const divider = screen.getByRole("separator", { name: "ep-003 · 2026-03-11" });
-    expect(divider).toHaveAttribute("data-divider-label", "ep-003 · 2026-03-11");
+    expect(screen.getByRole("separator", { name: "ep-003 · 2026-03-11" })).toHaveTextContent(
+      "ep-003 · 2026-03-11",
+    );
   });
 
   it("explains the compressed history in plain words, naming the agent", () => {
