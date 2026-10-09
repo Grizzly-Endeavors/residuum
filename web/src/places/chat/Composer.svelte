@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
+  import { MediaQuery } from "svelte/reactivity";
   import {
     actionRegistry,
     commandActions,
@@ -15,8 +16,9 @@
   import { hub } from "../../lib/hub.svelte";
   import { Icon } from "../../lib/icons";
   import { IMAGE_TYPES, readImages } from "../../lib/image-attachments";
+  import { PressAgain } from "../../lib/press-again.svelte";
   import type { ImageAttachment } from "../../lib/types";
-  import { IconButton, VisuallyHidden } from "../../lib/ui";
+  import { IconButton, overlayOpen, VisuallyHidden } from "../../lib/ui";
   import ModelControl from "./ModelControl.svelte";
   import SlashMenu from "./SlashMenu.svelte";
 
@@ -146,17 +148,56 @@
     }
   }
 
+  // On a touch screen Enter is a new line, as the soft keyboard's key says
+  // (`enterkeyhint`), and only the Send button sends.
+  const touch = new MediaQuery("(pointer: coarse)");
+
   function onkeydown(event: KeyboardEvent): void {
     if (event.isComposing) return;
     if (showMenu && menuKey(event)) {
       event.preventDefault();
       return;
     }
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key === "Enter" && !event.shiftKey && !touch.current) {
       event.preventDefault();
       send();
     }
   }
+
+  // ── Stopping with Esc ──────────────────────────────────────────────
+
+  // Esc is also how a dialog or menu closes, so it takes two presses to stop
+  // a reply: the first says so and waits for the second.
+  const stopKey = new PressAgain();
+
+  $effect(() => {
+    if (!replying) stopKey.disarm();
+  });
+  $effect(() => () => {
+    stopKey.disarm();
+  });
+
+  // Keys from anywhere in the composer. This listener is on the form itself,
+  // so it hears a key before the message box's delegated handler does: the
+  // open `/` menu is checked here rather than by that handler claiming the
+  // key. An open overlay keeps the press for closing itself.
+  function onformkeydown(event: KeyboardEvent): void {
+    if (event.isComposing) return;
+    if (event.key !== "Escape") {
+      stopKey.disarm();
+      return;
+    }
+    if (event.defaultPrevented || showMenu || !replying || overlayOpen()) return;
+    event.preventDefault();
+    // A held key repeats; it is one press.
+    if (event.repeat) return;
+    if (stopKey.press()) onstop();
+  }
+
+  const watchKeys = (form: HTMLElement): (() => void) => {
+    form.addEventListener("keydown", onformkeydown);
+    return () => form.removeEventListener("keydown", onformkeydown);
+  };
 
   // ── Images ─────────────────────────────────────────────────────────
 
@@ -223,9 +264,11 @@
     field?.focus();
   }
 
-  // A press anywhere else closes the menu.
+  // A press anywhere else closes the menu and drops a stop waiting for its second Esc.
   function onfocusout(event: FocusEvent & { currentTarget: HTMLElement }): void {
-    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) menuOpen = false;
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+    menuOpen = false;
+    stopKey.disarm();
   }
 
   const queuedLine = $derived(
@@ -243,6 +286,7 @@
   {ondragleave}
   {ondrop}
   {onfocusout}
+  {@attach watchKeys}
 >
   {#if showMenu}
     <SlashMenu
@@ -288,6 +332,7 @@
       aria-expanded={showMenu}
       aria-controls={showMenu ? menuId : undefined}
       aria-activedescendant={showMenu ? `${menuId}-${String(menuIndex)}` : undefined}
+      enterkeyhint={touch.current ? "enter" : undefined}
       {onkeydown}
       oninput={followTyping}
       {onpaste}
@@ -304,6 +349,9 @@
     />
     <ModelControl {agent} />
     <span class="composer-send">
+      {#if stopKey.armed}
+        <span class="composer-hint" role="status">Press Esc again to stop</span>
+      {/if}
       <!-- One element for Send and Stop, so focus has nothing to fall off when it changes. A press leaves focus in the message box: on a phone that keeps the keyboard up. -->
       <IconButton
         icon={showStop ? "stop" : "send"}
@@ -420,9 +468,20 @@
     min-width: 0;
   }
 
+  .composer-hint {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--color-text-2);
+    font-size: var(--font-size-sm);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .composer-send {
     display: flex;
-    flex: none;
+    align-items: center;
+    gap: var(--space-10);
+    min-width: 0;
     margin-left: auto;
 
     & :global(.ui-icon-button[data-variant="primary"]:disabled) {

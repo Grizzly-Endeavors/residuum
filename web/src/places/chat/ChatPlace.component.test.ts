@@ -274,7 +274,7 @@ describe("stopping the reply", () => {
     expect(screen.getByRole("button", { name: "Stop the reply" })).toHaveTextContent("Stopping…");
   });
 
-  it("stops it with Esc while the composer has focus", async () => {
+  it("stops it with a second Esc while the composer has focus", async () => {
     startTurn();
     const stop = vi.spyOn(ws, "stop");
     render(ChatPlace, { agent: "atlas", actions: shell });
@@ -282,7 +282,11 @@ describe("stopping the reply", () => {
 
     screen.getByRole("combobox").focus();
     await userEvent.keyboard("{Escape}");
+    expect(stop).not.toHaveBeenCalled();
+    expect(screen.getByText("Press Esc again to stop")).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
     expect(stop).toHaveBeenCalledOnce();
+    expect(screen.queryByText("Press Esc again to stop")).toBeNull();
   });
 
   it("leaves Esc to an open overlay, and does nothing between turns", async () => {
@@ -301,6 +305,7 @@ describe("stopping the reply", () => {
     await userEvent.keyboard("{Escape}");
     expect(stop).not.toHaveBeenCalled();
     expect(screen.queryByRole("menu", { name: "More for atlas" })).toBeNull();
+    expect(screen.queryByText("Press Esc again to stop")).toBeNull();
   });
 });
 

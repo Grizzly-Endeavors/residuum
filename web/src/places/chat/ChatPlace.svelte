@@ -8,7 +8,7 @@
   import { hub } from "../../lib/hub.svelte";
   import { notifications } from "../../lib/notifications.svelte";
   import type { ImageAttachment } from "../../lib/types";
-  import { EmptyState, overlayOpen } from "../../lib/ui";
+  import { EmptyState } from "../../lib/ui";
   import { ws } from "../../lib/ws.svelte";
   import Feed from "../../feed/Feed.svelte";
   import type { FeedHistory } from "../../feed/feed-history";
@@ -61,20 +61,6 @@
       focusComposer = false;
     });
   });
-
-  // Esc in the composer stops the reply. A control in the composer that uses
-  // Esc itself (the `/` menu) claims it first, and an open overlay takes it
-  // instead: closing the overlay is all that press does.
-  function stopOnEscape(node: HTMLElement): () => void {
-    const onKeydown = (event: KeyboardEvent): void => {
-      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
-      if (store.activeTurnId === null || overlayOpen()) return;
-      event.preventDefault();
-      ws.stop();
-    };
-    node.addEventListener("keydown", onKeydown);
-    return () => node.removeEventListener("keydown", onKeydown);
-  }
 
   // A line whose first word is a chat action's `/name` runs that action, with
   // the rest of the line as its text; anything else is a message, a pasted
@@ -131,7 +117,7 @@
     {/snippet}
   </Feed>
   {#if running}
-    <div class="chat-composer" bind:this={composerEl} {@attach stopOnEscape}>
+    <div class="chat-composer" bind:this={composerEl}>
       <Composer
         {agent}
         replying={store.activeTurnId !== null}

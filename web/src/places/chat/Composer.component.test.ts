@@ -25,12 +25,14 @@ interface Rendered {
   box: HTMLElement;
 }
 
-function composer(
-  props: Partial<{ replying: boolean; reconnecting: boolean; queued: number }> = {},
-): Rendered {
+type Props = Partial<{ replying: boolean; reconnecting: boolean; queued: number }>;
+
+function composerWithRerender(props: Props = {}): Rendered & {
+  rerender: (next: Props) => Promise<void>;
+} {
   const onsend = vi.fn(() => true);
   const onstop = vi.fn();
-  render(Composer, {
+  const { rerender } = render(Composer, {
     agent: "atlas",
     replying: false,
     reconnecting: false,
@@ -39,12 +41,26 @@ function composer(
     onstop,
     ...props,
   });
-  return { onsend, onstop, box: screen.getByRole("combobox", { name: "Message atlas" }) };
+  return {
+    onsend,
+    onstop,
+    box: screen.getByRole("combobox", { name: "Message atlas" }),
+    rerender: (next) => rerender(next),
+  };
 }
 
+function composer(props: Props = {}): Rendered {
+  const { onsend, onstop, box } = composerWithRerender(props);
+  return { onsend, onstop, box };
+}
+
+/** Whether the device reports a coarse pointer, as a touch screen does. */
+let coarsePointer = false;
+
 beforeEach(() => {
+  coarsePointer = false;
   vi.stubGlobal("matchMedia", (media: string) => ({
-    matches: false,
+    matches: coarsePointer && media === "(pointer: coarse)",
     media,
     addEventListener: () => {},
     removeEventListener: () => {},
@@ -274,6 +290,155 @@ describe("images", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "notes.pdf can't be attached. Attach a JPEG, PNG, GIF or WebP image.",
     );
+  });
+});
+
+describe("stopping the reply with Esc", () => {
+  const HINT = "Press Esc again to stop";
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function user(): ReturnType<typeof userEvent.setup> {
+    return userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
+  }
+
+  it("asks for a second Esc, announced politely, and stops on it", async () => {
+    const { onstop, box } = composer({ replying: true });
+    const keys = user();
+    box.focus();
+
+    await keys.keyboard("{Escape}");
+    expect(screen.getByRole("status")).toHaveTextContent(HINT);
+    expect(onstop).not.toHaveBeenCalled();
+
+    await keys.keyboard("{Escape}");
+    expect(onstop).toHaveBeenCalledOnce();
+    expect(screen.queryByText(HINT)).toBeNull();
+  });
+
+  it("lets the hint go when two seconds pass, and the next Esc asks again", async () => {
+    const { onstop, box } = composer({ replying: true });
+    const keys = user();
+    box.focus();
+
+    await keys.keyboard("{Escape}");
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(screen.queryByText(HINT)).toBeNull();
+    await keys.keyboard("{Escape}");
+    expect(onstop).not.toHaveBeenCalled();
+    expect(screen.getByText(HINT)).toBeInTheDocument();
+  });
+
+  it("is disarmed by any other key", async () => {
+    const { onstop, box } = composer({ replying: true });
+    const keys = user();
+    box.focus();
+
+    await keys.keyboard("{Escape}a");
+    expect(screen.queryByText(HINT)).toBeNull();
+    await keys.keyboard("{Escape}");
+    expect(onstop).not.toHaveBeenCalled();
+  });
+
+  it("is disarmed when focus leaves the composer", async () => {
+    const { onstop, box } = composer({ replying: true });
+    const keys = user();
+    box.focus();
+    await keys.keyboard("{Escape}");
+    expect(screen.getByText(HINT)).toBeInTheDocument();
+
+    box.blur();
+    await settle();
+    expect(screen.queryByText(HINT)).toBeNull();
+    box.focus();
+    await keys.keyboard("{Escape}");
+    expect(onstop).not.toHaveBeenCalled();
+  });
+
+  it("is disarmed when the reply ends", async () => {
+    const { rerender, box } = composerWithRerender({ replying: true });
+    const keys = user();
+    box.focus();
+    await keys.keyboard("{Escape}");
+    expect(screen.getByText(HINT)).toBeInTheDocument();
+
+    await rerender({ replying: false });
+    expect(screen.queryByText(HINT)).toBeNull();
+  });
+
+  it("counts a held key as one press", async () => {
+    const { onstop, box } = composer({ replying: true });
+    box.focus();
+    for (const repeat of [false, true, true]) {
+      box.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", repeat, bubbles: true, cancelable: true }),
+      );
+    }
+    await settle();
+    expect(onstop).not.toHaveBeenCalled();
+    expect(screen.getByText(HINT)).toBeInTheDocument();
+  });
+
+  it("does nothing between replies", async () => {
+    const { onstop, box } = composer({ replying: false });
+    const keys = user();
+    box.focus();
+    await keys.keyboard("{Escape}{Escape}");
+    expect(onstop).not.toHaveBeenCalled();
+    expect(screen.queryByText(HINT)).toBeNull();
+  });
+
+  it("leaves Esc to the / menu, which closes without arming the stop", async () => {
+    const { onstop, box } = composer({ replying: true });
+    const keys = user();
+    await keys.type(box, "/");
+    expect(screen.getByRole("listbox")).toBeInTheDocument();
+
+    await keys.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(screen.queryByText(HINT)).toBeNull();
+    expect(onstop).not.toHaveBeenCalled();
+  });
+
+  it("leaves Stop reply to stop at once", async () => {
+    const { onstop } = composer({ replying: true });
+    await user().click(screen.getByRole("button", { name: "Stop reply" }));
+    expect(onstop).toHaveBeenCalledOnce();
+  });
+});
+
+describe("Enter", () => {
+  it("sends on a screen with a mouse, and leaves the key hint alone", async () => {
+    const { onsend, box } = composer();
+    expect(box).not.toHaveAttribute("enterkeyhint");
+    await userEvent.type(box, "Hello{Enter}");
+    expect(onsend).toHaveBeenCalledWith("Hello", undefined);
+  });
+
+  it("is a new line on a touch screen, where only Send sends", async () => {
+    coarsePointer = true;
+    const { onsend, box } = composer();
+    expect(box).toHaveAttribute("enterkeyhint", "enter");
+    await userEvent.type(box, "First{Enter}second");
+    expect(box).toHaveValue("First\nsecond");
+    expect(onsend).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(onsend).toHaveBeenCalledWith("First\nsecond", undefined);
+  });
+
+  it("still lets Enter run the highlighted action of the / menu on a touch screen", async () => {
+    coarsePointer = true;
+    const { box } = composer();
+    await userEvent.type(box, "/obs{Enter}");
+    await settle();
+    expect(summarize).toHaveBeenCalledOnce();
   });
 });
 

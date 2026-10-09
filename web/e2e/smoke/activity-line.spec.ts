@@ -98,7 +98,9 @@ test.describe("a live turn", () => {
     await expect(feed.getByText("I've looked into that and here's what I found:")).toHaveCount(0);
   });
 
-  test("Esc in the composer stops it, and closes an open menu first", async ({ page }) => {
+  test("Esc in the composer closes an open menu first, then stops it on a second press", async ({
+    page,
+  }) => {
     await openAtlas(page);
     await send(page, "Tidy the wiki index");
     const feed = conversation(page);
@@ -113,7 +115,14 @@ test.describe("a live turn", () => {
 
     await composer(page).focus();
     await page.keyboard.press("Escape");
+    await expect(
+      page.getByRole("status").filter({ hasText: "Press Esc again to stop" }),
+    ).toBeVisible();
+    await expect(feed.getByText("Working")).toBeVisible();
+
+    await page.keyboard.press("Escape");
     await expect(summary(feed, /stopped by you/i)).toBeVisible();
+    await expect(page.getByText("Press Esc again to stop")).toHaveCount(0);
   });
 });
 
