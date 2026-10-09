@@ -102,6 +102,19 @@ fn partial_tag_len(text: &str, tag: &str) -> usize {
         .unwrap_or(0)
 }
 
+/// The readable reasoning of an assistant message that can go back to a host
+/// as plain text: the unsigned, unredacted blocks, not the signed or
+/// part-tagged ones another provider produced.
+pub(crate) fn plain_reasoning(thinking: &[ThinkingBlock]) -> Option<String> {
+    let text: Vec<&str> = thinking
+        .iter()
+        .filter(|b| b.signature.is_none() && b.redacted.is_none() && b.part.is_none())
+        .map(|b| b.text.as_str())
+        .filter(|t| !t.is_empty())
+        .collect();
+    (!text.is_empty()).then(|| text.join("\n\n"))
+}
+
 /// Collects a reply's text and reasoning, pushing both to a sink as they
 /// arrive when there is one.
 pub(crate) struct ReplyAssembler<'a> {
