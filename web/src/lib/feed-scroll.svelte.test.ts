@@ -180,13 +180,47 @@ describe("FeedScroller", () => {
       let covered = 150;
       const { feed, scroller } = attached({ covered: () => covered });
       feed.geometry.padding = 150;
-      feed.scrollBy(1500);
+      // 50px short of the bottom, with the last line in view.
+      feed.scrollBy(1450);
       expect(scroller.scrolledUp).toBe(false);
 
-      // The same position is worse with a taller composer: its 400px hide the last 250px of text.
+      // About the same position is worse with a taller composer: its 400px hide the last 300px of text.
       covered = 400;
-      feed.scrollBy(1500);
+      feed.scrollBy(1451);
       expect(scroller.scrolledUp).toBe(true);
+    });
+
+    it("keeps a reader at the very bottom following while the room for the composer catches up", () => {
+      // The composer just grew to 137px; the room under the last line, set
+      // from its height a frame later, is still the 48px buffer.
+      const { feed, scroller } = attached({ covered: () => 137 });
+      feed.geometry.padding = 48;
+      feed.scrollBy(1400);
+      feed.scrollBy(1500);
+      expect(scroller.isFollowing).toBe(true);
+      expect(scroller.scrolledUp).toBe(false);
+    });
+
+    it("doesn't take the late event of its own scroll for the reader leaving the end", () => {
+      // Seen on a phone while reconnecting: the composer covers 137px and the
+      // room under the last line is still 48px.
+      const { feed, observer, scroller } = attached({ covered: () => 137 });
+      feed.geometry.padding = 48;
+      feed.scrollTo.mockClear();
+      // The feed pins the reader to the bottom.
+      scroller.contentChanged(true);
+      expect(feed.geometry.scrollTop).toBe(2000);
+      // 46px more content lands, then the pin's own scroll event arrives,
+      // with the position where the pin left it.
+      feed.geometry.scrollHeight = 2546;
+      feed.scrollBy(feed.geometry.scrollTop);
+      expect(scroller.isFollowing).toBe(true);
+
+      // Older history is prepended: the reader is kept at the newest.
+      feed.geometry.scrollHeight = 3500;
+      observer.notify();
+      expect(feed.scrollTo).toHaveBeenLastCalledWith({ top: 3500, behavior: "instant" });
+      expect(scroller.scrolledUp).toBe(false);
     });
   });
 

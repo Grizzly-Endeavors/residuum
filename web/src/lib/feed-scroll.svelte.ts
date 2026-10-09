@@ -13,6 +13,9 @@
 /** Within this distance of the end of the content, a feed keeps following new content. */
 const FOLLOW_THRESHOLD_PX = 120;
 
+/** Sub-pixel scroll positions leave a reader at the bottom a pixel or so short of it. */
+const SCROLL_END_SLACK_PX = 2;
+
 /** Input that means the reader is scrolling by hand. */
 const READER_SCROLL_EVENTS = ["wheel", "touchstart", "keydown", "pointerdown"] as const;
 
@@ -117,9 +120,28 @@ export class FeedScroller {
     this.covered = options.covered ?? (() => 0);
   }
 
+  /**
+   * The scroll position the scroller last saw or set. A scroll event that
+   * finds the position where it was is not the reader moving: it is the late
+   * event of the scroller's own instant scroll, which can arrive after more
+   * content has landed below and must not count as the reader leaving the end.
+   */
+  private seenTop: number | null = null;
+
   private readonly onScroll = (): void => {
+    const top = this.el?.scrollTop;
+    if (top !== undefined && top === this.seenTop) return;
+    this.seenTop = top ?? null;
     this.measure();
   };
+
+  /** Scroll at once to `top`, as the scroller's own move rather than the reader's. */
+  private scrollInstantly(top: number): void {
+    const el = this.el;
+    if (!el) return;
+    el.scrollTo({ top, behavior: "instant" });
+    this.seenTop = el.scrollTop;
+  }
 
   // The reader taking over the scroll cancels a glide in progress, and ends
   // any hold on the place of a control they pressed.
@@ -269,7 +291,7 @@ export class FeedScroller {
     if (!el || isHidden(el)) return;
     // Instant, not smooth: a smooth scroll still in flight when more content
     // lands stops short of the new bottom.
-    el.scrollTo({ top: el.scrollHeight, behavior: "instant" });
+    this.scrollInstantly(el.scrollHeight);
     this.scrolledUp = false;
     this.unseen = false;
   }
@@ -298,8 +320,19 @@ export class FeedScroller {
     return this.contentEnd() - (el.scrollTop + el.clientHeight - this.covered());
   }
 
+  /**
+   * Whether the reader is at the end: their last line is near enough the view,
+   * or they are at the very bottom of the scroll range, where there is no
+   * further to go. The room under the last line is a CSS variable set from
+   * the composer's measured height a frame after the composer changes, so for
+   * that frame a reader at the bottom can see the composer cover more than the
+   * room left for it.
+   */
   private nearEnd(): boolean {
-    return this.reach() <= this.followWithinPx;
+    const el = this.el;
+    if (!el) return true;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= SCROLL_END_SLACK_PX;
+    return atBottom || this.reach() <= this.followWithinPx;
   }
 
   /** Scroll just far enough that something floating over the foot isn't covering the last line. */
@@ -307,7 +340,7 @@ export class FeedScroller {
     const el = this.el;
     if (!el) return;
     const reach = this.reach();
-    if (reach > 0) el.scrollTo({ top: el.scrollTop + reach, behavior: "instant" });
+    if (reach > 0) this.scrollInstantly(el.scrollTop + reach);
   }
 
   /** The reader's position, from their own scrolling. */
@@ -401,7 +434,7 @@ export class FeedScroller {
     const target = control ?? keeping.item;
     if (!target?.isConnected) return;
     const delta = placeIn(el, target) - (control === null ? keeping.itemTop : keeping.controlTop);
-    if (Math.abs(delta) > 0.5) el.scrollTo({ top: el.scrollTop + delta, behavior: "instant" });
+    if (Math.abs(delta) > 0.5) this.scrollInstantly(el.scrollTop + delta);
   }
 
   private letGoOfPlace(): void {
