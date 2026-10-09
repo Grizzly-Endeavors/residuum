@@ -1112,12 +1112,14 @@ pub(crate) mod tests {
             .collect()
     }
 
-    pub(crate) fn bundled_teams_template(file: &str) -> &'static str {
+    /// The bundled template with LF line endings, which a Windows checkout turns into CRLF.
+    pub(crate) fn bundled_teams_template(file: &str) -> String {
         match file {
             "m365agents.yml" => TEAMS_SETUP_M365AGENTS_YML,
             "appPackage/manifest.json" => TEAMS_SETUP_MANIFEST_JSON,
             other => panic!("no bundled template for {other}"),
         }
+        .replace("\r\n", "\n")
     }
 
     pub(crate) fn stale_bundled_teams_template(entry: &StaleTeamsTemplateText) -> String {
@@ -1128,7 +1130,7 @@ pub(crate) mod tests {
     fn the_bundled_teams_templates_match_the_toolkit_schemas() {
         for file in ["m365agents.yml", "appPackage/manifest.json"] {
             assert_eq!(
-                teams_template_schema_errors(file, bundled_teams_template(file)),
+                teams_template_schema_errors(file, &bundled_teams_template(file)),
                 Vec::<String>::new(),
                 "{file}"
             );
@@ -1149,13 +1151,13 @@ pub(crate) mod tests {
 
             assert_eq!(
                 repaired_teams_template_text(&stale, entry).as_deref(),
-                Some(bundled)
+                Some(bundled.as_str())
             );
             assert_eq!(
                 repaired_teams_template_text(&stale.replace('\n', "\r\n"), entry),
                 Some(bundled.replace('\n', "\r\n"))
             );
-            assert!(repaired_teams_template_text(bundled, entry).is_none());
+            assert!(repaired_teams_template_text(&bundled, entry).is_none());
             assert!(repaired_teams_template_text("{}\n", entry).is_none());
         }
     }
