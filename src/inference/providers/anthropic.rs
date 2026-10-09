@@ -101,11 +101,15 @@ impl AnthropicClient {
     /// string (Anthropic uses a top-level `system` field rather than putting
     /// system messages in the messages array).
     ///
-    /// The reasoning behind an assistant message that made tool calls goes
-    /// back ahead of its other blocks while the tool-use exchange it belongs
-    /// to is still going on, because the API rejects the next request
-    /// otherwise. Reasoning behind earlier replies is not sent.
-    fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<AnthropicMessage>) {
+    /// With `replay_thinking`, the reasoning behind an assistant message that
+    /// made tool calls goes back ahead of its other blocks while the
+    /// tool-use exchange it belongs to is still going on, because the API
+    /// rejects the next request otherwise. Reasoning behind earlier replies
+    /// is not sent, and none is when the request has thinking off.
+    fn convert_messages(
+        messages: &[Message],
+        replay_thinking: bool,
+    ) -> (Option<String>, Vec<AnthropicMessage>) {
         let mut system_parts: Vec<&str> = Vec::new();
         let mut api_messages: Vec<AnthropicMessage> = Vec::new();
         let exchange_start = current_exchange_start(messages);
@@ -143,7 +147,7 @@ impl AnthropicClient {
                 Role::Assistant => {
                     let mut blocks: Vec<AnthropicContentBlock> = Vec::new();
 
-                    if index >= exchange_start {
+                    if replay_thinking && index >= exchange_start {
                         blocks.extend(replayable_thinking(&msg.thinking));
                     }
 
@@ -239,7 +243,11 @@ impl AnthropicClient {
         tools: &[ToolDefinition],
         options: &CompletionOptions,
     ) -> PreparedRequest {
-        let (system, messages) = Self::convert_messages(messages);
+        let max_tokens = options.max_tokens.unwrap_or(self.max_tokens);
+        let thinking_on = build_thinking(options.thinking.as_ref(), max_tokens, false)
+            .thinking
+            .is_some();
+        let (system, messages) = Self::convert_messages(messages, thinking_on);
         let has_web_search = options.web_search.is_some();
         let tools = (!tools.is_empty() || has_web_search)
             .then(|| Self::convert_tools(tools, options.web_search.as_ref()));
@@ -276,7 +284,7 @@ impl AnthropicClient {
             tools,
             output_format,
             temperature: options.temperature,
-            max_tokens: options.max_tokens.unwrap_or(self.max_tokens),
+            max_tokens,
             thinking: options.thinking.clone(),
         }
     }
@@ -1510,7 +1518,7 @@ mod tests {
         assert!(result.is_ok(), "system message request should succeed");
 
         // Verify system was extracted properly by checking the conversion
-        let (system, api_msgs) = AnthropicClient::convert_messages(&messages);
+        let (system, api_msgs) = AnthropicClient::convert_messages(&messages, true);
         assert_eq!(
             system.as_deref(),
             Some("You are a helpful assistant."),
@@ -1594,7 +1602,7 @@ mod tests {
             Message::tool("Rust is a systems programming language.", "toolu_abc123"),
         ];
 
-        let (system, api_msgs) = AnthropicClient::convert_messages(&messages);
+        let (system, api_msgs) = AnthropicClient::convert_messages(&messages, true);
         assert!(system.is_none(), "no system message expected");
         assert_eq!(api_msgs.len(), 3, "should have 3 API messages");
 
@@ -2136,7 +2144,7 @@ mod tests {
             Message::tool("Result B", "tool_2"),
         ];
 
-        let (_system, api_msgs) = AnthropicClient::convert_messages(&messages);
+        let (_system, api_msgs) = AnthropicClient::convert_messages(&messages, true);
 
         // user, assistant, merged-user (two tool results)
         assert_eq!(
@@ -2209,7 +2217,7 @@ mod tests {
             Message::user("Thanks, now do something else"),
         ];
 
-        let (_system, api_msgs) = AnthropicClient::convert_messages(&messages);
+        let (_system, api_msgs) = AnthropicClient::convert_messages(&messages, true);
 
         // assistant, merged-user (tool_result + user text)
         assert_eq!(
@@ -2254,7 +2262,7 @@ mod tests {
             Message::user("Follow up"),
         ];
 
-        let (_system, api_msgs) = AnthropicClient::convert_messages(&messages);
+        let (_system, api_msgs) = AnthropicClient::convert_messages(&messages, true);
 
         assert_eq!(api_msgs.len(), 3, "alternating roles should not be merged");
         assert_eq!(api_msgs.first().unwrap().role, "user");
@@ -2405,7 +2413,7 @@ mod tests {
             Message::user("Hello"),
         ];
 
-        let (system, api_msgs) = AnthropicClient::convert_messages(&messages);
+        let (system, api_msgs) = AnthropicClient::convert_messages(&messages, true);
         assert_eq!(
             system.as_deref(),
             Some("First instruction."),
@@ -2824,7 +2832,7 @@ mod tests {
             ),
             Message::tool("a.txt", "toolu_1"),
         ];
-        let (_, api) = AnthropicClient::convert_messages(&messages);
+        let (_, api) = AnthropicClient::convert_messages(&messages, true);
         assert_eq!(
             block_types(&api).get(1).unwrap(),
             "thinking,redacted_thinking,text,tool_use",
@@ -2862,7 +2870,7 @@ mod tests {
             ),
             Message::tool("ok", "toolu_1"),
         ];
-        let (_, api) = AnthropicClient::convert_messages(&messages);
+        let (_, api) = AnthropicClient::convert_messages(&messages, true);
         let types = block_types(&api);
         assert_eq!(
             types.get(1).unwrap(),
@@ -2890,7 +2898,7 @@ mod tests {
             assistant_with_thinking("", Some(vec![call("t2")]), vec![signed("two", "s2")]),
             Message::tool("r2", "t2"),
         ];
-        let (_, api) = AnthropicClient::convert_messages(&messages);
+        let (_, api) = AnthropicClient::convert_messages(&messages, true);
         let types = block_types(&api);
         assert_eq!(
             types.get(1).unwrap(),
@@ -2901,6 +2909,29 @@ mod tests {
             types.get(3).unwrap(),
             "thinking,tool_use",
             "step two replays"
+        );
+    }
+
+    #[test]
+    fn thinking_is_replayed_only_when_the_request_has_thinking_on() {
+        let messages = vec![
+            Message::user("go"),
+            assistant_with_thinking("", Some(vec![call("t1")]), vec![signed("plan", "s1")]),
+            Message::tool("r1", "t1"),
+        ];
+        let client = test_client("http://localhost");
+
+        let on = client.prepare(&messages, &[], &thinking_options(4096));
+        assert_eq!(
+            block_types(&on.messages).get(1).unwrap(),
+            "thinking,tool_use",
+            "thinking blocks go back while thinking is on"
+        );
+        let off = client.prepare(&messages, &[], &CompletionOptions::default());
+        assert_eq!(
+            block_types(&off.messages).get(1).unwrap(),
+            "tool_use",
+            "with thinking off there is nothing to pair them with, so they are left out"
         );
     }
 
@@ -2926,7 +2957,7 @@ mod tests {
             ),
             Message::tool("r1", "t1"),
         ];
-        let (_, api) = AnthropicClient::convert_messages(&messages);
+        let (_, api) = AnthropicClient::convert_messages(&messages, true);
         let blocks = serde_json::to_value(&api.get(1).unwrap().content).unwrap();
         assert_eq!(
             blocks,
