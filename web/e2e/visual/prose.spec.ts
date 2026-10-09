@@ -1,4 +1,5 @@
 import type { Locator, Page } from "@playwright/test";
+import { sendFromComposer } from "../support/composer";
 import { expect, test } from "../support/fixtures";
 import { expectScreenshot } from "../support/screenshot";
 
@@ -19,9 +20,9 @@ async function showcase(page: Page): Promise<Locator> {
   await page.goto("/agent/atlas");
   const feed = conversation(page);
   await expect(feed.getByText(GREETING)).toBeVisible();
-  const box = page.getByRole("textbox", { name: "Message atlas" });
+  const box = page.getByRole("combobox", { name: "Message atlas" });
   await box.fill("markdown please");
-  await box.press("Enter");
+  await sendFromComposer(box);
   await expect(feed.getByText("Should parked notifications expire after a week")).toBeVisible();
   await expect(page.getByRole("button", { name: /^Model: Claude Sonnet 4\.6/ })).toBeAttached();
   return feed;
