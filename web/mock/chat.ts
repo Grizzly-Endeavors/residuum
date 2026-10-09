@@ -171,7 +171,13 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
       for (const frame of frames) state.broadcast(frame);
     };
 
-    emit([{ type: "turn_started", reply_to: replyTo }]);
+    emit([
+      {
+        type: "turn_started",
+        reply_to: replyTo,
+        origin: { endpoint: "ws", visibility: "user" },
+      },
+    ]);
     hub.setBusy(agent, true);
     for (const step of scenario.steps) {
       const onlyResults = step.frames.every((frame) => frame.type === "tool_result");
@@ -212,7 +218,15 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
               },
             ]);
           } else if (scenario.reply !== null) {
-            emit([{ type: "response", reply_to: replyTo, content: scenario.reply }]);
+            emit([
+              {
+                type: "response",
+                reply_to: replyTo,
+                call: scenario.replyCall,
+                endpoint: "ws",
+                content: scenario.reply,
+              },
+            ]);
           }
           emit([{ type: "turn_ended", reply_to: replyTo }]);
           hub.setBusy(agent, false);
@@ -242,7 +256,7 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
   function send(msg: SendMessage): void {
     const replyTo = msg.id;
     const { content } = msg;
-    const scenario = scenarioFor(content, env.nextId);
+    const scenario = scenarioFor(content, replyTo, env.nextId);
     if (scenario !== null) {
       runScenario(replyTo, content, scenario);
       return;
@@ -285,12 +299,23 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
       if (!down) state.broadcast(frame);
     };
 
-    live({ type: "turn_started", reply_to: replyTo });
+    live({
+      type: "turn_started",
+      reply_to: replyTo,
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     hub.setBusy(agent, true);
     later(300, () => {
-      live({ type: "broadcast_response", content: "Looking through recent notes first." });
+      live({
+        type: "broadcast_response",
+        reply_to: replyTo,
+        call: 0,
+        content: "Looking through recent notes first.",
+      });
       live({
         type: "tool_call",
+        reply_to: replyTo,
+        call: 0,
         id: toolCallId,
         name: "memory_search",
         arguments: toolArgs,
@@ -300,6 +325,7 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     later(600, () => {
       live({
         type: "tool_result",
+        reply_to: replyTo,
         tool_call_id: toolCallId,
         name: "memory_search",
         output: toolOutput,
@@ -316,6 +342,8 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
       for (const read of reads) {
         live({
           type: "tool_call",
+          reply_to: replyTo,
+          call: 1,
           id: read.id,
           name: "read_file",
           arguments: { path: read.path },
@@ -329,6 +357,7 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
           env.whenTurnReleased("results", () => {
             live({
               type: "tool_result",
+              reply_to: replyTo,
               tool_call_id: read.id,
               name: "read_file",
               output: read.output,
@@ -368,7 +397,7 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
         tool_calls: TURN_USAGE.tools,
         session_totals: state.usage,
       });
-      live({ type: "response", reply_to: replyTo, content: response });
+      live({ type: "response", reply_to: replyTo, call: 2, endpoint: "ws", content: response });
       live({ type: "turn_ended", reply_to: replyTo });
       if (lower.startsWith("remember")) {
         live({ type: "post_turn_activity", kind: "memory", active: true });

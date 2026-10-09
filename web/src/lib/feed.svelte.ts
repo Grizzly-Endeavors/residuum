@@ -398,6 +398,14 @@ export class FeedStore {
       case "workspace_watch_unavailable":
         // The change feed belongs to the watch registry's owners.
         break;
+
+      case "user_message":
+      case "text_delta":
+      case "thinking_delta":
+      case "thinking":
+      case "stream_restart":
+        // The feed does not render these frames.
+        break;
     }
   }
 

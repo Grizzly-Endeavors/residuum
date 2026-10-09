@@ -7,12 +7,21 @@ import type { ServerMessage, ToolCallState } from "./types";
 // timing, failures, how the turn ended, and steps the page may have missed.
 
 function toolCall(id: string, name = "read_file", server: string | null = null): ServerMessage {
-  return { type: "tool_call", id, name, arguments: { path: "team/wiki/index.md" }, server };
+  return {
+    type: "tool_call",
+    reply_to: "t1",
+    call: 0,
+    id,
+    name,
+    arguments: { path: "team/wiki/index.md" },
+    server,
+  };
 }
 
 function toolResult(id: string, isError = false): ServerMessage {
   return {
     type: "tool_result",
+    reply_to: "t1",
     tool_call_id: id,
     name: "read_file",
     output: "ok",
@@ -41,7 +50,11 @@ describe("a turn the page watched", () => {
   it("is timed from turn_started to turn_ended, and keeps a failed step's status", () => {
     const store = new FeedStore();
     store.pushUserMessage("check the wiki");
-    store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     store.handleMessage(toolCall("c1", "read_file", "github"));
     store.handleMessage(toolResult("c1", true));
     expect(callsOf(liveBlock(store))).toMatchObject([{ status: "error", server: "github" }]);
@@ -58,7 +71,11 @@ describe("a turn the page watched", () => {
     try {
       vi.setSystemTime(10_000);
       const store = new FeedStore();
-      store.handleMessage({ type: "turn_started", reply_to: "t1" });
+      store.handleMessage({
+        type: "turn_started",
+        reply_to: "t1",
+        origin: { endpoint: "ws", visibility: "user" },
+      });
       store.handleMessage(toolCall("c1"));
       store.handleMessage(toolCall("c2"));
       vi.setSystemTime(12_500);
@@ -77,7 +94,11 @@ describe("a turn the page watched", () => {
 
   it("is stopped by the user: steps still running are marked stopped", () => {
     const store = new FeedStore();
-    store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     store.handleMessage(toolCall("c1", "exec"));
     store.askStop();
     expect(store.observed.get("t1")?.stopAsked).toBe(true);
@@ -89,7 +110,11 @@ describe("a turn the page watched", () => {
 
   it("is cut off when the agent stops", () => {
     const store = new FeedStore();
-    store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     store.handleMessage(toolCall("c1"));
     store.abandonLiveTurn();
     expect(store.observed.get("t1")?.ending).toBe("interrupted");
@@ -99,7 +124,11 @@ describe("a turn the page watched", () => {
   it("shows from turn_started, before any output", () => {
     const store = new FeedStore();
     store.pushUserMessage("hello");
-    store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     expect(liveBlock(store)).toMatchObject({ key: "turn:t1", parts: [] });
 
     // The same block, by key, once output arrives.
@@ -109,7 +138,11 @@ describe("a turn the page watched", () => {
 
   it("notes where steps may be missing after the connection came back", () => {
     const store = new FeedStore();
-    store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     store.handleMessage(toolCall("c1"));
     store.handleMessage(toolCall("c2"));
     store.markReconnectGap();
@@ -118,7 +151,11 @@ describe("a turn the page watched", () => {
 
   it("is dropped once history renders the turn again, which has no timing", () => {
     const store = new FeedStore();
-    store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     store.handleMessage({ type: "turn_ended", reply_to: "t1" });
     expect(store.observed.get("t1")).toBeDefined();
     store.loadHistory({ kind: "recent", messages: [], next_cursor: null });
@@ -129,7 +166,12 @@ describe("a turn the page watched", () => {
 describe("a turn the page joined already running", () => {
   it("starts on its first frame, with a note that earlier steps aren't shown", () => {
     const store = new FeedStore(() => 5_000);
-    store.handleMessage({ type: "broadcast_response", content: "Looking first." });
+    store.handleMessage({
+      type: "broadcast_response",
+      reply_to: "t1",
+      call: 0,
+      content: "Looking first.",
+    });
     store.handleMessage(toolCall("c1"));
 
     const turnId = store.activeTurnId;
@@ -158,7 +200,7 @@ describe("a turn the page joined already running", () => {
     expect(store.feed.every((item) => item.turnId === "t9")).toBe(true);
     expect(store.observed.get("t9")?.gaps).toEqual([0]);
 
-    store.handleMessage({ type: "response", reply_to: "t9", content: "Done." });
+    store.handleMessage({ type: "response", reply_to: "t9", endpoint: "ws", content: "Done." });
     store.handleMessage({ type: "turn_ended", reply_to: "t9" });
     expect(store.observed.get("t9")?.ending).toBe("finished");
     expect(blocks(store)).toHaveLength(1);
@@ -179,7 +221,11 @@ describe("a turn the page joined already running", () => {
 
   it("never restarts a turn that already ended", () => {
     const store = new FeedStore();
-    store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     store.handleMessage({ type: "turn_ended", reply_to: "t1" });
     store.handleMessage({
       type: "turn_usage",

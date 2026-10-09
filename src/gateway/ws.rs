@@ -710,6 +710,8 @@ mod tests {
             auto_mode: None,
         };
         let main_call = ServerMessage::ToolCall {
+            reply_to: "turn-1".into(),
+            call: 0,
             id: "tc".into(),
             name: "exec".into(),
             arguments: serde_json::json!({}),

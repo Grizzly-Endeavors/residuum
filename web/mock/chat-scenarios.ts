@@ -32,6 +32,8 @@ export interface Scenario {
   toolCalls: number;
   /** The reply that ends the turn, or null when it fails instead. */
   reply: string | null;
+  /** The model call that wrote the reply, counting from zero. */
+  replyCall: number;
   failure: ScenarioFailure | null;
   /** What history records for the turn after the user's message; empty for a turn that failed. */
   recorded: ScenarioMessage[];
@@ -47,21 +49,31 @@ interface ScriptedCall {
   isError?: boolean;
 }
 
-function frameOf(scripted: ScriptedCall): ServerMessage {
-  const { call } = scripted;
+/** What a scenario needs to address its frames to the turn it runs for. */
+interface Context {
+  /** The correlation id of the turn. */
+  replyTo: string;
+  nextId: NextId;
+}
+
+function frameOf(ctx: Context, call: number, scripted: ScriptedCall): ServerMessage {
+  const { call: record } = scripted;
   return {
     type: "tool_call",
-    id: call.id,
-    name: call.name,
+    reply_to: ctx.replyTo,
+    call,
+    id: record.id,
+    name: record.name,
     arguments: scripted.args,
-    server: call.server ?? null,
+    server: record.server ?? null,
   };
 }
 
-function resultOf(scripted: ScriptedCall): ServerMessage {
+function resultOf(ctx: Context, scripted: ScriptedCall): ServerMessage {
   const { call } = scripted;
   return {
     type: "tool_result",
+    reply_to: ctx.replyTo,
     tool_call_id: call.id,
     name: call.name,
     output: scripted.output,
@@ -86,8 +98,13 @@ function recordCall(text: string, calls: ScriptedCall[]): ScenarioMessage[] {
 /** Hands out the ids of a scenario's tool calls. */
 export type NextId = () => number;
 
+/** A text the agent sends on the way, written by the model call numbered `call`. */
+function textOf(ctx: Context, call: number, content: string): ServerMessage {
+  return { type: "broadcast_response", reply_to: ctx.replyTo, call, content };
+}
+
 function scriptCall(
-  nextId: NextId,
+  { nextId }: Context,
   name: string,
   args: Record<string, JsonValue>,
   output: string,
@@ -107,10 +124,10 @@ function scriptCall(
  * the file, and its reply follows. Its texts and its work alternate, so the
  * chat shows runs of steps between messages.
  */
-function segments(nextId: NextId): Scenario {
+function segments(ctx: Context): Scenario {
   const reads = ["config.toml", "docker-compose.yml", "README.md"].map((file) =>
     scriptCall(
-      nextId,
+      ctx,
       "read_file",
       { path: `team/wiki/${file}` },
       `   1\t# ${file}\n   2\t(as it is today)`,
@@ -118,15 +135,15 @@ function segments(nextId: NextId): Scenario {
   );
   const commands = [
     scriptCall(
-      nextId,
+      ctx,
       "exec",
       { command: "grep -n port config.toml" },
       "12:port = 8080\n47:port = 8081",
     ),
-    scriptCall(nextId, "exec", { command: "systemctl status residuum" }, "active (running)"),
+    scriptCall(ctx, "exec", { command: "systemctl status residuum" }, "active (running)"),
   ];
   const edit = scriptCall(
-    nextId,
+    ctx,
     "edit_file",
     { path: "team/wiki/config.toml" },
     "edited team/wiki/config.toml",
@@ -137,19 +154,17 @@ function segments(nextId: NextId): Scenario {
   const reply = "Done. The port is set once now, at 8080, and the service picked it up.";
   return {
     steps: [
-      { at: 300, frames: [{ type: "broadcast_response", content: first }, ...reads.map(frameOf)] },
-      { at: 900, frames: reads.map(resultOf) },
-      {
-        at: 1300,
-        frames: [{ type: "broadcast_response", content: second }, ...commands.map(frameOf)],
-      },
-      { at: 1900, frames: commands.map(resultOf) },
-      { at: 2300, frames: [{ type: "broadcast_response", content: third }, frameOf(edit)] },
-      { at: 2700, frames: [resultOf(edit)] },
+      { at: 300, frames: [textOf(ctx, 0, first), ...reads.map((r) => frameOf(ctx, 0, r))] },
+      { at: 900, frames: reads.map((r) => resultOf(ctx, r)) },
+      { at: 1300, frames: [textOf(ctx, 1, second), ...commands.map((c) => frameOf(ctx, 1, c))] },
+      { at: 1900, frames: commands.map((c) => resultOf(ctx, c)) },
+      { at: 2300, frames: [textOf(ctx, 2, third), frameOf(ctx, 2, edit)] },
+      { at: 2700, frames: [resultOf(ctx, edit)] },
     ],
     endAt: 3000,
     toolCalls: reads.length + commands.length + 1,
     reply,
+    replyCall: 3,
     failure: null,
     recorded: [
       ...recordCall(first, reads),
@@ -164,9 +179,9 @@ function segments(nextId: NextId): Scenario {
  * A turn that gets as far as a search and then can't go on: the model
  * provider stops answering, and the agent reports it.
  */
-function failing(nextId: NextId): Scenario {
+function failing(ctx: Context): Scenario {
   const search = scriptCall(
-    nextId,
+    ctx,
     "memory_search",
     { query: "notification routing", limit: 5 },
     '[{"text":"Found 3 relevant observations from recent conversations.","score":0.87}]',
@@ -175,16 +190,14 @@ function failing(nextId: NextId): Scenario {
     steps: [
       {
         at: 300,
-        frames: [
-          { type: "broadcast_response", content: "Looking through recent notes first." },
-          frameOf(search),
-        ],
+        frames: [textOf(ctx, 0, "Looking through recent notes first."), frameOf(ctx, 0, search)],
       },
-      { at: 700, frames: [resultOf(search)] },
+      { at: 700, frames: [resultOf(ctx, search)] },
     ],
     endAt: 1000,
     toolCalls: 1,
     reply: null,
+    replyCall: 0,
     failure: {
       message: "The model provider didn't answer. Try sending your message again in a moment.",
       details:
@@ -200,9 +213,10 @@ function failing(nextId: NextId): Scenario {
  * - `segments` has the agent work in three rounds, with a text before each
  * - `error` has the turn fail after a search
  */
-export function scenarioFor(content: string, nextId: NextId): Scenario | null {
+export function scenarioFor(content: string, replyTo: string, nextId: NextId): Scenario | null {
+  const ctx: Context = { replyTo, nextId };
   const lower = content.toLowerCase();
-  if (lower.startsWith("segments")) return segments(nextId);
-  if (lower.startsWith("error")) return failing(nextId);
+  if (lower.startsWith("segments")) return segments(ctx);
+  if (lower.startsWith("error")) return failing(ctx);
   return null;
 }

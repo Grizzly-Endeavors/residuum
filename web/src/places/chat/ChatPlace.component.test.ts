@@ -212,9 +212,15 @@ describe("the conversation", () => {
 
   it("shows the live turn of the agent that is open, not the one that was", async () => {
     setViewedAgent("scout");
-    ws.store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    ws.store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     ws.store.handleMessage({
       type: "tool_call",
+      reply_to: "t1",
+      call: 0,
       id: "c1",
       name: "memory_search",
       arguments: { query: "release notes" },
@@ -256,7 +262,11 @@ describe("the conversation", () => {
 describe("stopping the reply", () => {
   function startTurn(): void {
     setViewedAgent("atlas");
-    ws.store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    ws.store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
   }
 
   it("stops it from the activity line, which says it is stopping", async () => {
@@ -291,7 +301,11 @@ describe("stopping the reply", () => {
     await userEvent.keyboard("{Escape}");
     expect(stop).not.toHaveBeenCalled();
 
-    ws.store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    ws.store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     await userEvent.click(screen.getByRole("button", { name: "More for atlas" }));
     expect(screen.getByRole("menu", { name: "More for atlas" })).toBeInTheDocument();
     screen.getByRole("textbox").focus();

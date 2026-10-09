@@ -79,11 +79,30 @@ impl ThinkingBlock {
     }
 }
 
+/// The readable text of `blocks` joined by a blank line, skipping blocks the
+/// provider withheld, or `None` when there is none. The one place reasoning
+/// becomes text for a reader: signatures and encrypted data never leave the
+/// blocks.
+#[must_use]
+pub fn joined_thinking_text(blocks: &[ThinkingBlock]) -> Option<String> {
+    let parts: Vec<&str> = blocks
+        .iter()
+        .map(|block| block.text.trim())
+        .filter(|text| !text.is_empty())
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
+}
+
 /// The person behind a user message and where they sent it from.
 ///
 /// Stored with the message so the agent can tell participants apart in
 /// shared spaces (team channels) long after the message arrived.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct MessageSender {
     /// Display name as the interface reports it.
     pub name: String,
@@ -93,6 +112,7 @@ pub struct MessageSender {
     pub interface: String,
     /// Where on the interface it was sent (e.g. `"direct message"`, `"#general"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub location: Option<String>,
 }
 
@@ -224,6 +244,21 @@ impl Message {
     pub fn with_agent_sender(mut self, agent_sender: Option<AgentSender>) -> Self {
         self.agent_sender = agent_sender;
         self
+    }
+
+    /// Attach the reasoning the model produced for this message.
+    #[must_use]
+    pub fn with_thinking(mut self, thinking: Vec<ThinkingBlock>) -> Self {
+        self.thinking = thinking;
+        self
+    }
+
+    /// The readable reasoning behind this message, blocks joined by a blank
+    /// line, or `None` when the model produced none. Never includes the
+    /// opaque signatures or encrypted data a provider needs replayed.
+    #[must_use]
+    pub fn thinking_text(&self) -> Option<String> {
+        joined_thinking_text(&self.thinking)
     }
 
     /// Message text as the agent reads it in history and transcripts.

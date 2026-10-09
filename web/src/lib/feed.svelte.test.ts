@@ -34,7 +34,11 @@ function storeWithSettledHistory(): FeedStore {
 /** Start a live turn (user message pushed, `turn_started` received). */
 function startLiveTurn(store: FeedStore, content: string, turnId: string): void {
   store.pushUserMessage(content);
-  store.handleMessage({ type: "turn_started", reply_to: turnId });
+  store.handleMessage({
+    type: "turn_started",
+    reply_to: turnId,
+    origin: { endpoint: "ws", visibility: "user" },
+  });
 }
 
 describe("FeedStore reconcileRecent end-of-turn decision", () => {
@@ -180,8 +184,17 @@ describe("FeedStore when a turn fails", () => {
 
   function failingTurn(store: FeedStore, id = "web-a"): void {
     store.pushUserMessage("Tidy the wiki index", undefined, id);
-    store.handleMessage({ type: "turn_started", reply_to: id });
-    store.handleMessage({ type: "broadcast_response", content: "Looking first." });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: id,
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    store.handleMessage({
+      type: "broadcast_response",
+      reply_to: "t1",
+      call: 0,
+      content: "Looking first.",
+    });
   }
 
   it("leaves an account of it in the turn, with its cause and what to send again", () => {
@@ -205,7 +218,11 @@ describe("FeedStore when a turn fails", () => {
     const store = new FeedStore();
     const image = { media_type: "image/png", data: "AAAA" };
     store.pushUserMessage("What is this?", [image], "web-a");
-    store.handleMessage({ type: "turn_started", reply_to: "web-a" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "web-a",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     store.handleMessage(error("web-a"));
 
     expect(store.feed.at(-1)).toMatchObject({
@@ -229,7 +246,11 @@ describe("FeedStore when a turn fails", () => {
   it("shows a turn that failed before it did anything", () => {
     const store = new FeedStore();
     store.pushUserMessage("Hello", undefined, "web-a");
-    store.handleMessage({ type: "turn_started", reply_to: "web-a" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "web-a",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     store.handleMessage(error("web-a"));
     store.handleMessage({ type: "turn_ended", reply_to: "web-a" });
 
@@ -240,7 +261,11 @@ describe("FeedStore when a turn fails", () => {
 
   it("offers no retry for a message the page doesn't hold, or one that wasn't the user's own", () => {
     const store = new FeedStore();
-    store.handleMessage({ type: "turn_started", reply_to: "t9" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t9",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     store.handleMessage(error("t9"));
     expect(store.feed.at(-1)).not.toHaveProperty("retry");
   });
@@ -256,7 +281,12 @@ describe("FeedStore when a turn fails", () => {
 
   it("names a turn joined partway by the error that names it", () => {
     const store = new FeedStore();
-    store.handleMessage({ type: "broadcast_response", content: "Working on it." });
+    store.handleMessage({
+      type: "broadcast_response",
+      reply_to: "t9",
+      call: 0,
+      content: "Working on it.",
+    });
     store.handleMessage(error("t5"));
     expect(store.activeTurnId).toBe("t5");
     expect(store.feed.every((item) => item.turnId === "t5")).toBe(true);
@@ -274,32 +304,66 @@ describe("FeedStore announcements", () => {
   it("says the agent is working when a turn starts", () => {
     const store = named();
     expect(store.announcement).toBeNull();
-    store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     expect(store.announcement?.text).toBe("atlas is working");
   });
 
   it("says the reply is complete, with the start of it, and not before", () => {
     const store = named();
-    store.handleMessage({ type: "turn_started", reply_to: "t1" });
-    store.handleMessage({ type: "broadcast_response", content: "Looking through the notes." });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    store.handleMessage({
+      type: "broadcast_response",
+      reply_to: "t1",
+      call: 0,
+      content: "Looking through the notes.",
+    });
     expect(store.announcement?.text).toBe("atlas is working");
 
-    store.handleMessage({ type: "response", reply_to: "t1", content: "**Done.** Fixed the port." });
+    store.handleMessage({
+      type: "response",
+      reply_to: "t1",
+      endpoint: "ws",
+      content: "**Done.** Fixed the port.",
+    });
     expect(store.announcement?.text).toBe("atlas replied: Done. Fixed the port.");
   });
 
   it("says nothing for a reply with no words, or the tools it ran", () => {
     const store = named();
-    store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     const started = store.announcement;
-    store.handleMessage({ type: "tool_call", id: "c1", name: "exec", arguments: {}, server: null });
-    store.handleMessage({ type: "response", reply_to: "t1", content: "" });
+    store.handleMessage({
+      type: "tool_call",
+      reply_to: "t1",
+      call: 0,
+      id: "c1",
+      name: "exec",
+      arguments: {},
+      server: null,
+    });
+    store.handleMessage({ type: "response", reply_to: "t1", endpoint: "ws", content: "" });
     expect(store.announcement).toBe(started);
   });
 
   it("says the turn couldn't finish, for an error that names it", () => {
     const store = named();
-    store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     store.handleMessage({ type: "error", reply_to: "t1", message: "Nope.", details: null });
     expect(store.announcement?.text).toBe("atlas couldn't finish");
   });
@@ -312,10 +376,18 @@ describe("FeedStore announcements", () => {
 
   it("makes each announcement a new one, so the same words twice are both read", () => {
     const store = named();
-    store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     const first = store.announcement;
     store.handleMessage({ type: "turn_ended", reply_to: "t1" });
-    store.handleMessage({ type: "turn_started", reply_to: "t2" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "t2",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     expect(store.announcement?.text).toBe(first?.text);
     expect(store.announcement?.id).not.toBe(first?.id);
   });
@@ -329,7 +401,11 @@ describe("FeedStore announcements", () => {
       ]),
     );
     store.pushUserMessage("Are you there?", undefined, "web-1");
-    store.handleMessage({ type: "turn_started", reply_to: "web-1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "web-1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     const before = store.announcement;
     expect(
       store.reconcileRecent(
@@ -341,7 +417,12 @@ describe("FeedStore announcements", () => {
         ]),
       ),
     ).toBe(true);
-    store.handleMessage({ type: "response", reply_to: "web-1", content: "Still here." });
+    store.handleMessage({
+      type: "response",
+      reply_to: "web-1",
+      endpoint: "ws",
+      content: "Still here.",
+    });
     expect(store.announcement).toBe(before);
   });
 });
@@ -359,7 +440,11 @@ describe("FeedStore with a turn id history already holds", () => {
     const store = new FeedStore();
     store.loadHistory(segment(earlier));
     store.pushUserMessage("New question", undefined, "web-1");
-    store.handleMessage({ type: "turn_started", reply_to: "web-1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "web-1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     return store;
   }
 
@@ -396,7 +481,11 @@ describe("FeedStore flagging messages that reach a running turn", () => {
   it("flags a user message sent while a turn runs, and not one that starts a turn", () => {
     const store = storeWithSettledHistory();
     store.pushUserMessage("Draft the post", undefined, "web-a");
-    store.handleMessage({ type: "turn_started", reply_to: "web-a" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "web-a",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     store.pushUserMessage("Keep it short", undefined, "web-b");
 
     const users = store.feed.filter((item) => item.kind === "user").slice(-2);
@@ -408,7 +497,11 @@ describe("FeedStore flagging messages that reach a running turn", () => {
     const store = storeWithSettledHistory();
     store.pushAgentMessage("spawned-1", "run-1", "Done early", null);
     store.pushUserMessage("Go", undefined, "web-a");
-    store.handleMessage({ type: "turn_started", reply_to: "web-a" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "web-a",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     store.pushAgentMessage("spawned-1", "run-1", "Result", null);
 
     const messages = store.feed.filter((item) => item.kind === "agent-message");
@@ -422,17 +515,26 @@ describe("FeedStore catching up on a turn whose frames are still arriving", () =
   // catch-up fetch can bring back a turn that has finished on the agent while
   // this page is still receiving its frames.
   const frames: ServerMessage[] = [
-    { type: "turn_started", reply_to: "web-1" },
-    { type: "broadcast_response", content: "Looking first." },
-    { type: "tool_call", id: "c1", name: "memory_search", arguments: {}, server: null },
+    { type: "turn_started", reply_to: "web-1", origin: { endpoint: "ws", visibility: "user" } },
+    { type: "broadcast_response", reply_to: "web-1", call: 0, content: "Looking first." },
+    {
+      type: "tool_call",
+      reply_to: "web-1",
+      call: 0,
+      id: "c1",
+      name: "memory_search",
+      arguments: {},
+      server: null,
+    },
     {
       type: "tool_result",
+      reply_to: "web-1",
       tool_call_id: "c1",
       name: "memory_search",
       output: "found",
       is_error: false,
     },
-    { type: "response", reply_to: "web-1", content: "Here is what I found." },
+    { type: "response", reply_to: "web-1", endpoint: "ws", content: "Here is what I found." },
     { type: "turn_ended", reply_to: "web-1" },
   ];
 
@@ -490,13 +592,26 @@ describe("FeedStore catching up on a turn whose frames are still arriving", () =
   it("lets the next turn's frames through once the settled turn has ended", () => {
     const store = storeWithSettledHistory();
     store.pushUserMessage("Are you there?", undefined, "web-1");
-    store.handleMessage({ type: "turn_started", reply_to: "web-1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "web-1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     expect(store.reconcileRecent(recorded)).toBe(true);
     for (const frame of frames.slice(1)) store.handleMessage(frame);
 
     store.pushUserMessage("And now?", undefined, "web-2");
-    store.handleMessage({ type: "turn_started", reply_to: "web-2" });
-    store.handleMessage({ type: "broadcast_response", content: "Still here." });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "web-2",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    store.handleMessage({
+      type: "broadcast_response",
+      reply_to: "web-1",
+      call: 0,
+      content: "Still here.",
+    });
     store.handleMessage({ type: "turn_ended", reply_to: "web-2" });
 
     expect(shown(store, "Still here.")).toBe(1);
@@ -505,11 +620,20 @@ describe("FeedStore catching up on a turn whose frames are still arriving", () =
   it("lets a turn joined after another reconnect through, though the settled one never ended", () => {
     const store = storeWithSettledHistory();
     store.pushUserMessage("Are you there?", undefined, "web-1");
-    store.handleMessage({ type: "turn_started", reply_to: "web-1" });
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "web-1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     expect(store.reconcileRecent(recorded)).toBe(true);
 
     store.markReconnectGap();
-    store.handleMessage({ type: "broadcast_response", content: "A later turn." });
+    store.handleMessage({
+      type: "broadcast_response",
+      reply_to: "web-1",
+      call: 0,
+      content: "A later turn.",
+    });
 
     expect(shown(store, "A later turn.")).toBe(1);
   });
