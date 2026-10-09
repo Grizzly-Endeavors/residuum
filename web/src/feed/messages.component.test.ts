@@ -201,6 +201,7 @@ describe("a file the agent sent", () => {
       agent: "atlas",
     });
     expect(container.querySelector("audio")).toHaveAttribute("src", "/files/memo.ogg");
+    expect(container.querySelector("audio")).toHaveAccessibleName("memo.ogg");
     expect(screen.queryByRole("img")).toBeNull();
   });
 
