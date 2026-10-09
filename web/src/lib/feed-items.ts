@@ -89,21 +89,36 @@ export interface HistoryConversion {
   endTurn: BackgroundTurnState;
 }
 
+/** The message before the one being read, and whether it reached the agent mid-turn. */
+interface Previous {
+  msg: RecentMessage;
+  midTurn: boolean;
+}
+
 /**
  * Whether `msg`, a user-role message, reached the agent while its turn ran.
  * The agent takes such a message in at its checkpoint after a tool batch, so
- * it follows a tool result of the same turn; a message that starts a turn
- * follows the previous turn's last reply, whatever id it carries. Messages
- * without turn ids (episodes, older records) can't be told apart this way,
- * and each of their user messages starts a turn.
+ * it follows a tool result of the same turn (or another message taken in at
+ * the same checkpoint); a message that starts a turn follows the previous
+ * turn's last reply, whatever id it carries.
+ *
+ * The main conversation's messages carry turn ids, which tie the two
+ * together. Episodes and older records carry none, and each of their user
+ * messages starts a turn. A session's transcript carries none either, but a
+ * session is told of a message mid-turn only through that checkpoint, so
+ * there a user message straight after a tool result counts. A turn that
+ * ended on a tool result (it failed there) and is followed by a new message
+ * reads as one that carried on.
  */
-function reachedAgentMidTurn(msg: RecentMessage, before: RecentMessage | undefined): boolean {
-  return (
-    msg.role === "user" &&
-    before?.role === "tool" &&
-    msg.turn_id !== undefined &&
-    before.turn_id === msg.turn_id
-  );
+function reachedAgentMidTurn(
+  msg: RecentMessage,
+  previous: Previous | undefined,
+  mode: HistoryConversionOptions["mode"],
+): boolean {
+  if (msg.role !== "user" || previous === undefined) return false;
+  if (msg.turn_id !== previous.msg.turn_id) return false;
+  if (msg.turn_id === undefined && mode !== "session") return false;
+  return previous.msg.role === "tool" || (previous.msg.role === "user" && previous.midTurn);
 }
 
 /** Convert chat-history-shaped messages into feed items. */
@@ -115,12 +130,18 @@ export function convertHistory(
   const undecidedHead: RecentMessage[] = [];
   const toolCallItems = new Map<string, ToolCallState>();
   let turn: BackgroundTurnState = opts.carriedTurn ?? "unknown";
-  /** The message before this one, leaving out the agent's own notes to itself. */
-  let before: RecentMessage | undefined;
+  /**
+   * The message before this one. The main conversation leaves out the agent's
+   * own notes to itself, which can come between a tool result and the message
+   * taken in after it. A session's transcript has no ids to fall back on, so
+   * there the messages must follow one another with nothing in between: a
+   * note that a stop leaves after a tool result ends the turn.
+   */
+  let before: Previous | undefined;
 
   for (const msg of messages) {
-    const midTurn = reachedAgentMidTurn(msg, before);
-    if (msg.role !== "system") before = msg;
+    const midTurn = reachedAgentMidTurn(msg, before, opts.mode);
+    if (msg.role !== "system" || opts.mode === "session") before = { msg, midTurn };
     const agentMessage = historyAgentMessage(msg, opts.mode);
     if (opts.mode === "main") {
       if (msg.role === "user") turn = agentMessage ? "shown" : "hidden";

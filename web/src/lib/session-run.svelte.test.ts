@@ -295,6 +295,25 @@ describe("following a run through the hub's session relay", () => {
 });
 
 describe("the run's commands", () => {
+  it("keeps a message sent while a turn runs inside that turn, and starts a turn with one sent between", async () => {
+    const { run, relay } = await opened({ address: ADDRESS });
+    const turn = (type: "session_turn_started" | "session_turn_ended", turnId: string): void => {
+      relay.relay("atlas", { type, address: ADDRESS, run_id: "run-1", turn_id: turnId });
+    };
+
+    turn("session_turn_started", "t1");
+    run.draft = "Skip the old notes.";
+    await run.send();
+    turn("session_turn_ended", "t1");
+    run.draft = "Now summarize.";
+    await run.send();
+
+    const sent = (content: string): unknown =>
+      run.items.find((item) => item.kind === "user" && item.content === content);
+    expect(sent("Skip the old notes.")).toMatchObject({ turnId: "t1", midTurn: true });
+    expect(sent("Now summarize.")).not.toHaveProperty("midTurn");
+  });
+
   it("sends the draft as the owner and says where it landed", async () => {
     const { run } = await opened({ address: ADDRESS });
     run.draft = "  Weigh safety over speed.  ";

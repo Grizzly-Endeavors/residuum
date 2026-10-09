@@ -170,7 +170,14 @@ export class SessionRun {
     this.sending = true;
     this.draft = "";
     this.turnStart ??= this.items.length;
-    this.items.push({ id: nextFeedId(), kind: "user", content });
+    // With a turn running, the session takes the message into it at its next checkpoint.
+    const running = this.activeTurnId;
+    this.items.push({
+      id: nextFeedId(),
+      kind: "user",
+      content,
+      ...(running === null ? {} : { turnId: running, midTurn: true }),
+    });
     // The new run a finished session starts can announce itself before the reply.
     this.followNextRun = true;
     try {

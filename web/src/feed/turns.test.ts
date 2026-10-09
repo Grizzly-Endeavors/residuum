@@ -121,6 +121,24 @@ describe("turns in recent history", () => {
     ]);
   });
 
+  it("keeps every message the agent took in at one checkpoint inside the turn", () => {
+    const items = convertHistoryMessages(
+      [
+        message("user", "Draft the post", { turn_id: "t1" }),
+        ...toolCall("a", "write_file", "t1"),
+        message("system", "Earlier in the group chat: ...", { turn_id: "t1" }),
+        message("user", "Keep it short", { turn_id: "t1" }),
+        message("user", "And friendly", { turn_id: "t1" }),
+        message("assistant", "Saved a short, friendly draft.", { turn_id: "t1" }),
+      ],
+      { mode: "main" },
+    );
+    expect(describeEntries(groupTurns(items, null))).toEqual([
+      "user:Draft the post",
+      "turn([write_file] | user:Keep it short | user:And friendly | assistant:Saved a short, friendly draft.)",
+    ]);
+  });
+
   it("keeps an agent's message that reached the turn mid-way inside it too", () => {
     const items = convertHistoryMessages(
       [
@@ -220,6 +238,118 @@ describe("turns in recent history", () => {
       "turn(assistant:Hi.)",
       "agent-message:Result of the research",
       "turn([memory_add] | assistant:Noted the result.)",
+    ]);
+  });
+});
+
+describe("turns in a session's transcript", () => {
+  // A transcript carries no turn ids and one timestamp for the whole run, so a
+  // message taken in mid-turn is told by where the agent takes it in.
+  const transcript = (messages: RecentMessage[]): string[] =>
+    describeEntries(groupTurns(convertHistoryMessages(messages, { mode: "session" }), null));
+
+  it("keeps a message taken in after a tool batch inside the turn it reached", () => {
+    expect(
+      transcript([
+        message("user", "Research the routing doc"),
+        ...toolCall("a", "memory_search"),
+        message("user", "Skip the old notes"),
+        ...toolCall("b", "read_file"),
+        message("assistant", "Here is what the doc says."),
+      ]),
+    ).toEqual([
+      "user:Research the routing doc",
+      "turn([memory_search] | user:Skip the old notes | [read_file] | assistant:Here is what the doc says.)",
+    ]);
+  });
+
+  it("keeps a message from another agent taken in that way inside it too", () => {
+    expect(
+      transcript([
+        message("user", "Draft the post"),
+        ...toolCall("a", "write_file"),
+        message("user", "Keep it short", {
+          agent_sender: { address: "main", category: "main" },
+        }),
+        message("assistant", "Saved a short draft."),
+      ]),
+    ).toEqual([
+      "user:Draft the post",
+      "turn([write_file] | agent-message:Keep it short | assistant:Saved a short draft.)",
+    ]);
+  });
+
+  it("keeps every message taken in at one checkpoint inside the turn", () => {
+    expect(
+      transcript([
+        message("user", "Draft the post"),
+        ...toolCall("a", "write_file"),
+        message("user", "Keep it short"),
+        message("user", "And friendly"),
+        message("assistant", "Saved a short, friendly draft."),
+      ]),
+    ).toEqual([
+      "user:Draft the post",
+      "turn([write_file] | user:Keep it short | user:And friendly | assistant:Saved a short, friendly draft.)",
+    ]);
+  });
+
+  it("starts a turn at a message that follows a reply", () => {
+    expect(
+      transcript([
+        message("user", "Hello"),
+        ...toolCall("a", "memory_search"),
+        message("assistant", "Hi."),
+        message("user", "And now?"),
+        message("assistant", "Nothing yet."),
+      ]),
+    ).toEqual([
+      "user:Hello",
+      "turn([memory_search] | assistant:Hi.)",
+      "user:And now?",
+      "turn(assistant:Nothing yet.)",
+    ]);
+  });
+
+  it("starts a turn at a message that follows the note a stop leaves", () => {
+    expect(
+      transcript([
+        message("user", "Clean up the wiki"),
+        ...toolCall("a", "list_files"),
+        message("system", "[Stopped] the user stopped this turn before it finished."),
+        message("user", "Try the notes folder instead"),
+        message("assistant", "Looking there."),
+      ]),
+    ).toEqual([
+      "user:Clean up the wiki",
+      "turn([list_files])",
+      "user:Try the notes folder instead",
+      "turn(assistant:Looking there.)",
+    ]);
+  });
+
+  it("starts a turn at the first message, which follows nothing", () => {
+    expect(transcript([message("user", "Go"), message("assistant", "Done.")])).toEqual([
+      "user:Go",
+      "turn(assistant:Done.)",
+    ]);
+  });
+
+  it("leaves the main conversation's records without ids as they were", () => {
+    const items = convertHistoryMessages(
+      [
+        message("user", "Draft the post"),
+        ...toolCall("a", "write_file"),
+        message("user", "Keep it short"),
+        message("assistant", "Saved a short draft."),
+      ],
+      { mode: "main" },
+    );
+    expect(describeEntries(groupTurns(items, null))).toEqual([
+      "user:Draft the post",
+      "turn([write_file])",
+      "user:Keep it short",
+      "turn(assistant:Saved a short draft.)",
     ]);
   });
 });
