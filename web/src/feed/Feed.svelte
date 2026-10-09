@@ -466,7 +466,10 @@
     container-type: size;
   }
 
+  /* Positioned, so absolutely placed text for screen readers in the messages
+     stays inside the scrolling area instead of making the whole page scroll. */
   .feed-column {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: var(--space-18);

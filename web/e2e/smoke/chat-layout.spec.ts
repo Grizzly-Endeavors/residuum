@@ -350,3 +350,31 @@ test.describe("the history", () => {
     );
   });
 });
+
+test.describe("the page", () => {
+  // Only the conversation scrolls: anything in it that its scrolling area
+  // doesn't clip (absolutely placed text for screen readers) would let the
+  // whole page scroll, and focusing something would then shift the app.
+  for (const [where, path, ready] of [
+    ["the chat", "/agent/atlas", GREETING],
+    ["the chat beside a file", "/agent/atlas?panel=file:team/wiki/index.md", GREETING],
+    [
+      "a session beside Activity",
+      "/agent/atlas/activity?panel=session:atlas:run-live-research",
+      "Starting with what's already in the wiki.",
+    ],
+  ] as const) {
+    test(`doesn't scroll itself on ${where}`, async ({ page }) => {
+      await page.goto(path);
+      await expect(page.getByText(ready).first()).toBeVisible();
+      await expect
+        .poll(() =>
+          page.evaluate(() => {
+            const root = document.scrollingElement;
+            return root ? root.scrollHeight - root.clientHeight : 0;
+          }),
+        )
+        .toBeLessThanOrEqual(0);
+    });
+  }
+});
