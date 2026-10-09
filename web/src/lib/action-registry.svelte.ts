@@ -114,19 +114,24 @@ export function commandActions(actions: readonly AppAction[]): AppAction[] {
   return actions.filter((action) => action.command !== undefined);
 }
 
-/** A composer line that starts with `/`: the command it names, the action with that command if any, and the text after it. */
+/** A composer line that runs a chat action: the action its first word names, and the text after it. */
 export interface CommandLine {
-  readonly name: string;
-  readonly action: AppAction | null;
+  readonly action: AppAction;
   readonly text: string;
 }
 
+/**
+ * Read `line` as a command. It is one only when its first word is `/` and the
+ * name of one of `actions`; anything else, such as a pasted path like
+ * `/home/bear/app.log has the error`, is a message and gives null.
+ */
 export function readCommandLine(actions: readonly AppAction[], line: string): CommandLine | null {
-  const match = /^\/(\S*)\s*([\s\S]*)$/.exec(line.trim());
+  const match = /^\/(\S+)\s*([\s\S]*)$/.exec(line.trim());
   if (match === null) return null;
   const name = (match[1] ?? "").toLowerCase();
-  const action = actions.find((candidate) => candidate.command === name) ?? null;
-  return { name, action, text: (match[2] ?? "").trim() };
+  const action = actions.find((candidate) => candidate.command === name);
+  if (action === undefined) return null;
+  return { action, text: (match[2] ?? "").trim() };
 }
 
 /** Consecutive actions under one heading, as the palette shows them. */

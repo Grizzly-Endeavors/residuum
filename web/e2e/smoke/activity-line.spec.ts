@@ -1,5 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
+import { sendFromComposer } from "../support/composer";
 import { expect, test } from "../support/fixtures";
 
 /**
@@ -17,12 +18,12 @@ function conversation(page: Page): Locator {
 }
 
 function composer(page: Page): Locator {
-  return page.getByRole("textbox", { name: "Message atlas" });
+  return page.getByRole("combobox", { name: "Message atlas" });
 }
 
 async function send(page: Page, text: string): Promise<void> {
   await composer(page).fill(text);
-  await composer(page).press("Enter");
+  await sendFromComposer(composer(page));
 }
 
 /** The summary of a finished turn's line: a button that opens to its steps. */
@@ -98,7 +99,9 @@ test.describe("a live turn", () => {
     await expect(feed.getByText("I've looked into that and here's what I found:")).toHaveCount(0);
   });
 
-  test("Esc in the composer stops it, and closes an open menu first", async ({ page }) => {
+  test("Esc in the composer closes an open menu first, then stops it on a second press", async ({
+    page,
+  }) => {
     await openAtlas(page);
     await send(page, "Tidy the wiki index");
     const feed = conversation(page);
@@ -113,7 +116,14 @@ test.describe("a live turn", () => {
 
     await composer(page).focus();
     await page.keyboard.press("Escape");
+    await expect(
+      page.getByRole("status").filter({ hasText: "Press Esc again to stop" }),
+    ).toBeVisible();
+    await expect(feed.getByText("Working")).toBeVisible();
+
+    await page.keyboard.press("Escape");
     await expect(summary(feed, /stopped by you/i)).toBeVisible();
+    await expect(page.getByText("Press Esc again to stop")).toHaveCount(0);
   });
 });
 

@@ -17,7 +17,7 @@ function card(page: Page, title: string): Locator {
 }
 
 function composer(page: Page): Locator {
-  return page.getByRole("textbox", { name: /^Message (atlas|brittle|drifter)$/ });
+  return page.getByRole("combobox", { name: /^Message (atlas|brittle|drifter)$/ });
 }
 
 async function expectNoReconnecting(page: Page): Promise<void> {

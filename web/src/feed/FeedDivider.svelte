@@ -1,11 +1,10 @@
 <script lang="ts">
-  // A day's start, or above a loaded episode its id and date. The feed's
-  // Jump to latest pill reads the label of the divider at the top of the view.
+  // A day's start, or above a loaded episode its id and date.
 
   let { label }: { label: string } = $props();
 </script>
 
-<div class="feed-divider" role="separator" aria-label={label} data-divider-label={label}>
+<div class="feed-divider" role="separator" aria-label={label}>
   {label}
 </div>
 

@@ -1,5 +1,6 @@
 <script lang="ts">
   import Feed from "../../feed/Feed.svelte";
+  import { composerClearance } from "../../lib/composer-clearance.svelte";
   import { formatTokenCount } from "../../lib/format-usage";
   import { hub } from "../../lib/hub.svelte";
   import { Icon } from "../../lib/icons";
@@ -197,6 +198,7 @@
 
   <form
     class="session-composer"
+    {@attach composerClearance.track}
     onsubmit={(event) => {
       event.preventDefault();
       void run.send();

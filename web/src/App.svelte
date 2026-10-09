@@ -5,6 +5,7 @@
   import { overview } from "./lib/overview.svelte";
   import { notifications } from "./lib/notifications.svelte";
   import { userErrorMessage } from "./lib/errors";
+  import { refuseStrayFileDrops } from "./lib/file-drop";
   import { router } from "./lib/router.svelte";
   import { Icon } from "./lib/icons";
   import { LazyComponent } from "./lib/lazy-component.svelte";
@@ -34,7 +35,7 @@
 
   router.start();
 
-  /** On phones, toasts clear the bottom bar, and the composer too on a place or panel that has one. */
+  /** Toasts clear the composer on a place or panel that has one (wherever it measures), and on phones the bottom bar. */
   const toastClearance = $derived.by(() => {
     if (mode !== "running") return "edge";
     const { place, panel } = router;
@@ -108,6 +109,9 @@
     <VisuallyHidden>{mode === "loading" ? "Loading your agents" : "Loading setup"}</VisuallyHidden>
   </div>
 {/if}
+
+<!-- A file dropped where nothing takes it would make the browser open it, and leave the app. -->
+<svelte:window ondragover={refuseStrayFileDrops} ondrop={refuseStrayFileDrops} />
 
 <ToastRegion clearance={toastClearance} />
 <TooltipHost />
