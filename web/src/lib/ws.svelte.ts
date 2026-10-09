@@ -18,7 +18,7 @@ import { FeedStore } from "./feed.svelte";
 import { SessionsStore, isSessionFrame } from "./sessions.svelte";
 import { notifications } from "./notifications.svelte";
 import { invalidate } from "./cache";
-import { userErrorMessage } from "./errors";
+import { userErrorMessage, userErrorReason } from "./errors";
 import { normalizeWatchPrefix } from "./workspace-watch";
 import { WatchRegistry } from "./watch-registry";
 import {
@@ -43,6 +43,8 @@ class WsCoordinator {
   });
   /** The main chat's feed for the bound agent. Replaced on an agent switch. */
   store = $state<FeedStore>(this.createFeed(null));
+  /** Why the main chat's history couldn't be loaded, in plain words, until a load succeeds. */
+  historyError = $state<string | null>(null);
   /** The bound agent's sessions. Replaced on an agent switch. */
   sessions = $state<SessionsStore>(this.createSessions(null, this.store));
   private msgCounter = 0;
@@ -226,6 +228,7 @@ class WsCoordinator {
     this.transport.reset();
     const store = this.createFeed(name);
     this.store = store;
+    this.historyError = null;
     this.sessions = this.createSessions(name, store);
     this.hasConnected = false;
     this.catchUpOnConnect = false;
@@ -251,15 +254,13 @@ class WsCoordinator {
     const agent = this.agent;
     if (agent === null) return;
     const store = this.store;
+    this.historyError = null;
     let recent;
     try {
       recent = await fetchChatHistory(agent);
     } catch (err) {
       if (store !== this.store) return;
-      notifications.surface(
-        "error",
-        userErrorMessage(err, { action: "Couldn't load the chat history." }),
-      );
+      this.historyError = userErrorReason(err, { action: "Couldn't load the chat history." });
       return;
     }
     if (store !== this.store) return;
