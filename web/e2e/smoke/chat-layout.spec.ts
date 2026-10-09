@@ -259,6 +259,21 @@ test.describe("toasts", () => {
 });
 
 test.describe("the message box", () => {
+  test("keeps Send inside the box when the model name doesn't fit", async ({ page }) => {
+    // The narrowest phones leave the model's name too little room.
+    await page.setViewportSize({ width: 320, height: 640 });
+    await openChat(page);
+    const composer = page.locator("form.composer");
+    const send = page.getByRole("button", { name: "Send" });
+    const outer = await rect(composer);
+    const padding = await composer.evaluate((form) =>
+      parseFloat(getComputedStyle(form).paddingRight),
+    );
+    const button = await rect(send);
+    // Inside the box's padding, not just its border.
+    expect(button.x + button.w).toBeLessThanOrEqual(outer.x + outer.w - padding + 0.5);
+  });
+
   test("keeps focus after Send is pressed", async ({ isMobile, page }) => {
     await openChat(page);
     await box(page).fill("Check the wiki");

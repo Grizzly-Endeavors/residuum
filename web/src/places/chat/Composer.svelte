@@ -446,11 +446,11 @@
     white-space: nowrap;
   }
 
+  /* Never narrower than its button: a long model name gives way first. */
   .composer-send {
     display: flex;
     align-items: center;
     gap: var(--space-10);
-    min-width: 0;
     margin-left: auto;
 
     & :global(.ui-icon-button[data-variant="primary"]:disabled) {
