@@ -76,24 +76,25 @@
     return () => node.removeEventListener("keydown", onKeydown);
   }
 
-  // A line that starts with `/` runs the chat action it names, with the rest
-  // of the line as its text; anything else is a message.
-  function handleSend(text: string, images?: ImageAttachment[]): void {
+  // A line whose first word is a chat action's `/name` runs that action, with
+  // the rest of the line as its text; anything else is a message, a pasted
+  // path included. An action that can't run now says why and leaves the line
+  // in the box.
+  function handleSend(text: string, images?: ImageAttachment[]): boolean {
     const line = readCommandLine(commandActions(actionRegistry.all), text);
     if (line === null) {
       ws.sendChat(text, images);
-      return;
+      return true;
     }
-    if (line.action === null) {
+    if (line.action.disabled !== undefined) {
       notifications.surface(
         "error",
-        `There's no /${line.name}. Type / at the start of a message to see the chat actions.`,
+        `Couldn't run /${line.action.command ?? ""}: ${line.action.disabled}.`,
       );
-    } else if (line.action.disabled !== undefined) {
-      notifications.surface("error", `Couldn't run /${line.name}: ${line.action.disabled}.`);
-    } else {
-      void actionRegistry.run(line.action, line.text);
+      return false;
     }
+    void actionRegistry.run(line.action, line.text);
+    return true;
   }
 </script>
 

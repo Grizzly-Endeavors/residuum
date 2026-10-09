@@ -63,10 +63,26 @@ test.describe("the / menu", () => {
     await page.keyboard.press("Enter");
     // One message: the agent's own, once the note is in its inbox.
     await expect(page.getByText("[inbox] item added")).toBeVisible();
+  });
 
-    await page.keyboard.type("/nope");
+  test("a pasted path is a message, and an action that can't run keeps the line", async ({
+    page,
+  }) => {
+    await openChat(page);
+    const conversation = page.getByRole("region", { name: "Conversation with atlas" });
+    await box(page).click();
+    await page.keyboard.type("/home/bear/logs/app.log has the error");
     await page.keyboard.press("Enter");
-    await expect(page.getByText(/There's no \/nope\./)).toBeVisible();
+    await expect(conversation.getByText("/home/bear/logs/app.log has the error")).toBeVisible();
+    await expect(box(page)).toHaveValue("");
+
+    // Stop reply names an action, which can't run while atlas isn't replying.
+    await page.keyboard.type("/stop now");
+    await page.keyboard.press("Enter");
+    await expect(
+      page.getByText(/^Couldn't run \/stop: atlas isn't replying right now\./),
+    ).toBeVisible();
+    await expect(box(page)).toHaveValue("/stop now");
   });
 
   test("the button opens every action, and Esc closes the menu without stopping anything", async ({

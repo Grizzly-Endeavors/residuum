@@ -34,8 +34,11 @@
     reconnecting: boolean;
     /** Messages waiting for the connection. */
     queued: number;
-    /** A message, or a `/name text` line, to send. */
-    onsend: (text: string, images?: ImageAttachment[]) => void;
+    /**
+     * A message, or a `/name text` line, to send. False when it couldn't go
+     * (a command that can't run now): the box keeps what was typed.
+     */
+    onsend: (text: string, images?: ImageAttachment[]) => boolean;
     onstop: () => void;
   }
 
@@ -200,7 +203,7 @@
 
   function send(): void {
     if (empty) return;
-    onsend(text.trim(), images.length > 0 ? images : undefined);
+    if (!onsend(text.trim(), images.length > 0 ? images : undefined)) return;
     text = "";
     images = [];
     problem = null;

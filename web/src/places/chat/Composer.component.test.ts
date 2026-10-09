@@ -28,7 +28,7 @@ interface Rendered {
 function composer(
   props: Partial<{ replying: boolean; reconnecting: boolean; queued: number }> = {},
 ): Rendered {
-  const onsend = vi.fn();
+  const onsend = vi.fn(() => true);
   const onstop = vi.fn();
   render(Composer, {
     agent: "atlas",
@@ -89,6 +89,22 @@ describe("sending", () => {
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     await userEvent.type(box, "   {Enter}");
     expect(onsend).not.toHaveBeenCalled();
+  });
+
+  it("keeps the text and the images in the box when the line couldn't go", async () => {
+    const { onsend, box } = composer();
+    onsend.mockReturnValue(false);
+    const picker = document.querySelector<HTMLInputElement>('input[type="file"]');
+    if (picker === null) throw new Error("no file picker");
+    await userEvent.upload(picker, new File(["png"], "shot.png", { type: "image/png" }));
+    await vi.waitFor(() => {
+      expect(screen.getAllByRole("img")).toHaveLength(1);
+    });
+    await userEvent.type(box, "/stop now{Enter}");
+    expect(onsend).toHaveBeenCalledOnce();
+    expect(box).toHaveValue("/stop now");
+    expect(screen.getAllByRole("img")).toHaveLength(1);
+    expect(readDraft("atlas")).toBe("/stop now");
   });
 
   it("is Stop while a reply runs and nothing is typed, and Send again once something is", async () => {

@@ -9,7 +9,10 @@ import {
   stubWebSocket,
 } from "../../test/component";
 import { snapshot } from "../../test/hub-frames";
+import { actionRegistry } from "../../lib/action-registry.svelte";
+import { saveDraft } from "../../lib/composer-drafts";
 import { hub } from "../../lib/hub.svelte";
+import { notifications } from "../../lib/notifications.svelte";
 import type { AgentSummary } from "../../lib/hub-types";
 import { router } from "../../lib/router.svelte";
 import type { SessionSummary } from "../../lib/types";
@@ -298,5 +301,69 @@ describe("stopping the reply", () => {
     await userEvent.keyboard("{Escape}");
     expect(stop).not.toHaveBeenCalled();
     expect(screen.queryByRole("menu", { name: "More for atlas" })).toBeNull();
+  });
+});
+
+describe("sending a line", () => {
+  async function open(): Promise<HTMLElement> {
+    Element.prototype.scrollIntoView = vi.fn();
+    setViewedAgent("atlas");
+    render(ChatPlace, { agent: "atlas", actions: shell });
+    await settle();
+    return screen.getByRole("textbox", { name: "Message atlas" });
+  }
+
+  afterEach(() => {
+    saveDraft("atlas", "");
+  });
+
+  it("sends a pasted path as a message, though it starts with a slash", async () => {
+    const box = await open();
+    const sendChat = vi.spyOn(ws, "sendChat").mockImplementation(() => {});
+    const surface = vi.spyOn(notifications, "surface");
+    surface.mockClear();
+
+    await userEvent.click(box);
+    await userEvent.paste("/home/bear/logs/app.log has the error");
+    await userEvent.keyboard("{Enter}");
+
+    expect(sendChat).toHaveBeenCalledWith("/home/bear/logs/app.log has the error", undefined);
+    expect(surface).not.toHaveBeenCalledWith("error", expect.stringContaining("run /"));
+    expect(box).toHaveValue("");
+  });
+
+  it("sends a slash word that names no action as a message", async () => {
+    const box = await open();
+    const sendChat = vi.spyOn(ws, "sendChat").mockImplementation(() => {});
+
+    await userEvent.type(box, "/nope at all{Enter}");
+
+    expect(sendChat).toHaveBeenCalledWith("/nope at all", undefined);
+  });
+
+  it("runs the action a line names, with the rest as its text", async () => {
+    const box = await open();
+    const sendChat = vi.spyOn(ws, "sendChat").mockImplementation(() => {});
+    const run = vi.spyOn(actionRegistry, "run").mockResolvedValue(true);
+
+    await userEvent.type(box, "/inbox water the plants{Enter}");
+
+    expect(sendChat).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledOnce();
+    expect(run.mock.calls[0]?.[0].command).toBe("inbox");
+    expect(run.mock.calls[0]?.[1]).toBe("water the plants");
+    expect(box).toHaveValue("");
+  });
+
+  it("says why an action can't run now, and leaves the line in the box", async () => {
+    const box = await open();
+    const sendChat = vi.spyOn(ws, "sendChat").mockImplementation(() => {});
+    const surface = vi.spyOn(notifications, "surface");
+
+    await userEvent.type(box, "/stop now{Enter}");
+
+    expect(sendChat).not.toHaveBeenCalled();
+    expect(surface).toHaveBeenCalledWith("error", expect.stringMatching(/^Couldn't run \/stop: /));
+    expect(box).toHaveValue("/stop now");
   });
 });
