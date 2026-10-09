@@ -3,20 +3,21 @@
   import { hub } from "../../lib/hub.svelte";
   import type { IconName } from "../../lib/icons";
   import { router } from "../../lib/router.svelte";
+  import { runningCount } from "../../lib/running-count";
   import { IconButton, Menu, MenuItem } from "../../lib/ui";
-  import { ws } from "../../lib/ws.svelte";
   import PlaceHeader from "../../shell/PlaceHeader.svelte";
 
-  // The Chat's title bar: the agent with its role, how many of its sessions
-  // are running (opening Activity), its settings, and a menu with the
-  // conversation's size, Restart and Stop. The menu's items are the action
-  // registry's, so they carry the same reasons when they can't run.
+  // The Chat's title bar: the agent with its role, how much it has running
+  // (the number the rail's Activity row shows, opening Activity, and only while
+  // the agent is up), its settings, and a menu with the conversation's size,
+  // Restart and Stop. The menu's items are the action registry's, so they carry
+  // the same reasons when they can't run.
 
   let { agent }: { agent: string } = $props();
 
   const summary = $derived(hub.agent(agent));
   const label = $derived(hub.shownName(agent));
-  const running = $derived(ws.agent === agent ? ws.sessions.live.length : 0);
+  const running = $derived(runningCount(agent));
 
   /** Why Restart or Stop isn't offered, when the registry doesn't list it. */
   const lifecycleReason = $derived.by(() => {

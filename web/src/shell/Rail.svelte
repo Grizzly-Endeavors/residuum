@@ -5,8 +5,8 @@
   import { Icon, type IconName } from "../lib/icons";
   import { hub } from "../lib/hub.svelte";
   import { overview } from "../lib/overview.svelte";
-  import { ws } from "../lib/ws.svelte";
   import { router } from "../lib/router.svelte";
+  import { runningCount } from "../lib/running-count";
   import { formatLocation, HOME, locationAt, placesEqual, type Place } from "../lib/routes";
   import {
     Badge,
@@ -62,12 +62,6 @@
     event.preventDefault();
     void router.openPlace(target);
     onclose?.();
-  }
-
-  /** The bound agent's running sessions; the rail knows no other agent's yet. */
-  function runningCount(agent: string): number {
-    if (ws.agent !== agent) return 0;
-    return ws.sessions.live.length + ws.sessions.outbound.length;
   }
 
   /** Up and Down move between the rows that show, Home and End go to the ends. */
