@@ -88,19 +88,30 @@ fn origins_equal(a: &str, b: &str) -> bool {
         .eq_ignore_ascii_case(b.trim().trim_end_matches('/'))
 }
 
-/// Whether the request is a browser navigation, which gets a redirect to the
-/// pairing page where anything else gets a `401`.
+/// Whether the request loads a page a person will see, which gets a redirect
+/// to the pairing page where a script's request gets a `401`.
+///
+/// Any one sign is enough: fetch metadata saying it navigates or loads a
+/// document or frame, or an `Accept` asking for HTML. A page load a service
+/// worker passes on may arrive with its fetch metadata changed but keeps its
+/// `Accept`, and a script's `fetch` asks for HTML only if it means to show it.
 pub(crate) fn is_navigation(method: &Method, headers: &HeaderMap) -> bool {
     if !matches!(*method, Method::GET | Method::HEAD) || is_state_changing(method, headers) {
         return false;
     }
-    match headers.get("sec-fetch-mode").and_then(|v| v.to_str().ok()) {
-        Some(mode) => mode.eq_ignore_ascii_case("navigate"),
-        None => headers
-            .get(header::ACCEPT)
+    let header_is = |name: &str, wanted: &[&str]| {
+        headers
+            .get(name)
             .and_then(|v| v.to_str().ok())
-            .is_some_and(|accept| accept.contains("text/html")),
-    }
+            .is_some_and(|value| wanted.iter().any(|w| value.eq_ignore_ascii_case(w)))
+    };
+    let accepts_html = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|accept| accept.contains("text/html"));
+    header_is("sec-fetch-mode", &["navigate"])
+        || header_is("sec-fetch-dest", &["document", "iframe", "frame"])
+        || accepts_html
 }
 
 /// Normalize an origin Residuum Cloud announced to `scheme://host[:port]`, or
@@ -201,6 +212,26 @@ mod tests {
         assert!(!is_navigation(&Method::POST, &nav));
         let socket = headers(&[("upgrade", "websocket"), ("sec-fetch-mode", "websocket")]);
         assert!(!is_navigation(&Method::GET, &socket));
+        let script = headers(&[
+            ("sec-fetch-mode", "cors"),
+            ("sec-fetch-dest", "empty"),
+            ("accept", "*/*"),
+        ]);
+        assert!(!is_navigation(&Method::GET, &script));
+    }
+
+    #[test]
+    fn a_page_load_passed_on_by_a_service_worker_is_still_a_navigation() {
+        let passed_on = headers(&[
+            ("sec-fetch-mode", "same-origin"),
+            ("accept", "text/html,application/xhtml+xml,*/*;q=0.8"),
+        ]);
+        assert!(is_navigation(&Method::GET, &passed_on));
+        let document = headers(&[
+            ("sec-fetch-mode", "same-origin"),
+            ("sec-fetch-dest", "document"),
+        ]);
+        assert!(is_navigation(&Method::GET, &document));
     }
 
     #[test]

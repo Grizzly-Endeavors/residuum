@@ -132,6 +132,10 @@ async fn a_tunneled_request_without_a_credential_is_refused_and_a_local_one_is_n
     let refused = json_of(&h, empty(remote(Method::GET, "/api/hub/agents"))).await;
     assert_eq!(refused["code"], "device_required");
     assert_eq!(
+        refused["error"],
+        "This browser isn't paired with Residuum yet. Pair it at https://bear.agent-residuum.com/pair."
+    );
+    assert_eq!(
         h.status(empty(remote(Method::GET, "/api/hub/agents")))
             .await,
         StatusCode::UNAUTHORIZED
@@ -165,6 +169,21 @@ async fn an_unpaired_navigation_is_redirected_to_the_pairing_page() {
         assert!(outcome.is_redirection(), "{path} gave {outcome}");
         assert_eq!(headers.get("location").unwrap(), "/pair", "{path}");
     }
+}
+
+/// A service worker passing a page load on can change its fetch metadata; the
+/// browser still shows whatever comes back, so it must be the pairing page.
+#[tokio::test]
+async fn an_unpaired_page_load_without_navigate_metadata_is_redirected_too() {
+    let h = Harness::new();
+    let passed_on = set(
+        remote(Method::GET, "/"),
+        "accept",
+        "text/html,application/xhtml+xml,*/*;q=0.8",
+    );
+    let (outcome, headers, _) = h.send(empty(passed_on)).await;
+    assert!(outcome.is_redirection(), "gave {outcome}");
+    assert_eq!(headers.get("location").unwrap(), "/pair");
 }
 
 #[tokio::test]
