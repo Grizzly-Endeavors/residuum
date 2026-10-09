@@ -127,6 +127,11 @@ pub fn process_leftover_interrupts(
 /// persist them to the recent-messages log so they survive a restart. Used
 /// when the agent is stopping and there is no next turn to run them as; the
 /// senders were already told these were delivered.
+///
+/// Web clients are not sent a `user_message` echo for them: the echo names the
+/// turn a message started or joined, none runs for these, and the bus the
+/// frame would travel on shuts down right after. History shows them once the
+/// agent is running again.
 pub(super) async fn inject_undelivered_messages(
     agent: &mut Agent,
     messenger: &crate::background::messaging::AgentMessenger,
@@ -2485,6 +2490,147 @@ mod tests {
         assert!(
             texts.is_empty(),
             "the turn was cut short before producing a reply"
+        );
+    }
+
+    /// A provider whose first model call fails, as one does when the API
+    /// keeps erroring past every retry, and whose later calls answer. It
+    /// records the roles of the messages each call carried.
+    struct FailsOnce {
+        calls: std::sync::atomic::AtomicUsize,
+        requests: Arc<std::sync::Mutex<Vec<Vec<crate::inference::Role>>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::inference::InferenceProvider for FailsOnce {
+        async fn complete(
+            &self,
+            messages: &[crate::inference::Message],
+            _tools: &[crate::inference::ToolDefinition],
+            _options: &crate::inference::CompletionOptions,
+        ) -> Result<crate::inference::InferenceResponse, crate::inference::InferenceError> {
+            self.requests
+                .lock()
+                .unwrap()
+                .push(messages.iter().map(|m| m.role).collect());
+            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                Err(crate::inference::InferenceError::Api(
+                    "the model is down".to_string(),
+                ))
+            } else {
+                Ok(crate::inference::InferenceResponse::new(
+                    "back".to_string(),
+                    vec![],
+                ))
+            }
+        }
+
+        fn model_name(&self) -> &'static str {
+            "fails-once"
+        }
+    }
+
+    /// What `handle_inbound_message` does with a turn that fails: the turn's
+    /// new messages are persisted whatever its result was, so the user's
+    /// message is recorded, with no assistant reply and no note of the
+    /// failure, and stays in the conversation the next turn sends the model.
+    #[tokio::test]
+    async fn a_failed_turn_keeps_the_users_message_and_records_nothing_else() {
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut agent = test_agent(FailsOnce {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            requests: Arc::clone(&requests),
+        });
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let ep = endpoint();
+        let prompt_ctx = PromptContext {
+            skills: crate::agent::context::SkillsContext {
+                index: None,
+                active_instructions: None,
+            },
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let recent_path = dir.path().join("recent_messages.json");
+
+        let before = agent.message_count();
+        let mut interrupts = crate::agent::interrupt::dead_interrupt_rx();
+        let failed = agent
+            .process_message(
+                "are you there?",
+                &publisher,
+                Some(&ep),
+                "corr-failed",
+                None,
+                &prompt_ctx,
+                &mut interrupts,
+                &[],
+                None,
+                &CancellationToken::new(),
+            )
+            .await;
+        assert!(failed.is_err(), "the model call failed");
+
+        let new_messages = agent.messages_since(before).to_vec();
+        crate::memory::recent_messages::append_recent_messages(
+            &recent_path,
+            &new_messages,
+            Visibility::User,
+            TEST_TZ,
+            Some("corr-failed"),
+        )
+        .await
+        .unwrap();
+        let saved = crate::memory::recent_messages::load_recent_messages(&recent_path)
+            .await
+            .unwrap();
+        let saved: Vec<_> = saved
+            .iter()
+            .map(|recent| {
+                (
+                    recent.message.role,
+                    recent.message.content.as_str(),
+                    recent.turn_id.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            saved,
+            [(
+                crate::inference::Role::User,
+                "are you there?",
+                Some("corr-failed")
+            )],
+            "the user's message is in recent_messages.json under its turn, alone"
+        );
+
+        agent
+            .process_message(
+                "hello again",
+                &publisher,
+                Some(&ep),
+                "corr-next",
+                None,
+                &prompt_ctx,
+                &mut interrupts,
+                &[],
+                None,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let requests = requests.lock().unwrap();
+        let conversation: Vec<_> = requests
+            .last()
+            .unwrap()
+            .iter()
+            .copied()
+            .filter(|role| *role != crate::inference::Role::System)
+            .collect();
+        assert_eq!(
+            conversation,
+            [crate::inference::Role::User, crate::inference::Role::User],
+            "the next turn sends the model the unanswered message and the new one"
         );
     }
 }

@@ -214,6 +214,24 @@ describe("FeedStore when a turn fails", () => {
     });
   });
 
+  it("shows the user's message after a reload, with the failure's account gone", () => {
+    const live = new FeedStore();
+    live.pushUserMessage("Hello", undefined, "web-a");
+    live.handleMessage({
+      type: "turn_started",
+      reply_to: "web-a",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
+    live.handleMessage(error("web-a"));
+    live.handleMessage({ type: "turn_ended", reply_to: "web-a" });
+    expect(live.feed.map((item) => item.kind)).toEqual(["user", "turn-failure"]);
+
+    // The server recorded the message of the turn that failed, and nothing else.
+    const reloaded = new FeedStore();
+    reloaded.loadHistory(segment([historyMsg("user", "Hello", { turnId: "web-a" })]));
+    expect(reloaded.feed.map((item) => item.kind)).toEqual(["user"]);
+  });
+
   it("keeps the images the user sent for Try again", () => {
     const store = new FeedStore();
     const image = { media_type: "image/png", data: "AAAA" };
