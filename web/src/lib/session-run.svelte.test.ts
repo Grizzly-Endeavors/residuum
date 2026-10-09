@@ -294,6 +294,34 @@ describe("following a run through the hub's session relay", () => {
   });
 });
 
+describe("when a session's messages were sent", () => {
+  it("shows no time for the transcript, which holds the run's start for every message, and a time for what arrives live", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 9, 9, 10, 5, 30));
+    try {
+      const { run, relay } = await opened({ address: ADDRESS });
+      relay.relay("atlas", {
+        type: "session_response",
+        address: ADDRESS,
+        run_id: "run-1",
+        turn_id: "t1",
+        content: "Here are the fallbacks.",
+      });
+      run.draft = "Thanks.";
+      await run.send();
+
+      const said = run.items.filter((item) => item.kind === "user" || item.kind === "assistant");
+      expect(said.map((item) => [item.content, item.timestamp])).toEqual([
+        ["Research fallbacks.", undefined],
+        ["Here are the fallbacks.", "2026-10-09T10:05:30"],
+        ["Thanks.", "2026-10-09T10:05:30"],
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("the run's commands", () => {
   it("keeps a message sent while a turn runs inside that turn, and starts a turn with one sent between", async () => {
     const { run, relay } = await opened({ address: ADDRESS });

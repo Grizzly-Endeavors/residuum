@@ -5,6 +5,7 @@
 // fast stream re-renders the Markdown no more often than the screen draws.
 
 import { nextFeedId } from "./feed-id";
+import { localTimestamp } from "./time";
 import type { AssistantFeedItem, FeedItem, ThinkingFeedItem } from "./types";
 
 /** Runs `flush` at the next frame the screen draws. */
@@ -52,10 +53,14 @@ export class LiveStreams {
   /**
    * @param feed The feed's own array, so a draft's changes are seen.
    * @param schedule When held pieces are added to their drafts.
+   * @param stamp The time a text shows as sent: a draft takes it when its first
+   *   piece arrives and again when the complete message does, which is when
+   *   history records a message.
    */
   constructor(
     private readonly feed: FeedItem[],
     private readonly schedule: FrameScheduler = nextAnimationFrame,
+    private readonly stamp: () => string = localTimestamp,
   ) {}
 
   /** Add a piece of the text model call `call` is writing. */
@@ -73,6 +78,7 @@ export class LiveStreams {
       content: piece,
       call,
       streaming: true,
+      timestamp: this.stamp(),
       ...tag,
     });
     this.text.set(key, created);
@@ -105,6 +111,7 @@ export class LiveStreams {
         content,
         ...(call === undefined ? {} : { call }),
         ...(deliveredTo === undefined ? {} : { deliveredTo }),
+        timestamp: this.stamp(),
         ...tag,
       });
       return;
@@ -115,6 +122,7 @@ export class LiveStreams {
     }
     draft.content = content;
     draft.streaming = false;
+    draft.timestamp = this.stamp();
     if (deliveredTo !== undefined) draft.deliveredTo = deliveredTo;
   }
 

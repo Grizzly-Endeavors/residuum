@@ -543,6 +543,13 @@ interface FeedItemBase {
    * starts a turn, even when its `turnId` repeats an earlier turn's.
    */
   midTurn?: boolean;
+  /**
+   * When a message was sent, as a local date and time ("2026-10-09T10:05:00"):
+   * from history, or from the moment its frame reached the page. Absent where
+   * it isn't known, as for an archived episode (every message carries its
+   * date) and a session's transcript (every message carries the run's start).
+   */
+  timestamp?: string;
 }
 
 /**

@@ -4,10 +4,12 @@
   import { turnChangedWorkspace, undoTurn } from "../lib/turn-undo";
   import type { UserFeedItem } from "../lib/types";
   import { Button } from "../lib/ui";
+  import Timestamp from "./Timestamp.svelte";
 
   // The user's message: a moss bubble on the right, with a sender line when
-  // it came from another interface or a workbench artifact. A turn observed
-  // live that changed files offers Undo this turn, in `agent`'s workspace.
+  // it came from another interface or a workbench artifact, and its time under
+  // it. A turn observed live that changed files offers Undo this turn, in
+  // `agent`'s workspace.
 
   let { item, agent }: { item: UserFeedItem; agent: string } = $props();
 
@@ -79,10 +81,23 @@
       </div>
     {/if}
   </div>
-  {#if item.turn?.changed}
-    <Button variant="quiet" size="sm" icon="restore" loading={undoing} onclick={() => void undo()}>
-      Undo this turn
-    </Button>
+  {#if item.turn?.changed === true || item.timestamp !== undefined}
+    <div class="user-foot" data-message-meta>
+      {#if item.turn?.changed}
+        <Button
+          variant="quiet"
+          size="sm"
+          icon="restore"
+          loading={undoing}
+          onclick={() => void undo()}
+        >
+          Undo this turn
+        </Button>
+      {/if}
+      {#if item.timestamp !== undefined}
+        <Timestamp timestamp={item.timestamp} />
+      {/if}
+    </div>
   {/if}
 </div>
 
@@ -128,6 +143,16 @@
       border-radius: var(--corner-md);
       object-fit: cover;
     }
+  }
+
+  /* Under the bubble: Undo this turn, and when it was sent. The row hangs into the gap below it, so the time takes little height. */
+  .user-foot {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-8);
+    min-height: var(--space-20);
+    margin-bottom: calc(-1 * var(--space-12));
   }
 
   @media (max-width: 760px) {

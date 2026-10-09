@@ -276,8 +276,23 @@
     return scrollEl ? Array.from(scrollEl.querySelectorAll<HTMLElement>("[data-feed-item]")) : [];
   }
 
+  /**
+   * What an item says, to find it again after a reload: its kind and its text,
+   * less the quiet details a message carries (its time, Copy), which differ
+   * between an item the page made live and the same one from history.
+   */
   function contentKey(el: HTMLElement): string {
-    return `${el.dataset.kind ?? ""}\u0000${el.textContent}`;
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) =>
+        node.parentElement?.closest("[data-message-meta]") instanceof Element
+          ? NodeFilter.FILTER_REJECT
+          : NodeFilter.FILTER_ACCEPT,
+    });
+    let text = "";
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      text += node.textContent ?? "";
+    }
+    return `${el.dataset.kind ?? ""}\u0000${text}`;
   }
 
   function captureAnchor(): ContentAnchor | null {

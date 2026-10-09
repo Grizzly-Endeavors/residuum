@@ -407,6 +407,7 @@ export class FeedStore {
           size: msg.size,
           url: msg.url,
           caption: msg.caption,
+          timestamp: localTimestamp(),
           ...this.ofLiveTurn(),
         };
         this.feed.push(item);
@@ -575,7 +576,7 @@ export class FeedStore {
     if (this.loadedEpisodes.has(segment.episode_id)) return;
     this.loadedEpisodes.add(segment.episode_id);
 
-    const conversion = convertHistory(segment.messages, { mode: "main" });
+    const conversion = convertHistory(segment.messages, { mode: "main", timestamps: false });
     if (conversion.endTurn !== "unknown") this.resolvePendingHeads(conversion.endTurn);
 
     const block: FeedItem[] = [
@@ -629,6 +630,7 @@ export class FeedStore {
       category,
       content,
       runId,
+      timestamp: localTimestamp(),
       ...this.reachedLiveTurn(),
     });
   }
@@ -645,9 +647,10 @@ export class FeedStore {
    * turn it starts when no turn is in flight.
    */
   pushUserMessage(content: string, images?: ImageAttachment[], id?: string): void {
-    // Live user messages carry an implicit "now" timestamp — inject a day
-    // divider if the calendar day has rolled over since the last live entry.
-    this.maybePushDayDivider(localTimestamp());
+    // Live user messages are stamped with the moment they arrive — inject a
+    // day divider if the calendar day has rolled over since the last live entry.
+    const timestamp = localTimestamp();
+    this.maybePushDayDivider(timestamp);
     if (id !== undefined) this.sentIds.add(id);
     if (this.activeTurnId === null && id !== undefined) {
       this.sentTurnId ??= id;
@@ -659,6 +662,7 @@ export class FeedStore {
       kind: "user",
       content,
       images,
+      timestamp,
       ...this.reachedLiveTurn(),
     });
     this.isProcessing = true;
@@ -720,14 +724,16 @@ export class FeedStore {
   private receiveUserMessage(msg: UserMessageFrame): void {
     if (this.sentIds.has(msg.id)) return;
     const joins = this.activeTurnId === msg.turn_id;
+    const timestamp = localTimestamp();
     if (!joins) {
-      this.maybePushDayDivider(localTimestamp());
+      this.maybePushDayDivider(timestamp);
       this.turnStart ??= this.feed.length;
     }
     this.feed.push({
       id: nextFeedId(),
       kind: "user",
       content: msg.content,
+      timestamp,
       ...(msg.images === undefined || msg.images.length === 0 ? {} : { images: msg.images }),
       ...(msg.sender === undefined ? {} : { sender: msg.sender }),
       turnId: msg.turn_id,
@@ -827,7 +833,11 @@ export class FeedStore {
     for (const head of heads) {
       if (head.recent) this.recentCarriedTurn = turn;
       if (turn === "hidden") continue;
-      const items = convertHistory(head.messages, { mode: "main", carriedTurn: "shown" }).items;
+      const items = convertHistory(head.messages, {
+        mode: "main",
+        carriedTurn: "shown",
+        timestamps: head.recent,
+      }).items;
       this.feed.splice(head.index, 0, ...items);
       if (head.index < this.recentStart) this.recentStart += items.length;
       if (this.turnStart !== null && head.index <= this.turnStart) {

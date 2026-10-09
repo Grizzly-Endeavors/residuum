@@ -2,9 +2,11 @@
   import { Icon } from "../lib/icons";
   import type { FileAttachmentFeedItem } from "../lib/types";
   import { fileSize } from "../lib/file-size";
+  import Timestamp from "./Timestamp.svelte";
 
   // A file the agent sent: its caption, the image or audio inline when it is
-  // one, and always the file to download with its name and size.
+  // one, and always the file to download with its name and size, and when it
+  // was sent beside it.
 
   let { item }: { item: FileAttachmentFeedItem } = $props();
 
@@ -23,11 +25,16 @@
       <track kind="captions" />
     </audio>
   {/if}
-  <a class="attachment-file" href={item.url} download={item.filename}>
-    <Icon name="paperclip" size={14} />
-    <span class="attachment-name">{item.filename}</span>
-    <span class="attachment-size">{fileSize(item.size)}</span>
-  </a>
+  <div class="attachment-foot">
+    <a class="attachment-file" href={item.url} download={item.filename}>
+      <Icon name="paperclip" size={14} />
+      <span class="attachment-name">{item.filename}</span>
+      <span class="attachment-size">{fileSize(item.size)}</span>
+    </a>
+    {#if item.timestamp !== undefined}
+      <Timestamp timestamp={item.timestamp} />
+    {/if}
+  </div>
 </div>
 
 <style>
@@ -54,11 +61,19 @@
     width: min(100%, 360px);
   }
 
+  .attachment-foot {
+    display: flex;
+    align-items: center;
+    gap: var(--space-10);
+    max-width: 100%;
+    min-width: 0;
+  }
+
   .attachment-file {
     display: inline-flex;
     align-items: center;
     gap: var(--space-8);
-    max-width: 100%;
+    min-width: 0;
     min-height: 32px;
     padding: 0 var(--space-12) 0 var(--space-10);
     border-radius: var(--corner-sm);

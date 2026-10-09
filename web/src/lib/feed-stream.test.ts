@@ -275,6 +275,55 @@ describe("streamed reasoning", () => {
   });
 });
 
+describe("when streamed text was sent", () => {
+  /** Streams that stamp each text with the next of a list of times. */
+  function stamped(...times: string[]): { feed: FeedItem[]; streams: LiveStreams } {
+    const feed: FeedItem[] = [];
+    const queue = [...times];
+    const streams = new LiveStreams(
+      feed,
+      (flush) => {
+        flush();
+      },
+      () => queue.shift() ?? "2026-10-09T23:59:59",
+    );
+    return { feed, streams };
+  }
+
+  it("stamps a draft when its first piece arrives, and again when the whole message does", () => {
+    const { feed, streams } = stamped("2026-10-09T10:05:00", "2026-10-09T10:06:30");
+    streams.appendText("t1", 0, "Let me", tag);
+    expect(assistants(feed)[0]?.timestamp).toBe("2026-10-09T10:05:00");
+
+    // History records a message when its model call is done, so that is the time it shows.
+    streams.completeText("t1", 0, "Let me look.", tag);
+    expect(assistants(feed)).toMatchObject([
+      { content: "Let me look.", streaming: false, timestamp: "2026-10-09T10:06:30" },
+    ]);
+  });
+
+  it("stamps a message that arrives whole, with no draft", () => {
+    const { feed, streams } = stamped("2026-10-09T10:05:00");
+    streams.completeText("t1", 0, "Done.", tag);
+    expect(assistants(feed)[0]?.timestamp).toBe("2026-10-09T10:05:00");
+  });
+
+  it("keeps the time a draft cut short began, as no whole message replaces it", () => {
+    const { feed, streams } = stamped("2026-10-09T10:05:00");
+    streams.appendText("t1", 0, "Let me", tag);
+    streams.finish("t1", "stopped");
+    expect(assistants(feed)).toMatchObject([
+      { cut: "stopped", streaming: false, timestamp: "2026-10-09T10:05:00" },
+    ]);
+  });
+
+  it("leaves reasoning unstamped, as it is a step and not a message", () => {
+    const { feed, streams } = stamped("2026-10-09T10:05:00");
+    streams.appendThought("t1", 0, "Hmm", tag);
+    expect(thoughts(feed)[0]).not.toHaveProperty("timestamp");
+  });
+});
+
 describe("MessageIds", () => {
   it("remembers the ids it was given", () => {
     const ids = new MessageIds();

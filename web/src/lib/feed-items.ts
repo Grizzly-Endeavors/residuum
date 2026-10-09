@@ -71,6 +71,13 @@ export interface HistoryConversionOptions {
   /** Called with each message's timestamp; returns a day divider to insert before it, if any. */
   dayDivider?: (timestamp: string) => DividerFeedItem | null;
   /**
+   * Whether the messages' timestamps are when they were sent, and so shown
+   * with them. `main` mode's recent messages are. An archived episode's carry
+   * its date at midnight and a session transcript's the run's start, so
+   * neither is.
+   */
+  timestamps?: boolean;
+  /**
    * `main` mode: the state of the background turn in progress where these
    * messages begin, when the older history before them is known.
    */
@@ -138,6 +145,7 @@ export function convertHistory(
    * note that a stop leaves after a tool result ends the turn.
    */
   let before: Previous | undefined;
+  const stamped = opts.timestamps ?? opts.mode === "main";
 
   for (const msg of messages) {
     const midTurn = reachedAgentMidTurn(msg, before, opts.mode);
@@ -164,6 +172,8 @@ export function convertHistory(
       ...(msg.turn_id === undefined ? {} : { turnId: msg.turn_id }),
       ...(midTurn ? { midTurn: true } : {}),
     };
+    // Only what was said shows when; the steps between are timed live, or not at all.
+    const sent = stamped && msg.timestamp ? { timestamp: msg.timestamp } : {};
     switch (msg.role) {
       case "user": {
         if (agentMessage) {
@@ -175,6 +185,7 @@ export function convertHistory(
             content: agentMessage.body,
             runId: null,
             ...ofTurn,
+            ...sent,
           });
           break;
         }
@@ -190,6 +201,7 @@ export function convertHistory(
               interface: "workbench artifact",
             },
             ...ofTurn,
+            ...sent,
           });
           break;
         }
@@ -200,6 +212,7 @@ export function convertHistory(
           content: ownerBody ?? content,
           sender: msg.sender,
           ...ofTurn,
+          ...sent,
         });
         break;
       }
@@ -211,7 +224,7 @@ export function convertHistory(
           }
         }
         if (content.trim()) {
-          out.push({ id: nextFeedId(), kind: "assistant", content, ...ofTurn });
+          out.push({ id: nextFeedId(), kind: "assistant", content, ...ofTurn, ...sent });
         }
         if (msg.tool_calls && msg.tool_calls.length > 0) {
           const calls: ToolCallState[] = msg.tool_calls.map((tc) => {

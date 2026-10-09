@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { groupTurns } from "../feed/turns";
 import { FeedStore } from "./feed.svelte";
 import type { FeedItem, MessageSender, RecentMessage, ServerMessage } from "./types";
@@ -205,6 +205,84 @@ describe("where a reply was delivered", () => {
     expect(store.feed.filter((item) => item.kind === "assistant")).toMatchObject([
       { content: "Done.", deliveredTo: "telegram", streaming: false },
     ]);
+  });
+});
+
+describe("when live messages were sent", () => {
+  // Frames carry no time, so a message shows the moment its frame reached the page, on the
+  // reader's clock in the shape history uses.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 9, 9, 10, 5, 30));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const at = (hour: number, minute: number): string =>
+    `2026-10-09T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:30`;
+
+  it("stamps the user's own message, and one another page or channel sent", () => {
+    const { store } = setup();
+    store.pushUserMessage("From here", undefined, "web-1");
+    vi.setSystemTime(new Date(2026, 9, 9, 10, 6, 30));
+    store.handleMessage(echo("tg-1", "From Telegram", { endpoint: "telegram", sender: ALEX }));
+
+    const users = store.feed.filter((item) => item.kind === "user");
+    expect(users.map((item) => [item.content, item.timestamp])).toEqual([
+      ["From here", at(10, 5)],
+      ["From Telegram", at(10, 6)],
+    ]);
+  });
+
+  it("stamps a streamed reply when it is whole, and a message from a session", () => {
+    const { store, frame } = setup();
+    store.handleMessage(started("t1"));
+    store.handleMessage({ type: "text_delta", reply_to: "t1", call: 0, text: "Do" });
+    frame();
+    vi.setSystemTime(new Date(2026, 9, 9, 10, 7, 30));
+    store.handleMessage({
+      type: "response",
+      reply_to: "t1",
+      call: 0,
+      endpoint: "ws",
+      content: "Done.",
+    });
+    store.pushAgentMessage("spawned-1", "run-1", "Result", null);
+
+    expect(store.feed.filter((item) => item.kind !== "divider")).toMatchObject([
+      { kind: "assistant", content: "Done.", timestamp: at(10, 7) },
+      { kind: "agent-message", content: "Result", timestamp: at(10, 7) },
+    ]);
+  });
+
+  it("stamps a file the agent sent, and leaves the steps of a turn unstamped", () => {
+    const { store } = setup();
+    store.handleMessage(started("t1"));
+    store.handleMessage({
+      type: "tool_call",
+      reply_to: "t1",
+      call: 0,
+      id: "c1",
+      name: "read_file",
+      arguments: {},
+      server: null,
+    });
+    store.handleMessage({
+      type: "file_attachment",
+      reply_to: "t1",
+      filename: "report.pdf",
+      mime_type: "application/pdf",
+      size: 10,
+      url: "/files/report.pdf",
+      caption: null,
+    });
+
+    expect(store.feed.find((item) => item.kind === "file-attachment")).toMatchObject({
+      timestamp: at(10, 5),
+    });
+    expect(store.feed.find((item) => item.kind === "tool-group")).not.toHaveProperty("timestamp");
   });
 });
 
