@@ -651,6 +651,29 @@ async fn another_instances_cookie_does_not_pair_this_one() {
     );
 }
 
+/// Over HTTP/2 a browser may send each cookie as its own `cookie` field, and
+/// one from another instance (or an old one) can come first.
+#[tokio::test]
+async fn a_credential_in_a_later_cookie_field_is_found() {
+    let h = Harness::new();
+    let laptop = pair_first_device(&h, "Laptop").await;
+    let split = |method: Method, path: &str| {
+        empty(
+            remote(method, path)
+                .header("cookie", "__Host-residuum_device_r730=stale")
+                .header("cookie", laptop.as_str()),
+        )
+    };
+    assert_eq!(
+        h.status(split(Method::GET, "/api/hub/agents")).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        json_of(&h, split(Method::GET, "/api/hub/pairing/state")).await,
+        json!({ "remote": true, "paired": true })
+    );
+}
+
 #[tokio::test]
 async fn the_cookie_is_issued_again_once_a_day_of_use() {
     let h = Harness::new();

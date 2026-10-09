@@ -14,7 +14,7 @@ use axum::Json;
 use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::request::Parts;
-use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
+use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 
@@ -28,7 +28,7 @@ use crate::pairing::types::{
 };
 use crate::pairing::{
     AuthenticatedDevice, DevicePairing, Issued, PAIRING_PAGE_PATH, PairingError, PollOutcome,
-    Surface, qr,
+    Surface, cookie_header, qr,
 };
 use crate::workbench::forward::ArtifactsOrigin;
 
@@ -73,10 +73,6 @@ fn surface_of(parts: &Parts) -> Surface {
 
 fn remote_of(parts: &Parts) -> Option<RemoteContext> {
     remote_context(&parts.extensions)
-}
-
-fn cookie_header(headers: &HeaderMap) -> Option<&str> {
-    headers.get(header::COOKIE).and_then(|v| v.to_str().ok())
 }
 
 /// The response for a pairing operation that didn't happen.
@@ -131,7 +127,7 @@ async fn pairing_state(State(pairing): State<DevicePairing>, parts: Parts) -> Re
     let remote = remote_of(&parts).is_some();
     let paired = !remote
         || pairing
-            .authenticate(surface_of(&parts), cookie_header(&parts.headers))
+            .authenticate(surface_of(&parts), cookie_header(&parts.headers).as_deref())
             .await
             .is_some();
     no_store(Json(PairingStateResponse { remote, paired }))
@@ -218,7 +214,7 @@ async fn redeem_handoff(
             "Workbench handoffs are completed on the workbench address.",
         );
     }
-    let held = pairing.cookie_in(cookie_header(&parts.headers));
+    let held = pairing.cookie_in(cookie_header(&parts.headers).as_deref());
     match pairing
         .redeem_handoff(remote_of(&parts).as_ref(), &body.token, held.as_deref())
         .await

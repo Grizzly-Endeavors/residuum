@@ -94,11 +94,7 @@ pub(crate) async fn device_gate(
         return next.run(req).await;
     }
 
-    let cookie_header = req
-        .headers()
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
+    let cookie_header = super::cookie_header(req.headers());
     let Some((hit, secret)) = gate
         .pairing
         .authenticate(gate.surface, cookie_header.as_deref())

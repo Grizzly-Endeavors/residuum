@@ -30,6 +30,7 @@ mod state;
 mod store;
 pub mod types;
 
+pub(crate) use cookies::cookie_header;
 pub use error::PairingError;
 pub use gate::DEVICE_REQUIRED_CODE;
 pub(crate) use gate::{

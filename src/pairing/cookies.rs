@@ -1,6 +1,8 @@
 //! The device credential cookie: its name, its `Set-Cookie` line, and finding
 //! it in a request's `Cookie` header.
 
+use axum::http::{HeaderMap, header};
+
 use super::state::DEVICE_LIFETIME_DAYS;
 
 /// Prefix of the cookie's name. `__Host-` makes browsers accept it only
@@ -37,6 +39,18 @@ pub(super) fn cookie_name(slug: Option<&str>) -> String {
 pub(super) fn set_cookie_value(name: &str, secret: &str) -> String {
     let max_age = DEVICE_LIFETIME_DAYS * 24 * 60 * 60;
     format!("{name}={secret}; Max-Age={max_age}; Path=/; Secure; HttpOnly; SameSite=Lax")
+}
+
+/// Every cookie a request carries, as one `Cookie` header value. Over HTTP/2
+/// a browser may send each cookie as a field of its own, so reading only the
+/// first field would miss the rest.
+pub(crate) fn cookie_header(headers: &HeaderMap) -> Option<String> {
+    let fields: Vec<&str> = headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .collect();
+    (!fields.is_empty()).then(|| fields.join("; "))
 }
 
 /// The value of cookie `name` in a `Cookie` header, if it is there.
@@ -85,6 +99,15 @@ mod tests {
         );
         assert_eq!(find_cookie(header, "__Host-residuum_device_phone"), None);
         assert_eq!(find_cookie("x=", "x"), None);
+    }
+
+    #[test]
+    fn cookies_split_across_fields_are_joined() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(cookie_header(&headers), None);
+        headers.append(header::COOKIE, "a=1".parse().unwrap());
+        headers.append(header::COOKIE, "b=2; c=3".parse().unwrap());
+        assert_eq!(cookie_header(&headers).as_deref(), Some("a=1; b=2; c=3"));
     }
 
     #[test]
