@@ -57,7 +57,7 @@
     {/if}
     <dl class="size-figures">
       <div>
-        <dt>Read over the conversation</dt>
+        <dt>Sent to the model in total, counting repeats</dt>
         <dd>About {formatApproxWords(usage.input_tokens)}</dd>
       </div>
       <div>
@@ -99,11 +99,11 @@
           </dd>
         </div>
         <div>
-          <dt>Sent in all</dt>
+          <dt>Sent in total, counting repeats</dt>
           <dd>{numbers.format(usage.input_tokens)}</dd>
         </div>
         <div>
-          <dt>Written in all</dt>
+          <dt>Written in total</dt>
           <dd>{numbers.format(usage.output_tokens)}</dd>
         </div>
         <div>
