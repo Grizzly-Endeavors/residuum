@@ -85,7 +85,8 @@ test.describe("the composer over the conversation", () => {
     else {
       const area = await rect(feed);
       expect(clear).toBeGreaterThanOrEqual(96);
-      expect(clear).toBeLessThanOrEqual(area.h * 0.25 + 24);
+      // The reply's quiet row (its time and Copy) is 16px of the room the last line is measured from.
+      expect(clear).toBeLessThanOrEqual(area.h * 0.25 + 24 + 16);
     }
   });
 
