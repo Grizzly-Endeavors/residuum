@@ -17,6 +17,7 @@ import { scheduled } from "./scheduled.svelte";
 import { FeedStore } from "./feed.svelte";
 import { SessionsStore, isSessionFrame } from "./sessions.svelte";
 import { notifications } from "./notifications.svelte";
+import { noticeFrameNotice, reloadingNotice } from "./reload-notices";
 import { invalidate } from "./cache";
 import { userErrorMessage } from "./errors";
 import { normalizeWatchPrefix } from "./workspace-watch";
@@ -100,9 +101,11 @@ class WsCoordinator {
         if (!this.liveUpdatesOffShown) notifications.surface("error", msg.message);
         this.liveUpdatesOffShown = true;
       } else if (msg.type === "notice") {
-        notifications.surface("notice", msg.message);
+        const notice = noticeFrameNotice(msg.message);
+        if (notice !== null) notifications.surface(notice.kind, notice.message, notice.details);
       } else if (msg.type === "reloading") {
-        notifications.surface("system", "Gateway is reloading…");
+        const notice = reloadingNotice();
+        if (notice !== null) notifications.surface(notice.kind, notice.message);
         // Gateway is reloading config from disk — anything we cached about
         // server-side state may be stale. Episode history is immutable and
         // intentionally stays cached.

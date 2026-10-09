@@ -268,8 +268,9 @@ test("a code block's Copy button copies it", async ({ page, context, browserName
   await send(page, "Where do the memory thresholds live?");
   await expect(feed.getByText(FIRST_REPLY)).toBeVisible();
 
-  await feed.getByRole("button", { name: "Copy" }).click();
+  await feed.getByRole("button", { name: "Copy code" }).click();
   await expect(feed.getByRole("button", { name: "Copied" })).toBeVisible();
+  await expect(feed.getByRole("status").filter({ hasText: "Copied" })).toBeAttached();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
     "[memory]\nobserver_threshold_tokens = 30000\nreflector_threshold_tokens = 40000",
   );
