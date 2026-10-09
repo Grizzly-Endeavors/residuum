@@ -14,7 +14,7 @@ use super::HopCounter;
 use super::context::{MemoryContext, PromptContext};
 use super::interrupt::Interrupt;
 use super::recent_messages::RecentMessages;
-use super::turn::{EventContext, EventTarget, TurnResources, execute_turn};
+use super::turn::{EventContext, EventTarget, TranscriptSink, TurnResources, execute_turn};
 use crate::bus::{
     AgentMessageEvent, EndpointName, IntermediateEvent, MainConversationEvent, MessageEvent,
     SessionAddress, Subscriber, ToolActivityEvent, TurnUsageEvent, topics,
@@ -156,6 +156,19 @@ impl Tool for EchoTool {
     }
 }
 
+/// A session's durable transcript, as the turn loop writes it.
+#[derive(Default)]
+struct RecordingSink {
+    recorded: Mutex<Vec<Message>>,
+}
+
+#[async_trait]
+impl TranscriptSink for RecordingSink {
+    async fn append(&self, messages: &[Message]) {
+        self.recorded.lock().unwrap().extend_from_slice(messages);
+    }
+}
+
 #[derive(Default)]
 struct Options {
     interrupts: Vec<Interrupt>,
@@ -171,6 +184,8 @@ struct Run {
     /// The main conversation, in order, up to the sentinel the harness ends it with.
     main: Vec<MainConversationEvent>,
     history: Vec<Message>,
+    /// What the turn wrote to its durable transcript.
+    transcript: Vec<Message>,
     endpoint_intermediate: Vec<IntermediateEvent>,
     endpoint_tools: Vec<ToolActivityEvent>,
     endpoint_usage: Vec<TurnUsageEvent>,
@@ -190,6 +205,7 @@ async fn run_turn_with(steps: Vec<Step>, options: Options) -> Run {
     let identity = IdentityFiles::default();
     let completion = CompletionOptions::default();
     let hop_counter = HopCounter::new(0);
+    let sink = RecordingSink::default();
     let resources = TurnResources {
         provider: &provider,
         tools: &tools,
@@ -199,7 +215,7 @@ async fn run_turn_with(steps: Vec<Step>, options: Options) -> Run {
         max_tool_iterations: options.max_tool_iterations,
         repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
         stop_token: &options.stop_token,
-        transcript_sink: None,
+        transcript_sink: Some(&sink),
         usage_sink: None,
         hop_counter: &hop_counter,
     };
@@ -278,6 +294,7 @@ async fn run_turn_with(steps: Vec<Step>, options: Options) -> Run {
         result,
         main: main_events,
         history: recent.messages().to_vec(),
+        transcript: sink.recorded.lock().unwrap().clone(),
         endpoint_intermediate: intermediate.drain(),
         endpoint_tools: tool_activity.drain(),
         endpoint_usage: usage.drain(),
@@ -825,5 +842,33 @@ async fn a_call_with_only_encrypted_reasoning_publishes_no_thinking_frame() {
         run.history.last().unwrap().thinking.len(),
         1,
         "the block is still kept for the provider"
+    );
+}
+
+#[tokio::test]
+async fn thinking_reaches_the_durable_transcript_with_the_message_it_belongs_to() {
+    let reasoning = vec![ThinkingBlock {
+        text: "I should look.".to_string(),
+        signature: Some("sig-1".to_string()),
+        redacted: None,
+    }];
+    let run = run_turn(vec![
+        Step::reply(with_thinking(
+            tool_call_response("Checking."),
+            reasoning.clone(),
+        )),
+        Step::reply(with_thinking(text("Done."), reasoning.clone())),
+    ])
+    .await;
+
+    let assistant: Vec<&Message> = run
+        .transcript
+        .iter()
+        .filter(|m| m.role == Role::Assistant)
+        .collect();
+    assert_eq!(assistant.len(), 2);
+    assert!(
+        assistant.iter().all(|m| m.thinking == reasoning),
+        "every assistant message is recorded with its call's reasoning: {assistant:?}"
     );
 }

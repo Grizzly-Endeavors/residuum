@@ -474,4 +474,27 @@ mod tests {
             "bundled SUBCONSCIOUS.md must have content"
         );
     }
+
+    #[test]
+    fn the_turn_transcript_leaves_out_the_models_thinking() {
+        let transcript = vec![
+            crate::inference::Message::user("what is it?"),
+            crate::inference::Message::assistant("The answer is 42.".to_string(), None)
+                .with_thinking(vec![crate::inference::ThinkingBlock {
+                    text: "private reasoning about the answer".to_string(),
+                    signature: Some("sig-opaque-token".to_string()),
+                    redacted: Some("encrypted-blob".to_string()),
+                }]),
+        ];
+
+        let formatted = format_turn_transcript(&transcript, 10_000);
+
+        assert!(formatted.contains("The answer is 42."));
+        for leaked in ["private reasoning", "sig-opaque-token", "encrypted-blob"] {
+            assert!(
+                !formatted.contains(leaked),
+                "{leaked} must not reach the classifier: {formatted}"
+            );
+        }
+    }
 }

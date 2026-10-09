@@ -98,7 +98,13 @@ pub(crate) async fn write_episode_transcript_tagged(
     lines.push(serde_json::to_string(&meta).context("failed to serialize episode meta")?);
 
     for msg in messages {
-        lines.push(serde_json::to_string(msg).context("failed to serialize message")?);
+        // An archived conversation is never replayed to a provider, so its
+        // reasoning is kept as readable text without the replay data.
+        let archived = (!msg.thinking.is_empty()).then(|| msg.without_replay_data());
+        lines.push(
+            serde_json::to_string(archived.as_ref().unwrap_or(msg))
+                .context("failed to serialize message")?,
+        );
     }
 
     let file_content = lines.join("\n") + "\n";
@@ -1219,5 +1225,71 @@ mod tests {
             interrupted.is_empty(),
             "an .idx.jsonl file is not an episode transcript"
         );
+    }
+
+    #[tokio::test]
+    async fn an_episode_keeps_the_readable_thinking_and_not_the_replay_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let episode = sample_episode();
+        let messages = vec![
+            Message::user("what is it?"),
+            crate::inference::Message::assistant("The answer is 42.".to_string(), None)
+                .with_thinking(vec![crate::inference::ThinkingBlock {
+                    text: "private reasoning about the answer".to_string(),
+                    signature: Some("sig-opaque-token".to_string()),
+                    redacted: Some("encrypted-blob".to_string()),
+                }]),
+        ];
+        write_episode_transcript(dir.path(), &episode, &messages)
+            .await
+            .unwrap();
+        let path = episode_jsonl_path(dir.path(), &episode);
+
+        let raw = tokio::fs::read_to_string(&path).await.unwrap();
+        let (_, loaded) = read_episode_jsonl(&path).await.unwrap();
+
+        assert!(raw.contains("private reasoning about the answer"));
+        assert!(!raw.contains("sig-opaque-token"), "{raw}");
+        assert!(!raw.contains("encrypted-blob"), "{raw}");
+        assert_eq!(
+            loaded.last().unwrap().thinking,
+            [crate::inference::ThinkingBlock::text(
+                "private reasoning about the answer"
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn reading_an_episode_back_to_the_model_leaves_out_the_thinking() {
+        let dir = tempfile::tempdir().unwrap();
+        let episode = sample_episode();
+        let messages = vec![
+            Message::user("what is it?"),
+            crate::inference::Message::assistant("The answer is 42.".to_string(), None)
+                .with_thinking(vec![crate::inference::ThinkingBlock {
+                    text: "private reasoning about the answer".to_string(),
+                    signature: Some("sig-opaque-token".to_string()),
+                    redacted: Some("encrypted-blob".to_string()),
+                }]),
+        ];
+        write_episode_transcript(dir.path(), &episode, &messages)
+            .await
+            .unwrap();
+        let path = episode_jsonl_path(dir.path(), &episode);
+
+        let output = read_episode_lines(&path, None, None, None).await.unwrap();
+        let expanded = read_episode_lines(&path, None, None, Some(3))
+            .await
+            .unwrap();
+
+        for shown in [output, expanded] {
+            assert!(shown.contains("The answer is 42."));
+            for leaked in ["private reasoning", "sig-opaque-token", "encrypted-blob"] {
+                assert!(
+                    !shown.contains(leaked),
+                    "{leaked} must not reach the model: {shown}"
+                );
+            }
+        }
     }
 }
