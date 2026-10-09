@@ -16,7 +16,7 @@ import {
   type BackgroundTurnState,
 } from "./feed-items";
 import { ObservedTurns, type TurnEnding } from "./observed-turns.svelte";
-import { isoNow } from "./time";
+import { localDay, localTimestamp } from "./time";
 import type {
   ServerMessage,
   RecentMessage,
@@ -105,27 +105,17 @@ function deliveredElsewhere(endpoint: string): string | undefined {
   return endpoint === "" || endpoint === "ws" || endpoint === "background" ? undefined : endpoint;
 }
 
-function dayKey(iso: string): string {
-  // Timestamps are either "YYYY-MM-DD" or "YYYY-MM-DDTHH:MM". Slice to date.
-  return iso.slice(0, 10);
-}
-
-/** A divider naming the day `iso` falls on. */
+/** A divider naming the day `iso` falls on, on the reader's clock. */
 function dayDivider(iso: string): DividerFeedItem {
-  return {
-    id: nextFeedId(),
-    kind: "divider",
-    variant: "day",
-    label: dayLabel(iso),
-    date: dayKey(iso),
-  };
+  const date = localDay(iso);
+  return { id: nextFeedId(), kind: "divider", variant: "day", label: dayLabel(date), date };
 }
 
 /** A day-divider callback with its own memory of the last day seen. */
 function dayDividerTracker(): (iso: string) => DividerFeedItem | null {
   let lastKey: string | null = null;
   return (iso) => {
-    const key = dayKey(iso);
+    const key = localDay(iso);
     const crossed = lastKey !== null && key !== lastKey;
     lastKey = key;
     return crossed ? dayDivider(iso) : null;
@@ -657,7 +647,7 @@ export class FeedStore {
   pushUserMessage(content: string, images?: ImageAttachment[], id?: string): void {
     // Live user messages carry an implicit "now" timestamp — inject a day
     // divider if the calendar day has rolled over since the last live entry.
-    this.maybePushDayDivider(isoNow());
+    this.maybePushDayDivider(localTimestamp());
     if (id !== undefined) this.sentIds.add(id);
     if (this.activeTurnId === null && id !== undefined) {
       this.sentTurnId ??= id;
@@ -731,7 +721,7 @@ export class FeedStore {
     if (this.sentIds.has(msg.id)) return;
     const joins = this.activeTurnId === msg.turn_id;
     if (!joins) {
-      this.maybePushDayDivider(isoNow());
+      this.maybePushDayDivider(localTimestamp());
       this.turnStart ??= this.feed.length;
     }
     this.feed.push({
@@ -935,11 +925,11 @@ export class FeedStore {
   /** Continue live day dividers from the newest message in `segment`. */
   private syncDayKey(segment: RecentHistorySegment): void {
     const last = segment.messages[segment.messages.length - 1];
-    if (last?.timestamp) this.lastLiveDayKey = dayKey(last.timestamp);
+    if (last?.timestamp) this.lastLiveDayKey = localDay(last.timestamp);
   }
 
   private dayDividerFor(iso: string): DividerFeedItem | null {
-    const key = dayKey(iso);
+    const key = localDay(iso);
     const crossed = this.lastLiveDayKey !== null && key !== this.lastLiveDayKey;
     this.lastLiveDayKey = key;
     return crossed ? dayDivider(iso) : null;
