@@ -84,6 +84,60 @@ test("a message from another day names the date as well", async ({ page }) => {
   expect(labels.some((label) => /^\d{1,2}:\d{2}/.test(label))).toBe(true);
 });
 
+test("Copy is quiet on a screen that hovers and in sight on one that doesn't, and reaches the keyboard", async ({
+  page,
+  isMobile,
+}) => {
+  await page.goto("/agent/atlas");
+  const message = messageSaying(page, GREETING);
+  const copy = message.getByRole("button", { name: "Copy reply" });
+  await expect(copy).toBeAttached();
+
+  if (isMobile) {
+    // No hover to reveal it, so it stays where a thumb can find it.
+    await expect(copy).toBeVisible();
+    await expect(copy.locator("xpath=..")).toHaveCSS("opacity", "1");
+  } else {
+    await expect(copy.locator("xpath=..")).toHaveCSS("opacity", "0");
+    await message.hover();
+    await expect(copy.locator("xpath=..")).toHaveCSS("opacity", "1");
+    await page.mouse.move(0, 0);
+    await expect(copy.locator("xpath=..")).toHaveCSS("opacity", "0");
+    // The keyboard reaches it, and focus there shows it.
+    await page.keyboard.press("Tab");
+    await copy.focus();
+    await expect(copy.locator("xpath=..")).toHaveCSS("opacity", "1");
+  }
+  await expectNoAxeViolations(page);
+});
+
+test("Copy puts the reply's Markdown on the clipboard and says Copied", async ({
+  page,
+  browserName,
+  context,
+}) => {
+  test.skip(browserName === "webkit", "WebKit grants no clipboard permission to a test.");
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.goto("/agent/atlas");
+  const feed = conversation(page);
+  // An archived reply whose Markdown has bold and a numbered list.
+  const reply = feed
+    .locator(".feed-message")
+    .filter({ hasText: "The observer keeps three things" });
+  await reply.scrollIntoViewIfNeeded();
+
+  await reply.getByRole("button", { name: "Copy reply" }).click();
+
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copied).toContain("The observer keeps three things for each compression pass:");
+  expect(copied).toContain("**Observations**");
+  expect(copied).toMatch(/^1\. /m);
+  // The button says so, and a polite status says it for a screen reader.
+  await expect(reply.getByRole("button", { name: "Copied" })).toBeVisible();
+  await expect(reply.locator(".reply-foot [role=status]")).toHaveText("Copied");
+  await expect(reply.getByRole("button", { name: "Copy reply" })).toBeVisible();
+});
+
 test("a reply that has streamed in gets its time once it is whole", async ({ page, mock }) => {
   await mock.post("/api/mock/delays", { data: { scale: 4 } });
   await page.goto("/agent/atlas");

@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
-import { advance, fireEvent, render, screen } from "../test/component";
+import { advance, fireEvent, render, screen, settle } from "../test/component";
 import { FeedStore } from "../lib/feed.svelte";
+import { toast } from "../lib/toast.svelte";
 import type { FeedItem } from "../lib/types";
 import FeedItemView from "./FeedItemView.svelte";
 
 // What a message keeps quiet until it is hovered, focused or tapped: when it
-// was sent.
+// was sent, and Copy on an agent's reply.
 
 class NoObserver {
   observe(): void {}
@@ -24,6 +25,12 @@ function show(item: FeedItem, agent = "atlas"): FeedItem {
   return held;
 }
 
+function stubClipboard(writeText: (text: string) => Promise<void>): ReturnType<typeof vi.fn> {
+  const spy = vi.fn(writeText);
+  Object.defineProperty(navigator, "clipboard", { value: { writeText: spy }, configurable: true });
+  return spy;
+}
+
 /** A screen where nothing hovers (`hover: none`), or one where something does. */
 function stubHover(hover: boolean): void {
   vi.stubGlobal(
@@ -37,7 +44,10 @@ function stubHover(hover: boolean): void {
   );
 }
 
-/** A user whose clicks advance the faked clock. */
+/**
+ * A user whose clicks advance the faked clock. It is made before the
+ * clipboard is stubbed, since it installs a clipboard of its own.
+ */
 function pointer(): ReturnType<typeof userEvent.setup> {
   return userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 }
@@ -78,7 +88,7 @@ describe("when a message was sent", () => {
     expect(screen.getByText(/11:00/).tagName).toBe("TIME");
   });
 
-  it("waits while the reply streams in, out of reach, and is there once it is whole", async () => {
+  it("waits with Copy while the reply streams in, out of reach, and is there once it is whole", async () => {
     const held = show({
       id: 1,
       kind: "assistant",
@@ -98,6 +108,7 @@ describe("when a message was sent", () => {
     await advance(0);
 
     expect(foot()?.inert).toBe(false);
+    expect(screen.getByRole("button", { name: "Copy reply" })).toBeInTheDocument();
   });
 
   it("sits in the head of a message from a session", () => {
@@ -150,6 +161,47 @@ describe("when a message was sent", () => {
   });
 });
 
+describe("copying a reply", () => {
+  it("puts the reply's Markdown source on the clipboard and says so politely", async () => {
+    const user = pointer();
+    const writeText = stubClipboard(() => Promise.resolve());
+    show({ id: 1, kind: "assistant", content: "Use **two** `ports`.\n\n- a\n- b" });
+    const copy = screen.getByRole("button", { name: "Copy reply" });
+    expect(copy).toHaveTextContent("Copy");
+
+    await user.click(copy);
+    await settle();
+
+    expect(writeText).toHaveBeenCalledWith("Use **two** `ports`.\n\n- a\n- b");
+    expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
+    // A button that is pressed doesn't announce its new label, so a status does.
+    const status = (): Element | null => document.querySelector(".reply-foot [role=status]");
+    expect(status()).toHaveTextContent("Copied");
+
+    await advance(2000);
+    expect(screen.getByRole("button", { name: "Copy reply" })).toBeInTheDocument();
+    expect(status()?.textContent).toBe("");
+  });
+
+  it("is on every reply, including one from an archive with no time", () => {
+    show({ id: 1, kind: "assistant", content: "Archived." });
+    expect(screen.getByRole("button", { name: "Copy reply" })).toBeInTheDocument();
+  });
+
+  it("says when the reply couldn't be copied, in a toast", async () => {
+    const user = pointer();
+    stubClipboard(() => Promise.reject(new Error("denied")));
+    const error = vi.spyOn(toast, "error");
+    show({ id: 1, kind: "assistant", content: "Hello" });
+
+    await user.click(screen.getByRole("button", { name: "Copy reply" }));
+    await settle();
+
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("Couldn't copy the reply"));
+    expect(screen.getByRole("button", { name: "Copy reply" })).toBeInTheDocument();
+  });
+});
+
 describe("showing the quiet details on a tap", () => {
   const message = (): HTMLElement => {
     const el = document.querySelector<HTMLElement>(".feed-message");
@@ -170,9 +222,10 @@ describe("showing the quiet details on a tap", () => {
     expect(message()).not.toHaveAttribute("data-revealed");
   });
 
-  it("leaves a tap on a link to the link", async () => {
+  it("leaves a tap on a button or a link to that control", async () => {
     const user = pointer();
     stubHover(false);
+    stubClipboard(() => Promise.resolve());
     show({
       id: 1,
       kind: "assistant",
@@ -184,6 +237,7 @@ describe("showing the quiet details on a tap", () => {
       event.preventDefault();
     });
 
+    await user.click(screen.getByRole("button", { name: "Copy reply" }));
     await user.click(screen.getByRole("link", { name: "the docs" }));
     expect(message()).not.toHaveAttribute("data-revealed");
   });
