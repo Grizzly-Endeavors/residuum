@@ -39,7 +39,7 @@ function composer(
     onstop,
     ...props,
   });
-  return { onsend, onstop, box: screen.getByRole("textbox", { name: "Message atlas" }) };
+  return { onsend, onstop, box: screen.getByRole("combobox", { name: "Message atlas" }) };
 }
 
 beforeEach(() => {
@@ -115,6 +115,52 @@ describe("sending", () => {
     expect(screen.queryByRole("button", { name: "Stop reply" })).toBeNull();
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
   });
+
+  it("keeps one button for Send and Stop, so the focus has nothing to fall off", async () => {
+    const { box } = composer({ replying: true });
+    const stop = screen.getByRole("button", { name: "Stop reply" });
+    expect(stop).toHaveAttribute("type", "button");
+    await userEvent.type(box, "Also");
+    const send = screen.getByRole("button", { name: "Send" });
+    expect(send).toBe(stop);
+    expect(send).toHaveAttribute("type", "submit");
+  });
+
+  it("leaves focus in the message box after Send is pressed", async () => {
+    const { onsend, box } = composer();
+    await userEvent.type(box, "Check the wiki");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(onsend).toHaveBeenCalledOnce();
+    expect(box).toHaveFocus();
+    expect(box).toHaveValue("");
+  });
+
+  it("puts focus back in the box when the keyboard presses Send, and after Stop", async () => {
+    const { onsend, onstop, box } = composer({ replying: true });
+    await userEvent.type(box, "Steer left");
+    await userEvent.tab();
+    await userEvent.tab();
+    await userEvent.tab();
+    await userEvent.tab();
+    const send = screen.getByRole("button", { name: "Send" });
+    expect(send).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+    expect(onsend).toHaveBeenCalledWith("Steer left", undefined);
+    expect(box).toHaveFocus();
+
+    await userEvent.click(screen.getByRole("button", { name: "Stop reply" }));
+    expect(onstop).toHaveBeenCalledOnce();
+    expect(box).toHaveFocus();
+  });
+
+  it("keeps the line, and the focus, when the line couldn't go", async () => {
+    const { onsend, box } = composer();
+    onsend.mockReturnValue(false);
+    await userEvent.type(box, "/stop now");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(box).toHaveValue("/stop now");
+    expect(box).toHaveFocus();
+  });
 });
 
 describe("drafts", () => {
@@ -135,6 +181,19 @@ describe("drafts", () => {
 });
 
 describe("the / menu", () => {
+  it("is the message box's own combobox, named once", () => {
+    const { box } = composer();
+    expect(screen.getAllByRole("combobox")).toEqual([box]);
+    expect(box.tagName).toBe("TEXTAREA");
+    expect(box).toHaveAttribute("aria-expanded", "false");
+    // Nothing to control while the list isn't there.
+    expect(box).not.toHaveAttribute("aria-controls");
+    expect(box).not.toHaveAttribute("aria-activedescendant");
+    expect(screen.getByRole("button", { name: "Chat actions" })).not.toHaveAttribute(
+      "aria-controls",
+    );
+  });
+
   it("is a combobox's list: / opens it, the arrows move along it, and Enter runs one", async () => {
     const { box } = composer();
     const field = screen.getByRole("combobox", { name: "Message atlas" });

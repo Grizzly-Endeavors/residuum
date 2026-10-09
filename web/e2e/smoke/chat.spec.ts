@@ -9,7 +9,7 @@ test("atlas answers a message sent from its chat", async ({ page }) => {
     page.getByText("Hi, this is atlas. You are in my conversation, not scout's."),
   ).toBeVisible();
 
-  const composer = page.getByRole("textbox", { name: "Message atlas" });
+  const composer = page.getByRole("combobox", { name: "Message atlas" });
   await composer.fill("What does the observer keep?");
   await composer.press("Enter");
 

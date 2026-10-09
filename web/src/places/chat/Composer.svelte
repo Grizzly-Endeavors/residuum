@@ -210,6 +210,19 @@
     menuOpen = false;
   }
 
+  // The button is about to be disabled or turn into Stop, either of which
+  // would drop focus to the page: put it back in the box first.
+  function onsubmit(event: SubmitEvent): void {
+    event.preventDefault();
+    send();
+    if (event.submitter !== null) field?.focus();
+  }
+
+  function stopFromButton(): void {
+    onstop();
+    field?.focus();
+  }
+
   // A press anywhere else closes the menu.
   function onfocusout(event: FocusEvent & { currentTarget: HTMLElement }): void {
     if (!event.currentTarget.contains(event.relatedTarget as Node | null)) menuOpen = false;
@@ -225,10 +238,7 @@
 <form
   class="composer"
   data-dragging={dragging || undefined}
-  onsubmit={(event) => {
-    event.preventDefault();
-    send();
-  }}
+  {onsubmit}
   {ondragover}
   {ondragleave}
   {ondrop}
@@ -266,20 +276,16 @@
     </ul>
   {/if}
   <VisuallyHidden id={labelId}>Message {hub.shownName(agent)}</VisuallyHidden>
-  <div
-    class="composer-field"
-    role="combobox"
-    aria-expanded={showMenu}
-    aria-controls={menuId}
-    aria-labelledby={labelId}
-  >
+  <div class="composer-field">
     <textarea
       bind:this={field}
       bind:value={text}
       rows="1"
       placeholder="Message {hub.shownName(agent)}"
+      role="combobox"
       aria-labelledby={labelId}
       aria-autocomplete="list"
+      aria-expanded={showMenu}
       aria-controls={showMenu ? menuId : undefined}
       aria-activedescendant={showMenu ? `${menuId}-${String(menuIndex)}` : undefined}
       {onkeydown}
@@ -293,16 +299,21 @@
       icon="slash"
       label="Chat actions"
       aria-expanded={showMenu && menuFromButton}
-      aria-controls={menuId}
+      aria-controls={showMenu ? menuId : undefined}
       onclick={toggleMenu}
     />
     <ModelControl {agent} />
     <span class="composer-send">
-      {#if showStop}
-        <IconButton icon="stop" variant="secondary" label="Stop reply" onclick={onstop} />
-      {:else}
-        <IconButton icon="send" variant="primary" label="Send" type="submit" disabled={empty} />
-      {/if}
+      <!-- One element for Send and Stop, so focus has nothing to fall off when it changes. A press leaves focus in the message box: on a phone that keeps the keyboard up. -->
+      <IconButton
+        icon={showStop ? "stop" : "send"}
+        variant={showStop ? "secondary" : "primary"}
+        label={showStop ? "Stop reply" : "Send"}
+        type={showStop ? "button" : "submit"}
+        disabled={empty && !showStop}
+        onmousedown={(event) => event.preventDefault()}
+        onclick={showStop ? stopFromButton : undefined}
+      />
     </span>
   </div>
   <input
@@ -331,15 +342,11 @@
     padding: var(--space-10) var(--space-10) var(--space-8) var(--space-14);
     border-radius: var(--corner-lg);
     background: var(--color-stone-2);
-    box-shadow: inset 0 0 0 1px var(--color-line-soft);
+    /* A text field's boundary and focus ring (see Input): the control border at rest, vein at double weight with a halo while focused. */
+    box-shadow: inset 0 0 0 1px var(--color-control-border);
     transition: box-shadow var(--duration-fast) var(--ease-out);
 
-    &:focus-within {
-      box-shadow:
-        inset 0 0 0 1px var(--color-vein-line),
-        0 0 0 3px var(--color-vein-faint);
-    }
-
+    &:focus-within,
     &[data-dragging] {
       box-shadow:
         inset 0 0 0 2px var(--color-vein),
@@ -428,6 +435,18 @@
   @media (max-width: 760px) {
     .composer {
       padding: var(--space-8) var(--space-8) var(--space-6) var(--space-12);
+    }
+
+    /* A small badge on the corner, so the thumbnail stays visible; its touch area grows past it to the touch target. */
+    .composer-image :global(.ui-icon-button.ui-icon-button) {
+      width: 24px;
+      height: 24px;
+
+      &::after {
+        content: "";
+        position: absolute;
+        inset: calc((24px - var(--layout-touch-target)) / 2);
+      }
     }
 
     .composer-field textarea {

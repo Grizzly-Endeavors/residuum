@@ -18,7 +18,7 @@ function conversation(page: Page, agent = "atlas"): Locator {
 }
 
 function composer(page: Page): Locator {
-  return page.getByRole("textbox", { name: "Message atlas" });
+  return page.getByRole("combobox", { name: "Message atlas" });
 }
 
 async function send(page: Page, text: string): Promise<void> {

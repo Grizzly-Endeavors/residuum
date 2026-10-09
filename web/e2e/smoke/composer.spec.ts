@@ -19,7 +19,7 @@ const PNG = Buffer.from(
 );
 
 function box(page: Page, agent = "atlas"): Locator {
-  return page.getByRole("textbox", { name: `Message ${agent}` });
+  return page.getByRole("combobox", { name: `Message ${agent}` });
 }
 
 async function openChat(page: Page): Promise<void> {

@@ -175,7 +175,7 @@ describe("the conversation", () => {
 
     expect(screen.getByRole("region", { name: "drifter is stopped" })).toBeInTheDocument();
     expect(screen.queryByText("No messages yet")).toBeNull();
-    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.queryByRole("combobox")).toBeNull();
     expect(screen.queryByText(/Reconnecting/)).toBeNull();
   });
 
@@ -205,12 +205,12 @@ describe("the conversation", () => {
     setViewedAgent("drifter");
     render(ChatPlace, { agent: "drifter", actions: shell });
     await settle();
-    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.queryByRole("combobox")).toBeNull();
 
     hub.handleFrame({ type: "agent_state", agent: agent("drifter", { state: "running" }) });
     await settle();
     expect(screen.queryByRole("region", { name: "drifter is stopped" })).toBeNull();
-    expect(screen.getByRole("textbox")).toBeInTheDocument();
+    expect(screen.getByRole("combobox")).toBeInTheDocument();
   });
 
   it("shows the live turn of the agent that is open, not the one that was", async () => {
@@ -280,7 +280,7 @@ describe("stopping the reply", () => {
     render(ChatPlace, { agent: "atlas", actions: shell });
     await settle();
 
-    screen.getByRole("textbox").focus();
+    screen.getByRole("combobox").focus();
     await userEvent.keyboard("{Escape}");
     expect(stop).toHaveBeenCalledOnce();
   });
@@ -290,14 +290,14 @@ describe("stopping the reply", () => {
     const stop = vi.spyOn(ws, "stop");
     render(ChatPlace, { agent: "atlas", actions: shell });
     await settle();
-    screen.getByRole("textbox").focus();
+    screen.getByRole("combobox").focus();
     await userEvent.keyboard("{Escape}");
     expect(stop).not.toHaveBeenCalled();
 
     ws.store.handleMessage({ type: "turn_started", reply_to: "t1" });
     await userEvent.click(screen.getByRole("button", { name: "More for atlas" }));
     expect(screen.getByRole("menu", { name: "More for atlas" })).toBeInTheDocument();
-    screen.getByRole("textbox").focus();
+    screen.getByRole("combobox").focus();
     await userEvent.keyboard("{Escape}");
     expect(stop).not.toHaveBeenCalled();
     expect(screen.queryByRole("menu", { name: "More for atlas" })).toBeNull();
@@ -310,7 +310,7 @@ describe("sending a line", () => {
     setViewedAgent("atlas");
     render(ChatPlace, { agent: "atlas", actions: shell });
     await settle();
-    return screen.getByRole("textbox", { name: "Message atlas" });
+    return screen.getByRole("combobox", { name: "Message atlas" });
   }
 
   afterEach(() => {
