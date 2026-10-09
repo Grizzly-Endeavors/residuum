@@ -13,7 +13,10 @@ test("atlas answers a message sent from its chat", async ({ page }) => {
   await composer.fill("What does the observer keep?");
   await composer.press("Enter");
 
-  await expect(page.getByText("What does the observer keep?")).toBeVisible();
+  const conversation = page.getByRole("region", { name: "Conversation with atlas" });
+  await expect(conversation.getByText("What does the observer keep?")).toBeVisible();
   // The mock's first canned reply; a reset before each test makes it the first.
-  await expect(page.getByText("I've looked into that and here's what I found:")).toBeVisible();
+  await expect(
+    conversation.getByText("I've looked into that and here's what I found:"),
+  ).toBeVisible();
 });

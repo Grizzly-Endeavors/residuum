@@ -79,6 +79,34 @@ function teammateMessage({ res, hub, query }: RouteContext): void {
 }
 
 /**
+ * A person writes to an agent (`?agent=atlas`) on Telegram, as `{ content?, name? }`
+ * (a question about the routing doc, from Alex, by default): every connected
+ * page is told of the message and then sees the agent work on it, and the
+ * agent answers on Telegram. The turn is recorded in history with its sender.
+ */
+async function telegramMessage({ req, res, hub, query }: RouteContext): Promise<void> {
+  const agent = hub.agents.get(query.get("agent") ?? "");
+  if (!agent) {
+    json(res, 404, { error: "mock: name an agent with ?agent=" });
+    return;
+  }
+  const raw = await readBody(req);
+  const {
+    content = "Can you check what the routing doc says about urgent notices?",
+    name = "Alex",
+  } = raw.trim() === "" ? {} : parseJsonObject(raw);
+  if (typeof content !== "string" || typeof name !== "string") {
+    json(res, 422, { error: "mock: `content` and `name` must be strings" });
+    return;
+  }
+  agent.receiveMessage(content, {
+    endpoint: "telegram",
+    sender: { name, id: "42", interface: "telegram", location: "direct message" },
+  });
+  json(res, 200, { ok: true });
+}
+
+/**
  * Fix the settings that stop an agent (`?agent=brittle`) starting, the way a
  * user would in Settings: every model its provider doesn't offer becomes the
  * provider's first one, so its next start succeeds. Its state doesn't change
@@ -266,6 +294,7 @@ export const controlRoutes: readonly Route[] = [
   { method: "POST", pattern: "/api/mock/session-relay-lag", handler: lagSessionRelay },
   { method: "POST", pattern: "/api/mock/missed-relay", handler: missedRelay },
   { method: "POST", pattern: "/api/mock/teammate-message", handler: teammateMessage },
+  { method: "POST", pattern: "/api/mock/telegram-message", handler: telegramMessage },
   { method: "POST", pattern: "/api/mock/fix-agent", handler: fixAgent },
   { method: "POST", pattern: "/api/mock/reset", handler: reset },
   { method: "POST", pattern: "/api/mock/clock/advance", handler: advanceClock },

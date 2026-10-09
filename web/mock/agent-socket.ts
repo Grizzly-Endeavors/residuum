@@ -125,6 +125,7 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
       if (sent !== null) sendFrame(client, sent);
     }
   };
+  agent.receiveMessage = chat.receive;
   agent.connectedClients = () =>
     [...wss.clients].filter((client) => !throughArtifactsOrigin.has(client)).length;
   agent.dispose = () => {

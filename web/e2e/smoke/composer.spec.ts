@@ -219,7 +219,11 @@ test("messages wait while the connection is down, and say so", async ({ page }) 
 
   online = true;
   await expect(page.getByText(/^Reconnecting/)).toHaveCount(0, { timeout: 20_000 });
-  await expect(page.getByText("I've looked into that and here's what I found:")).toBeVisible();
+  await expect(
+    page
+      .getByRole("region", { name: "Conversation with atlas" })
+      .getByText("I've looked into that and here's what I found:"),
+  ).toBeVisible();
 });
 
 test.describe("the conversation size", () => {

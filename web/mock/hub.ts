@@ -157,6 +157,7 @@ export function createHub(
         unread: 0,
         state: createState(name, false, env),
         connectedClients: () => 0,
+        receiveMessage: () => undefined,
         dispose: () => undefined,
       };
       if (runState === "running") startConversation(agent);

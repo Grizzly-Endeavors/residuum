@@ -51,18 +51,17 @@ test.describe("a turn that works in rounds", () => {
 
     const steps = feed.getByRole("button", { name: /^Edit(ing|ed) team\/wiki\/config\.toml/ });
     await expect(steps).toBeVisible({ timeout: 20_000 });
-    const read = feed.getByRole("button", { name: /^Read 3 files/ });
+    const read = feed.getByRole("button", { name: /^Read 3 files, thought/ });
     const ran = feed.getByRole("button", { name: /^Ran 2 commands/ });
     // The rounds the agent has said something after are collapsed to a line each.
     await expect(read).toHaveAttribute("aria-expanded", "false");
     await expect(ran).toHaveAttribute("aria-expanded", "false");
 
     const inOrder = [
-      feed.getByText("Let me check the config first."),
       read,
-      feed.getByText("The port is set twice. Fixing:"),
+      feed.getByText("Let me check the config first."),
       ran,
-      feed.getByText("One edit should do it."),
+      feed.getByText("The port is set twice. Fixing:"),
       steps,
       feed.getByText("Working", { exact: true }),
     ];
@@ -76,7 +75,7 @@ test.describe("a turn that works in rounds", () => {
       timeout: 20_000,
     });
     // Over, the head gives way to how long it took, and the last round is a line too.
-    await expect(feed.getByText("Working", { exact: true })).toHaveCount(0);
+    await expect(feed.getByText("Working", { exact: true })).toHaveCount(0, { timeout: 20_000 });
     await expect(feed.getByText(/^Worked for \d+s$/)).toBeVisible();
     await expect(feed.getByRole("button", { name: /^Edited 1 file/ })).toHaveAttribute(
       "aria-expanded",
@@ -97,10 +96,12 @@ test.describe("a turn that works in rounds", () => {
     const commands = feed.getByRole("button", { name: /^Ran grep -n port/ });
     await expect(commands).toBeVisible();
     await expect(feed.getByText("The port is set twice. Fixing:")).toBeVisible();
-    expect(await top(feed.getByText("The port is set twice. Fixing:"))).toBeLessThan(
+    expect(await top(feed.getByText("Let me check the config first."))).toBeLessThan(
       await top(commands),
     );
-    expect(await top(commands)).toBeLessThan(await top(feed.getByText("One edit should do it.")));
+    expect(await top(commands)).toBeLessThan(
+      await top(feed.getByText("The port is set twice. Fixing:")),
+    );
   });
 });
 
@@ -179,5 +180,173 @@ test.describe("what a screen reader is told", () => {
         .getByRole("status")
         .filter({ hasText: /^atlas/ }),
     ).toHaveCount(0);
+  });
+});
+
+test.describe("text and reasoning streaming in", () => {
+  test("a reply grows with a caret at its end, and the complete message takes its place", async ({
+    page,
+    mock,
+  }) => {
+    await mock.post("/api/mock/delays", { data: { scale: 8 } });
+    await openAtlas(page);
+    await send(page, "Tidy the wiki index");
+    const feed = conversation(page);
+
+    // Partway through: its first words are in, its last aren't, and it is still arriving.
+    const reply = feed.getByText("I've looked into that and here's what I found:");
+    await expect(reply).toBeVisible({ timeout: 30_000 });
+    await expect(feed.getByText("Would you like me to adjust any of these values?")).toHaveCount(0);
+    await expect(feed.locator("[data-streaming]")).toHaveCount(1);
+    await expect(feed.getByText("Working", { exact: true })).toBeVisible();
+    await expectNoAxeViolations(page);
+
+    await expect(feed.getByText("Would you like me to adjust any of these values?")).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(feed.locator("[data-streaming]")).toHaveCount(0);
+    await expect(feed.getByText("Working", { exact: true })).toHaveCount(0);
+    // It is the one message, not the draft and the message.
+    await expect(reply).toHaveCount(1);
+  });
+
+  test("stopping keeps the text so far, and says it was stopped", async ({ page, mock }) => {
+    await mock.post("/api/mock/delays", { data: { scale: 8 } });
+    await openAtlas(page);
+    await send(page, "Tidy the wiki index");
+    const feed = conversation(page);
+
+    await expect(feed.getByText("I've looked into that and here's what I found:")).toBeVisible({
+      timeout: 30_000,
+    });
+    await page.getByRole("button", { name: "Stop the reply" }).click();
+
+    await expect(feed.getByText("Stopped here")).toBeVisible({ timeout: 15_000 });
+    await expect(feed.getByText(/^Stopped by you/)).toBeVisible();
+    await expect(feed.getByText("I've looked into that and here's what I found:")).toBeVisible();
+    await expect(feed.getByText("Would you like me to adjust any of these values?")).toHaveCount(0);
+    await expect(feed.locator("[data-streaming]")).toHaveCount(0);
+  });
+
+  test("a reply that starts over says it is retrying, then keeps the second attempt", async ({
+    page,
+    mock,
+  }) => {
+    await mock.post("/api/mock/delays", { data: { scale: 6 } });
+    await openAtlas(page);
+    await send(page, "retry: look at the routing doc");
+    const feed = conversation(page);
+
+    await expect(feed.getByText("Retrying…")).toBeVisible({ timeout: 30_000 });
+    await expect(feed.getByText("Let me look at the notification routing doc")).toHaveCount(0);
+
+    await expect(feed.getByText(/^The routing doc sends urgent notices/)).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(feed.getByText("Retrying…")).toHaveCount(0);
+    await expect(feed.getByText("Working", { exact: true })).toHaveCount(0, { timeout: 20_000 });
+  });
+
+  test("reasoning streams in muted, then folds to Thought for and opens to all of it", async ({
+    page,
+    mock,
+  }) => {
+    await mock.post("/api/mock/delays", { data: { scale: 8 } });
+    await openAtlas(page);
+    await send(page, "think about the fallback order");
+    const feed = conversation(page);
+
+    await expect(feed.getByText("Thinking", { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(feed.getByText(/The question is whether to cascade/)).toBeVisible();
+    await expectNoAxeViolations(page);
+
+    const thought = feed.getByRole("button", { name: /^Thought for \d+s$/ });
+    await expect(thought).toBeVisible({ timeout: 30_000 });
+    await expect(feed.getByText("Thinking", { exact: true })).toHaveCount(0);
+    await expect(thought).toHaveAttribute("aria-expanded", "false");
+    await expect(feed.getByText(/^Retry three times with backoff/)).toBeVisible({
+      timeout: 30_000,
+    });
+
+    await thought.click();
+    await expect(feed.getByText(/I should answer with that order/)).toBeVisible();
+  });
+
+  test("history keeps the reasoning, in the line of the step that did it", async ({
+    page,
+    mock,
+  }) => {
+    await mock.post("/api/mock/delays", { data: { scale: 1 } });
+    await openAtlas(page);
+    await send(page, "think about the fallback order");
+    const feed = conversation(page);
+    await expect(feed.getByText(/^Retry three times with backoff/)).toBeVisible({
+      timeout: 20_000,
+    });
+    await expect(feed.getByText("Working", { exact: true })).toHaveCount(0, { timeout: 20_000 });
+
+    // The page's own record of the turn is gone; history has it, readable.
+    await page.reload();
+    await expect(feed.getByText(/^Retry three times with backoff/)).toBeVisible();
+    const thought = feed.getByRole("button", { name: "Thought" });
+    await thought.click();
+    await expect(feed.getByText(/Cascading is what most setups expect/)).toBeVisible();
+  });
+});
+
+test.describe("turns from other places", () => {
+  test("a message from Telegram shows with who sent it, and its reply says where it went", async ({
+    page,
+    mock,
+  }) => {
+    await mock.post("/api/mock/delays", { data: { scale: 3 } });
+    await openAtlas(page);
+    await mock.post("/api/mock/telegram-message", { params: { agent: "atlas" } });
+    const feed = conversation(page);
+
+    await expect(feed.getByText("Alex · telegram · direct message")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(
+      feed.getByText("Can you check what the routing doc says about urgent notices?"),
+    ).toBeVisible();
+    await expect(feed.getByText("Working", { exact: true })).toBeVisible();
+
+    await expect(feed.getByText(/^Urgent notices go to every channel/)).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(feed.getByText("Sent to Telegram")).toBeVisible();
+    await expect(feed.getByText("Working", { exact: true })).toHaveCount(0, { timeout: 20_000 });
+    await expectNoAxeViolations(page);
+  });
+
+  test("a message sent from another tab shows here as it is sent, once in the tab that sent it", async ({
+    page,
+    mock,
+  }) => {
+    await mock.post("/api/mock/delays", { data: { scale: 3 } });
+    await openAtlas(page);
+    const other = await page.context().newPage();
+    await other.goto("/agent/atlas");
+    await expect(conversation(other).getByText(GREETING)).toBeVisible();
+    await expect
+      .poll(async () => {
+        const answer = (await (
+          await page.request.get("/api/mock/connected-pages?agent=atlas")
+        ).json()) as { pages: number };
+        return answer.pages;
+      })
+      .toBe(2);
+
+    await send(other, "Check the routing doc, please");
+    await expect(conversation(page).getByText("Check the routing doc, please")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(conversation(page).getByText("Working", { exact: true })).toBeVisible();
+    await expect(conversation(other).getByText("Check the routing doc, please")).toHaveCount(1);
+
+    await expect(conversation(page).getByText(/^Worked for/)).toBeVisible({ timeout: 30_000 });
+    await expect(conversation(page).getByText("Check the routing doc, please")).toHaveCount(1);
+    await other.close();
   });
 });

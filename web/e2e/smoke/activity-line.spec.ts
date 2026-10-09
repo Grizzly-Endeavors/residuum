@@ -73,7 +73,7 @@ test.describe("a live turn", () => {
     const line = summary(feed, /^Searched memory, read 2 files(?: · \d+s)? · 1 step failed$/);
     await expect(line).toBeVisible({ timeout: 20_000 });
     await expect(line).toHaveAttribute("aria-expanded", "false");
-    await expect(feed.getByText("Working")).toHaveCount(0);
+    await expect(feed.getByText("Working")).toHaveCount(0, { timeout: 20_000 });
     // The turn did work worth timing, so its close says how long.
     await expect(feed.getByText(/^Worked for \d+s$/)).toBeVisible();
     await expect(feed.getByRole("button", { name: "Read team/wiki/index.md" })).toHaveCount(0);
