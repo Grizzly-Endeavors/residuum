@@ -3,7 +3,7 @@
   import { FeedScroller } from "../lib/feed-scroll.svelte";
   import type { ObservedTurnLookup } from "../lib/observed-turns.svelte";
   import type { FeedItem } from "../lib/types";
-  import { keyboardScrollable, Spinner } from "../lib/ui";
+  import { keyboardScrollable, Spinner, VisuallyHidden } from "../lib/ui";
   import type { FeedHistory } from "./feed-history";
   import FeedItemView from "./FeedItemView.svelte";
   import FeedTurn from "./FeedTurn.svelte";
@@ -30,8 +30,13 @@
     liveTurnId?: string | null;
     /** What the page saw of each turn while it ran: timing, how it ended, missed steps. */
     observed?: ObservedTurnLookup;
-    /** Stops the turn in flight, from its activity line. */
+    /** Stops the turn in flight, from the head of its block. */
     onStop?: () => void;
+    /**
+     * What a screen reader is told as the agent works: each a new object, so
+     * the same words twice in a row are read twice.
+     */
+    announcement?: { id: number; text: string } | null;
     /** What shows when there are no items. */
     empty?: Snippet;
     /** Live content after the items, such as the turn in progress. */
@@ -48,6 +53,7 @@
     liveTurnId = null,
     observed,
     onStop,
+    announcement = null,
     empty,
     tail,
   }: Props = $props();
@@ -285,6 +291,14 @@
 </script>
 
 <div class="feed">
+  <!-- Outside the scrolling region, which is no live region: a reply's text streams in piece by piece. This says only whole things, once each. -->
+  <div role="status">
+    {#if announcement}
+      {#key announcement.id}
+        <VisuallyHidden>{announcement.text}</VisuallyHidden>
+      {/key}
+    {/if}
+  </div>
   {#if scroller.scrolledUp}
     <div class="feed-pill">
       {#if anchorLabel}

@@ -194,12 +194,15 @@ class WsCoordinator {
    * running is timed from when the hub says the agent became busy.
    */
   private createFeed(agent: string | null): FeedStore {
-    return new FeedStore(() => {
-      if (agent === null) return null;
-      const since = hub.activityOf(agent).busy_since;
-      const at = since === null ? Number.NaN : Date.parse(since);
-      return Number.isNaN(at) ? null : at;
-    });
+    return new FeedStore(
+      () => {
+        if (agent === null) return null;
+        const since = hub.activityOf(agent).busy_since;
+        const at = since === null ? Number.NaN : Date.parse(since);
+        return Number.isNaN(at) ? null : at;
+      },
+      () => (agent === null ? "The agent" : hub.shownName(agent)),
+    );
   }
 
   /**

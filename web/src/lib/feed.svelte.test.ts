@@ -263,6 +263,89 @@ describe("FeedStore when a turn fails", () => {
   });
 });
 
+describe("FeedStore announcements", () => {
+  function named(): FeedStore {
+    return new FeedStore(
+      () => null,
+      () => "atlas",
+    );
+  }
+
+  it("says the agent is working when a turn starts", () => {
+    const store = named();
+    expect(store.announcement).toBeNull();
+    store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    expect(store.announcement?.text).toBe("atlas is working");
+  });
+
+  it("says the reply is complete, with the start of it, and not before", () => {
+    const store = named();
+    store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    store.handleMessage({ type: "broadcast_response", content: "Looking through the notes." });
+    expect(store.announcement?.text).toBe("atlas is working");
+
+    store.handleMessage({ type: "response", reply_to: "t1", content: "**Done.** Fixed the port." });
+    expect(store.announcement?.text).toBe("atlas replied: Done. Fixed the port.");
+  });
+
+  it("says nothing for a reply with no words, or the tools it ran", () => {
+    const store = named();
+    store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    const started = store.announcement;
+    store.handleMessage({ type: "tool_call", id: "c1", name: "exec", arguments: {}, server: null });
+    store.handleMessage({ type: "response", reply_to: "t1", content: "" });
+    expect(store.announcement).toBe(started);
+  });
+
+  it("says the turn couldn't finish, for an error that names it", () => {
+    const store = named();
+    store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    store.handleMessage({ type: "error", reply_to: "t1", message: "Nope.", details: null });
+    expect(store.announcement?.text).toBe("atlas couldn't finish");
+  });
+
+  it("leaves an error that names no turn to its toast", () => {
+    const store = named();
+    store.handleMessage({ type: "error", reply_to: null, message: "Bad frame.", details: null });
+    expect(store.announcement).toBeNull();
+  });
+
+  it("makes each announcement a new one, so the same words twice are both read", () => {
+    const store = named();
+    store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    const first = store.announcement;
+    store.handleMessage({ type: "turn_ended", reply_to: "t1" });
+    store.handleMessage({ type: "turn_started", reply_to: "t2" });
+    expect(store.announcement?.text).toBe(first?.text);
+    expect(store.announcement?.id).not.toBe(first?.id);
+  });
+
+  it("stays quiet about a turn history already showed", () => {
+    const store = named();
+    store.loadHistory(
+      segment([
+        historyMsg("user", "Are you there?", { turnId: "web-1" }),
+        historyMsg("assistant", "Here.", { turnId: "web-1" }),
+      ]),
+    );
+    store.pushUserMessage("Are you there?", undefined, "web-1");
+    store.handleMessage({ type: "turn_started", reply_to: "web-1" });
+    const before = store.announcement;
+    expect(
+      store.reconcileRecent(
+        segment([
+          historyMsg("user", "Are you there?", { turnId: "web-1" }),
+          historyMsg("assistant", "Here.", { turnId: "web-1" }),
+          historyMsg("user", "Are you there?", { turnId: "web-1" }),
+          historyMsg("assistant", "Still here.", { turnId: "web-1" }),
+        ]),
+      ),
+    ).toBe(true);
+    store.handleMessage({ type: "response", reply_to: "web-1", content: "Still here." });
+    expect(store.announcement).toBe(before);
+  });
+});
+
 describe("FeedStore with a turn id history already holds", () => {
   // Every page load once counted its message ids from web-1 again, and the
   // agent kept them as turn ids, so older history holds turns under ids a

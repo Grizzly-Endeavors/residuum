@@ -1,6 +1,7 @@
 // ── Feed store (Svelte 5 runes) ──────────────────────────────────────
 
 import { SvelteMap } from "svelte/reactivity";
+import { failedAnnouncement, repliedAnnouncement, workingAnnouncement } from "./announce";
 import { dayLabel } from "./day-label";
 import { nextFeedId } from "./feed-id";
 import {
@@ -222,10 +223,27 @@ export class FeedStore {
   private turnStart: number | null = null;
 
   /**
+   * What a screen reader is told about the agent's work: that a turn started,
+   * that its reply is complete (with the start of it), or that it couldn't
+   * finish. Each is new, so the same words twice in a row are read twice.
+   * Only whole messages are announced, never a reply as it streams in.
+   */
+  announcement = $state<{ id: number; text: string } | null>(null);
+  private announced = 0;
+
+  /**
    * @param joinedTurnStart When the agent became busy, for a turn this page
    *   joined already running; null when unknown.
+   * @param agentName How the agent is named in what a screen reader is told.
    */
-  constructor(private readonly joinedTurnStart: () => number | null = () => null) {}
+  constructor(
+    private readonly joinedTurnStart: () => number | null = () => null,
+    private readonly agentName: () => string = () => "The agent",
+  ) {}
+
+  private announce(text: string): void {
+    this.announcement = { id: ++this.announced, text };
+  }
 
   /** Dispatch a server message into the feed. */
   handleMessage(msg: ServerMessage): void {
@@ -235,6 +253,7 @@ export class FeedStore {
         this.sentTurnId = null;
         this.isProcessing = true;
         this.activeTurnId = msg.reply_to;
+        this.announce(workingAnnouncement(this.agentName()));
         this.captureBaseline(msg.reply_to);
         this.turnStart ??= this.feed.length;
         // The user message that started it arrived first.
@@ -291,6 +310,7 @@ export class FeedStore {
             content: msg.content,
             ...this.ofLiveTurn(),
           });
+          this.announce(repliedAnnouncement(this.agentName(), msg.content));
         }
         break;
 
@@ -313,7 +333,10 @@ export class FeedStore {
         this.isProcessing = false;
         // An error that names a turn is that turn failing: it leaves its
         // account in the feed after the toast is gone.
-        if (msg.reply_to !== null) this.recordFailure(msg.reply_to, msg.message, msg.details);
+        if (msg.reply_to !== null) {
+          this.recordFailure(msg.reply_to, msg.message, msg.details);
+          this.announce(failedAnnouncement(this.agentName()));
+        }
         break;
 
       case "notice":

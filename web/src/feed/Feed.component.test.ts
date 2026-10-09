@@ -112,6 +112,28 @@ describe("Feed", () => {
     ]);
   });
 
+  it("tells a screen reader what the agent is doing, from outside the scrolling region", async () => {
+    const view = render(Feed, {
+      agent: "atlas",
+      items: [reply],
+      label: "Conversation with atlas",
+      announcement: { id: 1, text: "atlas is working" },
+    });
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent("atlas is working");
+    expect(screen.getByRole("region", { name: "Conversation with atlas" })).not.toContainElement(
+      status,
+    );
+
+    await view.rerender({ announcement: { id: 2, text: "atlas replied: Done." } });
+    expect(status).toHaveTextContent(/^atlas replied: Done\.$/);
+  });
+
+  it("says nothing until there is something to say", () => {
+    render(Feed, { agent: "atlas", items: [reply], label: "Conversation with atlas" });
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+  });
+
   it("shows a turn that has only made tool calls as its line", () => {
     render(Feed, {
       agent: "atlas",

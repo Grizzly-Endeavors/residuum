@@ -109,6 +109,7 @@
     liveTurnId={store.activeTurnId}
     observed={store.observed.get}
     onStop={() => ws.stop()}
+    announcement={store.announcement}
   >
     {#snippet empty()}
       {#if running}

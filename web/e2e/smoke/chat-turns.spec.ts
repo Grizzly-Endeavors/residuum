@@ -141,3 +141,43 @@ test.describe("a turn that couldn't finish", () => {
     await expect(account).toHaveCount(2, { timeout: 15_000 });
   });
 });
+
+test.describe("what a screen reader is told", () => {
+  /** The visually hidden status region of the conversation, which says only whole things. */
+  function announced(page: Page, text: RegExp): Locator {
+    return page.getByRole("status").filter({ hasText: text });
+  }
+
+  test("a turn starting, its reply complete, and a turn that couldn't finish", async ({
+    page,
+    mock,
+  }) => {
+    await mock.post("/api/mock/delays", { data: { scale: 2 } });
+    await mock.post("/api/mock/turn-hold", { data: { held: true } });
+    await openAtlas(page);
+    await send(page, "check the wiki");
+    await expect(announced(page, /^atlas is working$/)).toBeAttached();
+    // The note it sends on the way is a message in the feed, not something read out.
+    await expect(conversation(page).getByText("Looking through recent notes first.")).toBeVisible();
+    await expect(announced(page, /Looking through/)).toHaveCount(0);
+
+    await mock.post("/api/mock/turn-hold", { data: { held: false } });
+    await expect(
+      announced(page, /^atlas replied: I've looked into that and here's what I found/),
+    ).toBeAttached({ timeout: 20_000 });
+
+    await send(page, "error: check the wiki");
+    await expect(announced(page, /^atlas couldn't finish$/)).toBeAttached({ timeout: 20_000 });
+  });
+
+  test("sits outside the scrolling conversation", async ({ page }) => {
+    await openAtlas(page);
+    await send(page, "check the wiki");
+    await expect(announced(page, /^atlas (is working|replied)/)).toBeAttached();
+    await expect(
+      conversation(page)
+        .getByRole("status")
+        .filter({ hasText: /^atlas/ }),
+    ).toHaveCount(0);
+  });
+});
