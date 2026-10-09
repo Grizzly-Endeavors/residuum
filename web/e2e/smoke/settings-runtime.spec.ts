@@ -105,7 +105,7 @@ test("Runtime: a limit and the idle channel are saved and read back from disk", 
   await page.goto("/agent/atlas?settings=atlas/runtime");
   await expect(page.getByRole("heading", { name: "Runtime", level: 2 })).toBeVisible();
   await expect(page.getByLabel("Reply time limit")).toHaveValue("120");
-  await expect(page.getByLabel("Reply length")).toHaveValue("8192");
+  await expect(page.getByLabel("Reply length")).toHaveValue("16384");
   await expectNoAxeViolations(page, overlay);
 
   await page.getByLabel("Reply length").fill("4096");
