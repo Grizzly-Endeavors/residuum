@@ -65,6 +65,8 @@ newtype_string!(
 pub enum TopicId {
     /// Interactive endpoint turn activity (responses, tool calls, lifecycle, intermediate text).
     Endpoint(EndpointName),
+    /// The main agent's whole conversation, one ordered stream for every turn.
+    MainConversation,
     /// Background task orchestration (spawn requests and task results).
     Background,
     /// Agent session lifecycle and session-tagged turn events.
@@ -89,6 +91,7 @@ impl fmt::Display for TopicId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Endpoint(name) => write!(f, "endpoint:{name}"),
+            Self::MainConversation => f.write_str("main:conversation"),
             Self::Background => f.write_str("background"),
             Self::Sessions => f.write_str("sessions"),
             Self::UserMessage => f.write_str("user:message"),

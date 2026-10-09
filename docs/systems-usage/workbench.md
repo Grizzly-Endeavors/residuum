@@ -65,7 +65,7 @@ As the page loads, the SDK opens the hub WebSocket (`/api/hub/ws`) on the page's
 
 `residuum.agent(name)` returns the handle for one agent. Its socket (`/api/agents/<name>/ws`) opens the first time the handle's `on` or `watch` is used and stays open while the page does, reconnecting with backoff like the hub socket. It turns verbose mode on as it connects, so tool calls and results arrive.
 
-- `on(type, handler)` receives that agent's frames of `type`, `"*"` for all of them: `turn_started`, `tool_call`, `response`, the `session_*` frames of its sessions, and the rest. `connection` follows this socket, and a handler registered later hears the current state first. Keepalive answers and the change feed's frames are not passed on.
+- `on(type, handler)` receives that agent's frames of `type`, `"*"` for all of them: `turn_started`, `user_message`, `text_delta`, `thinking`, `tool_call`, `response`, the `session_*` frames of its sessions, and the rest. The main chat's frames cover every turn the agent runs, whichever interface started it, and are described in [Turn Control](turn-control.md#the-main-conversation-stream). `connection` follows this socket, and a handler registered later hears the current state first. Keepalive answers and the change feed's frames are not passed on.
 - `watch(prefix, handler)` follows that agent's workspace in the file API's namespace: unprefixed paths are its own files, `team/...` the team's, and `""` all of it. Otherwise it behaves like `residuum.watch`, and after a reconnect its handlers get `workspace_resync` with `reason: "reconnected"`.
 
 An unknown agent, or one that isn't running, refuses the socket. The handle reports `disconnected`, logs it to the console, and keeps trying, so it connects once the agent runs.

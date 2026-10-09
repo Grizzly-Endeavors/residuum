@@ -24,6 +24,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
+use super::chat::HistoryMessage;
 use crate::background::messaging::AgentMessenger;
 use crate::background::registry::{
     MAIN_DEPTH, SessionCategory, SessionRegistry, artifact_sender_address, generate_address,
@@ -223,7 +224,7 @@ pub(crate) struct SessionTranscriptResponse {
     /// Its transcript so far, in the same shape `GET /api/agents/{name}/chat/history`
     /// returns. Runs don't record per-message times, so every message
     /// carries the run's start time.
-    messages: Vec<RecentMessage>,
+    messages: Vec<HistoryMessage>,
 }
 
 /// `GET /api/agents/{name}/sessions/runs/{run_id}/transcript` — one run's transcript.
@@ -271,11 +272,13 @@ pub(crate) async fn api_session_transcript(
     let timestamp = session.started_at.with_timezone(&state.tz).naive_local();
     let messages = transcript
         .into_iter()
-        .map(|message: Message| RecentMessage {
-            message,
-            timestamp,
-            visibility: Visibility::User,
-            turn_id: None,
+        .map(|message: Message| {
+            HistoryMessage::from(RecentMessage {
+                message,
+                timestamp,
+                visibility: Visibility::User,
+                turn_id: None,
+            })
         })
         .collect();
     Ok(Json(SessionTranscriptResponse { session, messages }))
@@ -858,6 +861,45 @@ mod tests {
                 {"role": "assistant", "content": "done", "timestamp": "2026-09-20T12:00", "visibility": "user"},
             ])
         );
+    }
+
+    #[tokio::test]
+    async fn transcript_shows_readable_thinking_and_hides_what_only_the_provider_needs() {
+        let (state, _dir) = state();
+        let run = info("spawned-r-0001", "run-r", EventTrigger::Agent, 0);
+        state.store.begin_run(&run).await;
+        state
+            .store
+            .complete_run(
+                &run,
+                "completed",
+                &crate::bus::AgentResultStatus::Completed,
+                vec![
+                    Message::user("go"),
+                    Message::assistant("done", None).with_thinking(vec![
+                        crate::inference::ThinkingBlock {
+                            text: "plan first".to_string(),
+                            signature: Some("sig-secret".to_string()),
+                            redacted: None,
+                            part: None,
+                        },
+                    ]),
+                ],
+                None,
+            )
+            .await
+            .unwrap();
+
+        let Json(body) = api_session_transcript(State(state.clone()), Path("run-r".to_string()))
+            .await
+            .unwrap();
+
+        let wire = serde_json::to_value(&body.messages).unwrap();
+        assert_eq!(
+            wire.get(1).and_then(|m| m.get("thinking")),
+            Some(&serde_json::json!(["plan first"]))
+        );
+        assert!(!wire.to_string().contains("sig-secret"), "{wire}");
     }
 
     #[tokio::test]

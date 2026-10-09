@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::inference::{AgentSender, MessageSender};
 
+/// The endpoint name of a message no interface delivered: a result relayed
+/// to the main agent, another agent's message, a delivery-failure notice.
+pub const BACKGROUND_ENDPOINT: &str = "background";
+
 /// Kind of chat conversation, which decides whether the bot needs an @mention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -68,6 +72,13 @@ impl MessageOrigin {
             None => true,
             Some(ctx) => ctx.kind == ConversationKind::Personal && ctx.is_owner,
         }
+    }
+
+    /// Whether a person sent this, as opposed to the system or an agent:
+    /// false for a background origin and for one agent's message to another.
+    #[must_use]
+    pub fn is_from_person(&self) -> bool {
+        self.endpoint != BACKGROUND_ENDPOINT && self.agent_sender.is_none()
     }
 }
 

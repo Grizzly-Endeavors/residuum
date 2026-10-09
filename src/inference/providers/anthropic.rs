@@ -13,7 +13,7 @@ use crate::inference::http::{
     warn_if_insecure_remote,
 };
 use crate::inference::retry::{RetryConfig, with_retry};
-use crate::inference::stream::{Flow, SseEvent, TrackedSink, read_sse};
+use crate::inference::stream::{Flow, SseEvent, TrackedSink, answered_whole, read_sse};
 use crate::inference::types::current_exchange_start;
 use crate::inference::{
     CompletionOptions, ImageData, InferenceError, InferenceProvider, InferenceResponse, Message,
@@ -427,7 +427,7 @@ impl AnthropicClient {
             return Err(error);
         }
 
-        let api_response = if let Some(sink) = sink {
+        let api_response = if let Some(sink) = sink.filter(|_| !answered_whole(&response)) {
             read_stream(response, timeout_secs, sink).await?
         } else {
             let body = response
@@ -3297,6 +3297,28 @@ mod tests {
         assert!(
             !err.is_retryable(),
             "a rejected request stays rejected: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_that_ignores_the_stream_request_is_read_whole() {
+        let body = json!({
+            "content": [{"type": "text", "text": "Whole answer"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 7, "output_tokens": 2}
+        });
+        let (result, sink, _) =
+            stream_from(json_response(200, &body.to_string()), test_client).await;
+        let response = result.unwrap();
+        assert_eq!(
+            response.content, "Whole answer",
+            "the whole body is the reply"
+        );
+        assert_eq!(response.stop_reason, Some(StopReason::EndTurn));
+        assert!(
+            sink.deltas().is_empty(),
+            "nothing streamed: {:?}",
+            sink.deltas()
         );
     }
 

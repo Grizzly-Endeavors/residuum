@@ -150,4 +150,26 @@ mod tests {
             "more messages should mean more tokens"
         );
     }
+
+    #[test]
+    fn a_messages_size_does_not_count_the_models_thinking() {
+        let plain = Message::assistant("The answer is 42.".to_string(), None);
+        let reasoned = crate::inference::Message::assistant("The answer is 42.".to_string(), None)
+            .with_thinking(vec![crate::inference::ThinkingBlock {
+                text: "private reasoning about the answer".to_string(),
+                signature: Some("sig-opaque-token".to_string()),
+                redacted: Some("encrypted-blob".to_string()),
+                part: None,
+            }]);
+
+        assert_eq!(
+            estimate_single_message(&reasoned),
+            estimate_single_message(&plain),
+            "conversation size is what the agent said, not what it thought"
+        );
+        assert_eq!(
+            estimate_message_tokens(std::slice::from_ref(&reasoned)),
+            estimate_message_tokens(std::slice::from_ref(&plain))
+        );
+    }
 }

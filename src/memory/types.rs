@@ -24,8 +24,9 @@ pub(crate) struct Episode {
 }
 
 /// Visibility of an observation relative to the conversation context.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export)]
 pub enum Visibility {
     /// Observation came from a user-visible conversation turn.
     #[default]

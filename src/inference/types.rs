@@ -100,11 +100,36 @@ pub(crate) fn current_exchange_start(messages: &[Message]) -> usize {
         .map_or(0, |last_reply| last_reply + 1)
 }
 
+/// The readable text of each block that has some, in order, skipping blocks
+/// the provider withheld. The one place reasoning becomes text for a reader:
+/// signatures and encrypted data never leave the blocks.
+#[must_use]
+pub fn readable_thinking(blocks: &[ThinkingBlock]) -> Vec<&str> {
+    blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .filter(|text| !text.trim().is_empty())
+        .collect()
+}
+
+/// The readable text of `blocks` joined by a blank line, or `None` when there
+/// is none (see [`readable_thinking`]).
+#[must_use]
+pub fn joined_thinking_text(blocks: &[ThinkingBlock]) -> Option<String> {
+    let parts = readable_thinking(blocks);
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
+}
+
 /// The person behind a user message and where they sent it from.
 ///
 /// Stored with the message so the agent can tell participants apart in
 /// shared spaces (team channels) long after the message arrived.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct MessageSender {
     /// Display name as the interface reports it.
     pub name: String,
@@ -114,6 +139,7 @@ pub struct MessageSender {
     pub interface: String,
     /// Where on the interface it was sent (e.g. `"direct message"`, `"#general"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub location: Option<String>,
 }
 
@@ -245,6 +271,28 @@ impl Message {
     pub fn with_agent_sender(mut self, agent_sender: Option<AgentSender>) -> Self {
         self.agent_sender = agent_sender;
         self
+    }
+
+    /// Attach the reasoning the model produced for this message.
+    #[must_use]
+    pub fn with_thinking(mut self, thinking: Vec<ThinkingBlock>) -> Self {
+        self.thinking = thinking;
+        self
+    }
+
+    /// This message for an archive nothing replays to a provider: its
+    /// reasoning is kept as readable text only, without the signatures and
+    /// encrypted blocks a provider needs back within a conversation, which
+    /// mean nothing once the conversation is over.
+    #[must_use]
+    pub fn without_replay_data(&self) -> Self {
+        Self {
+            thinking: readable_thinking(&self.thinking)
+                .into_iter()
+                .map(ThinkingBlock::text)
+                .collect(),
+            ..self.clone()
+        }
     }
 
     /// Message text as the agent reads it in history and transcripts.
@@ -758,5 +806,49 @@ mod tests {
             opts.temperature.is_none(),
             "default temperature should be None"
         );
+    }
+
+    #[test]
+    fn an_archived_message_keeps_readable_reasoning_and_drops_what_only_a_provider_needs() {
+        let message = Message::assistant("42.".to_string(), None).with_thinking(vec![
+            ThinkingBlock {
+                text: "work it out".to_string(),
+                signature: Some("sig".to_string()),
+                redacted: None,
+                part: None,
+            },
+            ThinkingBlock {
+                text: String::new(),
+                signature: None,
+                redacted: Some("encrypted".to_string()),
+                part: None,
+            },
+        ]);
+
+        let archived = message.without_replay_data();
+
+        assert_eq!(archived.thinking, [ThinkingBlock::text("work it out")]);
+        assert_eq!(archived.content, "42.");
+        assert_eq!(
+            message.thinking.len(),
+            2,
+            "the original keeps its blocks whole"
+        );
+    }
+
+    #[test]
+    fn reasoning_serializes_only_when_there_is_some() {
+        let plain = serde_json::to_value(Message::assistant("hi".to_string(), None)).unwrap();
+        assert!(plain.get("thinking").is_none(), "{plain}");
+
+        let reasoned = Message::assistant("hi".to_string(), None)
+            .with_thinking(vec![ThinkingBlock::text("because")]);
+        let json = serde_json::to_value(&reasoned).unwrap();
+        assert_eq!(
+            json.get("thinking"),
+            Some(&serde_json::json!([{ "text": "because" }]))
+        );
+        let back: Message = serde_json::from_value(json).unwrap();
+        assert_eq!(back.thinking, reasoned.thinking);
     }
 }

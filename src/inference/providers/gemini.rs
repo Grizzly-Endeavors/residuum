@@ -18,7 +18,7 @@ use crate::inference::http::{
     warn_if_insecure_remote,
 };
 use crate::inference::retry::{RetryConfig, with_retry};
-use crate::inference::stream::{Flow, SseEvent, TrackedSink, read_sse};
+use crate::inference::stream::{Flow, SseEvent, TrackedSink, answered_whole, read_sse};
 use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
     ResponseFormat, Role, StopReason, StreamDelta, StreamSink, ThinkingBlock, ThinkingConfig,
@@ -442,7 +442,7 @@ impl GeminiClient {
             return Err(InferenceError::Api(format!("{status}: {error_body}")));
         }
 
-        let gemini_response = if let Some(sink) = sink {
+        let gemini_response = if let Some(sink) = sink.filter(|_| !answered_whole(&response)) {
             read_stream(response, timeout_secs, sink).await?
         } else {
             let text = response
@@ -2288,6 +2288,27 @@ mod tests {
                 StreamDelta::Text("whole answer".to_string()),
             ],
             "the partial text is voided before the retry streams"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_that_ignores_the_stream_request_is_read_whole() {
+        let body = json!({
+            "candidates": [{"content": {"role": "model", "parts": [{"text": "Whole answer"}]},
+                "finishReason": "STOP"}],
+            "usageMetadata": {"promptTokenCount": 7, "candidatesTokenCount": 2}
+        });
+        let (result, sink, _) =
+            stream_from(json_response(200, &body.to_string()), make_client).await;
+        let response = result.unwrap();
+        assert_eq!(
+            response.content, "Whole answer",
+            "the whole body is the reply"
+        );
+        assert!(
+            sink.deltas().is_empty(),
+            "nothing streamed: {:?}",
+            sink.deltas()
         );
     }
 

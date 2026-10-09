@@ -341,8 +341,10 @@ impl Agent {
     /// Process a user message through the model, executing tool calls as needed.
     ///
     /// Returns a vec containing the final text-only response. Intermediate texts
-    /// emitted alongside tool calls are sent via `reply` in real-time but not
-    /// included in the return value.
+    /// emitted alongside tool calls are published to the bus as they are
+    /// produced (the main conversation, and `output_endpoint`'s topic) but not
+    /// included in the return value. `correlation_id` names the turn in
+    /// everything it publishes.
     ///
     /// # Errors
     /// Returns an error if the model call fails or tool execution errors

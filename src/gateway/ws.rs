@@ -208,6 +208,19 @@ async fn handle_client_message(
             content,
             images,
         } => {
+            // The id names the turn this message starts or joins in every
+            // frame about it, and an empty one reads as a message posted
+            // outside any turn. A client that sent none gets one made here.
+            let id = if id.is_empty() {
+                let generated = format!("ws-{}", uuid::Uuid::new_v4());
+                tracing::warn!(
+                    message_id = %generated,
+                    "client sent a message with an empty id; gave it one"
+                );
+                generated
+            } else {
+                id
+            };
             if !images.is_empty()
                 && let Err(reason) = validate_images(&images)
             {
@@ -710,6 +723,8 @@ mod tests {
             auto_mode: None,
         };
         let main_call = ServerMessage::ToolCall {
+            reply_to: "turn-1".into(),
+            call: 0,
             id: "tc".into(),
             name: "exec".into(),
             arguments: serde_json::json!({}),
@@ -800,6 +815,41 @@ mod tests {
             .await
             .expect("a message should have been sent")
             .expect("channel should still be open")
+    }
+
+    #[tokio::test]
+    async fn a_message_sent_without_an_id_is_given_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_test_gateway_state(dir.path());
+        let mut inbound: crate::bus::Subscriber<crate::bus::MessageEvent> = state
+            .bus_handle
+            .subscribe(crate::bus::topics::UserMessage)
+            .await
+            .unwrap();
+        let (local_tx, _local_rx) = mpsc::unbounded_channel();
+        let verbose = AtomicBool::new(false);
+        let (watch_tx, _watch_rx) = tokio::sync::watch::channel(WatchSet::default());
+
+        let keep_going = handle_client_message(
+            ClientMessage::SendMessage {
+                id: String::new(),
+                content: "hello".to_string(),
+                images: Vec::new(),
+            },
+            &state,
+            &local_tx,
+            &verbose,
+            &watch_tx,
+        )
+        .await;
+        assert!(keep_going);
+
+        let event = inbound.recv().await.unwrap().unwrap();
+        assert!(
+            !event.id.is_empty(),
+            "an empty id would make the turn's reply look like a post outside any turn"
+        );
+        assert_eq!(event.content, "hello");
     }
 
     #[tokio::test]

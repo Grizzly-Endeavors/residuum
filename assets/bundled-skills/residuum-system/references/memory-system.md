@@ -69,6 +69,10 @@ Episodes are indexed after each observer extraction and synced on startup. Wiki 
 
 A workbench artifact runs the same search via `GET /api/agents/<agent>/memory/search?q=<query>&limit=<1..50, default 10>&source=observations|episodes|wiki&date_from=&date_to=` (no `episode_ids` filter). It answers `{ results: [{ id, source, episode_id, date, line_start, line_end, snippet, score }], semantic }`, `semantic` saying whether vector search contributed. A blank `q`, an unrecognized `source`, or a malformed date answers `400`.
 
+## Thinking
+
+An assistant message may carry the model's reasoning as `thinking` blocks (readable `text`, plus an opaque `signature` or encrypted block some providers need replayed). `recent_messages.json` and session transcripts keep the blocks whole; episode transcripts keep the readable text only. The observer, reflector, search index, `memory_get` and token estimates never include it. If you read `recent_messages.json` directly, ignore the `signature` and `redacted` fields.
+
 ## Gotchas
 
 - Episode IDs are zero-padded to 3 digits (`ep-001`, `ep-012`). The next ID is determined by scanning existing files for the highest number.

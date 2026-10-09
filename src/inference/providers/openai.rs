@@ -17,7 +17,7 @@ use crate::inference::http::{
 };
 use crate::inference::reply::{ReplyAssembler, plain_reasoning};
 use crate::inference::retry::{RetryConfig, with_retry};
-use crate::inference::stream::{Flow, SseEvent, TrackedSink, read_sse};
+use crate::inference::stream::{Flow, SseEvent, TrackedSink, answered_whole, read_sse};
 use crate::inference::types::current_exchange_start;
 use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
@@ -309,7 +309,7 @@ impl OpenAiClient {
             OpenAiDialect::OpenAi => None,
         };
 
-        let resp = if let Some(sink) = sink {
+        let resp = if let Some(sink) = sink.filter(|_| !answered_whole(&response)) {
             read_stream(response, timeout_secs, sink, header_cached_tokens).await?
         } else {
             let body = response
@@ -2340,6 +2340,29 @@ mod tests {
             at(&body, "/stream_options/include_usage"),
             &json!(true),
             "asks for usage at the end"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_that_ignores_the_stream_request_is_read_whole() {
+        let body = json!({
+            "choices": [{"message": {"role": "assistant", "content": "Whole answer"},
+                "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 2}
+        });
+        let (streamed, sink, _server) =
+            stream_from(json_response(200, &body.to_string()), plain_client).await;
+        let streamed = streamed.unwrap();
+
+        assert_same_response(&streamed, &whole_response(body).await);
+        assert_eq!(
+            streamed.content, "Whole answer",
+            "the whole body is the reply"
+        );
+        assert!(
+            sink.deltas().is_empty(),
+            "nothing streamed: {:?}",
+            sink.deltas()
         );
     }
 

@@ -2,6 +2,7 @@
 
 import type {
   ImageAttachment as _ImageAttachment,
+  MessageSender,
   SessionSummary as _SessionSummary,
   RepoStats as _RepoStats,
 } from "./generated/protocol";
@@ -10,6 +11,9 @@ export type {
   ClientMessage,
   ServerMessage,
   PostTurnActivityKind,
+  MessageSender,
+  TurnOrigin,
+  Visibility,
   ImageAttachment,
   OutboundA2aTaskSummary,
   SessionCategory,
@@ -88,19 +92,16 @@ export interface ToolCallRecord {
   server?: string | null;
 }
 
-/** Person behind a user message that arrived on a chat interface. */
-export interface MessageSender {
-  name: string;
-  id: string;
-  interface: string;
-  location?: string;
-}
-
 export interface RecentMessage {
   role: "user" | "assistant" | "tool" | "system";
   content: string;
   tool_calls?: ToolCallRecord[];
   tool_call_id?: string;
+  /**
+   * The model's readable reasoning behind an assistant message, one entry per
+   * block that has text; absent when it produced none.
+   */
+  thinking?: string[];
   timestamp: string;
   visibility: "user" | "background";
   sender?: MessageSender;

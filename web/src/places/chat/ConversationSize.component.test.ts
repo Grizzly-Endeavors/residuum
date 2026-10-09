@@ -93,7 +93,11 @@ describe("the conversation size", () => {
     setViewedAgent("atlas");
     render(ConversationSizeHarness);
     await screen.findByText("Tools used");
-    ws.store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    ws.store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     ws.store.handleMessage({
       type: "turn_usage",
       reply_to: "t1",

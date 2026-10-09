@@ -164,6 +164,27 @@ pub(crate) enum Flow {
     Done,
 }
 
+/// Whether a response to a request to stream came back whole instead, as a
+/// plain JSON body. Some OpenAI-compatible servers and proxies ignore the
+/// request to stream; their answer is read as a non-streaming response, and
+/// nothing is streamed for it.
+pub(crate) fn answered_whole(response: &reqwest::Response) -> bool {
+    let whole = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("application/json")
+        });
+    if whole {
+        tracing::debug!("the server answered a request to stream with a whole response");
+    }
+    whole
+}
+
 /// Read a server-sent-events response to its end, handing each event to
 /// `on_event` as it completes.
 ///
