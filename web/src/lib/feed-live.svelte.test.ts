@@ -208,6 +208,37 @@ describe("where a reply was delivered", () => {
   });
 });
 
+describe("a turn no person started", () => {
+  it("shows the reply of a teammate's message once, whole, and ends the turn", () => {
+    // What the backend sends: no frame for the message itself, the reply in pieces and then
+    // whole, to nowhere (an empty endpoint).
+    const { store, frame } = setup();
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "bg-1",
+      origin: { endpoint: "background", visibility: "background" },
+    });
+    store.handleMessage({ type: "text_delta", reply_to: "bg-1", call: 0, text: "scout asked " });
+    store.handleMessage({ type: "text_delta", reply_to: "bg-1", call: 0, text: "me to look." });
+    store.handleMessage({
+      type: "response",
+      reply_to: "bg-1",
+      call: 0,
+      endpoint: "",
+      content: "scout asked me to look.",
+    });
+    store.handleMessage({ type: "turn_ended", reply_to: "bg-1" });
+    frame();
+
+    expect(store.feed).toMatchObject([
+      { kind: "assistant", content: "scout asked me to look.", turnId: "bg-1", streaming: false },
+    ]);
+    expect(store.feed[0]).not.toHaveProperty("deliveredTo");
+    expect(store.activeTurnId).toBeNull();
+    expect(store.isProcessing).toBe(false);
+  });
+});
+
 describe("a reply posted to this page outside any turn", () => {
   it("shows as a message of its own, and ends nothing", () => {
     const { store } = setup();
