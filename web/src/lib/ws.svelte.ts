@@ -18,6 +18,7 @@ import { FeedStore } from "./feed.svelte";
 import { SessionsStore, isSessionFrame } from "./sessions.svelte";
 import { notifications } from "./notifications.svelte";
 import { invalidate } from "./cache";
+import { newMessageId } from "./message-id";
 import { userErrorMessage } from "./errors";
 import { normalizeWatchPrefix } from "./workspace-watch";
 import { WatchRegistry } from "./watch-registry";
@@ -45,7 +46,6 @@ class WsCoordinator {
   store = $state<FeedStore>(this.createFeed(null));
   /** The bound agent's sessions. Replaced on an agent switch. */
   sessions = $state<SessionsStore>(this.createSessions(null, this.store));
-  private msgCounter = 0;
   private hasConnected = false;
   /** The agent started while bound, so its chat may be behind once the connection opens. */
   private catchUpOnConnect = false;
@@ -365,8 +365,7 @@ class WsCoordinator {
   }
 
   sendChat(content: string, images?: ImageAttachment[]): void {
-    this.msgCounter++;
-    const id = `web-${this.msgCounter}`;
+    const id = newMessageId();
     const msg: ClientMessage = {
       type: "send_message",
       id,
