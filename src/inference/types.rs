@@ -66,6 +66,12 @@ pub struct ThinkingBlock {
     /// `redacted_thinking`), replayed unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redacted: Option<String>,
+    /// Which part of the response the provider attached `signature` to, for
+    /// a provider that signs individual parts (Gemini: the id of the tool
+    /// call it belongs to, absent when it belongs to the response's text).
+    /// Replayed so each signature goes back on the part it came with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part: Option<String>,
 }
 
 impl ThinkingBlock {
@@ -77,6 +83,20 @@ impl ThinkingBlock {
             ..Self::default()
         }
     }
+}
+
+/// Index of the first message of the tool-use exchange the conversation is
+/// in the middle of: the message after the last assistant message that made
+/// no tool calls, or the first message when there is none. A provider that
+/// needs its reasoning replayed with the tool calls it led to replays it for
+/// the assistant messages from here on, and no earlier.
+pub(crate) fn current_exchange_start(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .rposition(|msg| {
+            msg.role == Role::Assistant && msg.tool_calls.as_ref().is_none_or(Vec::is_empty)
+        })
+        .map_or(0, |last_reply| last_reply + 1)
 }
 
 /// The person behind a user message and where they sent it from.
