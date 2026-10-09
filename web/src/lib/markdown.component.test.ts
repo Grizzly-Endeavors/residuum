@@ -110,3 +110,165 @@ describe("renderMarkdown code blocks", () => {
     expect(root.querySelector("img")).toBeNull();
   });
 });
+
+describe("renderMarkdown raw HTML", () => {
+  /** What a reader would see of the nodes: their text, with the whitespace between blocks tidied. */
+  function words(root: HTMLElement): string {
+    return root.textContent.replace(/\s+/g, " ").trim();
+  }
+
+  it("drops a style element and its rules, keeping the text around it", () => {
+    const root = html("before\n\n<style>.shell { display: none }</style>\n\nafter");
+    expect(root.querySelector("style")).toBeNull();
+    expect(words(root)).toBe("before after");
+  });
+
+  it("drops a form and every control in it, keeping their words", () => {
+    const root = html(
+      '<form action="https://other.example/steal"><p>Sign in</p><input name="token"><button>Go</button></form>',
+    );
+    expect(root.querySelector("form, input, button")).toBeNull();
+    expect(words(root)).toContain("Sign in");
+    expect(words(root)).toContain("Go");
+  });
+
+  it.each([
+    ["input", "<p>name <input type=text value=hidden> end</p>", "name end"],
+    ["button", "<p>press <button>Here</button> now</p>", "press Here now"],
+    ["textarea", "<textarea>typed words</textarea>", "typed words"],
+    [
+      "select and its options",
+      "<select><option>One</option><optgroup label=g><option>Two</option></optgroup></select>",
+      "OneTwo",
+    ],
+    [
+      "datalist",
+      "<p>pick</p><datalist id=d><option value=a>Alpha</option></datalist>",
+      "pickAlpha",
+    ],
+    ["fieldset and legend", "<fieldset><legend>Legend</legend>body</fieldset>", "Legendbody"],
+    ["output and label", "<label for=x>Name</label><output>42</output>", "Name42"],
+  ])("drops %s, keeping its text", (_name, markup, text) => {
+    const root = html(markup);
+    expect(
+      root.querySelector("input, button, textarea, select, option, optgroup, datalist"),
+    ).toBeNull();
+    expect(root.querySelector("fieldset, legend, output, label")).toBeNull();
+    expect(words(root).replace(/ /g, "")).toBe(text.replace(/ /g, ""));
+  });
+
+  it.each([
+    ["link", '<link rel="stylesheet" href="https://other.example/a.css"><p>text</p>'],
+    ["meta", '<meta http-equiv="refresh" content="0;url=https://other.example"><p>text</p>'],
+    ["base", '<base href="https://other.example/"><p>text</p>'],
+  ])("drops a %s element", (_name, markup) => {
+    const root = html(markup);
+    expect(root.querySelector("link, meta, base")).toBeNull();
+    expect(words(root)).toBe("text");
+  });
+
+  it("drops frames and plug-ins, keeping the fallback text an object carries", () => {
+    const root = html(
+      '<iframe src="https://other.example">frame</iframe><object data="https://other.example/a.swf">plug-in fallback</object><embed src="https://other.example/a.swf"><p>text</p>',
+    );
+    expect(root.querySelector("iframe, object, embed")).toBeNull();
+    expect(words(root)).toContain("plug-in fallback");
+    expect(words(root)).toContain("text");
+  });
+
+  it("drops svg and math, and the script an svg link carries", () => {
+    const root = html(
+      '<svg xmlns="http://www.w3.org/2000/svg"><a href="javascript:alert(1)"><rect/></a></svg><math><mi>x</mi></math><p>text</p>',
+    );
+    expect(root.querySelector("svg, math, a")).toBeNull();
+    expect(words(root)).toBe("text");
+  });
+
+  it("drops a script element", () => {
+    const root = html("<script>window.hacked = true</script><p>text</p>");
+    expect(root.querySelector("script")).toBeNull();
+    expect(words(root)).toBe("text");
+  });
+
+  it("drops a dialog and a marquee, keeping their text", () => {
+    const root = html("<dialog open>covering</dialog><marquee>moving</marquee>");
+    expect(root.querySelector("dialog, marquee")).toBeNull();
+    expect(words(root)).toBe("coveringmoving");
+  });
+
+  it("drops every inline style, so nothing can be placed over the app", () => {
+    const root = html(
+      '<div style="position:fixed;inset:0;background:red">cover</div><p style="color:red">red</p><img src="https://example.com/i.png" style="position:absolute" alt="pic">',
+    );
+    expect(root.querySelector("[style]")).toBeNull();
+    expect(words(root)).toBe("coverred");
+    expect(root.querySelector("img")?.getAttribute("alt")).toBe("pic");
+  });
+
+  it("drops the popover attribute and keeps the element's text", () => {
+    const root = html("<div popover>overlay</div>");
+    expect(root.querySelector("[popover]")).toBeNull();
+    expect(words(root)).toBe("overlay");
+  });
+
+  it("drops a button made to look like a Copy button", () => {
+    const root = html("<button type=button class=prose-copy data-copy-code>Copy</button>");
+    expect(root.querySelector("button")).toBeNull();
+  });
+
+  it("keeps the task glyph, its words and its classes, which need no inline style", () => {
+    const root = html("- [x] shipped\n- [ ] pending");
+    const checks = [...root.querySelectorAll<HTMLElement>("li.prose-task > .prose-check")];
+    expect(checks.map((check) => [check.dataset.done, check.textContent])).toEqual([
+      ["true", "Done: "],
+      ["false", "To do: "],
+    ]);
+    expect(root.querySelector("[style]")).toBeNull();
+    expect(root.querySelector("input")).toBeNull();
+  });
+
+  it("still gives each code block its own Copy button, after the sanitizer", () => {
+    const root = html("```\none\n```\n\n```\ntwo\n```");
+    const buttons = root.querySelectorAll<HTMLButtonElement>(
+      ".prose-code > button[data-copy-code]",
+    );
+    expect(buttons).toHaveLength(2);
+    for (const button of buttons) {
+      expect(button.type).toBe("button");
+      expect(button.getAttribute("aria-label")).toBe("Copy code");
+      expect(button.textContent).toBe("Copy");
+      expect(button.previousElementSibling?.tagName).toBe("PRE");
+    }
+  });
+
+  it("renders ordinary Markdown and harmless HTML as it always has", () => {
+    const root = html(
+      [
+        "Some **bold**, _em_, `code` and a [link](https://example.com/x).",
+        "",
+        "> quote",
+        "",
+        "1. one",
+        "2. two",
+        "",
+        '<div class="note" id="n">raw <span>html</span></div>',
+        "",
+        "<details><summary>More</summary>hidden <b>bold</b></details>",
+      ].join("\n"),
+    );
+    expect(root.innerHTML).toBe(
+      [
+        '<p>Some <strong>bold</strong>, <em>em</em>, <code>code</code> and a <a href="https://example.com/x" target="_blank" rel="noopener noreferrer">link</a>.</p>',
+        "<blockquote>",
+        "<p>quote</p>",
+        "</blockquote>",
+        "<ol>",
+        "<li>one</li>",
+        "<li>two</li>",
+        "</ol>",
+        '<div class="note" id="n">raw <span>html</span></div>' +
+          "<details><summary>More</summary>hidden <b>bold</b></details>",
+      ].join("\n"),
+    );
+  });
+});

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { renderMarkdown } from "../lib/markdown";
+  import { COPY_LABEL, COPY_NAME, renderMarkdown } from "../lib/markdown";
   import { VisuallyHidden } from "../lib/ui";
   import { openPathInPanel, pathHref } from "./feed-links";
 
@@ -24,8 +24,6 @@
     node.replaceChildren(renderMarkdown(content, { pathHref: (path) => pathHref(agent, path) }));
   }
 
-  const COPY_LABEL = "Copy";
-  const COPY_NAME = "Copy code";
   const COPY_FEEDBACK_MS = 2000;
 
   /** What the Copy button just did, said politely: a button that is pressed doesn't announce its new label. */
