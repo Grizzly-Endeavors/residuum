@@ -14,9 +14,11 @@
     agent: string;
     /** `compact` for text inside a card. */
     size?: "message" | "compact";
+    /** The text is still arriving: a blinking caret follows its last word. */
+    streaming?: boolean;
   }
 
-  let { content, agent, size = "message" }: Props = $props();
+  let { content, agent, size = "message", streaming = false }: Props = $props();
 
   // The sanitizer builds the nodes; they replace what was shown whenever the
   // text or its agent changes.
@@ -69,7 +71,7 @@
   }
 </script>
 
-<div class="prose" data-size={size} {@attach handleClicks}>
+<div class="prose" data-size={size} data-caret={streaming ? "" : undefined} {@attach handleClicks}>
   <div class="prose-body" {@attach render}></div>
   <VisuallyHidden><span role="status">{copyResult}</span></VisuallyHidden>
 </div>
@@ -302,6 +304,31 @@
     .prose-copy:hover {
       background: var(--color-stone-3);
       color: var(--color-text);
+    }
+  }
+
+  /* While the text streams in, a caret follows its last word: the end of the last
+     paragraph or heading, of a closing quote's last paragraph, or of the last item of a
+     closing list. A block that ends the text (code, a table, a rule) has none. */
+  .prose[data-caret]
+    :global(
+      .prose-body > :last-child:not(ul, ol, blockquote, .prose-code, .prose-table, hr)
+    )::after,
+  .prose[data-caret] :global(.prose-body > blockquote:last-child > :last-child:not(ul, ol))::after,
+  .prose[data-caret] :global(.prose-body > :is(ul, ol):last-child > li:last-child)::after {
+    content: "";
+    display: inline-block;
+    width: 2px;
+    height: 1.05em;
+    margin-left: var(--space-2);
+    background: var(--color-vein-bright);
+    vertical-align: text-bottom;
+    animation: prose-caret var(--duration-blink) var(--ease-blink) infinite;
+  }
+
+  @keyframes prose-caret {
+    50% {
+      opacity: 0;
     }
   }
 

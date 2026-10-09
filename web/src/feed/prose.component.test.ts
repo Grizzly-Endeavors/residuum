@@ -31,6 +31,23 @@ describe("Prose", () => {
     expect(screen.getByRole("cell", { name: "2" })).toBeInTheDocument();
   });
 
+  it("shows a caret only while the text is streaming in", async () => {
+    const { container, rerender } = render(Prose, {
+      content: "The port is set",
+      agent: "atlas",
+      streaming: true,
+    });
+    expect(container.querySelector(".prose")).toHaveAttribute("data-caret");
+
+    await rerender({ content: "The port is set twice.", agent: "atlas", streaming: false });
+    expect(container.querySelector(".prose")).not.toHaveAttribute("data-caret");
+  });
+
+  it("shows no caret by default", () => {
+    const { container } = render(Prose, { content: "Done.", agent: "atlas" });
+    expect(container.querySelector(".prose")).not.toHaveAttribute("data-caret");
+  });
+
   it("drops script and event handlers from the message", () => {
     const { container } = render(Prose, {
       content: 'hi <script>window.hacked = true</script><img src="x" onerror="alert(1)">',

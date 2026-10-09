@@ -119,11 +119,14 @@ test("Jump to latest sits above the composer, says when a reply landed below, an
   await expect(fresh).toHaveCount(0);
   await expect(jump).toHaveCount(0);
 
-  // Sending from further up brings the reader down to their own message.
+  // Sending from further up brings the reader down to their own message. The reply is held
+  // short of its end: a whole one is longer than a phone's view, and following it moves the
+  // message up out of sight.
   await scrollToTop(feed);
   await expect(jump).toBeVisible();
+  await mock.post("/api/mock/turn-hold", { data: { held: true } });
   await send(page, "Back to the routing doc.");
-  await expect(feed.getByText("Back to the routing doc.")).toBeInViewport();
+  await expect(feed.getByText("Back to the routing doc.", { exact: true })).toBeInViewport();
 });
 
 test("the keyboard scrolls a conversation that overflows, and follows it again at the end", async ({

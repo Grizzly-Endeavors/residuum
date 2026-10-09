@@ -6,9 +6,10 @@
   import { ws } from "../lib/ws.svelte";
   import { cardSender } from "./feed-words";
   import Prose from "./Prose.svelte";
+  import Timestamp from "./Timestamp.svelte";
 
-  // A message from a session or a teammate: a compact card with who sent it
-  // and its body clamped to a few lines. A session sender, on `agent`, can be
+  // A message from a session or a teammate: a compact card with who sent it,
+  // when, and its body clamped to a few lines. A session sender, on `agent`, can be
   // opened; a teammate is another agent and has no session here to open.
 
   let { item, agent }: { item: AgentMessageFeedItem; agent: string } = $props();
@@ -41,6 +42,9 @@
     <Icon name={sender.icon} size={14} />
     <span class="card-kind">{sender.kind}</span>
     <span class="card-sender">{sender.sender}</span>
+    {#if item.timestamp}
+      <span class="card-time"><Timestamp timestamp={item.timestamp} /></span>
+    {/if}
   </header>
   <div
     class="card-body"
@@ -114,6 +118,12 @@
     font-family: var(--font-code);
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* At the end of the line, once its sender has said what it needs. */
+  .card-time {
+    flex: none;
+    margin-left: auto;
   }
 
   .card-body.clamped {

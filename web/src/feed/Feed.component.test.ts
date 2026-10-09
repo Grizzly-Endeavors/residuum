@@ -21,6 +21,13 @@ class InViewObserver {
   disconnect(): void {}
 }
 
+/** What an element says, less the quiet details of its messages (when they were sent, Copy). */
+function said(element: Element): string {
+  const copy = element.cloneNode(true) as Element;
+  for (const meta of copy.querySelectorAll("[data-message-meta]")) meta.remove();
+  return copy.textContent.trim();
+}
+
 /** History with `parts` older parts, each load taking a moment. */
 function olderHistory(parts: number): {
   history: FeedHistory;
@@ -105,7 +112,7 @@ describe("Feed", () => {
       ["assistant", true],
     ]);
     const block = container.querySelector(".feed-turn");
-    expect(Array.from(block?.children ?? [], (el) => el.textContent.trim())).toEqual([
+    expect(Array.from(block?.children ?? [], said)).toEqual([
       "Checking first.",
       "Searched memory",
       "Here is the plan.",
@@ -168,10 +175,7 @@ describe("Feed", () => {
       tail: htmlSnippet('<p data-testid="live">Thinking…</p>'),
     });
     const items = container.querySelectorAll("[data-feed-item], [data-testid=live]");
-    expect(Array.from(items, (el) => el.textContent.trim())).toEqual([
-      "Here is the plan.",
-      "Thinking…",
-    ]);
+    expect(Array.from(items, said)).toEqual(["Here is the plan.", "Thinking…"]);
   });
 
   it("keeps loading older parts while the top stays in view, until there are none", async () => {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { groupTurns } from "../feed/turns";
 import { FeedStore } from "./feed.svelte";
 import type { RecentHistorySegment, RecentMessage, ServerMessage } from "./types";
@@ -171,6 +171,73 @@ describe("FeedStore dividers", () => {
     );
     const dividers = store.feed.filter((item) => item.kind === "divider");
     expect(dividers).toMatchObject([{ variant: "day", date: "2026-03-14" }]);
+  });
+});
+
+describe("FeedStore day dividers for live messages around local midnight", () => {
+  /** A store whose history ends at `last`, a local timestamp, read with the clock set to `now`. */
+  function storeEndingAt(last: string, now: string): FeedStore {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(now));
+    const store = new FeedStore();
+    store.loadHistory(segment([{ ...historyMsg("assistant", "Earlier."), timestamp: last }]));
+    return store;
+  }
+
+  const dividers = (store: FeedStore): unknown[] =>
+    store.feed.filter((item) => item.kind === "divider");
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  it("starts no new day while it is still the same day here, though it is the next day in UTC", () => {
+    vi.stubEnv("TZ", "America/Los_Angeles");
+    // 23:30 on the 9th in Los Angeles is 06:30 on the 10th in UTC.
+    const store = storeEndingAt("2026-10-09T23:10:00", "2026-10-10T06:30:00Z");
+    store.pushUserMessage("Still the same evening");
+    expect(dividers(store)).toEqual([]);
+  });
+
+  it("starts the new day when midnight passes here", () => {
+    vi.stubEnv("TZ", "America/Los_Angeles");
+    // 00:10 on the 10th in Los Angeles is 07:10 on the 10th in UTC.
+    const store = storeEndingAt("2026-10-09T23:40:00", "2026-10-10T07:10:00Z");
+    store.pushUserMessage("Just after midnight");
+    expect(dividers(store)).toMatchObject([{ variant: "day", date: "2026-10-10" }]);
+  });
+
+  it("starts the new day just after midnight east of UTC, where UTC is still on the old day", () => {
+    vi.stubEnv("TZ", "Pacific/Auckland");
+    // 00:30 on the 10th in Auckland is 11:30 on the 9th in UTC.
+    const store = storeEndingAt("2026-10-09T23:50:00", "2026-10-09T11:30:00Z");
+    store.pushUserMessage("Just after midnight");
+    expect(dividers(store)).toMatchObject([{ variant: "day", date: "2026-10-10" }]);
+  });
+
+  it("holds for a message another channel brings, and for the one after it", () => {
+    vi.stubEnv("TZ", "Pacific/Auckland");
+    const store = storeEndingAt("2026-10-09T23:50:00", "2026-10-09T10:50:00Z");
+    store.handleMessage({
+      type: "user_message",
+      id: "tg-1",
+      turn_id: "tg-1",
+      content: "Before midnight",
+      endpoint: "telegram",
+    });
+    expect(dividers(store)).toEqual([]);
+
+    vi.setSystemTime(new Date("2026-10-09T11:05:00Z"));
+    store.handleMessage({
+      type: "user_message",
+      id: "tg-2",
+      turn_id: "tg-2",
+      content: "After midnight",
+      endpoint: "telegram",
+    });
+    store.pushUserMessage("Later still");
+    expect(dividers(store)).toMatchObject([{ variant: "day", date: "2026-10-10" }]);
   });
 });
 

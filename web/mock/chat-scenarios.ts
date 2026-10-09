@@ -114,6 +114,34 @@ export function deltaFrames(
   );
 }
 
+/**
+ * The frames of a turn no person started, such as the one a teammate's message
+ * starts, from its start to its end: the reply written in pieces, then
+ * complete, and the turn's usage. The message that started it has no frame,
+ * as the backend announces only what a person sent, and the reply went
+ * nowhere, so its endpoint is empty.
+ */
+export function backgroundTurnFrames(replyTo: string, reply: string): ServerMessage[] {
+  return [
+    {
+      type: "turn_started",
+      reply_to: replyTo,
+      origin: { endpoint: "background", visibility: "background" },
+    },
+    ...deltaFrames(replyTo, "text", 0, reply),
+    { type: "response", reply_to: replyTo, call: 0, endpoint: "", content: reply },
+    {
+      type: "turn_usage",
+      reply_to: replyTo,
+      output_tokens: Math.ceil(reply.length / 4),
+      has_usage: true,
+      tool_calls: 0,
+      session_totals: null,
+    },
+    { type: "turn_ended", reply_to: replyTo },
+  ];
+}
+
 /** Builds the timed frames of one stretch of a turn. */
 class Timeline {
   readonly steps: ScenarioStep[] = [];

@@ -274,6 +274,21 @@ describe("Tooltips", () => {
     expect(screen.queryByRole("tooltip")).toBeNull();
   });
 
+  it("keeps Tab inside a dialog while a tooltip shows on its last control", async () => {
+    const user = userEvent.setup();
+    render(FloatingHarness);
+    screen.getByRole("button", { name: "Open dialog" }).focus();
+    await user.keyboard("{Enter}");
+    // The tooltip is a layer above the dialog, but holds no focus: Tab is still the dialog's.
+    expect(screen.getByRole("button", { name: "Reload" })).toHaveFocus();
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Reload");
+
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Close" })).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(screen.getByRole("button", { name: "Reload" })).toHaveFocus();
+  });
+
   it("takes the first Esc, before the dialog under it", async () => {
     const user = userEvent.setup();
     render(FloatingHarness);

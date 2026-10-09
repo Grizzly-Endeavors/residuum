@@ -1,3 +1,4 @@
+import { backgroundTurnFrames } from "./chat-scenarios";
 import type { TurnHold } from "./env";
 import { json, parseJsonObject, readBody, readJsonObject } from "./http";
 import { offeredModelsOnly } from "./provider-models";
@@ -39,8 +40,12 @@ function missedRelay({ res, state }: RouteContext): void {
 
 /**
  * A teammate (`?from=`, scout by default) messages an agent (`?agent=atlas`):
- * the message lands in its main conversation, and the hub reports it unread
- * until the web UI opens that agent's socket.
+ * the message lands in its main conversation and the agent answers it in a
+ * turn that no person started. Every connected page is sent that turn's
+ * frames (and, as the backend does, none for the message itself), history
+ * records both under the turn's id, and the hub reports the reply unread
+ * until the web UI opens that agent's socket. All of it has happened by the
+ * time the request is answered.
  */
 function teammateMessage({ res, hub, query }: RouteContext): void {
   const agent = hub.agents.get(query.get("agent") ?? "");
@@ -52,6 +57,7 @@ function teammateMessage({ res, hub, query }: RouteContext): void {
   const from = query.get("from") ?? "scout";
   const reply = `${from} asked me to check the wiki index. On it.`;
   const address = `agent:${from}`;
+  const turnId = `bg-${String(hub.env.nextId())}`;
   agent.state.extraRecent.push(
     {
       role: "user",
@@ -63,15 +69,18 @@ function teammateMessage({ res, hub, query }: RouteContext): void {
       timestamp: now,
       visibility: "background",
       agent_sender: { address, category: "teammate" },
+      turn_id: turnId,
     },
-    { role: "assistant", content: reply, timestamp: now, visibility: "user" },
+    {
+      role: "assistant",
+      content: reply,
+      timestamp: now,
+      // Recorded for the user to see, so Home and the team feed show the reply.
+      visibility: "user",
+      turn_id: turnId,
+    },
   );
-  agent.state.broadcast({
-    type: "response",
-    reply_to: "teammate",
-    endpoint: "background",
-    content: reply,
-  });
+  for (const frame of backgroundTurnFrames(turnId, reply)) agent.state.broadcast(frame);
   hub.teamEvents.agentReplied(agent);
   hub.overview.changed(agent);
   if (agent.connectedClients() === 0) hub.addUnread(agent);

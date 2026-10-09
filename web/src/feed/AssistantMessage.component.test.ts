@@ -12,15 +12,17 @@ describe("an agent's reply", () => {
     const { container } = render(AssistantMessage, { item: reply(), agent: "atlas" });
     expect(screen.getByText("The port is set twice.")).toBeVisible();
     expect(container.querySelector("[data-streaming]")).toBeNull();
+    expect(container.querySelector("[data-caret]")).toBeNull();
     expect(container.querySelector(".reply-note")).toBeNull();
   });
 
-  it("is marked as streaming while text is still arriving, for its caret", () => {
+  it("is marked as streaming while text is still arriving, with a caret on its prose", () => {
     const { container } = render(AssistantMessage, {
       item: reply({ streaming: true }),
       agent: "atlas",
     });
     expect(container.querySelector(".reply")).toHaveAttribute("data-streaming");
+    expect(container.querySelector(".prose")).toHaveAttribute("data-caret");
     // The text itself is the same message, in its Markdown.
     expect(screen.getByText("The port is set twice.")).toBeVisible();
   });

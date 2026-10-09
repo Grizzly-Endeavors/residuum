@@ -14,13 +14,13 @@
 
   interface Props {
     open: boolean;
-    /** `center` hangs below the top edge (dialogs), `top` hangs higher (the palette), `bottom` is a sheet, `left` a drawer. */
+    /** `center` hangs below the top edge (dialogs), `top` hangs higher (the palette), `bottom` is a sheet, `left` a drawer, `viewer` is centered in the view with room for a picture. */
     frame?: ModalFrame;
     /** A centered layer fills the screen at phone width. */
     fullscreenOnPhone?: boolean;
     /** Filling the screen on a phone, stop above the bottom bar (`[data-bottom-bar]`), which stays in reach. */
     keepBottomBar?: boolean;
-    /** The card's width, for the centered frame. */
+    /** The card's width, for the centered frames. */
     width?: string;
     role?: "dialog" | "alertdialog";
     label?: string;
@@ -196,6 +196,21 @@
 
     & .ui-modal {
       max-height: min(540px, 72vh);
+    }
+  }
+
+  /* ── Viewer: a picture, centered in the view with a margin all round ── */
+
+  .ui-modal-layer[data-frame="viewer"] {
+    justify-content: center;
+    padding: max(var(--space-16), var(--safe-top)) max(var(--space-16), var(--safe-right))
+      max(var(--space-16), var(--safe-bottom)) max(var(--space-16), var(--safe-left));
+
+    & .ui-modal {
+      width: var(--modal-width);
+      max-height: 100%;
+      border-radius: var(--corner-lg);
+      animation: ui-rise var(--duration-base) var(--ease-out);
     }
   }
 
