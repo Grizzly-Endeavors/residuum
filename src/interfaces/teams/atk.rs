@@ -501,108 +501,6 @@ pub struct ScaffoldAtkResult {
     pub endpoint: String,
 }
 
-/// Text in a Teams template file that the Agents Toolkit rejects, and what replaces it. Team
-/// template copies and scaffolded projects written from the bundled templates can still carry
-/// it, so [`repair_stale_teams_template_files`] rewrites it in place.
-pub(crate) struct StaleTeamsTemplateText {
-    /// Path of the file, relative to a template or project directory.
-    pub(crate) file: &'static str,
-    pub(crate) stale: &'static str,
-    pub(crate) fixed: &'static str,
-    /// What the rewrite changes, for the setup log.
-    pub(crate) change: &'static str,
-}
-
-pub(crate) const STALE_TEAMS_TEMPLATE_TEXT: &[StaleTeamsTemplateText] = &[
-    // The toolkit fails `atk provision` with `ConfigManager.InvalidYamlSchemaError` before any
-    // step runs: `validateAppPackage` only takes the zipped package, not a manifest path.
-    StaleTeamsTemplateText {
-        file: "m365agents.yml",
-        stale: "  - uses: teamsApp/validateAppPackage
-    with:
-      manifestPath: ./appPackage/manifest.json
-
-  - uses: teamsApp/zipAppPackage
-    with:
-      manifestPath: ./appPackage/manifest.json
-      outputZipPath: ./appPackage/build/appPackage.${{TEAMSFX_ENV}}.zip
-      outputFolder: ./appPackage/build
-",
-        fixed: "  - uses: teamsApp/validateManifest
-    with:
-      manifestPath: ./appPackage/manifest.json
-
-  - uses: teamsApp/zipAppPackage
-    with:
-      manifestPath: ./appPackage/manifest.json
-      outputZipPath: ./appPackage/build/appPackage.${{TEAMSFX_ENV}}.zip
-      outputFolder: ./appPackage/build
-
-  - uses: teamsApp/validateAppPackage
-    with:
-      appPackagePath: ./appPackage/build/appPackage.${{TEAMSFX_ENV}}.zip
-",
-        change: "m365agents.yml: replaced a validation step the Agents Toolkit rejects",
-    },
-    // `teamsApp/validateManifest` fails with `ManifestUtils.JSONSyntaxError` on
-    // `packageName`, which the v1.17 manifest schema does not allow.
-    StaleTeamsTemplateText {
-        file: "appPackage/manifest.json",
-        stale: "  \"id\": \"${{TEAMS_APP_ID}}\",\n  \"packageName\": \"com.residuum.agent\",\n",
-        fixed: "  \"id\": \"${{TEAMS_APP_ID}}\",\n",
-        change: "manifest.json: removed packageName, which the Teams manifest schema does not allow",
-    },
-];
-
-fn repaired_teams_template_text(content: &str, entry: &StaleTeamsTemplateText) -> Option<String> {
-    let updated = content
-        .replace(
-            &entry.stale.replace('\n', "\r\n"),
-            &entry.fixed.replace('\n', "\r\n"),
-        )
-        .replace(entry.stale, entry.fixed);
-    (updated != content).then_some(updated)
-}
-
-/// Rewrite text the Agents Toolkit rejects in the Teams template files under `dir`, which is a
-/// team template directory or a scaffolded project directory (they share a layout).
-///
-/// Returns a description of each change made. Missing files and files that don't carry the
-/// stale text exactly are left alone.
-///
-/// # Errors
-///
-/// Returns [`FatalError::Config`] if a file exists but cannot be read or rewritten.
-pub async fn repair_stale_teams_template_files(
-    dir: &Path,
-) -> Result<Vec<&'static str>, FatalError> {
-    let mut changes = Vec::new();
-    for entry in STALE_TEAMS_TEMPLATE_TEXT {
-        let path = dir.join(entry.file);
-        let existing = match tokio::fs::read_to_string(&path).await {
-            Ok(content) => content,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(FatalError::Config(format!(
-                    "failed to read {}: {error}",
-                    path.display()
-                )));
-            }
-        };
-        let Some(updated) = repaired_teams_template_text(&existing, entry) else {
-            continue;
-        };
-        crate::util::fs::atomic_write(&path, &updated)
-            .await
-            .map_err(|error| {
-                FatalError::Config(format!("failed to rewrite {}: {error:#}", path.display()))
-            })?;
-        tracing::info!(path = %path.display(), change = entry.change, "repaired a Teams template file");
-        changes.push(entry.change);
-    }
-    Ok(changes)
-}
-
 async fn resolve_template_text(
     team_path: &Path,
     embedded: &str,
@@ -1064,7 +962,7 @@ pub async fn forward_redirect(url_str: &str) -> Result<u16, FatalError> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     #[test]
     fn the_teams_endpoint_is_on_the_instance_host() {
         use super::cloud_teams_endpoint;
@@ -1113,17 +1011,13 @@ pub(crate) mod tests {
     }
 
     /// The bundled template with LF line endings, which a Windows checkout turns into CRLF.
-    pub(crate) fn bundled_teams_template(file: &str) -> String {
+    fn bundled_teams_template(file: &str) -> String {
         match file {
             "m365agents.yml" => TEAMS_SETUP_M365AGENTS_YML,
             "appPackage/manifest.json" => TEAMS_SETUP_MANIFEST_JSON,
             other => panic!("no bundled template for {other}"),
         }
         .replace("\r\n", "\n")
-    }
-
-    pub(crate) fn stale_bundled_teams_template(entry: &StaleTeamsTemplateText) -> String {
-        bundled_teams_template(entry.file).replace(entry.fixed, entry.stale)
     }
 
     #[test]
@@ -1135,75 +1029,6 @@ pub(crate) mod tests {
                 "{file}"
             );
         }
-    }
-
-    #[test]
-    fn stale_teams_template_text_is_rewritten_to_match_the_toolkit_schemas() {
-        for entry in STALE_TEAMS_TEMPLATE_TEXT {
-            let bundled = bundled_teams_template(entry.file);
-            let stale = stale_bundled_teams_template(entry);
-            assert_ne!(stale, bundled, "{}", entry.file);
-            assert!(
-                !teams_template_schema_errors(entry.file, &stale).is_empty(),
-                "{}",
-                entry.file
-            );
-
-            assert_eq!(
-                repaired_teams_template_text(&stale, entry).as_deref(),
-                Some(bundled.as_str())
-            );
-            assert_eq!(
-                repaired_teams_template_text(&stale.replace('\n', "\r\n"), entry),
-                Some(bundled.replace('\n', "\r\n"))
-            );
-            assert!(repaired_teams_template_text(&bundled, entry).is_none());
-            assert!(repaired_teams_template_text("{}\n", entry).is_none());
-        }
-    }
-
-    #[tokio::test]
-    async fn repairing_a_project_rewrites_only_stale_template_files() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(
-            repair_stale_teams_template_files(dir.path())
-                .await
-                .unwrap()
-                .is_empty()
-        );
-
-        tokio::fs::create_dir_all(dir.path().join("appPackage"))
-            .await
-            .unwrap();
-        for entry in STALE_TEAMS_TEMPLATE_TEXT {
-            tokio::fs::write(
-                dir.path().join(entry.file),
-                stale_bundled_teams_template(entry),
-            )
-            .await
-            .unwrap();
-        }
-        assert_eq!(
-            repair_stale_teams_template_files(dir.path())
-                .await
-                .unwrap()
-                .len(),
-            STALE_TEAMS_TEMPLATE_TEXT.len()
-        );
-        for entry in STALE_TEAMS_TEMPLATE_TEXT {
-            assert_eq!(
-                tokio::fs::read_to_string(dir.path().join(entry.file))
-                    .await
-                    .unwrap(),
-                bundled_teams_template(entry.file)
-            );
-        }
-        assert!(
-            repair_stale_teams_template_files(dir.path())
-                .await
-                .unwrap()
-                .is_empty()
-        );
     }
 
     // Verified fixtures generated with pinned @microsoft/teamsfx-core@3.1.3:

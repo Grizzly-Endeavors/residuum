@@ -586,9 +586,6 @@ async fn write_teams_setup_skill(skills_root: &std::path::Path) -> Result<(), Fa
     write_if_missing(&teams_pkg.join("color.png"), TEAMS_SETUP_COLOR_PNG).await?;
     write_if_missing(&teams_pkg.join("outline.png"), TEAMS_SETUP_OUTLINE_PNG).await?;
     write_if_missing(&teams_env.join(".env.residuum"), TEAMS_SETUP_ENV_RESIDUUM).await?;
-    crate::interfaces::teams::atk::repair_stale_teams_template_files(&teams_templates)
-        .await
-        .map_err(|e| FatalError::Workspace(e.to_string()))?;
     Ok(())
 }
 
@@ -701,38 +698,6 @@ mod tests {
             files.iter().all(|(path, _)| *path != layout.bootstrap_md()),
             "created agents never get BOOTSTRAP.md"
         );
-    }
-
-    #[tokio::test]
-    async fn stale_team_teams_templates_are_repaired() {
-        use crate::interfaces::teams::atk::STALE_TEAMS_TEMPLATE_TEXT;
-        use crate::interfaces::teams::atk::tests::{
-            bundled_teams_template, stale_bundled_teams_template,
-        };
-        let dir = tempfile::tempdir().unwrap();
-        let templates = dir.path().join("teams-setup/templates");
-        tokio::fs::create_dir_all(templates.join("appPackage"))
-            .await
-            .unwrap();
-        for entry in STALE_TEAMS_TEMPLATE_TEXT {
-            tokio::fs::write(
-                templates.join(entry.file),
-                stale_bundled_teams_template(entry),
-            )
-            .await
-            .unwrap();
-        }
-
-        write_teams_setup_skill(dir.path()).await.unwrap();
-
-        for entry in STALE_TEAMS_TEMPLATE_TEXT {
-            assert_eq!(
-                tokio::fs::read_to_string(templates.join(entry.file))
-                    .await
-                    .unwrap(),
-                bundled_teams_template(entry.file)
-            );
-        }
     }
 
     #[test]

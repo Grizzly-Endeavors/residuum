@@ -2,18 +2,26 @@
 version: v1.13
 
 provision:
-  - uses: botAadApp/create
+  # The service principal lets the bot get Bot Connector tokens from the
+  # tenant's own token endpoint, which is where Residuum asks for them.
+  - uses: aadApp/create
     with:
       name: ${{BOT_DISPLAY_NAME}}
+      generateClientSecret: true
+      generateServicePrincipal: true
+      signInAudience: AzureADMultipleOrgs
     writeToEnvironmentFile:
-      botId: BOT_ID
-      botPassword: SECRET_BOT_PASSWORD
+      clientId: BOT_ID
+      clientSecret: SECRET_BOT_PASSWORD
+      objectId: BOT_OBJECT_ID
 
   - uses: botFramework/create
     with:
       botId: ${{BOT_ID}}
       name: ${{BOT_DISPLAY_NAME}}
       messagingEndpoint: ${{BOT_ENDPOINT}}
+      channels:
+        - name: msteams
 
   - uses: teamsApp/create
     with:

@@ -15,8 +15,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::paths::{agent_dir, hub_dir};
 use crate::interfaces::teams::atk::{
-    ATK_CLI_VERSION, AtkScaffoldOptions, import_atk_project, repair_stale_teams_template_files,
-    resolve_atk_paths, scaffold_atk_project, validate_png_dimensions,
+    ATK_CLI_VERSION, AtkScaffoldOptions, import_atk_project, resolve_atk_paths,
+    scaffold_atk_project, validate_png_dimensions,
 };
 use crate::interfaces::teams::atk_runner::{
     AtkRunnerOverrides, BoundedLog, check_signed_in, detect_prereqs,
@@ -960,22 +960,6 @@ impl TeamsSetupJobManager {
             let lock = session.lock().await;
             lock.log.clone()
         };
-
-        match repair_stale_teams_template_files(&paths.project_dir).await {
-            Ok(changes) => {
-                for change in changes {
-                    log.push(LogStream::Info, format!("Updated {change}."));
-                }
-            }
-            Err(e) => {
-                return Err(SetupError {
-                    phase: TeamsSetupPhase::Provision,
-                    message: "Couldn't update the Teams project files before provisioning."
-                        .to_string(),
-                    detail: Some(e.to_string()),
-                });
-            }
-        }
 
         log.push(
             LogStream::Info,
