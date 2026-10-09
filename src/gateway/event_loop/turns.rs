@@ -624,11 +624,12 @@ fn spawn_main_turn_end_checkpoint(
 /// endpoint (e.g. a background turn with no prior user endpoint), success publishes
 /// nothing.
 ///
-/// On failure, logs the error, broadcasts an `ErrorEvent` on the system
-/// notification channel regardless of output endpoint, auto-reports the
-/// failure through `tracing_service` (a no-op unless the user has enabled
-/// auto error reporting), and — if there is an output endpoint — still closes
-/// the turn with `Ended`.
+/// On failure, logs the error, auto-reports the failure through
+/// `tracing_service` (a no-op unless the user has enabled auto error
+/// reporting), and publishes an `ErrorEvent` twice: to the output endpoint, so
+/// a chat interface can answer the conversation that started the turn, and on
+/// the system notification channel regardless of output endpoint, for the web
+/// UI. If there is an output endpoint it still closes the turn with `Ended`.
 async fn publish_turn_outcome(
     turn_result: anyhow::Result<Vec<String>>,
     publisher: &Publisher,
@@ -671,14 +672,22 @@ async fn publish_turn_outcome(
                     crate::tracing_service::client_context::gather_for_bug_report(cfg),
                 )
                 .await;
+            let event = ErrorEvent {
+                correlation_id: correlation_id.to_string(),
+                message: described.message,
+                details: Some(described.details),
+            };
+            if let Some(ep) = output_endpoint
+                && let Err(pub_err) = publisher
+                    .publish(topics::Endpoint(ep.clone()), event.clone())
+                    .await
+            {
+                tracing::warn!(error = %pub_err, endpoint = %ep, "failed to publish turn error to its endpoint");
+            }
             if let Err(pub_err) = publisher
                 .publish(
                     topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-                    ErrorEvent {
-                        correlation_id: correlation_id.to_string(),
-                        message: described.message,
-                        details: Some(described.details),
-                    },
+                    event,
                 )
                 .await
             {
@@ -1121,6 +1130,10 @@ mod tests {
             .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
             .await
             .unwrap();
+        let mut endpoint_errors: Subscriber<ErrorEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
         let mut responses: Subscriber<ResponseEvent> = handle
             .subscribe(topics::Endpoint(endpoint()))
             .await
@@ -1154,6 +1167,12 @@ mod tests {
             Some("boom"),
             "the raw cause must survive in details for a developer or the Details disclosure"
         );
+        let endpoint_error = endpoint_errors.recv().await.unwrap().unwrap();
+        assert_eq!(
+            endpoint_error.correlation_id, "corr-4",
+            "the endpoint that started the turn must hear about its failure"
+        );
+        assert_eq!(endpoint_error.message, error.message);
 
         let ended = lifecycle.recv().await.unwrap().unwrap();
         assert!(
@@ -1171,6 +1190,10 @@ mod tests {
             .await
             .unwrap();
         let mut lifecycle: Subscriber<TurnLifecycleEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+        let mut endpoint_errors: Subscriber<ErrorEvent> = handle
             .subscribe(topics::Endpoint(endpoint()))
             .await
             .unwrap();
@@ -1194,6 +1217,7 @@ mod tests {
             "the raw cause must survive in details even with no output endpoint"
         );
         assert_no_event(&mut lifecycle).await;
+        assert_no_event(&mut endpoint_errors).await;
     }
 
     #[tokio::test]

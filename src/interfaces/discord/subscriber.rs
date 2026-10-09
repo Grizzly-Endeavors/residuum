@@ -62,10 +62,6 @@ impl ChatOutbound for DiscordOutbound {
         parse_channel_id(conversation_id)
     }
 
-    async fn owner(&self) -> Option<ChannelId> {
-        self.state.owner_dm().await
-    }
-
     async fn describe(&self, _conversation_id: &str, target: &ChannelId) -> String {
         self.state
             .cached_label(*target)

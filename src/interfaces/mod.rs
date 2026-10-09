@@ -21,8 +21,7 @@ use std::path::Path;
 use crate::background::registry::{SessionRegistry, conversation_session_address};
 use crate::bus::{
     BusError, BusHandle, ConversationTypingEvent, EndpointName, ErrorEvent, IntermediateEvent,
-    NoticeEvent, NotifyName, ResponseEvent, SessionResponseEvent, Subscriber, TurnLifecycleEvent,
-    topics,
+    ResponseEvent, SessionResponseEvent, Subscriber, TurnLifecycleEvent, topics,
 };
 use crate::interfaces::types::{ConversationContext, ConversationKind};
 
@@ -39,21 +38,21 @@ pub(crate) struct BaseSubscribers {
     /// keyed by conversation id instead of correlation id.
     pub(crate) conversation_typing: Subscriber<ConversationTypingEvent>,
     pub(crate) intermediate: Subscriber<IntermediateEvent>,
-    pub(crate) notice: Subscriber<NoticeEvent>,
-    pub(crate) error: Subscriber<ErrorEvent>,
+    /// Failures of main-agent turns this endpoint started. System notices
+    /// and other errors are not subscribed: an external chat carries only
+    /// conversation, and the web UI shows the rest.
+    pub(crate) turn_error: Subscriber<ErrorEvent>,
 }
 
 impl BaseSubscribers {
     pub(crate) async fn new(bus_handle: &BusHandle, ep: EndpointName) -> Result<Self, BusError> {
-        let system_topic = || topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL));
         Ok(Self {
             response: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
             session_response: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
             turn_lifecycle: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
             conversation_typing: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
-            intermediate: bus_handle.subscribe(topics::Endpoint(ep)).await?,
-            notice: bus_handle.subscribe(system_topic()).await?,
-            error: bus_handle.subscribe(system_topic()).await?,
+            intermediate: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
+            turn_error: bus_handle.subscribe(topics::Endpoint(ep)).await?,
         })
     }
 }

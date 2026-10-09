@@ -2,17 +2,21 @@
 //!
 //! Each platform implements [`ChatOutbound`] for its own connection, id
 //! parsing, and send API. This loop is the delivery policy those three
-//! share: where a turn's replies go, typing indicators, owner-only notices,
-//! and the rule that a conversation session never falls back to the owner's
-//! direct messages.
+//! share: where a turn's replies go, typing indicators, and the rule that a
+//! conversation session never falls back to the owner's direct messages.
+//!
+//! Only conversation goes out: agent replies, and a turn's failure in place
+//! of its reply. System notices and errors stay in the web UI. A message the
+//! agent addressed to a conversation that cannot be delivered becomes a web
+//! UI notice and a note to main, never a chat message.
 
 use std::ops::ControlFlow;
 
 use async_trait::async_trait;
 
 use crate::bus::{
-    BusError, ConversationTypingEvent, ErrorEvent, IntermediateEvent, NoticeEvent, ResponseEvent,
-    SessionResponseEvent, TurnLifecycleEvent,
+    BusError, ConversationTypingEvent, ErrorEvent, IntermediateEvent, MessageEvent, ResponseEvent,
+    SessionResponseEvent, TurnLifecycleEvent, topics,
 };
 use crate::interfaces::attachment::FileAttachment;
 use crate::interfaces::notify_main_of_undeliverable_session_output;
@@ -28,10 +32,10 @@ pub(crate) trait ChatOutbound: Send + Sync {
     /// Short name used in logs (`"discord"`, `"telegram"`, `"teams"`).
     fn name(&self) -> &'static str;
 
-    /// Owner-facing reason when `conversation_id` does not resolve.
+    /// Plain-language reason when `conversation_id` does not resolve.
     fn unknown_conversation_reason(&self) -> &'static str;
 
-    /// Publishes a notice to main when a session's own output cannot be delivered.
+    /// Publishes delivery-failure notices and notes to main.
     fn publisher(&self) -> &crate::bus::Publisher;
 
     /// Where a main-agent turn replies: the conversation that started it, or
@@ -44,9 +48,6 @@ pub(crate) trait ChatOutbound: Send + Sync {
     /// Resolve a conversation id to a send target. `None` when the id is not
     /// one this platform can post to.
     async fn conversation_target(&self, conversation_id: &str) -> Option<Self::Target>;
-
-    /// The owner's direct-message target, when the platform knows one.
-    async fn owner(&self) -> Option<Self::Target>;
 
     /// Human-readable place name for an owner-facing delivery failure.
     async fn describe(&self, conversation_id: &str, target: &Self::Target) -> String;
@@ -147,28 +148,13 @@ pub(crate) async fn run<C: ChatOutbound>(mut subs: BaseSubscribers, chat: C) {
                     ControlFlow::Continue(im) => deliver_intermediate(&chat, im).await,
                 }
             }
-            // System notices and errors can carry internals; they only ever
-            // go to the owner.
-            event = subs.notice.recv() => {
+            event = subs.turn_error.recv() => {
                 match take_event(event, chat.name()) {
                     ControlFlow::Break(clean) => {
                         clean_exit = clean;
                         break;
                     }
-                    ControlFlow::Continue(NoticeEvent { message }) => {
-                        send_to_owner(&chat, &message).await;
-                    }
-                }
-            }
-            event = subs.error.recv() => {
-                match take_event(event, chat.name()) {
-                    ControlFlow::Break(clean) => {
-                        clean_exit = clean;
-                        break;
-                    }
-                    ControlFlow::Continue(ErrorEvent { message, .. }) => {
-                        send_to_owner(&chat, &format!("**Error:** {message}")).await;
-                    }
+                    ControlFlow::Continue(err) => deliver_turn_error(&chat, err).await,
                 }
             }
         }
@@ -219,7 +205,7 @@ async fn deliver_main<C: ChatOutbound>(chat: &C, response: ResponseEvent) {
                 conversation = %id,
                 "message addressed to an unknown conversation"
             );
-            notify_owner(chat, &id, chat.unknown_conversation_reason()).await;
+            report_undelivered_message(chat, &id, chat.unknown_conversation_reason()).await;
             return;
         };
         (target, Some(id))
@@ -241,7 +227,7 @@ async fn deliver_main<C: ChatOutbound>(chat: &C, response: ResponseEvent) {
         );
         if let Some(id) = addressed {
             let place = chat.describe(&id, &target).await;
-            notify_owner(chat, &place, &reason).await;
+            report_undelivered_message(chat, &place, &reason).await;
         }
     }
 }
@@ -288,25 +274,288 @@ async fn reply_target_or_warn<C: ChatOutbound>(
     target
 }
 
-async fn send_to_owner<C: ChatOutbound>(chat: &C, text: &str) {
-    let Some(owner) = chat.owner().await else {
+/// A main-agent turn failed. The chat that started it hears why in place of
+/// the reply; proactive turns tell the owner's direct messages, as their
+/// replies would.
+async fn deliver_turn_error<C: ChatOutbound>(chat: &C, event: ErrorEvent) {
+    let Some(target) = reply_target_or_warn(chat, &event.correlation_id).await else {
         return;
     };
-    if let Err(reason) = chat.send(&owner, text, None).await {
+    let text = format!("**Error:** {}", event.message);
+    if let Err(reason) = chat.send(&target, &text, None).await {
         tracing::warn!(
             interface = chat.name(),
+            target = %chat.target_label(&target),
             error = %reason,
-            "failed to send a notice to the owner"
+            "failed to send a turn error"
         );
     }
 }
 
-/// Tell the owner a message addressed to a specific conversation did not go
-/// out, since nobody else will see that it failed.
-async fn notify_owner<C: ChatOutbound>(chat: &C, place: &str, reason: &str) {
-    send_to_owner(
-        chat,
-        &format!("**Error:** I couldn't post a message to {place}: {reason}"),
-    )
-    .await;
+/// A message the agent addressed to a specific conversation did not go out.
+/// The owner sees it in the web UI and main hears about it, since nobody in
+/// the chat will.
+async fn report_undelivered_message<C: ChatOutbound>(chat: &C, place: &str, reason: &str) {
+    let text = format!(
+        "I couldn't post a message to {place} on {}: {reason}",
+        chat.name()
+    );
+    crate::gateway::helpers::publish_notice(chat.publisher(), text.clone()).await;
+    let event = MessageEvent::from_background(format!("[Delivery Failed] {text}"));
+    if let Err(e) = chat.publisher().publish(topics::UserMessage, event).await {
+        tracing::warn!(
+            interface = chat.name(),
+            error = %e,
+            "failed to notify main about an undelivered message"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use super::*;
+    use crate::bus::{BusHandle, EndpointName, NoticeEvent, NotifyName, SYSTEM_CHANNEL};
+
+    const ENDPOINT: &str = "fakechat";
+
+    /// A chat platform that records what it sends. Targets are plain strings:
+    /// `"owner-dm"` for the owner, otherwise a conversation id.
+    #[derive(Clone)]
+    struct FakeChat {
+        publisher: crate::bus::Publisher,
+        replies: HashMap<String, String>,
+        conversations: Vec<String>,
+        failing: Vec<String>,
+        sent: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    impl FakeChat {
+        fn new(handle: &BusHandle) -> Self {
+            Self {
+                publisher: handle.publisher(),
+                replies: HashMap::new(),
+                conversations: Vec::new(),
+                failing: Vec::new(),
+                sent: Arc::default(),
+            }
+        }
+
+        fn sent(&self) -> Vec<(String, String)> {
+            self.sent.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl ChatOutbound for FakeChat {
+        type Target = String;
+
+        fn name(&self) -> &'static str {
+            "fakechat"
+        }
+
+        fn unknown_conversation_reason(&self) -> &'static str {
+            "no such conversation"
+        }
+
+        fn publisher(&self) -> &crate::bus::Publisher {
+            &self.publisher
+        }
+
+        async fn reply_target(&self, correlation_id: &str) -> Option<String> {
+            Some(
+                self.replies
+                    .get(correlation_id)
+                    .cloned()
+                    .unwrap_or_else(|| "owner-dm".to_string()),
+            )
+        }
+
+        fn release_reply(&self, _correlation_id: &str) {}
+
+        async fn conversation_target(&self, conversation_id: &str) -> Option<String> {
+            self.conversations
+                .iter()
+                .find(|c| *c == conversation_id)
+                .cloned()
+        }
+
+        async fn describe(&self, conversation_id: &str, _target: &String) -> String {
+            conversation_id.to_string()
+        }
+
+        fn target_label(&self, target: &String) -> String {
+            target.clone()
+        }
+
+        fn start_typing(&self, _target: String) -> tokio::sync::watch::Sender<()> {
+            tokio::sync::watch::channel(()).0
+        }
+
+        async fn send(
+            &self,
+            target: &String,
+            content: &str,
+            _attachment: Option<&FileAttachment>,
+        ) -> Result<(), String> {
+            if self.failing.contains(target) {
+                return Err("the platform refused it".to_string());
+            }
+            self.sent
+                .lock()
+                .unwrap()
+                .push((target.clone(), content.to_string()));
+            Ok(())
+        }
+    }
+
+    async fn start(handle: &BusHandle, chat: FakeChat) {
+        let subs = BaseSubscribers::new(handle, EndpointName::from(ENDPOINT))
+            .await
+            .unwrap();
+        tokio::spawn(run(subs, chat));
+    }
+
+    fn response(correlation_id: &str, content: &str, conversation: Option<&str>) -> ResponseEvent {
+        ResponseEvent {
+            correlation_id: correlation_id.to_string(),
+            content: content.to_string(),
+            timestamp: chrono::Utc::now().naive_utc(),
+            attachment: None,
+            conversation: conversation.map(str::to_string),
+        }
+    }
+
+    async fn wait_for_sends(chat: &FakeChat, count: usize) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while chat.sent().len() < count {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn system_notices_and_errors_never_reach_the_chat() {
+        let handle = crate::bus::spawn_broker();
+        let chat = FakeChat::new(&handle);
+        start(&handle, chat.clone()).await;
+        let publisher = handle.publisher();
+        let system = || topics::Notification(NotifyName::from(SYSTEM_CHANNEL));
+
+        publisher
+            .publish(
+                system(),
+                NoticeEvent {
+                    message: "Config reloaded".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        publisher
+            .publish(
+                system(),
+                ErrorEvent {
+                    correlation_id: String::new(),
+                    message: "memory index failed".to_string(),
+                    details: None,
+                },
+            )
+            .await
+            .unwrap();
+        // A reply sent after them proves the loop has had its chance to
+        // deliver both.
+        publisher
+            .publish(
+                topics::Endpoint(EndpointName::from(ENDPOINT)),
+                response("m1", "hello", None),
+            )
+            .await
+            .unwrap();
+
+        wait_for_sends(&chat, 1).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            chat.sent(),
+            vec![("owner-dm".to_string(), "hello".to_string())],
+            "only the agent's reply may go out; system output stays in the web UI"
+        );
+    }
+
+    #[tokio::test]
+    async fn turn_error_answers_the_conversation_that_started_the_turn() {
+        let handle = crate::bus::spawn_broker();
+        let mut chat = FakeChat::new(&handle);
+        chat.replies.insert("m1".to_string(), "group-7".to_string());
+        start(&handle, chat.clone()).await;
+
+        handle
+            .publisher()
+            .publish(
+                topics::Endpoint(EndpointName::from(ENDPOINT)),
+                ErrorEvent {
+                    correlation_id: "m1".to_string(),
+                    message: "The model is unavailable.".to_string(),
+                    details: Some("503 from provider".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+
+        wait_for_sends(&chat, 1).await;
+        assert_eq!(
+            chat.sent(),
+            vec![(
+                "group-7".to_string(),
+                "**Error:** The model is unavailable.".to_string()
+            )],
+            "the failure goes where the reply would have, without technical details"
+        );
+    }
+
+    #[tokio::test]
+    async fn undeliverable_addressed_message_becomes_a_notice_not_a_chat_message() {
+        let handle = crate::bus::spawn_broker();
+        let mut notices: crate::bus::Subscriber<NoticeEvent> = handle
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let mut main: crate::bus::Subscriber<MessageEvent> =
+            handle.subscribe(topics::UserMessage).await.unwrap();
+        let mut chat = FakeChat::new(&handle);
+        chat.conversations.push("group-7".to_string());
+        chat.failing.push("group-7".to_string());
+        start(&handle, chat.clone()).await;
+
+        let endpoint = || topics::Endpoint(EndpointName::from(ENDPOINT));
+        let publisher = handle.publisher();
+        publisher
+            .publish(endpoint(), response("m1", "hi all", Some("group-7")))
+            .await
+            .unwrap();
+        publisher
+            .publish(endpoint(), response("m2", "hi ghost", Some("gone-1")))
+            .await
+            .unwrap();
+
+        for place in ["group-7", "gone-1"] {
+            let notice = notices.recv().await.unwrap().unwrap();
+            assert!(
+                notice.message.contains(place),
+                "notice should name {place}: {}",
+                notice.message
+            );
+            let note = main.recv().await.unwrap().unwrap();
+            assert!(note.content.starts_with("[Delivery Failed]"));
+            assert!(note.content.contains(place));
+        }
+        assert!(
+            chat.sent().is_empty(),
+            "a delivery failure must not be posted to the owner's chat"
+        );
+    }
 }
