@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { composerClearance } from "../composer-clearance.svelte";
   import { Icon, type IconName } from "../icons";
   import { toast, type Toast, type ToastKind } from "../toast.svelte";
   import IconButton from "./IconButton.svelte";
@@ -12,8 +13,10 @@
 
   interface Props {
     /**
-     * What toasts keep clear of at phone width: the bottom bar and a composer
-     * above it, the bottom bar alone, or just the screen's edge (no bar).
+     * What toasts keep clear of: the composer on screen, wherever it is and
+     * however tall it is now (`composerClearance`), and without one the
+     * phone's bottom bar; the phone's bottom bar alone; or just the screen's
+     * edge (no bar).
      */
     clearance?: "composer" | "bar" | "edge";
   }
@@ -27,6 +30,10 @@
   };
 
   const toasts = $derived([...toast.toasts.values()]);
+  /** From the foot of the screen to the top of the composer showing, when there is one. */
+  const lift = $derived(clearance === "composer" ? composerClearance.px : 0);
+  // With no composer to clear, the phone's bottom bar is what a composer's toasts keep clear of.
+  const keptClear = $derived(clearance === "composer" && lift === 0 ? "bar" : clearance);
   const errors = $derived(toasts.filter((item) => item.kind === "error"));
   const others = $derived(toasts.filter((item) => item.kind !== "error"));
 </script>
@@ -53,7 +60,7 @@
 
 <!-- The region moves into the overlay host; these hold its place in the block. -->
 <template></template>
-<div class="ui-toasts" data-clearance={clearance} {@attach portal}>
+<div class="ui-toasts" data-clearance={keptClear} style:--toast-lift="{lift}px" {@attach portal}>
   <!-- Errors interrupt; everything else is read at the next pause. Each new toast is read alone. -->
   <div class="ui-toast-group" role="alert" aria-atomic="false">
     {#each errors as item (item.id)}
@@ -150,11 +157,12 @@
     }
   }
 
-  @media (max-width: 760px) {
-    .ui-toasts[data-clearance="composer"] {
-      bottom: calc(var(--layout-bottom-bar-offset) + 96px);
-    }
+  /* Above the composer's top edge, however tall it is now. */
+  .ui-toasts[data-clearance="composer"] {
+    bottom: calc(var(--toast-lift) + var(--space-12));
+  }
 
+  @media (max-width: 760px) {
     .ui-toasts[data-clearance="bar"] {
       bottom: calc(var(--layout-bottom-bar-offset) + var(--space-16));
     }
