@@ -174,12 +174,7 @@
             <span class="rail-chevron"><Icon name="chevron-down" size={14} /></span>
             <VisuallyHidden>, {status.spoken}</VisuallyHidden>
           </button>
-          <ul
-            class="rail-places"
-            id="{uid}-places-{agent.name}"
-            hidden={!expanded}
-            data-working={status.working || undefined}
-          >
+          <ul class="rail-places" id="{uid}-places-{agent.name}" hidden={!expanded}>
             {#each AGENT_PLACES as entry (entry.kind)}
               {@const target = { kind: entry.kind, agent: agent.name } satisfies Place}
               {@const running = entry.kind === "activity" ? runningCount(agent.name) : 0}
@@ -393,20 +388,6 @@
       width: 1px;
       background: linear-gradient(180deg, var(--color-vein-dim), var(--color-vein-tint));
     }
-
-    /* While the agent works, a pulse of light runs down the vein. */
-    &[data-working]::after {
-      content: "";
-      position: absolute;
-      top: 0;
-      left: 14px;
-      width: 4px;
-      height: 26px;
-      border-radius: var(--space-2);
-      background: linear-gradient(180deg, transparent, var(--color-vein-bright), transparent);
-      pointer-events: none;
-      animation: rail-flow var(--duration-flow) var(--ease-out) infinite;
-    }
   }
 
   .rail-place {
@@ -451,22 +432,6 @@
     .rail-agent,
     .rail-place {
       height: var(--layout-touch-target);
-    }
-  }
-
-  @keyframes rail-flow {
-    0% {
-      opacity: 0;
-      transform: translateY(-8px);
-    }
-
-    25% {
-      opacity: 1;
-    }
-
-    100% {
-      opacity: 0;
-      transform: translateY(150px);
     }
   }
 </style>
