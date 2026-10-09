@@ -79,17 +79,23 @@ impl ThinkingBlock {
     }
 }
 
-/// The readable text of `blocks` joined by a blank line, skipping blocks the
-/// provider withheld, or `None` when there is none. The one place reasoning
-/// becomes text for a reader: signatures and encrypted data never leave the
-/// blocks.
+/// The readable text of each block that has some, in order, skipping blocks
+/// the provider withheld. The one place reasoning becomes text for a reader:
+/// signatures and encrypted data never leave the blocks.
+#[must_use]
+pub fn readable_thinking(blocks: &[ThinkingBlock]) -> Vec<&str> {
+    blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .filter(|text| !text.trim().is_empty())
+        .collect()
+}
+
+/// The readable text of `blocks` joined by a blank line, or `None` when there
+/// is none (see [`readable_thinking`]).
 #[must_use]
 pub fn joined_thinking_text(blocks: &[ThinkingBlock]) -> Option<String> {
-    let parts: Vec<&str> = blocks
-        .iter()
-        .map(|block| block.text.trim())
-        .filter(|text| !text.is_empty())
-        .collect();
+    let parts = readable_thinking(blocks);
     if parts.is_empty() {
         None
     } else {
@@ -251,14 +257,6 @@ impl Message {
     pub fn with_thinking(mut self, thinking: Vec<ThinkingBlock>) -> Self {
         self.thinking = thinking;
         self
-    }
-
-    /// The readable reasoning behind this message, blocks joined by a blank
-    /// line, or `None` when the model produced none. Never includes the
-    /// opaque signatures or encrypted data a provider needs replayed.
-    #[must_use]
-    pub fn thinking_text(&self) -> Option<String> {
-        joined_thinking_text(&self.thinking)
     }
 
     /// Message text as the agent reads it in history and transcripts.

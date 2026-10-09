@@ -22,5 +22,5 @@ pub use types::{
     AgentSender, CompletionOptions, ImageData, InferenceProvider, InferenceResponse, Message,
     MessageSender, ResponseFormat, Role, StopReason, StreamDelta, StreamSink, ThinkingBlock,
     ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition, Usage, WebSearchNativeConfig,
-    joined_thinking_text,
+    joined_thinking_text, readable_thinking,
 };

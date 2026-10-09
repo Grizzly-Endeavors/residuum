@@ -97,6 +97,11 @@ export interface RecentMessage {
   content: string;
   tool_calls?: ToolCallRecord[];
   tool_call_id?: string;
+  /**
+   * The model's readable reasoning behind an assistant message, one entry per
+   * block that has text; absent when it produced none.
+   */
+  thinking?: string[];
   timestamp: string;
   visibility: "user" | "background";
   sender?: MessageSender;
