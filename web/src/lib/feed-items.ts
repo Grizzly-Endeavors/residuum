@@ -247,6 +247,7 @@ export function appendToolCall(
     arguments: normalizeToolArgs(call.arguments),
     status: "running",
     server: call.server,
+    startedAt: Date.now(),
   };
   const last = feed[feed.length - 1];
   if (last?.kind === "tool-group" && last.turnId === turnId) {
@@ -275,7 +276,11 @@ export function settlePendingCalls(
   pending: Map<string, ToolCallState>,
   status: "done" | "stopped",
 ): void {
-  for (const call of pending.values()) call.status = status;
+  const at = Date.now();
+  for (const call of pending.values()) {
+    call.status = status;
+    call.endedAt = at;
+  }
   pending.clear();
 }
 
@@ -301,6 +306,7 @@ export function applyToolResult(
   const call = pending.get(result.tool_call_id);
   if (!call) return;
   call.status = result.is_error ? "error" : "done";
+  call.endedAt = Date.now();
   if (result.auto_mode) call.autoMode = result.auto_mode;
   if (result.output) appendResult(call, result.output);
   pending.delete(result.tool_call_id);

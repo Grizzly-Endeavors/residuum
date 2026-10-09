@@ -1,9 +1,32 @@
-// A conversation's items grouped by turn: each turn's output
-// shows as one block, with every tool call of the turn at its head and then
-// what the agent said, in order. Shared by the main chat and session
-// transcripts, which tag their items with turn ids the same way.
+// A conversation's items grouped by turn: each turn's output shows as one
+// block, in the order it happened. A run of tool calls is one activity
+// segment between the agent's messages, so what the agent said stays beside
+// the work it said it about. Shared by the main chat and session transcripts,
+// which tag their items with turn ids the same way.
 
 import type { FeedItem, ToolCallState } from "../lib/types";
+
+/**
+ * A run of tool calls with no message of the agent's between them, shown as
+ * one activity line at its place in the turn.
+ */
+export interface ActivitySegment {
+  kind: "activity";
+  /** Stable for keyed lists: taken from the segment's first tool group. */
+  key: string;
+  calls: ToolCallState[];
+  /** How many of the turn's tool calls came before this segment's. */
+  callsBefore: number;
+}
+
+/** A message or attachment of the turn, shown as it is. */
+export interface TurnMessage {
+  kind: "message";
+  key: string;
+  item: FeedItem;
+}
+
+export type TurnPart = ActivitySegment | TurnMessage;
 
 /** One turn's output. */
 export interface FeedTurn {
@@ -12,14 +35,12 @@ export interface FeedTurn {
   key: string;
   /** The turn's correlation id, when its items carry one. */
   turnId: string | null;
-  /** Every tool call the turn made, in order. */
-  calls: ToolCallState[];
   /**
-   * Everything else in the turn, in order: the agent's intermediate texts,
-   * its attachments and its final reply, and any message that reached the
-   * agent while the turn ran.
+   * What the turn produced, in the order it happened: runs of tool calls
+   * between the agent's intermediate texts, its attachments and its final
+   * reply, and any message that reached the agent while the turn ran.
    */
-  items: FeedItem[];
+  parts: TurnPart[];
   /** The turn is still running. */
   live: boolean;
 }
@@ -44,7 +65,68 @@ function isTurnMessage(item: FeedItem): boolean {
 }
 
 function emptyBlock(turnId: string): FeedTurn {
-  return { kind: "turn", key: `turn:${turnId}`, turnId, calls: [], items: [], live: false };
+  return { kind: "turn", key: `turn:${turnId}`, turnId, parts: [], live: false };
+}
+
+/** How many tool calls `turn` has made so far. */
+export function turnCallCount(turn: FeedTurn): number {
+  let count = 0;
+  for (const part of turn.parts) if (part.kind === "activity") count += part.calls.length;
+  return count;
+}
+
+/** Add `item` to the end of `turn`, joining a trailing run of tool calls. */
+function addToTurn(turn: FeedTurn, item: FeedItem): void {
+  if (item.kind !== "tool-group") {
+    turn.parts.push({ kind: "message", key: `item-${String(item.id)}`, item });
+    return;
+  }
+  const last = turn.parts.at(-1);
+  if (last?.kind === "activity") {
+    last.calls.push(...item.calls);
+    return;
+  }
+  turn.parts.push({
+    kind: "activity",
+    key: `activity-${String(item.id)}`,
+    calls: [...item.calls],
+    callsBefore: turnCallCount(turn),
+  });
+}
+
+/**
+ * The parts of `turn` as they are drawn, given where the page may have
+ * missed steps (`gaps`, as the number of steps it had seen). A turn the page
+ * joined while it ran, whose first thing is not a step, gets an empty
+ * segment at its head to hold the note that earlier steps aren't shown.
+ */
+export function drawnParts(turn: FeedTurn, gaps: readonly number[]): TurnPart[] {
+  const first = turn.parts[0];
+  if (!gaps.includes(0) || first?.kind === "activity") return turn.parts;
+  return [{ kind: "activity", key: `${turn.key}:lead`, calls: [], callsBefore: 0 }, ...turn.parts];
+}
+
+/**
+ * Where the notes for `gaps` go in `segment`: for each, the number of the
+ * segment's steps that come before it, so `segment.calls.length` means at
+ * its end. A gap before the first step belongs to the turn's first part; the
+ * rest follow the step they came after.
+ */
+export function gapsWithin(
+  gaps: readonly number[],
+  segment: ActivitySegment,
+  place: { first: boolean; last: boolean },
+): number[] {
+  const end = segment.callsBefore + segment.calls.length;
+  const within: number[] = [];
+  for (const seen of gaps) {
+    if (seen === 0) {
+      if (place.first) within.push(0);
+    } else if (seen > segment.callsBefore && (seen <= end || place.last)) {
+      within.push(Math.min(seen, end) - segment.callsBefore);
+    }
+  }
+  return within;
 }
 
 /**
@@ -100,18 +182,16 @@ export function groupTurns(
           kind: "turn",
           key: first ? `turn:${id}` : `turn-${String(item.id)}`,
           turnId: id ?? null,
-          calls: [],
-          items: [],
+          parts: [],
           live: false,
         };
         if (id !== undefined && id === liveTurnId) live.block = turn.block;
         entries.push(turn.block);
       }
-      if (item.kind === "tool-group") turn.block.calls.push(...item.calls);
-      else turn.block.items.push(item);
+      addToTurn(turn.block, item);
     } else if (isTurnMessage(item)) {
       if (item.midTurn === true && turn?.block) {
-        turn.block.items.push(item);
+        addToTurn(turn.block, item);
       } else if (turn?.block === null && item.turnId !== undefined && turn.id === item.turnId) {
         // Another message before the turn's first output: still the same turn.
         entries.push({ kind: "single", key: item.id, item });

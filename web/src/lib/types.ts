@@ -522,6 +522,10 @@ export interface ToolCallState {
   server?: string | null;
   /** Auto Mode's verdict, from the live result; history doesn't keep it. */
   autoMode?: AutoModeVerdict;
+  /** `Date.now()` when the page saw the call start; history doesn't keep it. */
+  startedAt?: number;
+  /** `Date.now()` when the page saw the call end, or the turn settle it. */
+  endedAt?: number;
 }
 
 interface FeedItemBase {

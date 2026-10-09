@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { FeedStore } from "../lib/feed.svelte";
 import { convertHistoryMessages } from "../lib/feed-items";
-import type { FeedItem, RecentMessage } from "../lib/types";
-import { groupTurns, type FeedEntry } from "./turns";
+import type { FeedItem, RecentMessage, ToolCallState } from "../lib/types";
+import {
+  drawnParts,
+  gapsWithin,
+  groupTurns,
+  type ActivitySegment,
+  type FeedEntry,
+  type TurnPart,
+} from "./turns";
 
 /** Each entry in a line of text: a single item's kind and text, or a turn's tools and items. */
 function describeEntries(entries: FeedEntry[]): string[] {
@@ -12,10 +19,14 @@ function describeEntries(entries: FeedEntry[]): string[] {
     }
     return item.kind === "divider" ? `divider:${item.episode ?? item.label}` : item.kind;
   };
+  const describePart = (part: TurnPart): string =>
+    part.kind === "activity"
+      ? `[${part.calls.map((call) => call.name).join(",")}]`
+      : text(part.item);
   return entries.map((entry) =>
     entry.kind === "single"
       ? text(entry.item)
-      : `turn[${entry.calls.map((call) => call.name).join(",")}](${entry.items.map(text).join(" | ")})`,
+      : `turn(${entry.parts.map(describePart).join(" | ")})`,
   );
 }
 
@@ -59,9 +70,9 @@ describe("turns in recent history", () => {
     );
     expect(describeEntries(groupTurns(items, null))).toEqual([
       "user:Tidy the wiki",
-      "turn[memory_search,read_file](assistant:Looking at the index first. | assistant:Done: three pages merged.)",
+      "turn([memory_search] | assistant:Looking at the index first. | [read_file] | assistant:Done: three pages merged.)",
       "user:Thanks",
-      "turn[](assistant:Any time.)",
+      "turn(assistant:Any time.)",
     ]);
     expect(
       items.filter((item) => item.kind === "tool-group").flatMap((item) => item.calls),
@@ -82,8 +93,8 @@ describe("turns in recent history", () => {
     );
     expect(describeEntries(groupTurns(items, null))).toEqual([
       "user:Two things",
-      "turn[](assistant:First.)",
-      "turn[](assistant:Second.)",
+      "turn(assistant:First.)",
+      "turn(assistant:Second.)",
     ]);
   });
 
@@ -105,7 +116,7 @@ describe("turns in recent history", () => {
     );
     expect(describeEntries(groupTurns(items, null))).toEqual([
       "user:Draft the post",
-      "turn[write_file](assistant:Drafting now. | user:Keep it short | assistant:Saved a short draft.)",
+      "turn(assistant:Drafting now. | [write_file] | user:Keep it short | assistant:Saved a short draft.)",
     ]);
   });
 
@@ -124,7 +135,7 @@ describe("turns in recent history", () => {
     );
     expect(describeEntries(groupTurns(items, null))).toEqual([
       "user:Look into it",
-      "turn[memory_search](agent-message:Result of the research | assistant:Thanks, that settles it.)",
+      "turn([memory_search] | agent-message:Result of the research | assistant:Thanks, that settles it.)",
     ]);
   });
 
@@ -147,11 +158,11 @@ describe("turns in recent history", () => {
     const entries = groupTurns(items, null);
     expect(describeEntries(entries)).toEqual([
       "user:First visit",
-      "turn[memory_search](assistant:Found it.)",
+      "turn([memory_search] | assistant:Found it.)",
       "user:Second visit",
-      "turn[](assistant:Welcome back.)",
+      "turn(assistant:Welcome back.)",
       "user:And once more",
-      "turn[read_file](assistant:Here it is.)",
+      "turn([read_file] | assistant:Here it is.)",
     ]);
     const keys = entries.map((entry) => entry.key);
     expect(new Set(keys).size).toBe(keys.length);
@@ -175,9 +186,9 @@ describe("turns in recent history", () => {
     );
     expect(shown).toEqual([
       "user:Earlier",
-      "turn[](assistant:Earlier reply.)",
+      "turn(assistant:Earlier reply.)",
       "user:Now",
-      "turn[](assistant:Looking.)",
+      "turn(assistant:Looking.)",
     ]);
   });
 
@@ -196,9 +207,9 @@ describe("turns in recent history", () => {
     );
     expect(describeEntries(groupTurns(items, null))).toEqual([
       "user:Hello",
-      "turn[](assistant:Hi.)",
+      "turn(assistant:Hi.)",
       "agent-message:Result of the research",
-      "turn[memory_add](assistant:Noted the result.)",
+      "turn([memory_add] | assistant:Noted the result.)",
     ]);
   });
 });
@@ -217,9 +228,9 @@ describe("turns in episodes", () => {
     );
     expect(describeEntries(groupTurns(items, null))).toEqual([
       "user:What changed?",
-      "turn[list_files](assistant:Two files.)",
+      "turn([list_files] | assistant:Two files.)",
       "user:And today?",
-      "turn[](assistant:Nothing yet.)",
+      "turn(assistant:Nothing yet.)",
     ]);
   });
 
@@ -235,7 +246,7 @@ describe("turns in episodes", () => {
     expect(describeEntries(groupTurns(store.feed, null))).toEqual([
       "divider:ep-001",
       "user:Hi",
-      "turn[](assistant:Hello.)",
+      "turn(assistant:Hello.)",
       "compressed-marker",
     ]);
   });
@@ -258,7 +269,7 @@ describe("live turns", () => {
     let entries = groupTurns(store.feed, store.activeTurnId);
     expect(describeEntries(entries)).toEqual([
       "user:Check the routing doc",
-      "turn[memory_search](assistant:Looking first.)",
+      "turn(assistant:Looking first. | [memory_search])",
     ]);
     expect(entries[1]).toMatchObject({ kind: "turn", turnId: "m1", live: true });
 
@@ -267,7 +278,7 @@ describe("live turns", () => {
     entries = groupTurns(store.feed, store.activeTurnId);
     expect(describeEntries(entries)).toEqual([
       "user:Check the routing doc",
-      "turn[memory_search](assistant:Looking first. | assistant:It's tidy.)",
+      "turn(assistant:Looking first. | [memory_search] | assistant:It's tidy.)",
     ]);
     expect(entries[1]).toMatchObject({ live: false });
   });
@@ -302,8 +313,8 @@ describe("live turns", () => {
 
     expect(describeEntries(groupTurns(store.feed, store.activeTurnId))).toEqual([
       "user:First",
-      "turn[read_file,list_dir]()",
-      "turn[write_file]()",
+      "turn([read_file,list_dir])",
+      "turn([write_file])",
     ]);
     expect(store.feed.filter((item) => item.kind === "tool-group")).toMatchObject([
       {
@@ -327,7 +338,7 @@ describe("live turns", () => {
 
     expect(describeEntries(groupTurns(store.feed, store.activeTurnId))).toEqual([
       "user:Draft the post",
-      "turn[](assistant:Drafting. | user:Keep it short | assistant:Done, and short.)",
+      "turn(assistant:Drafting. | user:Keep it short | assistant:Done, and short.)",
     ]);
   });
 
@@ -336,7 +347,7 @@ describe("live turns", () => {
     store.pushUserMessage("Plan the week");
     store.handleMessage({ type: "turn_started", reply_to: "m1" });
     let entries = groupTurns(store.feed, store.activeTurnId);
-    expect(describeEntries(entries)).toEqual(["user:Plan the week", "turn[]()"]);
+    expect(describeEntries(entries)).toEqual(["user:Plan the week", "turn()"]);
     expect(entries[1]).toMatchObject({ key: "turn:m1", live: true });
 
     store.handleMessage({
@@ -365,7 +376,7 @@ describe("live turns", () => {
     const stopped = (id: string): boolean => store.observed.get(id)?.ending === "stopped";
     expect(describeEntries(groupTurns(store.feed, null, stopped))).toEqual([
       "user:Never mind",
-      "turn[]()",
+      "turn()",
       "user:Something else",
     ]);
   });
@@ -392,5 +403,121 @@ describe("live turns", () => {
     expect(store.isProcessing).toBe(false);
     expect(store.activeTurnId).toBeNull();
     expect(groupTurns(store.feed, store.activeTurnId).at(-1)).toMatchObject({ live: false });
+  });
+});
+
+describe("activity segments", () => {
+  it("makes one segment of each run of tool calls between the agent's texts", () => {
+    const store = new FeedStore();
+    store.pushUserMessage("Fix the port");
+    store.handleMessage({ type: "turn_started", reply_to: "m1" });
+    store.handleMessage({ type: "broadcast_response", content: "Let me check the config first." });
+    for (const id of ["c1", "c2"]) {
+      store.handleMessage({
+        type: "tool_call",
+        id,
+        name: "read_file",
+        arguments: "{}",
+        server: null,
+      });
+    }
+    store.handleMessage({ type: "broadcast_response", content: "The port is set twice." });
+    store.handleMessage({
+      type: "tool_call",
+      id: "c3",
+      name: "edit_file",
+      arguments: "{}",
+      server: null,
+    });
+
+    const block = groupTurns(store.feed, store.activeTurnId).at(-1);
+    if (block?.kind !== "turn") throw new Error("expected the turn's block");
+    expect(
+      block.parts.map((part) => (part.kind === "activity" ? part.calls.length : "text")),
+    ).toEqual(["text", 2, "text", 1]);
+    expect(
+      block.parts.flatMap((part) => (part.kind === "activity" ? [part.callsBefore] : [])),
+    ).toEqual([0, 2]);
+    expect(new Set(block.parts.map((part) => part.key)).size).toBe(4);
+  });
+
+  it("joins tool groups that follow each other, as history records one per model call", () => {
+    const items = convertHistoryMessages(
+      [
+        message("user", "Look around", { turn_id: "t1" }),
+        ...toolCall("a", "memory_search", "t1"),
+        ...toolCall("b", "read_file", "t1"),
+        message("assistant", "Found it.", { turn_id: "t1" }),
+      ],
+      { mode: "main" },
+    );
+    expect(describeEntries(groupTurns(items, null))).toEqual([
+      "user:Look around",
+      "turn([memory_search,read_file] | assistant:Found it.)",
+    ]);
+  });
+
+  it("starts a new segment after an attachment", () => {
+    const done = (id: string): ToolCallState => ({
+      id,
+      name: "exec",
+      arguments: {},
+      status: "done",
+    });
+    const items: FeedItem[] = [
+      { id: 1, kind: "tool-group", turnId: "t1", calls: [done("a")] },
+      {
+        id: 2,
+        kind: "file-attachment",
+        turnId: "t1",
+        filename: "chart.png",
+        mimeType: "image/png",
+        size: 10,
+        url: "/files/chart.png",
+        caption: null,
+      },
+      { id: 3, kind: "tool-group", turnId: "t1", calls: [done("b")] },
+    ];
+    expect(describeEntries(groupTurns(items, null))).toEqual([
+      "turn([exec] | file-attachment | [exec])",
+    ]);
+  });
+
+  it("draws a lead segment for a turn joined at something other than a step", () => {
+    const store = new FeedStore();
+    store.handleMessage({ type: "broadcast_response", content: "Looking first." });
+    const block = groupTurns(store.feed, store.activeTurnId).at(-1);
+    if (block?.kind !== "turn") throw new Error("expected the turn's block");
+
+    expect(drawnParts(block, []).map((part) => part.kind)).toEqual(["message"]);
+    expect(drawnParts(block, [2]).map((part) => part.kind)).toEqual(["message"]);
+    const drawn = drawnParts(block, [0]);
+    expect(drawn.map((part) => part.kind)).toEqual(["activity", "message"]);
+    expect(drawn[0]).toMatchObject({ calls: [], callsBefore: 0 });
+  });
+
+  it("places the notes for missed steps in the segments they fall in", () => {
+    const segment = (callsBefore: number, count: number): ActivitySegment => ({
+      kind: "activity",
+      key: `s${String(callsBefore)}`,
+      callsBefore,
+      calls: Array.from({ length: count }, (_, i) => ({
+        id: `c${String(callsBefore + i)}`,
+        name: "exec",
+        arguments: {},
+        status: "done" as const,
+      })),
+    });
+    const first = segment(0, 2);
+    const second = segment(2, 3);
+    const gaps = [0, 1, 2, 4, 5];
+    // Before everything: the turn's first segment. Past its steps: at the end of the segment they follow.
+    expect(gapsWithin(gaps, first, { first: true, last: false })).toEqual([0, 1, 2]);
+    expect(gapsWithin(gaps, second, { first: false, last: true })).toEqual([2, 3]);
+    // A segment later in the turn takes no note for the head of the turn.
+    expect(gapsWithin([0], second, { first: false, last: true })).toEqual([]);
+    // A gap past the last step still lands on the last segment.
+    expect(gapsWithin([9], second, { first: false, last: true })).toEqual([3]);
+    expect(gapsWithin([9], first, { first: true, last: false })).toEqual([]);
   });
 });

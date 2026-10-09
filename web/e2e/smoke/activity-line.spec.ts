@@ -3,10 +3,10 @@ import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
 
 /**
- * The activity line: a live turn's steps, timer and Stop, Esc,
- * the line collapsing to its summary, a turn from history opened to a
- * step's details, joining a turn already running, and a session's
- * transcript.
+ * The activity lines: a live turn's steps, head with its timer and Stop, Esc,
+ * a line collapsing to its summary once the agent has said more, a turn from
+ * history opened to a step's details, joining a turn already running, and a
+ * session's transcript.
  */
 
 const GREETING = "Hi, this is atlas. You are in my conversation, not scout's.";
@@ -25,7 +25,7 @@ async function send(page: Page, text: string): Promise<void> {
   await composer(page).press("Enter");
 }
 
-/** The summary of a finished turn's line: a button that opens to its steps. */
+/** The summary of a run of steps that is over: a button that opens to its steps. */
 function summary(scope: Locator, text: string | RegExp): Locator {
   return scope.getByRole("button", { name: text });
 }
@@ -70,10 +70,12 @@ test.describe("a live turn", () => {
     await expectNoAxeViolations(page);
 
     await mock.post("/api/mock/turn-hold", { data: { held: false } });
-    const line = summary(feed, /^Searched memory, read 2 files · \d+s · 1 step failed$/);
+    const line = summary(feed, /^Searched memory, read 2 files(?: · \d+s)? · 1 step failed$/);
     await expect(line).toBeVisible({ timeout: 20_000 });
     await expect(line).toHaveAttribute("aria-expanded", "false");
     await expect(feed.getByText("Working")).toHaveCount(0);
+    // The turn did work worth timing, so its close says how long.
+    await expect(feed.getByText(/^Worked for \d+s$/)).toBeVisible();
     await expect(feed.getByRole("button", { name: "Read team/wiki/index.md" })).toHaveCount(0);
 
     await line.click();
@@ -91,8 +93,9 @@ test.describe("a live turn", () => {
     ).toBeVisible();
 
     await page.getByRole("button", { name: "Stop the reply" }).click();
-    const line = summary(feed, /^Searched memory, read 2 files · \d+s · stopped by you$/);
+    const line = summary(feed, /^Searched memory, read 2 files/);
     await expect(line).toBeVisible();
+    await expect(feed.getByText(/^Stopped by you/)).toBeVisible();
     await line.click();
     await expect(feed.getByRole("button", { name: /, stopped$/ }).first()).toBeVisible();
     await expect(feed.getByText("I've looked into that and here's what I found:")).toHaveCount(0);
@@ -113,7 +116,7 @@ test.describe("a live turn", () => {
 
     await composer(page).focus();
     await page.keyboard.press("Escape");
-    await expect(summary(feed, /stopped by you/i)).toBeVisible();
+    await expect(feed.getByText(/^Stopped by you/)).toBeVisible();
   });
 });
 
@@ -194,7 +197,7 @@ test.describe("connecting while a turn runs", () => {
     await expect(
       feed.getByText("Steps taken while this page was reconnecting may be missing"),
     ).toBeVisible({ timeout: 15_000 });
-    await expect(summary(feed, /^Searched memory, read 2 files · \d+s$/)).toBeVisible({
+    await expect(summary(feed, /^Searched memory, read 2 files(?: · \d+s)?$/)).toBeVisible({
       timeout: 15_000,
     });
   });
@@ -219,6 +222,6 @@ test("a session's transcript shows its live line too", async ({ page, isMobile, 
   if (isMobile) await expectNoAxeViolations(page, { within: "[data-overlay-host]" });
   else await expectNoAxeViolations(page);
 
-  await expect(summary(panel, /^Searched memory · \d+s$/)).toBeVisible({ timeout: 15_000 });
+  await expect(summary(panel, /^Searched memory(?: · \d+s)?$/)).toBeVisible({ timeout: 15_000 });
   await expect(panel.getByText('Understood: "Weigh safety over speed".')).toBeVisible();
 });

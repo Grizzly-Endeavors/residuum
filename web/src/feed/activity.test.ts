@@ -5,7 +5,9 @@ import {
   gapNote,
   stepText,
   stepsPhrase,
-  summarizeActivity,
+  segmentDuration,
+  summarizeSegment,
+  turnEndingLine,
   type StepCall,
 } from "./activity";
 
@@ -153,48 +155,77 @@ describe("the summary", () => {
     ).toBe("Searched memory, read 1 file, ran 1 command and 3 more steps");
   });
 
-  it("adds how long a watched turn took, and flags a failed step", () => {
+  it("adds how long a watched segment took, and flags a failed step", () => {
     const calls = [
-      call("memory_search", { query: "x" }),
-      call("read_file", { path: "a/b.md" }, { status: "error" }),
+      call("memory_search", { query: "x" }, { startedAt: 1_000, endedAt: 4_000 }),
+      call("read_file", { path: "a/b.md" }, { status: "error", startedAt: 3_000, endedAt: 15_000 }),
     ];
-    expect(summarizeActivity(calls, watched())).toEqual({
+    expect(summarizeSegment(calls, false)).toEqual({
       text: "Searched memory, read 1 file",
       duration: "14s",
       failures: "1 step failed",
-      ending: null,
     });
   });
 
-  it("shows neither timing nor failures for a turn from history", () => {
-    expect(summarizeActivity([call("read_file", { path: "a/b.md" })], undefined)).toEqual({
+  it("shows no timing for steps from history", () => {
+    expect(summarizeSegment([call("read_file", { path: "a/b.md" })], false)).toEqual({
       text: "Read 1 file",
       duration: null,
       failures: null,
-      ending: null,
     });
   });
 
-  it("leaves out the time of a turn the page joined partway", () => {
-    expect(
-      summarizeActivity([call("exec")], watched({ startedAt: null, gaps: [0] }))?.duration,
-    ).toBeNull();
+  it("leaves out a time under a second", () => {
+    const quick = [call("exec", {}, { startedAt: 5_000, endedAt: 5_400 })];
+    expect(summarizeSegment(quick, false)?.duration).toBeNull();
+    expect(segmentDuration([call("exec", {}, { startedAt: 5_000, endedAt: 6_000 })])).toBe("1s");
   });
 
-  it("says the user stopped it, even before any step ran", () => {
-    expect(
-      summarizeActivity([call("exec", {}, { status: "stopped" })], watched({ ending: "stopped" })),
-    ).toMatchObject({ text: "Ran 1 command", ending: "stopped by you" });
-    expect(summarizeActivity([], watched({ ending: "stopped" }))).toMatchObject({
-      text: "Stopped by you",
-      ending: null,
-    });
-    expect(summarizeActivity([], watched({ ending: "interrupted" }))?.text).toBe("Didn't finish");
+  it("leaves out a time it can't tell because a step wasn't watched", () => {
+    const calls = [
+      call("exec", {}, { startedAt: 1_000, endedAt: 9_000 }),
+      call("exec", {}, { startedAt: 2_000 }),
+    ];
+    expect(segmentDuration(calls)).toBeNull();
   });
 
-  it("has nothing to show for a turn without steps that ended on its own", () => {
-    expect(summarizeActivity([], watched())).toBeNull();
-    expect(summarizeActivity([], undefined)).toBeNull();
+  it("says the page missed a segment that holds no steps", () => {
+    expect(summarizeSegment([], true)?.text).toBe("Worked before this page connected");
+    expect(summarizeSegment([], false)).toBeNull();
+  });
+});
+
+describe("the line that closes a turn", () => {
+  it("says the user stopped it, and for how long", () => {
+    expect(turnEndingLine(watched({ ending: "stopped" }), true)).toBe("Stopped by you · 14s");
+    expect(turnEndingLine(watched({ ending: "stopped" }), false)).toBe("Stopped by you · 14s");
+  });
+
+  it("says the agent stopped under it", () => {
+    expect(turnEndingLine(watched({ ending: "interrupted" }), false)).toBe("Didn't finish · 14s");
+  });
+
+  it("leaves out a time it can't tell, or one under a second", () => {
+    expect(turnEndingLine(watched({ ending: "stopped", startedAt: null }), true)).toBe(
+      "Stopped by you",
+    );
+    expect(turnEndingLine(watched({ ending: "stopped", endedAt: 1_400 }), true)).toBe(
+      "Stopped by you",
+    );
+  });
+
+  it("says how long a turn that did work took, when it ended on its own", () => {
+    expect(turnEndingLine(watched(), true)).toBe("Worked for 14s");
+  });
+
+  it("has nothing to say about a turn that did no work, or took under a second", () => {
+    expect(turnEndingLine(watched(), false)).toBeNull();
+    expect(turnEndingLine(watched({ endedAt: 1_900 }), true)).toBeNull();
+  });
+
+  it("has nothing to say about a turn the page didn't watch, or one still running", () => {
+    expect(turnEndingLine(undefined, true)).toBeNull();
+    expect(turnEndingLine(watched({ endedAt: null, ending: null }), true)).toBeNull();
   });
 });
 

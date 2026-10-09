@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { groupTurns, type FeedTurn } from "../feed/turns";
 import { FeedStore } from "./feed.svelte";
-import type { ServerMessage } from "./types";
+import type { ServerMessage, ToolCallState } from "./types";
 
 // The feed store's record of each turn it watched, for the activity line:
 // timing, failures, how the turn ended, and steps the page may have missed.
@@ -26,6 +26,11 @@ function liveBlock(store: FeedStore): FeedTurn | undefined {
   );
 }
 
+/** Every tool call in `block`, across its activity segments. */
+function callsOf(block: FeedTurn | undefined): ToolCallState[] {
+  return block?.parts.flatMap((part) => (part.kind === "activity" ? part.calls : [])) ?? [];
+}
+
 function blocks(store: FeedStore): FeedTurn[] {
   return groupTurns(store.feed, store.activeTurnId).filter(
     (entry): entry is FeedTurn => entry.kind === "turn",
@@ -39,13 +44,35 @@ describe("a turn the page watched", () => {
     store.handleMessage({ type: "turn_started", reply_to: "t1" });
     store.handleMessage(toolCall("c1", "read_file", "github"));
     store.handleMessage(toolResult("c1", true));
-    expect(liveBlock(store)?.calls).toMatchObject([{ status: "error", server: "github" }]);
+    expect(callsOf(liveBlock(store))).toMatchObject([{ status: "error", server: "github" }]);
 
     store.handleMessage({ type: "turn_ended", reply_to: "t1" });
     const record = store.observed.get("t1");
     expect(record?.ending).toBe("finished");
     expect(record?.endedAt).toBeGreaterThanOrEqual(record?.startedAt ?? Infinity);
-    expect(blocks(store)[0]?.calls.map((c) => c.status)).toEqual(["error"]);
+    expect(callsOf(blocks(store)[0]).map((c) => c.status)).toEqual(["error"]);
+  });
+
+  it("times each step from its call to its result, or to the end of the turn", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(10_000);
+      const store = new FeedStore();
+      store.handleMessage({ type: "turn_started", reply_to: "t1" });
+      store.handleMessage(toolCall("c1"));
+      store.handleMessage(toolCall("c2"));
+      vi.setSystemTime(12_500);
+      store.handleMessage(toolResult("c1"));
+      vi.setSystemTime(14_000);
+      store.handleMessage({ type: "turn_ended", reply_to: "t1" });
+
+      expect(callsOf(blocks(store)[0])).toMatchObject([
+        { id: "c1", startedAt: 10_000, endedAt: 12_500 },
+        { id: "c2", startedAt: 10_000, endedAt: 14_000 },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("is stopped by the user: steps still running are marked stopped", () => {
@@ -57,7 +84,7 @@ describe("a turn the page watched", () => {
 
     store.handleMessage({ type: "turn_ended", reply_to: "t1" });
     expect(store.observed.get("t1")?.ending).toBe("stopped");
-    expect(blocks(store)[0]?.calls.map((c) => c.status)).toEqual(["stopped"]);
+    expect(callsOf(blocks(store)[0]).map((c) => c.status)).toEqual(["stopped"]);
   });
 
   it("is cut off when the agent stops", () => {
@@ -73,7 +100,7 @@ describe("a turn the page watched", () => {
     const store = new FeedStore();
     store.pushUserMessage("hello");
     store.handleMessage({ type: "turn_started", reply_to: "t1" });
-    expect(liveBlock(store)).toMatchObject({ key: "turn:t1", calls: [], items: [] });
+    expect(liveBlock(store)).toMatchObject({ key: "turn:t1", parts: [] });
 
     // The same block, by key, once output arrives.
     store.handleMessage(toolCall("c1"));
@@ -110,8 +137,10 @@ describe("a turn the page joined already running", () => {
     expect(store.isProcessing).toBe(true);
     expect(store.observed.get(turnId ?? "")).toMatchObject({ startedAt: 5_000, gaps: [0] });
     const block = liveBlock(store);
-    expect(block?.calls).toHaveLength(1);
-    expect(block?.items.map((i) => i.kind)).toEqual(["assistant"]);
+    expect(callsOf(block)).toHaveLength(1);
+    expect(
+      block?.parts.map((part) => (part.kind === "message" ? part.item.kind : part.kind)),
+    ).toEqual(["assistant", "activity"]);
   });
 
   it("takes the turn's id from the first frame that names it", () => {

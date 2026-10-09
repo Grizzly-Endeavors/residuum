@@ -84,7 +84,7 @@ describe("Feed", () => {
     expect(screen.queryByText("No messages yet")).toBeNull();
   });
 
-  it("puts a turn's activity line at the head of its block, before what it said", () => {
+  it("keeps a turn's activity line where it happened, between what the agent said", () => {
     const { container } = render(Feed, {
       agent: "atlas",
       items: [
@@ -105,7 +105,11 @@ describe("Feed", () => {
       ["assistant", true],
     ]);
     const block = container.querySelector(".feed-turn");
-    expect(block?.firstElementChild).toHaveTextContent("Searched memory");
+    expect(Array.from(block?.children ?? [], (el) => el.textContent.trim())).toEqual([
+      "Checking first.",
+      "Searched memory",
+      "Here is the plan.",
+    ]);
   });
 
   it("shows a turn that has only made tool calls as its line", () => {

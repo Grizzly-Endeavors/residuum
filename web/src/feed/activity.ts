@@ -426,54 +426,75 @@ export function stepsPhrase(calls: readonly StepCall[]): string {
 }
 
 export interface ActivitySummary {
-  /** What the turn did, or how it ended when it did nothing the page saw. */
+  /** What the segment did, or that the page missed it when the segment holds no steps. */
   text: string;
-  /** How long it ran, for a turn the page watched from its start. */
+  /** How long its steps took, for steps the page watched, when that was a second or more. */
   duration: string | null;
-  /** "1 step failed", for a turn the page watched. */
+  /** "1 step failed", for steps the page watched. */
   failures: string | null;
-  /** How it ended when that wasn't on its own: "stopped by you", "didn't finish". */
-  ending: string | null;
+}
+
+/** A length of time in words, or null when it was under a second and not worth a mention. */
+export function durationWords(ms: number): string | null {
+  return ms >= 1000 ? formatElapsed(ms) : null;
+}
+
+/**
+ * How long a segment's steps took, from the first starting to the last
+ * ending, for steps the page watched. Null when any step wasn't (history
+ * records no timing), or when it came to under a second.
+ */
+export function segmentDuration(calls: readonly StepCall[]): string | null {
+  if (calls.length === 0) return null;
+  let started = Infinity;
+  let ended = -Infinity;
+  for (const call of calls) {
+    if (call.startedAt === undefined || call.endedAt === undefined) return null;
+    started = Math.min(started, call.startedAt);
+    ended = Math.max(ended, call.endedAt);
+  }
+  return durationWords(ended - started);
+}
+
+/**
+ * A segment's line, collapsed. `missed` says the page may have missed steps
+ * in it. Null when there is nothing to show: no steps, and no gap to note.
+ */
+export function summarizeSegment(
+  calls: readonly StepCall[],
+  missed: boolean,
+): ActivitySummary | null {
+  const failed = calls.filter((call) => call.status === "error").length;
+  const failures =
+    failed === 0 ? null : `${String(failed)} ${failed === 1 ? "step" : "steps"} failed`;
+  if (calls.length > 0) {
+    return { text: stepsPhrase(calls), duration: segmentDuration(calls), failures };
+  }
+  if (missed) return { text: "Worked before this page connected", duration: null, failures };
+  return null;
 }
 
 /** How a watched turn ended, when it wasn't on its own. */
 const ENDING_WORDS: Readonly<Record<TurnEnding, string | null>> = {
   finished: null,
-  stopped: "stopped by you",
-  interrupted: "didn't finish",
+  stopped: "Stopped by you",
+  interrupted: "Didn't finish",
 };
 
 /**
- * A finished turn's line, collapsed. History records neither timing nor
- * failures, so a turn the page didn't watch shows its steps alone. Null when
- * there is nothing to show: no steps, and nothing the page saw happen.
+ * The line that closes a turn the page watched to its end: how it ended and
+ * how long it took. A turn that ended on its own gets one only when it did
+ * work worth timing (`worked`: it made tool calls, and it took a second or
+ * more). History records neither timing nor endings, so a turn the page
+ * didn't watch has none.
  */
-export function summarizeActivity(
-  calls: readonly StepCall[],
-  observed: ObservedTurn | undefined,
-): ActivitySummary | null {
-  const ending = observed?.ending ? ENDING_WORDS[observed.ending] : null;
-  const failed =
-    observed === undefined ? 0 : calls.filter((call) => call.status === "error").length;
-  const failures =
-    failed === 0 ? null : `${String(failed)} ${failed === 1 ? "step" : "steps"} failed`;
-  const duration =
-    observed?.startedAt != null && observed.endedAt !== null
-      ? formatElapsed(observed.endedAt - observed.startedAt)
-      : null;
-  if (calls.length > 0) return { text: stepsPhrase(calls), duration, failures, ending };
-  if (ending !== null) {
-    return {
-      text: ending.charAt(0).toUpperCase() + ending.slice(1),
-      duration,
-      failures,
-      ending: null,
-    };
-  }
-  if (observed !== undefined && observed.gaps.length > 0) {
-    return { text: "Worked before this page connected", duration, failures, ending: null };
-  }
-  return null;
+export function turnEndingLine(observed: ObservedTurn | undefined, worked: boolean): string | null {
+  if (observed?.ending == null || observed.endedAt === null) return null;
+  const took =
+    observed.startedAt === null ? null : durationWords(observed.endedAt - observed.startedAt);
+  const ending = ENDING_WORDS[observed.ending];
+  if (ending !== null) return took === null ? ending : `${ending} · ${took}`;
+  return worked && took !== null ? `Worked for ${took}` : null;
 }
 
 /** The note shown where the page may have missed steps. */
