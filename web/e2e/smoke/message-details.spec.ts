@@ -141,15 +141,35 @@ test("Copy puts the reply's Markdown on the clipboard and says Copied", async ({
 test("a reply that has streamed in gets its time once it is whole", async ({ page, mock }) => {
   await mock.post("/api/mock/delays", { data: { scale: 4 } });
   await page.goto("/agent/atlas");
-  await send(page, "Tidy the wiki index");
   const feed = conversation(page);
+  // Recorded in the page as the reply streams, since a slow machine can see
+  // the stream end before a separate check looks at it.
+  await page.evaluate(() => {
+    const seen: boolean[] = [];
+    (window as unknown as { streamingFootInert: boolean[] }).streamingFootInert = seen;
+    new MutationObserver(() => {
+      for (const foot of document.querySelectorAll<HTMLElement>(
+        ".reply[data-streaming] .reply-foot",
+      )) {
+        seen.push(foot.inert);
+      }
+    }).observe(document.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      characterData: true,
+    });
+  });
+  await send(page, "Tidy the wiki index");
 
-  const streaming = feed.locator(".reply[data-streaming]");
-  await expect(streaming).toHaveCount(1, { timeout: 30_000 });
-  // A streaming reply's row is out of reach, so nothing in it can be focused or read.
-  await expect(streaming.locator(".reply-foot")).toHaveJSProperty("inert", true);
-
+  await expect(feed.locator(".reply[data-streaming]")).toHaveCount(1, { timeout: 30_000 });
   await expect(feed.locator(".reply[data-streaming]")).toHaveCount(0, { timeout: 30_000 });
+  // A streaming reply's row is out of reach, so nothing in it can be focused or read.
+  const inert = await page.evaluate(
+    () => (window as unknown as { streamingFootInert: boolean[] }).streamingFootInert,
+  );
+  expect(inert.length).toBeGreaterThan(0);
+  expect(inert.every(Boolean)).toBe(true);
   const finished = feed.locator(".reply").last();
   await expect(finished.locator("time")).toHaveText(/^\d{1,2}:\d{2}/);
   await expect(finished.locator(".reply-foot")).toHaveJSProperty("inert", false);

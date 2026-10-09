@@ -232,6 +232,9 @@ test("a session's transcript shows its live line too", async ({ page, isMobile, 
   if (isMobile) await expectNoAxeViolations(page, { within: "[data-overlay-host]" });
   else await expectNoAxeViolations(page);
 
-  await expect(summary(panel, /^Searched memory(?: · \d+s)?$/)).toBeVisible({ timeout: 15_000 });
+  // The turn's work before the message and after it are separate lines; the one after it is last.
+  await expect(summary(panel, /^Searched memory(?: · \d+s)?$/).last()).toBeVisible({
+    timeout: 15_000,
+  });
   await expect(panel.getByText('Understood: "Weigh safety over speed".')).toBeVisible();
 });
