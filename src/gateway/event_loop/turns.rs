@@ -1169,6 +1169,59 @@ mod tests {
         assert_no_event(&mut lifecycle).await;
     }
 
+    /// Run `outcome` through `publish_turn_outcome` and say which turn the
+    /// main conversation ended.
+    async fn main_conversation_end_of(
+        outcome: anyhow::Result<Vec<String>>,
+        output_endpoint: Option<&EndpointName>,
+    ) -> Option<String> {
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let mut main: Subscriber<MainConversationEvent> =
+            handle.subscribe(topics::MainConversation).await.unwrap();
+
+        publish_turn_outcome(
+            outcome,
+            &publisher,
+            output_endpoint,
+            "corr-5",
+            TEST_TZ,
+            &test_tracing_service(),
+            &test_config(),
+        )
+        .await;
+
+        match tokio::time::timeout(Duration::from_millis(200), main.recv()).await {
+            Ok(Ok(Some(MainConversationEvent::TurnEnded { turn_id }))) => Some(turn_id),
+            _ => None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_turn_ends_in_the_main_conversation_however_it_ended() {
+        let ep = endpoint();
+        assert_eq!(
+            main_conversation_end_of(Ok(vec!["reply".into()]), Some(&ep)).await,
+            Some("corr-5".to_string()),
+            "a reply delivered to an endpoint"
+        );
+        assert_eq!(
+            main_conversation_end_of(Ok(vec!["reply".into()]), None).await,
+            Some("corr-5".to_string()),
+            "a reply with no endpoint to go to is still a turn that ended"
+        );
+        assert_eq!(
+            main_conversation_end_of(Err(anyhow::anyhow!("boom")), Some(&ep)).await,
+            Some("corr-5".to_string()),
+            "a failed turn"
+        );
+        assert_eq!(
+            main_conversation_end_of(Err(anyhow::anyhow!("boom")), None).await,
+            Some("corr-5".to_string()),
+            "a failed turn nobody was following"
+        );
+    }
+
     #[tokio::test]
     async fn err_broadcasts_error_event_and_ends_turn() {
         let handle = crate::bus::spawn_broker();
