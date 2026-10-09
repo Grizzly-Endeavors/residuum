@@ -1,4 +1,5 @@
 import type { Locator, Page } from "@playwright/test";
+import { sendFromComposer } from "../support/composer";
 import { expect, test } from "../support/fixtures";
 import { expectScreenshot } from "../support/screenshot";
 
@@ -104,7 +105,7 @@ test.describe("chat feed", { tag: "@visual" }, () => {
     const feed = conversation(page);
     await expect(feed.getByText(GREETING)).toBeInViewport();
     await page.getByRole("combobox", { name: "Message atlas" }).fill("Check the wiki index");
-    await page.getByRole("combobox", { name: "Message atlas" }).press("Enter");
+    await sendFromComposer(page.getByRole("combobox", { name: "Message atlas" }));
     await expect(feed.getByRole("button", { name: "Read team/wiki/index.md" })).toBeVisible({
       timeout: 30_000,
     });
@@ -158,7 +159,7 @@ test.describe("composer", { tag: "@visual" }, () => {
     await expect(conversation(page).getByText(GREETING)).toBeInViewport();
     const box = page.getByRole("combobox", { name: "Message atlas" });
     await box.fill("Are you there?");
-    await box.press("Enter");
+    await sendFromComposer(box);
     await expect(
       page.getByText("Reconnecting — 1 message will send once back online."),
     ).toBeVisible();

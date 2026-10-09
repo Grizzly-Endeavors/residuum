@@ -1,6 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
+import { sendFromComposer } from "../support/composer";
 import { expectFileOpen } from "../support/lazy";
 
 /**
@@ -23,7 +24,7 @@ function composer(page: Page): Locator {
 
 async function send(page: Page, text: string): Promise<void> {
   await composer(page).fill(text);
-  await composer(page).press("Enter");
+  await sendFromComposer(composer(page));
 }
 
 async function scrollToTop(feed: Locator): Promise<void> {
@@ -80,7 +81,10 @@ test("older episodes load as the reader nears the top, and what they read stays 
   await expect(feed.getByText("Loading earlier messages…")).toHaveCount(0);
 });
 
-test("Jump to latest names where the reader is, and takes them back", async ({ page }) => {
+test("Jump to latest sits above the composer, says when a reply landed below, and takes the reader back", async ({
+  page,
+  mock,
+}) => {
   await page.goto("/agent/atlas");
   const feed = conversation(page);
   const greeting = feed.getByText(GREETING);
@@ -90,11 +94,29 @@ test("Jump to latest names where the reader is, and takes them back", async ({ p
 
   await scrollToTop(feed);
   await expect(jump).toBeVisible();
-  await expect(jump).toHaveAccessibleDescription(/^ep-00\d · \d{4}-\d{2}-\d{2}$/);
+  // Bottom centre of the conversation, just above the composer.
+  const pill = await jump.boundingBox();
+  const area = await feed.boundingBox();
+  const field = await page.locator("form.composer").boundingBox();
+  if (!pill || !area || !field)
+    throw new Error("the pill, conversation or composer isn't laid out");
+  expect(pill.y + pill.height).toBeLessThanOrEqual(field.y);
+  expect(field.y - (pill.y + pill.height)).toBeLessThan(40);
+  expect(Math.abs(pill.x + pill.width / 2 - (area.x + area.width / 2))).toBeLessThan(20);
+  await expect(jump).not.toHaveAccessibleDescription(/ep-00/);
   await expectNoAxeViolations(page);
 
-  await jump.click();
-  await expect(greeting).toBeInViewport();
+  // A reply lands below them: the pill says so.
+  await mock.post("/api/mock/teammate-message?agent=atlas");
+  const fresh = page.getByRole("button", { name: "New reply, jump to latest" });
+  await expect(fresh).toBeVisible();
+  await expect(fresh).toHaveText("New reply");
+  await expect(greeting).not.toBeInViewport();
+  await expectNoAxeViolations(page);
+
+  await fresh.click();
+  await expect(feed.getByText("scout asked me to check the wiki index. On it.")).toBeInViewport();
+  await expect(fresh).toHaveCount(0);
   await expect(jump).toHaveCount(0);
 
   // Sending from further up brings the reader down to their own message.

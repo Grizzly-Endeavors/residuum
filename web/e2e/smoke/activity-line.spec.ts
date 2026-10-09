@@ -1,5 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
+import { sendFromComposer } from "../support/composer";
 import { expect, test } from "../support/fixtures";
 
 /**
@@ -22,7 +23,7 @@ function composer(page: Page): Locator {
 
 async function send(page: Page, text: string): Promise<void> {
   await composer(page).fill(text);
-  await composer(page).press("Enter");
+  await sendFromComposer(composer(page));
 }
 
 /** The summary of a finished turn's line: a button that opens to its steps. */

@@ -1,3 +1,4 @@
+import { sendFromComposer } from "../support/composer";
 import { expect, test } from "../support/fixtures";
 
 test("atlas answers a message sent from its chat", async ({ page }) => {
@@ -11,7 +12,7 @@ test("atlas answers a message sent from its chat", async ({ page }) => {
 
   const composer = page.getByRole("combobox", { name: "Message atlas" });
   await composer.fill("What does the observer keep?");
-  await composer.press("Enter");
+  await sendFromComposer(composer);
 
   await expect(page.getByText("What does the observer keep?")).toBeVisible();
   // The mock's first canned reply; a reset before each test makes it the first.
