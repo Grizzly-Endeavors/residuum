@@ -343,9 +343,13 @@ mod tests {
         (renamed, waited, root)
     }
 
+    /// Windows answers a rename onto a directory that is mid-deletion with
+    /// `ERROR_ACCESS_DENIED` rather than "not empty", so the moment the
+    /// releaser removes the occupant counts as still occupied.
     fn occupied(error: &io::Error) -> bool {
         error.kind() == io::ErrorKind::DirectoryNotEmpty
             || error.kind() == io::ErrorKind::AlreadyExists
+            || is_held_open(error)
     }
 
     fn never_held(_error: &io::Error) -> bool {

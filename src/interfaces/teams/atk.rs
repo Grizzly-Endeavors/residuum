@@ -501,14 +501,6 @@ pub struct ScaffoldAtkResult {
     pub endpoint: String,
 }
 
-/// Scaffold a Microsoft 365 Agents Toolkit project for an agent.
-///
-/// Copies templates from `<team>/skills/teams-setup/templates/` falling back to embedded templates,
-/// generates `.env.residuum` with properly escaped values, validates PNG icons, and verifies
-/// that existing files are not overwritten unless `force` is set.
-///
-/// # Errors
-///
 async fn resolve_template_text(
     team_path: &Path,
     embedded: &str,
@@ -614,13 +606,6 @@ fn build_scaffold_env(options: &AtkScaffoldOptions) -> Result<String, FatalError
     Ok(format!("{}\n", lines.join("\n")))
 }
 
-/// Scaffold a Microsoft 365 Agents Toolkit project for an agent.
-///
-/// Copies templates from `<team>/skills/teams-setup/templates/` falling back to embedded templates,
-/// generates `.env.residuum` with properly escaped values, validates PNG icons, and verifies
-/// that existing files are not overwritten unless `force` is set.
-///
-/// # Errors
 fn check_overwrite_safety(
     project_dir: &Path,
     target_files: &[PathBuf],
@@ -991,6 +976,60 @@ mod tests {
     }
 
     use super::*;
+
+    /// Schema errors for a Teams template file, with `${{...}}` placeholders filled the way the
+    /// toolkit fills them before validating.
+    fn teams_template_schema_errors(file: &str, content: &str) -> Vec<String> {
+        let filled = content
+            .replace("${{TEAMS_APP_ID}}", "0149c02f-e46b-41b3-81be-41b79f31d5b6")
+            .replace("${{BOT_ID}}", "b74523f1-6156-4e38-b4d0-f72d908a887d")
+            .replace("${{DEVELOPER_URL}}", "https://example.com")
+            .replace("${{PRIVACY_URL}}", "https://example.com/privacy")
+            .replace("${{TERMS_URL}}", "https://example.com/terms");
+        let (schema, doc): (serde_json::Value, serde_json::Value) = match file {
+            "m365agents.yml" => (
+                serde_json::from_str(include_str!(
+                    "../../../tests/fixtures/m365agents-v1.13.yaml.schema.json"
+                ))
+                .unwrap(),
+                serde_yaml_ng::from_str(content).unwrap(),
+            ),
+            "appPackage/manifest.json" => (
+                serde_json::from_str(include_str!(
+                    "../../../tests/fixtures/teams-manifest-v1.17.schema.json"
+                ))
+                .unwrap(),
+                serde_json::from_str(&filled).unwrap(),
+            ),
+            other => panic!("no schema for {other}"),
+        };
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        validator
+            .iter_errors(&doc)
+            .map(|e| format!("{}: {e}", e.instance_path()))
+            .collect()
+    }
+
+    /// The bundled template with LF line endings, which a Windows checkout turns into CRLF.
+    fn bundled_teams_template(file: &str) -> String {
+        match file {
+            "m365agents.yml" => TEAMS_SETUP_M365AGENTS_YML,
+            "appPackage/manifest.json" => TEAMS_SETUP_MANIFEST_JSON,
+            other => panic!("no bundled template for {other}"),
+        }
+        .replace("\r\n", "\n")
+    }
+
+    #[test]
+    fn the_bundled_teams_templates_match_the_toolkit_schemas() {
+        for file in ["m365agents.yml", "appPackage/manifest.json"] {
+            assert_eq!(
+                teams_template_schema_errors(file, &bundled_teams_template(file)),
+                Vec::<String>::new(),
+                "{file}"
+            );
+        }
+    }
 
     // Verified fixtures generated with pinned @microsoft/teamsfx-core@3.1.3:
     // Plaintext: "TestBotPassword123!"
