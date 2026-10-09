@@ -44,7 +44,7 @@ test.describe("chat feed", { tag: "@visual" }, () => {
       await feed.evaluate((el) => {
         el.scrollTop = 0;
       });
-      await expect(feed.getByRole("separator", { name: /^ep-001 · / })).toBeAttached({
+      await expect(feed.getByRole("separator", { name: /, ep-001$/ })).toBeAttached({
         timeout: 1000,
       });
     }).toPass();

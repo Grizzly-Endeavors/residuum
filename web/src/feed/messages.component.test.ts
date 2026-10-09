@@ -38,6 +38,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -153,10 +154,25 @@ describe("a message from a session or a teammate", () => {
 });
 
 describe("dividers and markers", () => {
-  it("labels a divider for the Jump to latest pill", () => {
-    show({ id: 1, kind: "divider", variant: "episode", label: "ep-003 · 2026-03-11" });
-    const divider = screen.getByRole("separator", { name: "ep-003 · 2026-03-11" });
-    expect(divider).toHaveAttribute("data-divider-label", "ep-003 · 2026-03-11");
+  it("names a day from today, and an episode by its day with the id kept quiet", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 9, 8, 12, 0));
+    show({
+      id: 1,
+      kind: "divider",
+      variant: "episode",
+      label: "",
+      date: "2026-10-07",
+      episode: "ep-003",
+    });
+    const divider = screen.getByRole("separator", { name: "Yesterday, ep-003" });
+    expect(divider).toHaveAttribute("data-divider-label", "Yesterday, ep-003");
+    expect(divider).toHaveTextContent(/^Yesterday\s*ep-003$/);
+  });
+
+  it("shows a divider that stands for no day as it is", () => {
+    show({ id: 1, kind: "divider", variant: "day", label: "New run" });
+    expect(screen.getByRole("separator", { name: "New run" })).toHaveTextContent("New run");
   });
 
   it("explains the compressed history in plain words, naming the agent", () => {

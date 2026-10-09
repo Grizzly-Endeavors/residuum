@@ -137,6 +137,38 @@ describe("FeedStore reloadHistory end-of-turn decision", () => {
   });
 });
 
+describe("FeedStore dividers", () => {
+  it("names the day an episode ends on, and keeps its id apart", () => {
+    const store = new FeedStore();
+    store.prependEpisode({
+      kind: "episode",
+      episode_id: "ep-002",
+      date: "2026-03-13",
+      messages: [historyMsg("user", "Hi"), historyMsg("assistant", "Hello.")],
+      next_cursor: null,
+    });
+    expect(store.feed[0]).toMatchObject({
+      kind: "divider",
+      variant: "episode",
+      date: "2026-03-13",
+      episode: "ep-002",
+    });
+  });
+
+  it("puts a day divider where history crosses into another day", () => {
+    const store = new FeedStore();
+    store.loadHistory(
+      segment([
+        { ...historyMsg("user", "Late"), timestamp: "2026-03-13T23:50" },
+        { ...historyMsg("assistant", "Still up?"), timestamp: "2026-03-13T23:51" },
+        { ...historyMsg("user", "Morning"), timestamp: "2026-03-14T08:00" },
+      ]),
+    );
+    const dividers = store.feed.filter((item) => item.kind === "divider");
+    expect(dividers).toMatchObject([{ variant: "day", date: "2026-03-14" }]);
+  });
+});
+
 describe("FeedStore with a turn id history already holds", () => {
   // Every page load once counted its message ids from web-1 again, and the
   // agent kept them as turn ids, so older history holds turns under ids a

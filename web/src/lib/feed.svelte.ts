@@ -1,6 +1,7 @@
 // ── Feed store (Svelte 5 runes) ──────────────────────────────────────
 
 import { SvelteMap } from "svelte/reactivity";
+import { dayLabel } from "./day-label";
 import { nextFeedId } from "./feed-id";
 import {
   appendToolCall,
@@ -89,20 +90,20 @@ function recordedMessages(messages: RecentMessage[], turnId: string): number {
   return messages.filter((msg) => msg.turn_id === turnId).length;
 }
 
-const DAY_DIVIDER_FORMATTER = new Intl.DateTimeFormat(undefined, {
-  month: "long",
-  day: "numeric",
-});
-
 function dayKey(iso: string): string {
   // Timestamps are either "YYYY-MM-DD" or "YYYY-MM-DDTHH:MM". Slice to date.
   return iso.slice(0, 10);
 }
 
-function dayLabel(iso: string): string {
-  const date = new Date(iso.length === 10 ? `${iso}T00:00` : iso);
-  if (Number.isNaN(date.getTime())) return iso.slice(0, 10);
-  return DAY_DIVIDER_FORMATTER.format(date);
+/** A divider naming the day `iso` falls on. */
+function dayDivider(iso: string): DividerFeedItem {
+  return {
+    id: nextFeedId(),
+    kind: "divider",
+    variant: "day",
+    label: dayLabel(iso),
+    date: dayKey(iso),
+  };
 }
 
 /** A day-divider callback with its own memory of the last day seen. */
@@ -112,9 +113,7 @@ function dayDividerTracker(): (iso: string) => DividerFeedItem | null {
     const key = dayKey(iso);
     const crossed = lastKey !== null && key !== lastKey;
     lastKey = key;
-    return crossed
-      ? { id: nextFeedId(), kind: "divider", variant: "day", label: dayLabel(iso) }
-      : null;
+    return crossed ? dayDivider(iso) : null;
   };
 }
 
@@ -505,7 +504,9 @@ export class FeedStore {
         id: nextFeedId(),
         kind: "divider",
         variant: "episode",
-        label: `${segment.episode_id} · ${segment.date}`,
+        label: dayLabel(segment.date),
+        date: segment.date,
+        episode: segment.episode_id,
       } satisfies DividerFeedItem,
       ...conversion.items,
     ];
@@ -806,9 +807,7 @@ export class FeedStore {
     const key = dayKey(iso);
     const crossed = this.lastLiveDayKey !== null && key !== this.lastLiveDayKey;
     this.lastLiveDayKey = key;
-    return crossed
-      ? { id: nextFeedId(), kind: "divider", variant: "day", label: dayLabel(iso) }
-      : null;
+    return crossed ? dayDivider(iso) : null;
   }
 
   private maybePushDayDivider(iso: string): void {

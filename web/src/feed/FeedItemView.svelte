@@ -23,7 +23,7 @@
 {:else if item.kind === "agent-message"}
   <AgentMessageCard {item} {agent} />
 {:else if item.kind === "divider"}
-  <FeedDivider label={item.label} />
+  <FeedDivider label={item.label} date={item.date} episode={item.episode} />
 {:else if item.kind === "compressed-marker"}
   <CompressedMarker {agent} />
 {:else if item.kind === "file-attachment"}

@@ -568,8 +568,13 @@ export interface AssistantFeedItem extends FeedItemBase {
 
 export interface DividerFeedItem extends FeedItemBase {
   kind: "divider";
+  /** The divider's text as it read when made; a divider with a `date` is named from it again as days pass. */
   label: string;
   variant?: "episode" | "day";
+  /** The day the divider stands for ("YYYY-MM-DD", or a timestamp on it), named relative to today. */
+  date?: string;
+  /** The episode that follows the divider, for an episode divider. */
+  episode?: string;
 }
 
 export interface CompressedMarkerFeedItem extends FeedItemBase {

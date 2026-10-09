@@ -10,7 +10,7 @@ function describeEntries(entries: FeedEntry[]): string[] {
     if (item.kind === "user" || item.kind === "assistant" || item.kind === "agent-message") {
       return `${item.kind}:${item.content}`;
     }
-    return item.kind === "divider" ? `divider:${item.label}` : item.kind;
+    return item.kind === "divider" ? `divider:${item.episode ?? item.label}` : item.kind;
   };
   return entries.map((entry) =>
     entry.kind === "single"
@@ -233,7 +233,7 @@ describe("turns in episodes", () => {
       next_cursor: null,
     });
     expect(describeEntries(groupTurns(store.feed, null))).toEqual([
-      "divider:ep-001 · 2026-03-13",
+      "divider:ep-001",
       "user:Hi",
       "turn[](assistant:Hello.)",
       "compressed-marker",
