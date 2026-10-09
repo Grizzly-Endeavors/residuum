@@ -160,6 +160,7 @@ mod tests {
                 signature: Some("sig-opaque-token".to_string()),
                 redacted: Some("encrypted-blob".to_string()),
                 part: None,
+                origin: None,
             }]);
 
         assert_eq!(

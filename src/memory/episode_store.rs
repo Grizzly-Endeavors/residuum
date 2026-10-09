@@ -1239,6 +1239,7 @@ mod tests {
                     signature: Some("sig-opaque-token".to_string()),
                     redacted: Some("encrypted-blob".to_string()),
                     part: None,
+                    origin: None,
                 }]),
         ];
         write_episode_transcript(dir.path(), &episode, &messages)
@@ -1272,6 +1273,7 @@ mod tests {
                     signature: Some("sig-opaque-token".to_string()),
                     redacted: Some("encrypted-blob".to_string()),
                     part: None,
+                    origin: None,
                 }]),
         ];
         write_episode_transcript(dir.path(), &episode, &messages)

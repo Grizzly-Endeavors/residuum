@@ -16,6 +16,11 @@ use crate::bus::{NoticeEvent, NotifyName, Publisher, SYSTEM_CHANNEL, topics};
 /// A provider that tries multiple underlying providers in order.
 ///
 /// On error (after retries exhaust within each provider), falls back to the next.
+///
+/// The provider that answers records itself as the origin of the reasoning in
+/// its response (see [`InferenceResponse::produced_at`]), and the response
+/// passes through here untouched, so the reasoning in a failed-over reply is
+/// attributed to the fallback that wrote it, never to the primary.
 pub(crate) struct FailoverProvider {
     providers: Vec<Box<dyn InferenceProvider>>,
     /// When set, a user notice is published on a fallback/recovery
@@ -890,5 +895,181 @@ mod tests {
             ],
             "one restart, from whichever layer saw the failure first"
         );
+    }
+
+    /// A chain of real Anthropic and Gemini clients, each on its own scripted
+    /// server, to follow reasoning across a failover.
+    mod reasoning_across_providers {
+        use super::*;
+        use crate::inference::providers::anthropic::AnthropicClient;
+        use crate::inference::providers::gemini::GeminiClient;
+        use crate::inference::retry::RetryConfig;
+        use crate::inference::test_support::{ScriptedServer, json_response};
+        use crate::inference::{
+            HttpClientConfig, ProviderApi, SharedHttpClient, ThinkingConfig, ThinkingLevel,
+            ThinkingOrigin,
+        };
+
+        const CLAUDE: &str = "claude-test";
+        const GEMINI: &str = "gemini-3-pro-preview";
+
+        fn chain(anthropic: &ScriptedServer, gemini: &ScriptedServer) -> FailoverProvider {
+            let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(5)).unwrap();
+            FailoverProvider::new(vec![
+                Box::new(AnthropicClient::new(
+                    http.clone(),
+                    anthropic.uri(),
+                    "key",
+                    CLAUDE,
+                    4096,
+                    RetryConfig::no_retry(),
+                )),
+                Box::new(GeminiClient::new(
+                    http,
+                    gemini.uri(),
+                    "key",
+                    GEMINI,
+                    4096,
+                    RetryConfig::no_retry(),
+                )),
+            ])
+        }
+
+        fn thinking_on() -> CompletionOptions {
+            CompletionOptions {
+                max_tokens: Some(4096),
+                thinking: Some(ThinkingConfig::Level(ThinkingLevel::Medium)),
+                ..CompletionOptions::default()
+            }
+        }
+
+        fn claude_tool_call() -> String {
+            r#"{"content":[
+                {"type":"thinking","thinking":"plan","signature":"ANTH-SIG"},
+                {"type":"tool_use","id":"toolu_1","name":"exec","input":{}}
+            ],"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}}"#
+                .to_string()
+        }
+
+        fn claude_answer() -> String {
+            r#"{"content":[{"type":"text","text":"done"}],"stop_reason":"end_turn",
+                "usage":{"input_tokens":1,"output_tokens":1}}"#
+                .to_string()
+        }
+
+        fn gemini_tool_call() -> String {
+            r#"{"candidates":[{"content":{"role":"model","parts":[
+                {"functionCall":{"name":"exec","args":{}},"thoughtSignature":"GEM-SIG"}
+            ]},"finishReason":"STOP"}]}"#
+                .to_string()
+        }
+
+        fn assistant_turn(response: &InferenceResponse) -> Message {
+            Message::assistant(response.content.clone(), Some(response.tool_calls.clone()))
+                .with_thinking(response.thinking.clone())
+        }
+
+        fn origin_of(response: &InferenceResponse) -> Vec<Option<ThinkingOrigin>> {
+            response
+                .thinking
+                .iter()
+                .map(|block| block.origin.clone())
+                .collect()
+        }
+
+        #[tokio::test]
+        async fn blocks_record_the_provider_that_actually_answered() {
+            let anthropic =
+                ScriptedServer::start(vec![json_response(200, &claude_tool_call())]).await;
+            let gemini = ScriptedServer::start(vec![json_response(200, &gemini_tool_call())]).await;
+            let ask = [Message::user("go")];
+
+            let primary = chain(&anthropic, &gemini)
+                .complete(&ask, &[], &thinking_on())
+                .await
+                .unwrap();
+            assert_eq!(
+                origin_of(&primary),
+                [Some(ThinkingOrigin::new(ProviderApi::Anthropic, CLAUDE))],
+                "the primary answered, so its blocks are Anthropic's"
+            );
+
+            let failing_anthropic = ScriptedServer::start(vec![json_response(
+                500,
+                r#"{"type":"error","error":{"type":"api_error","message":"down"}}"#,
+            )])
+            .await;
+            let fallback = chain(&failing_anthropic, &gemini)
+                .complete(&ask, &[], &thinking_on())
+                .await
+                .unwrap();
+            assert_eq!(
+                origin_of(&fallback),
+                [Some(ThinkingOrigin::new(ProviderApi::Gemini, GEMINI))],
+                "the primary failed and the fallback answered, so its blocks are Gemini's"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_tool_exchange_that_fails_over_and_back_replays_only_each_providers_own_reasoning()
+         {
+            let anthropic = ScriptedServer::start(vec![
+                json_response(200, &claude_tool_call()),
+                json_response(
+                    500,
+                    r#"{"type":"error","error":{"type":"api_error","message":"down"}}"#,
+                ),
+                json_response(200, &claude_answer()),
+            ])
+            .await;
+            let gemini = ScriptedServer::start(vec![json_response(200, &gemini_tool_call())]).await;
+            let provider = chain(&anthropic, &gemini);
+            let options = thinking_on();
+
+            // Anthropic starts a tool-use exchange.
+            let mut messages = vec![Message::user("go")];
+            let first = provider.complete(&messages, &[], &options).await.unwrap();
+            let first_call = first.tool_calls.first().unwrap().id.clone();
+            messages.push(assistant_turn(&first));
+            messages.push(Message::tool("one", first_call));
+
+            // Anthropic fails; Gemini carries the exchange on.
+            let second = provider.complete(&messages, &[], &options).await.unwrap();
+            let second_call = second.tool_calls.first().unwrap().id.clone();
+            messages.push(assistant_turn(&second));
+            messages.push(Message::tool("two", second_call));
+
+            // Anthropic is back for the exchange's last step.
+            let last = provider.complete(&messages, &[], &options).await.unwrap();
+            assert_eq!(last.content, "done");
+
+            let to_gemini = gemini.requests().first().unwrap().body.clone();
+            assert!(
+                !to_gemini.contains("ANTH-SIG"),
+                "Anthropic's signature never goes to Gemini: {to_gemini}"
+            );
+            assert!(
+                to_gemini.contains("skip_thought_signature_validator"),
+                "Gemini 3 gets the documented stand-in for the call it did not make: {to_gemini}"
+            );
+
+            let sent_to_claude: Vec<String> = anthropic
+                .requests()
+                .into_iter()
+                .map(|request| request.body)
+                .collect();
+            assert_eq!(sent_to_claude.len(), 3);
+            let [_, retried, returned] = sent_to_claude.as_slice() else {
+                panic!("three requests reached Anthropic: {sent_to_claude:?}");
+            };
+            assert!(
+                retried.contains("ANTH-SIG"),
+                "Anthropic's own signature goes back to it: {retried}"
+            );
+            assert!(
+                returned.contains("ANTH-SIG") && !returned.contains("GEM-SIG"),
+                "back on Anthropic, its own signature is replayed and Gemini's is not: {returned}"
+            );
+        }
     }
 }

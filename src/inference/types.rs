@@ -69,10 +69,16 @@ pub struct ThinkingBlock {
     /// Which part of the response the provider attached `signature` to, for
     /// a provider that signs individual parts (Gemini: the id of the tool
     /// call it belongs to, or `text` for the response's text). Replayed so
-    /// each signature goes back on the part it came with. A block that names
-    /// a part is that provider's own, and no other provider replays it.
+    /// each signature goes back on the part it came with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part: Option<String>,
+    /// The provider and model that produced the block, recorded by the
+    /// provider that answered. Signatures and encrypted blocks mean something
+    /// only to the provider (and model) that issued them, so a provider
+    /// replays only the blocks it produced itself. A block saved without an
+    /// origin has none to match and is never replayed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<ThinkingOrigin>,
 }
 
 impl ThinkingBlock {
@@ -84,6 +90,94 @@ impl ThinkingBlock {
             ..Self::default()
         }
     }
+
+    /// This block, recorded as produced at `origin`.
+    #[must_use]
+    pub fn from_origin(mut self, origin: &ThinkingOrigin) -> Self {
+        self.origin = Some(origin.clone());
+        self
+    }
+}
+
+/// The kind of provider API a model's reply came from. Providers that speak
+/// the same wire protocol are one kind: a Fireworks host and any other
+/// OpenAI-compatible server are both [`OpenAiCompatible`](Self::OpenAiCompatible).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderApi {
+    /// The Anthropic Messages API.
+    Anthropic,
+    /// The Google Gemini `generateContent` API.
+    Gemini,
+    /// An OpenAI-compatible chat completions API, including `OpenAI` itself.
+    #[serde(rename = "openai_compatible")]
+    OpenAiCompatible,
+    /// The Ollama chat API.
+    Ollama,
+}
+
+/// Who produced a piece of reasoning: the provider API and the model behind
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThinkingOrigin {
+    /// The provider API that returned the reasoning.
+    pub provider: ProviderApi,
+    /// The model that wrote it, as the provider names it.
+    pub model: String,
+}
+
+impl ThinkingOrigin {
+    /// The origin of reasoning that `model` returned through `provider`.
+    #[must_use]
+    pub fn new(provider: ProviderApi, model: impl Into<String>) -> Self {
+        Self {
+            provider,
+            model: model.into(),
+        }
+    }
+}
+
+/// How closely a provider ties the reasoning it replays to whoever produced
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReplayScope {
+    /// Any model of the provider's own API: the reasoning goes back as plain
+    /// text, which means the same whichever model wrote it.
+    SameProvider,
+    /// Only the model that wrote it: the reasoning carries a signature or
+    /// encrypted data that the issuing model binds to itself.
+    SameModel,
+}
+
+/// The blocks of `thinking` that the provider at `reader` may replay: those
+/// whose origin matches `reader` within `scope`. Every other block (another
+/// provider's, another model's, or one saved with no origin) is left out, with
+/// a debug line saying how many, so a provider never sends a request the API
+/// refuses over reasoning it did not produce.
+pub(crate) fn blocks_produced_at<'a>(
+    thinking: &'a [ThinkingBlock],
+    reader: &ThinkingOrigin,
+    scope: ReplayScope,
+) -> Vec<&'a ThinkingBlock> {
+    let own: Vec<&ThinkingBlock> = thinking
+        .iter()
+        .filter(|block| {
+            block.origin.as_ref().is_some_and(|origin| {
+                origin.provider == reader.provider
+                    && (scope == ReplayScope::SameProvider || origin.model == reader.model)
+            })
+        })
+        .collect();
+    let skipped = thinking.len() - own.len();
+    if skipped > 0 {
+        tracing::debug!(
+            skipped,
+            provider = ?reader.provider,
+            model = %reader.model,
+            "left out thinking blocks this provider and model did not produce"
+        );
+    }
+    own
 }
 
 /// Index of the first message of the tool-use exchange the conversation is
@@ -435,6 +529,18 @@ impl InferenceResponse {
             thinking: Vec::new(),
             stop_reason: None,
         }
+    }
+
+    /// This response with every thinking block recorded as produced at
+    /// `origin`. The provider that answered calls this on what it returns,
+    /// so a chain of providers (failover) records the one that actually
+    /// answered.
+    #[must_use]
+    pub(crate) fn produced_at(mut self, origin: &ThinkingOrigin) -> Self {
+        for block in &mut self.thinking {
+            block.origin = Some(origin.clone());
+        }
+        self
     }
 
     /// Whether this response represents a complete turn (text, no tool calls).
@@ -816,12 +922,14 @@ mod tests {
                 signature: Some("sig".to_string()),
                 redacted: None,
                 part: None,
+                origin: None,
             },
             ThinkingBlock {
                 text: String::new(),
                 signature: None,
                 redacted: Some("encrypted".to_string()),
                 part: None,
+                origin: None,
             },
         ]);
 
@@ -850,5 +958,109 @@ mod tests {
         );
         let back: Message = serde_json::from_value(json).unwrap();
         assert_eq!(back.thinking, reasoned.thinking);
+    }
+
+    #[test]
+    fn an_origin_round_trips_and_names_the_provider_in_plain_words() {
+        let block = ThinkingBlock {
+            signature: Some("sig".to_string()),
+            ..ThinkingBlock::default()
+        }
+        .from_origin(&ThinkingOrigin::new(
+            ProviderApi::OpenAiCompatible,
+            "gpt-test",
+        ));
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "signature": "sig",
+                "origin": {"provider": "openai_compatible", "model": "gpt-test"}
+            })
+        );
+        let back: ThinkingBlock = serde_json::from_value(json).unwrap();
+        assert_eq!(back, block);
+    }
+
+    #[test]
+    fn blocks_saved_before_origins_were_recorded_still_load_without_one() {
+        let saved = r#"{"role":"assistant","content":"hi","thinking":[
+            {"text":"plan","signature":"sig-old"},
+            {"redacted":"ENC"},
+            {"signature":"sig-g","part":"call_0"}
+        ]}"#;
+        let message: Message = serde_json::from_str(saved).unwrap();
+        assert_eq!(message.thinking.len(), 3, "every saved block loads");
+        assert!(
+            message.thinking.iter().all(|block| block.origin.is_none()),
+            "none of them claims an origin: {:?}",
+            message.thinking
+        );
+        let again = serde_json::to_value(&message).unwrap();
+        assert!(
+            !again.to_string().contains("origin"),
+            "and saving them back adds no origin: {again}"
+        );
+    }
+
+    fn block_from(provider: ProviderApi, model: &str, text: &str) -> ThinkingBlock {
+        ThinkingBlock::text(text).from_origin(&ThinkingOrigin::new(provider, model))
+    }
+
+    fn texts<'a>(blocks: &[&'a ThinkingBlock]) -> Vec<&'a str> {
+        blocks.iter().map(|block| block.text.as_str()).collect()
+    }
+
+    #[test]
+    fn a_reader_replays_only_blocks_its_own_provider_produced() {
+        let thinking = vec![
+            block_from(ProviderApi::Anthropic, "claude-a", "anthropic"),
+            block_from(ProviderApi::Gemini, "gemini-a", "gemini"),
+            block_from(ProviderApi::OpenAiCompatible, "gpt-a", "openai"),
+            block_from(ProviderApi::Ollama, "llama-a", "ollama"),
+            ThinkingBlock::text("no origin"),
+        ];
+        for (provider, model, expected) in [
+            (ProviderApi::Anthropic, "claude-a", "anthropic"),
+            (ProviderApi::Gemini, "gemini-a", "gemini"),
+            (ProviderApi::OpenAiCompatible, "gpt-a", "openai"),
+            (ProviderApi::Ollama, "llama-a", "ollama"),
+        ] {
+            let reader = ThinkingOrigin::new(provider, model);
+            for scope in [ReplayScope::SameProvider, ReplayScope::SameModel] {
+                assert_eq!(
+                    texts(&blocks_produced_at(&thinking, &reader, scope)),
+                    [expected],
+                    "{provider:?} reading at {scope:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_scope_decides_whether_another_model_of_the_same_provider_counts() {
+        let thinking = vec![
+            block_from(ProviderApi::Anthropic, "claude-a", "model a"),
+            block_from(ProviderApi::Anthropic, "claude-b", "model b"),
+        ];
+        let reader = ThinkingOrigin::new(ProviderApi::Anthropic, "claude-b");
+        assert_eq!(
+            texts(&blocks_produced_at(
+                &thinking,
+                &reader,
+                ReplayScope::SameModel
+            )),
+            ["model b"],
+            "a signature binds to its model"
+        );
+        assert_eq!(
+            texts(&blocks_produced_at(
+                &thinking,
+                &reader,
+                ReplayScope::SameProvider
+            )),
+            ["model a", "model b"],
+            "plain text means the same from any model of the provider"
+        );
     }
 }

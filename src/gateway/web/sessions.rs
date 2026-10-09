@@ -882,6 +882,7 @@ mod tests {
                             signature: Some("sig-secret".to_string()),
                             redacted: None,
                             part: None,
+                            origin: None,
                         },
                     ]),
                 ],
