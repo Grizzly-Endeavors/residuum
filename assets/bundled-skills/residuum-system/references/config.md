@@ -9,6 +9,13 @@ Your own config lives in `config/config.toml` and `config/providers.toml` inside
 - The hub's `hub/config.toml` — the timezone, `[gateway]`, `[cloud]`, the A2A listener (`[a2a]` `enabled`/`port`/`public_url`), `[tracing]`, `[push]` `contact` (the `mailto:` or `https:` contact Web Push services see), and `[background]` `max_concurrent`/`hop_soft_limit`/`hop_hard_limit`. It sits outside your workspace at `~/.residuum/hub/config.toml`; edit it by that absolute path, the same way, and only when the user asks — these settings apply to the whole hub, not just you. The reload outcome arrives as a system note for it too.
 - Workspace `config/*.json`/`*.toml` (`mcp.json`, `channels.toml`, `agent-card.json`, `a2a.json`) — per-system files, not global settings. Read the matching reference (mcp.md, notifications.md, a2a.md) before editing one of these; they have their own formats.
 
+## Model settings in config.toml
+
+- `timeout_secs` (default 120) — how long a model call may take. A reply that streams in fails only if nothing at all arrives for this long, so it never cuts off a long answer for its length; a stall reads "the model stopped responding for Ns".
+- `[retry]` — retries apply to streamed replies too. A stream that fails partway (an overloaded provider, a dropped connection, a reply that ends early) is retried, and what had already streamed is discarded first so the retry never appends to it. A fallback provider does the same when it takes over.
+- `thinking` — `off`, `on`, `low`, `medium` or `high`; a model role's entry in `providers.toml` can override it (`observer = { model = "...", thinking = "off" }`). Anthropic gets adaptive thinking (`low`/`medium`/`high` set its effort), and a model that only takes a manual token budget is switched to one automatically (a quarter, half or three quarters of `max_tokens`, at least 1024 and below `max_tokens`; with `max_tokens` of 1024 or lower thinking is left off). OpenAI-compatible hosts get `reasoning_effort`, Gemini a thinking budget plus thought summaries, Ollama `think`. Reasoning comes back as a summary where the provider offers one; OpenAI's own Chat Completions API returns none.
+- Reasoning from the tool-use exchange in progress is sent back with its tool calls where a provider needs it (Anthropic's signed blocks, Gemini's thought signatures, `reasoning_content` for DeepSeek-style hosts), and earlier turns' reasoning is not.
+
 ## How to edit
 
 1. Use `edit_file` with a targeted `old_string`/`new_string` that changes only the lines that need to change — both files carry comments and commented-out examples the user relies on, and a full `write_file` rewrite drops them.
