@@ -80,10 +80,15 @@ Two places hear live events.
 
 | `type` | Fields | Fires when |
 |--------|--------|------------|
-| `turn_started` / `turn_ended` | `reply_to` | The agent starts or finishes a turn in its main chat. |
-| `response` | `reply_to`, `content` | The agent replies in the main chat. |
-| `broadcast_response` | `content` | The agent emits text alongside tool calls. |
-| `tool_call` / `tool_result` | `name`, `arguments` / `output`, `is_error` | The agent calls a tool, and gets its result. |
+| `turn_started` | `reply_to`, `origin` (`endpoint`, `sender?`, `visibility`) | The agent starts a turn in its main chat, started from the web, a chat interface (`origin.endpoint` is `telegram`, `discord` or `teams`), or no person at all (`background`). `reply_to` is the turn's id. |
+| `turn_ended` | `reply_to` | The turn is over, whatever its outcome. |
+| `user_message` | `id`, `turn_id`, `content`, `images?`, `sender?`, `endpoint` | A person's message entered the main chat, starting a turn or joining the one running. |
+| `text_delta` / `thinking_delta` | `reply_to`, `call`, `text` | More of a model call's text or reasoning as it is written; a preview of the `broadcast_response` / `response` / `thinking` frame that follows. |
+| `stream_restart` | `reply_to`, `call` | What was streamed for that `call` is void; it starts over. |
+| `thinking` | `reply_to`, `call`, `content` | A model call's complete readable reasoning, sent before its text and tool calls. |
+| `response` | `reply_to`, `call?`, `endpoint`, `content` | The agent replies in the main chat. `endpoint` says where the reply was delivered (empty when nowhere). A message the agent posted to the web with `send_message` has an empty `reply_to` and no `call`. |
+| `broadcast_response` | `reply_to`, `call`, `content` | The agent emits text alongside tool calls. |
+| `tool_call` / `tool_result` | `reply_to`, `call` (calls), `name`, `arguments` / `output`, `is_error` | The agent calls a tool, and gets its result. `call` counts the turn's model calls from zero. |
 | `notice` | `message` | A system notice appears. |
 | `session_started`, `session_state_changed`, `session_completed` | `session` or `address`, `run_id`, … | One of the agent's background sessions starts, changes state, or finishes. For a session this artifact started, use its handle's `on` instead (see Agent Sessions). |
 
