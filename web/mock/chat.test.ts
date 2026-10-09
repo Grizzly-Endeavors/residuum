@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { ServerMessage } from "../src/lib/generated/protocol";
 import type { ChatHistorySegment, RecentMessage } from "../src/lib/types";
 import { chatHistorySegment, chatRoutes, createChatSimulator, type ChatSimulator } from "./chat";
-import { cannedResponses } from "./data/chat";
+import { cannedResponses, markdownShowcase } from "./data/chat";
 import { createState, type MockHub, type MockState } from "./state";
 import {
   captureFrames,
@@ -247,6 +247,15 @@ describe("chat turns", () => {
     }
     const replies = frames.flatMap((f) => (f.type === "response" ? [f.content] : []));
     expect(replies).toEqual([...cannedResponses, cannedResponses[0]]);
+  });
+
+  it("answers a message starting with 'markdown' with the showcase, and keeps the cycle's place", () => {
+    chat.send(message("markdown please", "m1"));
+    vi.advanceTimersByTime(TURN_MS);
+    chat.send(message("again", "m2"));
+    vi.advanceTimersByTime(TURN_MS);
+    const replies = frames.flatMap((f) => (f.type === "response" ? [f.content] : []));
+    expect(replies).toEqual([markdownShowcase, cannedResponses[0]]);
   });
 
   it("records the whole turn in history when it ends", () => {
