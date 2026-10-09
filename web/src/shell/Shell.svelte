@@ -33,6 +33,7 @@
   import Rail from "./Rail.svelte";
   import type { FeedbackTab, ShellActions } from "./shell-actions";
   import ShortcutsDialog from "./ShortcutsDialog.svelte";
+  import TabTitle from "./TabTitle.svelte";
   import UpdateBanner from "./UpdateBanner.svelte";
 
   // The frame around every place: the rail beside the main region at medium
@@ -186,6 +187,7 @@
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
+<TabTitle />
 
 <!-- data-hub and data-overview say how far the hub's state has arrived (the socket, then the counts it brings), for the end-to-end suite, which waits for "connected" and "loaded" before it acts. -->
 <div
