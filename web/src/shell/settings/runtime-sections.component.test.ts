@@ -85,8 +85,8 @@ describe("Runtime", () => {
 
     const length = box("Reply length");
     expect(length.value).toBe("");
-    expect(length.placeholder).toBe("8192");
-    expect(length).toHaveAccessibleDescription(/Default: 8,192 tokens\./);
+    expect(length.placeholder).toBe("16384");
+    expect(length).toHaveAccessibleDescription(/Default: 16,384 tokens\./);
     expect(box("First pause")).toHaveAccessibleDescription(/Default: 500 milliseconds\./);
     expect(box("Tool calls per turn").placeholder).toBe("No limit");
   });

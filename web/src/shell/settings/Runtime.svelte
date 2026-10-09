@@ -54,7 +54,7 @@
       field="max_tokens"
       label="Reply length"
       unit="tokens"
-      fallback={8192}
+      fallback={16384}
       min={1}
       hint="The most the model can write in one go. A token is about three quarters of a word."
     />
