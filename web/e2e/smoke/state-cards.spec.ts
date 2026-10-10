@@ -112,13 +112,15 @@ test("stopping a running agent keeps its conversation readable", async ({ page, 
   await expect(conversation.getByText(ATLAS_GREETING)).toBeVisible();
   await expect(composer(page)).toBeVisible();
 
-  // Stopping and starting take long enough to see.
-  await mock.post("/api/mock/delays", { data: { scale: 4 } });
+  // Stopping and starting stay in progress until the spec moves the mock's time on.
+  await mock.manualTime();
   await page.getByRole("button", { name: "More for atlas" }).click();
   await page.getByRole("menuitem", { name: /^Stop atlas/ }).click();
 
+  // The card follows the hub's announcement, so once it shows, the stop is under way in the mock.
   await expect(card(page, "Stopping atlas")).toBeVisible();
   await expect(composer(page)).toHaveCount(0);
+  await mock.advance(1_000);
   const stopped = card(page, "atlas is stopped");
   await expect(stopped).toBeVisible();
   await expect(conversation.getByText(ATLAS_GREETING)).toBeVisible();
@@ -127,6 +129,7 @@ test("stopping a running agent keeps its conversation readable", async ({ page, 
 
   await stopped.getByRole("button", { name: "Start atlas" }).click();
   await expect(card(page, "Starting atlas")).toBeVisible();
+  await mock.advance(1_000);
   await expect(composer(page)).toBeVisible();
   await expect(card(page, "Starting atlas")).toHaveCount(0);
 });

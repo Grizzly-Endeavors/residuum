@@ -1,5 +1,5 @@
 import { backgroundTurnFrames } from "./chat-scenarios";
-import type { TurnHold } from "./env";
+import type { TimeProgress, TurnHold } from "./env";
 import { json, parseJsonObject, readBody, readJsonObject } from "./http";
 import { offeredModelsOnly } from "./provider-models";
 import type { Route, RouteContext } from "./routes";
@@ -171,6 +171,60 @@ async function setDelays({ req, res, hub }: RouteContext): Promise<void> {
 }
 
 /**
+ * `{ mode }`: how simulated time passes, `"manual"` or `"scaled"` (see
+ * `TimeMode`). A spec sets it before it starts what it wants to watch; reset
+ * puts it back to scaled. Answers with the time the mock reads.
+ */
+async function setTimeMode({ req, res, hub }: RouteContext): Promise<void> {
+  const { mode } = await readJsonObject(req);
+  if (mode !== "manual" && mode !== "scaled") {
+    json(res, 422, { error: 'mock: `mode` must be "manual" or "scaled"' });
+    return;
+  }
+  hub.env.setTimeMode(mode);
+  json(res, 200, { mode, pending: hub.env.pendingTimers(), now: hub.env.clock.iso() });
+}
+
+/** Answer a move of manual time with what it did and the time the mock now reads. */
+function timeMoved(
+  res: RouteContext["res"],
+  hub: RouteContext["hub"],
+  progress: TimeProgress,
+): void {
+  json(res, 200, { ...progress, now: hub.env.clock.iso() });
+}
+
+/**
+ * `{ ms }`: in manual time, move simulated time forward. Every timer that
+ * comes due runs, in order, along with the timers their work sets within the
+ * span. Answers `{ fired, pending, elapsedMs, now }` once they have.
+ */
+async function advanceTime({ req, res, hub }: RouteContext): Promise<void> {
+  const { ms } = await readJsonObject(req);
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) {
+    json(res, 422, { error: "mock: `ms` must be a non-negative number of milliseconds" });
+    return;
+  }
+  if (hub.env.timeMode() !== "manual") {
+    json(res, 409, { error: "mock: time is scaled; set manual time first" });
+    return;
+  }
+  timeMoved(res, hub, await hub.env.advance(ms));
+}
+
+/**
+ * In manual time, run the next timer that waits, however far ahead it is.
+ * Answers `{ fired, pending, elapsedMs, now }`; `fired` is 0 when none waits.
+ */
+async function stepTime({ res, hub }: RouteContext): Promise<void> {
+  if (hub.env.timeMode() !== "manual") {
+    json(res, 409, { error: "mock: time is scaled; set manual time first" });
+    return;
+  }
+  timeMoved(res, hub, await hub.env.step());
+}
+
+/**
  * `{ held }`: how far simulated turns may get. `"reply"` stops each once its
  * reply has streamed in, before it ends; `true` stops each at its last step,
  * before its reply; `"steps"` stops each while its file reads are still
@@ -310,6 +364,9 @@ export const controlRoutes: readonly Route[] = [
   { method: "POST", pattern: "/api/mock/reset", handler: reset },
   { method: "POST", pattern: "/api/mock/clock/advance", handler: advanceClock },
   { method: "POST", pattern: "/api/mock/delays", handler: setDelays },
+  { method: "POST", pattern: "/api/mock/time", handler: setTimeMode },
+  { method: "POST", pattern: "/api/mock/time/advance", handler: advanceTime },
+  { method: "POST", pattern: "/api/mock/time/step", handler: stepTime },
   { method: "POST", pattern: "/api/mock/turn-hold", handler: holdTurns },
   { method: "GET", pattern: "/api/mock/connected-pages", handler: connectedPages },
 ];

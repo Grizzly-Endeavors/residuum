@@ -252,6 +252,67 @@ describe("test controls", () => {
     });
   });
 
+  describe("time", () => {
+    const post = (path: string, body?: unknown): Promise<{ status: number; body: unknown }> =>
+      fetchJson(`${harness.baseUrl}/api/mock/${path}`, {
+        method: "POST",
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+
+    it("holds a turn where it is until manual time moves, then lets it reach its end", async () => {
+      expect((await post("time", { mode: "manual" })).status).toBe(200);
+      const socket = await harness.openSocket("/api/agents/atlas/ws");
+      socket.send({ type: "send_message", id: "m1", content: "hello there" });
+      await socket.nextOfType("turn_started");
+
+      // However long the page takes, the turn stays where simulated time left it.
+      const meanwhile = await socket.settled();
+      expect(meanwhile.map((frame) => frame.type)).not.toContain("turn_ended");
+
+      const moved = await post("time/advance", { ms: 120_000 });
+      expect(moved.status).toBe(200);
+      expect(moved.body).toMatchObject({ pending: 0 });
+      expect((moved.body as { fired: number }).fired).toBeGreaterThan(0);
+      await socket.nextOfType("turn_ended");
+    });
+
+    it("steps one timer at a time, and says when none waits", async () => {
+      await post("time", { mode: "manual" });
+      const socket = await harness.openSocket("/api/agents/atlas/ws");
+      socket.send({ type: "send_message", id: "m1", content: "hello there" });
+      await socket.nextOfType("turn_started");
+
+      let last = await post("time/step");
+      expect(last.body).toMatchObject({ fired: 1 });
+      for (let steps = 0; (last.body as { fired: number }).fired === 1; steps++) {
+        expect(steps).toBeLessThan(500);
+        last = await post("time/step");
+      }
+      expect(last.body).toMatchObject({ fired: 0, pending: 0 });
+      await socket.nextOfType("turn_ended");
+    });
+
+    it("refuses to move scaled time, and a mode it doesn't know", async () => {
+      expect(await post("time/advance", { ms: 10 })).toEqual({
+        status: 409,
+        body: { error: "mock: time is scaled; set manual time first" },
+      });
+      expect((await post("time/step")).status).toBe(409);
+      expect(await post("time", { mode: "paused" })).toEqual({
+        status: 422,
+        body: { error: 'mock: `mode` must be "manual" or "scaled"' },
+      });
+      expect((await post("time", { mode: "manual" })).status).toBe(200);
+      expect((await post("time/advance", { ms: -1 })).status).toBe(422);
+    });
+
+    it("goes back to scaled time on reset", async () => {
+      await post("time", { mode: "manual" });
+      expect((await control("reset")).status).toBe(200);
+      expect((await post("time/advance", { ms: 10 })).status).toBe(409);
+    });
+  });
+
   describe("reset", () => {
     const agentNames = async (): Promise<string[]> => {
       const res = await fetchJson(`${harness.baseUrl}/api/hub/agents`);
