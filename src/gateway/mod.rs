@@ -15,6 +15,7 @@ mod reload;
 pub(crate) mod remote_control_guard;
 pub(crate) mod sessions;
 pub(crate) mod startup;
+pub mod turn_journal;
 pub(crate) mod types;
 pub(crate) mod watcher;
 pub(crate) mod web;

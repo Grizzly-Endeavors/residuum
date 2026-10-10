@@ -33,6 +33,10 @@ pub enum ClientMessage {
     },
     /// Keepalive ping.
     Ping,
+    /// Ask for everything the main agent's turn in flight has done so far,
+    /// answered with a `turn_snapshot` frame. Frames already received for
+    /// that turn are covered by the snapshot; the ones after it continue it.
+    ResyncTurn,
     /// Request the gateway to reload its configuration.
     Reload,
     /// A named server command (observe, reflect, context, etc.).
@@ -383,6 +387,33 @@ pub enum PostTurnActivityKind {
     Subconscious,
 }
 
+/// The main agent's turn in flight, as a `turn_snapshot` frame carries it.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TurnInProgress {
+    /// Correlation ID of the turn.
+    pub reply_to: String,
+    /// When the turn began (RFC 3339, UTC).
+    pub started_at: String,
+    /// The server's clock when the snapshot was taken (RFC 3339, UTC), so a
+    /// client whose clock differs can place the other times on its own.
+    pub now: String,
+    /// The frames the turn has sent so far, in order, with each model call's
+    /// streamed pieces joined into one `text_delta` or `thinking_delta`.
+    pub frames: Vec<SnapshotFrame>,
+}
+
+/// One frame of a turn in flight and when it was sent.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SnapshotFrame {
+    /// When the frame was sent (RFC 3339, UTC); for joined stream pieces,
+    /// when the first was.
+    pub at: String,
+    /// The frame, as it went out live.
+    pub frame: ServerMessage,
+}
+
 /// Messages sent from the server to WebSocket clients.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -589,6 +620,14 @@ pub enum ServerMessage {
     },
     /// Keepalive pong.
     Pong,
+    /// The main agent's turn in flight as it has run so far, answering
+    /// `resync_turn`. It replaces whatever the client showed of that turn:
+    /// the frames that follow it on this connection continue from where it
+    /// ends.
+    TurnSnapshot {
+        /// The turn, or `null` when none is running.
+        turn: Option<TurnInProgress>,
+    },
     /// The gateway is reloading its configuration.
     Reloading,
     /// Result of a manual memory operation (observe or reflect).

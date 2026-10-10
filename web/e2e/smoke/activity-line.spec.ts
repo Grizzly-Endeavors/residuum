@@ -160,13 +160,12 @@ test("a path a step read opens in the panel", async ({ page }) => {
 });
 
 test.describe("connecting while a turn runs", () => {
-  test("a page opened mid-turn shows the steps it saw, and says earlier ones aren't shown", async ({
+  test("a page opened mid-turn shows the steps taken before it connected", async ({
     page,
     mock,
   }) => {
     // The turn sits with its two file reads running, sending nothing more, so the
-    // second page can finish connecting however slowly it loads. Letting the
-    // reads finish is then the first thing it hears of the turn.
+    // second page can finish connecting however slowly it loads.
     await mock.post("/api/mock/turn-hold", { data: { held: "steps" } });
     await openAtlas(page);
     await send(page, "Check the routing doc");
@@ -180,21 +179,24 @@ test.describe("connecting while a turn runs", () => {
     await expect(feed.getByText(GREETING)).toBeVisible();
     await expect.poll(() => connectedPages(page)).toBe(2);
 
-    // The turn's end is still held, so it is seen running.
-    await mock.post("/api/mock/turn-hold", { data: { held: true } });
-    await expect(feed.getByText("Earlier steps happened before this page connected")).toBeVisible();
+    // The agent sent it the turn so far: the message, the note and the reads still running.
+    await expect(feed.getByText("Check the routing doc", { exact: true })).toBeVisible();
+    await expect(feed.getByText("Looking through recent notes first.")).toBeVisible();
+    await expect(
+      feed.getByRole("button", { name: /^Reading team\/wiki\/index\.md/ }),
+    ).toBeVisible();
     await expect(feed.getByText("Working")).toBeVisible();
+    await expect(feed.getByText(/before this page connected/)).toHaveCount(0);
     await expectNoAxeViolations(other);
     await mock.post("/api/mock/turn-hold", { data: { held: false } });
 
-    // It saw no step start, so its line says only that the turn worked before it connected.
-    await expect(summary(feed, /^Worked before this page connected/)).toBeVisible({
+    await expect(summary(feed, /^Searched memory, read 2 files(?: · \d+s)?$/)).toBeVisible({
       timeout: 20_000,
     });
     await other.close();
   });
 
-  test("a turn still running after the connection drops notes the steps it may have missed", async ({
+  test("a turn still running after the connection drops shows the steps taken while it was down", async ({
     page,
     mock,
   }) => {
@@ -204,12 +206,10 @@ test.describe("connecting while a turn runs", () => {
     await send(page, "drop: keep going");
     const feed = conversation(page);
 
-    await expect(
-      feed.getByText("Steps taken while this page was reconnecting may be missing"),
-    ).toBeVisible({ timeout: 15_000 });
     await expect(summary(feed, /^Searched memory, read 2 files(?: · \d+s)?$/)).toBeVisible({
       timeout: 15_000,
     });
+    await expect(feed.getByText(/may be missing/)).toHaveCount(0);
   });
 });
 

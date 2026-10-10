@@ -366,6 +366,7 @@ mod tests {
         std::fs::create_dir_all(&agent_inbox_dir).unwrap();
 
         GatewayState {
+            turn_journal: crate::gateway::turn_journal::TurnJournal::default(),
             reload_tx: core.reload_tx,
             command_tx: core.command_tx,
             stop_tx: core.stop_tx,

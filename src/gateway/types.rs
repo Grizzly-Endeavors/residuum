@@ -213,6 +213,9 @@ pub(crate) struct GatewayState {
     /// Pending one-off scheduled actions, for the Schedule place's listing
     /// and cancel button.
     pub action_store: Arc<tokio::sync::Mutex<ActionStore>>,
+    /// The main conversation's turn in flight, which every connection
+    /// follows the conversation through and can ask to be shown.
+    pub turn_journal: crate::gateway::turn_journal::TurnJournal,
     /// Workspace layout, for the Schedule place's reads of HEARTBEAT.yml,
     /// `pulse_state.json`, and its in-place edits to HEARTBEAT.yml.
     pub layout: WorkspaceLayout,

@@ -49,6 +49,11 @@ export function localTimestamp(at: Date = new Date()): string {
   return `${dateOf(at)}T${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`;
 }
 
+/** `localTimestamp` for the moment `ms` milliseconds after the epoch. */
+export function localTimestampAt(ms: number): string {
+  return localTimestamp(new Date(ms));
+}
+
 /** The moment a message timestamp names, or null when it names none. */
 export function parseTimestamp(timestamp: string): Date | null {
   const at = new Date(timestamp.replace(LONG_FRACTION, "$1"));

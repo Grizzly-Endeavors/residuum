@@ -10,6 +10,8 @@ import type { AutoModeVerdict } from "./generated/AutoModeVerdict";
 export type {
   ClientMessage,
   ServerMessage,
+  TurnInProgress,
+  SnapshotFrame,
   PostTurnActivityKind,
   MessageSender,
   TurnOrigin,
@@ -571,6 +573,8 @@ export interface UserFeedItem extends FeedItemBase {
   images?: ImageAttachment[];
   sender?: MessageSender;
   turn?: TurnRef;
+  /** The message's id, for one that arrived live: a turn snapshot names the messages it holds by it. */
+  messageId?: string;
 }
 
 export interface AssistantFeedItem extends FeedItemBase {

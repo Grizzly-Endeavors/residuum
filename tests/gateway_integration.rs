@@ -226,6 +226,9 @@ mod gateway_integration {
             ep.clone(),
             file_registry,
             tokio::sync::watch::channel(residuum::workspace::watch::WatchSet::default()).1,
+            &residuum::gateway::turn_journal::TurnJournal::spawn(&bus)
+                .await
+                .unwrap(),
         )
         .await
         .unwrap();
@@ -416,8 +419,8 @@ mod gateway_integration {
                     }
                 }
                 // SetVerbose (client-side), Reload, ServerCommand, InboxAdd,
-                // Cancel, the session commands, and workspace watching are not handled in the
-                // test stub
+                // Cancel, the session commands, workspace watching and turn
+                // resyncs are not handled in the test stub
                 ClientMessage::SetVerbose { .. }
                 | ClientMessage::Reload
                 | ClientMessage::ServerCommand { .. }
@@ -425,7 +428,8 @@ mod gateway_integration {
                 | ClientMessage::Cancel { .. }
                 | ClientMessage::SessionSendMessage { .. }
                 | ClientMessage::SessionStop { .. }
-                | ClientMessage::WatchWorkspace { .. } => {}
+                | ClientMessage::WatchWorkspace { .. }
+                | ClientMessage::ResyncTurn => {}
             }
         }
 

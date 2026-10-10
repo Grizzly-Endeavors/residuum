@@ -127,6 +127,9 @@ class WsCoordinator {
       // First on every connection: the activity line is built from the tool
       // frames, which the agent sends only to a connection that asks.
       this.transport.send({ type: "set_verbose", enabled: true });
+      // Then the turn in flight so far, which the live frames alone can't
+      // show: what streamed before this page connected, or while it was away.
+      this.transport.send({ type: "resync_turn" });
       // A turn still in flight carried on while the page was away.
       if (this.hasConnected) this.store.markReconnectGap();
       // Load the sessions listing, or catch up on frames missed while

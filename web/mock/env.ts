@@ -103,9 +103,10 @@ export interface MockEnv {
   /**
    * How far simulated turns may get, so a test can look at a running turn for
    * as long as it needs, however slowly the browser keeps up:
-   * - `"end"`: a turn runs through its steps, then waits instead of ending.
-   * - `"steps"`: a turn waits with its tool calls running, sending no more
-   *   frames, so a page that connects now sees nothing until the hold eases.
+   * - `"reply"`: a turn writes its reply, then waits with the reply still
+   *   streaming instead of ending.
+   * - `"end"`: a turn runs through its steps, then waits before writing its reply.
+   * - `"steps"`: a turn waits with its tool calls running, sending no more frames.
    * - `"none"`: turns run to their end.
    * Easing the hold lets the waiting turns carry on, in the order they waited.
    */
@@ -119,14 +120,21 @@ export interface MockEnv {
 }
 
 /** How far simulated turns may get: see `MockEnv.holdTurns`. */
-export type TurnHold = "none" | "end" | "steps";
+export type TurnHold = "none" | "reply" | "end" | "steps";
 
-/** The part of a turn a hold can stop at: delivering its tool results, or ending it. */
-export type TurnStage = "results" | "end";
+/**
+ * The part of a turn a hold can stop at: delivering its tool results, writing
+ * its reply, or finishing once the reply is written.
+ */
+export type TurnStage = "results" | "end" | "finish";
+
+/** How much of a turn each hold stops, and the hold each stage needs to be stopped: a later stage stops at more holds. */
+const HOLD_REACH: Record<TurnHold, number> = { none: 0, reply: 1, end: 2, steps: 3 };
+const STAGE_REACH: Record<TurnStage, number> = { finish: 1, end: 2, results: 3 };
 
 /** Whether `hold` keeps a turn from carrying out `stage`. */
 function holds(hold: TurnHold, stage: TurnStage): boolean {
-  return stage === "end" ? hold !== "none" : hold === "steps";
+  return HOLD_REACH[hold] >= STAGE_REACH[stage];
 }
 
 export function createMockEnv(options: EnvOptions = {}): MockEnv {

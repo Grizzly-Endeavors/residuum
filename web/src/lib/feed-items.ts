@@ -283,7 +283,8 @@ export function feedItemSignature(item: FeedItem): string | null {
  * Append a live tool call to `feed`, joining the tool group at the tail if
  * there is one of the same turn and the same model call, and remember it in
  * `pending` so its result can find it. `turnId` is the turn in flight, and
- * `modelCall` the model call that made the tool call, when known.
+ * `modelCall` the model call that made the tool call, when known. `at` is
+ * when the call was made.
  */
 export function appendToolCall(
   feed: FeedItem[],
@@ -291,6 +292,7 @@ export function appendToolCall(
   call: { id: string; name: string; arguments: unknown; server?: string | null },
   turnId?: string,
   modelCall?: number,
+  at: number = Date.now(),
 ): void {
   const state: ToolCallState = {
     id: call.id,
@@ -298,7 +300,7 @@ export function appendToolCall(
     arguments: normalizeToolArgs(call.arguments),
     status: "running",
     server: call.server,
-    startedAt: Date.now(),
+    startedAt: at,
   };
   const last = feed[feed.length - 1];
   if (last?.kind === "tool-group" && last.turnId === turnId && last.call === modelCall) {
@@ -345,7 +347,7 @@ export function countTurnCalls(items: readonly FeedItem[], turnId: string): numb
   return count;
 }
 
-/** Apply a live tool result to the call `pending` remembers for it. */
+/** Apply a live tool result, returned at `at`, to the call `pending` remembers for it. */
 export function applyToolResult(
   pending: Map<string, ToolCallState>,
   result: {
@@ -354,11 +356,12 @@ export function applyToolResult(
     is_error: boolean;
     auto_mode?: AutoModeVerdict;
   },
+  at: number = Date.now(),
 ): void {
   const call = pending.get(result.tool_call_id);
   if (!call) return;
   call.status = result.is_error ? "error" : "done";
-  call.endedAt = Date.now();
+  call.endedAt = at;
   if (result.auto_mode) call.autoMode = result.auto_mode;
   if (result.output) appendResult(call, result.output);
   pending.delete(result.tool_call_id);

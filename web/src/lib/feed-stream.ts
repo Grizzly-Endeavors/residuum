@@ -56,11 +56,13 @@ export class LiveStreams {
    * @param stamp The time a text shows as sent: a draft takes it when its first
    *   piece arrives and again when the complete message does, which is when
    *   history records a message.
+   * @param now This moment in milliseconds, for when reasoning starts and ends.
    */
   constructor(
     private readonly feed: FeedItem[],
     private readonly schedule: FrameScheduler = nextAnimationFrame,
     private readonly stamp: () => string = localTimestamp,
+    private readonly now: () => number = Date.now,
   ) {}
 
   /** Add a piece of the text model call `call` is writing. */
@@ -140,7 +142,7 @@ export class LiveStreams {
       content: piece,
       call,
       streaming: true,
-      startedAt: Date.now(),
+      startedAt: this.now(),
       ...tag,
     });
     this.thoughts.set(key, created);
@@ -157,7 +159,7 @@ export class LiveStreams {
     if (draft !== undefined) {
       if (content !== "") draft.content = content;
       draft.streaming = false;
-      draft.endedAt ??= Date.now();
+      draft.endedAt ??= this.now();
       return;
     }
     if (content.trim() === "") return;
@@ -183,7 +185,7 @@ export class LiveStreams {
     if (draft?.streaming !== true) return;
     this.flushKey(key);
     draft.streaming = false;
-    draft.endedAt ??= Date.now();
+    draft.endedAt ??= this.now();
   }
 
   /** Model call `call` started over: what it had streamed is dropped. */
@@ -215,7 +217,7 @@ export class LiveStreams {
     for (const [key, draft] of [...this.thoughts]) {
       if (!key.startsWith(prefix)) continue;
       draft.streaming = false;
-      draft.endedAt ??= Date.now();
+      draft.endedAt ??= this.now();
       this.thoughts.delete(key);
     }
     for (const key of [...this.anchors.keys()])
