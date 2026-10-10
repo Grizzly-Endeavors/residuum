@@ -335,8 +335,38 @@ impl PebbleHarness {
         drop(reservation);
     }
 
+    /// How many DNS queries for `host` the challenge test server has answered
+    /// since its history for `host` was last cleared.
+    pub(crate) async fn dns_queries(&self, host: &str) -> anyhow::Result<usize> {
+        let body = self
+            .manage_reading("dns-request-history", &serde_json::json!({ "host": host }))
+            .await?;
+        let history: Vec<serde_json::Value> = serde_json::from_str(&body)
+            .with_context(|| format!("unreadable DNS request history: {body}"))?;
+        Ok(history.len())
+    }
+
+    /// Forget the DNS queries for `host` the challenge test server recorded.
+    pub(crate) async fn clear_dns_queries(&self, host: &str) -> anyhow::Result<()> {
+        self.manage(
+            "clear-request-history",
+            &serde_json::json!({ "host": host, "type": "dns" }),
+        )
+        .await
+    }
+
     /// POST `body` to the challenge test server's management API.
     async fn manage(&self, endpoint: &str, body: &serde_json::Value) -> anyhow::Result<()> {
+        self.manage_reading(endpoint, body).await.map(|_| ())
+    }
+
+    /// POST `body` to the challenge test server's management API and return
+    /// the response body.
+    async fn manage_reading(
+        &self,
+        endpoint: &str,
+        body: &serde_json::Value,
+    ) -> anyhow::Result<String> {
         let body = serde_json::to_vec(body)?;
         let mut stream = TcpStream::connect(("127.0.0.1", self.management_port))
             .await
@@ -355,7 +385,10 @@ impl PebbleHarness {
             status_line.contains(" 200"),
             "challenge test server rejected /{endpoint}: {status_line}"
         );
-        Ok(())
+        Ok(response
+            .split_once("\r\n\r\n")
+            .map(|(_, answer)| answer.to_owned())
+            .unwrap_or_default())
     }
 }
 

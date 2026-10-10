@@ -53,4 +53,10 @@ join: JoinProgress | null,
 /**
  * Instances waiting for this one to approve them.
  */
-pending_joins: Array<PendingJoinInfo>, };
+pending_joins: Array<PendingJoinInfo>, 
+/**
+ * When Residuum last finished checking this instance's remote access,
+ * failed checks included (RFC 3339, UTC, to the millisecond). Absent
+ * until the first check ends. A retry has run once this moves.
+ */
+checked_at?: string, };

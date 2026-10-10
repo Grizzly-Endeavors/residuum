@@ -884,8 +884,12 @@ async fn a_restore_waits_for_a_write_holding_the_path_lock() {
     let held = f.hub.coordinator.lock(&file).await;
     let restoring = restore(&f, RepoKind::Team, &id, "wiki/a.md");
     tokio::pin!(restoring);
-    let early = tokio::time::timeout(std::time::Duration::from_millis(150), &mut restoring).await;
-    assert!(early.is_err(), "the restore must wait for the lock holder");
+    tokio::select! {
+        () = &mut restoring => panic!("the restore must wait for the lock holder"),
+        () = crate::testing::wait::until_true("the restore to queue for the lock", || {
+            f.hub.coordinator.lock_contenders(&file) == 2
+        }) => {}
+    }
     assert!(!file.exists(), "nothing is restored while the lock is held");
 
     drop(held);

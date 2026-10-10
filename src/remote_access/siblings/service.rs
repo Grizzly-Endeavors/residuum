@@ -495,8 +495,20 @@ mod tests {
         let asking = desktop.joiner(&client, "laptop");
         let (outcome, approved) = tokio::join!(desktop.service.join(&asking, &progress), async {
             let id = laptop.wait_for_pending().await;
-            // At the test poll interval this is well over ten polls.
-            tokio::time::sleep(Duration::from_millis(400)).await;
+            // More polls than the per-peer limit allows join requests in a
+            // minute (ten), all within that minute.
+            crate::testing::wait::until("the requester to poll more than ten times", || {
+                std::future::ready(
+                    laptop
+                        .service
+                        .host
+                        .pending(Utc::now())
+                        .iter()
+                        .any(|pending| pending.approval_id == id && pending.polls > 10)
+                        .then_some(()),
+                )
+            })
+            .await;
             laptop.service.approve(&laptop.approver(&client), &id).await
         });
         outcome.unwrap();

@@ -45,6 +45,42 @@ pub(crate) struct TriggerInputs {
     pub changes: AgentChangeReceiver,
     /// Shows the user a notice about how delivery is going.
     pub notice: Box<dyn Fn(String) + Send + Sync>,
+    /// Hears what the triggers decide about each input, for whoever is
+    /// diagnosing why something did or didn't send a push.
+    pub decisions: Option<broadcast::Sender<TriggerDecision>>,
+}
+
+/// What the triggers made of one thing that arrived on their inputs: the
+/// pushes it started, none when the rules found nothing worth a notification.
+/// Sent once those pushes are handed to the push service, so a delivery each
+/// one starts is already counted by [`PushService::deliveries_pending`].
+#[derive(Debug, Clone)]
+pub(crate) struct TriggerDecision {
+    pub(crate) input: TriggerInput,
+    pub(crate) triggers: Vec<Trigger>,
+}
+
+/// One thing the triggers read.
+#[derive(Debug, Clone)]
+pub(crate) enum TriggerInput {
+    HubEvent(HubEvent),
+    Change(AgentChange),
+}
+
+impl TriggerInput {
+    /// The agent it is about, when it is about one.
+    fn agent(&self) -> Option<&str> {
+        match self {
+            Self::HubEvent(
+                HubEvent::AgentState { agent }
+                | HubEvent::AgentCreated { agent, .. }
+                | HubEvent::AgentRestored { agent, .. },
+            ) => Some(&agent.name),
+            Self::HubEvent(HubEvent::AgentDeleted { name, .. }) => Some(name),
+            Self::HubEvent(_) => None,
+            Self::Change(change) => Some(&change.agent),
+        }
+    }
 }
 
 /// A running set of triggers. It stops when dropped.
@@ -78,22 +114,29 @@ async fn run(inputs: TriggerInputs) {
         mut hub_events,
         mut changes,
         notice,
+        decisions,
     } = inputs;
     let mut notices = push.subscribe_notices();
     let sender = Sender { push, directory };
     let mut rules = Rules::default();
     loop {
-        let triggers = tokio::select! {
+        let (input, triggers): (Option<TriggerInput>, Vec<Trigger>) = tokio::select! {
             event = hub_events.recv() => match event {
-                Ok(event) => rules.on_hub_event(&event).into_iter().collect(),
+                Ok(event) => {
+                    let triggers = rules.on_hub_event(&event).into_iter().collect();
+                    (Some(TriggerInput::HubEvent(event)), triggers)
+                }
                 Err(RecvError::Lagged(missed)) => {
                     tracing::warn!(missed, "push notifications fell behind the hub's events; reading every agent's state again");
-                    rules.reconcile(&sender.directory.list())
+                    (None, rules.reconcile(&sender.directory.list()))
                 }
                 Err(RecvError::Closed) => break,
             },
             change = changes.recv() => match change {
-                Some(change) => rules.on_change(change).into_iter().collect(),
+                Some(change) => {
+                    let triggers = rules.on_change(change.clone()).into_iter().collect();
+                    (Some(TriggerInput::Change(change)), triggers)
+                }
                 None => break,
             },
             message = notices.recv() => {
@@ -104,11 +147,24 @@ async fn run(inputs: TriggerInputs) {
                     }
                     Err(RecvError::Closed) => break,
                 }
-                Vec::new()
+                (None, Vec::new())
             }
         };
-        for trigger in triggers {
-            sender.send(trigger).await;
+        for trigger in &triggers {
+            sender.send(trigger.clone()).await;
+        }
+        if let Some(input) = input {
+            let decision = TriggerDecision { input, triggers };
+            let agent = decision.input.agent().unwrap_or_default();
+            if decision.triggers.is_empty() {
+                tracing::trace!(agent, input = ?decision.input, "nothing in this is worth a push");
+            } else {
+                tracing::debug!(agent, triggers = ?decision.triggers, "pushes started");
+            }
+            if let Some(decisions) = &decisions {
+                // A listener that went away is no reason to stop the triggers.
+                decisions.send(decision).ok();
+            }
         }
     }
     tracing::debug!("push triggers stopped");
@@ -116,7 +172,7 @@ async fn run(inputs: TriggerInputs) {
 
 /// Something worth a notification, before it is worded.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Trigger {
+pub(crate) enum Trigger {
     /// An agent saved an item in the user inbox.
     InboxItem { agent: String, item_id: String },
     /// An agent entered the failed state.

@@ -45,6 +45,8 @@ struct Fixture {
     _overview_tracker: OverviewTracker,
     /// Web Push notifications for what the agents do, over `services.push`.
     _push_triggers: PushTriggers,
+    /// What the triggers decided about each thing they read, from the start.
+    push_decisions: tokio::sync::broadcast::Sender<crate::hub::push::TriggerDecision>,
     /// The notices about push delivery that the triggers passed on.
     push_notices: Arc<std::sync::Mutex<Vec<String>>>,
 }
@@ -104,6 +106,7 @@ impl Fixture {
             host.agent_changes().subscribe(),
         );
         let push_notices = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (push_decisions, _) = tokio::sync::broadcast::channel(256);
         let push_triggers = PushTriggers::spawn(TriggerInputs {
             push: Arc::clone(&services.push),
             directory: Arc::clone(&host) as Arc<dyn AgentDirectory>,
@@ -113,6 +116,7 @@ impl Fixture {
                 let push_notices = Arc::clone(&push_notices);
                 move |message| push_notices.lock().unwrap().push(message)
             }),
+            decisions: Some(push_decisions.clone()),
         });
         host.discover().unwrap();
 
@@ -136,6 +140,7 @@ impl Fixture {
             overview,
             _overview_tracker: overview_tracker,
             _push_triggers: push_triggers,
+            push_decisions,
             push_notices,
         }
     }
@@ -171,17 +176,35 @@ impl Fixture {
         ))
         .await
         .unwrap();
-        wait::guarded("the agent's reply", async {
+        // Stays connected until the turn ends, as a page open on the chat
+        // does, so the turn counts the reply as seen.
+        wait::guarded("the agent's reply and the end of its turn", async {
+            // `(turn id, reply)` once the reply arrives; a `turn_ended` of
+            // another turn that was still finishing is not this one's.
+            let mut reply: Option<(String, String)> = None;
             while let Some(frame) = ws.next().await {
                 let WsMessage::Text(raw) = frame.unwrap() else {
                     continue;
                 };
                 let value: Value = serde_json::from_str(&raw).unwrap();
-                if value.get("type") == Some(&json!("response")) {
-                    return str_at(&value, "content").to_string();
+                match value.get("type").and_then(Value::as_str) {
+                    Some("response") => {
+                        reply = Some((
+                            str_at(&value, "reply_to").to_string(),
+                            str_at(&value, "content").to_string(),
+                        ));
+                    }
+                    Some("turn_ended") => {
+                        if let Some((turn, content)) = &reply
+                            && str_at(&value, "reply_to") == turn
+                        {
+                            return content.clone();
+                        }
+                    }
+                    _ => {}
                 }
             }
-            panic!("the WebSocket closed before the agent replied");
+            panic!("the WebSocket closed before the agent's turn ended");
         })
         .await
     }

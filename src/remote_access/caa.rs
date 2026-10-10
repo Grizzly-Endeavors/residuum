@@ -329,9 +329,15 @@ mod tests {
             CaaWaitError::Lookup(e) => panic!("unexpected lookup failure: {e:#}"),
         }
 
+        // The record goes in only once the wait below has looked the name up
+        // and found it missing, so the wait has to pick it up on a later pass.
+        pebble.clear_dns_queries("two.wait.test").await.unwrap();
         let late = Arc::clone(&pebble);
         let adder = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(800)).await;
+            crate::testing::wait::until("the wait to look up the missing name", || async {
+                (late.dns_queries("two.wait.test").await.unwrap() > 0).then_some(())
+            })
+            .await;
             late.set_caa("two.wait.test", &[&pin(ACCOUNT)])
                 .await
                 .unwrap();

@@ -401,6 +401,7 @@ impl TeamTracking {
             hub_events: host.subscribe(),
             changes: host.agent_changes().subscribe(),
             notice: Box::new(move |message| notices.notice(NoticeLevel::Warn, message, None)),
+            decisions: None,
         });
         Self {
             events,
