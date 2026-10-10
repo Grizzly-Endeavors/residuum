@@ -305,20 +305,20 @@ async fn a_background_turn_is_announced_with_its_visibility_live_and_in_history(
     assert_eq!(str_at(frame_of(&frames, "response"), "endpoint"), "ws");
 
     let turn_id = str_at(started, "reply_to");
-    // `turn_ended` is sent before the turn's messages are written to history,
-    // so wait until they are there.
-    let of_turn: Vec<Value> = wait::until("the background turn in history", || async {
-        let (status, body) = hub.get("/api/agents/scout/chat/history").await;
-        assert_eq!(status, 200, "{body}");
-        let history: Value = serde_json::from_str(&body).unwrap();
-        let of_turn: Vec<Value> = array_at(&history, "messages")
-            .iter()
-            .filter(|message| message.get("turn_id") == Some(&json!(turn_id)))
-            .cloned()
-            .collect();
-        (!of_turn.is_empty()).then_some(of_turn)
-    })
-    .await;
+    // The turn is written to history before `turn_ended` goes out, so a page
+    // that reloads history on `turn_ended` finds it there.
+    let (status, body) = hub.get("/api/agents/scout/chat/history").await;
+    assert_eq!(status, 200, "{body}");
+    let history: Value = serde_json::from_str(&body).unwrap();
+    let of_turn: Vec<Value> = array_at(&history, "messages")
+        .iter()
+        .filter(|message| message.get("turn_id") == Some(&json!(turn_id)))
+        .cloned()
+        .collect();
+    assert!(
+        !of_turn.is_empty(),
+        "the turn is in history once turn_ended arrives: {history}"
+    );
     assert!(
         of_turn
             .iter()

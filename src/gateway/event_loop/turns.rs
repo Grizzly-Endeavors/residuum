@@ -925,6 +925,18 @@ pub async fn handle_inbound_message(
 
     spawn_main_turn_end_checkpoint(rt, &reply_id, &turn_result);
 
+    // The turn goes into history before clients hear it ended, so a page that
+    // reloads history on `turn_ended` finds the turn there.
+    let new_messages: Vec<_> = rt.agent.messages_since(before).to_vec();
+    persist_and_maybe_observe(
+        rt,
+        &new_messages,
+        visibility.clone(),
+        observe_deadline,
+        Some(&reply_id),
+    )
+    .await;
+
     let replies = TurnReplies::of(&turn_result, output_endpoint.as_ref());
     publish_turn_outcome(
         turn_result,
@@ -939,16 +951,7 @@ pub async fn handle_inbound_message(
 
     // A background turn was started by no user message.
     let user_message = (!is_background).then(|| message.content.clone());
-    report_turn_end(&rt.activity, replies, user_message, visibility.clone());
-    let new_messages: Vec<_> = rt.agent.messages_since(before).to_vec();
-    persist_and_maybe_observe(
-        rt,
-        &new_messages,
-        visibility,
-        observe_deadline,
-        Some(&reply_id),
-    )
-    .await;
+    report_turn_end(&rt.activity, replies, user_message, visibility);
 
     // Background turns (including subconscious correction turns) are never
     // evaluated — this gate is what bounds the correction feedback loop.
