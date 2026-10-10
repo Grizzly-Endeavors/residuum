@@ -22,6 +22,7 @@ import DiagnosticsSection from "./DiagnosticsSection.svelte";
 import GeneralSection from "./GeneralSection.svelte";
 import LimitsSection from "./LimitsSection.svelte";
 import UpdatesSection from "./UpdatesSection.svelte";
+import { waitFor } from "../../test/wait";
 
 // The All agents sections that turn the hub's `config.toml` into forms
 // (General, Session limits, Diagnostics), and the two that act at once
@@ -469,7 +470,7 @@ describe("Residuum Cloud", () => {
   /** The section, once it has read the status. The answers arrive over more than one tick, so a test waits for what it expects. */
   async function view(): Promise<void> {
     render(CloudSection, { scope, section: "cloud" });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(document.querySelector(".ui-skeleton")).toBeNull();
     });
   }

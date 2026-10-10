@@ -16,6 +16,7 @@ import {
 import { fakeAgentConfig, type FakeAgentConfig } from "../../test/fake-config";
 import SettingsModal from "../SettingsModal.svelte";
 import { conflictQuestion } from "./changed-on-disk.svelte";
+import { waitFor } from "../../test/wait";
 
 // The Raw config section in the Settings modal: problems found as the text is
 // typed, Save and Discard, the lock in both directions, and a file that
@@ -41,7 +42,7 @@ async function open(section: SectionId): Promise<void> {
   render(SettingsModal);
   await router.openSettings({ scope: agent, section });
   await settle();
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(document.querySelector(".settings-content")).not.toBeNull();
     expect(screen.queryByText("Loading settings")).toBeNull();
   });
@@ -88,12 +89,12 @@ afterEach(async () => {
 describe("Raw config", () => {
   it("checks the text as it is typed and lists problems at their line, marked beside it", async () => {
     await open("raw");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByText("No problems found.")).toBeTruthy();
     });
     await type(text(), BROKEN);
     expect(screen.getByText("Checking for problems…")).toBeTruthy();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByText("1 problem found.")).toBeTruthy();
     });
     const problems = screen.getByRole("list", { name: "Problems in config.toml" });
@@ -108,7 +109,7 @@ describe("Raw config", () => {
   it("says so when the text can't be checked", async () => {
     checksFail = true;
     await open("raw");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByText(/Couldn't check this file for problems\./)).toBeTruthy();
     });
   });
@@ -117,7 +118,7 @@ describe("Raw config", () => {
     await open("raw");
     await type(text(), BROKEN);
     await fireEvent.click(screen.getByRole("button", { name: "Save config.toml" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(toasts()).toContain("Saved config.toml. It has problems, listed under the editor.");
     });
     expect(server.files.config).toBe(BROKEN);
@@ -130,18 +131,18 @@ describe("Raw config", () => {
     await open("raw");
     await type(text(), "timeout_secs = 45\n");
     await router.switchSettingsSection("runtime");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByText(/You have unsaved edits to config\.toml in Raw config/)).toBeTruthy();
     });
     expect(screen.getByLabelText("Reply time limit")).toBeDisabled();
 
     await fireEvent.click(screen.getByRole("button", { name: "Open Raw config" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByRole("tab", { name: "config.toml (unsaved)" })).toBeTruthy();
     });
     await fireEvent.click(screen.getByRole("button", { name: "Discard edits" }));
     await router.switchSettingsSection("runtime");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByLabelText("Reply time limit")).not.toBeDisabled();
     });
   });
@@ -151,16 +152,16 @@ describe("Raw config", () => {
     await type(text(), "timeout_secs = 45\n");
     server.files.config = "timeout_secs = 90\n";
     await configCoordinator.externalChange(agentConfigFile(agent, "config"));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByText(/changed on disk since you started editing/)).toBeTruthy();
     });
     expect(text().value).toBe("timeout_secs = 45\n");
     await fireEvent.click(screen.getByRole("button", { name: "Save config.toml" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByRole("dialog", { name: `${agent}'s config.toml changed` })).toBeTruthy();
     });
     conflictQuestion.answer("use-disk");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(toasts()).toContain("Kept config.toml as it is on disk, without your edits.");
     });
     expect(text().value).toBe("timeout_secs = 90\n");

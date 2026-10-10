@@ -1,4 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { waitFor } from "../src/test/wait";
+import { createMockEnv } from "./env";
 import { createModelRoutes, modelRoutes } from "./model";
 import { fetchJson, startRouteHarness, type RouteHarness } from "./test-support";
 
@@ -121,20 +123,38 @@ describe("model call route", () => {
   });
 
   it("holds a good call for the delay, and refuses a bad one at once", async () => {
-    const slow = await startRouteHarness(createModelRoutes(250));
+    // The delay is the mock's own sleep, so the test releases it by hand: no wall clock is read.
+    const env = createMockEnv();
+    const sleep = vi.spyOn(env, "sleep");
+    let endDelay: () => void = () => undefined;
+    sleep.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          endDelay = resolve;
+        }),
+    );
+    const slow = await startRouteHarness(createModelRoutes(250), env);
     try {
       const url = `${slow.baseUrl}/api/model/complete`;
       const post = (body: unknown): Promise<{ status: number; body: unknown }> =>
         fetchJson(url, { method: "POST", body: JSON.stringify(body) });
 
-      const refusedAt = Date.now();
       expect((await post({})).status).toBe(400);
-      expect(Date.now() - refusedAt).toBeLessThan(200);
+      expect(sleep).not.toHaveBeenCalled();
 
-      const answeredAt = Date.now();
-      expect((await post({ prompt: "hi" })).status).toBe(200);
-      expect(Date.now() - answeredAt).toBeGreaterThanOrEqual(240);
+      let answered = false;
+      const answer = post({ prompt: "hi" }).then((res) => {
+        answered = true;
+        return res;
+      });
+      await waitFor(() => {
+        expect(sleep).toHaveBeenCalledWith(250);
+      });
+      expect(answered).toBe(false);
+      endDelay();
+      expect((await answer).status).toBe(200);
     } finally {
+      endDelay();
       await slow.close();
     }
   });

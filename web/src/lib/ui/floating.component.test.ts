@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { render, screen } from "../../test/component";
 import FloatingHarness from "../../test/ui/FloatingHarness.svelte";
 import { router } from "../router.svelte";
+import { waitFor } from "../../test/wait";
 
 beforeAll(() => {
   router.startForOverlays();
@@ -16,7 +17,7 @@ afterAll(() => {
 afterEach(async () => {
   vi.useRealTimers();
   cleanup();
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect((window.history.state as { overlay?: string } | null)?.overlay).toBeUndefined();
   });
 });

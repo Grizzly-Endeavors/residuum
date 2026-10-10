@@ -8,6 +8,7 @@ import { WebSocket } from "ws";
 import { mockServerPlugin } from "./plugin";
 import { frameText } from "./sockets";
 import { fetchJson } from "./test-support";
+import { waitFor } from "../src/test/wait";
 
 type Middleware = (req: IncomingMessage, res: ServerResponse, next: () => void) => void;
 
@@ -142,7 +143,7 @@ describe("the mock server plugin", () => {
 
   it("starts the artifacts listener, and reports its port through the workbench info", async () => {
     const dev = await start();
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       const info = await fetchJson(`${dev.baseUrl}/api/team/workbench/info`);
       expect((info.body as WorkbenchInfo).port).not.toBeNull();
     });
@@ -158,7 +159,7 @@ describe("the mock server plugin", () => {
   it("closes the artifacts listener with the dev server", async () => {
     const dev = await start();
     let port: number | null = null;
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       const info = await fetchJson(`${dev.baseUrl}/api/team/workbench/info`);
       port = (info.body as WorkbenchInfo).port;
       expect(port).not.toBeNull();
@@ -183,7 +184,7 @@ describe("the mock server plugin", () => {
     ]);
     // The preview server's own middleware, the built app, answers what isn't /api.
     expect((await fetch(`${preview.baseUrl}/index.html`)).status).toBe(404);
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       const info = (await fetchJson(`${preview.baseUrl}/api/team/workbench/info`))
         .body as WorkbenchInfo;
       expect(info.port).not.toBeNull();
@@ -197,7 +198,7 @@ describe("the mock server plugin", () => {
 
   it("forwards the API and the hub socket on the artifacts port, except what artifacts are refused", async () => {
     const dev = await start();
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       const info = await fetchJson(`${dev.baseUrl}/api/team/workbench/info`);
       expect((info.body as WorkbenchInfo).port).not.toBeNull();
     });
@@ -232,7 +233,7 @@ describe("the mock server plugin", () => {
       vi.stubEnv("MOCK_DETERMINISTIC", "1");
       vi.stubEnv("MOCK_ARTIFACTS_PORT", String(port));
       const dev = await start();
-      await vi.waitFor(async () => {
+      await waitFor(async () => {
         const info = (await fetchJson(`${dev.baseUrl}/api/team/workbench/info`))
           .body as WorkbenchInfo;
         expect(info.port).toBe(port);
@@ -251,7 +252,7 @@ describe("the mock server plugin", () => {
       vi.stubEnv("MOCK_DETERMINISTIC", "1");
       vi.stubEnv("MOCK_ARTIFACTS_PORT", String(port));
       const dev = await start();
-      await vi.waitFor(() => {
+      await waitFor(() => {
         expect(
           dev.logged.some((line) => line.includes(`can't listen on port ${String(port)}`)),
         ).toBe(true);

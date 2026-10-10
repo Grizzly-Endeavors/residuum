@@ -69,18 +69,35 @@ function feed(): Feed {
   return { scroll, content, item, button, layout, scroller, scrollTo };
 }
 
+/** Callbacks waiting for the next frame, by the id `requestAnimationFrame` returned. */
+const frameCallbacks = new Map<number, () => void>();
+let nextFrameId = 1;
+
+/** Run the frame: every callback requested before it runs once, and any it requests waits for the next. */
+function runFrames(count: number): void {
+  for (let n = 0; n < count; n++) {
+    const due = [...frameCallbacks.values()];
+    frameCallbacks.clear();
+    for (const callback of due) callback();
+  }
+}
+
 beforeEach(() => {
   vi.useFakeTimers();
-  // A frame is a tick of 16ms here.
-  vi.stubGlobal("requestAnimationFrame", (callback: () => void) => setTimeout(callback, 16));
+  vi.stubGlobal("requestAnimationFrame", (callback: () => void): number => {
+    const id = nextFrameId++;
+    frameCallbacks.set(id, callback);
+    return id;
+  });
   vi.stubGlobal("cancelAnimationFrame", (id: number) => {
-    clearTimeout(id);
+    frameCallbacks.delete(id);
   });
 });
 
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  frameCallbacks.clear();
   ManualObserver.instances = [];
   document.body.innerHTML = "";
 });
@@ -115,12 +132,12 @@ describe("FeedScroller, opening and closing things", () => {
     const { button, layout, scrollTo } = feed();
     button.click();
     place(button, layout, 470);
-    vi.advanceTimersByTime(16);
+    runFrames(1);
     expect(scrollTo).toHaveBeenLastCalledWith({ top: 1530, behavior: "instant" });
     // Back in place, so a later frame leaves it be.
     place(button, layout, 440);
     scrollTo.mockClear();
-    vi.advanceTimersByTime(48);
+    runFrames(3);
     expect(scrollTo).not.toHaveBeenCalled();
   });
 

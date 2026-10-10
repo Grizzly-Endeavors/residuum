@@ -13,6 +13,7 @@ import {
 import { fakeAgentConfig, type FakeAgentConfig } from "../../../test/fake-config";
 import ConnectionsSection from "../ConnectionsSection.svelte";
 import TeamsSetupModal from "./TeamsSetupModal.svelte";
+import { waitFor } from "../../../test/wait";
 
 let agent = "atlas";
 let server: FakeAgentConfig;
@@ -199,7 +200,7 @@ afterEach(() => {
 });
 
 async function waitForModalReady(): Promise<void> {
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(document.querySelector(".loading-state")).toBeNull();
   });
 }
@@ -702,7 +703,7 @@ describe("ConnectionsSection Teams integration", () => {
 
     // Click opens modal
     await fireEvent.click(setupBtn);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByRole("dialog", { name: /Set up Microsoft Teams/i })).toBeTruthy();
     });
   });
@@ -720,7 +721,7 @@ describe("ConnectionsSection Teams integration", () => {
 
     // Click opens modal directly to progress
     await fireEvent.click(viewSetupBtn);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByRole("dialog", { name: /Setting up Microsoft Teams/i })).toBeTruthy();
     });
   });

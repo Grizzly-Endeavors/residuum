@@ -5,6 +5,7 @@ import type { AppLocation } from "../../lib/routes";
 import { toast } from "../../lib/toast.svelte";
 import { jsonResponse, mockFetch, render, screen, settle } from "../../test/component";
 import FilePanelHarness from "../../test/ui/FilePanelHarness.svelte";
+import { waitFor } from "../../test/wait";
 import { panelFile } from "./file-buffer.svelte";
 
 const ATLAS = { agent: "atlas", scope: "agent" } as const;
@@ -88,7 +89,7 @@ describe("the file panel", () => {
   });
 
   it("lists diagnostics, and a diagnostic's line moves the caret there", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.useFakeTimers();
     diagnostics = [
       {
         severity: "error",
@@ -97,13 +98,16 @@ describe("the file panel", () => {
       },
     ];
     render(FilePanelHarness, { source: ATLAS, path: "notes/plan.md" });
-    const editor = await screen.findByRole("textbox", { name: "Contents of plan.md" });
+    const editor = await waitFor(() =>
+      screen.getByRole("textbox", { name: "Contents of plan.md" }),
+    );
     if (!(editor instanceof HTMLTextAreaElement)) throw new Error("the editor is not a text area");
     await vi.advanceTimersByTimeAsync(600);
-    const problems = await screen.findByRole("list", { name: "Problems in plan.md" });
+    const problems = await waitFor(() => screen.getByRole("list", { name: "Problems in plan.md" }));
     expect(problems.textContent).toContain("expected a value");
 
-    await userEvent.click(screen.getByRole("button", { name: "line 2, column 6" }));
+    const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
+    await user.click(screen.getByRole("button", { name: "line 2, column 6" }));
     expect(document.activeElement).toBe(editor);
     expect(editor.selectionStart).toBe("line one\n".length + 5);
     vi.useRealTimers();

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HubClientMessage, HubServerMessage } from "./hub-types";
 import { SessionRun, type SessionRelayLink } from "./session-run.svelte";
 import type { RecentMessage, ServerMessage, SessionSummary } from "./types";
+import { waitFor } from "../test/wait";
 
 const ADDRESS = "spawned-research-3f9a";
 
@@ -105,7 +106,7 @@ async function opened(
   const relay = new FakeRelay();
   const run = new SessionRun("atlas", "run-1", known, relay);
   const close = run.open();
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(run.loaded).toBe(true);
   });
   return { run, relay, close };
@@ -132,11 +133,11 @@ describe("following a run through the hub's session relay", () => {
     const { relay } = await opened({ address: ADDRESS });
     expect(requests).toHaveLength(1);
     relay.emit({ type: "subscribed", kind: "session", agent: "atlas", address: ADDRESS });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(requests).toHaveLength(2);
     });
     relay.emit({ type: "session_relay_lagged" });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(requests).toHaveLength(3);
     });
   });
@@ -419,7 +420,7 @@ describe("the run's commands", () => {
     });
     await sending;
     release();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(run.loaded).toBe(true);
     });
     expect(run.runId).toBe("run-2");

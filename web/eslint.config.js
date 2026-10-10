@@ -115,6 +115,50 @@ export default tseslint.config(
             "Wait for the condition the next step depends on (a web-first assertion, expect.poll, or a helper in e2e/support), not for time to pass.",
         },
       ],
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "CallExpression[callee.name='setTimeout'], CallExpression[callee.object.name=/^(globalThis|window|self)$/][callee.property.name='setTimeout']",
+          message:
+            "Don't start a timer in an end-to-end spec. Wait for the condition the next step depends on (a web-first assertion, expect.poll, or a helper in e2e/support), not for time to pass.",
+        },
+      ],
+    },
+  },
+
+  // ── Unit and component tests wait on conditions ─────────────────────
+  // A wait that ends on elapsed time passes on a quiet machine and fails on a
+  // loaded one. `waitFor` (src/test/wait.ts) ends on the condition it checks,
+  // under the hang guard. Fake timers stand still until a test advances them;
+  // `shouldAdvanceTime` lets real time run them again, so it is banned too.
+  // A zero delay only flushes a macrotask, and stays allowed.
+  {
+    files: ["src/**/*.test.ts", "mock/**/*.test.ts"],
+    rules: {
+      "no-restricted-properties": [
+        "error",
+        {
+          object: "vi",
+          property: "waitFor",
+          message:
+            "Wait with `waitFor` from src/test/wait.ts, which ends on its condition under the hang guard. `vi.waitFor` has a one-second default and no guard.",
+        },
+      ],
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "Property[key.name='shouldAdvanceTime'], Property[key.value='shouldAdvanceTime']",
+          message:
+            "Don't let real time advance fake timers. Use plain `vi.useFakeTimers()` and step the clock with `vi.advanceTimersByTimeAsync`, or wait with `waitFor` from src/test/wait.ts.",
+        },
+        {
+          selector:
+            "CallExpression[callee.name='setTimeout'][arguments.1]:not([arguments.1.value=0]), CallExpression[callee.object.name=/^(globalThis|window|self)$/][callee.property.name='setTimeout'][arguments.1]:not([arguments.1.value=0])",
+          message:
+            "Don't wait on a timer with a delay in a test. Wait for the condition with `waitFor` from src/test/wait.ts, or step fake time with `vi.advanceTimersByTimeAsync`. Only a zero delay (a macrotask flush) is allowed.",
+        },
+      ],
     },
   },
 

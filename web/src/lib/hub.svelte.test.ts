@@ -5,6 +5,7 @@ import { notifications } from "./notifications.svelte";
 import { toast } from "./toast.svelte";
 import { activityFrame, snapshot } from "../test/hub-frames";
 import type { AgentActivity, AgentSummary, DeletedAgent } from "./hub-types";
+import { waitFor } from "../test/wait";
 
 function agent(name: string, overrides: Partial<AgentSummary> = {}): AgentSummary {
   return {
@@ -720,7 +721,7 @@ describe("HubStore deleted agents", () => {
     await hub.refreshDeleted();
     fetchMock.mockClear();
     hub.handleFrame({ type: "agent_deleted", name: "nova", by: "agent:scout" });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(fetchMock.mock.calls.map((call) => call[0])).toEqual(["/api/hub/agents/deleted"]);
     });
   });
@@ -740,7 +741,7 @@ describe("HubStore deleted agents", () => {
     );
     expect(deletedToast?.action?.label).toBe("Undo");
     toast.runAction(deletedToast?.id ?? -1);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(hub.agent("nova")?.state).toBe("running");
     });
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/hub/agents/restore");
