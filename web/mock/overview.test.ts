@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { OutboundA2aTaskSummary, PulseInfo } from "../src/lib/generated/protocol";
 import type { AgentOverview, OverviewResponse } from "../src/lib/hub-types";
 import { MOCK_DETERMINISTIC_BOOT_ID } from "./constants";
@@ -20,6 +20,7 @@ import {
   type MockServerHarness,
   type TestSocket,
 } from "./test-support";
+import { waitFor } from "../src/test/wait";
 
 describe("a preview", () => {
   it("drops markdown syntax and keeps the words, as the backend's does", () => {
@@ -331,12 +332,9 @@ describe("the outbound problems of an overview", () => {
       const { problems, frames } = watching(env, 150);
       expect(problems()).toEqual([0]);
 
-      await vi.waitFor(
-        () => {
-          expect(frames).toHaveLength(1);
-        },
-        { timeout: 4000 },
-      );
+      await waitFor(() => {
+        expect(frames).toHaveLength(1);
+      });
 
       expect(frames[0]?.outbound_problems.map((problem) => problem.task_id)).toEqual(["task-1"]);
       env.reset();

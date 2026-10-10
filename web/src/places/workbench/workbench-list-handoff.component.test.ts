@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../../test/component";
 import { WorkbenchList } from "./workbench-list.svelte";
+import { waitFor } from "../../test/wait";
 
 // Through Residuum Cloud, opening an artifact first trades a handoff token for
 // the workbench host's own credential; locally the link works as it is.
@@ -54,7 +55,7 @@ describe("opening an artifact through Residuum Cloud", () => {
     const { event, prevented } = click();
     bench.open(event, "notes");
     expect(prevented()).toBe(true);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(tab.location.href).toBe(
         "https://bear.workbench.agent-residuum.com/_handoff#token=tok&next=%2Fnotes%2F",
       );
@@ -67,7 +68,7 @@ describe("opening an artifact through Residuum Cloud", () => {
     const bench = list(RELAY.ui_origin);
     await bench.load();
     bench.open(click().event, "notes");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(tab.close).toHaveBeenCalled();
     });
     expect(tab.location.href).toBe("");

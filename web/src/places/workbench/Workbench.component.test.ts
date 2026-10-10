@@ -17,6 +17,7 @@ import { toast } from "../../lib/toast.svelte";
 import type { ArtifactSummary, WorkbenchInfo } from "../../lib/types";
 import Workbench from "./Workbench.svelte";
 import { CHANGE_GLOW_MS } from "./workbench-list.svelte";
+import { waitFor } from "../../test/wait";
 
 const tip: ArtifactSummary = {
   name: "tip-splitter",
@@ -182,7 +183,7 @@ describe("Workbench", () => {
     bench.artifacts = [tip];
     hub.handleFrame({ type: "hub_boot", boot_id: "boot-2" });
     await settle();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(resolve).toHaveBeenLastCalledWith(["tip-splitter"]);
     });
   });
@@ -241,7 +242,7 @@ describe("Workbench", () => {
 
     await user.click(screen.getByRole("button", { name: "More for Tip Splitter" }));
     await user.click(await screen.findByRole("menuitem", { name: "Delete" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.queryByText("Tip Splitter")).toBeNull();
     });
     expect(bench.requests).toContain("DELETE /api/team/workbench/artifacts/tip-splitter");
@@ -263,7 +264,7 @@ describe("Workbench", () => {
 
     writeText.mockImplementation(() => Promise.reject(new Error("not allowed")));
     await user.click(screen.getByRole("button", { name: "Copy link" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       const messages = [...toast.toasts.values()].map((t) => t.message);
       expect(messages).toContain(
         "Couldn't copy the link. Here it is to copy by hand: http://localhost:7702/tip-splitter/",

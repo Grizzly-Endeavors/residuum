@@ -6,6 +6,7 @@ import { FeedStore } from "../lib/feed.svelte";
 import { router } from "../lib/router.svelte";
 import type { FeedItem } from "../lib/types";
 import FeedItemView from "./FeedItemView.svelte";
+import { waitFor } from "../test/wait";
 
 // A picture from the conversation, opened full size in a modal layer.
 
@@ -51,7 +52,7 @@ beforeEach(() => {
 // let it land before the next test opens anything.
 afterEach(async () => {
   cleanup();
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect((window.history.state as { overlay?: string } | null)?.overlay).toBeUndefined();
   });
   await act(() => new Promise((resolve) => setTimeout(resolve, 20)));

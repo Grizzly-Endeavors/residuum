@@ -7,6 +7,7 @@ import {
   type InstallOffer,
   type InstallWindow,
 } from "./install";
+import { waitFor } from "../test/wait";
 
 const DESKTOP: InstallNavigator = {
   userAgent: "Mozilla/5.0 (X11; Linux x86_64) Chrome/140.0",
@@ -124,7 +125,7 @@ describe("watchInstallOffer", () => {
     const { offer, target, reportFailure } = watch();
     target.dispatchEvent(promptEvent(() => Promise.reject(new Error("already used"))));
     offer.install?.();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(reportFailure).toHaveBeenCalledWith(
         expect.stringContaining("Couldn't open the install prompt"),
       );

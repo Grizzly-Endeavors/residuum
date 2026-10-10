@@ -4,6 +4,7 @@ import { htmlSnippet } from "../test/snippets";
 import type { FeedItem } from "../lib/types";
 import type { FeedHistory } from "./feed-history";
 import Feed from "./Feed.svelte";
+import { waitFor } from "../test/wait";
 
 class NoObserver {
   observe(): void {}
@@ -187,7 +188,7 @@ describe("Feed", () => {
       label: "Conversation with atlas",
       history,
     });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(loadOlder).toHaveBeenCalledTimes(3);
     });
     expect(history.hasMore).toBe(false);

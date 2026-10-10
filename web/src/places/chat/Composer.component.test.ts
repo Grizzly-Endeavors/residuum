@@ -11,6 +11,7 @@ import {
   stubWebSocket,
 } from "../../test/component";
 import Composer from "./Composer.svelte";
+import { waitFor } from "../../test/wait";
 
 let unregister: () => void = () => {};
 const summarize = vi.fn();
@@ -113,7 +114,7 @@ describe("sending", () => {
     const picker = document.querySelector<HTMLInputElement>('input[type="file"]');
     if (picker === null) throw new Error("no file picker");
     await userEvent.upload(picker, new File(["png"], "shot.png", { type: "image/png" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getAllByRole("img")).toHaveLength(1);
     });
     await userEvent.type(box, "/stop now{Enter}");
@@ -269,7 +270,7 @@ describe("images", () => {
     const picker = document.querySelector<HTMLInputElement>('input[type="file"]');
     if (picker === null) throw new Error("no file picker");
     await userEvent.upload(picker, [png("a.png"), png("b.png")]);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getAllByRole("img")).toHaveLength(2);
     });
     await userEvent.click(screen.getByRole("button", { name: "Remove image 2" }));
