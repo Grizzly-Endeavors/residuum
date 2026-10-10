@@ -70,7 +70,7 @@ describe("Setup wizard", () => {
     await user.type(screen.getByLabelText("Anthropic API key"), "sk-secret");
     expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
 
-    // vi.waitFor moves the faked clock by its interval on every check.
+    // waitFor moves the faked clock by its interval on every check, which lets the draft save run.
     await waitFor(() => {
       expect(JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "null")).toMatchObject({ step: 1 });
     });

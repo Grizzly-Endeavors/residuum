@@ -13,7 +13,7 @@ import { waitFor } from "../../test/wait";
 
 /** Let the history traversals an overlay started land. */
 async function settleHistory(): Promise<void> {
-  await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+  await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
 }
 
 function scrim(): HTMLElement {

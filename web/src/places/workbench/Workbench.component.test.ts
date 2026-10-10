@@ -130,7 +130,7 @@ describe("Workbench", () => {
   });
 
   it("disables Open while pages can't open, and reads again until they can", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.useFakeTimers();
     const bench = serveBench({
       info: { port: null, unavailable_reason: "Port 7702 is taken.", relay: null },
     });
@@ -157,7 +157,7 @@ describe("Workbench", () => {
   });
 
   it("marks a page an agent changes as updating now, reads the list again, and settles", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.useFakeTimers();
     const bench = serveBench();
     render(Workbench, { artifact: null });
     await settle();

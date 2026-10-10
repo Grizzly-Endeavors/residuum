@@ -55,7 +55,7 @@ afterEach(async () => {
   await waitFor(() => {
     expect((window.history.state as { overlay?: string } | null)?.overlay).toBeUndefined();
   });
-  await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+  await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
 });
 
 describe("opening a message's images full size", () => {

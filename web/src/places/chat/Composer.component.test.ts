@@ -298,7 +298,7 @@ describe("stopping the reply with Esc", () => {
   const HINT = "Press Esc again to stop";
 
   beforeEach(() => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.useFakeTimers();
   });
 
   afterEach(() => {

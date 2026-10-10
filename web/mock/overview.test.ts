@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OutboundA2aTaskSummary, PulseInfo } from "../src/lib/generated/protocol";
 import type { AgentOverview, OverviewResponse } from "../src/lib/hub-types";
 import { MOCK_DETERMINISTIC_BOOT_ID } from "./constants";
@@ -62,6 +62,10 @@ describe("a preview", () => {
 });
 
 describe("the overview of a stub hub", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("is the agents by name, a stopped one that never ran with nothing scheduled and no outbound problems", () => {
     const hub = createStubHub(createMockEnv({ deterministic: true }));
     hub.createAgent("scout");
@@ -77,6 +81,7 @@ describe("the overview of a stub hub", () => {
   });
 
   it("gathers a burst of changes into one frame that shows the last state", async () => {
+    vi.useFakeTimers();
     const env = createMockEnv({ deterministic: true });
     const hub = createStubHub(env);
     const scout = hub.createAgent("scout");
@@ -100,7 +105,7 @@ describe("the overview of a stub hub", () => {
       });
       overview.changed(scout);
     }
-    await new Promise((done) => setTimeout(done, 20));
+    await vi.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
 
     expect(frames.map((frame) => frame.inbox_unread)).toEqual([before + 5]);
     expect(COALESCE_WINDOW_MS).toBe(1000);
@@ -304,6 +309,10 @@ describe("the outbound problems of an overview", () => {
   });
 
   describe("when a streak passes the threshold with nothing to announce it", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
     const unreachableUntilNotice = (env: MockEnv, aheadMs: number): OutboundA2aTaskSummary => ({
       ...task("task-1", "laptop", null, env),
       unreachable_since: new Date(env.clock.now() - OUTBOUND_NOTICE_MS + aheadMs).toISOString(),
@@ -341,12 +350,14 @@ describe("the outbound problems of an overview", () => {
     });
 
     it("waits for a clock that has not got there, and keeps no timer spinning", async () => {
+      vi.useFakeTimers();
       const env = createMockEnv({ deterministic: true });
       const { problems, frames } = watching(env, 150);
       expect(problems()).toEqual([0]);
 
-      await new Promise((done) => setTimeout(done, 50));
+      await vi.advanceTimersByTimeAsync(COALESCE_WINDOW_MS);
       expect(frames).toEqual([]);
+      expect(vi.getTimerCount()).toBe(0);
 
       env.clock.advance(200);
       expect(problems()).toEqual([1]);

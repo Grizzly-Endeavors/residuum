@@ -1,3 +1,4 @@
+import { act } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, settle } from "../test/component";
 import { htmlSnippet } from "../test/snippets";
@@ -203,7 +204,10 @@ describe("Feed", () => {
       label: "Conversation with atlas",
       history: { hasMore: true, loadingOlder: false, generation: 0, loadOlder },
     });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitFor(() => {
+      expect(loadOlder).toHaveBeenCalled();
+    });
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
     // The observer and the history's change each try once; a failure doesn't chain into more.
     expect(loadOlder.mock.calls.length).toBeGreaterThan(0);
     expect(loadOlder.mock.calls.length).toBeLessThanOrEqual(2);
