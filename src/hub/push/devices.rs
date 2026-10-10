@@ -31,6 +31,9 @@ struct DevicesFile {
 pub(super) struct DeviceStore {
     path: PathBuf,
     write_lock: tokio::sync::Mutex<()>,
+    /// Bumped after every change is saved, so a waiting retry can check
+    /// whether its device is still there.
+    changes: tokio::sync::watch::Sender<u64>,
 }
 
 impl DeviceStore {
@@ -38,7 +41,13 @@ impl DeviceStore {
         Self {
             path,
             write_lock: tokio::sync::Mutex::new(()),
+            changes: tokio::sync::watch::channel(0).0,
         }
+    }
+
+    /// Changes as they are saved: the value moves on after each one.
+    pub(super) fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changes.subscribe()
     }
 
     /// Every device, oldest first. A missing file holds no devices.
@@ -82,6 +91,7 @@ impl DeviceStore {
                     self.path.display()
                 ))
             })?;
+        self.changes.send_modify(|version| *version += 1);
         Ok(Some(result))
     }
 }

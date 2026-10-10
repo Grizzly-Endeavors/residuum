@@ -35,6 +35,67 @@ const UNNAMED_DEVICE: &str = "Unnamed device";
 /// failing at once.
 const NOTICE_CAPACITY: usize = 16;
 
+/// How many delivery reports a slow follower can fall behind by before it
+/// misses some, which it is told.
+const REPORT_CAPACITY: usize = 256;
+
+/// What became of one background delivery to one device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeliveryOutcome {
+    /// The first try failed in a way that may pass; one retry follows
+    /// `after` this long, unless the device is removed or re-registered
+    /// first.
+    RetryScheduled {
+        after: Duration,
+        status: Option<u16>,
+    },
+    /// The push service accepted the notification.
+    Delivered { retried: bool },
+    /// The notification wasn't delivered; the device records why.
+    Failed { status: Option<u16>, retried: bool },
+    /// The push service no longer knows the device, so it was removed.
+    DeviceGone,
+    /// The device was removed or re-registered while the retry waited, so
+    /// the notification was dropped.
+    DroppedDeviceChanged,
+}
+
+impl DeliveryOutcome {
+    /// Whether the delivery is over: every outcome but a scheduled retry.
+    #[must_use]
+    pub fn is_final(&self) -> bool {
+        !matches!(self, Self::RetryScheduled { .. })
+    }
+}
+
+/// A step of one background delivery, as [`PushService::subscribe_deliveries`]
+/// reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeliveryReport {
+    pub device_id: String,
+    pub event: PushEvent,
+    /// The notification's tag, which tells one notification from another.
+    pub tag: String,
+    pub outcome: DeliveryOutcome,
+}
+
+/// Counts one background delivery (or one notification's fan-out) as under
+/// way until dropped.
+struct PendingDelivery(Arc<watch::Sender<usize>>);
+
+impl PendingDelivery {
+    fn start(pending: &Arc<watch::Sender<usize>>) -> Self {
+        pending.send_modify(|count| *count += 1);
+        Self(Arc::clone(pending))
+    }
+}
+
+impl Drop for PendingDelivery {
+    fn drop(&mut self) {
+        self.0.send_modify(|count| *count = count.saturating_sub(1));
+    }
+}
+
 /// Web Push for the whole hub: registered devices, the signing key, and
 /// sending.
 ///
@@ -52,6 +113,10 @@ pub struct PushService {
     retry_delay: Duration,
     presence: Arc<Presence>,
     notices: broadcast::Sender<String>,
+    reports: broadcast::Sender<DeliveryReport>,
+    /// Background deliveries not yet over, counting a notification's
+    /// fan-out until it has started a delivery for each of its devices.
+    pending: Arc<watch::Sender<usize>>,
 }
 
 impl PushService {
@@ -59,12 +124,19 @@ impl PushService {
     /// files it keeps there. `contact` is the hub config's `[push] contact`.
     #[must_use]
     pub fn new(hub_dir: &Path, contact: Option<&str>) -> Arc<Self> {
-        Arc::new(Self::build(hub_dir, contact, RETRY_DELAY))
+        Self::with_retry_delay(hub_dir, contact, RETRY_DELAY)
     }
 
-    fn build(hub_dir: &Path, contact: Option<&str>, retry_delay: Duration) -> Self {
+    /// [`Self::new`], with a failure that may pass retried after
+    /// `retry_delay` rather than the usual 30 seconds.
+    #[must_use]
+    pub(crate) fn with_retry_delay(
+        hub_dir: &Path,
+        contact: Option<&str>,
+        retry_delay: Duration,
+    ) -> Arc<Self> {
         let paths = HubPaths::new(hub_dir);
-        Self {
+        Arc::new(Self {
             key_path: paths.push_vapid_key(),
             store: DeviceStore::new(paths.push_devices_json()),
             key: OnceCell::new(),
@@ -72,7 +144,36 @@ impl PushService {
             retry_delay,
             presence: Presence::new(),
             notices: broadcast::channel(NOTICE_CAPACITY).0,
-        }
+            reports: broadcast::channel(REPORT_CAPACITY).0,
+            pending: Arc::new(watch::channel(0).0),
+        })
+    }
+
+    /// Follow every background delivery: a report when one schedules its
+    /// retry, and one when it is over. A receiver hears the deliveries
+    /// reported after it subscribes.
+    #[must_use]
+    pub fn subscribe_deliveries(&self) -> broadcast::Receiver<DeliveryReport> {
+        self.reports.subscribe()
+    }
+
+    /// How many background deliveries are still under way, a retry that is
+    /// waiting included.
+    #[must_use]
+    pub fn deliveries_pending(&self) -> watch::Receiver<usize> {
+        self.pending.subscribe()
+    }
+
+    fn report(&self, device: &PushDevice, message: &PushMessage, outcome: DeliveryOutcome) {
+        // Nobody following is the normal state.
+        self.reports
+            .send(DeliveryReport {
+                device_id: device.id.clone(),
+                event: message.payload.event,
+                tag: message.payload.tag.clone(),
+                outcome,
+            })
+            .ok();
     }
 
     /// Use `contact` (the hub config's `[push] contact`) as the VAPID `sub`
@@ -280,7 +381,9 @@ impl PushService {
     /// caller, and what goes wrong is logged and recorded on the device.
     pub fn notify(self: &Arc<Self>, message: PushMessage, skip: HashSet<String>) {
         let service = Arc::clone(self);
+        let fan_out = PendingDelivery::start(&self.pending);
         crate::util::spawn_in_span(async move {
+            let _fan_out = fan_out;
             let devices = match service.store.read().await {
                 Ok(devices) => devices,
                 Err(e) => {
@@ -294,7 +397,9 @@ impl PushService {
             }) {
                 let service = Arc::clone(&service);
                 let message = Arc::clone(&message);
+                let delivery = PendingDelivery::start(&service.pending);
                 crate::util::spawn_in_span(async move {
+                    let _delivery = delivery;
                     service.deliver(stored, &message, true).await;
                 });
             }
@@ -323,27 +428,73 @@ impl PushService {
                 retry_in_secs = self.retry_delay.as_secs(),
                 "push delivery failed, retrying once"
             );
-            tokio::time::sleep(self.retry_delay).await;
-            // The device may have been removed or re-registered meanwhile.
-            match self.current_subscription(&stored.device.id).await {
-                Some(current) if current == stored.subscription => {
-                    attempt = self.attempt(&stored.subscription, message).await;
-                    retried = true;
-                }
-                _ => {
-                    tracing::debug!(device = %stored.device.label, "the device changed while a push waited to be retried, so it was dropped");
-                    return PushTestResult {
-                        delivered: false,
-                        error: Some(
-                            "The device changed before the notification could be sent again."
-                                .to_string(),
-                        ),
-                    };
+            self.report(
+                &stored.device,
+                message,
+                DeliveryOutcome::RetryScheduled {
+                    after: self.retry_delay,
+                    status: first.status,
+                },
+            );
+            if !self.wait_for_retry(&stored).await {
+                tracing::debug!(device = %stored.device.label, "the device changed while a push waited to be retried, so it was dropped");
+                self.report(
+                    &stored.device,
+                    message,
+                    DeliveryOutcome::DroppedDeviceChanged,
+                );
+                return PushTestResult {
+                    delivered: false,
+                    error: Some(
+                        "The device changed before the notification could be sent again."
+                            .to_string(),
+                    ),
+                };
+            }
+            attempt = self.attempt(&stored.subscription, message).await;
+            retried = true;
+        }
+        let (result, outcome) = self
+            .conclude(&stored.device, attempt, retried, background)
+            .await;
+        if background {
+            self.report(&stored.device, message, outcome);
+        }
+        result
+    }
+
+    /// Wait out the retry delay for `stored`. `false` as soon as the device
+    /// is removed or re-registered, which drops the retry then rather than
+    /// at the deadline.
+    async fn wait_for_retry(&self, stored: &StoredDevice) -> bool {
+        let deadline = tokio::time::Instant::now() + self.retry_delay;
+        // Subscribed before the first check, so a change between the two
+        // still wakes the wait.
+        let mut changes = self.store.subscribe_changes();
+        if !self.still_registered(stored).await {
+            return false;
+        }
+        loop {
+            tokio::select! {
+                () = tokio::time::sleep_until(deadline) => break,
+                seen = changes.changed() => {
+                    if seen.is_err() {
+                        break;
+                    }
+                    if !self.still_registered(stored).await {
+                        return false;
+                    }
                 }
             }
         }
-        self.conclude(&stored.device, attempt, retried, background)
+        self.still_registered(stored).await
+    }
+
+    /// Whether `stored` is still registered with the same subscription.
+    async fn still_registered(&self, stored: &StoredDevice) -> bool {
+        self.current_subscription(&stored.device.id)
             .await
+            .is_some_and(|current| current == stored.subscription)
     }
 
     async fn current_subscription(&self, id: &str) -> Option<WebPushSubscription> {
@@ -389,7 +540,7 @@ impl PushService {
         attempt: Attempt,
         retried: bool,
         background: bool,
-    ) -> PushTestResult {
+    ) -> (PushTestResult, DeliveryOutcome) {
         match attempt {
             Attempt::Delivered => {
                 if retried {
@@ -397,10 +548,13 @@ impl PushService {
                 }
                 self.record(&device.id, |d| d.last_success_at = Some(Utc::now()))
                     .await;
-                PushTestResult {
-                    delivered: true,
-                    error: None,
-                }
+                (
+                    PushTestResult {
+                        delivered: true,
+                        error: None,
+                    },
+                    DeliveryOutcome::Delivered { retried },
+                )
             }
             Attempt::Gone => {
                 tracing::warn!(device = %device.label, "the push service no longer knows this device, so it was removed");
@@ -412,14 +566,17 @@ impl PushService {
                         device.label
                     ));
                 }
-                PushTestResult {
-                    delivered: false,
-                    error: Some(
-                        "This device's notifications were turned off or expired, so it was \
-                         removed from the list. Turn notifications on again on that device."
-                            .to_string(),
-                    ),
-                }
+                (
+                    PushTestResult {
+                        delivered: false,
+                        error: Some(
+                            "This device's notifications were turned off or expired, so it was \
+                             removed from the list. Turn notifications on again on that device."
+                                .to_string(),
+                        ),
+                    },
+                    DeliveryOutcome::DeviceGone,
+                )
             }
             Attempt::Retryable(failure) | Attempt::Rejected(failure) => {
                 tracing::warn!(
@@ -444,10 +601,16 @@ impl PushService {
                         device.label, failure.message
                     ));
                 }
-                PushTestResult {
-                    delivered: false,
-                    error: Some(failure.message),
-                }
+                (
+                    PushTestResult {
+                        delivered: false,
+                        error: Some(failure.message),
+                    },
+                    DeliveryOutcome::Failed {
+                        status: failure.status,
+                        retried,
+                    },
+                )
             }
         }
     }
@@ -569,11 +732,12 @@ mod tests {
     use super::*;
     use crate::hub::push::encrypt::browser::Browser;
     use crate::hub::push::types::PushPreferencesPatch;
+    use crate::testing::wait;
 
     const FAST_RETRY: Duration = Duration::from_millis(40);
 
     fn service_in(dir: &tempfile::TempDir, retry_delay: Duration) -> Arc<PushService> {
-        Arc::new(PushService::build(dir.path(), None, retry_delay))
+        PushService::with_retry_delay(dir.path(), None, retry_delay)
     }
 
     fn put(endpoint: &str, browser: &Browser, label: &str) -> PutPushDeviceRequest {
@@ -609,21 +773,20 @@ mod tests {
             .find(|d| d.id == id)
     }
 
-    /// Wait for the device to reach the state `done` describes, as a
-    /// background delivery records its result.
+    /// Wait until no background delivery is under way, then read the device
+    /// and check it reached the state `done` describes.
     async fn settle(
         service: &PushService,
         id: &str,
         done: impl Fn(Option<&PushDevice>) -> bool,
     ) -> Option<PushDevice> {
-        for _ in 0..250 {
-            let device = find(service, id).await;
-            if done(device.as_ref()) {
-                return device;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        panic!("the device never reached the expected state");
+        until_deliveries_finish(service).await;
+        let device = find(service, id).await;
+        assert!(
+            done(device.as_ref()),
+            "the device didn't reach the expected state: {device:?}"
+        );
+        device
     }
 
     fn sample_message(event: PushEvent) -> PushMessage {
@@ -950,7 +1113,7 @@ mod tests {
 
         assert!(!result.delivered);
         assert!(result.error.unwrap().contains("503"));
-        tokio::time::sleep(FAST_RETRY * 4).await;
+        until_deliveries_finish(&service).await;
         assert_eq!(requests_to(&server).await, 1, "a test is never retried");
         let after = find(&service, &device.id).await.unwrap();
         assert_eq!(after.last_failure.unwrap().status, Some(503));
@@ -1024,7 +1187,6 @@ mod tests {
         assert_eq!(failure.status, Some(503));
         assert!(failure.message.contains("503"), "{failure:?}");
         assert!(failed.last_success_at.is_none());
-        tokio::time::sleep(FAST_RETRY * 4).await;
         assert_eq!(requests_to(&server).await, 2, "one try and one retry");
     }
 
@@ -1044,7 +1206,6 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(failed.last_failure.unwrap().status, Some(403));
-        tokio::time::sleep(FAST_RETRY * 4).await;
         assert_eq!(requests_to(&server).await, 1);
     }
 
@@ -1142,7 +1303,6 @@ mod tests {
             d.is_some_and(|d| d.last_success_at.is_some())
         })
         .await;
-        tokio::time::sleep(FAST_RETRY * 2).await;
         assert_eq!(requests_to(&wants).await, 1);
         assert_eq!(requests_to(&declines).await, 0, "inbox_item is off");
         assert_eq!(requests_to(&present).await, 0, "skipped as present");
@@ -1153,21 +1313,28 @@ mod tests {
         let server = MockServer::start().await;
         accepts(&server, 503).await;
         let dir = tempfile::tempdir().unwrap();
-        // The retry wait has to outlast noticing the first request and
-        // deleting the device, even on a loaded machine.
-        let service = service_in(&dir, Duration::from_secs(2));
+        // Long enough that only the removal can end the wait.
+        let service = service_in(&dir, Duration::from_secs(3600));
         let device = register(&service, &server, "Laptop").await;
+        let mut reports = service.subscribe_deliveries();
 
         service.notify(sample_message(PushEvent::InboxItem), HashSet::new());
-        for _ in 0..250 {
-            if requests_to(&server).await == 1 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        wait::next_where("the retry to be scheduled", &mut reports, |report| {
+            matches!(report.outcome, DeliveryOutcome::RetryScheduled { .. })
+        })
+        .await;
         service.delete_device(&device.id).await.unwrap();
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        let dropped = wait::next_where("the delivery to end", &mut reports, |report| {
+            report.outcome.is_final()
+        })
+        .await;
 
+        assert_eq!(
+            dropped.last().unwrap().outcome,
+            DeliveryOutcome::DroppedDeviceChanged,
+            "the removal ends the wait at once"
+        );
+        until_deliveries_finish(&service).await;
         assert_eq!(
             requests_to(&server).await,
             1,
@@ -1176,15 +1343,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn background_deliveries_report_each_step() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        accepts(&server, 201).await;
+        let dir = tempfile::tempdir().unwrap();
+        let service = service_in(&dir, FAST_RETRY);
+        let device = register(&service, &server, "Laptop").await;
+        let mut reports = service.subscribe_deliveries();
+
+        service.notify(sample_message(PushEvent::InboxItem), HashSet::new());
+        let steps = wait::next_where("the delivery to end", &mut reports, |report| {
+            report.outcome.is_final()
+        })
+        .await;
+
+        let outcomes: Vec<&DeliveryOutcome> = steps.iter().map(|step| &step.outcome).collect();
+        assert_eq!(
+            outcomes,
+            [
+                &DeliveryOutcome::RetryScheduled {
+                    after: FAST_RETRY,
+                    status: Some(503)
+                },
+                &DeliveryOutcome::Delivered { retried: true },
+            ]
+        );
+        let last = steps.last().unwrap();
+        assert_eq!(last.device_id, device.id);
+        assert_eq!(last.event, PushEvent::InboxItem);
+        assert_eq!(last.tag, "tag");
+        until_deliveries_finish(&service).await;
+        assert_eq!(*service.deliveries_pending().borrow(), 0);
+    }
+
+    #[tokio::test]
     async fn the_contact_becomes_the_sub_claim_and_falls_back_to_the_project() {
         let server = MockServer::start().await;
         accepts(&server, 201).await;
         let dir = tempfile::tempdir().unwrap();
-        let service = Arc::new(PushService::build(
-            dir.path(),
-            Some("mailto:bear@example.com"),
-            FAST_RETRY,
-        ));
+        let service =
+            PushService::with_retry_delay(dir.path(), Some("mailto:bear@example.com"), FAST_RETRY);
         let device = register(&service, &server, "Laptop").await;
 
         service.send_test(&device.id, 0).await.unwrap();
@@ -1278,24 +1481,20 @@ mod tests {
     /// on a clock; the bound turns a notice that never comes into a failure
     /// instead of a hang.
     async fn next_notice(notices: &mut broadcast::Receiver<String>) -> String {
-        tokio::time::timeout(Duration::from_secs(30), notices.recv())
-            .await
-            .expect("no notice reached the user")
-            .expect("the notice channel closed")
+        wait::next("a notice for the user", notices).await
     }
 
-    /// Wait until every background delivery has finished. Each one holds a
-    /// clone of the service until it has recorded its result and told the
-    /// user, so once the test's own handle is the only one left, no notice is
-    /// still to come.
-    async fn until_deliveries_finish(service: &Arc<PushService>) {
-        tokio::time::timeout(Duration::from_secs(30), async {
-            while Arc::strong_count(service) > 1 {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("a background delivery never finished");
+    /// Wait until every background delivery has finished, which is after
+    /// it has recorded its result and told the user, so no notice is still
+    /// to come.
+    async fn until_deliveries_finish(service: &PushService) {
+        let mut pending = service.deliveries_pending();
+        wait::watch_until(
+            "the background deliveries to finish",
+            &mut pending,
+            |count| *count == 0,
+        )
+        .await;
     }
 
     /// Assert that the user has been told nothing since the last notice read,
