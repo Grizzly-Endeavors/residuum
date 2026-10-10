@@ -49,6 +49,11 @@ release: web-build
 test *args: _web-dist
     cargo test --quiet {{ args }}
 
+# Run the tests under load: two copies at once plus CPU burners (STRESS_COPIES, STRESS_ROUNDS, STRESS_BURN); args are a libtest filter, e.g. `just stress hub::`
+[group('rust')]
+stress *args: _web-dist
+    scripts/stress-tests.sh {{ args }}
+
 # Run the remote access tests that start Pebble (the Let's Encrypt test CA) in Docker
 [group('rust')]
 pebble: _web-dist
