@@ -743,7 +743,7 @@ fn the_start_of_the_hub_is_the_first_entry_and_points_nowhere() {
     assert_eq!((event.agent.as_deref(), &event.target), (None, &None));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn the_running_recorder_reads_both_sources_until_it_is_dropped() {
     let log = TeamEventLog::new("boot");
     let (events, _keep) = tokio::sync::broadcast::channel(16);
@@ -767,10 +767,7 @@ async fn the_running_recorder_reads_both_sources_until_it_is_dropped() {
 
     let mut kinds = Vec::new();
     for _ in 0..2 {
-        let entry = tokio::time::timeout(std::time::Duration::from_secs(5), entries_seen.recv())
-            .await
-            .expect("an entry arrives")
-            .unwrap();
+        let entry = crate::testing::wait::next("a team event entry", &mut entries_seen).await;
         kinds.push(entry.kind);
     }
     kinds.sort_by_key(|kind| format!("{kind:?}"));
@@ -788,7 +785,9 @@ async fn the_running_recorder_reads_both_sources_until_it_is_dropped() {
             agent: None,
         })
         .unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Nothing else can run on a paused clock, so once this returns the
+    // recorder has handled everything it was sent.
+    crate::testing::clock::elapse(std::time::Duration::from_millis(50)).await;
     assert_eq!(
         log.page(&PageQuery::default()).events.len(),
         2,

@@ -130,14 +130,14 @@ fn build_team_embedding(source: &EmbeddingSource) -> Option<Arc<dyn EmbeddingPro
     }
 }
 
-/// Bind the HTTP server and serve `app` on it.
+/// Bind the gateway's address from its config. The hub serves on the bound
+/// listener, so binding happens before the hub's other services start.
 ///
 /// # Errors
 /// Returns `FatalError::Gateway` if the address cannot be bound.
-async fn spawn_http_server(
+async fn bind_gateway(
     gateway: &crate::config::GatewayConfig,
-    app: axum::Router,
-) -> Result<HttpServer, FatalError> {
+) -> Result<tokio::net::TcpListener, FatalError> {
     let addr = gateway.addr();
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
@@ -149,6 +149,11 @@ async fn spawn_http_server(
             "web UI is exposed on a non-loopback address with no authentication"
         );
     }
+    Ok(listener)
+}
+
+/// Serve `app` on the gateway's bound `listener`.
+fn spawn_http_server(listener: tokio::net::TcpListener, app: axum::Router) -> HttpServer {
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let handle = crate::util::spawn_in_span(async move {
         if let Err(e) = axum::serve(listener, app)
@@ -160,10 +165,10 @@ async fn spawn_http_server(
             tracing::error!(error = %e, "gateway server error");
         }
     });
-    Ok(HttpServer {
+    HttpServer {
         handle,
         shutdown_tx,
-    })
+    }
 }
 
 /// What the secure tunnel serves and reports through, kept for the hub's
@@ -293,17 +298,35 @@ fn start_remote_access(
     }
 }
 
+/// Bind the A2A listener's address from its config, when A2A is enabled. A
+/// bind that fails is logged and left to the listener, which tries again when
+/// it starts.
+async fn bind_a2a(hub: &HubConfig) -> Option<tokio::net::TcpListener> {
+    if !hub.a2a.enabled {
+        return None;
+    }
+    let addr = format!("{}:{}", hub.gateway.bind, hub.a2a.port);
+    match tokio::net::TcpListener::bind(&addr).await {
+        Ok(listener) => Some(listener),
+        Err(e) => {
+            tracing::warn!(addr = %addr, error = %e, "a2a interface couldn't bind; it will try again when it starts");
+            None
+        }
+    }
+}
+
 /// Start the hub's A2A listener over `host`, serving every agent under
-/// `/agents/{name}/`.
+/// `/agents/{name}/`. It serves on `bound` when the caller bound it.
 fn spawn_a2a_listener(
     hub: &HubConfig,
     host: &Arc<AgentHost>,
     services: &HubServices,
+    bound: Option<tokio::net::TcpListener>,
 ) -> A2aListenerTask {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     // Nothing the relay says names a caller: siblings present the keys they
     // were issued when they joined.
-    let listener = crate::a2a::A2aListener::new(
+    let mut listener = crate::a2a::A2aListener::new(
         hub.gateway.bind.clone(),
         hub.a2a.port,
         Arc::clone(host) as Arc<dyn AgentDirectory>,
@@ -311,6 +334,9 @@ fn spawn_a2a_listener(
         shutdown_rx,
     )
     .with_sibling_keys(services.remote_access.sibling_keys());
+    if let Some(bound) = bound {
+        listener = listener.with_bound_listener(bound);
+    }
     let handle = crate::util::spawn_monitored("a2a", async move {
         if let Err(e) = listener.start().await {
             tracing::error!(error = %e, "a2a interface failed");
@@ -420,6 +446,8 @@ impl HubRuntime {
         root: &Path,
         hub_cfg: HubConfig,
         fallback_problem: Option<String>,
+        gateway: tokio::net::TcpListener,
+        a2a_listener: Option<tokio::net::TcpListener>,
     ) -> Result<Self, FatalError> {
         let hub_dir = hub_cfg.config_dir.clone();
         let (restart_tx, restart_rx) = mpsc::channel::<()>(1);
@@ -473,11 +501,11 @@ impl HubRuntime {
         )?;
         workbench_api.bind(app.clone());
         let remote_wiring = RemoteWiring::new(&app, workbench_router, &services, &host);
-        let server = spawn_http_server(&hub_cfg.gateway, app.clone()).await?;
+        let server = spawn_http_server(gateway, app.clone());
         let a2a = hub_cfg
             .a2a
             .enabled
-            .then(|| spawn_a2a_listener(&hub_cfg, &host, &services));
+            .then(|| spawn_a2a_listener(&hub_cfg, &host, &services, a2a_listener));
         let relay_agents = RelayAgents::spawn(
             Arc::clone(&host) as Arc<dyn AgentDirectory>,
             hub_cfg.a2a.enabled,
@@ -786,12 +814,8 @@ impl HubRuntime {
     /// Serve the hub's HTTP app on the new address, then retire the old
     /// server. A bind failure keeps the current server and tells the user.
     async fn rebind_http(&mut self, new_hub: &HubConfig) {
-        match spawn_http_server(&new_hub.gateway, self.app.clone()).await {
-            Ok(server) => {
-                let old = std::mem::replace(&mut self.server, server);
-                old.shutdown_tx.send(true).ok();
-                tracing::info!(addr = %new_hub.gateway.addr(), "gateway rebound to new address");
-            }
+        let listener = match bind_gateway(&new_hub.gateway).await {
+            Ok(listener) => listener,
             Err(e) => {
                 tracing::warn!(error = %e, "failed to bind to the new gateway address, keeping the current server");
                 self.host.notice(
@@ -802,8 +826,13 @@ impl HubRuntime {
                     ),
                     None,
                 );
+                return;
             }
-        }
+        };
+        let server = spawn_http_server(listener, self.app.clone());
+        let old = std::mem::replace(&mut self.server, server);
+        old.shutdown_tx.send(true).ok();
+        tracing::info!(addr = %new_hub.gateway.addr(), "gateway rebound to new address");
     }
 
     /// Push a changed `[tracing]` section into the tracing service and the
@@ -856,7 +885,12 @@ impl HubRuntime {
             stop_task("a2a", &a2a.shutdown_tx, a2a.handle).await;
         }
         if new_hub.a2a.enabled {
-            self.a2a = Some(spawn_a2a_listener(new_hub, &self.host, &self.services));
+            self.a2a = Some(spawn_a2a_listener(
+                new_hub,
+                &self.host,
+                &self.services,
+                None,
+            ));
             tracing::info!("a2a listener restarted with new config");
         } else {
             tracing::info!("a2a listener removed from config");
@@ -1033,7 +1067,9 @@ fn spawn_update_check(status: &crate::update::SharedUpdateStatus) {
 pub async fn run_hub(root: &Path) -> Result<GatewayExit, FatalError> {
     let hub_dir = crate::config::paths::hub_dir(root);
     let (hub_cfg, fallback_problem) = load_hub_with_fallback(&hub_dir)?;
-    let runtime = HubRuntime::start(root, hub_cfg, fallback_problem).await?;
+    let gateway = bind_gateway(&hub_cfg.gateway).await?;
+    let a2a_listener = bind_a2a(&hub_cfg).await;
+    let runtime = HubRuntime::start(root, hub_cfg, fallback_problem, gateway, a2a_listener).await?;
     Ok(Box::pin(runtime.run(true)).await)
 }
 
@@ -1079,10 +1115,9 @@ mod tests {
     ) -> serde_json::Value {
         use futures_util::StreamExt as _;
 
-        let message = tokio::time::timeout(Duration::from_secs(20), socket.next())
+        let message = crate::testing::wait::guarded("a hub socket frame", socket.next())
             .await
             .expect("a frame arrives")
-            .unwrap()
             .unwrap();
         serde_json::from_str(&message.into_text().unwrap()).unwrap()
     }
@@ -1113,21 +1148,21 @@ mod tests {
             )
             .unwrap();
             let model = MockServer::start().await;
-            mount_reply(&model, "hello", Duration::ZERO).await;
+            mount_reply(&model, "hello").await;
             for name in names {
                 write_agent(root.path(), name, &model.uri());
             }
             let hub_config = HubConfig::load_at(&hub_dir).unwrap();
-            // The gateway and A2A listeners bind these exact ports inside
-            // `HubRuntime::start`; drop the reservations right before so no
-            // other test process can take them in the gap, while leaving the
-            // ports free for `HubRuntime::start` itself to bind.
-            drop(gateway_reservation);
-            drop(a2a_reservation);
+            // The hub serves on the sockets the reservations hold, so no other
+            // process can take either port before the hub starts.
+            let gateway = gateway_reservation.into_tokio_listener();
+            let a2a = a2a_reservation.into_tokio_listener();
             let runtime = HubRuntime::start(
                 root.path(),
                 hub_config,
                 fallback_problem.map(str::to_string),
+                gateway,
+                Some(a2a),
             )
             .await
             .unwrap();
@@ -1157,14 +1192,11 @@ mod tests {
         }
 
         async fn eventually_status(&self, port: u16, path: &str, expected: Option<u16>) {
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-            while self.status_of(port, path).await != expected {
-                assert!(
-                    tokio::time::Instant::now() < deadline,
-                    "timed out waiting for {path} on port {port} to answer {expected:?}"
-                );
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
+            crate::testing::wait::until(
+                format!("{path} on port {port} to answer {expected:?}"),
+                || async { (self.status_of(port, path).await == expected).then_some(()) },
+            )
+            .await;
         }
 
         /// The hub's team event log over HTTP: its boot id and every entry,
@@ -1190,21 +1222,13 @@ mod tests {
         /// Wait until the team event log holds an entry of `kind` about
         /// `agent`, and return it.
         async fn team_event(&self, kind: &str, agent: &str) -> serde_json::Value {
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-            loop {
+            crate::testing::wait::until(format!("a {kind} entry about {agent}"), || async {
                 let (_boot, events) = self.team_events().await;
-                if let Some(found) = events
+                events
                     .into_iter()
                     .find(|event| at(event, "/kind") == kind && at(event, "/agent") == agent)
-                {
-                    return found;
-                }
-                assert!(
-                    tokio::time::Instant::now() < deadline,
-                    "timed out waiting for a {kind} entry about {agent}"
-                );
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
+            })
+            .await
         }
 
         fn hub_config_path(&self) -> std::path::PathBuf {
@@ -1214,7 +1238,7 @@ mod tests {
         /// Wait for the hub to announce a finished config reload, and return
         /// its frame with the notices that came before it.
         async fn next_reload(&mut self) -> Reload {
-            tokio::time::timeout(Duration::from_secs(20), async {
+            crate::testing::wait::guarded("the hub to announce the reload", async {
                 let mut notices = Vec::new();
                 loop {
                     match self.events.recv().await.unwrap() {
@@ -1241,7 +1265,6 @@ mod tests {
                 }
             })
             .await
-            .expect("the hub announces the reload")
         }
 
         async fn shut_down(self) {
@@ -1255,10 +1278,12 @@ mod tests {
                 .await
                 .unwrap();
             assert!(response.status().is_success());
-            let exit = tokio::time::timeout(Duration::from_secs(60), self.exit)
-                .await
-                .expect("the hub stops after a shutdown request")
-                .unwrap();
+            let exit = crate::testing::wait::guarded(
+                "the hub to stop after a shutdown request",
+                self.exit,
+            )
+            .await
+            .unwrap();
             assert!(matches!(exit, GatewayExit::Shutdown));
         }
     }
@@ -1600,14 +1625,11 @@ mod tests {
 
         assert!(response.status().is_success(), "{response:?}");
         for (name, before) in ["atlas", "scout"].into_iter().zip(reloads_before) {
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-            while hub.host.reloads_finished(name).unwrap() <= before {
-                assert!(
-                    tokio::time::Instant::now() < deadline,
-                    "{name} never reloaded after the team USER.md changed"
-                );
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
+            crate::testing::wait::until(
+                format!("{name} to reload after the team USER.md changed"),
+                || async { (hub.host.reloads_finished(name).unwrap() > before).then_some(()) },
+            )
+            .await;
         }
         hub.shut_down().await;
     }

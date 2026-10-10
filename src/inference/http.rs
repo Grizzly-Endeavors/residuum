@@ -257,12 +257,13 @@ mod tests {
         );
     }
 
-    /// A response that sends a chunk every 600ms for about 1.8 seconds.
+    /// A response that sends a chunk every 100ms for two seconds, twice the
+    /// one-second timeout it streams under.
     fn slow_steady_response() -> Vec<Step> {
         let mut script = vec![Step::head(200, "text/event-stream")];
-        for _ in 0..3 {
+        for _ in 0..20 {
             script.push(Step::chunk("tick"));
-            script.push(Step::pause(Duration::from_millis(600)));
+            script.push(Step::pause(Duration::from_millis(100)));
         }
         script.push(Step::end());
         script
@@ -284,7 +285,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            streamed, "tickticktick",
+            streamed,
+            "tick".repeat(20),
             "a body that keeps arriving outlives the timeout"
         );
 

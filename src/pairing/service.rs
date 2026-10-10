@@ -852,19 +852,11 @@ mod tests {
         })
         .unwrap();
         // The identity is set in memory first and saved after, so wait for the file.
-        let mut saved = None;
-        for _ in 0..250 {
-            saved = DevicePairing::open(dir.path()).identity().slug;
-            if saved.is_some() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        assert_eq!(
-            saved.as_deref(),
-            Some("laptop"),
-            "the announced identity is saved"
-        );
+        let saved = crate::testing::wait::until("the announced identity to be saved", || {
+            std::future::ready(DevicePairing::open(dir.path()).identity().slug)
+        })
+        .await;
+        assert_eq!(saved, "laptop", "the announced identity is saved");
         assert_eq!(pairing.identity().slug.as_deref(), Some("laptop"));
     }
 }

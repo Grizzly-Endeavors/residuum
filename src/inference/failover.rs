@@ -235,6 +235,7 @@ mod tests {
     use super::*;
     use crate::inference::StreamDelta;
     use crate::inference::test_support::RecordingSink;
+    use crate::testing::wait;
 
     /// A mock provider that always succeeds with a fixed response.
     struct SuccessProvider {
@@ -411,18 +412,16 @@ mod tests {
     }
 
     async fn notice_text(sub: &mut crate::bus::Subscriber<NoticeEvent>) -> String {
-        tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
-            .await
-            .expect("a notice should have been published")
-            .unwrap()
-            .unwrap()
-            .message
+        wait::next_event("a notice", sub).await.message
     }
 
-    async fn assert_no_notice(sub: &mut crate::bus::Subscriber<NoticeEvent>) {
-        let recv = tokio::time::timeout(std::time::Duration::from_millis(50), sub.recv()).await;
+    async fn assert_no_notice(
+        bus: &crate::bus::BusHandle,
+        sub: &mut crate::bus::Subscriber<NoticeEvent>,
+    ) {
+        wait::bus_barrier(bus).await;
         assert!(
-            recv.is_err(),
+            sub.drain().is_empty(),
             "expected no notice on a repeat call while already on the fallback"
         );
     }
@@ -488,7 +487,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        assert_no_notice(&mut notices).await;
+        assert_no_notice(&bus_handle, &mut notices).await;
     }
 
     #[tokio::test]
@@ -569,7 +568,7 @@ mod tests {
             .complete(&[], &[], &CompletionOptions::default())
             .await
             .unwrap();
-        assert_no_notice(&mut notices).await;
+        assert_no_notice(&bus_handle, &mut notices).await;
     }
 
     #[tokio::test]
@@ -591,7 +590,7 @@ mod tests {
             .complete(&[], &[], &CompletionOptions::default())
             .await
             .unwrap();
-        assert_no_notice(&mut notices).await;
+        assert_no_notice(&bus_handle, &mut notices).await;
     }
 
     /// A provider that streams `partial` and then either fails or completes.

@@ -352,6 +352,10 @@ const WAIT_HELPERS: &[&str] = &[
     "src/testing/wait.rs",
     "src/testing/clock.rs",
     "src/testing/source_scan.rs",
+    // Integration tests can't reach `crate::testing`; these are its two waits
+    // for them, under the same hang guard.
+    "tests/support/until.rs",
+    "tests/support/guarded.rs",
 ];
 
 /// A wall-clock wait in test code: a sleep, a timeout, an import that brings

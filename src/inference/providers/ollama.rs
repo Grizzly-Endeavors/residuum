@@ -767,6 +767,8 @@ mod tests {
         ndjson_response, split_bytes, sse_chunks,
     };
     use crate::inference::{StreamDelta, ThinkingBlock};
+    use crate::testing::gate::Gate;
+    use crate::testing::model::GatedModel;
     use serde_json::json;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1252,16 +1254,10 @@ mod tests {
 
     #[tokio::test]
     async fn complete_timeout() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/api/chat"))
-            .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(3)))
-            .mount(&mock_server)
-            .await;
-
-        // Client with 1 second timeout
-        let client = make_client_with_timeout(mock_server.uri(), "test-model", 1);
+        // The reply waits at a gate that never opens, so only the client's own
+        // 1 second timeout can end the call.
+        let model = GatedModel::replying("unused").await;
+        let client = make_client_with_timeout(model.uri(), "test-model", 1);
         let result = client
             .complete(&[], &[], &CompletionOptions::default())
             .await;
@@ -2111,7 +2107,9 @@ mod tests {
     #[tokio::test]
     async fn stalled_stream_fails_after_the_idle_timeout() {
         let mut script = sse_chunks(&[piece(json!({"content": "partial"}))]);
-        script.push(Step::pause(std::time::Duration::from_secs(5)));
+        // Held rather than paused: nothing more arrives, so only the idle timeout ends the stream.
+        let stall = Gate::closed("stalled stream");
+        script.push(Step::Hold(stall.entry()));
         let (result, _, _) = stream_from(script, |url| make_client_with_timeout(url, "m", 1)).await;
         let err = result.unwrap_err();
         assert!(
@@ -2123,16 +2121,17 @@ mod tests {
     #[tokio::test]
     async fn stream_longer_than_the_timeout_completes_while_bytes_keep_arriving() {
         let mut script = vec![Step::head(200, "application/x-ndjson")];
-        for word in ["one ", "two ", "three ", "four "] {
+        let words: Vec<String> = (0..20).map(|n| format!("w{n} ")).collect();
+        for word in &words {
             script.push(Step::chunk(piece(json!({"content": word}))));
-            script.push(Step::pause(std::time::Duration::from_millis(600)));
+            script.push(Step::pause(std::time::Duration::from_millis(100)));
         }
         script.push(Step::chunk(last_line()));
         script.push(Step::end());
         let (result, _, _) = stream_from(script, |url| make_client_with_timeout(url, "m", 1)).await;
         assert_eq!(
             result.unwrap().content,
-            "one two three four ",
+            words.concat(),
             "the idle timeout does not cap the whole stream"
         );
     }

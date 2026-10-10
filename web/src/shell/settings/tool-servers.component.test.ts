@@ -16,6 +16,7 @@ import {
 } from "../../test/component";
 import { fakeAgentConfig, type FakeAgentConfig } from "../../test/fake-config";
 import SettingsModal from "../SettingsModal.svelte";
+import { waitFor } from "../../test/wait";
 
 const CATALOG: McpCatalogEntry[] = [
   {
@@ -59,7 +60,7 @@ async function open(): Promise<void> {
   render(SettingsModal);
   await router.openSettings({ scope: agent, section: "servers" });
   await settle();
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(screen.getByRole("heading", { name: "Tool servers" })).toBeTruthy();
   });
 }
@@ -110,19 +111,19 @@ describe("the Tool servers section", () => {
   it("shows a catalog that couldn't be read as an error with Try again, never as empty", async () => {
     catalogFails = 1;
     await open();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByRole("alert")).toHaveTextContent("Couldn't read the tool server catalog.");
     });
     expect(screen.queryByText("The catalog has no servers in it.")).toBeNull();
     await press("Try again");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByRole("button", { name: "Add fetch" })).toBeTruthy();
     });
   });
 
   it("asks for a catalog server's key, then stages it with the key in its variables", async () => {
     await open();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(screen.getByRole("button", { name: "Add github" })).toBeTruthy();
     });
     await press("Add github");
@@ -139,7 +140,7 @@ describe("the Tool servers section", () => {
     expect(saveBar()).toHaveTextContent("You have unsaved changes.");
 
     await press("Save changes");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(saveBar()).toBeNull();
     });
     expect(mcpPatches()).toEqual([
@@ -174,7 +175,7 @@ describe("the Tool servers section", () => {
     await type(screen.getByLabelText("Environment variables"), "LOG=debug\nnot a pair");
     expect(screen.getByText(/Line 2 has no NAME= before the value/)).toBeTruthy();
     await press("Save changes");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(mcpPatches()).toEqual([
         {
           mcpServers: {
@@ -207,7 +208,7 @@ describe("the Tool servers section", () => {
     expect(serverNames()).toEqual(["files", "search"]);
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Add a server" }));
     await press("Save changes");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(mcpPatches()).toEqual([
         {
           mcpServers: {

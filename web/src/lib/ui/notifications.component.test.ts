@@ -7,6 +7,7 @@ import { composerClearance } from "../composer-clearance.svelte";
 import { notifications } from "../notifications.svelte";
 import { router } from "../router.svelte";
 import { toast } from "../toast.svelte";
+import { waitFor } from "../../test/wait";
 
 beforeAll(() => {
   router.startForOverlays();
@@ -24,7 +25,7 @@ beforeEach(() => {
 afterEach(async () => {
   vi.useRealTimers();
   cleanup();
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect((window.history.state as { overlay?: string } | null)?.overlay).toBeUndefined();
   });
 });

@@ -432,10 +432,6 @@ mod tests {
     use crate::bus::Subscriber;
     use crate::workspace::watch::{WorkspaceChange, WorkspaceChangeKind};
 
-    /// Generous: CI machines can be slow, and none of these waits bound a
-    /// correct result from above.
-    const WAIT: Duration = Duration::from_secs(10);
-
     fn change(path: &str, kind: WorkspaceChangeKind) -> WorkspaceChange {
         WorkspaceChange {
             path: path.to_string(),
@@ -444,9 +440,8 @@ mod tests {
     }
 
     async fn next_event(sub: &mut Subscriber<WorkspaceEvent>) -> WorkspaceEvent {
-        tokio::time::timeout(WAIT, sub.recv())
+        crate::testing::wait::guarded("a workspace event", sub.recv())
             .await
-            .expect("timed out waiting for a workspace event")
             .unwrap()
             .unwrap()
     }
@@ -516,9 +511,20 @@ mod tests {
             .collect();
         assert_eq!(&*changes, expected.as_slice());
 
-        // Well past the quiet period, nothing else was published.
-        let more = tokio::time::timeout(Duration::from_secs(1), h.sub.recv()).await;
-        assert!(more.is_err(), "the burst produced a second batch: {more:?}");
+        // Nothing else was published after the burst: the next batch is the one
+        // a later write produces, so any stray batch from the burst would have
+        // arrived before it.
+        std::fs::write(h.dir.path().join("after.md"), "x").unwrap();
+        h.notify(EventKind::Create(CreateKind::File), &["after.md"])
+            .await;
+        let WorkspaceEvent::Changed(after) = next_event(&mut h.sub).await else {
+            panic!("expected a change batch");
+        };
+        assert_eq!(
+            &*after,
+            [change("after.md", WorkspaceChangeKind::Created)].as_slice(),
+            "the burst produced a batch of its own after the first"
+        );
         h.task.abort();
     }
 
@@ -623,7 +629,9 @@ mod tests {
             .send(Err(notify::Error::new(notify::ErrorKind::MaxFilesWatch)))
             .await
             .unwrap();
-        let exit = tokio::time::timeout(WAIT, h.task).await.unwrap().unwrap();
+        let exit = crate::testing::wait::guarded("the feed to exit for a polling restart", h.task)
+            .await
+            .unwrap();
         assert_eq!(exit, LoopExit::Restart(Mode::Polling));
     }
 
@@ -680,10 +688,12 @@ mod tests {
         let mut sub = bus.subscribe(topics::Workspace).await.unwrap();
         let (health_tx, mut health_rx) = watch::channel(WatchHealth::Starting);
         let task = spawn_change_feed(root.clone(), None, bus.publisher(), health_tx);
-        tokio::time::timeout(WAIT, health_rx.wait_for(|h| *h != WatchHealth::Starting))
-            .await
-            .unwrap()
-            .unwrap();
+        crate::testing::wait::watch_until(
+            "the change feed's watcher to start",
+            &mut health_rx,
+            |h| *h != WatchHealth::Starting,
+        )
+        .await;
         crate::workspace::watch::assert_native_watch(*health_rx.borrow(), "the change feed");
 
         std::fs::create_dir(root.join(".index")).unwrap();
@@ -721,10 +731,12 @@ mod tests {
         let mut sub = bus.subscribe(topics::Workspace).await.unwrap();
         let (health_tx, mut health_rx) = watch::channel(WatchHealth::Starting);
         let task = spawn_change_feed(root.clone(), Some("team"), bus.publisher(), health_tx);
-        tokio::time::timeout(WAIT, health_rx.wait_for(|h| *h != WatchHealth::Starting))
-            .await
-            .unwrap()
-            .unwrap();
+        crate::testing::wait::watch_until(
+            "the change feed's watcher to start",
+            &mut health_rx,
+            |h| *h != WatchHealth::Starting,
+        )
+        .await;
         crate::workspace::watch::assert_native_watch(*health_rx.borrow(), "the change feed");
 
         crate::util::fs::atomic_write(&root.join("workbench").join("tool.html"), "hi")

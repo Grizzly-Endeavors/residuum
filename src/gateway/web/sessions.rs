@@ -661,6 +661,7 @@ pub(crate) async fn api_session_message(
 
 #[cfg(test)]
 mod tests {
+    use crate::testing::wait;
     use chrono::{Duration, TimeZone, Utc};
     use tokio_util::sync::CancellationToken;
 
@@ -1113,11 +1114,7 @@ mod tests {
     async fn next_spawn(
         spawns: &mut crate::bus::Subscriber<SpawnRequestEvent>,
     ) -> SpawnRequestEvent {
-        tokio::time::timeout(std::time::Duration::from_secs(1), spawns.recv())
-            .await
-            .expect("a spawn request should be published")
-            .unwrap()
-            .unwrap()
+        wait::next_event("a spawn request", spawns).await
     }
 
     async fn subscribe_spawns(fx: &Fixture) -> crate::bus::Subscriber<SpawnRequestEvent> {
@@ -1126,7 +1123,8 @@ mod tests {
 
     #[tokio::test]
     async fn start_with_a_malformed_identity_header_is_refused() {
-        let (state, _fx) = state();
+        let (state, fx) = state();
+        let mut spawns = subscribe_spawns(&fx).await;
 
         let malformed = start(
             &state,
@@ -1136,6 +1134,11 @@ mod tests {
         .await;
 
         assert_eq!(malformed.status, StatusCode::BAD_REQUEST);
+        wait::bus_barrier(&fx.bus).await;
+        assert!(
+            spawns.drain().is_empty(),
+            "a refused start must not spawn anything"
+        );
     }
 
     #[tokio::test]
@@ -1220,7 +1223,8 @@ mod tests {
 
     #[tokio::test]
     async fn an_artifact_cannot_fork_the_main_conversation() {
-        let (state, _fx) = state();
+        let (state, fx) = state();
+        let mut spawns = subscribe_spawns(&fx).await;
 
         let refused = start(
             &state,
@@ -1230,6 +1234,11 @@ mod tests {
         .await;
 
         assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+        wait::bus_barrier(&fx.bus).await;
+        assert!(
+            spawns.drain().is_empty(),
+            "a refused start must not spawn anything"
+        );
         assert!(
             refused.text("error").contains("/multitask"),
             "got {}",

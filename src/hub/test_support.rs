@@ -3,24 +3,20 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde_json::json;
 use tracing_subscriber::layer::SubscriberExt as _;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// Mount a model reply of `text` on `server`, answering after `delay`.
-pub(crate) async fn mount_reply(server: &MockServer, text: &str, delay: Duration) {
+/// Mount a model reply of `text` on `server`. A test that needs the reply to
+/// wait puts a gate in front of the server instead.
+pub(crate) async fn mount_reply(server: &MockServer, text: &str) {
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_delay(delay)
-                .set_body_json(json!({
-                    "choices": [{ "message": { "role": "assistant", "content": text } }]
-                })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{ "message": { "role": "assistant", "content": text } }]
+        })))
         .mount(server)
         .await;
 }

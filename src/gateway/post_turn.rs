@@ -640,13 +640,12 @@ mod tests {
 
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use async_trait::async_trait;
-
-    use crate::inference::{
-        CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, ToolDefinition,
-    };
+    use crate::bus::{NotifyName, SYSTEM_CHANNEL, Subscriber};
     use crate::memory::recent_messages::{append_recent_messages, load_recent_messages};
     use crate::memory::types::Visibility;
+    use crate::testing::gate::Gate;
+    use crate::testing::model::GatedProvider;
+    use crate::testing::wait;
     use crate::workspace::layout::WorkspaceLayout;
 
     const OBSERVER_RESPONSE: &str = r#"{
@@ -656,42 +655,15 @@ mod tests {
         "narrative": ""
     }"#;
 
-    /// Counts calls and holds each one until the test releases a permit, so
-    /// a test can hold a cycle mid-extraction.
-    struct GatedProvider {
-        calls: Arc<AtomicUsize>,
-        gate: Arc<tokio::sync::Semaphore>,
-    }
-
-    #[async_trait]
-    impl InferenceProvider for GatedProvider {
-        async fn complete(
-            &self,
-            _messages: &[Message],
-            _tools: &[ToolDefinition],
-            _options: &CompletionOptions,
-        ) -> Result<InferenceResponse, InferenceError> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            self.gate.acquire().await.unwrap().forget();
-            Ok(InferenceResponse::new(
-                OBSERVER_RESPONSE.to_string(),
-                vec![],
-            ))
-        }
-
-        fn model_name(&self) -> &'static str {
-            "gated"
-        }
-    }
-
     struct ObserveHarness {
         _dir: tempfile::TempDir,
         layout: WorkspaceLayout,
         mem: MemorySubsystems,
-        calls: Arc<AtomicUsize>,
-        gate: Arc<tokio::sync::Semaphore>,
+        /// Holds each extraction call until the test releases it.
+        gate: Gate,
         worker: Arc<ObserveWorker>,
         results: mpsc::UnboundedReceiver<PostTurnResult>,
+        activity: Subscriber<PostTurnActivityEvent>,
     }
 
     async fn observe_harness() -> ObserveHarness {
@@ -700,13 +672,9 @@ mod tests {
         for d in layout.required_dirs() {
             tokio::fs::create_dir_all(&d).await.unwrap();
         }
-        let calls = Arc::new(AtomicUsize::new(0));
-        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let gate = Gate::closed("observer");
         let observer = Arc::new(crate::memory::observer::Observer::new(
-            Box::new(GatedProvider {
-                calls: Arc::clone(&calls),
-                gate: Arc::clone(&gate),
-            }),
+            Box::new(GatedProvider::new(&gate, OBSERVER_RESPONSE)),
             crate::memory::observer::ObserverConfig::default(),
         ));
         let search_index = Arc::new(
@@ -719,22 +687,28 @@ mod tests {
             None,
             None,
         ));
+        let bus = crate::bus::spawn_broker();
+        // Subscribed before any trigger, so no activity signal can be missed.
+        let activity: Subscriber<PostTurnActivityEvent> = bus
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
         let mem = MemorySubsystems {
             observer,
             merge_writer,
             layout: layout.clone(),
             tz: chrono_tz::UTC,
-            publisher: crate::bus::spawn_broker().publisher(),
+            publisher: bus.publisher(),
         };
         let (result_tx, results) = mpsc::unbounded_channel();
         ObserveHarness {
             _dir: dir,
             layout,
             mem,
-            calls,
             gate,
             worker: ObserveWorker::new(result_tx),
             results,
+            activity,
         }
     }
 
@@ -750,14 +724,18 @@ mod tests {
         .unwrap();
     }
 
-    async fn wait_for_calls(calls: &AtomicUsize, expected: usize) {
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while calls.load(Ordering::SeqCst) < expected {
-                tokio::time::sleep(Duration::from_millis(5)).await;
+    /// Waits until the memory cycle's busy signal reaches `active`. Activity
+    /// from the other post-turn cycle is skipped.
+    async fn memory_activity_reaches(
+        activity: &mut Subscriber<PostTurnActivityEvent>,
+        active: bool,
+    ) {
+        loop {
+            let event = wait::next_event("a memory cycle activity signal", activity).await;
+            if event.kind == PostTurnActivityKind::Memory && event.active == active {
+                return;
             }
-        })
-        .await
-        .unwrap_or_else(|_| panic!("expected {expected} extraction call(s)"));
+        }
     }
 
     #[test]
@@ -809,24 +787,24 @@ mod tests {
         // The trigger returns immediately while the cycle waits on its
         // extraction call: the work is off the caller's path.
         h.worker.trigger(h.mem.clone());
-        wait_for_calls(&h.calls, 1).await;
+        h.gate.until_held(1).await;
+        memory_activity_reaches(&mut h.activity, true).await;
 
         // Two more turns end while the first cycle is still extracting.
         append_message(&h.layout, "second turn").await;
         h.worker.trigger(h.mem.clone());
         h.worker.trigger(h.mem.clone());
 
-        h.gate.add_permits(10);
+        h.gate.open_all();
         for _ in 0..2 {
-            let result = tokio::time::timeout(Duration::from_secs(5), h.results.recv())
-                .await
-                .unwrap()
-                .unwrap();
+            let result = wait::next("an observation result", &mut h.results).await;
             assert!(matches!(result, PostTurnResult::ObservationReady));
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // The busy signal goes idle only after the run loop has exited, so
+        // the arrival count read below is final.
+        memory_activity_reaches(&mut h.activity, false).await;
         assert_eq!(
-            h.calls.load(Ordering::SeqCst),
+            h.gate.arrived(),
             2,
             "three triggers make one cycle plus exactly one follow-up"
         );
@@ -844,16 +822,13 @@ mod tests {
         let mut h = observe_harness().await;
         append_message(&h.layout, "observed").await;
         h.worker.trigger(h.mem.clone());
-        wait_for_calls(&h.calls, 1).await;
+        h.gate.until_held(1).await;
 
         // A turn ends mid-cycle but its trigger hasn't fired yet (the
         // observe threshold wasn't crossed).
         append_message(&h.layout, "arrived mid-cycle").await;
-        h.gate.add_permits(1);
-        tokio::time::timeout(Duration::from_secs(5), h.results.recv())
-            .await
-            .unwrap()
-            .unwrap();
+        h.gate.release(1);
+        wait::next("the observation result", &mut h.results).await;
 
         let remaining = load_recent_messages(&h.layout.recent_messages_json())
             .await
@@ -870,16 +845,16 @@ mod tests {
         let mut h = observe_harness().await;
         append_message(&h.layout, "unobserved").await;
         h.worker.trigger(h.mem.clone());
-        wait_for_calls(&h.calls, 1).await;
+        h.gate.until_held(1).await;
 
-        // The gate is never opened: only cancellation can end this cycle,
-        // well inside the grace period.
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            h.worker.shutdown(Duration::from_secs(60)),
+        // The gate is never opened: only cancellation can end this cycle. The
+        // grace period is longer than the hang guard, so a shutdown that waited
+        // it out would fail the guard rather than return.
+        wait::guarded(
+            "shutdown to cancel the in-flight extraction",
+            h.worker.shutdown(wait::HANG_GUARD * 2),
         )
-        .await
-        .expect("shutdown must cancel the extraction rather than wait out the grace period");
+        .await;
 
         assert!(
             h.results.try_recv().is_err(),
@@ -904,13 +879,14 @@ mod tests {
             "no episode was written"
         );
 
+        // A trigger after shutdown decides synchronously and spawns nothing, so
+        // the run state read right after it is final.
         h.worker.trigger(h.mem.clone());
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert_eq!(
-            h.calls.load(Ordering::SeqCst),
-            1,
+        assert!(
+            !lock(&h.worker.coalescer.state).running,
             "triggers after shutdown start nothing"
         );
+        assert_eq!(h.gate.arrived(), 1, "triggers after shutdown start nothing");
     }
 
     #[tokio::test]
@@ -918,18 +894,23 @@ mod tests {
         let h = observe_harness().await;
         append_message(&h.layout, "hello").await;
         h.worker.trigger(h.mem.clone());
-        wait_for_calls(&h.calls, 1).await;
+        h.gate.until_held(1).await;
 
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), h.worker.lock_cycle())
-                .await
-                .is_err(),
-            "a forced observe must wait while a background cycle is extracting"
-        );
-        h.gate.add_permits(1);
-        let _guard = tokio::time::timeout(Duration::from_secs(5), h.worker.lock_cycle())
-            .await
-            .expect("the lock frees once the background cycle finishes");
+        // The background cycle holds the lock while its extraction waits at the
+        // gate, so the forced observe's lock is still pending when first polled.
+        tokio::select! {
+            biased;
+            _guard = h.worker.lock_cycle() => {
+                panic!("a forced observe must wait while a background cycle is extracting");
+            }
+            () = std::future::ready(()) => {}
+        }
+        h.gate.release(1);
+        let _guard = wait::guarded(
+            "the lock to free once the background cycle finishes",
+            h.worker.lock_cycle(),
+        )
+        .await;
     }
 
     fn scratch_with_note(note: &str) -> TurnScratch {
@@ -1024,10 +1005,7 @@ mod tests {
             TurnScratch::default(),
         ));
 
-        let result = tokio::time::timeout(Duration::from_secs(5), results.recv())
-            .await
-            .unwrap()
-            .unwrap();
+        let result = wait::next("the subconscious result", &mut results).await;
         let PostTurnResult::SubconsciousNotes(notes) = result else {
             panic!("expected subconscious notes");
         };
@@ -1054,10 +1032,7 @@ mod tests {
             scratch_with_note("queued mid-turn"),
         ));
 
-        let result = tokio::time::timeout(Duration::from_secs(5), results.recv())
-            .await
-            .unwrap()
-            .unwrap();
+        let result = wait::next("the subconscious result", &mut results).await;
         let PostTurnResult::SubconsciousNotes(notes) = result else {
             panic!("expected the queued note as a fallback");
         };

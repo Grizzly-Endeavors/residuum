@@ -5,6 +5,7 @@ import { render, screen } from "../test/component";
 import { actionRegistry, type AppAction } from "../lib/action-registry.svelte";
 import { router } from "../lib/router.svelte";
 import CommandPalette from "./CommandPalette.svelte";
+import { waitFor } from "../test/wait";
 
 const observe = vi.fn();
 const reflect = vi.fn();
@@ -53,7 +54,7 @@ beforeEach(() => {
 afterEach(async () => {
   unregister();
   cleanup();
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect((window.history.state as { overlay?: string } | null)?.overlay).toBeUndefined();
   });
 });
@@ -78,7 +79,7 @@ describe("CommandPalette", () => {
       expect.stringContaining("Summarize older messages now"),
     ]);
     await user.keyboard("{Enter}");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(observe).toHaveBeenCalledOnce();
     });
     expect(screen.queryByRole("combobox")).toBeNull();
@@ -112,7 +113,7 @@ describe("CommandPalette", () => {
     const user = userEvent.setup();
     render(CommandPalette, { open: true });
     await user.click(screen.getByRole("option", { name: /Home/ }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(goHome).toHaveBeenCalledOnce();
     });
   });

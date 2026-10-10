@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { jsonResponse, mockFetch, render, screen, settle } from "./test/component";
 import Setup from "./Setup.svelte";
+import { waitFor } from "./test/wait";
 
 const DRAFT_KEY = "residuum-setup-draft";
 
@@ -27,7 +28,7 @@ describe("Setup wizard", () => {
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Welcome to Residuum");
     const steps = screen.getByRole("list", { name: "Setup steps" });
     expect(steps.querySelector("[aria-current='step']")).toHaveTextContent("Welcome");
-    await vi.waitFor(() => expect(screen.getByLabelText("Time zone")).toHaveValue("Europe/Oslo"));
+    await waitFor(() => expect(screen.getByLabelText("Time zone")).toHaveValue("Europe/Oslo"));
   });
 
   it("moves focus to the next step's heading", async () => {
@@ -69,13 +70,10 @@ describe("Setup wizard", () => {
     await user.type(screen.getByLabelText("Anthropic API key"), "sk-secret");
     expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
 
-    // vi.waitFor moves the faked clock by its interval on every check.
-    await vi.waitFor(
-      () => {
-        expect(JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "null")).toMatchObject({ step: 1 });
-      },
-      { interval: 100, timeout: 5000 },
-    );
+    // waitFor moves the faked clock by its interval on every check, which lets the draft save run.
+    await waitFor(() => {
+      expect(JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "null")).toMatchObject({ step: 1 });
+    });
     expect(localStorage.getItem(DRAFT_KEY)).not.toContain("sk-secret");
   });
 

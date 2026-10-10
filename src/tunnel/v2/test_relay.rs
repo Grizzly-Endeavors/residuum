@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
 
 use axum::Router;
 use axum::extract::State;
@@ -183,17 +182,19 @@ impl FakeRelay {
 
     /// Wait for a received frame matching `matches`.
     pub(crate) async fn wait_frame(&self, matches: impl Fn(&V2Frame) -> bool) -> V2Frame {
-        let found = tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                let notified = self.shared.frames_changed.notified();
-                if let Some(frame) = lock(&self.shared.frames).iter().find(|f| matches(f)) {
-                    return frame.clone();
+        crate::testing::wait::guarded(
+            "a frame matching the test's expectation at the fake relay",
+            async {
+                loop {
+                    let notified = self.shared.frames_changed.notified();
+                    if let Some(frame) = lock(&self.shared.frames).iter().find(|f| matches(f)) {
+                        return frame.clone();
+                    }
+                    notified.await;
                 }
-                notified.await;
-            }
-        })
-        .await;
-        found.expect("expected frame never arrived at the fake relay")
+            },
+        )
+        .await
     }
 
     fn conn(&self) -> Arc<Conn> {
@@ -551,10 +552,7 @@ async fn read_hello(socket: &mut TcpStream) -> Option<(Vec<u8>, String)> {
         if buf.len() > 20_000 {
             return None;
         }
-        let n = tokio::time::timeout(Duration::from_secs(5), socket.read(&mut chunk))
-            .await
-            .ok()?
-            .ok()?;
+        let n = socket.read(&mut chunk).await.ok()?;
         if n == 0 {
             return None;
         }

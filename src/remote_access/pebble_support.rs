@@ -14,9 +14,8 @@
 use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use anyhow::Context as _;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -27,6 +26,8 @@ use tracing::debug;
 
 use super::acme::AcmeSettings;
 use super::tls::CertResolver;
+use crate::testing::wait;
+use crate::util::test_ports::{ReservedPort, reserve_port};
 
 /// Pinned Pebble release; both images share the tag.
 const PEBBLE_VERSION: &str = "2.10.1";
@@ -50,6 +51,8 @@ pub(crate) struct PebbleHarness {
     management_port: u16,
     dns_port: u16,
     tls_port: u16,
+    /// Holds `tls_port` until the test binds it, see [`Self::release_tls_port`].
+    tls_reservation: Mutex<Option<ReservedPort>>,
     root_ca: PathBuf,
 }
 
@@ -60,7 +63,8 @@ impl PebbleHarness {
         let acme_port = free_port()?;
         let pebble_management_port = free_port()?;
         let http_port = free_port()?;
-        let tls_port = free_port()?;
+        let tls = reserve_port();
+        let tls_port = tls.port();
         let management_port = free_port()?;
         let dns_port = free_dns_port()?;
 
@@ -105,6 +109,7 @@ impl PebbleHarness {
             management_port,
             dns_port,
             tls_port,
+            tls_reservation: Mutex::new(Some(tls)),
             root_ca,
         };
 
@@ -146,7 +151,7 @@ impl PebbleHarness {
             ("Pebble", acme_port),
             ("challenge test server", management_port),
         ] {
-            harness.wait_for_port(what, port).await?;
+            harness.wait_for_port(what, port).await;
         }
         Ok(harness)
     }
@@ -212,6 +217,7 @@ impl PebbleHarness {
         &self,
         resolver: &Arc<CertResolver>,
     ) -> anyhow::Result<TlsAlpnListener> {
+        self.release_tls_port();
         let listener = TcpListener::bind(("127.0.0.1", self.tls_port())).with_context(|| {
             format!(
                 "failed to listen on the TLS-ALPN-01 port {}",
@@ -246,8 +252,7 @@ impl PebbleHarness {
     /// sees only the job's work directory, and a bind mount of a path it lacks
     /// becomes an empty directory. The network is shared, which host networking
     /// relies on. Containers are not `--rm`, so a container that exits at
-    /// startup still has logs for [`Self::wait_for_port`] to report; `Drop`
-    /// removes them.
+    /// startup keeps its logs for `docker logs`; `Drop` removes them.
     fn run_container(
         &mut self,
         name: &str,
@@ -290,32 +295,44 @@ impl PebbleHarness {
         Ok(())
     }
 
-    async fn wait_for_port(&self, what: &str, port: u16) -> anyhow::Result<()> {
-        for _ in 0..100 {
-            if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
-                return Ok(());
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-        let logs: Vec<String> = self
-            .containers
-            .iter()
-            .map(|name| {
-                let output = docker(["logs", "--tail", "20", name]);
-                match output {
-                    Ok(o) => format!(
-                        "{name}: {}{}",
-                        String::from_utf8_lossy(&o.stdout),
-                        String::from_utf8_lossy(&o.stderr)
-                    ),
-                    Err(error) => format!("{name}: {error:#}"),
-                }
-            })
-            .collect();
-        anyhow::bail!(
-            "{what} did not start listening on port {port}\n{}",
-            logs.join("\n")
+    /// Wait for a container to accept connections. A container that never
+    /// listens fails the wait with the last lines of every container's log.
+    async fn wait_for_port(&self, what: &str, port: u16) {
+        wait::until_reporting(
+            format!("the {what} on port {port} to start listening"),
+            || async {
+                TcpStream::connect(("127.0.0.1", port))
+                    .await
+                    .ok()
+                    .map(|_| ())
+            },
+            || {
+                self.containers
+                    .iter()
+                    .map(|name| match docker(["logs", "--tail", "20", name]) {
+                        Ok(o) => format!(
+                            "{name}: {}{}",
+                            String::from_utf8_lossy(&o.stdout),
+                            String::from_utf8_lossy(&o.stderr)
+                        ),
+                        Err(error) => format!("{name}: {error:#}"),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            },
         )
+        .await;
+    }
+
+    /// Let go of the TLS-ALPN-01 port so the caller can bind it: the fake relay
+    /// that stands in for the front door, or [`Self::serve_tls_alpn`].
+    pub(crate) fn release_tls_port(&self) {
+        let reservation = self
+            .tls_reservation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        drop(reservation);
     }
 
     /// POST `body` to the challenge test server's management API.

@@ -40,7 +40,6 @@ const BASE: &str = "relay.test";
 const UI: &str = "bear.relay.test";
 const WORKBENCH: &str = "bear.workbench.relay.test";
 const INSTANCE: &str = "laptop.bear.relay.test";
-const WAIT: Duration = Duration::from_secs(90);
 
 /// Everything one instance keeps on disk, which survives a restart.
 struct Env {
@@ -179,9 +178,8 @@ impl Stack {
 
     async fn stop(self) {
         self.shutdown.send_replace(true);
-        tokio::time::timeout(Duration::from_secs(15), self.task)
+        crate::testing::wait::guarded("the tunnel to stop", self.task)
             .await
-            .expect("the tunnel stops")
             .unwrap();
     }
 
@@ -194,18 +192,15 @@ impl Stack {
         what: &str,
         matches: impl Fn(&RemoteAccessStatus) -> bool,
     ) -> RemoteAccessStatus {
-        let deadline = tokio::time::Instant::now() + WAIT;
-        loop {
-            let status = self.status();
-            if matches(&status) {
-                return status;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "gave up waiting for {what}; status is {status:?}"
-            );
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
+        crate::testing::wait::until_reporting(
+            what,
+            || {
+                let status = self.status();
+                std::future::ready(matches(&status).then_some(status))
+            },
+            || format!("last status: {:?}", self.status()),
+        )
+        .await
     }
 
     async fn wait_for_state(&self, state: RemoteAccessState) -> RemoteAccessStatus {
@@ -296,9 +291,8 @@ async fn fetch(door_port: u16, sni: &str, host: &str, path: &str) -> Fetched {
     .await
     .unwrap();
     let mut raw = Vec::new();
-    tokio::time::timeout(Duration::from_secs(10), tls.read_to_end(&mut raw))
+    crate::testing::wait::guarded("the answer to arrive", tls.read_to_end(&mut raw))
         .await
-        .expect("the answer arrives")
         .ok();
     Fetched {
         response: String::from_utf8_lossy(&raw).into_owned(),
@@ -493,6 +487,7 @@ async fn pebble_world() -> (Arc<PebbleHarness>, FakePinService, FakeRelay) {
         harness.add_a(name).await.unwrap();
     }
     let pins = FakePinService::start(Some(Arc::clone(&harness))).await;
+    harness.release_tls_port();
     let relay = FakeRelay::start(FakeRelayConfig {
         door_port: Some(harness.tls_port()),
         ..relay_config()

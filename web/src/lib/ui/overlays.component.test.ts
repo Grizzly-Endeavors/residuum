@@ -1,4 +1,4 @@
-import { act, cleanup, waitFor } from "@testing-library/svelte";
+import { act, cleanup } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { render, screen } from "../../test/component";
@@ -9,10 +9,11 @@ import ConfirmDialog from "./ConfirmDialog.svelte";
 import ModalLayer from "./ModalLayer.svelte";
 import ConfirmHost from "./ConfirmHost.svelte";
 import { confirmations, confirmLeave } from "./confirm.svelte";
+import { waitFor } from "../../test/wait";
 
 /** Let the history traversals an overlay started land. */
 async function settleHistory(): Promise<void> {
-  await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+  await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
 }
 
 function scrim(): HTMLElement {
@@ -52,7 +53,7 @@ afterAll(() => {
 // let it land before the next test opens anything.
 afterEach(async () => {
   cleanup();
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect((window.history.state as { overlay?: string } | null)?.overlay).toBeUndefined();
   });
   await settleHistory();
@@ -209,7 +210,7 @@ describe("Dialog", () => {
 
     await user.click(screen.getByRole("button", { name: "Open" }));
     await user.keyboard("{Escape}");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(window.history.state).toEqual({ idx: start });
     });
   });
@@ -334,7 +335,7 @@ describe("ConfirmDialog", () => {
     await user.keyboard("{Enter}");
     expect(onconfirm).toHaveBeenCalledTimes(1);
     first.unmount();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect((window.history.state as { overlay?: string }).overlay).toBeUndefined();
     });
 

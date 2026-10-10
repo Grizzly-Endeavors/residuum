@@ -8,6 +8,9 @@
 //! them from here would mean re-exposing crate-internal construction just
 //! for the test.
 
+#[path = "support/until.rs"]
+mod until;
+
 #[expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
@@ -51,26 +54,18 @@ mod background_integration {
             .await
             .unwrap();
 
-        // Poll for the inbox item to appear (up to 2 seconds)
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
-        let mut found = false;
-        while tokio::time::Instant::now() < deadline {
+        crate::until::until("an inbox item to be created", || {
             let count = std::fs::read_dir(&inbox_dir)
                 .unwrap()
                 .filter_map(Result::ok)
                 .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
                 .count();
-            if count >= 1 {
-                found = true;
-                break;
-            }
-            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        }
+            std::future::ready((count >= 1).then_some(()))
+        })
+        .await;
 
         // Abort the subscriber loop
         loop_task.abort();
-
-        assert!(found, "should create one inbox item within timeout");
     }
 
     // ── Session registry discovery surface ──────────────────────────────

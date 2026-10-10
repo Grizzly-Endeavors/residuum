@@ -1,9 +1,11 @@
+import { act } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, settle } from "../test/component";
 import { htmlSnippet } from "../test/snippets";
 import type { FeedItem } from "../lib/types";
 import type { FeedHistory } from "./feed-history";
 import Feed from "./Feed.svelte";
+import { waitFor } from "../test/wait";
 
 class NoObserver {
   observe(): void {}
@@ -187,7 +189,7 @@ describe("Feed", () => {
       label: "Conversation with atlas",
       history,
     });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(loadOlder).toHaveBeenCalledTimes(3);
     });
     expect(history.hasMore).toBe(false);
@@ -202,7 +204,10 @@ describe("Feed", () => {
       label: "Conversation with atlas",
       history: { hasMore: true, loadingOlder: false, generation: 0, loadOlder },
     });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitFor(() => {
+      expect(loadOlder).toHaveBeenCalled();
+    });
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
     // The observer and the history's change each try once; a failure doesn't chain into more.
     expect(loadOlder.mock.calls.length).toBeGreaterThan(0);
     expect(loadOlder.mock.calls.length).toBeLessThanOrEqual(2);

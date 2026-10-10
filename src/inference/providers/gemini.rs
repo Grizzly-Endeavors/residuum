@@ -1155,6 +1155,8 @@ mod tests {
         sse_chunks, sse_response,
     };
     use crate::inference::{StreamDelta, ThinkingBlock};
+    use crate::testing::gate::Gate;
+    use crate::testing::model::GatedModel;
     use serde_json::{Value, json};
     use wiremock::matchers::{method, path_regex, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1519,20 +1521,16 @@ mod tests {
 
     #[tokio::test]
     async fn complete_timeout() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
-            .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(3)))
-            .mount(&mock_server)
-            .await;
+        // The reply waits at a gate that never opens, so only the client's own
+        // 1 second timeout can end the call.
+        let model = GatedModel::replying("unused").await;
 
         let http =
             SharedHttpClient::new(&crate::inference::http::HttpClientConfig::with_timeout(1))
                 .unwrap();
         let client = GeminiClient::new(
             http,
-            mock_server.uri(),
+            model.uri(),
             "test-api-key",
             "gemini-2.0-flash",
             8192,
@@ -2443,7 +2441,9 @@ mod tests {
     #[tokio::test]
     async fn stalled_stream_fails_after_the_idle_timeout() {
         let mut script = sse_chunks(&[parts_event(json!([{"text": "partial"}]))]);
-        script.push(Step::pause(std::time::Duration::from_secs(5)));
+        // Held rather than paused: nothing more arrives, so only the idle timeout ends the stream.
+        let stall = Gate::closed("stalled stream");
+        script.push(Step::Hold(stall.entry()));
         let (result, _, _) = stream_from(script, |url| {
             let http =
                 SharedHttpClient::new(&crate::inference::http::HttpClientConfig::with_timeout(1))
