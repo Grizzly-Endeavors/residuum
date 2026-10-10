@@ -88,6 +88,12 @@ impl Gate {
         state.arrived - state.passed
     }
 
+    /// How many calls have reached the gate, ever, whether they are still
+    /// waiting at it or have passed.
+    pub(crate) fn arrived(&self) -> usize {
+        self.state.borrow().arrived
+    }
+
     /// Wait until `n` calls are waiting at the gate.
     pub(crate) async fn until_held(&self, n: usize) {
         let mut rx = self.state.subscribe();

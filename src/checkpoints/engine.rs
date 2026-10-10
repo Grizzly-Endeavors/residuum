@@ -1382,7 +1382,7 @@ fn short_id(id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use crate::testing::wait;
 
     use super::super::types::CheckpointTrigger;
     use super::*;
@@ -1586,18 +1586,14 @@ mod tests {
             .join("objects");
         std::fs::set_permissions(&objects_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
 
-        let result = tokio::time::timeout(
-            Duration::from_secs(5),
+        wait::guarded(
+            "checkpoint_workspace_before_action to return when the commit fails",
             engine.checkpoint_workspace_before_action(ctx(
                 CheckpointTrigger::PreAction,
                 "delete a.txt",
             )),
         )
         .await;
-        assert!(
-            result.is_ok(),
-            "checkpoint_workspace_before_action must never hang, even when the underlying commit fails"
-        );
 
         std::fs::set_permissions(&objects_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     }

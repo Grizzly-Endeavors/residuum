@@ -99,6 +99,7 @@ mod tests {
     use super::*;
     use crate::actions::types::ScheduledAction;
     use crate::bus::Subscriber;
+    use crate::testing::wait;
     use chrono::{Duration, Utc};
 
     fn due_action(id: &str, name: &str) -> ScheduledAction {
@@ -127,11 +128,7 @@ mod tests {
 
         spawn_due_actions(&action_store, &bus_handle.publisher()).await;
 
-        let event = tokio::time::timeout(std::time::Duration::from_millis(200), sub.recv())
-            .await
-            .expect("a spawn request should have been published")
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event("a spawn request", &mut sub).await;
         assert_eq!(event.source_label, "action:morning digest");
 
         let locked = action_store.lock().await;
