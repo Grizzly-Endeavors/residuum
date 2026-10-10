@@ -15,7 +15,7 @@ async fn overview_frame(
     what: &str,
     wanted: impl Fn(&AgentOverview) -> bool,
 ) -> AgentOverview {
-    tokio::time::timeout(POLL_TIMEOUT, async {
+    wait::guarded(what, async {
         loop {
             match frames.recv().await {
                 Ok(frame) if frame.name == agent && wanted(&frame) => return frame,
@@ -27,7 +27,6 @@ async fn overview_frame(
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
 }
 
 /// What `GET /api/hub/overview` says about `agent`.
@@ -82,9 +81,8 @@ async fn a_turn_the_user_was_part_of_is_the_last_message_and_a_background_turn_i
         .await
         .unwrap();
     loop {
-        let change = tokio::time::timeout(POLL_TIMEOUT, turns.recv())
+        let change = wait::guarded("the background turn to end", turns.recv())
             .await
-            .expect("the background turn ends")
             .unwrap();
         if matches!(change.kind, crate::hub::agent_watch::AgentChangeKind::TurnEnded(ref turn) if turn.visibility == Visibility::Background)
         {
