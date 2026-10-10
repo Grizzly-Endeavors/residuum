@@ -220,6 +220,7 @@ async fn route_webhook_content(
                 inbound: None,
                 images: Vec::new(),
                 overlap: None,
+                carried_history: Vec::new(),
             };
             if let Err(e) = state
                 .publisher

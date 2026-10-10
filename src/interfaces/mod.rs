@@ -97,6 +97,11 @@ pub(crate) struct CommandDispatch<'a> {
     pub(crate) session_registry: &'a SessionRegistry,
     pub(crate) inbox_dir: &'a Path,
     pub(crate) tz: chrono_tz::Tz,
+    /// Publishes the spawn request `/multitask` starts its fork with.
+    pub(crate) publisher: &'a crate::bus::Publisher,
+    /// Main's saved conversation (`recent_messages.json`), which `/multitask`
+    /// forks.
+    pub(crate) main_conversation: &'a Path,
 }
 
 /// Run a slash command typed into a chat interface and return the reply text.
@@ -168,8 +173,70 @@ pub(crate) async fn run_chat_command(
         Some(commands::CommandSideEffect::ListSessions) => {
             format_session_list(dispatch.session_registry)
         }
+        Some(commands::CommandSideEffect::Multitask(task)) => {
+            start_multitask(dispatch, interface, conversation, task).await
+        }
         None => result.response,
     }
+}
+
+/// Fork the main conversation into a session that works on `task` —
+/// `/multitask <task>` — and reply with where it is. Only main's own
+/// conversation (the owner's DM, per [`resolve_stop_target`]) can be forked;
+/// the fork posts its replies back into that DM.
+async fn start_multitask(
+    dispatch: &CommandDispatch<'_>,
+    interface: &str,
+    conversation: Option<&ConversationContext>,
+    task: String,
+) -> String {
+    if matches!(
+        resolve_stop_target(interface, conversation),
+        StopTarget::Conversation(_)
+    ) {
+        return "/multitask forks the conversation you and I have in our direct messages, \
+                so it only works there."
+            .to_string();
+    }
+    let history =
+        match crate::background::owner_session::load_main_conversation(dispatch.main_conversation)
+            .await
+        {
+            Ok(history) => history,
+            Err(e) => {
+                tracing::error!(
+                    error = format!("{e:#}"),
+                    interface,
+                    "couldn't read main's conversation for /multitask"
+                );
+                return "Couldn't read our conversation to fork it, so nothing was started. \
+                    The logs have the details."
+                    .to_string();
+            }
+        };
+    let event = crate::background::owner_session::OwnerSessionStart {
+        prompt: task,
+        model_tier: crate::config::BackgroundModelTier::Medium,
+        fork_of: Some(history),
+        conversation: conversation.map(|ctx| crate::bus::ConversationTarget {
+            endpoint: interface.to_string(),
+            conversation_id: ctx.id.clone(),
+        }),
+    }
+    .into_spawn_event();
+    let address = event.address.clone();
+    if let Err(e) = dispatch.publisher.publish(topics::Background, event).await {
+        tracing::warn!(error = %e, interface, "failed to publish a /multitask fork");
+        return "Couldn't start the fork because I'm shutting down or restarting. \
+                Try again shortly."
+            .to_string();
+    }
+    tracing::info!(address = %address, interface, "owner forked main's conversation with /multitask");
+    format!(
+        "Forked into session {address}. Its replies will show up here, starting with \
+         \"{address}:\". Open it from Activity in the web UI to follow up, or stop it with \
+         /stop {address}."
+    )
 }
 
 /// Stop a named session — `/stop <name>` — through the same registry stop
@@ -558,6 +625,119 @@ mod tests {
             event.origin.belongs_to_main(),
             "the notice must reach main, never a conversation session"
         );
+    }
+
+    /// What a `/multitask` test needs to run `start_multitask`: the channels a
+    /// dispatch borrows, a saved main conversation, and the bus its fork's
+    /// spawn request is published on.
+    struct MultitaskFixture {
+        bus: crate::bus::BusHandle,
+        reload_tx: crate::gateway::types::ReloadSender,
+        command_tx: tokio::sync::mpsc::Sender<crate::gateway::types::ServerCommand>,
+        stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
+        registry: SessionRegistry,
+        publisher: crate::bus::Publisher,
+        dir: tempfile::TempDir,
+    }
+
+    impl MultitaskFixture {
+        async fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            crate::memory::recent_messages::append_recent_messages(
+                &dir.path().join("recent_messages.json"),
+                &[crate::inference::Message::user(
+                    "should we repaint the shed?",
+                )],
+                crate::memory::types::Visibility::User,
+                chrono_tz::UTC,
+                Some("turn-1"),
+            )
+            .await
+            .unwrap();
+            let bus = crate::bus::spawn_broker();
+            Self {
+                publisher: bus.publisher(),
+                bus,
+                reload_tx: tokio::sync::mpsc::unbounded_channel().0,
+                command_tx: tokio::sync::mpsc::channel(1).0,
+                stop_tx: tokio::sync::mpsc::channel(1).0,
+                registry: SessionRegistry::new(),
+                dir,
+            }
+        }
+
+        fn main_conversation(&self) -> std::path::PathBuf {
+            self.dir.path().join("recent_messages.json")
+        }
+
+        async fn multitask(&self, conversation: &ConversationContext, task: &str) -> String {
+            let main_conversation = self.main_conversation();
+            let dispatch = CommandDispatch {
+                reload_tx: &self.reload_tx,
+                command_tx: &self.command_tx,
+                stop_tx: &self.stop_tx,
+                session_registry: &self.registry,
+                inbox_dir: self.dir.path(),
+                tz: chrono_tz::UTC,
+                publisher: &self.publisher,
+                main_conversation: &main_conversation,
+            };
+            run_chat_command(
+                "multitask",
+                Some(task),
+                &dispatch,
+                "telegram",
+                "owner",
+                Some(conversation),
+            )
+            .await
+        }
+    }
+
+    #[tokio::test]
+    async fn multitask_in_the_owner_s_dm_forks_main_and_replies_into_that_dm() {
+        let fx = MultitaskFixture::new().await;
+        let mut spawns: Subscriber<crate::bus::SpawnRequestEvent> =
+            fx.bus.subscribe(topics::Background).await.unwrap();
+
+        let reply = fx.multitask(&owner_dm("dm-1"), "price out the paint").await;
+
+        let spawn = crate::testing::wait::next_event("the fork's spawn request", &mut spawns).await;
+        assert!(reply.contains(spawn.address.as_ref()), "{reply}");
+        assert_eq!(spawn.prompt, "price out the paint");
+        assert_eq!(spawn.spawner, None, "its replies never go to main");
+        let carried: Vec<&str> = spawn
+            .carried_history
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect();
+        assert_eq!(carried, ["should we repaint the shed?"]);
+        let target = spawn.conversation.expect("the fork replies into the DM");
+        assert_eq!(target.endpoint, "telegram");
+        assert_eq!(target.conversation_id, "dm-1");
+    }
+
+    #[tokio::test]
+    async fn multitask_in_a_group_chat_is_refused() {
+        let fx = MultitaskFixture::new().await;
+
+        let reply = fx
+            .multitask(&group_chat("group-1"), "price out the paint")
+            .await;
+
+        assert!(reply.contains("only works there"), "{reply}");
+    }
+
+    #[test]
+    fn multitask_without_a_task_shows_its_usage() {
+        let result = commands::execute_command(
+            "multitask",
+            Some("  "),
+            &commands::CommandContext::default(),
+        );
+
+        assert_eq!(result.response, "usage: /multitask <task>");
+        assert!(result.side_effect.is_none());
     }
 
     #[test]

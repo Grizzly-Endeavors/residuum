@@ -172,6 +172,7 @@ impl DiscordInterface {
             state: Arc::clone(&state),
             publisher: self.senders.publisher.clone(),
             inbox_dir: layout.agent_inbox_dir(),
+            main_conversation: layout.recent_messages_json(),
             reload_tx: self.senders.reload,
             command_tx: self.senders.command,
             stop_tx: self.senders.stop,

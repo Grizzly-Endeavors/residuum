@@ -89,6 +89,7 @@ fn build_feature_routers(state: &GatewayState, extra: ExtraApiStates) -> Feature
         messenger: Arc::clone(&state.agent_messenger),
         publisher: state.publisher.clone(),
         skill_state: Arc::clone(&state.skill_state),
+        main_conversation: state.layout.recent_messages_json(),
     });
 
     let scheduled = web::scheduled::scheduled_api_router(web::scheduled::ScheduledApiState {

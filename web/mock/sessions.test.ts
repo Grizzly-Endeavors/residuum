@@ -119,10 +119,7 @@ describe("sessions endpoints", () => {
   });
 
   describe("starting a session", () => {
-    it("needs the artifact identity header", async () => {
-      const missing = await post(harness, "/api/sessions", { prompt: "hi" });
-      expect(missing.status).toBe(400);
-      expect(String(missing.body.error)).toContain("X-Residuum-Artifact");
+    it("refuses an identity header that names no artifact", async () => {
       const malformed = await post(
         harness,
         "/api/sessions",
@@ -130,6 +127,70 @@ describe("sessions endpoints", () => {
         { "X-Residuum-Artifact": "Not A Name" },
       );
       expect(malformed.status).toBe(400);
+      expect(String(malformed.body.error)).toContain("x-residuum-artifact");
+      expect((await list()).body.live).toHaveLength(3);
+    });
+
+    it("refuses unknown fields, a bad model and a fork from an artifact", async () => {
+      const unknown = await post(harness, "/api/sessions", { prompt: "hi", agent: "atlas" });
+      expect(unknown.status).toBe(400);
+      expect(String(unknown.body.error)).toContain("unknown field `agent`");
+      const model = await post(harness, "/api/sessions", { prompt: "hi", model: "huge" });
+      expect(model).toEqual({
+        status: 400,
+        body: { error: "invalid model tier 'huge': must be small, medium, or large" },
+      });
+      const fork = await post(
+        harness,
+        "/api/sessions",
+        { prompt: "hi", fork: true },
+        ARTIFACT_HEADER,
+      );
+      expect(fork.status).toBe(400);
+      expect(String(fork.body.error)).toContain("/multitask");
+      expect((await list()).body.live).toHaveLength(3);
+    });
+
+    it("starts the owner's own clean session without the identity header", async () => {
+      const { status, body } = await post(harness, "/api/sessions", {
+        prompt: "plan the garden",
+        model: "large",
+      });
+      expect(status).toBe(202);
+      expect(body).toEqual({ address: "spawned-session-a001" });
+      const started = harness.frames.find((f) => f.type === "session_started");
+      expect(started).toMatchObject({
+        session: {
+          address: "spawned-session-a001",
+          category: "spawned",
+          source_label: "owner:session",
+          spawner: null,
+          depth: 1,
+          purpose: "plan the garden",
+        },
+      });
+    });
+
+    it("forks the main conversation for /multitask", async () => {
+      const { status, body } = await post(harness, "/api/sessions", {
+        prompt: "price out the paint",
+        fork: true,
+      });
+      expect(status).toBe(202);
+      expect(body).toEqual({ address: "spawned-multitask-a001" });
+      const live = (await list()).body.live;
+      expect(live[0]).toMatchObject({
+        address: "spawned-multitask-a001",
+        category: "spawned",
+        source_label: "owner:multitask",
+        spawner: null,
+      });
+      const transcript = await fetchJson(
+        `${harness.baseUrl}/api/sessions/runs/${live[0]?.run_id ?? ""}/transcript`,
+      );
+      const messages = (transcript.body as SessionTranscriptResponse).messages;
+      expect(messages[0]?.content).toMatch(/^\[You are a fork of the main conversation/);
+      expect(messages[0]?.content).toMatch(/price out the paint$/);
     });
 
     it("rejects an empty prompt and an empty body", async () => {

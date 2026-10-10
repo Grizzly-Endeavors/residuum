@@ -28,8 +28,9 @@
 
   // What an agent is doing and has done: its live runs and the tasks it sent
   // to other agents, each with Stop, then its finished runs, paged and
-  // filtered by kind. A run opens in the context panel. The agent is the
-  // bound one, so the lists are the coordinator's sessions store.
+  // filtered by kind. A run opens in the context panel, and so does a new
+  // session the owner starts. The agent is the bound one, so the lists are
+  // the coordinator's sessions store.
 
   let { agent }: { agent: string } = $props();
   const label = $derived(hub.shownName(agent));
@@ -63,6 +64,17 @@
     starting = true;
     await hub.startAgent(agent);
     starting = false;
+  }
+
+  /** Why a new session can't start now, or null when it can. */
+  const newSessionBlocked = $derived.by(() => {
+    if (agentState === "running") return null;
+    if (agentState === "stopping") return `${label} is stopping.`;
+    return `Start ${label} first.`;
+  });
+
+  function openNewSession(): void {
+    void router.openPanel({ kind: "new-session", agent });
   }
 
   function open(run: SessionSummary): void {
@@ -129,9 +141,21 @@
         {#if !sessions.listError}<Skeleton lines={5} label="Loading what's running" />{/if}
       {:else}
         <section aria-labelledby="{uid}-running">
-          <h2 class="heading" id="{uid}-running">
-            Running now <Badge count={liveCount} label="running" />
-          </h2>
+          <div class="heading-row">
+            <h2 class="heading" id="{uid}-running">
+              Running now <Badge count={liveCount} label="running" />
+            </h2>
+            <Button
+              size="sm"
+              icon="plus"
+              disabled={newSessionBlocked !== null}
+              aria-describedby={newSessionBlocked === null ? undefined : `${uid}-new-why`}
+              onclick={openNewSession}>New session</Button
+            >
+          </div>
+          {#if newSessionBlocked !== null}
+            <p class="new-why" id="{uid}-new-why">{newSessionBlocked}</p>
+          {/if}
           {#if sessions.outboundError}
             <Banner tone="error">
               {sessions.outboundError}
@@ -141,7 +165,9 @@
             </Banner>
           {/if}
           {#if liveCount === 0}
-            <EmptyState>Nothing running. Work {label} starts on its own shows up here.</EmptyState>
+            <EmptyState
+              >Nothing running. Work {label} starts, and sessions you start, show up here.</EmptyState
+            >
           {:else}
             <ul class="rows">
               {#each sessions.live as run (run.run_id)}
@@ -347,6 +373,12 @@
     color: var(--color-text-2);
     font-size: var(--font-size-sm);
     font-weight: var(--font-weight-semibold);
+  }
+
+  .new-why {
+    color: var(--color-text-3);
+    font-size: var(--font-size-xs);
+    text-align: end;
   }
 
   .heading-count {

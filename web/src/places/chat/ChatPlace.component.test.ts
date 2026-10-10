@@ -17,8 +17,10 @@ import { notifications } from "../../lib/notifications.svelte";
 import type { AgentSummary } from "../../lib/hub-types";
 import { router } from "../../lib/router.svelte";
 import type { SessionSummary } from "../../lib/types";
+import { toast } from "../../lib/toast.svelte";
 import { setViewedAgent } from "../../lib/viewed-agent";
 import { ws } from "../../lib/ws.svelte";
+import { waitFor } from "../../test/wait";
 import { registerAppActions } from "../../shell/app-actions.svelte";
 import type { ShellActions } from "../../shell/shell-actions";
 import ChatPlace from "./ChatPlace.svelte";
@@ -373,6 +375,70 @@ describe("sending a line", () => {
     expect(run.mock.calls[0]?.[0].command).toBe("inbox");
     expect(run.mock.calls[0]?.[1]).toBe("water the plants");
     expect(box).toHaveValue("");
+  });
+
+  it("forks the conversation into a session with /multitask, and opens it from the toast", async () => {
+    const box = await open();
+    const sendChat = vi.spyOn(ws, "sendChat").mockImplementation(() => {});
+    const openPlace = vi.spyOn(router, "openPlace").mockResolvedValue(true);
+    const starts: unknown[] = [];
+    mockFetch((url, init) => {
+      if (url === "/api/agents/atlas/sessions" && init?.method === "POST") {
+        if (typeof init.body === "string") starts.push(JSON.parse(init.body));
+        return jsonResponse({ address: "spawned-multitask-1a2b" }, 202);
+      }
+      return jsonResponse({}, 404);
+    });
+
+    await userEvent.type(box, "/multitask price out the paint{Enter}");
+
+    const confirmation = await waitFor(() => {
+      const shown = [...toast.toasts.values()].find((t) => t.message.startsWith("Forked into"));
+      expect(shown).toBeDefined();
+      return shown;
+    });
+    expect(confirmation?.message).toBe(
+      "Forked into spawned-multitask-1a2b. Its replies show there, not in this chat.",
+    );
+    expect(starts).toEqual([{ prompt: "price out the paint", fork: true }]);
+    expect(sendChat).not.toHaveBeenCalled();
+
+    ws.sessions.live = [{ ...liveRun("run-7"), address: "spawned-multitask-1a2b" }];
+    expect(confirmation?.action?.label).toBe("Open session");
+    confirmation?.action?.onClick();
+    await waitFor(() => {
+      expect(openPlace).toHaveBeenCalledWith(
+        { kind: "chat", agent: "atlas" },
+        { panel: { kind: "session", agent: "atlas", runId: "run-7" } },
+      );
+    });
+  });
+
+  it("asks for the task when /multitask has none, and says why a fork failed", async () => {
+    const box = await open();
+    const surface = vi.spyOn(notifications, "surface");
+    mockFetch(() => jsonResponse({ error: "prompt must not be empty" }, 400));
+
+    // The first Enter picks the action from the `/` menu, the second sends the line.
+    await userEvent.type(box, "/multitask{Enter}{Enter}");
+    await waitFor(() => {
+      expect(surface).toHaveBeenCalledWith(
+        "notice",
+        'Add the task after /multitask, like "/multitask compare the three quotes".',
+        undefined,
+        undefined,
+      );
+    });
+
+    await userEvent.type(box, "/multitask  x {Enter}");
+    await waitFor(() => {
+      expect(surface).toHaveBeenCalledWith(
+        "error",
+        "Couldn't fork the conversation. Prompt must not be empty.",
+        undefined,
+        undefined,
+      );
+    });
   });
 
   it("says why an action can't run now, and leaves the line in the box", async () => {

@@ -10,7 +10,8 @@
 //   /team/workbench[/:artifact]    the Workbench list, with an artifact's row selected
 //   /team/files                    Shared files
 //
-//   ?panel=session:<agent>:<runId> | file:<path> | size     the context panel
+//   ?panel=session:<agent>:<runId> | new-session:<agent> | file:<path> | size
+//                                                           the context panel
 //   ?settings=<agent | _all>[/<section>]                    the Settings modal
 //
 // Paths that older versions used redirect to these. Nothing here touches the
@@ -49,6 +50,7 @@ export type AgentPlace = Extract<Place, { kind: AgentPlaceKind }>;
 
 export type Panel =
   | { kind: "session"; agent: string; runId: string }
+  | { kind: "new-session"; agent: string }
   | { kind: "file"; path: string }
   | { kind: "size" };
 
@@ -97,11 +99,17 @@ export function isAgentName(name: string): boolean {
   return isAgentSlug(name);
 }
 
-/** Whether a panel can show on a place: a session of the viewed agent, a file, or the conversation size. */
+/**
+ * Whether a panel can show on a place: a session of the viewed agent (or on
+ * the Workbench), a new session on the viewed agent, a file, or the
+ * conversation size.
+ */
 export function panelAllowed(place: Place, panel: Panel): boolean {
   switch (panel.kind) {
     case "session":
       return (isAgentPlace(place) && place.agent === panel.agent) || place.kind === "workbench";
+    case "new-session":
+      return isAgentPlace(place) && place.agent === panel.agent;
     case "file":
       return isAgentPlace(place) || place.kind === "shared-files";
     case "size":
@@ -151,6 +159,8 @@ function parsePanel(value: string): Panel | null {
   const kind = value.slice(0, colon);
   const rest = value.slice(colon + 1);
   if (kind === "file") return rest === "" ? null : { kind: "file", path: rest };
+  if (kind === "new-session")
+    return isAgentName(rest) ? { kind: "new-session", agent: rest } : null;
   if (kind === "session") {
     const split = rest.indexOf(":");
     if (split < 0) return null;
@@ -439,6 +449,8 @@ function formatPanel(panel: Panel): string {
       return `file:${panel.path}`;
     case "session":
       return `session:${panel.agent}:${panel.runId}`;
+    case "new-session":
+      return `new-session:${panel.agent}`;
   }
 }
 

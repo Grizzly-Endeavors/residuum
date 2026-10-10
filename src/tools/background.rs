@@ -425,6 +425,7 @@ impl Tool for SubagentSpawnTool {
             inbound: None,
             images: Vec::new(),
             overlap: None,
+            carried_history: Vec::new(),
         };
 
         self.publisher

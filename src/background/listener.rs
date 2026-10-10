@@ -65,6 +65,8 @@ async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnR
             Ok(Some(event)) => {
                 let source_label = event.source_label.clone();
                 let trigger = event.source.clone();
+                let owner_address =
+                    super::owner_session::is_owner_start(&event).then(|| event.address.clone());
                 match handle_spawn_request(&ctx, event).await {
                     Ok(()) => {
                         if spawn_failures.remove(&source_label).is_some() {
@@ -74,16 +76,21 @@ async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnR
                             );
                         }
                     }
-                    Err(e) => {
-                        handle_spawn_failure(
-                            &ctx.publisher,
-                            &mut spawn_failures,
-                            &trigger,
-                            &source_label,
-                            &e,
-                        )
-                        .await;
-                    }
+                    Err(e) => match owner_address {
+                        Some(address) => {
+                            notify_owner_start_failed(&ctx.publisher, &address, &e).await;
+                        }
+                        None => {
+                            handle_spawn_failure(
+                                &ctx.publisher,
+                                &mut spawn_failures,
+                                &trigger,
+                                &source_label,
+                                &e,
+                            )
+                            .await;
+                        }
+                    },
                 }
             }
             Ok(None) => break,
@@ -152,6 +159,28 @@ async fn handle_spawn_failure(
         .await
     {
         tracing::warn!(source = %source_label, error = %e, "failed to publish spawn-failure notice");
+    }
+}
+
+/// Tell the owner a session they started by hand couldn't start. Their start
+/// was already accepted (the web UI is waiting for the run to appear, or a
+/// chat command already named its address), so the failure has to reach them
+/// on its own.
+async fn notify_owner_start_failed(
+    publisher: &Publisher,
+    address: &SessionAddress,
+    error: &anyhow::Error,
+) {
+    tracing::warn!(address = %address, error = format!("{error:#}"), "failed to fork a session the owner started");
+    let notice = format!("The session {address} you started couldn't start: {error}");
+    if let Err(e) = publisher
+        .publish(
+            topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+            NoticeEvent { message: notice },
+        )
+        .await
+    {
+        tracing::warn!(address = %address, error = %e, "failed to publish an owner session's start-failure notice");
     }
 }
 
@@ -391,6 +420,7 @@ async fn fork_and_spawn(
             sender: event.sender,
             inbound: event.inbound,
             images: event.images,
+            carried_history: event.carried_history,
         },
         conversation_target: event.conversation,
         overlap: event.overlap,
@@ -464,6 +494,7 @@ mod tests {
             images: inbound.images.clone(),
             inbound: Some(inbound),
             overlap: None,
+            carried_history: Vec::new(),
         }
     }
 
@@ -709,6 +740,30 @@ mod tests {
         let notice = wait::next_event("the first failure's notice", &mut sub).await;
         assert!(notice.message.contains("email_check"));
         assert!(notice.message.contains("skill 'ghost' not found"));
+    }
+
+    #[tokio::test]
+    async fn an_owner_session_that_fails_to_start_tells_the_owner_which_one() {
+        let bus = crate::bus::spawn_broker();
+        let mut sub: Subscriber<NoticeEvent> = bus
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+
+        notify_owner_start_failed(
+            &bus.publisher(),
+            &SessionAddress::from("spawned-multitask-1a2b"),
+            &anyhow::anyhow!("no API key for the medium tier"),
+        )
+        .await;
+
+        let notice = wait::next_event("the owner's failure notice", &mut sub).await;
+        assert!(
+            notice.message.contains("spawned-multitask-1a2b"),
+            "{}",
+            notice.message
+        );
+        assert!(notice.message.contains("no API key"), "{}", notice.message);
     }
 
     #[tokio::test]

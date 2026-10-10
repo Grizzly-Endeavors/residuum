@@ -719,6 +719,7 @@ async fn publish_conversation_spawn(
         images: original_inbound.images.clone(),
         inbound: Some(original_inbound),
         overlap: None,
+        carried_history: Vec::new(),
     };
     publisher
         .publish(topics::Background, event)
@@ -758,6 +759,7 @@ async fn publish_conversation_resume(
         images: inbound.images.clone(),
         inbound: Some(inbound.clone()),
         overlap: None,
+        carried_history: Vec::new(),
     };
     publisher.publish(topics::Background, event).await.map_err(|e| {
         tracing::error!(error = %e, address = %address, "failed to publish conversation resume");
@@ -1140,6 +1142,7 @@ async fn publish_resume(
         inbound: None,
         images,
         overlap: None,
+        carried_history: Vec::new(),
     };
 
     publisher

@@ -600,6 +600,7 @@ fn spawn_mini_background_listener(bus_handle: BusHandle, deps: MiniListenerDeps)
                     sender: event.sender,
                     inbound: event.inbound,
                     images: event.images,
+                    carried_history: event.carried_history,
                 },
                 conversation_target: event.conversation,
                 overlap: event.overlap,

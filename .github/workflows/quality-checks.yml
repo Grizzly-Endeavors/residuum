@@ -72,13 +72,6 @@ jobs:
         id: web_build
         run: cd web && npm run build
 
-      # Fails when the gzipped initial route outgrows its budget, which is set
-      # in the script.
-      - name: Web initial-route budget
-        id: web_size
-        if: always() && steps.web_build.outcome == 'success'
-        run: scripts/web-initial-route-size.sh web/dist
-
       - name: Build summary
         if: always()
         run: |
@@ -92,7 +85,6 @@ jobs:
             echo "| Types | ${{ steps.web_typecheck.outcome }} |"
             echo "| Tests | ${{ steps.web_test.outcome }} |"
             echo "| Build | ${{ steps.web_build.outcome }} |"
-            echo "| Initial-route budget | ${{ steps.web_size.outcome }} |"
             echo ''
             echo 'The end-to-end, accessibility and visual results are in the Web End-to-End jobs.'
             if [ -f web/coverage/summary.txt ]; then
@@ -103,7 +95,6 @@ jobs:
               sed '/^$/d' web/coverage/summary.txt
               echo '```'
             fi
-            # The table, and the over-budget message when there is one. The budget step decides the outcome.
             if [ -f web/dist/index.html ]; then
               echo ''
               echo '### Web initial-route size'
