@@ -47,7 +47,7 @@ agent (6 agents = 6 apps; free-tier cap 10 integrations, fits).
 
 ## Status
 - [x] Survey: spawn pattern, config structs, discord run() read end-to-end
-- [ ] Config plumbing
+- [x] Config plumbing
 - [ ] socket.rs client
 - [ ] handler.rs inbound
 - [ ] subscriber.rs outbound
