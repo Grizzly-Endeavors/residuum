@@ -458,6 +458,7 @@ pub(crate) async fn execute_subagent(
 
     let events = EventContext {
         publisher: identity.publisher,
+        reply_audience: None,
         target: EventTarget::Session {
             address: identity.address,
             run_id: identity.run_id,

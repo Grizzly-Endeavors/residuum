@@ -15,3 +15,4 @@ pub mod usage;
 
 pub use core::{Agent, AgentConfig};
 pub use hop::HopCounter;
+pub use turn::ReplyAudience;

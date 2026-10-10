@@ -59,6 +59,10 @@ pub struct Agent {
     /// The agent's handle on the hub's team router, read for the `TEAM`
     /// roster at each turn entry. `None` leaves the prompt without a roster.
     team: Option<crate::hub::team::TeamLink>,
+    /// Told as each endpoint reply of a turn reaches the main conversation,
+    /// so the hub counts it read or unread at that moment. `None` counts
+    /// nothing.
+    reply_audience: Option<std::sync::Arc<dyn super::ReplyAudience>>,
     last_user_message_at: Option<chrono::NaiveDateTime>,
     /// Main's current-turn hop count: the highest hop count among the
     /// inputs (kickoff message, agent-message interrupts drained mid-turn)
@@ -108,6 +112,7 @@ impl Agent {
             tz: config.tz,
             layout: config.layout,
             team: None,
+            reply_audience: None,
             last_user_message_at: None,
             hop_counter,
             usage_totals: std::sync::Arc::new(tokio::sync::Mutex::new(
@@ -152,6 +157,12 @@ impl Agent {
     /// from `team` at every turn entry.
     pub fn set_team(&mut self, team: crate::hub::team::TeamLink) {
         self.team = Some(team);
+    }
+
+    /// Tell `audience` as each of a turn's endpoint replies reaches the main
+    /// conversation.
+    pub fn set_reply_audience(&mut self, audience: std::sync::Arc<dyn super::ReplyAudience>) {
+        self.reply_audience = Some(audience);
     }
 
     /// Get a reference to the MCP registry.
@@ -415,6 +426,7 @@ impl Agent {
         };
         let events = EventContext {
             publisher,
+            reply_audience: self.reply_audience.as_deref(),
             target: EventTarget::Endpoint {
                 output_endpoint,
                 correlation_id,
