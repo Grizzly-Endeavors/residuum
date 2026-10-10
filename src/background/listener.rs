@@ -391,6 +391,7 @@ async fn fork_and_spawn(
             sender: event.sender,
             inbound: event.inbound,
             images: event.images,
+            carried_history: event.carried_history,
         },
         conversation_target: event.conversation,
         overlap: event.overlap,
@@ -464,6 +465,7 @@ mod tests {
             images: inbound.images.clone(),
             inbound: Some(inbound),
             overlap: None,
+            carried_history: Vec::new(),
         }
     }
 

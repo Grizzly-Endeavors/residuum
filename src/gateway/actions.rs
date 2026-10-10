@@ -78,6 +78,7 @@ async fn publish_action_spawn(
         inbound: None,
         images: Vec::new(),
         overlap: None,
+        carried_history: Vec::new(),
     };
 
     match publisher.publish(topics::Background, spawn_event).await {

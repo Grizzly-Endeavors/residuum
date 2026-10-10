@@ -597,6 +597,11 @@ pub struct SpawnRequestEvent {
     /// still live in the registry. `None` for every other trigger, and for a
     /// pulse fire that found no live previous run. See [`PulseOverlap`].
     pub overlap: Option<PulseOverlap>,
+    /// Main's saved conversation, for a fork of it (the owner's
+    /// `/multitask`): the new run sends these to the model ahead of its task
+    /// on every turn, but keeps them out of its own transcript and memory.
+    /// Empty for every other request, including a resume of such a fork.
+    pub carried_history: Vec<crate::inference::Message>,
 }
 
 /// Marks a pulse run that started while its previous run was still going
