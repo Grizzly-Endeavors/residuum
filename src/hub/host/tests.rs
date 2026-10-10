@@ -19,9 +19,9 @@ use crate::hub::push::{PushTriggers, TriggerInputs};
 use crate::hub::runtime::build_app;
 use crate::hub::team_events::{TeamEventLog, TeamEventRecorder};
 use crate::hub::test_support::{mount_reply, reserve_port, write_agent};
+use crate::testing::model::GatedModel;
+use crate::testing::wait::{self, HANG_GUARD};
 use crate::workspace::watch::WatchHealth;
-
-const POLL_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A hub over a temp residuum root with running-capable agents, each talking
 /// to its own mock model server that answers "<name> here".
@@ -31,6 +31,9 @@ struct Fixture {
     services: HubServices,
     addr: String,
     mocks: BTreeMap<String, MockServer>,
+    /// The gated proxy each agent's model calls go through, in front of its
+    /// mock server; holding it keeps it serving.
+    _models: BTreeMap<String, GatedModel>,
     http: reqwest::Client,
     /// What the hub's recorder has written since the fixture was built.
     team_events: Arc<TeamEventLog>,
@@ -71,11 +74,14 @@ impl Fixture {
         )
         .unwrap();
         let mut mocks = BTreeMap::new();
+        let mut models = BTreeMap::new();
         for name in names {
             let server = MockServer::start().await;
             mount_reply(&server, &format!("{name} here"), Duration::ZERO).await;
-            write_agent(root.path(), name, &server.uri());
+            let model = GatedModel::in_front_of(&server.uri()).await;
+            write_agent(root.path(), name, &model.uri());
             mocks.insert((*name).to_string(), server);
+            models.insert((*name).to_string(), model);
         }
         let hub = HubConfig::load_at(&hub_dir).unwrap();
         let services = HubServices::for_tests(root.path(), &hub).await;
@@ -122,6 +128,7 @@ impl Fixture {
             services,
             addr,
             mocks,
+            _models: models,
             http: reqwest::Client::new(),
             team_events,
             _recorder: recorder,
@@ -155,7 +162,7 @@ impl Fixture {
         ))
         .await
         .unwrap();
-        tokio::time::timeout(POLL_TIMEOUT, async {
+        wait::guarded("the agent's reply", async {
             while let Some(frame) = ws.next().await {
                 let WsMessage::Text(raw) = frame.unwrap() else {
                     continue;
@@ -168,7 +175,6 @@ impl Fixture {
             panic!("the WebSocket closed before the agent replied");
         })
         .await
-        .expect("the agent replies within the timeout")
     }
 
     /// Start an artifact session in the agent and return its address.
@@ -263,13 +269,10 @@ impl Fixture {
             .control
             .workspace_watch_health
             .clone();
-        tokio::time::timeout(
-            POLL_TIMEOUT,
-            health.wait_for(|health| *health != WatchHealth::Starting),
-        )
-        .await
-        .expect("the agent's file watcher never started")
-        .unwrap();
+        wait::watch_until("the agent's file watcher to start", &mut health, |health| {
+            *health != WatchHealth::Starting
+        })
+        .await;
         crate::workspace::watch::assert_native_watch(*health.borrow(), "the agent's file watcher");
     }
 
@@ -280,7 +283,7 @@ impl Fixture {
     /// turn changed and the second finds nothing to record, so which of them
     /// reaches the history, and whether both do, depends on scheduling.
     async fn wait_for_a_turn_checkpoint(&self, name: &str) {
-        eventually("a checkpoint of the turn to be recorded", || async {
+        wait::until("a checkpoint of the turn to be recorded", || async {
             let (_, history) = self
                 .get(&format!("/api/agents/{name}/checkpoints?repo=workspace"))
                 .await;
@@ -309,7 +312,7 @@ impl Fixture {
             name,
         )
         .join("workspace.git");
-        let deadline = std::time::Instant::now() + POLL_TIMEOUT;
+        let deadline = std::time::Instant::now() + HANG_GUARD;
         loop {
             std::fs::remove_dir_all(&repo).ok();
             if std::fs::write(&repo, "not a repository").is_ok() {
@@ -388,25 +391,6 @@ fn user_inbox_files(hub: &Fixture, agent: &str) -> Vec<std::path::PathBuf> {
         .collect()
 }
 
-/// Poll `check` until it returns `Some`, or fail after the timeout.
-async fn eventually<T, F, Fut>(what: &str, mut check: F) -> T
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Option<T>>,
-{
-    let deadline = tokio::time::Instant::now() + POLL_TIMEOUT;
-    loop {
-        if let Some(found) = check().await {
-            return found;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "timed out waiting for {what}"
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-}
-
 fn drain_events(rx: &mut broadcast::Receiver<HubEvent>) -> Vec<HubEvent> {
     let mut events = Vec::new();
     while let Ok(event) = rx.try_recv() {
@@ -454,7 +438,7 @@ async fn each_agent_serves_its_own_routes_with_separate_memory_and_sessions() {
     let history_with = |name: &'static str, needle: &'static str| {
         let hub = &hub;
         async move {
-            eventually("the conversation to reach history", || async {
+            wait::until("the conversation to reach history", || async {
                 let (_, history) = hub.get(&format!("/api/agents/{name}/chat/history")).await;
                 history.contains(needle).then_some(history)
             })
@@ -479,7 +463,7 @@ async fn each_agent_serves_its_own_routes_with_separate_memory_and_sessions() {
 
     // Sessions are per agent too.
     hub.start_session("scout", "look something up").await;
-    eventually("scout's session to finish its turn", || async {
+    wait::until("scout's session to finish its turn", || async {
         (hub.sessions("scout").await.0 == ["idle"]).then_some(())
     })
     .await;
@@ -516,7 +500,7 @@ async fn a_stopped_agent_serves_what_it_kept_and_only_status_needs_it_running() 
         hub.chat("scout", "remember the pelican").await,
         "scout here"
     );
-    eventually("the conversation to reach history", || async {
+    wait::until("the conversation to reach history", || async {
         let (_, history) = hub.get("/api/agents/scout/chat/history").await;
         history.contains("remember the pelican").then_some(())
     })
@@ -595,7 +579,7 @@ async fn a_stopped_agents_history_and_inbox_answer_when_its_checkpoint_repositor
         hub.chat("scout", "remember the pelican").await,
         "scout here"
     );
-    eventually("the conversation to reach history", || async {
+    wait::until("the conversation to reach history", || async {
         let (_, history) = hub.get("/api/agents/scout/chat/history").await;
         history.contains("remember the pelican").then_some(())
     })
@@ -637,7 +621,7 @@ async fn a_running_agents_history_and_inbox_do_not_open_its_checkpoint_repositor
         hub.chat("scout", "remember the pelican").await,
         "scout here"
     );
-    eventually("the conversation to reach history", || async {
+    wait::until("the conversation to reach history", || async {
         let (_, history) = hub.get("/api/agents/scout/chat/history").await;
         history.contains("remember the pelican").then_some(())
     })
@@ -773,7 +757,7 @@ async fn a_panic_in_one_agents_loop_fails_only_that_agent() {
         ws
     };
 
-    eventually("scout to be marked failed", || async {
+    wait::until("scout to be marked failed", || async {
         (hub.state_of("scout") == AgentState::Failed).then_some(())
     })
     .await;
@@ -810,7 +794,7 @@ async fn a_panic_in_one_agents_loop_fails_only_that_agent() {
         "the failure is published on the hub bus"
     );
     // The failure was also auto-reported, naming the agent.
-    eventually("the automatic bug report", || async {
+    wait::until("the automatic bug report", || async {
         let received = reports.received_requests().await.unwrap_or_default();
         received
             .iter()
@@ -842,7 +826,7 @@ async fn sessions_from_both_agents_queue_on_the_one_shared_budget() {
     hub.start_session("scout", "first task").await;
     hub.start_session("atlas", "second task").await;
     for name in ["atlas", "scout"] {
-        eventually(&format!("{name}'s session to queue"), || async {
+        wait::until(&format!("{name}'s session to queue"), || async {
             (hub.sessions(name).await.0 == ["queued"]).then_some(())
         })
         .await;
@@ -850,7 +834,7 @@ async fn sessions_from_both_agents_queue_on_the_one_shared_budget() {
 
     drop(held);
     for name in ["atlas", "scout"] {
-        eventually(&format!("{name}'s session to run its turn"), || async {
+        wait::until(&format!("{name}'s session to run its turn"), || async {
             (hub.sessions(name).await.0 == ["idle"]).then_some(())
         })
         .await;
@@ -973,14 +957,14 @@ async fn unread_counts_messages_while_no_client_is_connected_and_resets_on_conne
     ))
     .await
     .unwrap();
-    eventually("scout to be busy", || async {
+    wait::until("scout to be busy", || async {
         hub.activity_of("scout").busy.then_some(())
     })
     .await;
     ws.close(None).await.unwrap();
     drop(ws);
 
-    eventually("the unread reply", || async {
+    wait::until("the unread reply", || async {
         let activity = hub.activity_of("scout");
         (!activity.busy && activity.unread == 1).then_some(())
     })
@@ -991,7 +975,7 @@ async fn unread_counts_messages_while_no_client_is_connected_and_resets_on_conne
         tokio_tungstenite::connect_async(format!("ws://{}/api/agents/scout/ws", hub.addr))
             .await
             .unwrap();
-    eventually("the unread count to reset", || async {
+    wait::until("the unread count to reset", || async {
         (hub.activity_of("scout").unread == 0).then_some(())
     })
     .await;
@@ -1031,7 +1015,7 @@ async fn the_listing_and_the_hub_snapshot_show_a_turn_in_progress_and_then_its_e
 
     let before = Utc::now();
     let _ws = hub.start_a_turn("scout").await;
-    eventually("scout to be busy", || async {
+    wait::until("scout to be busy", || async {
         hub.activity_of("scout").busy.then_some(())
     })
     .await;
@@ -1053,7 +1037,7 @@ async fn the_listing_and_the_hub_snapshot_show_a_turn_in_progress_and_then_its_e
     let snapshot = frame_where(&mut hub_ws, "agents_snapshot", |_| true).await;
     assert_eq!(snapshot.pointer("/activity/scout"), Some(scout));
 
-    eventually("the turn to end", || async {
+    wait::until("the turn to end", || async {
         (!hub.activity_of("scout").busy).then_some(())
     })
     .await;
@@ -1116,7 +1100,7 @@ async fn stopping_an_agent_records_its_live_sessions_as_interrupted() {
     mount_reply(hub.mock("scout"), "slow", Duration::from_secs(30)).await;
     hub.host.start("scout").await.unwrap();
     hub.start_session("scout", "a long task").await;
-    eventually("the session to run", || async {
+    wait::until("the session to run", || async {
         (hub.sessions("scout").await.0 == ["running"]).then_some(())
     })
     .await;
@@ -1464,7 +1448,7 @@ async fn creating_an_agent_writes_it_starts_it_and_briefs_it() {
 
     // The description reached the new agent's main conversation as its first
     // message, so it can write its own notes.
-    eventually("the description to reach the model", || async {
+    wait::until("the description to reach the model", || async {
         model_was_told(hub.mock("scout"), "keeps the wiki tidy")
             .await
             .then_some(())
@@ -1502,7 +1486,7 @@ async fn an_agent_created_by_another_agent_is_briefed_in_that_agents_name() {
         .await
         .unwrap();
 
-    eventually("the creator's message to reach the model", || async {
+    wait::until("the creator's message to reach the model", || async {
         model_was_told(hub.mock("scout"), "agent:scout")
             .await
             .then_some(())
@@ -1751,7 +1735,7 @@ async fn frame_where(
     frame_type: &str,
     matches: impl Fn(&Value) -> bool,
 ) -> Value {
-    tokio::time::timeout(POLL_TIMEOUT, async {
+    wait::guarded(format_args!("a matching {frame_type} frame"), async {
         while let Some(frame) = ws.next().await {
             let WsMessage::Text(raw) = frame.unwrap() else {
                 continue;
@@ -1764,7 +1748,6 @@ async fn frame_where(
         panic!("the WebSocket closed before a {frame_type} frame arrived");
     })
     .await
-    .unwrap_or_else(|_| panic!("no {frame_type} frame arrived within the timeout"))
 }
 
 #[tokio::test]
@@ -2139,7 +2122,7 @@ async fn a_teams_bind_failure_is_a_hub_notice_naming_the_agent_and_port() {
 
     hub.host.start("atlas").await.unwrap();
 
-    let message = eventually("the Teams bind failure notice", || {
+    let message = wait::until("the Teams bind failure notice", || {
         let found = drain_events(&mut events)
             .into_iter()
             .find_map(|event| match event {
@@ -2190,7 +2173,7 @@ async fn the_team_wiki_follows_the_agents_embedding_model() {
     // The hub opened text-only; the first agent that configures an embedding
     // model starts and the shared index gains vectors.
     hub.host.start("atlas").await.unwrap();
-    eventually("the team wiki to gain vectors", || {
+    wait::until("the team wiki to gain vectors", || {
         std::future::ready(hub.services.team_wiki.has_vector().then_some(()))
     })
     .await;
@@ -2321,7 +2304,7 @@ async fn a_teammate_message_is_attributed_and_the_reply_finds_its_way_back() {
 
     hub.chat("alpha", "kickoff").await;
 
-    eventually("alpha to receive beta's reply", || async {
+    wait::until("alpha to receive beta's reply", || async {
         model_was_told(hub.mock("alpha"), "pong from beta")
             .await
             .then_some(())
@@ -2359,7 +2342,7 @@ async fn a_message_sent_during_the_final_model_call_gets_its_own_reply() {
     ))
     .await
     .unwrap();
-    eventually("alpha's model call to start", || async {
+    wait::until("alpha's model call to start", || async {
         model_was_told(hub.mock("alpha"), "first-question")
             .await
             .then_some(())
@@ -2371,7 +2354,7 @@ async fn a_message_sent_during_the_final_model_call_gets_its_own_reply() {
     .await
     .unwrap();
 
-    let replies = tokio::time::timeout(POLL_TIMEOUT, async {
+    let replies = wait::guarded("both messages to be answered", async {
         let mut replies = 0;
         while replies < 2 {
             let Some(frame) = ws.next().await else {
@@ -2387,8 +2370,7 @@ async fn a_message_sent_during_the_final_model_call_gets_its_own_reply() {
         }
         replies
     })
-    .await
-    .expect("both messages are answered");
+    .await;
 
     assert_eq!(replies, 2);
     let requests = hub.mock("alpha").received_requests().await.unwrap();
@@ -2433,7 +2415,7 @@ async fn a_sessions_teammate_message_is_answered_at_the_sessions_own_address() {
 
     hub.chat("alpha", "kickoff-session").await;
 
-    eventually("alpha's session to receive beta's reply", || async {
+    wait::until("alpha's session to receive beta's reply", || async {
         model_was_told(hub.mock("alpha"), "session pong")
             .await
             .then_some(())
@@ -2488,7 +2470,7 @@ async fn a_two_agent_loop_hits_the_hard_hop_limit_and_the_refusal_is_seen() {
     hub.chat("alpha", "kickoff").await;
 
     let refusal = "message loop limit reached";
-    eventually("one side to be refused at the hard limit", || async {
+    wait::until("one side to be refused at the hard limit", || async {
         let alpha = model_was_told(hub.mock("alpha"), refusal).await;
         let beta = model_was_told(hub.mock("beta"), refusal).await;
         (alpha || beta).then_some(())
@@ -2678,17 +2660,12 @@ async fn relay_list_where(
     rx: &mut tokio::sync::watch::Receiver<Vec<crate::tunnel::v2::frames::AgentInfo>>,
     check: impl Fn(&[crate::tunnel::v2::frames::AgentInfo]) -> bool,
 ) -> Vec<crate::tunnel::v2::frames::AgentInfo> {
-    tokio::time::timeout(POLL_TIMEOUT, async {
-        loop {
-            let current = rx.borrow_and_update().clone();
-            if check(&current) {
-                return current;
-            }
-            rx.changed().await.unwrap();
-        }
-    })
+    wait::watch_until(
+        "the relay's agent list to reach the expected state",
+        rx,
+        |current| check(current),
+    )
     .await
-    .expect("the relay's agent list never reached the expected state")
 }
 
 #[tokio::test]

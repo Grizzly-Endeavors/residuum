@@ -2625,11 +2625,13 @@ mod tests {
             }),
         );
 
-        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
-            info.state == SessionState::Running
-        })
-        .await
-        .expect("session should reach running while blocked on the model call");
+        wait_for(
+            &runtime,
+            &address,
+            "the session to reach running while blocked on the model call",
+            |info| info.state == SessionState::Running,
+        )
+        .await;
 
         assert!(runtime.registry.stop(&address));
 
@@ -2671,11 +2673,13 @@ mod tests {
             }),
         );
 
-        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
-            info.state == SessionState::Running
-        })
-        .await
-        .expect("session should reach running while blocked on the model call");
+        wait_for(
+            &runtime,
+            &address,
+            "the session to reach running while blocked on the model call",
+            |info| info.state == SessionState::Running,
+        )
+        .await;
         let info = runtime.registry.get(&address).unwrap();
 
         let point = runtime
@@ -2772,11 +2776,13 @@ mod tests {
         // both events are driven by BlockingProvider's deterministic
         // never-resolves-until-cancelled gate and the bus's own delivery,
         // neither of which depends on wall-clock timing.
-        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
-            info.state == SessionState::Running
-        })
-        .await
-        .expect("session should reach running while blocked on the model call");
+        wait_for(
+            &runtime,
+            &address,
+            "the session to reach running while blocked on the model call",
+            |info| info.state == SessionState::Running,
+        )
+        .await;
 
         assert_eq!(
             runtime.registry.deliver(
@@ -3099,11 +3105,13 @@ mod tests {
             }),
         );
 
-        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
-            info.state == SessionState::Running
-        })
-        .await
-        .expect("session should reach running before shutdown stops it");
+        wait_for(
+            &runtime,
+            &address,
+            "the session to reach running before shutdown stops it",
+            |info| info.state == SessionState::Running,
+        )
+        .await;
 
         runtime.shutdown(Duration::from_secs(2)).await;
 
@@ -3139,7 +3147,6 @@ mod tests {
         // that timeout — and the check doesn't depend on how fast a loaded
         // CI runner forks a session.
         let idle_window = Duration::from_mins(10);
-        let generous = Duration::from_secs(20);
         let bus_handle = crate::bus::spawn_broker();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
@@ -3180,11 +3187,13 @@ mod tests {
         );
 
         // Wait for the first session to go idle (releasing its permit).
-        wait_for(&runtime, &first, generous, |info| {
-            info.state == SessionState::Idle
-        })
-        .await
-        .expect("first session should reach idle");
+        wait_for(
+            &runtime,
+            &first,
+            "the first session to reach idle",
+            |info| info.state == SessionState::Idle,
+        )
+        .await;
 
         let second = SessionAddress::from("spawned-second-0002");
         runtime.spawn(
@@ -3193,15 +3202,13 @@ mod tests {
         );
         // Any state past `Forking` means the permit was acquired and the
         // turn at least started.
-        let second_started = wait_for(&runtime, &second, generous, |info| {
-            info.state != SessionState::Forking
-        })
+        wait_for(
+            &runtime,
+            &second,
+            "the second session to start while the first is idle",
+            |info| info.state != SessionState::Forking,
+        )
         .await;
-        assert!(
-            second_started.is_some(),
-            "second session should start while the first is idle, not wait out its \
-             {idle_window:?} idle timeout"
-        );
         assert_eq!(
             runtime.registry.get(&first).map(|info| info.state),
             Some(SessionState::Idle),
@@ -3209,23 +3216,20 @@ mod tests {
         );
     }
 
-    /// Poll a runtime's registry until `address`'s info satisfies `pred`, or the deadline elapses.
+    /// Wait until `address`'s info in the runtime's registry satisfies `pred`.
     async fn wait_for(
         runtime: &SessionRuntime,
         address: &SessionAddress,
-        deadline: Duration,
+        what: &str,
         pred: impl Fn(&SessionInfo) -> bool,
-    ) -> Option<std::time::Instant> {
-        let start = std::time::Instant::now();
-        while start.elapsed() < deadline {
-            if let Some(info) = runtime.registry.get(address)
-                && pred(&info)
-            {
-                return Some(std::time::Instant::now());
-            }
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
-        None
+    ) {
+        crate::testing::wait::until_true(what, || {
+            runtime
+                .registry
+                .get(address)
+                .is_some_and(|info| pred(&info))
+        })
+        .await;
     }
 
     #[test]
@@ -3554,11 +3558,13 @@ mod tests {
             Some(make_sequenced_resources(vec!["first done", "second done"])),
         );
 
-        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
-            info.state == SessionState::Idle
-        })
-        .await
-        .expect("session should go idle after its first turn");
+        wait_for(
+            &runtime,
+            &address,
+            "the session to go idle after its first turn",
+            |info| info.state == SessionState::Idle,
+        )
+        .await;
 
         // Exactly what `AgentMessenger::send` does to deliver to a live
         // session — see `crate::background::messaging`.
@@ -3629,11 +3635,13 @@ mod tests {
             Some(make_sequenced_resources(vec!["first done", "second done"])),
         );
 
-        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
-            info.state == SessionState::Idle
-        })
-        .await
-        .expect("session should go idle after its first turn");
+        wait_for(
+            &runtime,
+            &address,
+            "the session to go idle after its first turn",
+            |info| info.state == SessionState::Idle,
+        )
+        .await;
 
         // Exactly what `AgentMessenger::deliver_conversation` does to deliver
         // to a live session.
@@ -3842,11 +3850,13 @@ mod tests {
         ]);
         runtime.spawn(sample_request(address.as_ref()), Some(resources));
 
-        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
-            info.state == SessionState::Idle
-        })
-        .await
-        .expect("session should go idle after its first turn");
+        wait_for(
+            &runtime,
+            &address,
+            "the session to go idle after its first turn",
+            |info| info.state == SessionState::Idle,
+        )
+        .await;
 
         assert_eq!(
             runtime.registry.deliver(
@@ -4178,11 +4188,13 @@ mod tests {
             // session queued before this one gives the permit back.
             Some(make_slow_resources("first done", Duration::from_secs(3))),
         );
-        wait_for(&runtime, &first, Duration::from_secs(1), |info| {
-            info.state == SessionState::Running
-        })
-        .await
-        .expect("first session should reach running and hold the only permit");
+        wait_for(
+            &runtime,
+            &first,
+            "the first session to reach running and hold the only permit",
+            |info| info.state == SessionState::Running,
+        )
+        .await;
 
         let second = SessionAddress::from("spawned-second-waiting-0002");
         runtime.spawn(
@@ -4190,21 +4202,22 @@ mod tests {
             Some(make_resources("second done")),
         );
 
-        wait_for(&runtime, &second, Duration::from_secs(2), |info| {
-            info.state == SessionState::Queued
-        })
-        .await
-        .expect(
-            "second session should show as queued while the first session holds the \
-             only concurrency permit",
-        );
+        wait_for(
+            &runtime,
+            &second,
+            "the second session to show as queued while the first holds the only concurrency permit",
+            |info| info.state == SessionState::Queued,
+        )
+        .await;
 
         // Once the first session finishes and releases its permit, the
         // second should proceed to running rather than staying queued.
-        wait_for(&runtime, &second, Duration::from_secs(5), |info| {
-            info.state == SessionState::Running || info.state == SessionState::Idle
-        })
-        .await
-        .expect("second session should proceed once the permit is released");
+        wait_for(
+            &runtime,
+            &second,
+            "the second session to proceed once the permit is released",
+            |info| info.state == SessionState::Running || info.state == SessionState::Idle,
+        )
+        .await;
     }
 }

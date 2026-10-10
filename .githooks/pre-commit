@@ -69,6 +69,12 @@ if [ -n "$STAGED_RUST" ] || [ -n "$STAGED_MANIFEST" ]; then
         cargo test --quiet || fail "ERROR: tests failed."
     fi
 
+    # The source scans read the whole crate, so a commit to any module can
+    # break them, and the touched-module runs above wouldn't notice.
+    echo "Scanning sources..."
+    cargo test --quiet --lib testing::source_scan \
+        || fail "ERROR: a source scan failed. A test that waits on elapsed time should wait on the event instead (CONTRIBUTING.md, \"Waiting in tests\")."
+
     # The web app's protocol types are generated from the Rust types, so a
     # commit that changes Rust has to carry the regenerated files. The script
     # compares what the Rust types generate now with the index.
@@ -116,6 +122,35 @@ if grep -qE '^\+.*#\[allow\(' <<<"$DIFF"; then
     echo -e "${RED}ERROR: Found #[allow(...)] in staged changes.${NC}" >&2
     echo "Use #[expect(lint, reason = \"...\")] instead so stale suppressions warn." >&2
     grep -nE '^\+.*#\[allow\(' <<<"$DIFF" >&2
+    exit 1
+fi
+
+# The wall-clock backlog only shrinks. A new entry, a raised count, or a new
+# allowed file would let a test go back to waiting on the clock; convert the
+# wait instead. The commit that creates the file is the one that sets it.
+BACKLOG=src/testing/wall_clock_backlog.rs
+BACKLOG_GROWTH=""
+git cat-file -e "HEAD:$BACKLOG" 2>/dev/null && BACKLOG_GROWTH="$(git diff --cached -U0 -- "$BACKLOG" | awk '
+    /^-[^-]/ && match($0, /"[^"]+\.rs"/) {
+        path = substr($0, RSTART, RLENGTH)
+        count = $0; sub(/.*"[^"]+\.rs", */, "", count); sub(/[^0-9].*/, "", count)
+        removed[path] = (count == "" ? -1 : count + 0)
+    }
+    /^\+[^+]/ && match($0, /"[^"]+\.rs"/) {
+        path = substr($0, RSTART, RLENGTH)
+        count = $0; sub(/.*"[^"]+\.rs", */, "", count); sub(/[^0-9].*/, "", count)
+        added[path] = (count == "" ? -1 : count + 0); line[path] = $0
+    }
+    END {
+        for (path in added) {
+            if (!(path in removed) || (added[path] >= 0 && removed[path] >= 0 && added[path] > removed[path])) print line[path]
+        }
+    }
+')"
+if [ -n "$BACKLOG_GROWTH" ]; then
+    echo -e "${RED}ERROR: $BACKLOG may only shrink.${NC}" >&2
+    echo "Make the test wait on the event it checks instead (CONTRIBUTING.md, \"Waiting in tests\"):" >&2
+    echo "$BACKLOG_GROWTH" >&2
     exit 1
 fi
 

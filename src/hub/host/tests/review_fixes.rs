@@ -47,7 +47,7 @@ async fn a_user_created_agent_gets_its_role_as_the_owners_own_message() {
         .await
         .unwrap();
 
-    eventually("the description to reach the new agent", || async {
+    wait::until("the description to reach the new agent", || async {
         model_was_told(hub.mock("scout"), "keeps the wiki tidy")
             .await
             .then_some(())
@@ -72,7 +72,7 @@ async fn an_agent_created_by_an_agent_gets_its_role_as_a_teammate_message() {
         .unwrap();
 
     assert!(!result.is_error, "{}", result.output);
-    eventually(
+    wait::until(
         "the role to arrive framed as a teammate message",
         || async {
             model_was_told(hub.mock("scout"), "Message from teammate agent:scout")
