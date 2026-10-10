@@ -102,7 +102,7 @@ pub(crate) fn from_file_and_env(
         subconscious::resolve_subconscious_settings(file.and_then(|f| f.subconscious.as_ref()));
     let learning = subconscious::resolve_learning_config(file.and_then(|f| f.learning.as_ref()));
 
-    let (discord, telegram, teams, idle) =
+    let (discord, telegram, teams, slack, idle) =
         channels::resolve_configured_chats(file, &secrets, &mut notices);
     let a2a = a2a::resolve_agent_a2a_config(hub, file.and_then(|f| f.a2a.as_ref()), &mut notices);
     let webhooks = channels::resolve_webhooks_config(
@@ -168,6 +168,7 @@ pub(crate) fn from_file_and_env(
         cloud: hub.cloud.clone(),
         discord,
         telegram,
+        slack,
         teams,
         a2a,
         webhooks,
