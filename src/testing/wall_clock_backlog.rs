@@ -6,15 +6,15 @@
 //! comes off the list. The pre-commit hook refuses a commit that adds an entry.
 
 /// Files whose test code waits on the clock, and how many such waits each has.
-pub(super) const BACKLOG: &[(&str, usize)] = &[
-    ("src/a2a/client/e2e_tests.rs", 2),
-    ("src/a2a/client/siblings.rs", 3),
-    ("src/a2a/server_e2e_tests.rs", 1),
-    ("src/hub/http/tests/overview.rs", 1),
-];
+pub(super) const BACKLOG: &[(&str, usize)] = &[];
 
 /// Test code where the clock is the stimulus rather than a guess, with why.
 pub(super) const ALLOWED: &[(&str, usize, &str)] = &[
+    (
+        "src/a2a/server_e2e_tests.rs",
+        1,
+        "the harness's `Drop` removes the workspace while detached session and checkpoint writers may still be finishing; teardown is synchronous, with nothing to await their end on, so the removal retries between short pauses",
+    ),
     (
         "src/inference/test_support.rs",
         1,

@@ -215,18 +215,6 @@ impl Default for HarnessOptions {
     }
 }
 
-/// Poll until `port` accepts TCP connections, so a request never races the
-/// listener's bind.
-async fn wait_until_listening(port: u16) {
-    wait::until(format!("the listener on port {port}"), || async move {
-        tokio::net::TcpStream::connect(("127.0.0.1", port))
-            .await
-            .ok()
-            .map(|_| ())
-    })
-    .await;
-}
-
 /// Set up the tempdir-backed workspace a harness runs against: required
 /// directories, an optional workspace skill (for the skill-mapping test),
 /// and the workspace agent-card file.
@@ -366,7 +354,7 @@ fn start_scripted_sessions(
 
 /// Build the real executor/handler and start the real `A2aListener` on
 /// `port`, returning its caller-key store and shutdown sender.
-async fn start_a2a_listener(
+fn start_a2a_listener(
     workspace_dir: &std::path::Path,
     card_state: &SharedCardState,
     task_store: &SharedTaskStore,
@@ -400,12 +388,11 @@ async fn start_a2a_listener(
         Arc::new(directory),
         Arc::clone(&keys),
         shutdown_rx,
-    );
-    // The listener below binds `port` for real; drop the reservation right
-    // before so no other test process can take it first.
-    drop(held);
+    )
+    // The listener serves on the reserved socket itself, so no other process
+    // can take the port, and connections queue on it until it accepts them.
+    .with_bound_listener(held.into_tokio_listener());
     crate::util::spawn_in_span(listener.start());
-    wait_until_listening(port).await;
     (keys, shutdown_tx, port)
 }
 
@@ -525,7 +512,7 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
         chrono_tz::UTC,
     );
     let (keys, shutdown_tx, port) =
-        start_a2a_listener(&workspace_dir, &card_state, &task_store, executor, held).await;
+        start_a2a_listener(&workspace_dir, &card_state, &task_store, executor, held);
 
     Harness {
         base_url: format!("http://127.0.0.1:{port}/agents/{AGENT_NAME}"),

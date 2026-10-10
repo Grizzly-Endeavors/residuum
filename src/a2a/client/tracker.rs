@@ -369,6 +369,13 @@ impl RemoteTaskTracker {
         self.spawn_watch(task_id);
     }
 
+    /// Apply the task a send was answered with, after [`Self::track`]. A remote
+    /// that finished the task, or needs input, before it answered reports that
+    /// only here: no later event or poll would tell the sender.
+    pub async fn apply_sent_task(&self, task: a2a::Task) {
+        self.apply_remote_task(task).await;
+    }
+
     /// Every open task, from every sender, newest first — the web UI's list of
     /// tasks sent to other agents (Activity's Running now).
     pub async fn open_tasks(&self) -> Vec<TrackedTask> {
@@ -833,6 +840,13 @@ impl RemoteTaskTracker {
                 tokio::time::sleep(MIN_BACKOFF).await;
                 continue;
             };
+            // A subscription doesn't replay what the remote sent before it
+            // attached, and a task that already reached a final state sends
+            // nothing more: read where it stands now. Anything after this
+            // arrives on the stream.
+            if self.poll_once(&client, task_id).await {
+                return;
+            }
 
             let mut pending_artifacts: Vec<a2a::Artifact> = Vec::new();
             let mut delivered = false;
