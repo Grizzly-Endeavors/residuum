@@ -17,7 +17,7 @@ pub(super) const BACKLOG: &[(&str, usize)] = &[
     ("src/gateway/memory.rs", 7),
     ("src/gateway/post_turn.rs", 11),
     ("src/gateway/web/a2a.rs", 1),
-    ("src/gateway/web/sessions.rs", 2),
+    ("src/gateway/web/sessions.rs", 1),
     ("src/gateway/web/workbench.rs", 1),
     ("src/gateway/web/workspace_team_tests.rs", 1),
     ("src/gateway/ws.rs", 1),

@@ -146,7 +146,7 @@ describe("Activity", () => {
       [run("run-9", { state: "completed", outcome: "failed", error: "the site timed out" })],
     );
     expect(
-      screen.getByText("Nothing running. Work atlas starts on its own shows up here."),
+      screen.getByText("Nothing running. Work atlas starts, and sessions you start, show up here."),
     ).toBeVisible();
     expect(screen.getByText("Failed: the site timed out")).toBeVisible();
 

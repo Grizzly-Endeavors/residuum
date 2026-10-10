@@ -165,7 +165,9 @@
             </Banner>
           {/if}
           {#if liveCount === 0}
-            <EmptyState>Nothing running. Work {label} starts on its own shows up here.</EmptyState>
+            <EmptyState
+              >Nothing running. Work {label} starts, and sessions you start, show up here.</EmptyState
+            >
           {:else}
             <ul class="rows">
               {#each sessions.live as run (run.run_id)}

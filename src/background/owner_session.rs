@@ -73,6 +73,13 @@ impl OwnerSessionStart {
     }
 }
 
+/// Whether `event` starts (or resumes) a session the owner started by hand:
+/// every `spawned` session an agent starts names its spawner.
+#[must_use]
+pub(crate) fn is_owner_start(event: &SpawnRequestEvent) -> bool {
+    matches!(event.source, EventTrigger::Agent) && event.spawner.is_none()
+}
+
 /// Main's saved conversation (`recent_messages.json`), up to its last
 /// finished turn, for a fork of it to start from.
 ///
