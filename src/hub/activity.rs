@@ -27,6 +27,9 @@ struct ActivityState {
     unread: u32,
     /// Web clients currently connected to the agent's `/ws`.
     clients: usize,
+    /// Whether a client was connected when the running turn's latest
+    /// endpoint reply went out; taken when the turn ends.
+    last_reply_seen: bool,
     /// Bumped whenever the agent stops, so a connection guard from the run
     /// that ended cannot unbalance the next run's client count.
     run: u64,
@@ -113,37 +116,41 @@ impl ActivityTracker {
         }
     }
 
-    /// A main-conversation message was published. It counts as unread when no
-    /// web client is connected to see it.
+    /// A main-conversation reply for an endpoint was just published. It
+    /// counts as unread when no web client is connected to see it, and the
+    /// turn's end reports whether one was.
     pub fn main_message_published(&self) {
         self.update(|state| {
-            if state.clients == 0 {
+            let seen = state.clients > 0;
+            if !seen {
                 state.unread = state.unread.saturating_add(1);
             }
+            state.last_reply_seen = seen;
         });
     }
 
     /// The turn hook: a main turn ended. The runtime calls this exactly once
     /// per turn, after the turn's replies were published and counted by
-    /// [`Self::main_message_published`].
+    /// [`Self::main_message_published`] as each went out.
     ///
     /// `user_message` is what the user said to start the turn, `reply` the
     /// turn's last reply text, and `visibility` whether a user was part of it.
     /// Text that is empty or only whitespace counts as no text. The turn is
-    /// reported with the time, and whether any client has the agent's
-    /// WebSocket open right now.
+    /// reported with the time, and whether a client was there to see it:
+    /// connected as the turn's last reply went out (a reader who saw it may
+    /// leave before the turn's tail finishes), or connected now (a page that
+    /// opens mid-turn is shown the turn so far).
     pub fn main_turn_ended(
         &self,
         user_message: Option<String>,
         reply: Option<String>,
         visibility: Visibility,
     ) {
-        let client_connected = self
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clients
-            > 0;
+        let client_connected = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let reply_seen = std::mem::take(&mut state.last_reply_seen);
+            reply_seen || state.clients > 0
+        };
         self.changes.publish(&AgentChange {
             agent: self.name.clone(),
             kind: AgentChangeKind::TurnEnded(MainTurnEnded {
@@ -189,8 +196,15 @@ impl ActivityTracker {
         self.update(|state| {
             state.busy_since = None;
             state.clients = 0;
+            state.last_reply_seen = false;
             state.run += 1;
         });
+    }
+}
+
+impl crate::agent::ReplyAudience for ActivityTracker {
+    fn reply_published(&self) {
+        self.main_message_published();
     }
 }
 
@@ -465,6 +479,52 @@ mod tests {
 
         drop(client);
         tracker.main_turn_ended(None, None, Visibility::User);
+        assert!(!next_turn(&mut changes).await.client_connected);
+    }
+
+    #[tokio::test]
+    async fn a_reply_seen_as_it_went_out_stays_seen_when_the_reader_leaves() {
+        let (tracker, mut changes) = tracker_with_changes();
+        let client = tracker.client_connected();
+        tracker.main_message_published();
+        // The reader closes the page while the turn's tail is still running.
+        drop(client);
+        tracker.main_turn_ended(None, Some("Done.".to_string()), Visibility::User);
+        assert!(next_turn(&mut changes).await.client_connected);
+        assert_eq!(tracker.snapshot().unread, 0);
+    }
+
+    #[tokio::test]
+    async fn a_reply_no_one_saw_is_seen_once_a_page_opens_before_the_turn_ends() {
+        let (tracker, mut changes) = tracker_with_changes();
+        tracker.main_message_published();
+        assert_eq!(tracker.snapshot().unread, 1);
+        let _client = tracker.client_connected();
+        tracker.main_turn_ended(None, Some("Done.".to_string()), Visibility::User);
+        assert!(next_turn(&mut changes).await.client_connected);
+        assert_eq!(tracker.snapshot().unread, 0);
+    }
+
+    #[tokio::test]
+    async fn a_reply_no_one_saw_is_unread_and_reported_unseen() {
+        let (tracker, mut changes) = tracker_with_changes();
+        tracker.main_message_published();
+        tracker.main_turn_ended(None, Some("Done.".to_string()), Visibility::User);
+        assert!(!next_turn(&mut changes).await.client_connected);
+        assert_eq!(tracker.snapshot().unread, 1);
+    }
+
+    #[tokio::test]
+    async fn a_turn_does_not_inherit_the_last_turns_seen_reply() {
+        let (tracker, mut changes) = tracker_with_changes();
+        let client = tracker.client_connected();
+        tracker.main_message_published();
+        drop(client);
+        tracker.main_turn_ended(None, Some("Done.".to_string()), Visibility::User);
+        assert!(next_turn(&mut changes).await.client_connected);
+
+        tracker.main_message_published();
+        tracker.main_turn_ended(None, Some("Again.".to_string()), Visibility::User);
         assert!(!next_turn(&mut changes).await.client_connected);
     }
 

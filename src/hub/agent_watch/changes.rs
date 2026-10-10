@@ -52,7 +52,8 @@ pub struct MainTurnEnded {
     pub at: DateTime<Utc>,
     /// Whether a user was part of the turn or it ran in the background.
     pub visibility: Visibility,
-    /// Whether any client had the agent's WebSocket open as the turn ended.
+    /// Whether a client was there to see the turn: had the agent's WebSocket
+    /// open as the turn's last endpoint reply went out, or as the turn ended.
     pub client_connected: bool,
 }
 

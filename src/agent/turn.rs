@@ -30,9 +30,21 @@ use super::recent_messages::RecentMessages;
 use super::stream::{ChannelSink, DeltaCoalescer, DiscardSink, StreamPiece};
 use super::usage::{SessionUsageTotals, TurnUsage, UsageSink};
 
+/// Told each time one of a main turn's replies reaches the main
+/// conversation on its way to an endpoint. Whoever counts unread replies
+/// decides then whether someone was there to see it, rather than at the end
+/// of the turn, when the reader may already have left.
+pub trait ReplyAudience: Send + Sync {
+    /// A reply for an endpoint was just published to the main conversation.
+    fn reply_published(&self);
+}
+
 /// Context for publishing streaming events during a turn.
 pub(crate) struct EventContext<'a> {
     pub publisher: &'a Publisher,
+    /// Told as each of a main turn's endpoint replies is published. `None`
+    /// for a session's turn, and where nothing counts unread replies.
+    pub reply_audience: Option<&'a dyn ReplyAudience>,
     pub target: EventTarget<'a>,
     /// When this turn belongs to a conversation session, its own address and
     /// the conversation it replies to on its interface. Intermediate
@@ -231,6 +243,7 @@ impl EventContext<'_> {
             }
             | EventTarget::Session { .. } => String::new(),
         };
+        let for_endpoint = !endpoint.is_empty();
         self.publish_main(|turn_id| MainConversationEvent::Response {
             turn_id: turn_id.to_owned(),
             call,
@@ -238,6 +251,9 @@ impl EventContext<'_> {
             content: content.to_owned(),
         })
         .await;
+        if for_endpoint && let Some(audience) = self.reply_audience {
+            audience.reply_published();
+        }
     }
 
     /// Publish the complete readable reasoning of model call `call` to the
@@ -1507,11 +1523,67 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
 
+    /// Counts the replies it is told went out.
+    #[derive(Default)]
+    struct CountingAudience(AtomicUsize);
+
+    impl ReplyAudience for CountingAudience {
+        fn reply_published(&self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_reply_audience_hears_each_endpoint_reply_as_it_is_published() {
+        let bus = crate::bus::spawn_broker();
+        let publisher = bus.publisher();
+        let mut main = bus.subscribe(topics::MainConversation).await.unwrap();
+        let audience = CountingAudience::default();
+        let ws = EndpointName::from("ws");
+        let to_endpoint = EventContext {
+            publisher: &publisher,
+            reply_audience: Some(&audience),
+            target: EventTarget::Endpoint {
+                output_endpoint: Some(&ws),
+                correlation_id: "t1",
+            },
+            session_conversation: None,
+        };
+        to_endpoint.publish_reply(Some(0), "hello").await;
+        assert_eq!(audience.0.load(Ordering::SeqCst), 1);
+
+        let nowhere = EventContext {
+            publisher: &publisher,
+            reply_audience: Some(&audience),
+            target: EventTarget::Endpoint {
+                output_endpoint: None,
+                correlation_id: "t2",
+            },
+            session_conversation: None,
+        };
+        nowhere.publish_reply(None, "a note").await;
+        assert_eq!(
+            audience.0.load(Ordering::SeqCst),
+            1,
+            "a reply bound for no endpoint is not one to count"
+        );
+
+        // Both still reach the main conversation.
+        for want in ["hello", "a note"] {
+            let event = wait::next_event("a reply in the main conversation", &mut main).await;
+            assert!(
+                matches!(&event, MainConversationEvent::Response { content, .. } if content == want),
+                "{event:?}"
+            );
+        }
+    }
+
     /// A main-turn context whose events go nowhere, for tests of code that
     /// only needs one to hand along.
     fn silent_events(publisher: &Publisher) -> EventContext<'_> {
         EventContext {
             publisher,
+            reply_audience: None,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
                 correlation_id: "turn-1",
@@ -1688,6 +1760,7 @@ mod tests {
         let address = SessionAddress::from("external-discord-chan-1");
         let events = EventContext {
             publisher: &publisher,
+            reply_audience: None,
             target: EventTarget::Session {
                 address: &address,
                 run_id: "run-1",
@@ -1746,6 +1819,7 @@ mod tests {
 
         let events = EventContext {
             publisher: &publisher,
+            reply_audience: None,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
                 correlation_id: "corr-1",
@@ -1776,6 +1850,7 @@ mod tests {
 
         let events = EventContext {
             publisher: &publisher,
+            reply_audience: None,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
                 correlation_id: "corr-1",
@@ -1810,6 +1885,7 @@ mod tests {
 
         let events = EventContext {
             publisher: &publisher,
+            reply_audience: None,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
                 correlation_id: "corr-1",
@@ -1862,6 +1938,7 @@ mod tests {
         let publisher = bus_handle.publisher();
         let events = EventContext {
             publisher: &publisher,
+            reply_audience: None,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
                 correlation_id: "corr-1",
@@ -1951,6 +2028,7 @@ mod tests {
         let publisher = bus_handle.publisher();
         let events = EventContext {
             publisher: &publisher,
+            reply_audience: None,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
                 correlation_id: "corr-1",
@@ -2059,6 +2137,7 @@ mod tests {
         let publisher = bus_handle.publisher();
         let events = EventContext {
             publisher: &publisher,
+            reply_audience: None,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
                 correlation_id: "corr-1",
@@ -2172,6 +2251,7 @@ mod tests {
         let publisher = bus_handle.publisher();
         let events = EventContext {
             publisher: &publisher,
+            reply_audience: None,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
                 correlation_id: "corr-1",
@@ -2245,6 +2325,7 @@ mod tests {
         let publisher = bus_handle.publisher();
         let events = EventContext {
             publisher: &publisher,
+            reply_audience: None,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
                 correlation_id: "corr-1",
@@ -2335,14 +2416,7 @@ mod tests {
         };
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
-        let events = EventContext {
-            publisher: &publisher,
-            target: EventTarget::Endpoint {
-                output_endpoint: None,
-                correlation_id: "corr-1",
-            },
-            session_conversation: None,
-        };
+        let events = silent_events(&publisher);
         let memory_ctx = MemoryContext {
             observations: None,
             recent_context: None,
@@ -2597,6 +2671,7 @@ mod tests {
 
         let events = EventContext {
             publisher: &publisher,
+            reply_audience: None,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
                 correlation_id: "corr-1",
@@ -2633,6 +2708,7 @@ mod tests {
 
         let events = EventContext {
             publisher: &publisher,
+            reply_audience: None,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
                 correlation_id: "corr-1",
@@ -2656,6 +2732,7 @@ mod tests {
         let address = SessionAddress::from("spawned-x-0001");
         let events = EventContext {
             publisher: &publisher,
+            reply_audience: None,
             target: EventTarget::Session {
                 address: &address,
                 run_id: "run-1",
@@ -2701,6 +2778,7 @@ mod tests {
         let mut sub = UsageFeed::follow(&bus_handle).await;
         let events = EventContext {
             publisher: &publisher,
+            reply_audience: None,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
                 correlation_id: "corr-1",
@@ -2747,6 +2825,7 @@ mod tests {
         let ep = EndpointName::from("ws");
         let events = EventContext {
             publisher: &publisher,
+            reply_audience: None,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
                 correlation_id: "corr-1",
@@ -2777,6 +2856,7 @@ mod tests {
         let mut sub = UsageFeed::follow(&bus_handle).await;
         let events = EventContext {
             publisher: &publisher,
+            reply_audience: None,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
                 correlation_id: "corr-1",
@@ -2806,6 +2886,7 @@ mod tests {
         let mut sub = UsageFeed::follow(&bus_handle).await;
         let events = EventContext {
             publisher: &publisher,
+            reply_audience: None,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
                 correlation_id: "corr-1",
@@ -2878,6 +2959,7 @@ mod tests {
         let mut sub = UsageFeed::follow(&bus_handle).await;
         let events = EventContext {
             publisher: &publisher,
+            reply_audience: None,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
                 correlation_id: "corr-1",
@@ -3007,6 +3089,7 @@ mod tests {
         let mut sub = UsageFeed::follow(&bus_handle).await;
         let events = EventContext {
             publisher: &publisher,
+            reply_audience: None,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
                 correlation_id: "corr-1",
@@ -3098,6 +3181,7 @@ mod tests {
             .unwrap();
         let events = EventContext {
             publisher: &publisher,
+            reply_audience: None,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
                 correlation_id: "corr-1",
@@ -3182,6 +3266,7 @@ mod tests {
         let publisher = bus_handle.publisher();
         let events = EventContext {
             publisher: &publisher,
+            reply_audience: None,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
                 correlation_id: "corr-1",
@@ -3269,6 +3354,7 @@ mod tests {
         let publisher = bus_handle.publisher();
         let events = EventContext {
             publisher: &publisher,
+            reply_audience: None,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
                 correlation_id: "corr-1",
@@ -3355,6 +3441,7 @@ mod tests {
         let publisher = bus_handle.publisher();
         let events = EventContext {
             publisher: &publisher,
+            reply_audience: None,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
                 correlation_id: "corr-1",
@@ -3447,6 +3534,7 @@ mod tests {
         let publisher = bus_handle.publisher();
         let events = EventContext {
             publisher: &publisher,
+            reply_audience: None,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
                 correlation_id: "corr-1",

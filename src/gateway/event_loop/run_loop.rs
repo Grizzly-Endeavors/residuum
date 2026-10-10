@@ -745,6 +745,11 @@ async fn build_runtime(
         .send_replace(a2a.as_ref().map(|agent| agent.router.clone()));
 
     let tracing_service = Arc::clone(&channels.services.tracing_service);
+    // Each reply is counted read or unread as it reaches the main
+    // conversation, while the reader who saw it is still connected.
+    parts
+        .agent
+        .set_reply_audience(Arc::clone(&channels.activity) as Arc<dyn crate::agent::ReplyAudience>);
     Ok(AgentRuntime {
         name: channels.name,
         services: channels.services,

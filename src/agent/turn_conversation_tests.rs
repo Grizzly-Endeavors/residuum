@@ -246,6 +246,7 @@ async fn run_turn_with(steps: Vec<Step>, options: Options) -> Run {
     };
     let events = EventContext {
         publisher: &publisher,
+        reply_audience: None,
         target,
         session_conversation: None,
     };

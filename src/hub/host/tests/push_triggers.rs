@@ -521,6 +521,71 @@ async fn a_reply_is_pushed_once_when_no_client_was_connected_and_never_for_a_bac
     assert_eq!(str_at(&payload, "target"), "/agent/scout");
 }
 
+#[tokio::test]
+async fn a_reply_the_reader_saw_is_not_pushed_or_unread_when_they_leave_before_the_turn_ends() {
+    let hub = Fixture::new(&["scout"], "").await;
+    hub.host.start("scout").await.unwrap();
+    let phone = Phone::register(&hub, "Phone", all_on()).await;
+    let mut decisions = hub.push_decisions.subscribe();
+    let mut changes = hub.host.agent_changes().subscribe();
+
+    let (mut ws, _) =
+        tokio_tungstenite::connect_async(format!("ws://{}/api/agents/scout/ws", hub.addr))
+            .await
+            .unwrap();
+    ws.send(WsMessage::text(
+        json!({ "type": "send_message", "id": "m1", "content": "ping" }).to_string(),
+    ))
+    .await
+    .unwrap();
+    // The reader sees the reply, then closes the page while the rest of the
+    // turn (writing history, the endpoint copy) is still to come.
+    wait::guarded("the reply to reach the page", async {
+        while let Some(frame) = ws.next().await {
+            if let WsMessage::Text(raw) = frame.unwrap()
+                && serde_json::from_str::<Value>(&raw)
+                    .unwrap()
+                    .get("type")
+                    .and_then(Value::as_str)
+                    == Some("response")
+            {
+                return;
+            }
+        }
+        panic!("the WebSocket closed before the reply arrived");
+    })
+    .await;
+    ws.close(None).await.unwrap();
+    drop(ws);
+    wait::until("the reader to leave", || async {
+        (hub.host.connected_clients("scout") == Some(0)).then_some(())
+    })
+    .await;
+
+    let turn = wait::guarded("the turn to end", async {
+        loop {
+            let change = changes.recv().await.unwrap();
+            if let AgentChangeKind::TurnEnded(turn) = change.kind {
+                return turn;
+            }
+        }
+    })
+    .await;
+    assert!(
+        turn.client_connected,
+        "the reply reached a connected reader: {turn:?}"
+    );
+    let started = until_decided(
+        &hub,
+        &mut decisions,
+        "the triggers to read the turn's end",
+        vec![turn_ended(Visibility::User)],
+    )
+    .await;
+    assert_eq!(phone.pushes().await, 0, "pushes started: {started:?}");
+    assert_eq!(hub.activity_of("scout").unread, 0);
+}
+
 // ─── Presence ─────────────────────────────────────────────────────────
 
 #[tokio::test]
