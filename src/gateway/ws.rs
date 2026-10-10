@@ -126,6 +126,8 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
                 break; // client disconnected
             }
         }
+        // Nothing more will be forwarded: close, so the client knows to reconnect.
+        ws_tx.close().await.ok();
     });
 
     // Read loop: WebSocket client → bus / local channel

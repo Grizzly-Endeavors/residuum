@@ -56,6 +56,8 @@ struct JournalState {
     seq: u64,
     turn: Option<TurnRecord>,
     followers: Vec<mpsc::UnboundedSender<JournaledEvent>>,
+    /// The journal no longer reads the conversation: following it ends at once.
+    closed: bool,
 }
 
 impl JournalState {
@@ -165,8 +167,26 @@ impl TurnJournal {
                     }
                 }
             }
+            // Its followers' connections close, so a page shows it is
+            // disconnected instead of waiting on frames that never come.
+            feeder.close();
         });
         Ok(journal)
+    }
+
+    /// A journal that reads nothing: every connection that follows it closes
+    /// at once. For an agent whose journal couldn't start.
+    #[must_use]
+    pub fn closed() -> Self {
+        let journal = Self::default();
+        journal.close();
+        journal
+    }
+
+    fn close(&self) {
+        let mut state = self.lock();
+        state.closed = true;
+        state.followers.clear();
     }
 
     /// Record an event and relay it to every follower.
@@ -186,11 +206,15 @@ impl TurnJournal {
         });
     }
 
-    /// Follow the conversation from the next event on.
+    /// Follow the conversation from the next event on. The receiver ends
+    /// when the journal stops reading it.
     #[must_use]
     pub fn follow(&self) -> mpsc::UnboundedReceiver<JournaledEvent> {
         let (tx, rx) = mpsc::unbounded_channel();
-        self.lock().followers.push(tx);
+        let mut state = self.lock();
+        if !state.closed {
+            state.followers.push(tx);
+        }
         rx
     }
 
@@ -373,6 +397,12 @@ mod tests {
         assert!(
             matches!(second.event, MainConversationEvent::TextDelta { ref text, .. } if text == "b")
         );
+    }
+
+    #[tokio::test]
+    async fn following_a_journal_that_reads_nothing_ends_at_once() {
+        let mut follower = TurnJournal::closed().follow();
+        assert!(follower.recv().await.is_none());
     }
 
     #[tokio::test]

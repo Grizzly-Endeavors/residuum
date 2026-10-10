@@ -527,7 +527,12 @@ async fn spawn_agent_tasks(
     } = spawn_change_feed_tasks(core, &parts.layout, &services.team_feed).await;
     let turn_journal = crate::gateway::turn_journal::TurnJournal::spawn(&core.bus_handle)
         .await
-        .map_err(|e| FatalError::Gateway(format!("failed to start the turn journal: {e}")))?;
+        .unwrap_or_else(|e| {
+            // The agent still runs for its other interfaces; the web chat's
+            // connections close at once and keep retrying.
+            tracing::error!(error = %e, "failed to start the turn journal; the web chat can't connect");
+            crate::gateway::turn_journal::TurnJournal::closed()
+        });
     let state = build_gateway_state(
         core,
         parts,
