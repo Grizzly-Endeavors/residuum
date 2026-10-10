@@ -1190,10 +1190,18 @@ async fn maybe_output_to_conversation(
         );
         return;
     }
+    // A fork the owner started from a chat app with `/multitask` (the only
+    // spawned session with a conversation) posts into the same direct
+    // messages main answers in, so it names itself to be told apart.
+    let content = if info.category == SessionCategory::Spawned {
+        format!("{}:\n{summary}", info.address)
+    } else {
+        summary.to_string()
+    };
     let event = SessionResponseEvent {
         session_address: info.address.clone(),
         conversation_id: target.conversation_id.clone(),
-        content: summary.to_string(),
+        content,
         attachment: None,
         timestamp: crate::time::now_local(env.tz),
         is_final: true,
@@ -3657,14 +3665,17 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn conversation_session_turn_output_is_published_to_its_conversation() {
+    /// A runtime whose sessions' conversation output can be read from the
+    /// `discord` endpoint, as a chat adapter would.
+    async fn conversation_output_runtime() -> (
+        SessionRuntime,
+        crate::bus::Subscriber<crate::bus::SessionResponseEvent>,
+    ) {
         let bus_handle = crate::bus::spawn_broker();
-        let mut session_output: crate::bus::Subscriber<crate::bus::SessionResponseEvent> =
-            bus_handle
-                .subscribe(topics::Endpoint(crate::bus::EndpointName::from("discord")))
-                .await
-                .unwrap();
+        let session_output: crate::bus::Subscriber<crate::bus::SessionResponseEvent> = bus_handle
+            .subscribe(topics::Endpoint(crate::bus::EndpointName::from("discord")))
+            .await
+            .unwrap();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
         let dir_path = dir.path().to_path_buf();
@@ -3697,6 +3708,13 @@ mod tests {
             },
         );
 
+        (runtime, session_output)
+    }
+
+    #[tokio::test]
+    async fn conversation_session_turn_output_is_published_to_its_conversation() {
+        let (runtime, mut session_output) = conversation_output_runtime().await;
+
         let address = SessionAddress::from("external-discord-output");
         runtime.spawn(
             sample_conversation_request(address.as_ref()),
@@ -3714,6 +3732,26 @@ mod tests {
         assert!(
             event.is_final,
             "a run's completed turn output must be marked final"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fork_posting_into_the_owner_s_chat_names_itself() {
+        let (runtime, mut session_output) = conversation_output_runtime().await;
+        let mut request = sample_request("spawned-multitask-0001");
+        request.spawner = None;
+        request.conversation_target = Some(ConversationTarget {
+            endpoint: "discord".to_string(),
+            conversation_id: "owner-dm".to_string(),
+        });
+
+        runtime.spawn(request, Some(make_resources("paint is $40 a gallon")));
+
+        let event = wait::next_event("the fork's reply to be posted", &mut session_output).await;
+        assert_eq!(event.conversation_id, "owner-dm");
+        assert_eq!(
+            event.content, "spawned-multitask-0001:\npaint is $40 a gallon",
+            "a fork's reply shares main's chat, so it says whose it is"
         );
     }
 

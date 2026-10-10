@@ -295,6 +295,8 @@ async fn run_command(
         session_registry: &rt.session_registry,
         inbox_dir: &rt.inbox_dir,
         tz: rt.tz,
+        publisher: &rt.publisher,
+        main_conversation: &rt.main_conversation,
     };
     let conversation = ConversationContext {
         id: conversation_id.to_string(),
@@ -604,6 +606,7 @@ mod tests {
             stop_tx: tokio::sync::mpsc::channel(1).0,
             session_registry: Arc::new(crate::background::registry::SessionRegistry::new()),
             inbox_dir: dir.path().to_path_buf(),
+            main_conversation: dir.path().join("recent_messages.json"),
             tz: chrono_tz::UTC,
         });
         Harness {
