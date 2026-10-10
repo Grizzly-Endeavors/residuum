@@ -187,9 +187,16 @@ async fn run(
 
     let mut backoff = timings.min_backoff;
     let mut failing = false;
+    let mut had_directory = false;
 
     loop {
         let secure = secure_rx.borrow_and_update().clone();
+        if secure.is_none() && had_directory {
+            tracing::debug!(
+                "a2a sibling discovery has no directory to read; the siblings already found stay registered"
+            );
+        }
+        had_directory = secure.is_some();
         let wait = match secure {
             Some(secure) => match discover(&client, &fanout, &secure).await {
                 Ok(()) => {
@@ -514,12 +521,16 @@ mod tests {
 
     #[tokio::test]
     async fn nobody_is_registered_until_a_join_exists_and_a_removed_sibling_is_dropped() {
-        let (origin, _relay) = spawn_fake_relay(vec![("beta", "atlas")]).await;
+        let (origin, relay) = spawn_fake_relay(vec![("beta", "atlas")]).await;
         let hub = Arc::new(A2aClientHub::new());
         let (tx, task) = start(fanout_of(&hub).await);
 
         tx.send(Some(secure(&origin, "alpha", &[]))).ok();
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        // A second read of the directory starts only after the first pass is done.
+        wait::until_true("discovery to read the directory twice", || {
+            relay.directory_auth_seen.lock().unwrap().len() >= 2
+        })
+        .await;
         assert!(
             hub.snapshot().await.is_empty(),
             "an unjoined sibling is ignored"
@@ -622,15 +633,26 @@ mod tests {
         let hub = Arc::new(A2aClientHub::new());
         let (tx, task) = start(fanout_of(&hub).await);
 
-        // An address nothing listens on: every fetch fails immediately.
-        tx.send(Some(secure(
-            "http://127.0.0.1:1",
-            "alpha",
-            &[("beta", "key1")],
-        )))
-        .ok();
+        // A directory that hangs up on every request: each fetch fails, and
+        // each attempt is counted.
+        let refusing = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://{}", refusing.local_addr().unwrap());
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&attempts);
+        crate::util::spawn_in_span(async move {
+            while let Ok((connection, _)) = refusing.accept().await {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                drop(connection);
+            }
+        });
+        tx.send(Some(secure(&address, "alpha", &[("beta", "key1")])))
+            .ok();
 
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        // A second attempt means the loop came through the first failure.
+        wait::until_true("discovery to try the directory again", || {
+            attempts.load(std::sync::atomic::Ordering::SeqCst) >= 2
+        })
+        .await;
         assert!(
             !task.is_finished(),
             "the discovery task must not panic or exit on failure"
@@ -647,6 +669,8 @@ mod tests {
     async fn losing_the_directory_address_keeps_previously_registered_siblings() {
         let (origin, _relay) = spawn_fake_relay(vec![("alpha", "scout"), ("beta", "atlas")]).await;
         let hub = Arc::new(A2aClientHub::new());
+        let log = crate::hub::test_support::EventLog::default();
+        let _capture = log.capture();
         let (tx, task) = start(fanout_of(&hub).await);
 
         tx.send(Some(secure(&origin, "alpha", &[("beta", "key1")])))
@@ -654,7 +678,10 @@ mod tests {
         wait_for(&hub, |snap| !snap.is_empty()).await;
 
         tx.send(None).ok();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        wait::until_true("discovery to notice the directory is gone", || {
+            !log.matching("no directory to read").is_empty()
+        })
+        .await;
 
         assert!(
             !hub.snapshot().await.is_empty(),

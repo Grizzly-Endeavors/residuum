@@ -322,8 +322,9 @@ impl TeamOverview {
     }
 
     /// When the soonest frame is due, or the soonest task passes the notice
-    /// threshold, if either is waited for.
-    pub(super) async fn next_due(&self) -> Option<Instant> {
+    /// threshold, if either is waited for. `None` means nothing is pending:
+    /// every frame the changes so far called for has been sent.
+    pub(crate) async fn next_due(&self) -> Option<Instant> {
         self.agents
             .lock()
             .await
