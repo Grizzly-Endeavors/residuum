@@ -556,6 +556,32 @@ impl AgentHost {
         }
     }
 
+    /// The health of the change feed over the running agent `name`'s
+    /// directory, or `None` when it isn't running. The receiver belongs to
+    /// this run of the agent: its sender goes away when the agent stops, so
+    /// after a restart a caller asks again.
+    #[must_use]
+    pub fn workspace_watch_health(
+        &self,
+        name: &str,
+    ) -> Option<watch::Receiver<crate::workspace::watch::WatchHealth>> {
+        let slot = self.slot(name).ok()?;
+        let state = slot.lock();
+        state
+            .running
+            .as_ref()
+            .map(|running| running.control.workspace_watch_health.clone())
+    }
+
+    /// How many web clients are connected to the agent `name`'s WebSocket,
+    /// or `None` for an agent the hub doesn't have.
+    #[must_use]
+    pub fn connected_clients(&self, name: &str) -> Option<usize> {
+        self.slot(name)
+            .ok()
+            .map(|slot| slot.activity.connected_clients())
+    }
+
     /// How many config reloads the running agent `name` has finished, or
     /// `None` when it isn't running.
     #[cfg(test)]

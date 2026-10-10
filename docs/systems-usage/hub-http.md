@@ -127,7 +127,7 @@ Errors are `{ "error": message }`: `400` for a `before` or `after` that is not a
 An agent's routes come in two groups:
 
 - **File routes** work on a running, stopped, or failed agent, because they only read and write the agent's files on disk. They are the repair routes, which let the user fix a configuration (`config/...`, `providers/...` including `providers/models`, `mcp/...`, `workspace/...`, and `checkpoints...` for the agent's `workspace` and `agent_config` repositories), and the routes that show what the agent kept: `chat/history` (recent messages, and `?episode=` for an archived episode; an assistant message carries the model's readable reasoning as a `thinking` array of strings when it produced some, see [Turn Control](turn-control.md#the-main-conversation-stream)), `usage`, the user inbox (`inbox`, `inbox/archive`, `inbox/{id}/read`, `inbox/{id}/archive`, `inbox/{id}/restore`, `inbox/{id}/attachments/{index}`), and `a2a/agents/raw` (`GET` and `PUT`). Requests and responses have the same shape in every state. A write to a stopped or failed agent only touches disk, and the agent reads it when it next starts; a write to a running agent signals it to reload where that applies, as a config or A2A settings write does. A stopped or failed agent's `chat/history`, `usage`, inbox, and `a2a/agents/raw` routes never open its checkpoint repositories, so they answer even when those can't be opened; the raw A2A settings write opens them to take its checkpoint and, when it can't, saves without one and logs a warning. The repair routes do open them, and answer `500` naming the checkpoint history when they can't.
-- **Live routes** need the agent to be running: `ws`, `status`, `sessions...`, `scheduled/...`, `agent-inbox`, `files/...`, `memory/search`, `model/complete`, and `a2a/{agents,status,card,outbound...}`. `status` reports the running process, so it answers `409` for an agent in any other state.
+- **Live routes** need the agent to be running: `ws`, `status`, `sessions...`, `scheduled/...`, `agent-inbox`, `files/...`, `memory/search`, `model/complete`, and `a2a/{agents,status,card,outbound...}`. `status` reports the running process, so it answers `409` for an agent in any other state. Besides `mode`, `version`, `features` and the checkpoint repositories' stats, it carries `live_updates`: how file changes in the agent's directory reach open pages and the agent's watchers, `starting`, `native` (operating system notifications), `polling` (the fallback, up to 2 seconds late) or `off` (see [Change feed](workbench.md#change-feed)).
 
 Resolution answers before the agent's router sees the request:
 
@@ -169,11 +169,12 @@ Through Residuum Cloud the secure tunnel's engine serves this router in-process,
 
 ## Hub WebSocket
 
-`/api/hub/ws` sends JSON frames tagged by `type`, and accepts `watch_team`, `presence` and the session subscriptions of the [session relay](#session-relay).
+`/api/hub/ws` sends JSON frames tagged by `type`, and accepts `watch_team`, `presence`, `ping` and the session subscriptions of the [session relay](#session-relay).
 
 | Frame | Sent when |
 |-------|-----------|
 | `hub_boot` `{ boot_id }` | First on every connection. `boot_id` is a random id the hub generates at startup, and the team event log's id too: every connection to one process sees the same id, and a restarted hub has a new one. |
+| `pong` | In answer to a `ping`. |
 | `system_one_status` `{ status }` | After `hub_boot`, and again whenever the [decision model's](system-one.md#status-and-outages) status changes. `status` is `{ configured, provider, model, outage }`; `outage` is `null`, or `{ kind, message, since }` with `kind` one of `not_configured`, `unreachable` or `rejected` and `message` a plain-language reason. |
 | `agents_snapshot` `{ agents, activity, stopping }` | After `system_one_status`, and again whenever the connection fell behind the hub's event stream, the team event log or the overview frames and lost frames. It has the three fields of `GET /api/hub/agents`. A client that gets one after its first reads the events it missed from `GET /api/hub/events` and the overviews from `GET /api/hub/overview`. |
 | `agent_state` `{ agent }` | An agent's state, `autostart`, or visibility changed. |
@@ -191,6 +192,8 @@ Through Residuum Cloud the secure tunnel's engine serves this router in-process,
 | `workspace_changed` `{ changes }`, `workspace_resync` `{ reason }`, `workspace_watch_unavailable` `{ message }` | Team change-feed frames, with the shapes of the agent WebSocket's, for the paths the connection watches. |
 
 `{ "type": "watch_team", "prefixes": [...] }` replaces the set of team paths the connection watches; `[]` stops watching. A prefix names `team` or a path under `team/`, the spelling the change feed uses (`team/wiki`), and matches whole path segments. A prefix outside `team/` or an unreadable message is refused with a warning `notice`, and the current watch stays in force. A connection that starts watching while the team watcher is off gets `workspace_watch_unavailable`.
+
+`{ "type": "ping" }` is answered with `pong`. The hub handles a connection's messages in order, so the `pong` also says that everything the connection sent before the `ping`, such as a `watch_team`, has taken effect.
 
 `{ "type": "presence", "device_id": "...", "active": true }` says whether the window for a push device is in front of the user: `true` while a window is visible and focused, repeated every 30 seconds while it stays so, and `false` when it hides or loses focus.
 

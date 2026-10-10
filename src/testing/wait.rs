@@ -108,6 +108,18 @@ impl<T: Debug> Recv for mpsc::UnboundedReceiver<T> {
     }
 }
 
+impl Recv for crate::hub::agent_watch::AgentChangeReceiver {
+    type Item = crate::hub::agent_watch::AgentChange;
+
+    async fn recv_next(&mut self) -> Option<Self::Item> {
+        self.recv().await
+    }
+
+    fn try_next(&mut self) -> Option<Self::Item> {
+        self.try_recv()
+    }
+}
+
 /// A lagged receiver missed messages, so a test reading it can't conclude
 /// anything from what it saw: it fails instead.
 impl<T: Clone + Debug> Recv for broadcast::Receiver<T> {
