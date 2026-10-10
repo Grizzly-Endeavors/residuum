@@ -1,12 +1,15 @@
 import type { Locator, Page } from "@playwright/test";
+import { sendFromComposer } from "../support/composer";
 import { expect, test } from "../support/fixtures";
 import { expectScreenshot } from "../support/screenshot";
 
 /**
  * The chat's baselines: the latest messages, the summarized past with Jump to
  * latest, the state cards of a stopped and a failed agent, the header's menu,
- * a running turn, and the composer with its `/` menu, an attached image, and
- * the model and thinking control open.
+ * a running turn, a turn working in rounds and the same finished, reasoning
+ * opened, a turn that couldn't finish, and a message from Telegram, and the
+ * composer with its `/` menu, an attached image, and the model and thinking
+ * control open.
  */
 
 const GREETING = "Hi, this is atlas. You are in my conversation, not scout's.";
@@ -44,7 +47,7 @@ test.describe("chat feed", { tag: "@visual" }, () => {
       await feed.evaluate((el) => {
         el.scrollTop = 0;
       });
-      await expect(feed.getByRole("separator", { name: /^ep-001 · / })).toBeAttached({
+      await expect(feed.getByRole("separator", { name: /, ep-001$/ })).toBeAttached({
         timeout: 1000,
       });
     }).toPass();
@@ -103,8 +106,8 @@ test.describe("chat feed", { tag: "@visual" }, () => {
     await page.goto("/agent/atlas");
     const feed = conversation(page);
     await expect(feed.getByText(GREETING)).toBeInViewport();
-    await page.getByRole("textbox", { name: "Message atlas" }).fill("Check the wiki index");
-    await page.getByRole("textbox", { name: "Message atlas" }).press("Enter");
+    await page.getByRole("combobox", { name: "Message atlas" }).fill("Check the wiki index");
+    await sendFromComposer(page.getByRole("combobox", { name: "Message atlas" }));
     await expect(feed.getByRole("button", { name: "Read team/wiki/index.md" })).toBeVisible({
       timeout: 30_000,
     });
@@ -125,6 +128,83 @@ test.describe("chat feed", { tag: "@visual" }, () => {
   });
 });
 
+test.describe("a turn in the chat", { tag: "@visual" }, () => {
+  test("working in rounds: runs of steps between what the agent says, the head last", async ({
+    page,
+    mock,
+  }) => {
+    // The turn waits with its last edit done, so the layout holds still.
+    await mock.post("/api/mock/turn-hold", { data: { held: true } });
+    await page.goto("/agent/atlas");
+    const feed = conversation(page);
+    await expect(feed.getByText(GREETING)).toBeInViewport();
+    await page.getByRole("combobox", { name: "Message atlas" }).fill("segments: fix the port");
+    await sendFromComposer(page.getByRole("combobox", { name: "Message atlas" }));
+    await expect(
+      feed.getByRole("button", { name: /^Edited team\/wiki\/config\.toml/ }),
+    ).toBeVisible();
+    await expect(feed.getByText("Working", { exact: true })).toBeVisible();
+    await page.mouse.move(0, 0);
+    await chatScreenshot(page, "chat-turn-rounds");
+  });
+
+  test("a finished turn: its rounds as lines, and how long it took", async ({ page }) => {
+    await page.goto("/agent/atlas");
+    const feed = conversation(page);
+    await expect(feed.getByText(GREETING)).toBeInViewport();
+    await page.getByRole("combobox", { name: "Message atlas" }).fill("segments: fix the port");
+    await sendFromComposer(page.getByRole("combobox", { name: "Message atlas" }));
+    await expect(feed.getByText("Done. The port is set once now")).toBeVisible();
+    await expect(feed.getByText("Working", { exact: true })).toHaveCount(0);
+    await page.mouse.move(0, 0);
+    await chatScreenshot(page, "chat-turn-done");
+  });
+
+  test("reasoning, folded to a line and opened to all of it", async ({ page }) => {
+    await page.goto("/agent/atlas");
+    const feed = conversation(page);
+    await expect(feed.getByText(GREETING)).toBeInViewport();
+    await page
+      .getByRole("combobox", { name: "Message atlas" })
+      .fill("think about the fallback order");
+    await sendFromComposer(page.getByRole("combobox", { name: "Message atlas" }));
+    await expect(feed.getByText(/^Retry three times with backoff/)).toBeVisible();
+    await feed.getByRole("button", { name: "Thought" }).click();
+    await expect(feed.getByText(/I should answer with that order/)).toBeVisible();
+    await page.mouse.move(0, 0);
+    await chatScreenshot(page, "chat-thought");
+  });
+
+  test("a turn that couldn't finish, with its details open", async ({ page }) => {
+    await page.goto("/agent/atlas");
+    const feed = conversation(page);
+    await expect(feed.getByText(GREETING)).toBeInViewport();
+    await page.getByRole("combobox", { name: "Message atlas" }).fill("error: check the wiki");
+    await sendFromComposer(page.getByRole("combobox", { name: "Message atlas" }));
+    await expect(feed.getByText("atlas couldn't finish this reply")).toBeVisible();
+    // The toast for the same failure would stand over the shot.
+    await page
+      .getByRole("alert")
+      .filter({ hasText: "The model provider didn't answer" })
+      .getByRole("button", { name: "Dismiss" })
+      .click();
+    await feed.getByRole("button", { name: "Details" }).click();
+    await expect(feed.getByText(/provider returned 503/)).toBeVisible();
+    await page.mouse.move(0, 0);
+    await chatScreenshot(page, "chat-turn-failed");
+  });
+
+  test("a message from Telegram, and the reply sent back there", async ({ page, mock }) => {
+    await page.goto("/agent/atlas");
+    const feed = conversation(page);
+    await expect(feed.getByText(GREETING)).toBeInViewport();
+    await mock.post("/api/mock/telegram-message", { params: { agent: "atlas" } });
+    await expect(feed.getByText("Sent to Telegram")).toBeVisible();
+    await expect(feed.getByText("Working", { exact: true })).toHaveCount(0);
+    await page.mouse.move(0, 0);
+    await chatScreenshot(page, "chat-telegram");
+  });
+});
 test.describe("composer", { tag: "@visual" }, () => {
   test("a draft with an image attached, and the / menu open", async ({ page }) => {
     await page.goto("/agent/atlas");
@@ -133,7 +213,7 @@ test.describe("composer", { tag: "@visual" }, () => {
       .locator('input[type="file"]')
       .setInputFiles({ name: "shot.png", mimeType: "image/png", buffer: PNG });
     await expect(page.getByRole("img", { name: "Image 1" })).toBeVisible();
-    const box = page.getByRole("textbox", { name: "Message atlas" });
+    const box = page.getByRole("combobox", { name: "Message atlas" });
     await box.click();
     await page.keyboard.type("/");
     await expect(page.getByRole("listbox", { name: "Chat actions" })).toBeVisible();
@@ -156,9 +236,9 @@ test.describe("composer", { tag: "@visual" }, () => {
     });
     await page.goto("/agent/atlas");
     await expect(conversation(page).getByText(GREETING)).toBeInViewport();
-    const box = page.getByRole("textbox", { name: "Message atlas" });
+    const box = page.getByRole("combobox", { name: "Message atlas" });
     await box.fill("Are you there?");
-    await box.press("Enter");
+    await sendFromComposer(box);
     await expect(
       page.getByText("Reconnecting — 1 message will send once back online."),
     ).toBeVisible();

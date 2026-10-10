@@ -278,7 +278,7 @@ Both the listing and the `session_started` frame describe a run as a `SessionSum
 
 ### Live events (server → client)
 
-Every session publishes the same turn events the main agent does, as their own `session_*` frames tagged with `address` and `run_id`. The main agent's frames (`turn_started`, `response`, `error`, and so on) keep their shape and never carry session activity, so a client that ignores `session_*` frames is unaffected.
+Every session publishes the same turn events the main agent does, as their own `session_*` frames tagged with `address` and `run_id`. The main agent's frames (`turn_started`, `response`, `error`, and so on; see [Turn Control](turn-control.md#the-main-conversation-stream)) never carry session activity, so a client that ignores `session_*` frames is unaffected. A session's turn does not stream: it publishes whole `session_broadcast_response` and `session_response` frames.
 
 | Frame | Fields | When |
 |-------|--------|------|
@@ -323,7 +323,7 @@ Query parameters: `category` (`scheduled` | `external` | `spawned` | `artifact`;
 
 **`POST /api/agents/{name}/sessions/{address}/messages`** with `{ content }` sends any session a message, with the `session_send_message` command's delivery rules. It answers `200` with `{ outcome: "live" | "queued" | "resumed" }`. A failure answers `{ error, code }` with the command's code and a status per code: `invalid_request` `400` (a malformed body, blank content, `main`, or a malformed artifact identity header), `unknown_address` `404`, `busy` `409`, `delivery_failed` `502`. With the `X-Residuum-Artifact` header, the session sees the message as that artifact's (`[Message from the workbench artifact "<name>" …]`, sender `artifact:<name>`); without it, as the owner's.
 
-**`GET /api/agents/{name}/sessions/runs/{run_id}/transcript`** returns `{ session: SessionSummary, messages: RecentMessage[] }`. `messages` has the same shape `GET /api/agents/{name}/chat/history` returns, so the chat's message components render it. A live run's transcript is read from its incremental transcript file, current to the last message produced, and `session` reflects its live state; a completed run's comes from its final record. Runs don't record per-message times, so every message carries the run's start time (in the configured timezone, like chat history). A run id containing anything but ASCII letters, digits, `-`, and `_` is a `400`; an unknown run is a `404`.
+**`GET /api/agents/{name}/sessions/runs/{run_id}/transcript`** returns `{ session: SessionSummary, messages: RecentMessage[] }`. `messages` has the same shape `GET /api/agents/{name}/chat/history` returns (including `thinking`, the model's readable reasoning per message, without signatures), so the chat's message components render it. A live run's transcript is read from its incremental transcript file, current to the last message produced, and `session` reflects its live state; a completed run's comes from its final record. Runs don't record per-message times, so every message carries the run's start time (in the configured timezone, like chat history). A run id containing anything but ASCII letters, digits, `-`, and `_` is a `400`; an unknown run is a `404`.
 
 ### Activity and the session panel
 

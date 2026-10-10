@@ -76,9 +76,9 @@ describe("the conversation size", () => {
     expect(screen.getByRole("complementary")).toHaveTextContent(
       "About 14,000 words go to the model each time atlas replies",
     );
-    expect(screen.getByText("Read over the conversation").nextElementSibling).toHaveTextContent(
-      "About 310,000 words",
-    );
+    expect(
+      screen.getByText("Sent to the model in total, counting repeats").nextElementSibling,
+    ).toHaveTextContent("About 310,000 words");
     expect(screen.getByText("Tools used").nextElementSibling).toHaveTextContent("37 times");
     expect(screen.queryByText("This reply so far")).toBeNull();
 
@@ -93,7 +93,11 @@ describe("the conversation size", () => {
     setViewedAgent("atlas");
     render(ConversationSizeHarness);
     await screen.findByText("Tools used");
-    ws.store.handleMessage({ type: "turn_started", reply_to: "t1" });
+    ws.store.handleMessage({
+      type: "turn_started",
+      reply_to: "t1",
+      origin: { endpoint: "ws", visibility: "user" },
+    });
     ws.store.handleMessage({
       type: "turn_usage",
       reply_to: "t1",

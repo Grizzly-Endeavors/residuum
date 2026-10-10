@@ -6,8 +6,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
 use tracing::{info, warn};
 
+use super::stream::TrackedSink;
 use super::{
-    CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
+    CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, StreamSink,
     ToolDefinition,
 };
 use crate::bus::{NoticeEvent, NotifyName, Publisher, SYSTEM_CHANNEL, topics};
@@ -15,6 +16,11 @@ use crate::bus::{NoticeEvent, NotifyName, Publisher, SYSTEM_CHANNEL, topics};
 /// A provider that tries multiple underlying providers in order.
 ///
 /// On error (after retries exhaust within each provider), falls back to the next.
+///
+/// The provider that answers records itself as the origin of the reasoning in
+/// its response (see [`InferenceResponse::produced_at`]), and the response
+/// passes through here untouched, so the reasoning in a failed-over reply is
+/// attributed to the fallback that wrote it, never to the primary.
 pub(crate) struct FailoverProvider {
     providers: Vec<Box<dyn InferenceProvider>>,
     /// When set, a user notice is published on a fallback/recovery
@@ -119,16 +125,16 @@ impl FailoverProvider {
             tracing::warn!(error = %e, "failed to publish failover notice");
         }
     }
-}
 
-#[async_trait]
-impl InferenceProvider for FailoverProvider {
-    #[tracing::instrument(skip_all, fields(provider_count = self.providers.len(), primary = self.providers.first().map_or("empty", |p| p.model_name())))]
-    async fn complete(
+    /// Try each provider in turn, streaming into `sink` when there is one.
+    /// Whatever a failed provider already streamed is voided before the next
+    /// one is tried.
+    async fn run(
         &self,
         messages: &[Message],
         tools: &[ToolDefinition],
         options: &CompletionOptions,
+        sink: Option<&TrackedSink<'_>>,
     ) -> Result<InferenceResponse, InferenceError> {
         let total = self.providers.len();
         let previously_active = self.active_index.load(Ordering::SeqCst);
@@ -139,7 +145,15 @@ impl InferenceProvider for FailoverProvider {
         let mut active_provider_cause: Option<&'static str> = None;
 
         for (idx, provider) in self.providers.iter().enumerate() {
-            match provider.complete(messages, tools, options).await {
+            let attempt = match sink {
+                Some(sink) => {
+                    provider
+                        .complete_streaming(messages, tools, options, sink)
+                        .await
+                }
+                None => provider.complete(messages, tools, options).await,
+            };
+            match attempt {
                 Ok(response) => {
                     if idx > 0 {
                         info!(
@@ -166,6 +180,9 @@ impl InferenceProvider for FailoverProvider {
                     if idx == previously_active {
                         active_provider_cause = Some(err.cause_phrase());
                     }
+                    if let Some(sink) = sink {
+                        sink.restart_if_needed();
+                    }
                     last_error = Some(err);
                 }
             }
@@ -175,6 +192,34 @@ impl InferenceProvider for FailoverProvider {
         Err(last_error.unwrap_or_else(|| {
             InferenceError::Api("no providers configured in failover chain".to_string())
         }))
+    }
+}
+
+#[async_trait]
+impl InferenceProvider for FailoverProvider {
+    #[tracing::instrument(skip_all, fields(provider_count = self.providers.len(), primary = self.providers.first().map_or("empty", |p| p.model_name())))]
+    async fn complete(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+    ) -> Result<InferenceResponse, InferenceError> {
+        self.run(messages, tools, options, None).await
+    }
+
+    /// Like `complete`, streaming the successful provider's response into
+    /// `sink`. When a provider fails after streaming something, the sink is
+    /// told to start over before the next provider is tried.
+    #[tracing::instrument(skip_all, fields(provider_count = self.providers.len(), primary = self.providers.first().map_or("empty", |p| p.model_name())))]
+    async fn complete_streaming(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+        sink: &dyn StreamSink,
+    ) -> Result<InferenceResponse, InferenceError> {
+        let tracked = TrackedSink::new(sink);
+        self.run(messages, tools, options, Some(&tracked)).await
     }
 
     fn model_name(&self) -> &str {
@@ -188,6 +233,8 @@ impl InferenceProvider for FailoverProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::StreamDelta;
+    use crate::inference::test_support::RecordingSink;
 
     /// A mock provider that always succeeds with a fixed response.
     struct SuccessProvider {
@@ -545,5 +592,484 @@ mod tests {
             .await
             .unwrap();
         assert_no_notice(&mut notices).await;
+    }
+
+    /// A provider that streams `partial` and then either fails or completes.
+    struct StreamingProvider {
+        name: &'static str,
+        partial: &'static str,
+        fails: bool,
+    }
+
+    #[async_trait]
+    impl InferenceProvider for StreamingProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            Err(InferenceError::Api("not used".to_string()))
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+            sink: &dyn StreamSink,
+        ) -> Result<InferenceResponse, InferenceError> {
+            if !self.partial.is_empty() {
+                sink.push(StreamDelta::Text(self.partial.to_string()));
+            }
+            if self.fails {
+                Err(InferenceError::StreamInterrupted(format!(
+                    "{} dropped",
+                    self.name
+                )))
+            } else {
+                Ok(InferenceResponse::new(self.partial.to_string(), vec![]))
+            }
+        }
+
+        fn model_name(&self) -> &str {
+            self.name
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_restarts_the_sink_before_the_next_provider() {
+        let provider = FailoverProvider::new(vec![
+            Box::new(StreamingProvider {
+                name: "primary",
+                partial: "half an ans",
+                fails: true,
+            }),
+            Box::new(StreamingProvider {
+                name: "fallback",
+                partial: "full answer",
+                fails: false,
+            }),
+        ]);
+        let sink = RecordingSink::default();
+
+        let response = provider
+            .complete_streaming(&[], &[], &CompletionOptions::default(), &sink)
+            .await
+            .unwrap();
+
+        assert_eq!(response.content, "full answer", "fallback's answer is used");
+        assert_eq!(
+            sink.deltas(),
+            vec![
+                StreamDelta::Text("half an ans".to_string()),
+                StreamDelta::Restart,
+                StreamDelta::Text("full answer".to_string()),
+            ],
+            "the half answer is voided before the fallback streams"
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_failover_before_any_output_does_not_restart() {
+        let provider = FailoverProvider::new(vec![
+            Box::new(StreamingProvider {
+                name: "primary",
+                partial: "",
+                fails: true,
+            }),
+            Box::new(StreamingProvider {
+                name: "fallback",
+                partial: "answer",
+                fails: false,
+            }),
+        ]);
+        let sink = RecordingSink::default();
+
+        provider
+            .complete_streaming(&[], &[], &CompletionOptions::default(), &sink)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            sink.deltas(),
+            vec![StreamDelta::Text("answer".to_string())],
+            "nothing had streamed, so nothing is voided"
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_through_a_provider_that_cannot_stream_still_answers() {
+        let provider = FailoverProvider::new(vec![
+            Box::new(StreamingProvider {
+                name: "primary",
+                partial: "partial",
+                fails: true,
+            }),
+            Box::new(SuccessProvider { name: "plain" }),
+        ]);
+        let sink = RecordingSink::default();
+
+        let response = provider
+            .complete_streaming(&[], &[], &CompletionOptions::default(), &sink)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.content, "response from plain",
+            "a provider with the default complete_streaming answers without streaming"
+        );
+        assert_eq!(
+            sink.deltas(),
+            vec![
+                StreamDelta::Text("partial".to_string()),
+                StreamDelta::Restart
+            ],
+            "the primary's partial text is voided and the plain provider streams nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_with_every_provider_failing_returns_the_last_error_and_voids_the_sink() {
+        let provider = FailoverProvider::new(vec![
+            Box::new(StreamingProvider {
+                name: "primary",
+                partial: "one",
+                fails: true,
+            }),
+            Box::new(StreamingProvider {
+                name: "fallback",
+                partial: "two",
+                fails: true,
+            }),
+        ]);
+        let sink = RecordingSink::default();
+
+        let err = provider
+            .complete_streaming(&[], &[], &CompletionOptions::default(), &sink)
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("fallback dropped"),
+            "the last provider's error is returned: {err}"
+        );
+        assert_eq!(
+            sink.deltas(),
+            vec![
+                StreamDelta::Text("one".to_string()),
+                StreamDelta::Restart,
+                StreamDelta::Text("two".to_string()),
+                StreamDelta::Restart,
+            ],
+            "each failed provider's output is voided"
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_failover_notifies_like_complete() {
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let mut notices: crate::bus::Subscriber<NoticeEvent> = bus_handle
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let provider = FailoverProvider::new(vec![
+            Box::new(StreamingProvider {
+                name: "primary",
+                partial: "",
+                fails: true,
+            }),
+            Box::new(StreamingProvider {
+                name: "fallback",
+                partial: "answer",
+                fails: false,
+            }),
+        ])
+        .with_notices(publisher, "main model");
+
+        provider
+            .complete_streaming(
+                &[],
+                &[],
+                &CompletionOptions::default(),
+                &RecordingSink::default(),
+            )
+            .await
+            .unwrap();
+
+        let message = notice_text(&mut notices).await;
+        assert!(
+            message.contains("main model") && message.contains("fallback"),
+            "the transition is announced: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn real_streams_failing_over_mid_response_restart_exactly_once() {
+        use crate::inference::providers::anthropic::AnthropicClient;
+        use crate::inference::retry::RetryConfig;
+        use crate::inference::test_support::{ScriptedServer, sse_response};
+        use crate::inference::{HttpClientConfig, SharedHttpClient};
+
+        fn sse(name: &str, data: &str) -> String {
+            format!("event: {name}\ndata: {data}\n\n")
+        }
+        let start = sse(
+            "message_start",
+            r#"{"type":"message_start","message":{"usage":{"input_tokens":3,"output_tokens":1}}}"#,
+        );
+        let open_text = sse(
+            "content_block_start",
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+        );
+        let text = |t: &str| {
+            sse(
+                "content_block_delta",
+                &format!(
+                    r#"{{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":"{t}"}}}}"#
+                ),
+            )
+        };
+        let primary_stream = [
+            start.clone(),
+            open_text.clone(),
+            text("half"),
+            sse(
+                "error",
+                r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#,
+            ),
+        ]
+        .concat();
+        let fallback_stream = [
+            start,
+            open_text,
+            text("the whole answer"),
+            sse(
+                "content_block_stop",
+                r#"{"type":"content_block_stop","index":0}"#,
+            ),
+            sse(
+                "message_delta",
+                r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}"#,
+            ),
+            sse("message_stop", r#"{"type":"message_stop"}"#),
+        ]
+        .concat();
+        let primary_server = ScriptedServer::start(vec![sse_response(&[primary_stream])]).await;
+        let fallback_server = ScriptedServer::start(vec![sse_response(&[fallback_stream])]).await;
+        let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(5)).unwrap();
+        let client = |url: String| {
+            Box::new(AnthropicClient::new(
+                http.clone(),
+                url,
+                "key",
+                "claude-test",
+                1024,
+                RetryConfig::no_retry(),
+            )) as Box<dyn InferenceProvider>
+        };
+        let provider = FailoverProvider::new(vec![
+            client(primary_server.uri()),
+            client(fallback_server.uri()),
+        ]);
+        let sink = RecordingSink::default();
+
+        let response = provider
+            .complete_streaming(
+                &[Message::user("hi")],
+                &[],
+                &CompletionOptions::default(),
+                &sink,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.content, "the whole answer", "fallback's answer");
+        assert_eq!(
+            sink.deltas(),
+            vec![
+                StreamDelta::Text("half".to_string()),
+                StreamDelta::Restart,
+                StreamDelta::Text("the whole answer".to_string()),
+            ],
+            "one restart, from whichever layer saw the failure first"
+        );
+    }
+
+    /// A chain of real Anthropic and Gemini clients, each on its own scripted
+    /// server, to follow reasoning across a failover.
+    mod reasoning_across_providers {
+        use super::*;
+        use crate::inference::providers::anthropic::AnthropicClient;
+        use crate::inference::providers::gemini::GeminiClient;
+        use crate::inference::retry::RetryConfig;
+        use crate::inference::test_support::{ScriptedServer, json_response};
+        use crate::inference::{
+            HttpClientConfig, ProviderApi, SharedHttpClient, ThinkingConfig, ThinkingLevel,
+            ThinkingOrigin,
+        };
+
+        const CLAUDE: &str = "claude-test";
+        const GEMINI: &str = "gemini-3-pro-preview";
+
+        fn chain(anthropic: &ScriptedServer, gemini: &ScriptedServer) -> FailoverProvider {
+            let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(5)).unwrap();
+            FailoverProvider::new(vec![
+                Box::new(AnthropicClient::new(
+                    http.clone(),
+                    anthropic.uri(),
+                    "key",
+                    CLAUDE,
+                    4096,
+                    RetryConfig::no_retry(),
+                )),
+                Box::new(GeminiClient::new(
+                    http,
+                    gemini.uri(),
+                    "key",
+                    GEMINI,
+                    4096,
+                    RetryConfig::no_retry(),
+                )),
+            ])
+        }
+
+        fn thinking_on() -> CompletionOptions {
+            CompletionOptions {
+                max_tokens: Some(4096),
+                thinking: Some(ThinkingConfig::Level(ThinkingLevel::Medium)),
+                ..CompletionOptions::default()
+            }
+        }
+
+        fn claude_tool_call() -> String {
+            r#"{"content":[
+                {"type":"thinking","thinking":"plan","signature":"ANTH-SIG"},
+                {"type":"tool_use","id":"toolu_1","name":"exec","input":{}}
+            ],"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}}"#
+                .to_string()
+        }
+
+        fn claude_answer() -> String {
+            r#"{"content":[{"type":"text","text":"done"}],"stop_reason":"end_turn",
+                "usage":{"input_tokens":1,"output_tokens":1}}"#
+                .to_string()
+        }
+
+        fn gemini_tool_call() -> String {
+            r#"{"candidates":[{"content":{"role":"model","parts":[
+                {"functionCall":{"name":"exec","args":{}},"thoughtSignature":"GEM-SIG"}
+            ]},"finishReason":"STOP"}]}"#
+                .to_string()
+        }
+
+        fn assistant_turn(response: &InferenceResponse) -> Message {
+            Message::assistant(response.content.clone(), Some(response.tool_calls.clone()))
+                .with_thinking(response.thinking.clone())
+        }
+
+        fn origin_of(response: &InferenceResponse) -> Vec<Option<ThinkingOrigin>> {
+            response
+                .thinking
+                .iter()
+                .map(|block| block.origin.clone())
+                .collect()
+        }
+
+        #[tokio::test]
+        async fn blocks_record_the_provider_that_actually_answered() {
+            let anthropic =
+                ScriptedServer::start(vec![json_response(200, &claude_tool_call())]).await;
+            let gemini = ScriptedServer::start(vec![json_response(200, &gemini_tool_call())]).await;
+            let ask = [Message::user("go")];
+
+            let primary = chain(&anthropic, &gemini)
+                .complete(&ask, &[], &thinking_on())
+                .await
+                .unwrap();
+            assert_eq!(
+                origin_of(&primary),
+                [Some(ThinkingOrigin::new(ProviderApi::Anthropic, CLAUDE))],
+                "the primary answered, so its blocks are Anthropic's"
+            );
+
+            let failing_anthropic = ScriptedServer::start(vec![json_response(
+                500,
+                r#"{"type":"error","error":{"type":"api_error","message":"down"}}"#,
+            )])
+            .await;
+            let fallback = chain(&failing_anthropic, &gemini)
+                .complete(&ask, &[], &thinking_on())
+                .await
+                .unwrap();
+            assert_eq!(
+                origin_of(&fallback),
+                [Some(ThinkingOrigin::new(ProviderApi::Gemini, GEMINI))],
+                "the primary failed and the fallback answered, so its blocks are Gemini's"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_tool_exchange_that_fails_over_and_back_replays_only_each_providers_own_reasoning()
+         {
+            let anthropic = ScriptedServer::start(vec![
+                json_response(200, &claude_tool_call()),
+                json_response(
+                    500,
+                    r#"{"type":"error","error":{"type":"api_error","message":"down"}}"#,
+                ),
+                json_response(200, &claude_answer()),
+            ])
+            .await;
+            let gemini = ScriptedServer::start(vec![json_response(200, &gemini_tool_call())]).await;
+            let provider = chain(&anthropic, &gemini);
+            let options = thinking_on();
+
+            // Anthropic starts a tool-use exchange.
+            let mut messages = vec![Message::user("go")];
+            let first = provider.complete(&messages, &[], &options).await.unwrap();
+            let first_call = first.tool_calls.first().unwrap().id.clone();
+            messages.push(assistant_turn(&first));
+            messages.push(Message::tool("one", first_call));
+
+            // Anthropic fails; Gemini carries the exchange on.
+            let second = provider.complete(&messages, &[], &options).await.unwrap();
+            let second_call = second.tool_calls.first().unwrap().id.clone();
+            messages.push(assistant_turn(&second));
+            messages.push(Message::tool("two", second_call));
+
+            // Anthropic is back for the exchange's last step.
+            let last = provider.complete(&messages, &[], &options).await.unwrap();
+            assert_eq!(last.content, "done");
+
+            let to_gemini = gemini.requests().first().unwrap().body.clone();
+            assert!(
+                !to_gemini.contains("ANTH-SIG"),
+                "Anthropic's signature never goes to Gemini: {to_gemini}"
+            );
+            assert!(
+                to_gemini.contains("skip_thought_signature_validator"),
+                "Gemini 3 gets the documented stand-in for the call it did not make: {to_gemini}"
+            );
+
+            let sent_to_claude: Vec<String> = anthropic
+                .requests()
+                .into_iter()
+                .map(|request| request.body)
+                .collect();
+            assert_eq!(sent_to_claude.len(), 3);
+            let [_, retried, returned] = sent_to_claude.as_slice() else {
+                panic!("three requests reached Anthropic: {sent_to_claude:?}");
+            };
+            assert!(
+                retried.contains("ANTH-SIG"),
+                "Anthropic's own signature goes back to it: {retried}"
+            );
+            assert!(
+                returned.contains("ANTH-SIG") && !returned.contains("GEM-SIG"),
+                "back on Anthropic, its own signature is replayed and Gemini's is not: {returned}"
+            );
+        }
     }
 }

@@ -20,7 +20,7 @@ function menuButton(page: Page): Locator {
   return floatingSection(page).getByRole("button", { name: "Manage atlas" });
 }
 
-test.describe("menus", () => {
+test.describe("menus", { tag: "@dev" }, () => {
   test("a menu opens from its button, and a press outside closes it", async ({ page }) => {
     await openGallery(page);
     await menuButton(page).click();
@@ -89,7 +89,7 @@ test.describe("menus", () => {
   });
 });
 
-test.describe("popovers", () => {
+test.describe("popovers", { tag: "@dev" }, () => {
   test("a popover opens on its first control, and Esc closes it onto its button", async ({
     page,
   }) => {
@@ -130,7 +130,7 @@ test.describe("popovers", () => {
   });
 });
 
-test.describe("tooltips", () => {
+test.describe("tooltips", { tag: "@dev" }, () => {
   test("keyboard focus shows a tooltip, and moving on hides it", async ({ page }) => {
     await openGallery(page);
     const section = floatingSection(page);
@@ -158,7 +158,7 @@ test.describe("tooltips", () => {
   });
 });
 
-test.describe("toasts", () => {
+test.describe("toasts", { tag: "@dev" }, () => {
   test("toasts show, errors stay until dismissed, and an action runs once", async ({ page }) => {
     await openGallery(page);
     const section = page.getByRole("region", { name: "Toasts and recent notifications" });
@@ -179,7 +179,7 @@ test.describe("toasts", () => {
   });
 });
 
-test.describe("recent notifications", () => {
+test.describe("recent notifications", { tag: "@dev" }, () => {
   async function openWithSamples(page: Page): Promise<Locator> {
     await openGallery(page);
     const section = page.getByRole("region", { name: "Toasts and recent notifications" });

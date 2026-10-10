@@ -19,10 +19,12 @@
 
 # ── General settings ──────────────────────────────────────────────────────────
 # autostart = true   # whether this agent starts when the hub starts
+# A model call may take timeout_secs; a streamed reply fails only after that
+# many seconds with no output at all, so a long answer is never cut off.
 timeout_secs = 120
 max_tokens = 16384
 # temperature = 0.7
-# thinking = "medium"
+# thinking = "medium"   # off, on, low, medium or high
 
 # ── Retry (optional, defaults shown) ─────────────────────────────────────────
 # [retry]

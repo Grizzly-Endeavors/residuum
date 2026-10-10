@@ -6,8 +6,12 @@ pub(crate) mod factory;
 pub(crate) mod failover;
 mod http;
 pub(crate) mod providers;
+mod reply;
 pub(crate) mod retry;
+mod stream;
 pub mod system_one;
+#[cfg(test)]
+mod test_support;
 mod types;
 
 pub(crate) use embedding::build_embedding_provider;
@@ -20,6 +24,8 @@ pub(crate) use factory::{
 pub use http::{HttpClientConfig, SharedHttpClient};
 pub use types::{
     AgentSender, CompletionOptions, ImageData, InferenceProvider, InferenceResponse, Message,
-    MessageSender, ResponseFormat, Role, StopReason, ThinkingConfig, ThinkingLevel, ToolCall,
-    ToolDefinition, Usage, WebSearchNativeConfig,
+    MessageSender, ProviderApi, ResponseFormat, Role, StopReason, StreamDelta, StreamSink,
+    ThinkingBlock, ThinkingConfig, ThinkingLevel, ThinkingOrigin, ToolCall, ToolDefinition, Usage,
+    WebSearchNativeConfig, joined_thinking_text, readable_thinking,
 };
+pub(crate) use types::{ReplayScope, blocks_produced_at};

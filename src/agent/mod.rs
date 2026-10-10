@@ -6,8 +6,11 @@ mod core;
 pub mod hop;
 pub mod interrupt;
 pub mod recent_messages;
+mod stream;
 mod think_tags;
 pub(crate) mod turn;
+#[cfg(test)]
+mod turn_conversation_tests;
 pub mod usage;
 
 pub use core::{Agent, AgentConfig};

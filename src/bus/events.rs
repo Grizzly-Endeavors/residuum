@@ -11,6 +11,7 @@ use crate::config::BackgroundModelTier;
 use crate::inference::{ImageData, Message, MessageSender};
 use crate::interfaces::attachment::FileAttachment;
 use crate::interfaces::types::MessageOrigin;
+use crate::memory::types::Visibility;
 
 // ---------------------------------------------------------------------------
 // EventTrigger
@@ -808,15 +809,6 @@ pub enum SessionEventKind {
 // Typed topic event enums
 // ---------------------------------------------------------------------------
 
-/// Tool activity during a turn (call or result).
-#[derive(Debug, Clone)]
-pub enum ToolActivityEvent {
-    /// A tool was invoked by the agent.
-    Call(ToolCallEvent),
-    /// A tool execution completed.
-    Result(ToolResultEvent),
-}
-
 /// Turn lifecycle transitions.
 #[derive(Debug, Clone)]
 pub enum TurnLifecycleEvent {
@@ -835,9 +827,10 @@ pub enum TurnLifecycleEvent {
 /// Token usage and tool-call progress for a turn still running: this
 /// turn's own output tokens and executed tool calls so far (for the
 /// activity line) and, when the caller tracks cumulative session
-/// totals, the updated totals (for the conversation size). Published after every
-/// model call and after every tool-call batch; never delivered to the
-/// agent itself. See `docs/systems-usage/turn-control.md`.
+/// totals, the updated totals (for the conversation size). Published to the
+/// main conversation (as [`MainConversationEvent::TurnUsage`]) after every
+/// model call and after every tool-call batch; never delivered to the agent
+/// itself. See `docs/systems-usage/turn-control.md`.
 #[derive(Debug, Clone)]
 pub struct TurnUsageEvent {
     /// Links back to the originating message.
@@ -850,6 +843,170 @@ pub struct TurnUsageEvent {
     pub tool_calls: u32,
     /// Updated cumulative session totals, when the caller tracks them.
     pub session_totals: Option<crate::agent::usage::SessionUsageTotals>,
+}
+
+/// Where a main-conversation turn came from.
+///
+/// Sent to web clients as the origin of a `turn_started` frame, so a client
+/// can tell a turn the owner started from the web from one that started on a
+/// chat interface or in the background.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct TurnOrigin {
+    /// Endpoint the message that started the turn arrived on (`"ws"`,
+    /// `"telegram"`, `"discord"`, `"teams"`, ...), or `"background"` for a turn
+    /// no person started.
+    pub endpoint: String,
+    /// The person who sent it, for interfaces that identify one.
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender: Option<MessageSender>,
+    /// The visibility the turn's messages are recorded with in history.
+    pub visibility: Visibility,
+}
+
+impl TurnOrigin {
+    /// The origin of a turn started by `message_origin`, recorded with
+    /// `visibility`.
+    #[must_use]
+    pub fn new(message_origin: &MessageOrigin, visibility: Visibility) -> Self {
+        Self {
+            endpoint: message_origin.endpoint.clone(),
+            sender: message_origin.sender.clone(),
+            visibility,
+        }
+    }
+}
+
+/// One thing that happened in the main agent's conversation, in the order it
+/// happened.
+///
+/// Carried on [`super::topics::MainConversation`] for every main-agent turn,
+/// whatever endpoint started it, so a client following the conversation (the
+/// web UI) gets one lossless, ordered stream instead of reassembling it from
+/// per-endpoint topics that only carry turns delivered to that endpoint.
+/// Every turn event names its turn by `turn_id`, the id of the message that
+/// started it. A model call within a turn is numbered by `call`, counting
+/// from zero.
+#[derive(Debug, Clone)]
+pub enum MainConversationEvent {
+    /// A turn began.
+    TurnStarted {
+        /// The turn.
+        turn_id: String,
+        /// Where it came from.
+        origin: TurnOrigin,
+    },
+    /// A turn finished, whatever its outcome.
+    TurnEnded {
+        /// The turn.
+        turn_id: String,
+    },
+    /// A person's message entered the conversation: as the message that
+    /// started a turn, or injected into a turn already running. Never sent
+    /// for one agent's message to another.
+    UserMessage {
+        /// The message's id: the id its sender gave it, so a client that sent
+        /// it can recognize the echo.
+        id: String,
+        /// The turn the message started or joined.
+        turn_id: String,
+        /// The message text.
+        content: String,
+        /// Images attached to it.
+        images: Vec<ImageData>,
+        /// The person who sent it, for interfaces that identify one.
+        sender: Option<MessageSender>,
+        /// Endpoint it arrived on.
+        endpoint: String,
+    },
+    /// The agent invoked a tool.
+    ToolCall {
+        /// Index of the model call that requested it.
+        call: u32,
+        /// The invocation; its `correlation_id` is the turn.
+        event: ToolCallEvent,
+    },
+    /// A tool the agent invoked returned.
+    ToolResult(ToolResultEvent),
+    /// More of a model call's text, as the provider produced it.
+    TextDelta {
+        /// The turn.
+        turn_id: String,
+        /// The model call.
+        call: u32,
+        /// The new text.
+        text: String,
+    },
+    /// More of a model call's readable reasoning, as the provider produced it.
+    ThinkingDelta {
+        /// The turn.
+        turn_id: String,
+        /// The model call.
+        call: u32,
+        /// The new reasoning text.
+        text: String,
+    },
+    /// What was streamed for a model call is void: the call is being sent
+    /// again, and what follows starts over from the beginning.
+    StreamRestart {
+        /// The turn.
+        turn_id: String,
+        /// The model call.
+        call: u32,
+    },
+    /// A model call's complete readable reasoning, sent once the call has
+    /// returned and before the call's text and tool calls. Only when the
+    /// model produced some.
+    Thinking {
+        /// The turn.
+        turn_id: String,
+        /// The model call.
+        call: u32,
+        /// The reasoning text.
+        content: String,
+    },
+    /// Text the agent wrote alongside tool calls.
+    Intermediate {
+        /// The turn.
+        turn_id: String,
+        /// The model call that produced the text.
+        call: u32,
+        /// The text.
+        content: String,
+    },
+    /// The agent's reply that ends its turn.
+    Response {
+        /// The turn.
+        turn_id: String,
+        /// The model call that produced the text, or `None` for text the turn
+        /// itself wrote (the notice that a limit ended the turn).
+        call: Option<u32>,
+        /// Endpoint the reply was delivered to; empty when it went nowhere
+        /// (a background turn with no endpoint to follow).
+        endpoint: String,
+        /// The reply text.
+        content: String,
+    },
+    /// Progress of the running turn.
+    TurnUsage(TurnUsageEvent),
+}
+
+impl MainConversationEvent {
+    /// The event announcing `message` entering the conversation in turn
+    /// `turn_id`, or `None` when no person sent it (a background origin, or
+    /// one agent's message to another).
+    #[must_use]
+    pub fn user_message(message: &MessageEvent, turn_id: &str) -> Option<Self> {
+        message.origin.is_from_person().then(|| Self::UserMessage {
+            id: message.id.clone(),
+            turn_id: turn_id.to_owned(),
+            content: message.content.clone(),
+            images: message.images.clone(),
+            sender: message.origin.sender.clone(),
+            endpoint: message.origin.endpoint.clone(),
+        })
+    }
 }
 
 /// A workbench artifact appeared, changed, or was deleted: its page, or any

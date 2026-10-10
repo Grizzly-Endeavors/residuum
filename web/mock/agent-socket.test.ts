@@ -244,9 +244,15 @@ describe("agent socket", () => {
       await verbose.nextOfType("turn_ended");
       await socket.nextOfType("turn_ended");
 
-      const types = (frames: Frame[]): string[] => frames.map((f) => String(f.type));
+      // Not the pieces the model's text and reasoning stream in as.
+      const types = (frames: Frame[]): string[] =>
+        frames
+          .map((f) => String(f.type))
+          .filter((type) => type !== "text_delta" && type !== "thinking_delta");
       expect(types(socket.frames)).toEqual([
+        "user_message",
         "turn_started",
+        "thinking",
         "broadcast_response",
         "turn_usage",
         "turn_usage",
@@ -255,7 +261,9 @@ describe("agent socket", () => {
       ]);
       expect(types(verbose.frames)).toEqual([
         "pong",
+        "user_message",
         "turn_started",
+        "thinking",
         "broadcast_response",
         "tool_call",
         "tool_result",

@@ -269,3 +269,32 @@ export const cannedResponses: readonly string[] = [
     "Everything looks healthy. The memory subsystem is operating within expected parameters. " +
     "Let me know if you'd like a deeper dive into any specific area.",
 ];
+
+/**
+ * The reply to a message starting with "markdown": every Markdown shape a
+ * reply can take that the page has to fit, with a table too wide for a phone
+ * and a code line too long for any screen.
+ */
+export const markdownShowcase: string =
+  "# Rollout notes\n\n" +
+  "Three channels are live, and the **fallback order** is set. Docs are at " +
+  "[the notification guide](https://example.com/guides/notifications) and the draft is in " +
+  "`team/wiki/notification-fallbacks.md`.\n\n" +
+  "## Channels\n\n" +
+  "| Channel | Delivery | Fallback | Rate limit | Owner |\n" +
+  "|---|---|---|---|---|\n" +
+  "| discord | direct message to the owner | telegram, then webhook | 5 per minute | notifications |\n" +
+  "| telegram | daily digest of everything unread | webhook | 30 per hour | notifications |\n" +
+  "| webhook | custom HTTP POST for external integrations | inbox | unlimited | integrations |\n\n" +
+  "## Checklist\n\n" +
+  "- [x] Wire the discord adapter\n" +
+  "- [x] Cascade to the next channel when one is unreachable\n" +
+  "- [ ] Park the notification in the inbox when every channel is down\n" +
+  "  - [ ] Write the inbox summary line\n" +
+  "- A plain bullet stays a bullet\n\n" +
+  "```toml\n" +
+  "[notifications]\n" +
+  'fallback_order = ["discord", "telegram", "webhook", "inbox"]  # the first channel that answers wins, and the rest are only tried when it does not\n' +
+  "```\n\n" +
+  "### Open questions\n\n" +
+  "Should parked notifications expire after a week, or stay until someone reads them?";

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { FeedScroller } from "./feed-scroll.svelte";
+import { FeedScroller, type FeedScrollerOptions } from "./feed-scroll.svelte";
 
 /** A ResizeObserver whose notifications the test sends. */
 class ManualObserver {
@@ -21,6 +21,14 @@ class ManualObserver {
   }
 }
 
+interface Geometry {
+  scrollHeight: number;
+  clientHeight: number;
+  scrollTop: number;
+  /** The content's bottom padding: room reserved under its last line. */
+  padding: number;
+}
+
 interface FakeScroller {
   el: HTMLElement;
   content: HTMLElement;
@@ -29,11 +37,11 @@ interface FakeScroller {
   scrollBy: (top: number) => void;
   /** Press a key in the feed. */
   press: (init: KeyboardEventInit) => void;
-  geometry: { scrollHeight: number; clientHeight: number; scrollTop: number };
+  geometry: Geometry;
 }
 
 function fakeScroller(): FakeScroller {
-  const geometry = { scrollHeight: 2000, clientHeight: 500, scrollTop: 1500 };
+  const geometry: Geometry = { scrollHeight: 2000, clientHeight: 500, scrollTop: 1500, padding: 0 };
   const listeners = new Map<string, (event?: Event) => void>();
   const scrollTo = vi.fn((options: { top: number }) => {
     geometry.scrollTop = options.top;
@@ -53,6 +61,7 @@ function fakeScroller(): FakeScroller {
     removeEventListener: (type: string) => listeners.delete(type),
     scrollTo,
   } as unknown as HTMLElement;
+  vi.stubGlobal("getComputedStyle", () => ({ paddingBottom: `${String(geometry.padding)}px` }));
   return {
     el,
     content: {} as HTMLElement,
@@ -74,13 +83,18 @@ afterEach(() => {
 });
 
 describe("FeedScroller", () => {
-  function attached(): { feed: FakeScroller; observer: ManualObserver } {
+  function attached(options?: FeedScrollerOptions): {
+    feed: FakeScroller;
+    observer: ManualObserver;
+    scroller: FeedScroller;
+  } {
     vi.stubGlobal("ResizeObserver", ManualObserver);
     const feed = fakeScroller();
-    new FeedScroller().attach(feed.el, feed.content);
+    const scroller = new FeedScroller(options);
+    scroller.attach(feed.el, feed.content);
     const observer = ManualObserver.instances[0];
     if (observer === undefined) throw new Error("the scroller made no ResizeObserver");
-    return { feed, observer };
+    return { feed, observer, scroller };
   }
 
   it("follows the newest content from End, though content lands at the top on the way", () => {
@@ -117,7 +131,7 @@ describe("FeedScroller", () => {
   it("keeps a following reader at the bottom when the viewport shrinks under them", () => {
     const { feed, observer } = attached();
     feed.scrollTo.mockClear();
-    // The composer below the feed grew, so the same content has less room.
+    // The window narrowed, so the same content has less room.
     feed.geometry.clientHeight = 470;
     observer.notify();
     expect(feed.scrollTo).toHaveBeenCalledWith({ top: 2000, behavior: "instant" });
@@ -130,5 +144,242 @@ describe("FeedScroller", () => {
     feed.geometry.clientHeight = 470;
     observer.notify();
     expect(feed.scrollTo).not.toHaveBeenCalled();
+  });
+
+  it("pins a following reader to the true bottom, the reserved room included", () => {
+    const { feed, observer, scroller } = attached();
+    feed.geometry.padding = 300;
+    feed.scrollTo.mockClear();
+    feed.geometry.scrollHeight = 2400;
+    observer.notify();
+    expect(feed.scrollTo).toHaveBeenCalledWith({ top: 2400, behavior: "instant" });
+    scroller.contentChanged();
+    expect(feed.geometry.scrollTop).toBe(2400);
+  });
+
+  describe("how near the end counts as following", () => {
+    it("measures from the end of the content, not from the end of the room reserved below it", () => {
+      const { feed, scroller } = attached();
+      // 300px of room under the last line: the content ends at 1700.
+      feed.geometry.padding = 300;
+      feed.scrollBy(1500);
+      expect(scroller.scrolledUp).toBe(false);
+
+      // 400px from the true bottom, but the last line is 100px under the view's foot.
+      feed.scrollBy(1100);
+      expect(scroller.scrolledUp).toBe(false);
+      expect(scroller.isFollowing).toBe(true);
+
+      // 121px under it: far enough to stop following.
+      feed.scrollBy(1079);
+      expect(scroller.scrolledUp).toBe(true);
+      expect(scroller.isFollowing).toBe(false);
+    });
+
+    it("sees the last line only above what floats over the foot of the area", () => {
+      let covered = 150;
+      const { feed, scroller } = attached({ covered: () => covered });
+      feed.geometry.padding = 150;
+      // 50px short of the bottom, with the last line in view.
+      feed.scrollBy(1450);
+      expect(scroller.scrolledUp).toBe(false);
+
+      // About the same position is worse with a taller composer: its 400px hide the last 300px of text.
+      covered = 400;
+      feed.scrollBy(1451);
+      expect(scroller.scrolledUp).toBe(true);
+    });
+
+    it("keeps a reader at the very bottom following while the room for the composer catches up", () => {
+      // The composer just grew to 137px; the room under the last line, set
+      // from its height a frame later, is still the 48px buffer.
+      const { feed, scroller } = attached({ covered: () => 137 });
+      feed.geometry.padding = 48;
+      feed.scrollBy(1400);
+      feed.scrollBy(1500);
+      expect(scroller.isFollowing).toBe(true);
+      expect(scroller.scrolledUp).toBe(false);
+    });
+
+    it("doesn't pull back a reader whose scroll lands before its event does", () => {
+      const { feed, observer, scroller } = attached();
+      feed.scrollBy(1500);
+      expect(scroller.isFollowing).toBe(true);
+
+      // The reader scrolls up; before the scroll event arrives, a streamed
+      // reply adds content and the page tells the scroller.
+      feed.scrollTo.mockClear();
+      feed.geometry.scrollTop = 600;
+      feed.geometry.scrollHeight = 2100;
+      scroller.contentChanged();
+      observer.notify();
+
+      expect(feed.scrollTo).not.toHaveBeenCalled();
+      expect(feed.geometry.scrollTop).toBe(600);
+      expect(scroller.isFollowing).toBe(false);
+      expect(scroller.scrolledUp).toBe(true);
+    });
+
+    it("keeps a pinned reader at the bottom when the room for an unchanged composer lands late", () => {
+      // The feed pinned the reader with the composer's 109px already measured,
+      // but the browser restyled the column with its room a frame later.
+      const { feed, observer, scroller } = attached({ covered: () => 109 });
+      feed.geometry.padding = 212;
+      observer.notify();
+      scroller.contentChanged(true);
+      expect(feed.geometry.scrollTop).toBe(2000);
+
+      feed.scrollTo.mockClear();
+      feed.geometry.padding = 321;
+      feed.geometry.scrollHeight = 2109;
+      observer.notify();
+      expect(feed.scrollTo).toHaveBeenCalledWith({ top: 2109, behavior: "instant" });
+    });
+
+    it("doesn't take the late event of its own scroll for the reader leaving the end", () => {
+      // Seen on a phone while reconnecting: the composer covers 137px and the
+      // room under the last line is still 48px.
+      const { feed, observer, scroller } = attached({ covered: () => 137 });
+      feed.geometry.padding = 48;
+      feed.scrollTo.mockClear();
+      // The feed pins the reader to the bottom.
+      scroller.contentChanged(true);
+      expect(feed.geometry.scrollTop).toBe(2000);
+      // 46px more content lands, then the pin's own scroll event arrives,
+      // with the position where the pin left it.
+      feed.geometry.scrollHeight = 2546;
+      feed.scrollBy(feed.geometry.scrollTop);
+      expect(scroller.isFollowing).toBe(true);
+
+      // Older history is prepended: the reader is kept at the newest.
+      feed.geometry.scrollHeight = 3500;
+      observer.notify();
+      expect(feed.scrollTo).toHaveBeenLastCalledWith({ top: 3500, behavior: "instant" });
+      expect(scroller.scrolledUp).toBe(false);
+    });
+  });
+
+  describe("when the composer over the foot changes size", () => {
+    function composerFeed(): ReturnType<typeof attached> & { grow: (by: number) => void } {
+      let covered = 100;
+      const result = attached({ covered: () => covered });
+      // The reserved room is the composer plus a 200px buffer, and the reader sits at the true bottom.
+      result.feed.geometry.padding = 300;
+      result.observer.notify();
+      result.feed.scrollBy(1500);
+      result.feed.scrollTo.mockClear();
+      return {
+        ...result,
+        grow: (by) => {
+          covered += by;
+          result.feed.geometry.padding += by;
+          result.feed.geometry.scrollHeight += by;
+        },
+      };
+    }
+
+    it("doesn't move a following reader's thread while the buffer absorbs it", () => {
+      const { feed, observer, scroller, grow } = composerFeed();
+      grow(150);
+      observer.notify();
+      feed.scrollBy(feed.geometry.scrollTop);
+
+      expect(feed.scrollTo).not.toHaveBeenCalled();
+      expect(feed.geometry.scrollTop).toBe(1500);
+      // Nor does it flip the feed out of following, whatever the composer grew by.
+      expect(scroller.scrolledUp).toBe(false);
+      expect(scroller.isFollowing).toBe(true);
+    });
+
+    it("moves the thread only as far as keeps the last line out from under it", () => {
+      const { feed, observer, grow } = composerFeed();
+      // 200px of buffer is gone after 200px of growth, which leaves 200px of text covered.
+      grow(400);
+      observer.notify();
+
+      expect(feed.scrollTo).toHaveBeenCalledOnce();
+      expect(feed.scrollTo).toHaveBeenCalledWith({ top: 1700, behavior: "instant" });
+    });
+
+    it("doesn't move a following reader's thread when it shrinks", () => {
+      const { feed, observer, grow } = composerFeed();
+      grow(-50);
+      observer.notify();
+      expect(feed.scrollTo).not.toHaveBeenCalled();
+    });
+
+    it("leaves a reader who scrolled up where they are, grown or shrunk", () => {
+      const { feed, observer, scroller, grow } = composerFeed();
+      feed.scrollBy(600);
+      grow(250);
+      observer.notify();
+      grow(-250);
+      observer.notify();
+      expect(feed.scrollTo).not.toHaveBeenCalled();
+      expect(feed.geometry.scrollTop).toBe(600);
+      expect(scroller.scrolledUp).toBe(true);
+    });
+  });
+
+  describe("new content below a reader who scrolled up", () => {
+    it("is flagged as unseen when an item arrives, until they are back at the end", () => {
+      const { feed, scroller } = attached();
+      feed.scrollBy(100);
+      expect(scroller.scrolledUp).toBe(true);
+      expect(scroller.unseen).toBe(false);
+
+      feed.geometry.scrollHeight = 2400;
+      scroller.contentChanged(false, true);
+      expect(scroller.unseen).toBe(true);
+      expect(feed.scrollTo).not.toHaveBeenCalled();
+
+      feed.scrollBy(1900);
+      expect(scroller.scrolledUp).toBe(false);
+      expect(scroller.unseen).toBe(false);
+    });
+
+    it("isn't flagged by content that only grew, such as a reply filling in", () => {
+      const { feed, scroller } = attached();
+      feed.scrollBy(100);
+      scroller.contentChanged(false, false);
+      expect(scroller.unseen).toBe(false);
+    });
+
+    it("isn't flagged for a following reader, who is taken down to it", () => {
+      const { feed, scroller } = attached();
+      feed.geometry.scrollHeight = 2400;
+      scroller.contentChanged(false, true);
+      expect(scroller.unseen).toBe(false);
+      expect(feed.geometry.scrollTop).toBe(2400);
+    });
+
+    it("is cleared by Jump to latest", () => {
+      const { feed, scroller } = attached();
+      feed.scrollBy(100);
+      scroller.contentChanged(false, true);
+      expect(scroller.unseen).toBe(true);
+      scroller.jumpToLatest();
+      expect(scroller.unseen).toBe(false);
+      expect(scroller.scrolledUp).toBe(false);
+    });
+  });
+
+  describe("Jump to latest", () => {
+    it("glides to the newest content", () => {
+      const { feed, scroller } = attached();
+      feed.scrollBy(100);
+      scroller.jumpToLatest();
+      expect(feed.scrollTo).toHaveBeenCalledWith({ top: 2000, behavior: "smooth" });
+    });
+
+    it("jumps at once under reduced motion", () => {
+      vi.stubGlobal("window", {
+        matchMedia: (query: string) => ({ matches: query === "(prefers-reduced-motion: reduce)" }),
+      });
+      const { feed, scroller } = attached();
+      feed.scrollBy(100);
+      scroller.jumpToLatest();
+      expect(feed.scrollTo).toHaveBeenCalledWith({ top: 2000, behavior: "instant" });
+    });
   });
 });

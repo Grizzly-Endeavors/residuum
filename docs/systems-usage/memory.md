@@ -148,6 +148,10 @@ Knowledge and memory appear in the agent's context, after `team/USER.md`, as:
 
 An agent session's fork carries a snapshot of the observation log and the recent-context narrative taken at fork time, alongside `team/USER.md` and `WIKI_INDEX` — a session never sees observations merged after it forked; it sees them on its next run. See [background-tasks.md](background-tasks.md) for the full fork contents.
 
+## The Model's Thinking
+
+When a model returns reasoning, it is kept as `thinking` blocks on the assistant message it belongs to: readable `text`, for providers that need it an opaque `signature` or an encrypted block to send back unchanged, and an `origin` naming the provider API and model that produced the block, which is how a provider tells its own blocks from another's (see [Config](config.md#model-calls-thinking-timeouts-and-streaming)). `memory/recent_messages.json` and session transcripts hold the blocks whole. An episode transcript, which is never replayed to a provider, holds the readable text only. Thinking is not memory: the observer's extraction transcript, the interaction-pair chunks that are searched, `memory_get` output and the token estimates behind the observer thresholds and the conversation size are built from what was said and done, never from the model's reasoning. See [Turn Control](turn-control.md#the-main-conversation-stream) for what the web shows.
+
 ## Message Senders
 
 A user message that arrives on a chat interface (Discord, Telegram, Teams) records who sent it: display name, stable ID, interface, and where on that interface it was sent (a direct message, a named channel). The sender is stored as its own field alongside the message in `recent_messages.json` and episode transcripts; the message text is never rewritten.

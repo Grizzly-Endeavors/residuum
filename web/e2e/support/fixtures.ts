@@ -196,7 +196,12 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
   },
 });
 
-/** The origin of the running test's artifacts listener, on its worker's dev server. Call it from inside a test. */
+/**
+ * The origin of the running test's artifacts listener, on the worker's server
+ * the test runs against (its project's `mockServer`). Call it from inside a test.
+ */
 export function artifactsOrigin(): string {
-  return `http://localhost:${String(serversOf(test.info().parallelIndex).dev.artifactsPort)}`;
+  const info = test.info();
+  const kind = (info.project.use as Partial<E2EOptions>).mockServer ?? "dev";
+  return `http://localhost:${String(serversOf(info.parallelIndex)[kind].artifactsPort)}`;
 }

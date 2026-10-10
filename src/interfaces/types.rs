@@ -2,7 +2,32 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::bus::EndpointName;
 use crate::inference::{AgentSender, MessageSender};
+
+/// The endpoint name of a message no interface delivered: a result relayed
+/// to the main agent, another agent's message, a delivery-failure notice.
+pub const BACKGROUND_ENDPOINT: &str = "background";
+
+/// The web UI's endpoint name: always the owner's own channel, with no
+/// conversation concept to post elsewhere within.
+///
+/// The web UI follows the main agent's turns through the main conversation
+/// topic. What is published to its endpoint topic is only what the agent
+/// posts to the web with `send_message`, files included.
+pub const WEB_UI_ENDPOINT: &str = "ws";
+
+/// The endpoint whose topic carries a turn's events for the chat interface
+/// behind it: `delivered_to` itself, unless it is the web UI, which takes a
+/// turn's lifecycle, intermediate text, reply and failure from the main
+/// conversation topic instead. `None` when the turn is delivered nowhere.
+///
+/// Every other endpoint name is treated as a chat interface, so a new one
+/// receives its turns' events without further wiring.
+#[must_use]
+pub fn chat_interface_endpoint(delivered_to: Option<&EndpointName>) -> Option<&EndpointName> {
+    delivered_to.filter(|endpoint| endpoint.as_ref() != WEB_UI_ENDPOINT)
+}
 
 /// Kind of chat conversation, which decides whether the bot needs an @mention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -69,6 +94,13 @@ impl MessageOrigin {
             Some(ctx) => ctx.kind == ConversationKind::Personal && ctx.is_owner,
         }
     }
+
+    /// Whether a person sent this, as opposed to the system or an agent:
+    /// false for a background origin and for one agent's message to another.
+    #[must_use]
+    pub fn is_from_person(&self) -> bool {
+        self.endpoint != BACKGROUND_ENDPOINT && self.agent_sender.is_none()
+    }
 }
 
 #[cfg(test)]
@@ -117,11 +149,30 @@ mod tests {
     fn no_conversation_belongs_to_main() {
         // The web UI and background/internal origins.
         let origin = MessageOrigin {
-            endpoint: "ws".to_string(),
+            endpoint: WEB_UI_ENDPOINT.to_string(),
             sender: None,
             conversation: None,
             agent_sender: None,
         };
         assert!(origin.belongs_to_main());
+    }
+
+    #[test]
+    fn a_turn_reaches_the_endpoint_topic_of_a_chat_interface_but_not_the_web_ui() {
+        let name = |endpoint: &str| EndpointName::from(endpoint);
+        for chat in ["telegram", "discord", "teams", "slack-someday"] {
+            let endpoint = name(chat);
+            assert_eq!(
+                chat_interface_endpoint(Some(&endpoint)),
+                Some(&endpoint),
+                "{chat} reads its turns' events from its endpoint topic"
+            );
+        }
+        assert_eq!(
+            chat_interface_endpoint(Some(&name(WEB_UI_ENDPOINT))),
+            None,
+            "the web UI follows the main conversation topic"
+        );
+        assert_eq!(chat_interface_endpoint(None), None, "nowhere to deliver");
     }
 }

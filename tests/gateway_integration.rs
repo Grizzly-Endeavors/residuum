@@ -11,16 +11,13 @@
     reason = "test assertions use panic on unexpected variants"
 )]
 #[expect(
-    clippy::wildcard_enum_match_arm,
-    reason = "test assertions use wildcard for non-matching variants"
-)]
-#[expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
 )]
 mod gateway_integration {
-    use std::sync::Arc;
+    use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
     use futures_util::{SinkExt, StreamExt};
@@ -31,13 +28,14 @@ mod gateway_integration {
     use residuum::agent::Agent;
     use residuum::agent::context::PromptContext;
     use residuum::agent::interrupt;
-    use residuum::bus::{EndpointName, spawn_broker, topics};
+    use residuum::bus::{EndpointName, MainConversationEvent, TurnOrigin, spawn_broker, topics};
     use residuum::gateway::protocol::{ClientMessage, ServerMessage};
     use residuum::inference::{
         CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
-        ToolDefinition,
+        StreamDelta, StreamSink, ToolCall, ToolDefinition,
     };
-    use residuum::tools::ToolRegistry;
+    use residuum::memory::types::Visibility;
+    use residuum::tools::{Tool, ToolError, ToolRegistry, ToolResult};
     use residuum::workspace::identity::IdentityFiles;
 
     /// Mock provider that returns configurable responses in sequence.
@@ -90,6 +88,112 @@ mod gateway_integration {
             },
             residuum::agent::HopCounter::new(0),
         )
+    }
+
+    fn make_agent_with(provider: Box<dyn InferenceProvider>, tools: ToolRegistry) -> Agent {
+        Agent::new(
+            provider,
+            tools,
+            residuum::mcp::McpRegistry::new_shared(),
+            IdentityFiles::default(),
+            residuum::agent::AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                layout: None,
+            },
+            residuum::agent::HopCounter::new(0),
+        )
+    }
+
+    /// One model call of a [`ScriptedProvider`]: what it streams, then what
+    /// it returns.
+    struct Step {
+        deltas: Vec<StreamDelta>,
+        response: InferenceResponse,
+    }
+
+    impl Step {
+        /// A call that returns `response` and streams nothing.
+        fn reply(response: InferenceResponse) -> Self {
+            Self {
+                deltas: Vec::new(),
+                response,
+            }
+        }
+    }
+
+    /// Provider that plays back a script, one step per model call, streaming
+    /// each step's deltas into the sink before it returns.
+    struct ScriptedProvider {
+        script: Mutex<VecDeque<Step>>,
+    }
+
+    impl ScriptedProvider {
+        fn new(steps: Vec<Step>) -> Self {
+            Self {
+                script: Mutex::new(steps.into()),
+            }
+        }
+
+        fn next_step(&self) -> Step {
+            self.script
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("the script has a step for every model call")
+        }
+    }
+
+    #[async_trait]
+    impl InferenceProvider for ScriptedProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            Ok(self.next_step().response)
+        }
+
+        async fn complete_streaming(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+            sink: &dyn StreamSink,
+        ) -> Result<InferenceResponse, InferenceError> {
+            let step = self.next_step();
+            for delta in step.deltas {
+                sink.push(delta);
+            }
+            Ok(step.response)
+        }
+
+        fn model_name(&self) -> &'static str {
+            "scripted"
+        }
+    }
+
+    /// A tool that always answers "noon".
+    struct ClockTool;
+
+    #[async_trait]
+    impl Tool for ClockTool {
+        fn name(&self) -> &'static str {
+            "clock"
+        }
+
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "clock".to_string(),
+                description: "Tell the time.".to_string(),
+                parameters: serde_json::json!({ "type": "object", "properties": {} }),
+            }
+        }
+
+        async fn execute(&self, _arguments: serde_json::Value) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("noon"))
+        }
     }
 
     /// Message that flows from a WebSocket client into the main loop.
@@ -177,26 +281,37 @@ mod gateway_integration {
         while let Some(inbound) = inbound_rx.recv().await {
             let reply_id = inbound.id.clone();
 
-            // Publish TurnStarted (normally done by the event loop)
-            drop(
-                publisher
-                    .publish(
-                        topics::Endpoint(ep.clone()),
-                        residuum::bus::TurnLifecycleEvent::Started {
-                            correlation_id: reply_id.clone(),
-                        },
-                    )
-                    .await,
-            );
+            // The message and the turn's start (normally published by the
+            // event loop), to the main conversation. The web UI takes a turn
+            // from there alone.
+            for event in [
+                MainConversationEvent::UserMessage {
+                    id: reply_id.clone(),
+                    turn_id: reply_id.clone(),
+                    content: inbound.content.clone(),
+                    images: Vec::new(),
+                    sender: None,
+                    endpoint: ep.to_string(),
+                },
+                MainConversationEvent::TurnStarted {
+                    turn_id: reply_id.clone(),
+                    origin: TurnOrigin {
+                        endpoint: ep.to_string(),
+                        sender: None,
+                        visibility: Visibility::User,
+                    },
+                },
+            ] {
+                drop(publisher.publish(topics::MainConversation, event).await);
+            }
 
             let mut irx = interrupt::dead_interrupt_rx();
-            match agent
+            let outcome = agent
                 .process_message(
                     &inbound.content,
                     &publisher,
                     Some(&ep),
-                    None,
-                    "",
+                    &reply_id,
                     None,
                     &PromptContext::default(),
                     &mut irx,
@@ -204,39 +319,26 @@ mod gateway_integration {
                     None,
                     &CancellationToken::new(),
                 )
-                .await
+                .await;
+            if let Err(e) = outcome
+                && broadcast_tx
+                    .send(ServerMessage::Error {
+                        reply_to: Some(reply_id.clone()),
+                        message: e.to_string(),
+                        details: None,
+                    })
+                    .is_err()
             {
-                Ok(texts) => {
-                    for text in &texts {
-                        drop(
-                            publisher
-                                .publish(
-                                    topics::Endpoint(ep.clone()),
-                                    residuum::bus::ResponseEvent {
-                                        correlation_id: reply_id.clone(),
-                                        content: text.clone(),
-                                        timestamp: chrono::NaiveDateTime::default(),
-                                        attachment: None,
-                                        conversation: None,
-                                    },
-                                )
-                                .await,
-                        );
-                    }
-                }
-                Err(e) => {
-                    if broadcast_tx
-                        .send(ServerMessage::Error {
-                            reply_to: Some(reply_id),
-                            message: e.to_string(),
-                            details: None,
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
+                break;
             }
+            drop(
+                publisher
+                    .publish(
+                        topics::MainConversation,
+                        MainConversationEvent::TurnEnded { turn_id: reply_id },
+                    )
+                    .await,
+            );
         }
     }
 
@@ -392,6 +494,48 @@ mod gateway_integration {
         }
     }
 
+    /// Receive the frames of one turn: everything up to and including its
+    /// `turn_ended`.
+    async fn recv_turn(
+        rx: &mut futures_util::stream::SplitStream<
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+        >,
+    ) -> Vec<ServerMessage> {
+        let mut frames = Vec::new();
+        loop {
+            let frame = recv_msg(rx).await;
+            let ended = matches!(frame, ServerMessage::TurnEnded { .. });
+            frames.push(frame);
+            if ended {
+                return frames;
+            }
+        }
+    }
+
+    /// The frame at `index` of a turn's frames.
+    fn at(frames: &[ServerMessage], index: usize) -> &ServerMessage {
+        frames
+            .get(index)
+            .expect("the turn has a frame at this position")
+    }
+
+    /// The `type` tag of each frame, as a client sees it.
+    fn frame_types(frames: &[ServerMessage]) -> Vec<String> {
+        frames
+            .iter()
+            .map(|frame| {
+                serde_json::to_value(frame)
+                    .unwrap()
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    }
+
     // ── Tests ────────────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -426,34 +570,116 @@ mod gateway_integration {
         )
         .await;
 
-        // With typed subscribers, TurnStarted and Response may arrive in
-        // either order, interleaved with any number of TurnUsage progress
-        // events for the turn's model call — those are ignored here; a
-        // fixed bound just guards against an infinite loop if one is
-        // somehow never received.
-        let mut got_turn_started = false;
-        let mut got_response = false;
-        for _ in 0..10 {
-            if got_turn_started && got_response {
-                break;
-            }
-            let msg = recv_msg(&mut rx).await;
-            match msg {
-                ServerMessage::TurnStarted { ref reply_to } if reply_to == "msg-1" => {
-                    got_turn_started = true;
-                }
-                ServerMessage::Response {
-                    ref reply_to,
-                    ref content,
-                } if reply_to == "msg-1" && content == "hello back!" => {
-                    got_response = true;
-                }
-                ServerMessage::TurnUsage { .. } => {}
-                other => panic!("unexpected message: {other:?}"),
-            }
-        }
-        assert!(got_turn_started, "should have received TurnStarted");
-        assert!(got_response, "should have received Response");
+        let frames = recv_turn(&mut rx).await;
+        assert_eq!(
+            frame_types(&frames),
+            [
+                "user_message",
+                "turn_started",
+                "turn_usage",
+                "response",
+                "turn_ended"
+            ],
+            "a text-only turn arrives in the order it happened"
+        );
+        assert!(
+            matches!(
+                at(&frames, 0),
+                ServerMessage::UserMessage { id, turn_id, content, endpoint, .. }
+                    if id == "msg-1" && turn_id == "msg-1" && content == "hello" && endpoint == "ws"
+            ),
+            "the sender's message is echoed under its own id: {:?}",
+            at(&frames, 0)
+        );
+        assert!(
+            matches!(
+                at(&frames, 1),
+                ServerMessage::TurnStarted { reply_to, origin }
+                    if reply_to == "msg-1" && origin.endpoint == "ws"
+                        && origin.visibility == Visibility::User
+            ),
+            "{:?}",
+            at(&frames, 1)
+        );
+        assert!(
+            matches!(
+                at(&frames, 3),
+                ServerMessage::Response { reply_to, call: Some(0), content, .. }
+                    if reply_to == "msg-1" && content == "hello back!"
+            ),
+            "{:?}",
+            at(&frames, 3)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_with_a_tool_call_arrives_in_order_with_its_model_calls_numbered() {
+        let provider = ScriptedProvider::new(vec![
+            Step::reply(InferenceResponse::new(
+                "Checking the clock.".to_string(),
+                vec![ToolCall {
+                    id: "tc-1".to_string(),
+                    name: "clock".to_string(),
+                    arguments: serde_json::json!({}),
+                    server: None,
+                }],
+            )),
+            Step::reply(InferenceResponse::new("It is noon.".to_string(), vec![])),
+        ]);
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(ClockTool));
+        let (_inbound_tx, _broadcast_tx, addr) =
+            start_test_gateway(make_agent_with(Box::new(provider), tools)).await;
+        let (mut tx, mut rx) = connect_client(&addr).await;
+
+        send_msg(
+            &mut tx,
+            &ClientMessage::SendMessage {
+                id: "msg-1".to_string(),
+                content: "what time is it".to_string(),
+                images: vec![],
+            },
+        )
+        .await;
+
+        let frames = recv_turn(&mut rx).await;
+        assert_eq!(
+            frame_types(&frames),
+            [
+                "user_message",
+                "turn_started",
+                "broadcast_response",
+                "tool_call",
+                "tool_result",
+                "turn_usage",
+                "turn_usage",
+                "response",
+                "turn_ended",
+            ]
+        );
+        assert!(matches!(
+            at(&frames, 2),
+            ServerMessage::BroadcastResponse { reply_to, call: 0, content }
+                if reply_to == "msg-1" && content == "Checking the clock."
+        ));
+        assert!(matches!(
+            at(&frames, 3),
+            ServerMessage::ToolCall { reply_to, call: 0, id, name, .. }
+                if reply_to == "msg-1" && id == "tc-1" && name == "clock"
+        ));
+        assert!(matches!(
+            at(&frames, 4),
+            ServerMessage::ToolResult { reply_to, tool_call_id, output, .. }
+                if reply_to == "msg-1" && tool_call_id == "tc-1" && output == "noon"
+        ));
+        assert!(
+            matches!(
+                at(&frames, 7),
+                ServerMessage::Response { call: Some(1), content, .. } if content == "It is noon."
+            ),
+            "the reply belongs to the second model call: {:?}",
+            at(&frames, 7)
+        );
     }
 
     #[tokio::test]
@@ -468,6 +694,8 @@ mod gateway_integration {
         assert!(
             broadcast_tx
                 .send(ServerMessage::ToolCall {
+                    reply_to: "msg-1".to_string(),
+                    call: 0,
                     id: "tc-1".to_string(),
                     name: "exec".to_string(),
                     arguments: serde_json::json!({"command": "echo test"}),
@@ -494,6 +722,7 @@ mod gateway_integration {
         assert!(
             broadcast_tx
                 .send(ServerMessage::ToolResult {
+                    reply_to: "msg-1".to_string(),
                     tool_call_id: "tc-1".to_string(),
                     name: "exec".to_string(),
                     output: "test output".to_string(),
@@ -529,25 +758,31 @@ mod gateway_integration {
         )
         .await;
 
-        // Both clients should receive TurnStarted and Response (order may vary),
-        // plus a TurnUsage frame for the turn's one model call — never surfaced
-        // to the agent, only to web clients (see `docs/systems-usage/turn-control.md`).
+        // Every client gets the whole turn, the message that started it
+        // included, and the TurnUsage frame for its one model call — never
+        // surfaced to the agent, only to web clients (see
+        // `docs/systems-usage/turn-control.md`).
         for (label, rx) in [("A", &mut rx_a), ("B", &mut rx_b)] {
-            let mut got_started = false;
-            let mut got_response = false;
-            for _ in 0..3 {
-                let msg = recv_msg(rx).await;
-                match msg {
-                    ServerMessage::TurnStarted { .. } => got_started = true,
-                    ServerMessage::TurnUsage { .. } => {}
-                    ServerMessage::Response { ref content, .. } if content == "shared response" => {
-                        got_response = true;
-                    }
-                    other => panic!("client {label}: unexpected {other:?}"),
-                }
-            }
-            assert!(got_started, "client {label} should receive TurnStarted");
-            assert!(got_response, "client {label} should receive Response");
+            let frames = recv_turn(rx).await;
+            assert_eq!(
+                frame_types(&frames),
+                [
+                    "user_message",
+                    "turn_started",
+                    "turn_usage",
+                    "response",
+                    "turn_ended"
+                ],
+                "client {label}"
+            );
+            assert!(
+                matches!(
+                    at(&frames, 3),
+                    ServerMessage::Response { content, .. } if content == "shared response"
+                ),
+                "client {label}: {:?}",
+                at(&frames, 3)
+            );
         }
     }
 
@@ -594,8 +829,7 @@ mod gateway_integration {
             )
             .await;
 
-            let _ = recv_msg(&mut rx_a).await; // TurnStarted
-            let _ = recv_msg(&mut rx_a).await; // Response
+            let _ = recv_turn(&mut rx_a).await;
         }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -612,25 +846,17 @@ mod gateway_integration {
         )
         .await;
 
-        // With typed subscribers, TurnStarted and Response may arrive in either
-        // order, alongside a TurnUsage frame for the turn's one model call —
-        // never surfaced to the agent, only to web clients (see
-        // `docs/systems-usage/turn-control.md`).
-        let mut got_turn_started = false;
-        let mut got_response = false;
-        for _ in 0..3 {
-            let msg = recv_msg(&mut rx_b).await;
-            match msg {
-                ServerMessage::TurnStarted { .. } => got_turn_started = true,
-                ServerMessage::TurnUsage { .. } => {}
-                ServerMessage::Response { .. } => got_response = true,
-                other => panic!("unexpected message after disconnect: {other:?}"),
-            }
-        }
-        assert!(
-            got_turn_started,
-            "should receive TurnStarted after disconnect"
+        let frames = recv_turn(&mut rx_b).await;
+        assert_eq!(
+            frame_types(&frames),
+            [
+                "user_message",
+                "turn_started",
+                "turn_usage",
+                "response",
+                "turn_ended"
+            ],
+            "the gateway still serves a new client after another disconnected"
         );
-        assert!(got_response, "should receive Response after disconnect");
     }
 }

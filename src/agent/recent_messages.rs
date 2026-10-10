@@ -148,6 +148,7 @@ mod tests {
             images: Vec::new(),
             sender: None,
             agent_sender: None,
+            thinking: Vec::new(),
         });
     }
 
@@ -198,6 +199,7 @@ mod tests {
             images: Vec::new(),
             sender: None,
             agent_sender: None,
+            thinking: Vec::new(),
         });
     }
 
@@ -210,6 +212,7 @@ mod tests {
             images: Vec::new(),
             sender: None,
             agent_sender: None,
+            thinking: Vec::new(),
         });
     }
 
@@ -227,6 +230,7 @@ mod tests {
             images: Vec::new(),
             sender: None,
             agent_sender: None,
+            thinking: Vec::new(),
         });
     }
 

@@ -1,4 +1,4 @@
-// The words a feed shows about who sent a message.
+// The words a feed shows about who sent a message, and where a reply went.
 
 import type { IconName } from "../lib/icons";
 
@@ -39,4 +39,15 @@ export function cardSender(from: string, category: string | null, agent: string)
   }
   const kind = (category === null ? undefined : SESSION_KINDS[category]) ?? "Session";
   return { kind, sender: from, icon: "layers", isSession: true };
+}
+
+const ENDPOINT_NAMES: Readonly<Record<string, string>> = {
+  telegram: "Telegram",
+  discord: "Discord",
+  teams: "Teams",
+};
+
+/** A chat interface as people name it: `telegram` is "Telegram"; any other is its id, capitalized. */
+export function endpointName(endpoint: string): string {
+  return ENDPOINT_NAMES[endpoint] ?? `${endpoint.charAt(0).toUpperCase()}${endpoint.slice(1)}`;
 }

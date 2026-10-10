@@ -121,7 +121,9 @@ jobs:
   # beside the runner starts and the wrapper script stops. The image comes
   # through the cluster registry's mirror of mcr.microsoft.com, so it is
   # pulled over the LAN. E2E_ALL_IN_CONTAINER sends the Chromium projects
-  # there, as the visual ones always go. The visual comparisons run unless the
+  # there, as the visual ones always go. CI is set on the runner, so the
+  # untagged specs run against the production build (web/playwright.config.ts,
+  # `smokeServer`). The visual comparisons run unless the
   # `visual` input is turned off, and then the summary says so.
   web-e2e:
     name: Web End-to-End (${{ matrix.shard }}/4)

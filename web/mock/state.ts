@@ -4,6 +4,7 @@ import type {
   AgentListResponse,
   AgentState,
   AgentSummary,
+  MessageSender,
   OutboundA2aTaskSummary,
   ServerMessage,
   SessionUsageTotals,
@@ -148,6 +149,8 @@ export interface MockAgent {
   state: MockState;
   /** How many web clients have this agent's WebSocket open. Set by the agent socket. */
   connectedClients: () => number;
+  /** Have the main conversation take a message another channel brought, as a turn from that channel. Set by the agent socket. */
+  receiveMessage: (content: string, source: { endpoint: string; sender?: MessageSender }) => void;
   /** Close the agent's WebSocket route and its connections. Set by the agent socket. */
   dispose: () => void;
 }

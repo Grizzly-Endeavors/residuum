@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
+  import { MediaQuery } from "svelte/reactivity";
   import {
     actionRegistry,
     commandActions,
@@ -15,8 +16,9 @@
   import { hub } from "../../lib/hub.svelte";
   import { Icon } from "../../lib/icons";
   import { IMAGE_TYPES, readImages } from "../../lib/image-attachments";
+  import { PressAgain } from "../../lib/press-again.svelte";
   import type { ImageAttachment } from "../../lib/types";
-  import { IconButton, VisuallyHidden } from "../../lib/ui";
+  import { IconButton, overlayOpen, VisuallyHidden } from "../../lib/ui";
   import ModelControl from "./ModelControl.svelte";
   import SlashMenu from "./SlashMenu.svelte";
 
@@ -34,8 +36,11 @@
     reconnecting: boolean;
     /** Messages waiting for the connection. */
     queued: number;
-    /** A message, or a `/name text` line, to send. */
-    onsend: (text: string, images?: ImageAttachment[]) => void;
+    /**
+     * A message, or a `/name text` line, to send. False when it couldn't go
+     * (a command that can't run now): the box keeps what was typed.
+     */
+    onsend: (text: string, images?: ImageAttachment[]) => boolean;
     onstop: () => void;
   }
 
@@ -51,7 +56,6 @@
   let text = $state(untrack(() => readDraft(agent)));
   let images = $state<ImageAttachment[]>(untrack(() => readDraftImages(agent)));
   let problem = $state<string | null>(null);
-  let dragging = $state(false);
   let field = $state<HTMLTextAreaElement>();
   let filePicker = $state<HTMLInputElement>();
 
@@ -143,21 +147,61 @@
     }
   }
 
+  // On a touch screen Enter is a new line, as the soft keyboard's key says
+  // (`enterkeyhint`), and only the Send button sends.
+  const touch = new MediaQuery("(pointer: coarse)");
+
   function onkeydown(event: KeyboardEvent): void {
     if (event.isComposing) return;
     if (showMenu && menuKey(event)) {
       event.preventDefault();
       return;
     }
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key === "Enter" && !event.shiftKey && !touch.current) {
       event.preventDefault();
       send();
     }
   }
 
+  // ── Stopping with Esc ──────────────────────────────────────────────
+
+  // Esc is also how a dialog or menu closes, so it takes two presses to stop
+  // a reply: the first says so and waits for the second.
+  const stopKey = new PressAgain();
+
+  $effect(() => {
+    if (!replying) stopKey.disarm();
+  });
+  $effect(() => () => {
+    stopKey.disarm();
+  });
+
+  // Keys from anywhere in the composer. This listener is on the form itself,
+  // so it hears a key before the message box's delegated handler does: the
+  // open `/` menu is checked here rather than by that handler claiming the
+  // key. An open overlay keeps the press for closing itself.
+  function onformkeydown(event: KeyboardEvent): void {
+    if (event.isComposing) return;
+    if (event.key !== "Escape") {
+      stopKey.disarm();
+      return;
+    }
+    if (event.defaultPrevented || showMenu || !replying || overlayOpen()) return;
+    event.preventDefault();
+    // A held key repeats; it is one press.
+    if (event.repeat) return;
+    if (stopKey.press()) onstop();
+  }
+
+  const watchKeys = (form: HTMLElement): (() => void) => {
+    form.addEventListener("keydown", onformkeydown);
+    return () => form.removeEventListener("keydown", onformkeydown);
+  };
+
   // ── Images ─────────────────────────────────────────────────────────
 
-  async function attach(files: Iterable<File>): Promise<void> {
+  /** Attach the images among `files`, such as ones dropped on the chat; names any it can't. */
+  export async function attach(files: Iterable<File>): Promise<void> {
     const read = await readImages(files);
     images = [...images, ...read.images];
     problem = read.problem;
@@ -170,27 +214,6 @@
     void attach(pasted);
   }
 
-  const carriesFiles = (event: DragEvent): boolean =>
-    event.dataTransfer?.types.includes("Files") ?? false;
-
-  function ondragover(event: DragEvent): void {
-    if (!carriesFiles(event)) return;
-    event.preventDefault();
-    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
-    dragging = true;
-  }
-
-  function ondragleave(event: DragEvent & { currentTarget: HTMLElement }): void {
-    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) dragging = false;
-  }
-
-  function ondrop(event: DragEvent): void {
-    if (!carriesFiles(event)) return;
-    event.preventDefault();
-    dragging = false;
-    void attach(event.dataTransfer?.files ?? []);
-  }
-
   // ── Sending ────────────────────────────────────────────────────────
 
   const empty = $derived(text.trim() === "" && images.length === 0);
@@ -200,16 +223,31 @@
 
   function send(): void {
     if (empty) return;
-    onsend(text.trim(), images.length > 0 ? images : undefined);
+    if (!onsend(text.trim(), images.length > 0 ? images : undefined)) return;
     text = "";
     images = [];
     problem = null;
     menuOpen = false;
   }
 
-  // A press anywhere else closes the menu.
+  // The button is about to be disabled or turn into Stop, either of which
+  // would drop focus to the page: put it back in the box first.
+  function onsubmit(event: SubmitEvent): void {
+    event.preventDefault();
+    send();
+    if (event.submitter !== null) field?.focus();
+  }
+
+  function stopFromButton(): void {
+    onstop();
+    field?.focus();
+  }
+
+  // A press anywhere else closes the menu and drops a stop waiting for its second Esc.
   function onfocusout(event: FocusEvent & { currentTarget: HTMLElement }): void {
-    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) menuOpen = false;
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+    menuOpen = false;
+    stopKey.disarm();
   }
 
   const queuedLine = $derived(
@@ -219,18 +257,7 @@
   );
 </script>
 
-<form
-  class="composer"
-  data-dragging={dragging || undefined}
-  onsubmit={(event) => {
-    event.preventDefault();
-    send();
-  }}
-  {ondragover}
-  {ondragleave}
-  {ondrop}
-  {onfocusout}
->
+<form class="composer" {onsubmit} {onfocusout} {@attach watchKeys}>
   {#if showMenu}
     <SlashMenu
       id={menuId}
@@ -263,22 +290,19 @@
     </ul>
   {/if}
   <VisuallyHidden id={labelId}>Message {hub.shownName(agent)}</VisuallyHidden>
-  <div
-    class="composer-field"
-    role="combobox"
-    aria-expanded={showMenu}
-    aria-controls={menuId}
-    aria-labelledby={labelId}
-  >
+  <div class="composer-field">
     <textarea
       bind:this={field}
       bind:value={text}
       rows="1"
       placeholder="Message {hub.shownName(agent)}"
+      role="combobox"
       aria-labelledby={labelId}
       aria-autocomplete="list"
+      aria-expanded={showMenu}
       aria-controls={showMenu ? menuId : undefined}
       aria-activedescendant={showMenu ? `${menuId}-${String(menuIndex)}` : undefined}
+      enterkeyhint={touch.current ? "enter" : undefined}
       {onkeydown}
       oninput={followTyping}
       {onpaste}
@@ -290,16 +314,24 @@
       icon="slash"
       label="Chat actions"
       aria-expanded={showMenu && menuFromButton}
-      aria-controls={menuId}
+      aria-controls={showMenu ? menuId : undefined}
       onclick={toggleMenu}
     />
     <ModelControl {agent} />
     <span class="composer-send">
-      {#if showStop}
-        <IconButton icon="stop" variant="secondary" label="Stop reply" onclick={onstop} />
-      {:else}
-        <IconButton icon="send" variant="primary" label="Send" type="submit" disabled={empty} />
+      {#if stopKey.armed}
+        <span class="composer-hint" role="status">Press Esc again to stop</span>
       {/if}
+      <!-- One element for Send and Stop, so focus has nothing to fall off when it changes. A press leaves focus in the message box: on a phone that keeps the keyboard up. -->
+      <IconButton
+        icon={showStop ? "stop" : "send"}
+        variant={showStop ? "secondary" : "primary"}
+        label={showStop ? "Stop reply" : "Send"}
+        type={showStop ? "button" : "submit"}
+        disabled={empty && !showStop}
+        onmousedown={(event) => event.preventDefault()}
+        onclick={showStop ? stopFromButton : undefined}
+      />
     </span>
   </div>
   <input
@@ -328,16 +360,11 @@
     padding: var(--space-10) var(--space-10) var(--space-8) var(--space-14);
     border-radius: var(--corner-lg);
     background: var(--color-stone-2);
-    box-shadow: inset 0 0 0 1px var(--color-line-soft);
+    /* A text field's boundary and focus ring (see Input): the control border at rest, vein at double weight with a halo while focused. */
+    box-shadow: inset 0 0 0 1px var(--color-control-border);
     transition: box-shadow var(--duration-fast) var(--ease-out);
 
     &:focus-within {
-      box-shadow:
-        inset 0 0 0 1px var(--color-vein-line),
-        0 0 0 3px var(--color-vein-faint);
-    }
-
-    &[data-dragging] {
       box-shadow:
         inset 0 0 0 2px var(--color-vein),
         0 0 0 3px var(--color-vein-faint);
@@ -410,9 +437,20 @@
     min-width: 0;
   }
 
+  .composer-hint {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--color-text-2);
+    font-size: var(--font-size-sm);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Never narrower than its button: a long model name gives way first. */
   .composer-send {
     display: flex;
-    flex: none;
+    align-items: center;
+    gap: var(--space-10);
     margin-left: auto;
 
     & :global(.ui-icon-button[data-variant="primary"]:disabled) {
@@ -425,6 +463,18 @@
   @media (max-width: 760px) {
     .composer {
       padding: var(--space-8) var(--space-8) var(--space-6) var(--space-12);
+    }
+
+    /* A small badge on the corner, so the thumbnail stays visible; its touch area grows past it to the touch target. */
+    .composer-image :global(.ui-icon-button.ui-icon-button) {
+      width: 24px;
+      height: 24px;
+
+      &::after {
+        content: "";
+        position: absolute;
+        inset: calc((24px - var(--layout-touch-target)) / 2);
+      }
     }
 
     .composer-field textarea {

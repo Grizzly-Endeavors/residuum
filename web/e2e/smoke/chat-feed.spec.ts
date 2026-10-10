@@ -1,6 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
+import { sendFromComposer } from "../support/composer";
 import { expectFileOpen } from "../support/lazy";
 
 /**
@@ -18,12 +19,12 @@ function conversation(page: Page, agent = "atlas"): Locator {
 }
 
 function composer(page: Page): Locator {
-  return page.getByRole("textbox", { name: "Message atlas" });
+  return page.getByRole("combobox", { name: "Message atlas" });
 }
 
 async function send(page: Page, text: string): Promise<void> {
   await composer(page).fill(text);
-  await composer(page).press("Enter");
+  await sendFromComposer(composer(page));
 }
 
 async function scrollToTop(feed: Locator): Promise<void> {
@@ -59,28 +60,31 @@ test("older episodes load as the reader nears the top, and what they read stays 
   await expect(feed.getByText(GREETING)).toBeInViewport();
 
   // The newest episode comes with recent history, so the marker shows from the start.
-  const newest = feed.getByRole("separator", { name: /^ep-003 · / });
+  const newest = feed.getByRole("separator", { name: /, ep-003$/ });
   await expect(newest).toBeAttached();
   await expect(feed.getByRole("note")).toHaveText(
     "Older messages are summarized. atlas remembers what was said, not the exact wording.",
   );
-  await expect(feed.getByRole("separator", { name: /^ep-002 · / })).toHaveCount(0);
+  await expect(feed.getByRole("separator", { name: /, ep-002$/ })).toHaveCount(0);
 
   await scrollToTop(feed);
-  await expect(feed.getByRole("separator", { name: /^ep-002 · / })).toBeAttached();
+  await expect(feed.getByRole("separator", { name: /, ep-002$/ })).toBeAttached();
   // The older part went in above: the divider the reader was at is still in view.
   await expect(newest).toBeInViewport();
 
   await expect(async () => {
     await scrollToTop(feed);
-    await expect(feed.getByRole("separator", { name: /^ep-001 · / })).toBeInViewport({
+    await expect(feed.getByRole("separator", { name: /, ep-001$/ })).toBeInViewport({
       timeout: 1000,
     });
   }).toPass();
   await expect(feed.getByText("Loading earlier messages…")).toHaveCount(0);
 });
 
-test("Jump to latest names where the reader is, and takes them back", async ({ page }) => {
+test("Jump to latest sits above the composer, says when a reply landed below, and takes the reader back", async ({
+  page,
+  mock,
+}) => {
   await page.goto("/agent/atlas");
   const feed = conversation(page);
   const greeting = feed.getByText(GREETING);
@@ -90,18 +94,39 @@ test("Jump to latest names where the reader is, and takes them back", async ({ p
 
   await scrollToTop(feed);
   await expect(jump).toBeVisible();
-  await expect(jump).toHaveAccessibleDescription(/^ep-00\d · \d{4}-\d{2}-\d{2}$/);
+  // Bottom centre of the conversation, just above the composer.
+  const pill = await jump.boundingBox();
+  const area = await feed.boundingBox();
+  const field = await page.locator("form.composer").boundingBox();
+  if (!pill || !area || !field)
+    throw new Error("the pill, conversation or composer isn't laid out");
+  expect(pill.y + pill.height).toBeLessThanOrEqual(field.y);
+  expect(field.y - (pill.y + pill.height)).toBeLessThan(40);
+  expect(Math.abs(pill.x + pill.width / 2 - (area.x + area.width / 2))).toBeLessThan(20);
+  await expect(jump).not.toHaveAccessibleDescription(/ep-00/);
   await expectNoAxeViolations(page);
 
-  await jump.click();
-  await expect(greeting).toBeInViewport();
+  // A reply lands below them: the pill says so.
+  await mock.post("/api/mock/teammate-message?agent=atlas");
+  const fresh = page.getByRole("button", { name: "New reply, jump to latest" });
+  await expect(fresh).toBeVisible();
+  await expect(fresh).toHaveText("New reply");
+  await expect(greeting).not.toBeInViewport();
+  await expectNoAxeViolations(page);
+
+  await fresh.click();
+  await expect(feed.getByText("scout asked me to check the wiki index. On it.")).toBeInViewport();
+  await expect(fresh).toHaveCount(0);
   await expect(jump).toHaveCount(0);
 
-  // Sending from further up brings the reader down to their own message.
+  // Sending from further up brings the reader down to their own message. The reply is held
+  // short of its end: a whole one is longer than a phone's view, and following it moves the
+  // message up out of sight.
   await scrollToTop(feed);
   await expect(jump).toBeVisible();
+  await mock.post("/api/mock/turn-hold", { data: { held: true } });
   await send(page, "Back to the routing doc.");
-  await expect(feed.getByText("Back to the routing doc.")).toBeInViewport();
+  await expect(feed.getByText("Back to the routing doc.", { exact: true })).toBeInViewport();
 });
 
 test("the keyboard scrolls a conversation that overflows, and follows it again at the end", async ({
@@ -196,7 +221,7 @@ test.describe("after the connection drops", () => {
     });
     await expect(page.getByRole("button", { name: "Jump to latest" })).toBeVisible();
 
-    await expect(feed.getByRole("separator", { name: /^ep-004 · / })).toBeAttached({
+    await expect(feed.getByRole("separator", { name: /, ep-004$/ })).toBeAttached({
       timeout: 15_000,
     });
     await expect(reading).toBeInViewport();
@@ -268,8 +293,9 @@ test("a code block's Copy button copies it", async ({ page, context, browserName
   await send(page, "Where do the memory thresholds live?");
   await expect(feed.getByText(FIRST_REPLY)).toBeVisible();
 
-  await feed.getByRole("button", { name: "Copy" }).click();
+  await feed.getByRole("button", { name: "Copy code" }).click();
   await expect(feed.getByRole("button", { name: "Copied" })).toBeVisible();
+  await expect(feed.getByRole("status").filter({ hasText: "Copied" })).toBeAttached();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
     "[memory]\nobserver_threshold_tokens = 30000\nreflector_threshold_tokens = 40000",
   );

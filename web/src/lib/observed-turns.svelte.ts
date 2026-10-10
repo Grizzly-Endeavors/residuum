@@ -16,6 +16,8 @@ export interface ObservedTurn {
   ending: TurnEnding | null;
   /** The user asked to stop it. */
   stopAsked: boolean;
+  /** The model call that was streaming its text started over, and nothing of the new attempt has arrived yet. */
+  retrying: boolean;
   /**
    * Where the page may have missed steps, as the number of steps it had seen
    * at that point: 0 when it joined a turn already running, more when it
@@ -43,6 +45,7 @@ export class ObservedTurns {
       endedAt: null,
       ending: null,
       stopAsked: false,
+      retrying: false,
       gaps: [],
     });
   }
@@ -54,7 +57,14 @@ export class ObservedTurns {
    */
   join(turnId: string | null, startedAt: number | null): string {
     const id = turnId ?? `${UNNAMED_PREFIX}${String(++this.unnamed)}`;
-    this.turns.set(id, { startedAt, endedAt: null, ending: null, stopAsked: false, gaps: [0] });
+    this.turns.set(id, {
+      startedAt,
+      endedAt: null,
+      ending: null,
+      stopAsked: false,
+      retrying: false,
+      gaps: [0],
+    });
     return id;
   }
 
@@ -74,6 +84,11 @@ export class ObservedTurns {
   /** The page reconnected partway through the turn, having seen `stepsSeen` steps. */
   gap(turnId: string, stepsSeen: number): void {
     this.update(turnId, (record) => ({ gaps: [...record.gaps, stepsSeen] }));
+  }
+
+  /** A model call's stream started over (`on`), or its next piece arrived. */
+  retry(turnId: string, on: boolean): void {
+    if (this.turns.get(turnId)?.retrying !== on) this.update(turnId, () => ({ retrying: on }));
   }
 
   askStop(turnId: string): void {

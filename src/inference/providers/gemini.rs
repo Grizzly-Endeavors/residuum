@@ -1,9 +1,12 @@
 //! Google Gemini API provider implementation.
 //!
-//! Uses the Gemini `generateContent` REST API. Authentication is via an API
-//! key passed as a query parameter. System messages are extracted and sent
-//! as the top-level `systemInstruction` field. Tool results are sent as
-//! `functionResponse` parts in user-role messages.
+//! Uses the Gemini `generateContent` REST API, and `streamGenerateContent`
+//! for streaming. Authentication is via an API key passed as a query
+//! parameter. System messages are extracted and sent as the top-level
+//! `systemInstruction` field. Tool results are sent as `functionResponse`
+//! parts in user-role messages.
+
+use std::collections::HashMap;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -11,14 +14,38 @@ use tracing::{debug, info};
 
 use crate::inference::embedding::{EmbeddingProvider, EmbeddingResponse};
 use crate::inference::http::{
-    SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote,
+    SharedHttpClient, map_request_error, map_stream_request_error, read_error_body,
+    warn_if_insecure_remote,
 };
 use crate::inference::retry::{RetryConfig, with_retry};
+use crate::inference::stream::{Flow, SseEvent, TrackedSink, answered_whole, read_sse};
+use crate::inference::types::current_exchange_start;
 use crate::inference::{
-    CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
-    ResponseFormat, Role, StopReason, ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition,
-    Usage,
+    CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, ProviderApi,
+    ReplayScope, ResponseFormat, Role, StopReason, StreamDelta, StreamSink, ThinkingBlock,
+    ThinkingConfig, ThinkingLevel, ThinkingOrigin, ToolCall, ToolDefinition, Usage,
+    blocks_produced_at,
 };
+
+/// The `part` of a [`ThinkingBlock`] whose signature belongs to the
+/// response's text rather than to a tool call.
+const TEXT_PART: &str = "text";
+
+/// The thought signature Google documents for a function call the model did
+/// not itself produce, such as one that another provider made earlier in the
+/// same tool-use exchange before a failover. Gemini 3 answers a request whose
+/// current turn holds a function call without a signature with a 400; this
+/// value makes it skip that check for the call. Google calls it a last
+/// resort because the model then reasons without the call's original
+/// thinking.
+const SKIP_SIGNATURE_VALIDATOR: &str = "skip_thought_signature_validator";
+
+/// Whether `model` rejects a request whose current-turn function calls lack
+/// thought signatures. Gemini 3 does; Gemini 2.5 treats them as optional, and
+/// is not sent a stand-in for a signature it does not require.
+fn requires_call_signatures(model: &str) -> bool {
+    model.starts_with("gemini-3")
+}
 
 /// Client for the Google Gemini `generateContent` API.
 pub(crate) struct GeminiClient {
@@ -61,6 +88,10 @@ impl GeminiClient {
     }
 
     /// Parse a successful Gemini response into our generic `InferenceResponse`.
+    ///
+    /// Reasoning summaries (parts marked `thought`) are kept apart from the
+    /// answer, and each thought signature is recorded with the part it came
+    /// on so it can be sent back there.
     fn parse_response(
         gemini_response: GeminiResponse,
     ) -> Result<InferenceResponse, InferenceError> {
@@ -73,47 +104,85 @@ impl GeminiClient {
             })?;
 
         let mut content_text = String::new();
+        let mut thinking: Vec<ThinkingBlock> = Vec::new();
+        // The summary block that further summary text can still be added to:
+        // a summary arrives in pieces, until a part that signs it.
+        let mut open_summary: Option<usize> = None;
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         let finish_reason = candidate.finish_reason;
 
         for (idx, part) in candidate.content.parts.into_iter().enumerate() {
-            match part {
-                GeminiPart::Text { text } => {
-                    content_text.push_str(&text);
-                }
-                GeminiPart::FunctionCall { function_call } => {
-                    // Gemini does not return IDs for function calls; synthesize them.
-                    tool_calls.push(ToolCall {
-                        id: format!("call_{idx}"),
-                        name: function_call.name,
-                        arguments: function_call.args,
-                        server: None,
+            let signature = part.thought_signature.filter(|s| !s.is_empty());
+            if let Some(function_call) = part.function_call {
+                // Gemini does not return IDs for function calls; synthesize them.
+                let id = format!("call_{}", tool_calls.len());
+                if let Some(signature) = signature {
+                    thinking.push(ThinkingBlock {
+                        signature: Some(signature),
+                        part: Some(id.clone()),
+                        ..ThinkingBlock::default()
                     });
                 }
-                GeminiPart::FunctionResponse { .. } => {
-                    debug!(
-                        part_index = idx,
-                        "unexpected functionResponse part in Gemini model output"
-                    );
+                open_summary = None;
+                tool_calls.push(ToolCall {
+                    id,
+                    name: function_call.name,
+                    arguments: function_call.args,
+                    server: None,
+                });
+            } else if let Some(text) = part.text {
+                if part.thought == Some(true) {
+                    let index = open_summary.unwrap_or_else(|| {
+                        thinking.push(ThinkingBlock::default());
+                        thinking.len() - 1
+                    });
+                    open_summary = Some(index);
+                    if let Some(block) = thinking.get_mut(index) {
+                        block.text.push_str(&text);
+                        if signature.is_some() {
+                            block.signature = signature;
+                            block.part = Some(TEXT_PART.to_string());
+                            open_summary = None;
+                        }
+                    }
+                } else {
+                    content_text.push_str(&text);
+                    open_summary = None;
+                    if let Some(signature) = signature {
+                        thinking.push(text_signature(signature));
+                    }
                 }
-                GeminiPart::InlineData { .. } => {
-                    debug!(
-                        part_index = idx,
-                        "unexpected inlineData part in Gemini model output"
-                    );
-                }
+            } else if let Some(signature) = signature {
+                open_summary = None;
+                thinking.push(text_signature(signature));
+            } else if part.function_response.is_some() {
+                debug!(
+                    part_index = idx,
+                    "unexpected functionResponse part in Gemini model output"
+                );
+            } else if part.inline_data.is_some() {
+                debug!(
+                    part_index = idx,
+                    "unexpected inlineData part in Gemini model output"
+                );
             }
         }
 
+        // Thought tokens are billed as output but reported apart from the
+        // candidates' own, so they are added in, as Anthropic's and
+        // OpenAI's output counts already include theirs.
         let usage = gemini_response.usage_metadata.map(|u| Usage {
             input_tokens: u.prompt_token_count,
-            output_tokens: u.candidates_token_count,
+            output_tokens: u
+                .candidates_token_count
+                .saturating_add(u.thoughts_token_count),
             cache_creation_tokens: None,
             cache_read_tokens: u.cached_content_token_count,
         });
 
         let mut model_response = InferenceResponse::new(content_text, tool_calls);
         model_response.usage = usage;
+        model_response.thinking = thinking;
         model_response.stop_reason = finish_reason.as_deref().map(map_stop_reason);
         Ok(model_response)
     }
@@ -126,21 +195,39 @@ impl GeminiClient {
         )
     }
 
+    /// Build the streaming endpoint URL, which answers with server-sent events.
+    fn stream_endpoint(&self) -> String {
+        format!(
+            "{}/models/{}:streamGenerateContent?alt=sse&key={}",
+            self.base_url, self.model, self.api_key
+        )
+    }
+
     /// Convert generic messages into Gemini API format.
     ///
     /// System messages are extracted and returned separately; Gemini uses a
     /// top-level `systemInstruction` field rather than including system content
     /// in the `contents` array. Multiple system messages are concatenated.
     ///
-    /// Tool result messages (`Role::Tool`) become user-role messages containing
-    /// `functionResponse` parts, as required by the Gemini API.
+    /// Tool result messages (`Role::Tool`) become `functionResponse` parts of a
+    /// user-role message, one message for a run of results, named for the
+    /// function whose call they answer. An assistant message goes back as the
+    /// model sent it: its thought signatures on the parts they came with
+    /// (only those `reader`'s own model produced; see [`model_parts`]), and
+    /// its function calls in their original order.
     fn convert_messages(
         messages: &[Message],
+        reader: &ThinkingOrigin,
     ) -> (Option<GeminiSystemInstruction>, Vec<GeminiContent>) {
         let mut system_parts: Vec<&str> = Vec::new();
         let mut contents: Vec<GeminiContent> = Vec::new();
+        let exchange_start = current_exchange_start(messages);
+        // The function names of the latest assistant message's tool calls, by
+        // id. Ids are synthesized per response, so a result is only matched
+        // against the calls just before it.
+        let mut call_names: HashMap<&str, &str> = HashMap::new();
 
-        for msg in messages {
+        for (index, msg) in messages.iter().enumerate() {
             match msg.role {
                 Role::System => {
                     if system_parts.is_empty() {
@@ -148,9 +235,7 @@ impl GeminiClient {
                     } else {
                         contents.push(GeminiContent {
                             role: "user".to_string(),
-                            parts: vec![GeminiPart::Text {
-                                text: format!("System: {}", msg.content),
-                            }],
+                            parts: vec![GeminiPart::text(format!("System: {}", msg.content))],
                         });
                     }
                 }
@@ -158,25 +243,22 @@ impl GeminiClient {
                     if msg.images.is_empty() {
                         contents.push(GeminiContent {
                             role: "user".to_string(),
-                            parts: vec![GeminiPart::Text {
-                                text: msg.content.clone(),
-                            }],
+                            parts: vec![GeminiPart::text(msg.content.clone())],
                         });
                     } else {
                         let mut parts: Vec<GeminiPart> = Vec::new();
 
                         if !msg.content.is_empty() {
-                            parts.push(GeminiPart::Text {
-                                text: msg.content.clone(),
-                            });
+                            parts.push(GeminiPart::text(msg.content.clone()));
                         }
 
                         for img in &msg.images {
-                            parts.push(GeminiPart::InlineData {
-                                inline_data: GeminiInlineData {
+                            parts.push(GeminiPart {
+                                inline_data: Some(GeminiInlineData {
                                     mime_type: img.media_type.clone(),
                                     data: img.data.clone(),
-                                },
+                                }),
+                                ..GeminiPart::default()
                             });
                         }
 
@@ -187,131 +269,70 @@ impl GeminiClient {
                     }
                 }
                 Role::Assistant => {
-                    let mut parts: Vec<GeminiPart> = Vec::new();
-
-                    if !msg.content.is_empty() {
-                        parts.push(GeminiPart::Text {
-                            text: msg.content.clone(),
-                        });
-                    }
-
-                    if let Some(tool_calls) = &msg.tool_calls {
-                        for tc in tool_calls {
-                            parts.push(GeminiPart::FunctionCall {
-                                function_call: GeminiFunctionCall {
-                                    name: tc.name.clone(),
-                                    args: tc.arguments.clone(),
-                                },
-                            });
-                        }
-                    }
-
+                    call_names = msg
+                        .tool_calls
+                        .iter()
+                        .flatten()
+                        .map(|tc| (tc.id.as_str(), tc.name.as_str()))
+                        .collect();
+                    let in_current_turn = index >= exchange_start;
                     contents.push(GeminiContent {
                         role: "model".to_string(),
-                        parts,
+                        parts: model_parts(
+                            msg,
+                            reader,
+                            in_current_turn && requires_call_signatures(&reader.model),
+                        ),
                     });
                 }
                 Role::Tool => {
                     // Gemini expects functionResponse in a user-role message.
                     // The response must be a JSON object; wrap plain strings.
-                    let response_value = serde_json::json!({ "result": msg.content });
-                    let tool_name = msg.tool_call_id.as_deref().unwrap_or("unknown");
-
-                    contents.push(GeminiContent {
-                        role: "user".to_string(),
-                        parts: vec![GeminiPart::FunctionResponse {
-                            function_response: GeminiFunctionResponse {
-                                name: tool_name.to_string(),
-                                response: response_value,
-                            },
-                        }],
-                    });
+                    // The results of one round of calls share one message: the
+                    // API wants as many response parts as there were calls.
+                    let call_id = msg.tool_call_id.as_deref().unwrap_or("unknown");
+                    let part = GeminiPart {
+                        function_response: Some(GeminiFunctionResponse {
+                            name: call_names
+                                .get(call_id)
+                                .copied()
+                                .unwrap_or(call_id)
+                                .to_string(),
+                            response: serde_json::json!({ "result": msg.content }),
+                        }),
+                        ..GeminiPart::default()
+                    };
+                    match contents.last_mut() {
+                        Some(last)
+                            if last.role == "user"
+                                && last.parts.iter().all(|p| p.function_response.is_some()) =>
+                        {
+                            last.parts.push(part);
+                        }
+                        _ => contents.push(GeminiContent {
+                            role: "user".to_string(),
+                            parts: vec![part],
+                        }),
+                    }
                 }
             }
         }
 
         let system_instruction = (!system_parts.is_empty()).then(|| GeminiSystemInstruction {
-            parts: vec![GeminiPart::Text {
-                text: system_parts.join("\n\n"),
-            }],
+            parts: vec![GeminiPart::text(system_parts.join("\n\n"))],
         });
 
         (system_instruction, contents)
     }
 
-    #[tracing::instrument(skip_all, fields(
-        model = %model,
-        message_count = request.contents.len(),
-        tool_count = request.tools.as_ref().map_or(0, Vec::len),
-    ))]
-    async fn send_completion(
-        http: &SharedHttpClient,
-        url: &str,
-        model: &str,
-        request: &GeminiRequest,
-    ) -> Result<InferenceResponse, InferenceError> {
-        let timeout_secs = http.timeout_secs();
-        let request_json = serde_json::to_string(request)
-            .map_err(|e| InferenceError::Parse(format!("failed to serialize request: {e}")))?;
-
-        debug!(
-            max_output_tokens = request.generation_config.max_output_tokens,
-            message_count = request.contents.len(),
-            tool_count = request.tools.as_ref().map_or(0, Vec::len),
-            "sending gemini generateContent request"
-        );
-
-        let response = http
-            .client()
-            .post(url)
-            .body(request_json.clone())
-            .header("content-type", "application/json")
-            .send()
-            .await
-            .map_err(|e| map_request_error(e, timeout_secs))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let raw_body = read_error_body(response).await;
-            tracing::warn!(
-                status = %status,
-                response_body = %raw_body,
-                request_body = %request_json,
-                "gemini API error — full request/response for diagnosis"
-            );
-            let error_body = serde_json::from_str::<GeminiErrorResponse>(&raw_body)
-                .map_or_else(|_| raw_body, |e| e.error.message);
-            return Err(InferenceError::Api(format!("{status}: {error_body}")));
-        }
-
-        let text = response
-            .text()
-            .await
-            .map_err(|e| map_request_error(e, timeout_secs))?;
-        let result = Self::parse_response(serde_json::from_str(&text).map_err(|e| {
-            InferenceError::Parse(format!("failed to parse gemini response: {e}"))
-        })?)?;
-        info!(
-            model = %model,
-            content_len = result.content.len(),
-            tool_calls = result.tool_calls.len(),
-            "gemini completion received"
-        );
-        Ok(result)
-    }
-}
-
-#[async_trait]
-impl InferenceProvider for GeminiClient {
-    #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
-    async fn complete(
+    /// Build the request body, which stays the same across retries.
+    fn prepare(
         &self,
         messages: &[Message],
         tools: &[ToolDefinition],
         options: &CompletionOptions,
-    ) -> Result<InferenceResponse, InferenceError> {
-        let url = self.endpoint();
-        let (system_instruction, contents) = Self::convert_messages(messages);
+    ) -> GeminiRequest {
+        let (system_instruction, contents) = Self::convert_messages(messages, &self.origin());
         let has_web_search = options.web_search.is_some();
         let gemini_tools = (!tools.is_empty() || has_web_search).then(|| {
             let function_declarations = (!tools.is_empty()).then(|| {
@@ -330,9 +351,6 @@ impl InferenceProvider for GeminiClient {
                 google_search,
             }]
         });
-        let max_output_tokens = options.max_tokens.unwrap_or(self.max_tokens);
-        let model = self.model.clone();
-        let http = self.http.clone();
 
         let (response_mime_type, response_schema) = match &options.response_format {
             ResponseFormat::Text => (None, None),
@@ -341,55 +359,348 @@ impl InferenceProvider for GeminiClient {
                 Some(strip_unsupported_schema_fields(schema.clone())),
             ),
         };
-        let generation_config = GeminiGenerationConfig {
-            max_output_tokens,
-            response_mime_type,
-            response_schema,
-            temperature: options.temperature,
-        };
 
-        let thinking_config = options.thinking.as_ref().and_then(|tc| match tc {
-            ThinkingConfig::Level(ThinkingLevel::Low) => Some(GeminiThinkingConfig {
-                thinking_budget: 1024,
-            }),
-            ThinkingConfig::Level(ThinkingLevel::Medium) => Some(GeminiThinkingConfig {
-                thinking_budget: 8192,
-            }),
-            ThinkingConfig::Level(ThinkingLevel::High) => Some(GeminiThinkingConfig {
-                thinking_budget: 32768,
-            }),
-            ThinkingConfig::Toggle(true) => Some(GeminiThinkingConfig {
-                thinking_budget: GEMINI_THINKING_BUDGET_DYNAMIC,
-            }),
-            ThinkingConfig::Toggle(false) => None,
+        // Thinking summaries are only returned when asked for.
+        let thinking_config = options.thinking.as_ref().and_then(|tc| {
+            let thinking_budget = match tc {
+                ThinkingConfig::Level(ThinkingLevel::Low) => 1024,
+                ThinkingConfig::Level(ThinkingLevel::Medium) => 8192,
+                ThinkingConfig::Level(ThinkingLevel::High) => 32768,
+                ThinkingConfig::Toggle(true) => GEMINI_THINKING_BUDGET_DYNAMIC,
+                ThinkingConfig::Toggle(false) => return None,
+            };
+            Some(GeminiThinkingConfig {
+                thinking_budget,
+                include_thoughts: true,
+            })
         });
 
-        with_retry(&self.retry, || {
-            let url = url.clone();
-            let system_instruction = system_instruction.clone();
-            let contents = contents.clone();
-            let gemini_tools = gemini_tools.clone();
-            let generation_config = generation_config.clone();
-            let thinking_config = thinking_config.clone();
-            let model = model.clone();
-            let http = http.clone();
+        GeminiRequest {
+            contents,
+            system_instruction,
+            tools: gemini_tools,
+            generation_config: GeminiGenerationConfig {
+                max_output_tokens: options.max_tokens.unwrap_or(self.max_tokens),
+                response_mime_type,
+                response_schema,
+                temperature: options.temperature,
+                thinking_config,
+            },
+        }
+    }
 
-            async move {
-                let request = GeminiRequest {
-                    contents,
-                    system_instruction,
-                    tools: gemini_tools,
-                    generation_config,
-                    thinking_config,
-                };
-                Self::send_completion(&http, &url, &model, &request).await
+    /// Run a prepared request to completion: retrying transient failures,
+    /// and streaming the response into `sink` when there is one.
+    async fn run(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+        sink: Option<&dyn StreamSink>,
+    ) -> Result<InferenceResponse, InferenceError> {
+        let request = self.prepare(messages, tools, options);
+        let tracked = sink.map(TrackedSink::new);
+
+        let response = with_retry(&self.retry, || async {
+            let result = self.send(&request, tracked.as_ref()).await;
+            if result.is_err()
+                && let Some(tracked) = &tracked
+            {
+                tracked.restart_if_needed();
             }
+            result
         })
-        .await
+        .await?;
+        Ok(response.produced_at(&self.origin()))
+    }
+
+    /// Who the reasoning this client returns is recorded as coming from, and
+    /// the only origin whose signatures it sends back.
+    fn origin(&self) -> ThinkingOrigin {
+        ThinkingOrigin::new(ProviderApi::Gemini, &self.model)
+    }
+
+    #[tracing::instrument(skip_all, fields(
+        model = %self.model,
+        message_count = request.contents.len(),
+        tool_count = request.tools.as_ref().map_or(0, Vec::len),
+        streaming = sink.is_some(),
+    ))]
+    async fn send(
+        &self,
+        request: &GeminiRequest,
+        sink: Option<&TrackedSink<'_>>,
+    ) -> Result<InferenceResponse, InferenceError> {
+        let timeout_secs = self.http.timeout_secs();
+        let request_json = serde_json::to_string(request)
+            .map_err(|e| InferenceError::Parse(format!("failed to serialize request: {e}")))?;
+
+        debug!(
+            max_output_tokens = request.generation_config.max_output_tokens,
+            message_count = request.contents.len(),
+            tool_count = request.tools.as_ref().map_or(0, Vec::len),
+            "sending gemini generateContent request"
+        );
+
+        let (client, url) = if sink.is_some() {
+            (self.http.streaming_client(), self.stream_endpoint())
+        } else {
+            (self.http.client(), self.endpoint())
+        };
+        let response = client
+            .post(url)
+            .body(request_json.clone())
+            .header("content-type", "application/json")
+            .send()
+            .await
+            .map_err(|e| {
+                if sink.is_some() {
+                    map_stream_request_error(e, timeout_secs)
+                } else {
+                    map_request_error(e, timeout_secs)
+                }
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let raw_body = read_error_body(response).await;
+            tracing::warn!(
+                status = %status,
+                response_body = %raw_body,
+                request_body = %request_json,
+                "gemini API error — full request/response for diagnosis"
+            );
+            let error_body = serde_json::from_str::<GeminiErrorResponse>(&raw_body)
+                .map_or_else(|_| raw_body, |e| e.error.message);
+            return Err(InferenceError::Api(format!("{status}: {error_body}")));
+        }
+
+        let gemini_response = if let Some(sink) = sink.filter(|_| !answered_whole(&response)) {
+            read_stream(response, timeout_secs, sink).await?
+        } else {
+            let text = response
+                .text()
+                .await
+                .map_err(|e| map_request_error(e, timeout_secs))?;
+            serde_json::from_str(&text).map_err(|e| {
+                InferenceError::Parse(format!("failed to parse gemini response: {e}"))
+            })?
+        };
+        let result = Self::parse_response(gemini_response)?;
+        info!(
+            model = %self.model,
+            content_len = result.content.len(),
+            tool_calls = result.tool_calls.len(),
+            "gemini completion received"
+        );
+        Ok(result)
+    }
+}
+
+/// A block recording a signature that belongs to the response's text.
+fn text_signature(signature: String) -> ThinkingBlock {
+    ThinkingBlock {
+        signature: Some(signature),
+        part: Some(TEXT_PART.to_string()),
+        ..ThinkingBlock::default()
+    }
+}
+
+/// The parts an assistant message goes back as: its text, then its function
+/// calls in order, each carrying the thought signature Gemini attached to it.
+///
+/// Only signatures that `reader`'s own model produced go back; one from
+/// another provider or model would not verify. Gemini 3 refuses a request
+/// whose current-turn function calls lack signatures and recommends sending
+/// the others back too. With `needs_call_signature`, a message's first
+/// function call (the one Gemini checks) that has no signature of its own to
+/// send gets [`SKIP_SIGNATURE_VALIDATOR`] instead, so a tool-use exchange
+/// another provider began can carry on here.
+fn model_parts(
+    msg: &Message,
+    reader: &ThinkingOrigin,
+    needs_call_signature: bool,
+) -> Vec<GeminiPart> {
+    let own = blocks_produced_at(&msg.thinking, reader, ReplayScope::SameModel);
+    let signature_for = |part: &str| {
+        own.iter()
+            .rev()
+            .find(|block| block.part.as_deref() == Some(part))
+            .and_then(|block| block.signature.clone())
+    };
+
+    let mut parts: Vec<GeminiPart> = Vec::new();
+    let text_signature = signature_for(TEXT_PART);
+    if !msg.content.is_empty() || text_signature.is_some() {
+        // A signature can arrive on a part with no text of its own.
+        parts.push(GeminiPart {
+            text: Some(msg.content.clone()),
+            thought_signature: text_signature,
+            ..GeminiPart::default()
+        });
+    }
+    for (position, tc) in msg.tool_calls.iter().flatten().enumerate() {
+        let thought_signature = signature_for(&tc.id).or_else(|| {
+            (needs_call_signature && position == 0).then(|| SKIP_SIGNATURE_VALIDATOR.to_string())
+        });
+        parts.push(GeminiPart {
+            function_call: Some(GeminiFunctionCall {
+                name: tc.name.clone(),
+                args: tc.arguments.clone(),
+            }),
+            thought_signature,
+            ..GeminiPart::default()
+        });
+    }
+    parts
+}
+
+#[async_trait]
+impl InferenceProvider for GeminiClient {
+    #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
+    async fn complete(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+    ) -> Result<InferenceResponse, InferenceError> {
+        self.run(messages, tools, options, None).await
+    }
+
+    /// Like `complete`, streaming the response's text and reasoning summary
+    /// into `sink` as they arrive.
+    ///
+    /// # Errors
+    /// Returns the errors `complete` does, plus `InferenceError::Stalled`
+    /// when the stream goes quiet for the configured timeout and
+    /// `InferenceError::StreamInterrupted` when it breaks or ends early.
+    #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
+    async fn complete_streaming(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+        sink: &dyn StreamSink,
+    ) -> Result<InferenceResponse, InferenceError> {
+        self.run(messages, tools, options, Some(sink)).await
     }
 
     fn model_name(&self) -> &str {
         &self.model
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Streaming
+// ---------------------------------------------------------------------------
+
+/// Read a streamed response to its end, pushing text and reasoning summary to
+/// `sink` as they arrive, and return it as the response `generateContent`
+/// would have returned.
+async fn read_stream(
+    response: reqwest::Response,
+    idle_secs: u64,
+    sink: &dyn StreamSink,
+) -> Result<GeminiResponse, InferenceError> {
+    let mut assembler = StreamAssembler {
+        sink,
+        parts: Vec::new(),
+        finish_reason: None,
+        usage: None,
+        saw_candidate: false,
+    };
+    read_sse(response, idle_secs, |event| assembler.handle(&event)).await?;
+    assembler.finish()
+}
+
+/// One streamed event: the next piece of the response.
+#[derive(Deserialize)]
+struct GeminiStreamEvent {
+    #[serde(default)]
+    candidates: Vec<GeminiCandidate>,
+    #[serde(default, rename = "usageMetadata")]
+    usage_metadata: Option<GeminiUsageMetadata>,
+    /// A failure reported in the stream after the response began.
+    #[serde(default)]
+    error: Option<GeminiStreamError>,
+}
+
+#[derive(Deserialize)]
+struct GeminiStreamError {
+    #[serde(default)]
+    code: Option<u32>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    message: String,
+}
+
+struct StreamAssembler<'a> {
+    sink: &'a dyn StreamSink,
+    parts: Vec<GeminiPart>,
+    finish_reason: Option<String>,
+    usage: Option<GeminiUsageMetadata>,
+    saw_candidate: bool,
+}
+
+impl StreamAssembler<'_> {
+    fn handle(&mut self, event: &SseEvent) -> Result<Flow, InferenceError> {
+        let parsed: GeminiStreamEvent = serde_json::from_str(&event.data).map_err(|e| {
+            InferenceError::Parse(format!("failed to parse gemini stream event: {e}"))
+        })?;
+        if let Some(error) = parsed.error {
+            let code = error.code.map(|c| c.to_string()).unwrap_or_default();
+            let status = error.status.unwrap_or_default();
+            return Err(InferenceError::Api(format!(
+                "{} {}: {}",
+                code, status, error.message
+            )));
+        }
+        if parsed.usage_metadata.is_some() {
+            self.usage = parsed.usage_metadata;
+        }
+        // Only the first candidate is used: a request never asks for more.
+        if let Some(candidate) = parsed.candidates.into_iter().next() {
+            self.saw_candidate = true;
+            for part in candidate.content.parts {
+                if let Some(text) = &part.text {
+                    self.sink.push(if part.thought == Some(true) {
+                        StreamDelta::Thinking(text.clone())
+                    } else {
+                        StreamDelta::Text(text.clone())
+                    });
+                }
+                self.parts.push(part);
+            }
+            if candidate.finish_reason.is_some() {
+                self.finish_reason = candidate.finish_reason;
+            }
+        }
+        Ok(Flow::Continue)
+    }
+
+    /// Assemble the response `generateContent` would have returned. Fails
+    /// when the stream stopped short of a `finishReason`.
+    fn finish(self) -> Result<GeminiResponse, InferenceError> {
+        if self.saw_candidate && self.finish_reason.is_none() {
+            return Err(InferenceError::StreamInterrupted(
+                "the stream ended before the response was complete".to_string(),
+            ));
+        }
+        // With no candidate at all (a blocked prompt, say) the parse step
+        // reports it, as it does for a response that arrives whole.
+        let candidates = if self.saw_candidate {
+            vec![GeminiCandidate {
+                content: GeminiResponseContent { parts: self.parts },
+                finish_reason: self.finish_reason,
+            }]
+        } else {
+            Vec::new()
+        };
+        Ok(GeminiResponse {
+            candidates,
+            usage_metadata: self.usage,
+        })
     }
 }
 
@@ -404,6 +715,9 @@ const GEMINI_THINKING_BUDGET_DYNAMIC: i32 = -1;
 struct GeminiThinkingConfig {
     #[serde(rename = "thinkingBudget")]
     thinking_budget: i32,
+    /// Ask for a summary of the reasoning to come back with the answer.
+    #[serde(rename = "includeThoughts")]
+    include_thoughts: bool,
 }
 
 #[derive(Serialize)]
@@ -415,8 +729,6 @@ struct GeminiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<GeminiTools>>,
     generation_config: GeminiGenerationConfig,
-    #[serde(rename = "thinkingConfig", skip_serializing_if = "Option::is_none")]
-    thinking_config: Option<GeminiThinkingConfig>,
 }
 
 #[derive(Serialize, Clone)]
@@ -430,24 +742,50 @@ struct GeminiContent {
     parts: Vec<GeminiPart>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(untagged)]
-enum GeminiPart {
-    Text {
-        text: String,
-    },
-    FunctionCall {
-        #[serde(rename = "functionCall")]
-        function_call: GeminiFunctionCall,
-    },
-    FunctionResponse {
-        #[serde(rename = "functionResponse")]
-        function_response: GeminiFunctionResponse,
-    },
-    InlineData {
-        #[serde(rename = "inlineData")]
-        inline_data: GeminiInlineData,
-    },
+/// One part of a message. A part carries one kind of content, so every
+/// field is optional; a response part that is a reasoning summary is told
+/// apart from the answer by `thought`.
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct GeminiPart {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    /// The text is a summary of the model's reasoning, not part of its answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    thought: Option<bool>,
+    /// Proof of the reasoning behind this part, to be sent back with it.
+    #[serde(
+        default,
+        rename = "thoughtSignature",
+        skip_serializing_if = "Option::is_none"
+    )]
+    thought_signature: Option<String>,
+    #[serde(
+        default,
+        rename = "functionCall",
+        skip_serializing_if = "Option::is_none"
+    )]
+    function_call: Option<GeminiFunctionCall>,
+    #[serde(
+        default,
+        rename = "functionResponse",
+        skip_serializing_if = "Option::is_none"
+    )]
+    function_response: Option<GeminiFunctionResponse>,
+    #[serde(
+        default,
+        rename = "inlineData",
+        skip_serializing_if = "Option::is_none"
+    )]
+    inline_data: Option<GeminiInlineData>,
+}
+
+impl GeminiPart {
+    fn text(text: String) -> Self {
+        Self {
+            text: Some(text),
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -512,6 +850,8 @@ struct GeminiGenerationConfig {
     response_schema: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    #[serde(rename = "thinkingConfig", skip_serializing_if = "Option::is_none")]
+    thinking_config: Option<GeminiThinkingConfig>,
 }
 
 // ---------------------------------------------------------------------------
@@ -520,6 +860,7 @@ struct GeminiGenerationConfig {
 
 #[derive(Deserialize)]
 struct GeminiResponse {
+    #[serde(default)]
     candidates: Vec<GeminiCandidate>,
     #[serde(rename = "usageMetadata")]
     usage_metadata: Option<GeminiUsageMetadata>,
@@ -527,8 +868,10 @@ struct GeminiResponse {
 
 #[derive(Deserialize)]
 struct GeminiCandidate {
+    /// Absent when the candidate was stopped before producing anything.
+    #[serde(default)]
     content: GeminiResponseContent,
-    #[serde(rename = "finishReason")]
+    #[serde(default, rename = "finishReason")]
     finish_reason: Option<String>,
 }
 
@@ -544,18 +887,21 @@ fn map_stop_reason(raw: &str) -> StopReason {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct GeminiResponseContent {
+    #[serde(default)]
     parts: Vec<GeminiPart>,
 }
 
 #[derive(Deserialize)]
 #[expect(clippy::struct_field_names, reason = "field names match Gemini API")]
 struct GeminiUsageMetadata {
-    #[serde(rename = "promptTokenCount")]
+    #[serde(default, rename = "promptTokenCount")]
     prompt_token_count: u32,
-    #[serde(rename = "candidatesTokenCount")]
+    #[serde(default, rename = "candidatesTokenCount")]
     candidates_token_count: u32,
+    #[serde(default, rename = "thoughtsTokenCount")]
+    thoughts_token_count: u32,
     #[serde(default, rename = "cachedContentTokenCount")]
     cached_content_token_count: Option<u32>,
 }
@@ -804,8 +1150,21 @@ mod tests {
     use super::*;
     use crate::inference::CompletionOptions;
     use crate::inference::retry::RetryConfig;
+    use crate::inference::test_support::{
+        RecordingSink, ScriptedServer, Step, assert_same_response, at, json_response, split_bytes,
+        sse_chunks, sse_response,
+    };
+    use crate::inference::{StreamDelta, ThinkingBlock};
+    use serde_json::{Value, json};
     use wiremock::matchers::{method, path_regex, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const TEST_MODEL: &str = "gemini-2.0-flash";
+
+    /// Where the test client's own reasoning comes from.
+    fn test_origin() -> ThinkingOrigin {
+        ThinkingOrigin::new(ProviderApi::Gemini, TEST_MODEL)
+    }
 
     fn make_client(base_url: &str) -> GeminiClient {
         let http =
@@ -815,7 +1174,7 @@ mod tests {
             http,
             base_url,
             "test-api-key",
-            "gemini-2.0-flash",
+            TEST_MODEL,
             8192,
             RetryConfig::no_retry(),
         )
@@ -845,19 +1204,17 @@ mod tests {
     #[test]
     fn convert_messages_extracts_system() {
         let messages = vec![Message::system("You are helpful."), Message::user("Hello")];
-        let (system, contents) = GeminiClient::convert_messages(&messages);
+        let (system, contents) = GeminiClient::convert_messages(&messages, &test_origin());
 
         assert!(system.is_some(), "system instruction should be extracted");
         let sys = system.unwrap();
         assert_eq!(sys.parts.len(), 1, "should have one system part");
         let first_part = sys.parts.first().unwrap();
-        assert!(
-            matches!(first_part, GeminiPart::Text { .. }),
-            "system part should be text"
+        assert_eq!(
+            first_part.text.as_deref(),
+            Some("You are helpful."),
+            "system part should be the system text"
         );
-        if let GeminiPart::Text { text } = first_part {
-            assert_eq!(text, "You are helpful.", "system text should match");
-        }
 
         assert_eq!(contents.len(), 1, "only user message in contents");
         assert_eq!(
@@ -870,24 +1227,22 @@ mod tests {
     #[test]
     fn convert_messages_tool_result_becomes_function_response() {
         let messages = vec![Message::tool("command output", "call_0")];
-        let (_, contents) = GeminiClient::convert_messages(&messages);
+        let (_, contents) = GeminiClient::convert_messages(&messages, &test_origin());
 
         assert_eq!(contents.len(), 1, "tool message becomes one content entry");
         let entry = contents.first().unwrap();
         assert_eq!(entry.role, "user", "tool result role should be user");
         assert_eq!(entry.parts.len(), 1, "should have one part");
         let part = entry.parts.first().unwrap();
-        assert!(
-            matches!(part, GeminiPart::FunctionResponse { .. }),
-            "part should be functionResponse"
+        let function_response = part
+            .function_response
+            .as_ref()
+            .expect("part should be functionResponse");
+        assert_eq!(
+            function_response.response,
+            serde_json::json!({"result": "command output"}),
+            "response should wrap content"
         );
-        if let GeminiPart::FunctionResponse { function_response } = part {
-            assert_eq!(
-                function_response.response,
-                serde_json::json!({"result": "command output"}),
-                "response should wrap content"
-            );
-        }
     }
 
     #[test]
@@ -901,17 +1256,20 @@ mod tests {
                 server: None,
             }]),
         )];
-        let (_, contents) = GeminiClient::convert_messages(&messages);
+        let (_, contents) = GeminiClient::convert_messages(&messages, &test_origin());
 
         let entry = contents.first().unwrap();
         assert_eq!(entry.role, "model", "assistant maps to model role");
         assert_eq!(entry.parts.len(), 2, "text + function call parts");
         assert!(
-            matches!(entry.parts.first(), Some(GeminiPart::Text { .. })),
+            entry.parts.first().is_some_and(|p| p.text.is_some()),
             "first part should be text"
         );
         assert!(
-            matches!(entry.parts.get(1), Some(GeminiPart::FunctionCall { .. })),
+            entry
+                .parts
+                .get(1)
+                .is_some_and(|p| p.function_call.is_some()),
             "second part should be function call"
         );
     }
@@ -1346,8 +1704,11 @@ mod tests {
             .and(path_regex("/models/.+:generateContent"))
             .and(query_param("key", "test-api-key"))
             .and(wiremock::matchers::body_partial_json(serde_json::json!({
-                "thinkingConfig": {
-                    "thinkingBudget": 8192
+                "generationConfig": {
+                    "thinkingConfig": {
+                        "thinkingBudget": 8192,
+                        "includeThoughts": true
+                    }
                 }
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -1373,6 +1734,871 @@ mod tests {
         assert!(
             result.is_ok(),
             "request with thinking config should succeed: {result:?}"
+        );
+    }
+
+    // --- Thinking, signatures and replay ---
+
+    fn call(id: &str, name: &str) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: json!({"command": "ls"}),
+            server: None,
+        }
+    }
+
+    fn signature_block(signature: &str, part: &str) -> ThinkingBlock {
+        ThinkingBlock {
+            signature: Some(signature.to_string()),
+            part: Some(part.to_string()),
+            ..ThinkingBlock::default()
+        }
+    }
+
+    /// A signature the test client itself received.
+    fn own_signature_block(signature: &str, part: &str) -> ThinkingBlock {
+        signature_block(signature, part).from_origin(&test_origin())
+    }
+
+    fn assistant(content: &str, calls: Vec<ToolCall>, thinking: Vec<ThinkingBlock>) -> Message {
+        let mut message = Message::assistant(content, (!calls.is_empty()).then_some(calls));
+        message.thinking = thinking;
+        message
+    }
+
+    fn wire(contents: &[GeminiContent]) -> Value {
+        serde_json::to_value(contents).unwrap()
+    }
+
+    #[tokio::test]
+    async fn thinking_requests_include_thoughts_inside_generation_config() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex("/models/.+:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{"content": {"parts": [{"text": "ok"}], "role": "model"}}]
+            })))
+            .mount(&mock_server)
+            .await;
+        let client = make_client(&mock_server.uri());
+
+        for (config, budget) in [
+            (ThinkingConfig::Level(ThinkingLevel::Low), 1024),
+            (ThinkingConfig::Level(ThinkingLevel::High), 32768),
+            (ThinkingConfig::Toggle(true), -1),
+        ] {
+            let options = CompletionOptions {
+                thinking: Some(config.clone()),
+                ..CompletionOptions::default()
+            };
+            client
+                .complete(&[Message::user("hi")], &[], &options)
+                .await
+                .unwrap();
+            let requests = mock_server.received_requests().await.unwrap();
+            let body: Value = serde_json::from_slice(&requests.last().unwrap().body).unwrap();
+            assert_eq!(
+                at(&body, "/generationConfig/thinkingConfig"),
+                &json!({"thinkingBudget": budget, "includeThoughts": true}),
+                "{config:?} asks for thought summaries inside generationConfig"
+            );
+            assert!(
+                body.get("thinkingConfig").is_none(),
+                "{config:?}: thinkingConfig is not a top-level field: {body}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn thinking_off_sends_no_thinking_config() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex("/models/.+:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{"content": {"parts": [{"text": "ok"}], "role": "model"}}]
+            })))
+            .mount(&mock_server)
+            .await;
+        let client = make_client(&mock_server.uri());
+        for thinking in [None, Some(ThinkingConfig::Toggle(false))] {
+            let options = CompletionOptions {
+                thinking,
+                ..CompletionOptions::default()
+            };
+            client
+                .complete(&[Message::user("hi")], &[], &options)
+                .await
+                .unwrap();
+        }
+        for request in mock_server.received_requests().await.unwrap() {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            assert!(
+                body.pointer("/generationConfig/thinkingConfig").is_none(),
+                "no thinking config when thinking is off: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn thought_parts_are_kept_out_of_the_answer() {
+        let response: GeminiResponse = serde_json::from_value(json!({
+            "candidates": [{"content": {"role": "model", "parts": [
+                {"text": "Weighing the options", "thought": true},
+                {"text": " carefully.", "thought": true},
+                {"text": "The answer.", "thoughtSignature": "SIG-TEXT"}
+            ]}, "finishReason": "STOP"}]
+        }))
+        .unwrap();
+        let parsed = GeminiClient::parse_response(response).unwrap();
+        assert_eq!(
+            parsed.content, "The answer.",
+            "summaries never reach the content"
+        );
+        assert_eq!(
+            parsed.thinking,
+            vec![
+                ThinkingBlock::text("Weighing the options carefully."),
+                signature_block("SIG-TEXT", TEXT_PART),
+            ],
+            "the summary is one block and the text's signature another"
+        );
+    }
+
+    #[test]
+    fn function_call_signature_is_recorded_against_its_call() {
+        let response: GeminiResponse = serde_json::from_value(json!({
+            "candidates": [{"content": {"role": "model", "parts": [
+                {"text": "Checking.", "thought": true},
+                {"functionCall": {"name": "bash", "args": {"command": "ls"}},
+                 "thoughtSignature": "SIG-FC1"},
+                {"functionCall": {"name": "read", "args": {"path": "a"}}}
+            ]}, "finishReason": "STOP"}]
+        }))
+        .unwrap();
+        let parsed = GeminiClient::parse_response(response).unwrap();
+        let ids: Vec<&str> = parsed.tool_calls.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["call_0", "call_1"], "calls are numbered in order");
+        assert_eq!(
+            parsed.thinking,
+            vec![
+                ThinkingBlock::text("Checking."),
+                signature_block("SIG-FC1", "call_0"),
+            ],
+            "only the first call carries a signature, and it is tied to that call"
+        );
+    }
+
+    #[test]
+    fn signature_in_a_part_with_no_text_is_not_lost() {
+        let response: GeminiResponse = serde_json::from_value(json!({
+            "candidates": [{"content": {"role": "model", "parts": [
+                {"text": "Hello"},
+                {"text": "", "thoughtSignature": "SIG-LATE"}
+            ]}, "finishReason": "STOP"}]
+        }))
+        .unwrap();
+        let parsed = GeminiClient::parse_response(response).unwrap();
+        assert_eq!(parsed.content, "Hello", "text unaffected");
+        assert_eq!(
+            parsed.thinking,
+            vec![signature_block("SIG-LATE", TEXT_PART)],
+            "the late signature is kept"
+        );
+    }
+
+    #[test]
+    fn function_calls_go_back_with_their_signatures_before_their_results() {
+        let messages = vec![
+            Message::user("do two things"),
+            assistant(
+                "On it.",
+                vec![call("call_0", "bash"), call("call_1", "read")],
+                vec![
+                    ThinkingBlock::text("a summary that is not replayed"),
+                    own_signature_block("SIG-FC1", "call_0"),
+                    own_signature_block("SIG-TEXT", TEXT_PART),
+                ],
+            ),
+            Message::tool("out-1", "call_0"),
+            Message::tool("out-2", "call_1"),
+        ];
+        let (_, contents) = GeminiClient::convert_messages(&messages, &test_origin());
+        let wire = wire(&contents);
+        assert_eq!(
+            wire,
+            json!([
+                {"role": "user", "parts": [{"text": "do two things"}]},
+                {"role": "model", "parts": [
+                    {"text": "On it.", "thoughtSignature": "SIG-TEXT"},
+                    {"functionCall": {"name": "bash", "args": {"command": "ls"}},
+                     "thoughtSignature": "SIG-FC1"},
+                    {"functionCall": {"name": "read", "args": {"command": "ls"}}}
+                ]},
+                {"role": "user", "parts": [
+                    {"functionResponse": {"name": "bash", "response": {"result": "out-1"}}},
+                    {"functionResponse": {"name": "read", "response": {"result": "out-2"}}}
+                ]}
+            ]),
+            "calls keep their order and signatures, then the results follow in one message, \
+             each named for its function"
+        );
+    }
+
+    #[test]
+    fn results_are_matched_to_the_calls_just_before_them() {
+        let messages = vec![
+            Message::user("go"),
+            assistant("", vec![call("call_0", "bash")], vec![]),
+            Message::tool("first", "call_0"),
+            assistant("", vec![call("call_0", "read")], vec![]),
+            Message::tool("second", "call_0"),
+        ];
+        let (_, contents) = GeminiClient::convert_messages(&messages, &test_origin());
+        let wire = wire(&contents);
+        assert_eq!(
+            at(&wire, "/2/parts/0/functionResponse/name"),
+            &json!("bash"),
+            "the first result answers the first call"
+        );
+        assert_eq!(
+            at(&wire, "/4/parts/0/functionResponse/name"),
+            &json!("read"),
+            "ids repeat across responses, so the second result answers the second call"
+        );
+    }
+
+    #[test]
+    fn a_signature_with_no_text_goes_back_on_an_empty_text_part() {
+        let messages = vec![assistant(
+            "",
+            vec![],
+            vec![own_signature_block("SIG-ONLY", TEXT_PART)],
+        )];
+        let (_, contents) = GeminiClient::convert_messages(&messages, &test_origin());
+        assert_eq!(
+            wire(&contents),
+            json!([{"role": "model", "parts": [{"text": "", "thoughtSignature": "SIG-ONLY"}]}]),
+            "the signature is not dropped with its empty part"
+        );
+    }
+
+    #[test]
+    fn blocks_from_other_providers_are_not_replayed_as_signatures() {
+        let anthropic = ThinkingOrigin::new(ProviderApi::Anthropic, "claude-opus-4-5");
+        let messages = vec![assistant(
+            "Hi",
+            vec![call("call_0", "bash")],
+            vec![
+                ThinkingBlock {
+                    text: "anthropic".to_string(),
+                    signature: Some("ANTHROPIC-SIG".to_string()),
+                    ..ThinkingBlock::default()
+                }
+                .from_origin(&anthropic),
+                ThinkingBlock {
+                    redacted: Some("ENC".to_string()),
+                    ..ThinkingBlock::default()
+                }
+                .from_origin(&anthropic),
+            ],
+        )];
+        let (_, contents) = GeminiClient::convert_messages(&messages, &test_origin());
+        let text = serde_json::to_string(&contents).unwrap();
+        assert!(
+            !text.contains("ANTHROPIC-SIG") && !text.contains("ENC"),
+            "only Gemini's own part-tagged signatures go back: {text}"
+        );
+    }
+
+    #[test]
+    fn only_signatures_this_model_produced_go_back_on_their_parts() {
+        let other_model = ThinkingOrigin::new(ProviderApi::Gemini, "gemini-2.5-pro");
+        let messages = vec![
+            Message::user("go"),
+            assistant(
+                "Hi",
+                vec![call("call_0", "bash")],
+                vec![
+                    signature_block("OTHER-MODEL-TEXT", TEXT_PART).from_origin(&other_model),
+                    signature_block("LEGACY-CALL", "call_0"),
+                    own_signature_block("OWN-TEXT", TEXT_PART),
+                ],
+            ),
+        ];
+        let (_, contents) = GeminiClient::convert_messages(&messages, &test_origin());
+        assert_eq!(
+            wire(&contents),
+            json!([
+                {"role": "user", "parts": [{"text": "go"}]},
+                {"role": "model", "parts": [
+                    {"text": "Hi", "thoughtSignature": "OWN-TEXT"},
+                    {"functionCall": {"name": "bash", "args": {"command": "ls"}}}
+                ]}
+            ]),
+            "a signature from another Gemini model, or saved with no origin, does not verify, \
+             so only the model's own goes back"
+        );
+    }
+
+    /// A tool-use exchange another provider began: its tool-calling messages
+    /// carry that provider's reasoning, none of it usable by Gemini.
+    fn exchange_begun_elsewhere() -> Vec<Message> {
+        let anthropic = ThinkingOrigin::new(ProviderApi::Anthropic, "claude-opus-4-5");
+        vec![
+            Message::user("do two things"),
+            assistant(
+                "On it.",
+                vec![call("toolu_1", "bash"), call("toolu_2", "read")],
+                vec![
+                    ThinkingBlock {
+                        signature: Some("ANTHROPIC-SIG".to_string()),
+                        ..ThinkingBlock::default()
+                    }
+                    .from_origin(&anthropic),
+                ],
+            ),
+            Message::tool("out-1", "toolu_1"),
+            Message::tool("out-2", "toolu_2"),
+        ]
+    }
+
+    fn gemini_3() -> ThinkingOrigin {
+        ThinkingOrigin::new(ProviderApi::Gemini, "gemini-3-pro-preview")
+    }
+
+    #[test]
+    fn gemini_3_is_told_to_skip_the_signature_of_a_call_another_provider_made() {
+        let (_, contents) =
+            GeminiClient::convert_messages(&exchange_begun_elsewhere(), &gemini_3());
+        let wire = wire(&contents);
+        assert_eq!(
+            at(&wire, "/1/parts/1/thoughtSignature"),
+            &json!(SKIP_SIGNATURE_VALIDATOR),
+            "the first call of the step is the one Gemini 3 checks"
+        );
+        assert!(
+            at(&wire, "/1/parts/2").get("thoughtSignature").is_none(),
+            "a parallel call after the first carries none: {wire}"
+        );
+        assert!(
+            !wire.to_string().contains("ANTHROPIC-SIG"),
+            "the other provider's signature is never sent: {wire}"
+        );
+    }
+
+    #[test]
+    fn a_model_that_does_not_require_signatures_is_sent_no_stand_in() {
+        let (_, contents) =
+            GeminiClient::convert_messages(&exchange_begun_elsewhere(), &test_origin());
+        assert!(
+            !wire(&contents).to_string().contains("thoughtSignature"),
+            "{}",
+            wire(&contents)
+        );
+    }
+
+    #[test]
+    fn calls_before_the_current_exchange_are_sent_without_a_stand_in() {
+        let mut messages = vec![
+            Message::user("earlier"),
+            assistant("", vec![call("toolu_0", "bash")], vec![]),
+            Message::tool("done", "toolu_0"),
+            assistant("All done.", vec![], vec![]),
+        ];
+        messages.extend(exchange_begun_elsewhere());
+        let (_, contents) = GeminiClient::convert_messages(&messages, &gemini_3());
+        let wire = wire(&contents);
+        assert!(
+            at(&wire, "/1/parts/0").get("thoughtSignature").is_none(),
+            "Gemini checks only the current turn: {wire}"
+        );
+        assert_eq!(
+            at(&wire, "/5/parts/1/thoughtSignature"),
+            &json!(SKIP_SIGNATURE_VALIDATOR),
+            "the exchange in progress gets one"
+        );
+    }
+
+    #[test]
+    fn a_signature_the_model_produced_is_sent_instead_of_the_stand_in() {
+        let own = ThinkingOrigin::new(ProviderApi::Gemini, "gemini-3-pro-preview");
+        let messages = vec![
+            Message::user("go"),
+            assistant(
+                "",
+                vec![call("call_0", "bash"), call("call_1", "read")],
+                vec![signature_block("SIG-FC1", "call_0").from_origin(&own)],
+            ),
+            Message::tool("out", "call_0"),
+            Message::tool("out", "call_1"),
+        ];
+        let (_, contents) = GeminiClient::convert_messages(&messages, &own);
+        let wire = wire(&contents);
+        assert_eq!(
+            at(&wire, "/1/parts/0/thoughtSignature"),
+            &json!("SIG-FC1"),
+            "its own signature"
+        );
+        assert!(
+            at(&wire, "/1/parts/1").get("thoughtSignature").is_none(),
+            "{wire}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_response_records_the_model_that_produced_its_signatures() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex("/models/.+:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{"content": {"role": "model", "parts": [
+                    {"text": "Weighing it", "thought": true},
+                    {"functionCall": {"name": "bash", "args": {"command": "ls"}},
+                     "thoughtSignature": "SIG-FC1"}
+                ]}, "finishReason": "STOP"}]
+            })))
+            .mount(&mock_server)
+            .await;
+        let response = make_client(&mock_server.uri())
+            .complete(&[Message::user("ls")], &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            response.thinking,
+            vec![
+                ThinkingBlock::text("Weighing it").from_origin(&test_origin()),
+                own_signature_block("SIG-FC1", "call_0"),
+            ],
+            "every block names Gemini and the model that answered"
+        );
+    }
+
+    #[tokio::test]
+    async fn signatures_round_trip_through_complete() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex("/models/.+:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{"content": {"role": "model", "parts": [
+                    {"functionCall": {"name": "bash", "args": {"command": "ls"}},
+                     "thoughtSignature": "SIG-FC1"}
+                ]}, "finishReason": "STOP"}]
+            })))
+            .mount(&mock_server)
+            .await;
+        let client = make_client(&mock_server.uri());
+        let first = client
+            .complete(&[Message::user("ls")], &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+
+        let mut reply = Message::assistant("", Some(first.tool_calls.clone()));
+        reply.thinking = first.thinking.clone();
+        client
+            .complete(
+                &[
+                    Message::user("ls"),
+                    reply,
+                    Message::tool("a.txt", &first.tool_calls.first().unwrap().id),
+                ],
+                &[],
+                &CompletionOptions::default(),
+            )
+            .await
+            .unwrap();
+
+        let requests = mock_server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests.last().unwrap().body).unwrap();
+        assert_eq!(
+            at(&body, "/contents/1/parts/0/thoughtSignature"),
+            &json!("SIG-FC1"),
+            "the signature the model sent comes back on its function call"
+        );
+    }
+
+    // --- Streaming ---
+
+    fn event(candidate: impl Into<Value>) -> String {
+        let candidate: Value = candidate.into();
+        format!("data: {}\n\n", json!({"candidates": [candidate]}))
+    }
+
+    fn parts_event(parts: impl Into<Value>) -> String {
+        let parts: Value = parts.into();
+        event(json!({"content": {"role": "model", "parts": parts}, "index": 0}))
+    }
+
+    fn last_event(parts: impl Into<Value>) -> String {
+        let parts: Value = parts.into();
+        format!(
+            "data: {}\n\n",
+            json!({
+                "candidates": [{"content": {"role": "model", "parts": parts},
+                    "finishReason": "STOP", "index": 0}],
+                "usageMetadata": {"promptTokenCount": 21, "candidatesTokenCount": 9,
+                    "thoughtsTokenCount": 5, "totalTokenCount": 35,
+                    "cachedContentTokenCount": 4}
+            })
+        )
+    }
+
+    /// A reply with a reasoning summary, text and two function calls, the
+    /// first of which is signed, as Gemini streams it.
+    fn full_stream() -> String {
+        [
+            parts_event(json!([{"text": "Weighing ", "thought": true}])),
+            parts_event(json!([{"text": "it.", "thought": true}])),
+            parts_event(json!([{"text": "Hello w"}])),
+            parts_event(json!([{"text": "\u{f6}rld \u{1f600}"}])),
+            parts_event(
+                json!([{"functionCall": {"name": "bash", "args": {"command": "ls"}},
+                "thoughtSignature": "SIG-FC1"}]),
+            ),
+            last_event(json!([
+                {"functionCall": {"name": "read", "args": {"path": "a"}}},
+                {"text": "", "thoughtSignature": "SIG-LATE"}
+            ])),
+        ]
+        .concat()
+    }
+
+    fn full_response_body() -> Value {
+        json!({
+            "candidates": [{"content": {"role": "model", "parts": [
+                {"text": "Weighing it.", "thought": true},
+                {"text": "Hello w\u{f6}rld \u{1f600}"},
+                {"functionCall": {"name": "bash", "args": {"command": "ls"}},
+                 "thoughtSignature": "SIG-FC1"},
+                {"functionCall": {"name": "read", "args": {"path": "a"}}},
+                {"text": "", "thoughtSignature": "SIG-LATE"}
+            ]}, "finishReason": "STOP"}],
+            "usageMetadata": {"promptTokenCount": 21, "candidatesTokenCount": 9,
+                "thoughtsTokenCount": 5, "totalTokenCount": 35,
+                "cachedContentTokenCount": 4}
+        })
+    }
+
+    async fn stream_from(
+        script: Vec<Step>,
+        client: impl FnOnce(&str) -> GeminiClient,
+    ) -> (
+        Result<InferenceResponse, InferenceError>,
+        RecordingSink,
+        ScriptedServer,
+    ) {
+        let server = ScriptedServer::start(vec![script]).await;
+        let client = client(&server.uri());
+        let sink = RecordingSink::default();
+        let result = client
+            .complete_streaming(
+                &[Message::user("hi")],
+                &[],
+                &CompletionOptions::default(),
+                &sink,
+            )
+            .await;
+        (result, sink, server)
+    }
+
+    #[tokio::test]
+    async fn streamed_response_matches_the_non_streaming_one() {
+        let (streamed, sink, server) =
+            stream_from(sse_response(&[full_stream()]), make_client).await;
+        let streamed = streamed.unwrap();
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(full_response_body()))
+            .mount(&mock_server)
+            .await;
+        let whole = make_client(&mock_server.uri())
+            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+
+        assert_same_response(&streamed, &whole);
+        assert_eq!(streamed.content, "Hello w\u{f6}rld \u{1f600}", "text");
+        assert_eq!(
+            streamed.thinking,
+            vec![
+                ThinkingBlock::text("Weighing it.").from_origin(&test_origin()),
+                own_signature_block("SIG-FC1", "call_0"),
+                own_signature_block("SIG-LATE", TEXT_PART),
+            ],
+            "summary, the first call's signature, and the late text signature"
+        );
+        let ids: Vec<&str> = streamed.tool_calls.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["call_0", "call_1"],
+            "calls numbered across events"
+        );
+        let usage = streamed.usage.unwrap();
+        assert_eq!(
+            (
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.cache_read_tokens
+            ),
+            (21, 14, Some(4)),
+            "usage from the last event, with the 5 thought tokens counted as output"
+        );
+        assert_eq!(
+            streamed.stop_reason,
+            Some(StopReason::EndTurn),
+            "finish reason"
+        );
+        assert_eq!(sink.text(), "Hello w\u{f6}rld \u{1f600}", "text streamed");
+        assert_eq!(
+            sink.thinking(),
+            "Weighing it.",
+            "summary streamed as thinking"
+        );
+
+        let requests = server.requests();
+        let request = requests.first().unwrap();
+        assert!(
+            request.target.contains(":streamGenerateContent")
+                && request.target.contains("alt=sse")
+                && request.target.contains("key=test-api-key"),
+            "the streaming endpoint is used with SSE framing: {}",
+            request.target
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_parses_at_every_chunk_boundary_including_inside_characters() {
+        let stream = full_stream();
+        let (whole, _, _) =
+            stream_from(sse_response(std::slice::from_ref(&stream)), make_client).await;
+        let whole = whole.unwrap();
+        for size in [1, 2, 3, 11, 64] {
+            let chunks = split_bytes(&stream, size);
+            let (result, sink, _) = stream_from(sse_response(&chunks), make_client).await;
+            let result = result.unwrap();
+            assert_same_response(&result, &whole);
+            assert_eq!(
+                sink.text(),
+                "Hello w\u{f6}rld \u{1f600}",
+                "chunks of {size} bytes keep characters whole"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_without_a_finish_reason_is_interrupted() {
+        let partial = parts_event(json!([{"text": "half an ans"}]));
+        let (clean_end, _, _) =
+            stream_from(sse_response(std::slice::from_ref(&partial)), make_client).await;
+        let err = clean_end.unwrap_err();
+        assert!(
+            matches!(err, InferenceError::StreamInterrupted(_)) && err.is_retryable(),
+            "ending before a finish reason is an interrupted stream: {err:?}"
+        );
+
+        let (dropped, sink, _) = stream_from(sse_chunks(&[partial]), make_client).await;
+        let dropped_err = dropped.unwrap_err();
+        assert!(
+            matches!(dropped_err, InferenceError::StreamInterrupted(_)),
+            "a dropped connection is an interrupted stream: {dropped_err:?}"
+        );
+        assert_eq!(sink.text(), "", "the partial text is voided");
+    }
+
+    #[tokio::test]
+    async fn blocked_prompt_in_a_stream_reports_no_candidates() {
+        let blocked = format!(
+            "data: {}\n\n",
+            json!({"promptFeedback": {"blockReason": "SAFETY"}})
+        );
+        let (result, _, _) = stream_from(sse_response(&[blocked]), make_client).await;
+        let err = result.unwrap_err();
+        assert!(
+            matches!(&err, InferenceError::Parse(m) if m.contains("no candidates")),
+            "same error as a response that arrives whole: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn in_stream_error_surfaces_and_unavailable_is_retryable() {
+        let stream = [
+            parts_event(json!([{"text": "partial"}])),
+            format!(
+                "data: {}\n\n",
+                json!({"error": {"code": 503, "status": "UNAVAILABLE",
+                    "message": "The model is overloaded."}})
+            ),
+        ]
+        .concat();
+        let (result, _, _) = stream_from(sse_response(&[stream]), make_client).await;
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("overloaded") && err.is_retryable(),
+            "the error event surfaces and 503 is retried: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stalled_stream_fails_after_the_idle_timeout() {
+        let mut script = sse_chunks(&[parts_event(json!([{"text": "partial"}]))]);
+        script.push(Step::pause(std::time::Duration::from_secs(5)));
+        let (result, _, _) = stream_from(script, |url| {
+            let http =
+                SharedHttpClient::new(&crate::inference::http::HttpClientConfig::with_timeout(1))
+                    .unwrap();
+            GeminiClient::new(
+                http,
+                url,
+                "k",
+                "gemini-2.0-flash",
+                1024,
+                RetryConfig::no_retry(),
+            )
+        })
+        .await;
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, InferenceError::Stalled(1)),
+            "a silent stream is a stall: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_after_partial_output_restarts_the_stream() {
+        let second = [
+            parts_event(json!([{"text": "whole answer"}])),
+            last_event(json!([])),
+        ]
+        .concat();
+        let server = ScriptedServer::start(vec![
+            sse_chunks(&[parts_event(json!([{"text": "par"}]))]),
+            sse_response(&[second]),
+        ])
+        .await;
+        let http =
+            SharedHttpClient::new(&crate::inference::http::HttpClientConfig::default()).unwrap();
+        let client = GeminiClient::new(
+            http,
+            server.uri(),
+            "k",
+            "gemini-2.0-flash",
+            1024,
+            RetryConfig {
+                max_retries: 1,
+                initial_delay: std::time::Duration::from_millis(5),
+                max_delay: std::time::Duration::from_millis(5),
+                backoff_multiplier: 1.0,
+            },
+        );
+        let sink = RecordingSink::default();
+        let response = client
+            .complete_streaming(
+                &[Message::user("hi")],
+                &[],
+                &CompletionOptions::default(),
+                &sink,
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.content, "whole answer", "the retry's answer");
+        assert_eq!(
+            sink.deltas(),
+            vec![
+                StreamDelta::Text("par".to_string()),
+                StreamDelta::Restart,
+                StreamDelta::Text("whole answer".to_string()),
+            ],
+            "the partial text is voided before the retry streams"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_that_ignores_the_stream_request_is_read_whole() {
+        let body = json!({
+            "candidates": [{"content": {"role": "model", "parts": [{"text": "Whole answer"}]},
+                "finishReason": "STOP"}],
+            "usageMetadata": {"promptTokenCount": 7, "candidatesTokenCount": 2}
+        });
+        let (result, sink, _) =
+            stream_from(json_response(200, &body.to_string()), make_client).await;
+        let response = result.unwrap();
+        assert_eq!(
+            response.content, "Whole answer",
+            "the whole body is the reply"
+        );
+        assert!(
+            sink.deltas().is_empty(),
+            "nothing streamed: {:?}",
+            sink.deltas()
+        );
+    }
+
+    #[tokio::test]
+    async fn status_errors_before_the_stream_surface_the_servers_message() {
+        let (result, sink, _) = stream_from(
+            json_response(
+                429,
+                r#"{"error":{"code":429,"message":"Resource has been exhausted","status":"RESOURCE_EXHAUSTED"}}"#,
+            ),
+            make_client,
+        )
+        .await;
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("429") && err.to_string().contains("exhausted"),
+            "status and message are kept: {err}"
+        );
+        assert!(err.is_retryable(), "429 is retried");
+        assert!(sink.deltas().is_empty(), "nothing streamed");
+    }
+
+    #[tokio::test]
+    async fn thought_tokens_count_as_output_without_a_stream_too() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{"content": {"role": "model", "parts": [{"text": "ok"}]},
+                    "finishReason": "STOP"}],
+                "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 3,
+                    "thoughtsTokenCount": 40, "totalTokenCount": 53}
+            })))
+            .mount(&mock_server)
+            .await;
+        let usage = make_client(&mock_server.uri())
+            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+            .await
+            .unwrap()
+            .usage
+            .unwrap();
+        assert_eq!(usage.input_tokens, 10, "input tokens unchanged");
+        assert_eq!(
+            usage.output_tokens, 43,
+            "the 40 thought tokens are output tokens beside the 3 of the answer"
+        );
+    }
+
+    #[tokio::test]
+    async fn candidate_stopped_without_content_parses_as_an_empty_response() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{"finishReason": "SAFETY"}]
+            })))
+            .mount(&mock_server)
+            .await;
+        let response = make_client(&mock_server.uri())
+            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+        assert!(response.content.is_empty(), "nothing to show");
+        assert_eq!(
+            response.stop_reason,
+            Some(StopReason::ContentFilter),
+            "the reason it stopped is reported"
         );
     }
 

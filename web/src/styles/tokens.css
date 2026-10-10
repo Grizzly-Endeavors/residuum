@@ -136,6 +136,10 @@
      pinned to the bottom of the viewport sits above this. */
   --layout-bottom-bar-offset: calc(var(--layout-bottom-bar-height) + var(--safe-bottom));
   --layout-touch-target: 44px;
+  /* The room a conversation keeps under its newest line beside the composer
+     on a wide screen: a quarter of the view, between these. It reads
+     container-query units, so it works inside the feed's scrolling area. */
+  --layout-feed-buffer: clamp(96px, 25cqh, 280px);
 
   /* ── Breakpoints ───────────────────────────────────────────────────── */
   /* Phone is up to phone-max, wide from wide-min, medium between. Media
@@ -163,11 +167,9 @@
   /* Content swapped inside a frame that stays put: the settings sections. */
   --duration-swap: 120ms;
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
-  /* Continuous indicators: a spinner, a working pulse, the rail's flowing
-     vein and the streaming caret. */
+  /* Continuous indicators: a spinner, a working pulse and the streaming caret. */
   --duration-spin: 900ms;
   --duration-pulse: 1600ms;
-  --duration-flow: 1800ms;
   --duration-blink: 1000ms;
   --ease-linear: linear;
   --ease-in-out: ease-in-out;

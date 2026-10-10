@@ -7,13 +7,15 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::bus::{
-    EndpointName, NoticeEvent, NotifyName, Publisher, SYSTEM_CHANNEL, SessionAddress,
-    SessionEventKind, SessionResponseEvent, ToolActivityEvent, ToolCallEvent, ToolResultEvent,
-    TurnUsageEvent, topics,
+    EndpointName, MainConversationEvent, MessageEvent, NoticeEvent, NotifyName, Publisher,
+    SYSTEM_CHANNEL, SessionAddress, SessionEventKind, SessionResponseEvent, ToolCallEvent,
+    ToolResultEvent, TurnUsageEvent, topics,
 };
 use crate::inference::{
-    CompletionOptions, InferenceProvider, InferenceResponse, Message, ToolCall,
+    CompletionOptions, InferenceProvider, InferenceResponse, Message, StreamSink, ToolCall,
+    ToolDefinition, joined_thinking_text,
 };
+use crate::interfaces::types::chat_interface_endpoint;
 use crate::mcp::SharedMcpRegistry;
 use crate::tools::{
     CANCELLED_BEFORE_START, CANCELLED_WHILE_RUNNING, ToolError, ToolRegistry, ToolResult,
@@ -25,6 +27,7 @@ use super::context::{MemoryContext, PromptContext, StatusLine, assemble_system_p
 use super::hop::HopCounter;
 use super::interrupt::{Interrupt, InterruptSource};
 use super::recent_messages::RecentMessages;
+use super::stream::{ChannelSink, DeltaCoalescer, DiscardSink, StreamPiece};
 use super::usage::{SessionUsageTotals, TurnUsage, UsageSink};
 
 /// Context for publishing streaming events during a turn.
@@ -43,14 +46,22 @@ pub(crate) struct EventContext<'a> {
     pub session_conversation: Option<SessionConversationTarget<'a>>,
 }
 
+/// A tool call or its result, as a turn publishes it.
+enum ToolActivity {
+    /// A tool was invoked by the agent.
+    Call(ToolCallEvent),
+    /// A tool execution completed.
+    Result(ToolResultEvent),
+}
+
 /// Where a turn's streaming events (tool activity, intermediate text) go.
 pub(crate) enum EventTarget<'a> {
-    /// The main agent: interactive endpoint topics, correlated to the
-    /// message that started the turn. Either endpoint may be absent (e.g. a
+    /// The main agent: the main conversation, and for a turn delivered to a
+    /// chat interface that interface's endpoint topic, correlated to the
+    /// message that started the turn. The endpoint may be absent (e.g. a
     /// background turn with nowhere to show its output).
     Endpoint {
         output_endpoint: Option<&'a EndpointName>,
-        tool_activity_endpoint: Option<&'a EndpointName>,
         correlation_id: &'a str,
     },
     /// An agent session: the sessions topic, tagged with the session's
@@ -83,28 +94,46 @@ impl EventContext<'_> {
         }
     }
 
-    async fn publish_tool_activity(&self, event: ToolActivityEvent, tool_name: &str) {
+    /// Whether this is a main-agent turn, whose output streams to the main
+    /// conversation. A session's does not.
+    fn streams_to_main(&self) -> bool {
+        matches!(self.target, EventTarget::Endpoint { .. })
+    }
+
+    /// Publish one event of the main agent's conversation, built from the
+    /// turn's id. A session's turn has no main conversation to publish to.
+    async fn publish_main(&self, build: impl FnOnce(&str) -> MainConversationEvent) {
+        let EventTarget::Endpoint { correlation_id, .. } = self.target else {
+            return;
+        };
+        if let Err(e) = self
+            .publisher
+            .publish(topics::MainConversation, build(correlation_id))
+            .await
+        {
+            tracing::debug!(error = %e, "failed to publish main conversation event");
+        }
+    }
+
+    /// Publish a tool call or result of model call `call`: to the main
+    /// conversation for the main agent, to the session stream for a session.
+    /// No endpoint topic carries it.
+    async fn publish_tool_activity(&self, event: ToolActivity, call: u32) {
         match self.target {
-            EventTarget::Endpoint {
-                tool_activity_endpoint: Some(ep),
-                ..
-            } => {
-                if let Err(e) = self
-                    .publisher
-                    .publish(topics::Endpoint(ep.clone()), event)
-                    .await
-                {
-                    tracing::debug!(error = %e, tool_name = %tool_name, "failed to publish tool activity event");
-                }
+            EventTarget::Endpoint { .. } => {
+                self.publish_main(|_| match event {
+                    ToolActivity::Call(tool_call) => MainConversationEvent::ToolCall {
+                        call,
+                        event: tool_call,
+                    },
+                    ToolActivity::Result(result) => MainConversationEvent::ToolResult(result),
+                })
+                .await;
             }
-            EventTarget::Endpoint {
-                tool_activity_endpoint: None,
-                ..
-            } => {}
             EventTarget::Session { address, run_id } => {
                 let kind = match event {
-                    ToolActivityEvent::Call(call) => SessionEventKind::ToolCall(call),
-                    ToolActivityEvent::Result(result) => SessionEventKind::ToolResult(result),
+                    ToolActivity::Call(tool_call) => SessionEventKind::ToolCall(tool_call),
+                    ToolActivity::Result(result) => SessionEventKind::ToolResult(result),
                 };
                 crate::background::events::publish_session_event(
                     self.publisher,
@@ -117,38 +146,42 @@ impl EventContext<'_> {
         }
     }
 
-    /// Publish this turn's intermediate (pre-tool-call) text: to the
-    /// session-stream topic for [`EventTarget::Session`] (or main's own
-    /// endpoint topic for [`EventTarget::Endpoint`]), and — when
-    /// [`Self::session_conversation`] is set — additionally as a
-    /// [`SessionResponseEvent`] to the conversation session's own
-    /// conversation, never falling back to the owner's DM, the same rule its
-    /// turn responses follow.
-    async fn publish_intermediate(&self, content: &str) {
+    /// Publish this turn's intermediate (pre-tool-call) text from model call
+    /// `call`: to the main conversation and, when the turn is delivered to a
+    /// chat interface, that interface's endpoint topic for
+    /// [`EventTarget::Endpoint`], or the session-stream topic for
+    /// [`EventTarget::Session`]; and — when [`Self::session_conversation`]
+    /// is set — additionally as a [`SessionResponseEvent`] to the
+    /// conversation session's own conversation, never falling back to the
+    /// owner's DM, the same rule its turn responses follow.
+    async fn publish_intermediate(&self, content: &str, call: u32) {
         match self.target {
             EventTarget::Endpoint {
-                output_endpoint: Some(ep),
+                output_endpoint,
                 correlation_id,
                 ..
             } => {
-                if let Err(e) = self
-                    .publisher
-                    .publish(
-                        topics::Endpoint(ep.clone()),
-                        crate::bus::IntermediateEvent {
-                            correlation_id: correlation_id.to_owned(),
-                            content: content.to_owned(),
-                        },
-                    )
-                    .await
+                self.publish_main(|turn_id| MainConversationEvent::Intermediate {
+                    turn_id: turn_id.to_owned(),
+                    call,
+                    content: content.to_owned(),
+                })
+                .await;
+                if let Some(ep) = chat_interface_endpoint(output_endpoint)
+                    && let Err(e) = self
+                        .publisher
+                        .publish(
+                            topics::Endpoint(ep.clone()),
+                            crate::bus::IntermediateEvent {
+                                correlation_id: correlation_id.to_owned(),
+                                content: content.to_owned(),
+                            },
+                        )
+                        .await
                 {
                     tracing::debug!(error = %e, "failed to publish intermediate text event");
                 }
             }
-            EventTarget::Endpoint {
-                output_endpoint: None,
-                ..
-            } => {}
             EventTarget::Session { address, run_id } => {
                 crate::background::events::publish_session_event(
                     self.publisher,
@@ -182,6 +215,76 @@ impl EventContext<'_> {
         }
     }
 
+    /// Publish a main-agent turn's reply text to the main conversation. The
+    /// endpoint topic gets its copy when the turn ends, from the event loop;
+    /// `call` is the model call that wrote the text, `None` for a notice the
+    /// turn itself wrote.
+    async fn publish_reply(&self, call: Option<u32>, content: &str) {
+        let endpoint = match self.target {
+            EventTarget::Endpoint {
+                output_endpoint: Some(ep),
+                ..
+            } => ep.to_string(),
+            EventTarget::Endpoint {
+                output_endpoint: None,
+                ..
+            }
+            | EventTarget::Session { .. } => String::new(),
+        };
+        self.publish_main(|turn_id| MainConversationEvent::Response {
+            turn_id: turn_id.to_owned(),
+            call,
+            endpoint,
+            content: content.to_owned(),
+        })
+        .await;
+    }
+
+    /// Publish the complete readable reasoning of model call `call` to the
+    /// main conversation.
+    async fn publish_thinking(&self, call: u32, content: String) {
+        self.publish_main(|turn_id| MainConversationEvent::Thinking {
+            turn_id: turn_id.to_owned(),
+            call,
+            content,
+        })
+        .await;
+    }
+
+    /// Publish one batched piece of model call `call`'s streamed output to
+    /// the main conversation.
+    async fn publish_stream_piece(&self, call: u32, piece: StreamPiece) {
+        self.publish_main(|turn_id| {
+            let turn_id = turn_id.to_owned();
+            match piece {
+                StreamPiece::Text(text) => MainConversationEvent::TextDelta {
+                    turn_id,
+                    call,
+                    text,
+                },
+                StreamPiece::Thinking(text) => MainConversationEvent::ThinkingDelta {
+                    turn_id,
+                    call,
+                    text,
+                },
+                StreamPiece::Restart => MainConversationEvent::StreamRestart { turn_id, call },
+            }
+        })
+        .await;
+    }
+
+    /// Announce a person's message joining this main-agent turn mid-turn. Not
+    /// for one agent's message to another, and not for a session's turn.
+    async fn publish_user_message(&self, message: &MessageEvent) {
+        let EventTarget::Endpoint { correlation_id, .. } = self.target else {
+            return;
+        };
+        let Some(event) = MainConversationEvent::user_message(message, correlation_id) else {
+            return;
+        };
+        self.publish_main(|_| event).await;
+    }
+
     /// Publish this turn's live usage progress after a model call: this
     /// turn's own output tokens so far (for the activity line)
     /// and, when the caller tracks cumulative session totals, the updated
@@ -189,32 +292,17 @@ impl EventContext<'_> {
     /// `docs/systems-usage/turn-control.md`.
     async fn publish_usage(&self, turn: TurnUsage, session_totals: Option<SessionUsageTotals>) {
         match self.target {
-            EventTarget::Endpoint {
-                output_endpoint: Some(ep),
-                correlation_id,
-                ..
-            } => {
-                if let Err(e) = self
-                    .publisher
-                    .publish(
-                        topics::Endpoint(ep.clone()),
-                        TurnUsageEvent {
-                            correlation_id: correlation_id.to_owned(),
-                            output_tokens: turn.output_tokens,
-                            has_usage: turn.has_usage,
-                            tool_calls: turn.tool_calls,
-                            session_totals,
-                        },
-                    )
-                    .await
-                {
-                    tracing::debug!(error = %e, "failed to publish turn usage event");
-                }
+            EventTarget::Endpoint { correlation_id, .. } => {
+                let event = TurnUsageEvent {
+                    correlation_id: correlation_id.to_owned(),
+                    output_tokens: turn.output_tokens,
+                    has_usage: turn.has_usage,
+                    tool_calls: turn.tool_calls,
+                    session_totals,
+                };
+                self.publish_main(|_| MainConversationEvent::TurnUsage(event))
+                    .await;
             }
-            EventTarget::Endpoint {
-                output_endpoint: None,
-                ..
-            } => {}
             EventTarget::Session { address, run_id } => {
                 crate::background::events::publish_session_event(
                     self.publisher,
@@ -361,6 +449,165 @@ async fn push_and_record_many(
     recent_messages.extend(messages);
 }
 
+/// How one model call ended.
+enum ModelCall {
+    /// The call returned a response.
+    Completed {
+        response: InferenceResponse,
+        /// Whether text or reasoning streamed to the main conversation while
+        /// the call ran and has not been voided since: when the response
+        /// turns out to be one the turn discards, it must void them.
+        streamed: bool,
+    },
+    /// The user stopped the turn while the call was in flight.
+    Stopped,
+}
+
+/// Wait until `deadline`, or forever when there is none.
+async fn sleep_until_deadline(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Publish batched stream pieces, tracking whether any non-void streamed
+/// output has been published for the call.
+async fn publish_stream_pieces(
+    events: &EventContext<'_>,
+    call: u32,
+    pieces: impl IntoIterator<Item = StreamPiece>,
+    streamed: &mut bool,
+) {
+    for piece in pieces {
+        *streamed = !matches!(piece, StreamPiece::Restart);
+        events.publish_stream_piece(call, piece).await;
+    }
+}
+
+/// Make one model request, raced against the stop token.
+///
+/// A main-agent turn hands the provider a sink that forwards its streamed
+/// text and reasoning to the main conversation, batched (see
+/// [`DeltaCoalescer`]) and tagged with `call`; a session's turn hands it a
+/// sink that discards them. The sink never blocks, so a slow bus can't stall
+/// the provider's read loop. Whatever was streamed is published before this
+/// returns — also when the call fails or is stopped — so the authoritative
+/// frames that follow always come after it, and a stopped turn keeps the
+/// partial text on the page.
+async fn call_model(
+    resources: &TurnResources<'_>,
+    events: &EventContext<'_>,
+    messages: &[Message],
+    tool_definitions: &[ToolDefinition],
+    call: u32,
+) -> anyhow::Result<ModelCall> {
+    let (channel_sink, mut deltas) = ChannelSink::channel();
+    let sink: &dyn StreamSink = if events.streams_to_main() {
+        &channel_sink
+    } else {
+        &DiscardSink
+    };
+    let request =
+        resources
+            .provider
+            .complete_streaming(messages, tool_definitions, resources.options, sink);
+    tokio::pin!(request);
+
+    let mut coalescer = DeltaCoalescer::default();
+    let mut streamed = false;
+    let outcome = loop {
+        let flush_at = coalescer.flush_at();
+        tokio::select! {
+            biased;
+            () = resources.stop_token.cancelled() => break None,
+            Some(delta) = deltas.recv() => {
+                let ready = coalescer.push(delta, tokio::time::Instant::now());
+                publish_stream_pieces(events, call, ready, &mut streamed).await;
+            }
+            () = sleep_until_deadline(flush_at) => {
+                publish_stream_pieces(events, call, coalescer.take_pending(), &mut streamed).await;
+            }
+            result = &mut request => break Some(result),
+        }
+    };
+
+    // Whatever the provider pushed just before returning is still queued.
+    while let Ok(delta) = deltas.try_recv() {
+        let ready = coalescer.push(delta, tokio::time::Instant::now());
+        publish_stream_pieces(events, call, ready, &mut streamed).await;
+    }
+    publish_stream_pieces(events, call, coalescer.take_pending(), &mut streamed).await;
+
+    match outcome {
+        None => Ok(ModelCall::Stopped),
+        Some(result) => Ok(ModelCall::Completed {
+            response: result.context("model completion failed")?,
+            streamed,
+        }),
+    }
+}
+
+/// Prepare to ask the model again after an empty response (a transient API
+/// glitch), voiding what the empty attempt streamed. Errors once the retries
+/// are used up.
+async fn retry_empty_response(
+    empty_retries: &mut u32,
+    streamed: bool,
+    events: &EventContext<'_>,
+    call: u32,
+) -> anyhow::Result<()> {
+    if streamed {
+        events
+            .publish_stream_piece(call, StreamPiece::Restart)
+            .await;
+    }
+    if *empty_retries >= MAX_EMPTY_RESPONSE_RETRIES {
+        anyhow::bail!("model returned empty response with no tool calls");
+    }
+    *empty_retries += 1;
+    tracing::warn!(
+        attempt = *empty_retries,
+        max = MAX_EMPTY_RESPONSE_RETRIES,
+        "model returned empty response, retrying"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    Ok(())
+}
+
+/// Leave a system note in the conversation that the user stopped the turn.
+async fn record_stop(recent_messages: &mut RecentMessages, resources: &TurnResources<'_>) {
+    push_and_record(
+        recent_messages,
+        resources.transcript_sink,
+        Message::system(STOP_NOTE),
+    )
+    .await;
+}
+
+/// Tidy a model response before the turn acts on it: strip inline think
+/// tags from its text and publish its reasoning to the main conversation,
+/// ahead of the text and tool calls it led to. An empty response is retried
+/// by the turn, so its reasoning is not kept or published.
+async fn settle_response(response: &mut InferenceResponse, events: &EventContext<'_>, call: u32) {
+    if !response.thinking.is_empty() {
+        tracing::debug!(
+            thinking_len = response
+                .thinking
+                .iter()
+                .map(|block| block.text.len())
+                .sum::<usize>(),
+            "structured thinking received"
+        );
+    }
+    response.content = super::think_tags::strip_think_tags(&response.content);
+
+    let empty = response.tool_calls.is_empty() && response.content.is_empty();
+    if !empty && let Some(reasoning) = joined_thinking_text(&response.thinking) {
+        events.publish_thinking(call, reasoning).await;
+    }
+}
+
 /// Push `notice` as the turn's one final assistant message and return it as
 /// the turn's whole result. Shared by every "end the turn here with a
 /// message the user sees" path in [`execute_turn`]'s loop (the
@@ -370,9 +617,11 @@ async fn finish_turn_with_notice(
     notice: String,
     recent_messages: &mut RecentMessages,
     resources: &TurnResources<'_>,
+    events: &EventContext<'_>,
 ) -> anyhow::Result<Vec<String>> {
     let final_message = Message::assistant(notice.clone(), None);
     push_and_record(recent_messages, resources.transcript_sink, final_message).await;
+    events.publish_reply(None, &notice).await;
     Ok(vec![notice])
 }
 
@@ -388,8 +637,12 @@ async fn finish_turn_with_notice(
 /// offered two definitions under one name. See `src/mcp/CLAUDE.md`.
 ///
 /// Returns a vec containing the final text-only response. Intermediate texts
-/// emitted alongside tool calls are sent via `reply` in real-time but not
-/// included in the return value.
+/// emitted alongside tool calls are published through `events` as they are
+/// produced but not included in the return value.
+///
+/// A main-agent turn streams each model call's text and reasoning to the
+/// main conversation while the call runs (see [`call_model`]); the frames
+/// that follow it carry the authoritative text.
 #[tracing::instrument(skip_all, fields(operation = "execute_turn"))]
 #[expect(
     clippy::too_many_arguments,
@@ -416,13 +669,21 @@ pub(crate) async fn execute_turn(
 
     let mut iteration: usize = 0;
     loop {
-        if check_tool_iteration_limit(resources, recent_messages, iteration, &mut texts).await {
+        if check_tool_iteration_limit(resources, recent_messages, events, iteration, &mut texts)
+            .await
+        {
             return Ok(texts);
         }
 
-        if check_interrupts_and_stop(interrupt_rx, recent_messages, resources, iteration).await {
+        if check_interrupts_and_stop(interrupt_rx, recent_messages, resources, events, iteration)
+            .await
+        {
             return Ok(texts);
         }
+
+        // The model request this iteration makes; an empty-response retry
+        // repeats it, so it always equals the iteration.
+        let call = u32::try_from(iteration).unwrap_or(u32::MAX);
 
         let mut tool_definitions = resources.tools.definitions();
 
@@ -445,25 +706,19 @@ pub(crate) async fn execute_turn(
             status_line,
         );
 
-        let mut response = tokio::select! {
-            biased;
-            () = resources.stop_token.cancelled() => {
-                tracing::info!(iterations = iteration, "turn stopped by user during model call");
-                push_and_record(recent_messages, resources.transcript_sink, Message::system(STOP_NOTE)).await;
-                return Ok(texts);
-            }
-            result = resources.provider.complete(&messages, &tool_definitions, resources.options) => {
-                result.context("model completion failed")?
-            }
-        };
-
-        if let Some(ref thinking) = response.thinking {
-            tracing::debug!(
-                thinking_len = thinking.len(),
-                "structured thinking received"
-            );
-        }
-        response.content = super::think_tags::strip_think_tags(&response.content);
+        let (mut response, streamed) =
+            match call_model(resources, events, &messages, &tool_definitions, call).await? {
+                ModelCall::Completed { response, streamed } => (response, streamed),
+                ModelCall::Stopped => {
+                    tracing::info!(
+                        iterations = iteration,
+                        "turn stopped by user during model call"
+                    );
+                    record_stop(recent_messages, resources).await;
+                    return Ok(texts);
+                }
+            };
+        settle_response(&mut response, events, call).await;
 
         if response.was_truncated() {
             handle_output_truncated(&response, resources, events, recent_messages).await;
@@ -474,21 +729,14 @@ pub(crate) async fn execute_turn(
             update_and_publish_usage(&response, 0, &mut turn_usage, resources.usage_sink, events)
                 .await;
             if response.content.is_empty() {
-                if empty_retries < MAX_EMPTY_RESPONSE_RETRIES {
-                    empty_retries += 1;
-                    tracing::warn!(
-                        attempt = empty_retries,
-                        max = MAX_EMPTY_RESPONSE_RETRIES,
-                        "model returned empty response, retrying"
-                    );
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    continue;
-                }
-                anyhow::bail!("model returned empty response with no tool calls");
+                retry_empty_response(&mut empty_retries, streamed, events, call).await?;
+                continue;
             }
             tracing::debug!(iterations = iteration, "turn complete");
-            let final_message = Message::assistant(response.content.clone(), None);
+            let final_message =
+                Message::assistant(response.content.clone(), None).with_thinking(response.thinking);
             push_and_record(recent_messages, resources.transcript_sink, final_message).await;
+            events.publish_reply(Some(call), &response.content).await;
             texts.push(response.content);
             return Ok(texts);
         }
@@ -508,6 +756,7 @@ pub(crate) async fn execute_turn(
                 events,
                 subconscious,
                 iteration,
+                call,
                 turn_start,
             },
             &mut turn_usage,
@@ -515,7 +764,7 @@ pub(crate) async fn execute_turn(
         .await;
 
         if let Some(notice) = notice {
-            return finish_turn_with_notice(notice, recent_messages, resources).await;
+            return finish_turn_with_notice(notice, recent_messages, resources, events).await;
         }
         iteration += 1;
     }
@@ -563,6 +812,7 @@ async fn process_tool_call_batch(
 async fn check_tool_iteration_limit(
     resources: &TurnResources<'_>,
     recent_messages: &mut RecentMessages,
+    events: &EventContext<'_>,
     iteration: usize,
     texts: &mut Vec<String>,
 ) -> bool {
@@ -583,6 +833,7 @@ async fn check_tool_iteration_limit(
     );
     let final_message = Message::assistant(notice.clone(), None);
     push_and_record(recent_messages, resources.transcript_sink, final_message).await;
+    events.publish_reply(None, &notice).await;
     texts.push(notice);
     true
 }
@@ -595,6 +846,8 @@ struct ToolCallResponseContext<'a> {
     events: &'a EventContext<'a>,
     subconscious: Option<&'a crate::subconscious::SubconsciousWatch>,
     iteration: usize,
+    /// Index of the model call whose response is being handled.
+    call: u32,
     turn_start: usize,
 }
 
@@ -615,13 +868,16 @@ async fn handle_tool_call_response(
     ctx: ToolCallResponseContext<'_>,
 ) -> (u32, Option<String>) {
     if !response.content.is_empty() {
-        ctx.events.publish_intermediate(&response.content).await;
+        ctx.events
+            .publish_intermediate(&response.content, ctx.call)
+            .await;
     }
 
     let tool_calls =
         annotate_tool_call_servers(&response.tool_calls, ctx.resources.mcp_registry).await;
 
-    let msg = Message::assistant(response.content.clone(), Some(tool_calls.clone()));
+    let msg = Message::assistant(response.content.clone(), Some(tool_calls.clone()))
+        .with_thinking(response.thinking.clone());
     push_and_record(recent_messages, ctx.resources.transcript_sink, msg).await;
 
     // Classification runs concurrently with tool execution; a correction
@@ -639,6 +895,7 @@ async fn handle_tool_call_response(
         recent_messages,
         ctx.events,
         repeat_guard,
+        ctx.call,
     )
     .await;
 
@@ -669,6 +926,7 @@ async fn check_interrupts_and_stop(
     interrupt_rx: &mut dyn InterruptSource,
     recent_messages: &mut RecentMessages,
     resources: &TurnResources<'_>,
+    events: &EventContext<'_>,
     iteration: usize,
 ) -> bool {
     let mut stopped = drain_interrupts(
@@ -676,6 +934,7 @@ async fn check_interrupts_and_stop(
         recent_messages,
         resources.transcript_sink,
         resources.hop_counter,
+        events,
     )
     .await;
 
@@ -708,17 +967,22 @@ async fn check_interrupts_and_stop(
 /// the caller can end the turn gracefully at this checkpoint. Draining
 /// continues to the end of the buffered batch even after a stop is seen, so
 /// any interrupts queued just before it are still folded into history.
+///
+/// A person's message is announced to the main conversation at the moment it
+/// is folded in, so a client sees it at the position the model does.
 async fn drain_interrupts(
     interrupt_rx: &mut dyn InterruptSource,
     recent_messages: &mut RecentMessages,
     sink: Option<&dyn TranscriptSink>,
     hop_counter: &HopCounter,
+    events: &EventContext<'_>,
 ) -> bool {
     let mut stopped = false;
     while let Ok(interrupt) = interrupt_rx.try_recv() {
         match interrupt {
             Interrupt::UserMessage(msg) => {
                 tracing::info!(msg_id = %msg.id, "injecting mid-turn user message");
+                events.publish_user_message(&msg).await;
                 push_and_record_many(recent_messages, sink, msg.into_history_messages()).await;
             }
             Interrupt::AgentMessage(msg) => {
@@ -830,6 +1094,7 @@ async fn run_tool_call_batch(
     recent_messages: &mut RecentMessages,
     events: &EventContext<'_>,
     repeat_guard: &mut RepeatCallGuard,
+    call: u32,
 ) -> (u32, Option<(String, u32)>) {
     let guard_cfg = resources.repeat_call_guard;
     let mut stopped_by_repeat_guard = None;
@@ -837,7 +1102,7 @@ async fn run_tool_call_batch(
     let mut executed: u32 = 0;
     for tool_call in tool_calls {
         if resources.stop_token.is_cancelled() || stopped_by_repeat_guard.is_some() {
-            skip_tool_call(tool_call, resources, recent_messages, events).await;
+            skip_tool_call(tool_call, resources, recent_messages, events, call).await;
             skipped += 1;
             continue;
         }
@@ -845,8 +1110,15 @@ async fn run_tool_call_batch(
         if guard_cfg.enabled {
             let consecutive = repeat_guard.record(&tool_call.name, &tool_call.arguments);
             if consecutive >= guard_cfg.stop_after {
-                stop_repeated_tool_call(tool_call, consecutive, resources, recent_messages, events)
-                    .await;
+                stop_repeated_tool_call(
+                    tool_call,
+                    consecutive,
+                    resources,
+                    recent_messages,
+                    events,
+                    call,
+                )
+                .await;
                 stopped_by_repeat_guard = Some((tool_call.name.clone(), consecutive));
                 continue;
             }
@@ -860,13 +1132,21 @@ async fn run_tool_call_batch(
                     "You've made this exact call {consecutive} times in a row with the same \
                      arguments; the result won't change. Try something different or finish."
                 );
-                execute_tool(tool_call, resources, recent_messages, events, Some(note)).await;
+                execute_tool(
+                    tool_call,
+                    resources,
+                    recent_messages,
+                    events,
+                    call,
+                    Some(note),
+                )
+                .await;
                 executed += 1;
                 continue;
             }
         }
 
-        execute_tool(tool_call, resources, recent_messages, events, None).await;
+        execute_tool(tool_call, resources, recent_messages, events, call, None).await;
         executed += 1;
     }
     if skipped > 0 {
@@ -995,18 +1275,19 @@ async fn execute_tool(
     resources: &TurnResources<'_>,
     recent_messages: &mut RecentMessages,
     events: &EventContext<'_>,
+    call: u32,
     steering_note: Option<String>,
 ) {
     events
         .publish_tool_activity(
-            ToolActivityEvent::Call(ToolCallEvent {
+            ToolActivity::Call(ToolCallEvent {
                 correlation_id: events.correlation_id().to_owned(),
                 tool_call_id: tool_call.id.clone(),
                 name: tool_call.name.clone(),
                 arguments: tool_call.arguments.clone(),
                 server: tool_call.server.clone(),
             }),
-            &tool_call.name,
+            call,
         )
         .await;
 
@@ -1064,7 +1345,7 @@ async fn execute_tool(
 
     events
         .publish_tool_activity(
-            ToolActivityEvent::Result(ToolResultEvent {
+            ToolActivity::Result(ToolResultEvent {
                 correlation_id: events.correlation_id().to_owned(),
                 tool_call_id: tool_call.id.clone(),
                 name: tool_call.name.clone(),
@@ -1072,7 +1353,7 @@ async fn execute_tool(
                 is_error,
                 auto_mode,
             }),
-            &tool_call.name,
+            call,
         )
         .await;
 
@@ -1095,17 +1376,18 @@ async fn record_cancelled_tool_call(
     resources: &TurnResources<'_>,
     recent_messages: &mut RecentMessages,
     events: &EventContext<'_>,
+    call: u32,
 ) {
     events
         .publish_tool_activity(
-            ToolActivityEvent::Call(ToolCallEvent {
+            ToolActivity::Call(ToolCallEvent {
                 correlation_id: events.correlation_id().to_owned(),
                 tool_call_id: tool_call.id.clone(),
                 name: tool_call.name.clone(),
                 arguments: tool_call.arguments.clone(),
                 server: tool_call.server.clone(),
             }),
-            &tool_call.name,
+            call,
         )
         .await;
 
@@ -1113,7 +1395,7 @@ async fn record_cancelled_tool_call(
 
     events
         .publish_tool_activity(
-            ToolActivityEvent::Result(ToolResultEvent {
+            ToolActivity::Result(ToolResultEvent {
                 correlation_id: events.correlation_id().to_owned(),
                 tool_call_id: tool_call.id.clone(),
                 name: tool_call.name.clone(),
@@ -1121,7 +1403,7 @@ async fn record_cancelled_tool_call(
                 is_error: result.is_error,
                 auto_mode: None,
             }),
-            &tool_call.name,
+            call,
         )
         .await;
 
@@ -1137,6 +1419,7 @@ async fn skip_tool_call(
     resources: &TurnResources<'_>,
     recent_messages: &mut RecentMessages,
     events: &EventContext<'_>,
+    call: u32,
 ) {
     tracing::info!(
         tool_name = %tool_call.name,
@@ -1149,6 +1432,7 @@ async fn skip_tool_call(
         resources,
         recent_messages,
         events,
+        call,
     )
     .await;
 }
@@ -1163,13 +1447,14 @@ async fn stop_repeated_tool_call(
     resources: &TurnResources<'_>,
     recent_messages: &mut RecentMessages,
     events: &EventContext<'_>,
+    call: u32,
 ) {
     let output = format!(
         "cancelled: this exact call (same tool, same arguments) was made {consecutive} times \
          in a row; the turn was stopped instead of running it again because the result cannot \
          change — try a different approach or report back instead"
     );
-    record_cancelled_tool_call(tool_call, output, resources, recent_messages, events).await;
+    record_cancelled_tool_call(tool_call, output, resources, recent_messages, events, call).await;
 }
 
 /// Log token usage from a model response at debug level.
@@ -1220,6 +1505,19 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
 
+    /// A main-turn context whose events go nowhere, for tests of code that
+    /// only needs one to hand along.
+    fn silent_events(publisher: &Publisher) -> EventContext<'_> {
+        EventContext {
+            publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: None,
+                correlation_id: "turn-1",
+            },
+            session_conversation: None,
+        }
+    }
+
     /// Collects every message it's asked to record, so a test can assert the
     /// incremental transcript sink saw exactly what `recent_messages` did.
     #[derive(Default)]
@@ -1244,8 +1542,14 @@ mod tests {
             "[Subconscious] Save the preference.".to_string(),
         ))
         .ok();
-        let stopped =
-            drain_interrupts(&mut rx, &mut recent, Some(&sink), &HopCounter::new(0)).await;
+        let stopped = drain_interrupts(
+            &mut rx,
+            &mut recent,
+            Some(&sink),
+            &HopCounter::new(0),
+            &silent_events(&Publisher::noop()),
+        )
+        .await;
 
         assert!(!stopped, "a subconscious correction is not a stop");
         assert_eq!(recent.len(), 1, "one message should be injected");
@@ -1270,8 +1574,14 @@ mod tests {
         let sink = MockSink::default();
 
         tx.send(Interrupt::Stopped).ok();
-        let stopped =
-            drain_interrupts(&mut rx, &mut recent, Some(&sink), &HopCounter::new(0)).await;
+        let stopped = drain_interrupts(
+            &mut rx,
+            &mut recent,
+            Some(&sink),
+            &HopCounter::new(0),
+            &silent_events(&Publisher::noop()),
+        )
+        .await;
 
         assert!(stopped, "a queued Stopped interrupt should report true");
         assert_eq!(recent.len(), 1, "the stop note should be injected");
@@ -1296,7 +1606,14 @@ mod tests {
         let (_tx, mut rx) = mpsc::unbounded_channel::<Interrupt>();
         let mut recent = RecentMessages::new();
 
-        let stopped = drain_interrupts(&mut rx, &mut recent, None, &HopCounter::new(0)).await;
+        let stopped = drain_interrupts(
+            &mut rx,
+            &mut recent,
+            None,
+            &HopCounter::new(0),
+            &silent_events(&Publisher::noop()),
+        )
+        .await;
 
         assert!(!stopped, "an empty channel should never report a stop");
         assert_eq!(recent.len(), 0, "nothing should be injected");
@@ -1325,8 +1642,14 @@ mod tests {
             context: None,
         };
         tx.send(Interrupt::UserMessage(inbound)).ok();
-        let stopped =
-            drain_interrupts(&mut rx, &mut recent, Some(&sink), &HopCounter::new(0)).await;
+        let stopped = drain_interrupts(
+            &mut rx,
+            &mut recent,
+            Some(&sink),
+            &HopCounter::new(0),
+            &silent_events(&Publisher::noop()),
+        )
+        .await;
 
         assert!(!stopped);
         assert!(!recent.messages().is_empty());
@@ -1374,7 +1697,9 @@ mod tests {
             }),
         };
 
-        events.publish_intermediate("checking the build now").await;
+        events
+            .publish_intermediate("checking the build now", 0)
+            .await;
 
         let event = tokio::time::timeout(std::time::Duration::from_secs(1), conv_sub.recv())
             .await
@@ -1425,7 +1750,7 @@ mod tests {
     async fn publish_intermediate_without_a_session_conversation_uses_intermediate_event() {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
-        let ep = EndpointName::from("ws");
+        let ep = EndpointName::from("telegram");
         let mut sub: crate::bus::Subscriber<crate::bus::IntermediateEvent> = bus_handle
             .subscribe(topics::Endpoint(ep.clone()))
             .await
@@ -1435,13 +1760,12 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
         };
 
-        events.publish_intermediate("thinking...").await;
+        events.publish_intermediate("thinking...", 0).await;
 
         let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
             .await
@@ -1450,6 +1774,51 @@ mod tests {
             .unwrap();
         assert_eq!(event.content, "thinking...");
         assert_eq!(event.correlation_id, "corr-1");
+    }
+
+    #[tokio::test]
+    async fn publish_intermediate_for_the_web_ui_reaches_only_the_main_conversation() {
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let ep = EndpointName::from(crate::interfaces::types::WEB_UI_ENDPOINT);
+        let mut endpoint_sub: crate::bus::Subscriber<crate::bus::IntermediateEvent> = bus_handle
+            .subscribe(topics::Endpoint(ep.clone()))
+            .await
+            .unwrap();
+        let mut main_sub: crate::bus::Subscriber<MainConversationEvent> = bus_handle
+            .subscribe(topics::MainConversation)
+            .await
+            .unwrap();
+
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: Some(&ep),
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+        events.publish_intermediate("thinking...", 0).await;
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), main_sub.recv())
+            .await
+            .expect("the main conversation should get the text promptly")
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                &event,
+                MainConversationEvent::Intermediate { turn_id, call: 0, content }
+                    if turn_id == "corr-1" && content == "thinking..."
+            ),
+            "{event:?}"
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), endpoint_sub.recv())
+                .await
+                .is_err(),
+            "the web UI's endpoint topic has no subscriber for a turn's intermediate text"
+        );
     }
 
     #[tokio::test]
@@ -1464,12 +1833,11 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
         };
-        events.publish_intermediate("nothing to see").await;
+        events.publish_intermediate("nothing to see", 0).await;
 
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(50), sub.recv())
@@ -1518,14 +1886,13 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
         };
 
         let mut recent = RecentMessages::new();
-        execute_tool(&tool_call, &resources, &mut recent, &events, None).await;
+        execute_tool(&tool_call, &resources, &mut recent, &events, 0, None).await;
 
         let msg = recent
             .messages()
@@ -1608,14 +1975,13 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
         };
 
         let mut recent = RecentMessages::new();
-        execute_tool(&tool_call, &resources, &mut recent, &events, None).await;
+        execute_tool(&tool_call, &resources, &mut recent, &events, 0, None).await;
 
         let msg = recent
             .messages()
@@ -1717,13 +2083,12 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
         };
         let mut recent = RecentMessages::new();
-        execute_tool(&tool_call, &resources, &mut recent, &events, None).await;
+        execute_tool(&tool_call, &resources, &mut recent, &events, 0, None).await;
         let output = recent
             .messages()
             .first()
@@ -1818,7 +2183,6 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -1835,7 +2199,7 @@ mod tests {
         let mut recent = RecentMessages::new();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             tokio::join!(
-                execute_tool(&tool_call, &resources, &mut recent, &events, None),
+                execute_tool(&tool_call, &resources, &mut recent, &events, 0, None),
                 cancel_after_a_moment,
             )
         })
@@ -1889,14 +2253,13 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
         };
 
         let mut recent = RecentMessages::new();
-        skip_tool_call(&tool_call, &resources, &mut recent, &events).await;
+        skip_tool_call(&tool_call, &resources, &mut recent, &events, 0).await;
 
         let msg = recent
             .messages()
@@ -1981,7 +2344,6 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2203,21 +2565,46 @@ mod tests {
         }
     }
 
+    /// The usage progress a turn publishes to the main conversation, which is
+    /// the only place it goes.
+    struct UsageFeed(crate::bus::Subscriber<MainConversationEvent>);
+
+    impl UsageFeed {
+        async fn follow(bus_handle: &crate::bus::BusHandle) -> Self {
+            Self(
+                bus_handle
+                    .subscribe(topics::MainConversation)
+                    .await
+                    .unwrap(),
+            )
+        }
+
+        /// The next usage event, passing over the conversation's other events.
+        async fn next(&mut self) -> TurnUsageEvent {
+            loop {
+                let event = tokio::time::timeout(std::time::Duration::from_secs(1), self.0.recv())
+                    .await
+                    .expect("a usage event should be published promptly")
+                    .unwrap()
+                    .unwrap();
+                if let MainConversationEvent::TurnUsage(usage) = event {
+                    return usage;
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn publish_usage_for_endpoint_target_maps_to_turn_usage_event() {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let ep = EndpointName::from("ws");
-        let mut sub: crate::bus::Subscriber<TurnUsageEvent> = bus_handle
-            .subscribe(topics::Endpoint(ep.clone()))
-            .await
-            .unwrap();
+        let mut sub = UsageFeed::follow(&bus_handle).await;
 
         let events = EventContext {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2236,11 +2623,7 @@ mod tests {
             )
             .await;
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
-            .await
-            .expect("a TurnUsageEvent should be published promptly")
-            .unwrap()
-            .unwrap();
+        let event = sub.next().await;
         assert_eq!(event.correlation_id, "corr-1");
         assert_eq!(event.output_tokens, 20);
         assert!(event.has_usage);
@@ -2249,30 +2632,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publish_usage_with_no_output_endpoint_is_a_noop() {
+    async fn publish_usage_with_no_output_endpoint_still_reports_to_the_main_conversation() {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
-        let ep = EndpointName::from("ws");
-        let mut sub: crate::bus::Subscriber<TurnUsageEvent> =
-            bus_handle.subscribe(topics::Endpoint(ep)).await.unwrap();
+        let mut sub = UsageFeed::follow(&bus_handle).await;
 
         let events = EventContext {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
         };
         events.publish_usage(TurnUsage::default(), None).await;
 
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), sub.recv())
-                .await
-                .is_err(),
-            "with no output endpoint there is nowhere to publish turn usage"
-        );
+        let event = sub.next().await;
+        assert_eq!(event.correlation_id, "corr-1");
+        assert!(!event.has_usage);
     }
 
     #[tokio::test]
@@ -2331,15 +2708,11 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let ep = EndpointName::from("ws");
-        let mut sub: crate::bus::Subscriber<TurnUsageEvent> = bus_handle
-            .subscribe(topics::Endpoint(ep.clone()))
-            .await
-            .unwrap();
+        let mut sub = UsageFeed::follow(&bus_handle).await;
         let events = EventContext {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2369,11 +2742,7 @@ mod tests {
             "the sink should receive exactly this batch's executed tool-call count"
         );
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
-            .await
-            .expect("a TurnUsageEvent should be published promptly")
-            .unwrap()
-            .unwrap();
+        let event = sub.next().await;
         assert_eq!(event.output_tokens, 20);
         assert_eq!(event.tool_calls, 2);
         assert_eq!(event.session_totals.map(|t| t.input_tokens), Some(100));
@@ -2390,7 +2759,6 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2416,15 +2784,11 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let ep = EndpointName::from("ws");
-        let mut sub: crate::bus::Subscriber<TurnUsageEvent> = bus_handle
-            .subscribe(topics::Endpoint(ep.clone()))
-            .await
-            .unwrap();
+        let mut sub = UsageFeed::follow(&bus_handle).await;
         let events = EventContext {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2435,11 +2799,7 @@ mod tests {
         response.usage = Some(usage(50, 5));
         update_and_publish_usage(&response, 0, &mut turn_usage, None, &events).await;
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
-            .await
-            .expect("a TurnUsageEvent should be published promptly")
-            .unwrap()
-            .unwrap();
+        let event = sub.next().await;
         assert_eq!(event.output_tokens, 5);
         assert_eq!(
             event.session_totals, None,
@@ -2453,15 +2813,11 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let ep = EndpointName::from("ws");
-        let mut sub: crate::bus::Subscriber<TurnUsageEvent> = bus_handle
-            .subscribe(topics::Endpoint(ep.clone()))
-            .await
-            .unwrap();
+        let mut sub = UsageFeed::follow(&bus_handle).await;
         let events = EventContext {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2475,11 +2831,7 @@ mod tests {
             !turn_usage.has_usage,
             "a provider reporting no usage must not flip has_usage"
         );
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
-            .await
-            .expect("a TurnUsageEvent should still be published so the indicator keeps ticking")
-            .unwrap()
-            .unwrap();
+        let event = sub.next().await;
         assert!(!event.has_usage);
         assert_eq!(event.output_tokens, 0);
     }
@@ -2533,15 +2885,11 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let ep = EndpointName::from("ws");
-        let mut sub: crate::bus::Subscriber<TurnUsageEvent> = bus_handle
-            .subscribe(topics::Endpoint(ep.clone()))
-            .await
-            .unwrap();
+        let mut sub = UsageFeed::follow(&bus_handle).await;
         let events = EventContext {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2569,11 +2917,7 @@ mod tests {
         .unwrap();
         assert_eq!(texts, vec!["hello".to_string()]);
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
-            .await
-            .expect("a TurnUsageEvent should be published promptly")
-            .unwrap()
-            .unwrap();
+        let event = sub.next().await;
         assert_eq!(
             event.tool_calls, 0,
             "a turn with no tool calls should report a zero tool-call count, not omit it"
@@ -2670,15 +3014,11 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let ep = EndpointName::from("ws");
-        let mut sub: crate::bus::Subscriber<TurnUsageEvent> = bus_handle
-            .subscribe(topics::Endpoint(ep.clone()))
-            .await
-            .unwrap();
+        let mut sub = UsageFeed::follow(&bus_handle).await;
         let events = EventContext {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: Some(&ep),
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2713,11 +3053,7 @@ mod tests {
 
         // First TurnUsageEvent, published right after the tool batch: the
         // three parallel calls should already be reflected.
-        let after_batch = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
-            .await
-            .expect("a TurnUsageEvent should be published after the tool batch")
-            .unwrap()
-            .unwrap();
+        let after_batch = sub.next().await;
         assert_eq!(
             after_batch.tool_calls, 3,
             "every parallel call in the batch should count individually"
@@ -2725,11 +3061,7 @@ mod tests {
 
         // Second TurnUsageEvent, published after the final text-only
         // response: the count must not be reset or double-counted.
-        let after_final = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
-            .await
-            .expect("a TurnUsageEvent should be published after the final response")
-            .unwrap()
-            .unwrap();
+        let after_final = sub.next().await;
         assert_eq!(
             after_final.tool_calls, 3,
             "the tool-call count must carry over unchanged into the turn's final response"
@@ -2778,7 +3110,6 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2867,7 +3198,6 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2876,7 +3206,7 @@ mod tests {
         let mut recent = RecentMessages::new();
         let mut guard = RepeatCallGuard::new();
         let (executed, stopped) =
-            run_tool_call_batch(&batch, &resources, &mut recent, &events, &mut guard).await;
+            run_tool_call_batch(&batch, &resources, &mut recent, &events, &mut guard, 0).await;
 
         assert!(stopped.is_none(), "3 repeats is below the stop threshold");
         assert_eq!(
@@ -2955,7 +3285,6 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2964,7 +3293,7 @@ mod tests {
         let mut recent = RecentMessages::new();
         let mut guard = RepeatCallGuard::new();
         let (executed, stopped) =
-            run_tool_call_batch(&batch, &resources, &mut recent, &events, &mut guard).await;
+            run_tool_call_batch(&batch, &resources, &mut recent, &events, &mut guard, 0).await;
 
         let (name, count) = stopped.expect("the 6th identical call should stop the turn");
         assert_eq!(name, "counting_tool");
@@ -3042,7 +3371,6 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -3051,7 +3379,7 @@ mod tests {
         let mut recent = RecentMessages::new();
         let mut guard = RepeatCallGuard::new();
         let (executed, stopped) =
-            run_tool_call_batch(&batch, &resources, &mut recent, &events, &mut guard).await;
+            run_tool_call_batch(&batch, &resources, &mut recent, &events, &mut guard, 0).await;
 
         assert!(stopped.is_none(), "a disabled guard never stops the turn");
         assert_eq!(
@@ -3135,7 +3463,6 @@ mod tests {
             publisher: &publisher,
             target: EventTarget::Endpoint {
                 output_endpoint: None,
-                tool_activity_endpoint: None,
                 correlation_id: "corr-1",
             },
             session_conversation: None,

@@ -6,10 +6,9 @@
 
 use super::events::{
     A2aTaskSignalEvent, AgentResultEvent, ConversationTypingEvent, ErrorEvent, InlineOutputEvent,
-    IntermediateEvent, MessageEvent, NoticeEvent, NotificationEvent, OutboundA2aTaskEvent,
-    PostTurnActivityEvent, ResponseEvent, SessionEvent, SessionResponseEvent, SpawnRequestEvent,
-    ToolActivityEvent, TurnLifecycleEvent, TurnUsageEvent, UserInboxAddedEvent, WorkbenchEvent,
-    WorkspaceEvent,
+    IntermediateEvent, MainConversationEvent, MessageEvent, NoticeEvent, NotificationEvent,
+    OutboundA2aTaskEvent, PostTurnActivityEvent, ResponseEvent, SessionEvent, SessionResponseEvent,
+    SpawnRequestEvent, TurnLifecycleEvent, UserInboxAddedEvent, WorkbenchEvent, WorkspaceEvent,
 };
 use super::types::{EndpointName, NotifyName, TopicId};
 
@@ -60,10 +59,14 @@ pub trait Carries<E: Clone + Send + Sync + 'static>: Topic {
 // Topic structs
 // ---------------------------------------------------------------------------
 
-/// Interactive endpoint turn activity.
+/// What is delivered to one named endpoint.
 ///
-/// Carries responses, tool call/result activity, turn lifecycle transitions,
-/// and intermediate model text for a specific named endpoint.
+/// For a chat interface (Telegram, Discord, Teams) it carries the turns that
+/// interface started: the reply, turn lifecycle transitions (its typing
+/// indicator), intermediate model text and a failure, plus conversation
+/// sessions' output and typing. The web UI's endpoint carries only what the
+/// agent posts to it with `send_message`; the web follows every turn through
+/// [`MainConversation`] instead.
 pub struct Endpoint(pub EndpointName);
 
 impl Topic for Endpoint {
@@ -77,19 +80,10 @@ impl Carries<ResponseEvent> for Endpoint {
     // agent's answer.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
-impl Carries<ToolActivityEvent> for Endpoint {
-    // Tool call/result activity the UI renders as it happens.
-    const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
-}
 impl Carries<TurnLifecycleEvent> for Endpoint {
     // Turn start/end drives visible turn state (e.g. the activity line of a running turn);
     // a dropped `Ended` would leave the UI showing a turn that never stops.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
-}
-impl Carries<TurnUsageEvent> for Endpoint {
-    // Cumulative token-count ticks for a running turn's progress — each one
-    // supersedes the last, so missing intermediate ticks is invisible.
-    const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossy;
 }
 impl Carries<IntermediateEvent> for Endpoint {
     // Pre-tool-call text the agent chose to say; each one is rendered as its
@@ -109,6 +103,28 @@ impl Carries<ConversationTypingEvent> for Endpoint {
 impl Carries<ErrorEvent> for Endpoint {
     // A turn's failure, sent back to the chat that started it in place of
     // the reply — dropping it leaves that chat with no answer and no reason.
+    const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
+}
+
+/// The main agent's conversation: every turn it runs, whatever endpoint
+/// started it, as one ordered stream.
+///
+/// [`Endpoint`] carries a turn only to the endpoint it is delivered to, which
+/// serves the chat interface that holds that conversation. This topic is the
+/// complete record for a surface that follows the conversation as a whole.
+pub struct MainConversation;
+
+impl Topic for MainConversation {
+    fn topic_id(&self) -> TopicId {
+        TopicId::MainConversation
+    }
+}
+
+impl Carries<MainConversationEvent> for MainConversation {
+    // One enum holds the whole ordered record of a turn: a dropped event
+    // would hide a message, a tool call, or the end of a turn, and the single
+    // channel is what keeps them in order. Streaming deltas ride in it too;
+    // they are coalesced upstream, so a lossless channel stays small.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
 
@@ -318,6 +334,11 @@ mod tests {
     }
 
     #[test]
+    fn main_conversation_topic_id() {
+        assert_eq!(MainConversation.topic_id(), TopicId::MainConversation);
+    }
+
+    #[test]
     fn background_topic_id() {
         assert_eq!(Background.topic_id(), TopicId::Background);
     }
@@ -355,16 +376,8 @@ mod tests {
             DeliveryMode::Lossless
         );
         assert_eq!(
-            <Endpoint as Carries<ToolActivityEvent>>::DELIVERY_MODE,
-            DeliveryMode::Lossless
-        );
-        assert_eq!(
             <Endpoint as Carries<TurnLifecycleEvent>>::DELIVERY_MODE,
             DeliveryMode::Lossless
-        );
-        assert_eq!(
-            <Endpoint as Carries<TurnUsageEvent>>::DELIVERY_MODE,
-            DeliveryMode::Lossy
         );
         assert_eq!(
             <Endpoint as Carries<IntermediateEvent>>::DELIVERY_MODE,
@@ -376,6 +389,11 @@ mod tests {
         );
         assert_eq!(
             <Endpoint as Carries<ErrorEvent>>::DELIVERY_MODE,
+            DeliveryMode::Lossless
+        );
+
+        assert_eq!(
+            <MainConversation as Carries<MainConversationEvent>>::DELIVERY_MODE,
             DeliveryMode::Lossless
         );
 

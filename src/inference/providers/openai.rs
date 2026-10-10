@@ -4,18 +4,25 @@
 //! other compatible endpoints. Host-specific behavior on top of the shared wire
 //! format is selected with [`OpenAiDialect`].
 
+use std::collections::BTreeMap;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use crate::inference::embedding::{EmbeddingProvider, EmbeddingResponse};
 use crate::inference::http::{
-    SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote,
+    SharedHttpClient, map_request_error, map_stream_request_error, read_error_body,
+    warn_if_insecure_remote,
 };
+use crate::inference::reply::{ReplyAssembler, plain_reasoning};
 use crate::inference::retry::{RetryConfig, with_retry};
+use crate::inference::stream::{Flow, SseEvent, TrackedSink, answered_whole, read_sse};
+use crate::inference::types::current_exchange_start;
 use crate::inference::{
-    CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
-    ResponseFormat, StopReason, ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition, Usage,
+    CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, ProviderApi,
+    ResponseFormat, StopReason, StreamSink, ThinkingConfig, ThinkingLevel, ThinkingOrigin,
+    ToolCall, ToolDefinition, Usage,
 };
 
 /// Fireworks response header carrying the prompt tokens served from cache.
@@ -123,141 +130,55 @@ impl OpenAiClient {
         }
     }
 
-    /// Send a pre-built request to the OpenAI-compatible API and parse the response.
-    #[tracing::instrument(skip_all, fields(
-        model = %request.model,
-        message_count = request.messages.len(),
-        tool_count = request.tools.as_ref().map_or(0, Vec::len),
-    ))]
-    async fn send_completion(
-        http: &SharedHttpClient,
-        url: &str,
-        api_key: Option<&str>,
-        dialect: &OpenAiDialect,
-        request: &ChatCompletionRequest<'_>,
-    ) -> Result<InferenceResponse, InferenceError> {
-        let timeout_secs = http.timeout_secs();
-        let request_json = serde_json::to_string(request)
-            .map_err(|e| InferenceError::Parse(format!("failed to serialize request: {e}")))?;
-
-        debug!(model = %request.model, "sending openai completion request");
-
-        let mut req_builder = http
-            .client()
-            .post(url)
-            .body(request_json.clone())
-            .header("content-type", "application/json");
-
-        if let Some(key) = api_key {
-            req_builder = req_builder.header("Authorization", format!("Bearer {key}"));
+    /// Whether this host wants the reasoning it returned sent back with the
+    /// tool calls it led to, and understands the `reasoning_content` field
+    /// that carries it. DeepSeek-style hosts reject a tool-use exchange
+    /// whose reasoning is missing; `OpenAI` itself returns no reasoning text
+    /// and rejects fields it does not know, so it gets none.
+    fn replays_reasoning(&self) -> bool {
+        match &self.dialect {
+            OpenAiDialect::Fireworks { .. } => true,
+            OpenAiDialect::OpenAi => url::Url::parse(&self.base_url)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_lowercase))
+                .is_some_and(|host| !is_official_openai_host(&host)),
         }
-
-        if let OpenAiDialect::Fireworks {
-            session_affinity: Some(affinity),
-        } = dialect
-        {
-            req_builder = req_builder.header(FIREWORKS_SESSION_AFFINITY_HEADER, affinity);
-        }
-
-        let response = req_builder
-            .send()
-            .await
-            .map_err(|e| map_request_error(e, timeout_secs))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let raw_body = read_error_body(response).await;
-            tracing::warn!(
-                status = %status,
-                response_body = %raw_body,
-                request_body = %request_json,
-                "openai API error — full request/response for diagnosis"
-            );
-            let error_body = serde_json::from_str::<OpenAiErrorResponse>(&raw_body)
-                .map_or_else(|_| raw_body, |e| e.error.message);
-            return Err(InferenceError::Api(format!("{status}: {error_body}")));
-        }
-
-        let header_cached_tokens = match dialect {
-            OpenAiDialect::Fireworks { .. } => fireworks_cached_prompt_tokens(response.headers()),
-            OpenAiDialect::OpenAi => None,
-        };
-
-        let body = response
-            .text()
-            .await
-            .map_err(|e| map_request_error(e, timeout_secs))?;
-        let chat_response: ChatCompletionResponse = serde_json::from_str(&body)
-            .map_err(|e| InferenceError::Parse(format!("failed to parse openai response: {e}")))?;
-
-        let usage = chat_response.usage.map(|u| Usage {
-            input_tokens: u.prompt_tokens.unwrap_or(0),
-            output_tokens: u.completion_tokens.unwrap_or(0),
-            cache_creation_tokens: None,
-            cache_read_tokens: u
-                .prompt_tokens_details
-                .and_then(|d| d.cached_tokens)
-                .or(header_cached_tokens),
-        });
-
-        let choice = chat_response.choices.into_iter().next().ok_or_else(|| {
-            InferenceError::Parse(
-                "OpenAI API response contained no choices in response".to_string(),
-            )
-        })?;
-
-        let finish_reason = choice.finish_reason;
-
-        // OpenAI uses null for content when tool_calls are present
-        let content = choice.message.content.unwrap_or_default();
-
-        let tool_calls = choice
-            .message
-            .tool_calls
-            .unwrap_or_default()
-            .into_iter()
-            .map(|tc| {
-                // OpenAI returns arguments as a JSON string, need to parse it
-                let arguments: serde_json::Value = serde_json::from_str(&tc.function.arguments)
-                    .map_err(|e| {
-                        InferenceError::Parse(format!(
-                            "failed to parse tool arguments for '{}': {e} (raw: {})",
-                            tc.function.name, tc.function.arguments
-                        ))
-                    })?;
-                Ok(ToolCall {
-                    id: tc.id,
-                    name: tc.function.name,
-                    arguments,
-                    server: None,
-                })
-            })
-            .collect::<Result<Vec<_>, InferenceError>>()?;
-
-        let mut resp = InferenceResponse::new(content, tool_calls);
-        resp.usage = usage;
-        resp.stop_reason = finish_reason.as_deref().map(map_stop_reason);
-        info!(
-            model = %request.model,
-            content_len = resp.content.len(),
-            tool_calls = resp.tool_calls.len(),
-            "openai completion received"
-        );
-        Ok(resp)
     }
-}
 
-#[async_trait]
-impl InferenceProvider for OpenAiClient {
-    #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
-    async fn complete(
+    /// Who the reasoning this client returns is recorded as coming from, and
+    /// the only provider API whose reasoning it sends back.
+    fn origin(&self) -> ThinkingOrigin {
+        ThinkingOrigin::new(ProviderApi::OpenAiCompatible, &self.model)
+    }
+
+    /// Convert a conversation to the wire format, replaying the reasoning an
+    /// OpenAI-compatible API returned for the assistant messages of the
+    /// tool-use exchange in progress, on a host that wants it.
+    fn convert_messages(&self, messages: &[Message]) -> Vec<OpenAiMessage> {
+        let replay_from = self
+            .replays_reasoning()
+            .then(|| current_exchange_start(messages));
+        let origin = self.origin();
+        messages
+            .iter()
+            .enumerate()
+            .map(|(index, msg)| {
+                let mut converted = OpenAiMessage::from(msg);
+                if replay_from.is_some_and(|start| index >= start) {
+                    converted.reasoning_content = plain_reasoning(&msg.thinking, &origin);
+                }
+                converted
+            })
+            .collect()
+    }
+
+    /// Build everything about a request that stays the same across retries.
+    fn prepare(
         &self,
         messages: &[Message],
         tools: &[ToolDefinition],
         options: &CompletionOptions,
-    ) -> Result<InferenceResponse, InferenceError> {
-        let url = format!("{}/chat/completions", self.base_url);
-        let openai_messages: Vec<OpenAiMessage> = messages.iter().map(Into::into).collect();
+    ) -> PreparedRequest {
         let mut openai_tools: Vec<OpenAiToolEntry> = tools
             .iter()
             .map(|t| {
@@ -279,11 +200,6 @@ impl InferenceProvider for OpenAiClient {
                 search_context_size: ws.search_context_size.clone(),
             }));
         }
-        let has_tools = !openai_tools.is_empty();
-        let model = self.model.clone();
-        let api_key = self.api_key.clone();
-        let http = self.http.clone();
-        let dialect = self.dialect.clone();
 
         let response_format = match &options.response_format {
             ResponseFormat::Text => None,
@@ -296,39 +212,273 @@ impl InferenceProvider for OpenAiClient {
                 },
             }),
         };
-        let temperature = options.temperature;
 
-        let reasoning_effort = options
-            .thinking
-            .as_ref()
-            .and_then(Self::build_reasoning_effort);
+        PreparedRequest {
+            messages: self.convert_messages(messages),
+            tools: (!openai_tools.is_empty()).then_some(openai_tools),
+            response_format,
+            temperature: options.temperature,
+            reasoning_effort: options
+                .thinking
+                .as_ref()
+                .and_then(Self::build_reasoning_effort),
+        }
+    }
 
-        with_retry(&self.retry, || {
-            let url = url.clone();
-            let openai_messages = openai_messages.clone();
-            let openai_tools = openai_tools.clone();
-            let model = model.clone();
-            let api_key = api_key.clone();
-            let http = http.clone();
-            let response_format = response_format.clone();
-            let reasoning_effort = reasoning_effort.clone();
-            let dialect = dialect.clone();
+    /// Run a prepared request to completion: retrying transient failures,
+    /// and streaming the response into `sink` when there is one.
+    async fn run(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+        sink: Option<&dyn StreamSink>,
+    ) -> Result<InferenceResponse, InferenceError> {
+        let prepared = self.prepare(messages, tools, options);
+        let tracked = sink.map(TrackedSink::new);
 
-            async move {
-                let request = ChatCompletionRequest {
-                    model: &model,
-                    messages: openai_messages,
-                    tools: has_tools.then_some(openai_tools),
-                    tool_choice: has_tools.then_some("auto"),
-                    response_format,
-                    temperature,
-                    reasoning_effort,
-                };
-
-                Self::send_completion(&http, &url, api_key.as_deref(), &dialect, &request).await
+        let response = with_retry(&self.retry, || async {
+            let request = prepared.request(&self.model, tracked.is_some());
+            let result = self.send(&request, tracked.as_ref()).await;
+            if result.is_err()
+                && let Some(tracked) = &tracked
+            {
+                tracked.restart_if_needed();
             }
+            result
         })
-        .await
+        .await?;
+        Ok(response.produced_at(&self.origin()))
+    }
+
+    /// Send a pre-built request to the OpenAI-compatible API and parse the response.
+    #[tracing::instrument(skip_all, fields(
+        model = %request.model,
+        message_count = request.messages.len(),
+        tool_count = request.tools.map_or(0, <[OpenAiToolEntry]>::len),
+        streaming = sink.is_some(),
+    ))]
+    async fn send(
+        &self,
+        request: &ChatCompletionRequest<'_>,
+        sink: Option<&TrackedSink<'_>>,
+    ) -> Result<InferenceResponse, InferenceError> {
+        let timeout_secs = self.http.timeout_secs();
+        let request_json = serde_json::to_string(request)
+            .map_err(|e| InferenceError::Parse(format!("failed to serialize request: {e}")))?;
+
+        debug!(model = %request.model, "sending openai completion request");
+
+        let client = if sink.is_some() {
+            self.http.streaming_client()
+        } else {
+            self.http.client()
+        };
+        let mut req_builder = client
+            .post(format!("{}/chat/completions", self.base_url))
+            .body(request_json.clone())
+            .header("content-type", "application/json");
+
+        if let Some(key) = &self.api_key {
+            req_builder = req_builder.header("Authorization", format!("Bearer {key}"));
+        }
+
+        if let OpenAiDialect::Fireworks {
+            session_affinity: Some(affinity),
+        } = &self.dialect
+        {
+            req_builder = req_builder.header(FIREWORKS_SESSION_AFFINITY_HEADER, affinity);
+        }
+
+        let response = req_builder.send().await.map_err(|e| {
+            if sink.is_some() {
+                map_stream_request_error(e, timeout_secs)
+            } else {
+                map_request_error(e, timeout_secs)
+            }
+        })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let raw_body = read_error_body(response).await;
+            tracing::warn!(
+                status = %status,
+                response_body = %raw_body,
+                request_body = %request_json,
+                "openai API error — full request/response for diagnosis"
+            );
+            let error_body = serde_json::from_str::<OpenAiErrorResponse>(&raw_body)
+                .map_or_else(|_| raw_body, |e| e.error.message);
+            return Err(InferenceError::Api(format!("{status}: {error_body}")));
+        }
+
+        let header_cached_tokens = match &self.dialect {
+            OpenAiDialect::Fireworks { .. } => fireworks_cached_prompt_tokens(response.headers()),
+            OpenAiDialect::OpenAi => None,
+        };
+
+        let resp = if let Some(sink) = sink.filter(|_| !answered_whole(&response)) {
+            read_stream(response, timeout_secs, sink, header_cached_tokens).await?
+        } else {
+            let body = response
+                .text()
+                .await
+                .map_err(|e| map_request_error(e, timeout_secs))?;
+            let chat_response: ChatCompletionResponse =
+                serde_json::from_str(&body).map_err(|e| {
+                    InferenceError::Parse(format!("failed to parse openai response: {e}"))
+                })?;
+            parse_response(chat_response, header_cached_tokens)?
+        };
+        info!(
+            model = %request.model,
+            content_len = resp.content.len(),
+            tool_calls = resp.tool_calls.len(),
+            "openai completion received"
+        );
+        Ok(resp)
+    }
+}
+
+/// Turn a completed (or fully streamed) response into an `InferenceResponse`.
+fn parse_response(
+    chat_response: ChatCompletionResponse,
+    header_cached_tokens: Option<u32>,
+) -> Result<InferenceResponse, InferenceError> {
+    let usage = chat_response
+        .usage
+        .map(|u| usage_from(u, header_cached_tokens));
+
+    let choice = chat_response.choices.into_iter().next().ok_or_else(|| {
+        InferenceError::Parse("OpenAI API response contained no choices in response".to_string())
+    })?;
+
+    let mut reply = ReplyAssembler::new(None);
+    reply.reasoning(&choice.message.reasoning.text());
+    // OpenAI uses null for content when tool_calls are present
+    reply.content(choice.message.content.as_deref().unwrap_or_default());
+    let (content, thinking) = reply.finish();
+
+    let raw_calls = choice
+        .message
+        .tool_calls
+        .unwrap_or_default()
+        .into_iter()
+        .map(|tc| RawToolCall {
+            id: tc.id,
+            name: tc.function.name,
+            arguments: tc.function.arguments,
+        })
+        .collect();
+    let truncated = choice.finish_reason.as_deref() == Some("length");
+
+    let mut resp = InferenceResponse::new(content, build_tool_calls(raw_calls, truncated)?);
+    resp.usage = usage;
+    resp.thinking = thinking;
+    resp.stop_reason = choice.finish_reason.as_deref().map(map_stop_reason);
+    Ok(resp)
+}
+
+fn usage_from(usage: OpenAiUsage, header_cached_tokens: Option<u32>) -> Usage {
+    Usage {
+        input_tokens: usage.prompt_tokens.unwrap_or(0),
+        output_tokens: usage.completion_tokens.unwrap_or(0),
+        cache_creation_tokens: None,
+        cache_read_tokens: usage
+            .prompt_tokens_details
+            .and_then(|d| d.cached_tokens)
+            .or(header_cached_tokens),
+    }
+}
+
+/// A tool call as the API returns it, before its arguments are parsed.
+struct RawToolCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+/// Parse tool calls' arguments, naming a call that has no id after its
+/// position.
+///
+/// A response cut off by the output limit ends mid-way through its last
+/// tool call's arguments; that call is dropped, and the stop reason tells the
+/// caller why.
+fn build_tool_calls(
+    raw_calls: Vec<RawToolCall>,
+    truncated: bool,
+) -> Result<Vec<ToolCall>, InferenceError> {
+    let mut calls = Vec::with_capacity(raw_calls.len());
+    for (index, raw) in raw_calls.into_iter().enumerate() {
+        // Some servers send no arguments at all for a call that takes none.
+        let arguments = if raw.arguments.trim().is_empty() {
+            Ok(serde_json::json!({}))
+        } else {
+            serde_json::from_str(&raw.arguments)
+        };
+        match arguments {
+            Ok(arguments) => calls.push(ToolCall {
+                id: if raw.id.is_empty() {
+                    format!("call_{index}")
+                } else {
+                    raw.id
+                },
+                name: raw.name,
+                arguments,
+                server: None,
+            }),
+            Err(e) if truncated => {
+                tracing::warn!(
+                    tool = %raw.name,
+                    error = %e,
+                    "dropping a tool call whose arguments were cut off by the output limit"
+                );
+            }
+            Err(e) => {
+                return Err(InferenceError::Parse(format!(
+                    "failed to parse tool arguments for '{}': {e} (raw: {})",
+                    raw.name, raw.arguments
+                )));
+            }
+        }
+    }
+    Ok(calls)
+}
+
+/// Whether `host` is `OpenAI`'s own service, which accepts only the fields
+/// its API documents.
+fn is_official_openai_host(host: &str) -> bool {
+    host == "api.openai.com" || host.ends_with(".openai.com") || host.ends_with(".openai.azure.com")
+}
+
+#[async_trait]
+impl InferenceProvider for OpenAiClient {
+    #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
+    async fn complete(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+    ) -> Result<InferenceResponse, InferenceError> {
+        self.run(messages, tools, options, None).await
+    }
+
+    /// Like `complete`, streaming the response's text and reasoning into
+    /// `sink` as they arrive.
+    ///
+    /// # Errors
+    /// Returns the errors `complete` does, plus `InferenceError::Stalled`
+    /// when the stream goes quiet for the configured timeout and
+    /// `InferenceError::StreamInterrupted` when it breaks or ends early.
+    #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
+    async fn complete_streaming(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+        sink: &dyn StreamSink,
+    ) -> Result<InferenceResponse, InferenceError> {
+        self.run(messages, tools, options, Some(sink)).await
     }
 
     fn model_name(&self) -> &str {
@@ -350,22 +500,179 @@ fn fireworks_cached_prompt_tokens(headers: &reqwest::header::HeaderMap) -> Optio
     parsed
 }
 
+// --- Streaming ---
+
+/// Read a streamed chat completion to its end, pushing text and reasoning to
+/// `sink` as they arrive, and return it as the response a non-streaming
+/// request would have returned.
+async fn read_stream(
+    response: reqwest::Response,
+    idle_secs: u64,
+    sink: &dyn StreamSink,
+    header_cached_tokens: Option<u32>,
+) -> Result<InferenceResponse, InferenceError> {
+    let mut assembler = StreamAssembler::new(sink);
+    read_sse(response, idle_secs, |event| assembler.handle(&event)).await?;
+    assembler.finish(header_cached_tokens)
+}
+
+struct StreamAssembler<'a> {
+    reply: ReplyAssembler<'a>,
+    tool_calls: BTreeMap<u32, RawToolCall>,
+    usage: Option<OpenAiUsage>,
+    finish_reason: Option<String>,
+    /// The `[DONE]` marker arrived.
+    done: bool,
+}
+
+impl<'a> StreamAssembler<'a> {
+    fn new(sink: &'a dyn StreamSink) -> Self {
+        Self {
+            reply: ReplyAssembler::new(Some(sink)),
+            tool_calls: BTreeMap::new(),
+            usage: None,
+            finish_reason: None,
+            done: false,
+        }
+    }
+
+    fn handle(&mut self, event: &SseEvent) -> Result<Flow, InferenceError> {
+        if event.data.trim() == "[DONE]" {
+            self.done = true;
+            return Ok(Flow::Done);
+        }
+        let chunk: StreamChunk = serde_json::from_str(&event.data).map_err(|e| {
+            InferenceError::Parse(format!("failed to parse openai stream chunk: {e}"))
+        })?;
+        if let Some(error) = chunk.error {
+            let kind = error.r#type.filter(|k| !k.is_empty());
+            return Err(InferenceError::Api(match kind {
+                Some(kind) => format!("openai stream error ({kind}): {}", error.message),
+                None => format!("openai stream error: {}", error.message),
+            }));
+        }
+        if let Some(usage) = chunk.usage {
+            self.usage = Some(usage);
+        }
+        // Only the first choice is used: a request never asks for more.
+        if let Some(choice) = chunk.choices.into_iter().next() {
+            self.apply_delta(choice.delta);
+            if choice.finish_reason.is_some() {
+                self.finish_reason = choice.finish_reason;
+            }
+        }
+        Ok(Flow::Continue)
+    }
+
+    fn apply_delta(&mut self, delta: ChunkDelta) {
+        self.reply.reasoning(&delta.reasoning.text());
+        if let Some(content) = delta.content {
+            self.reply.content(&content);
+        }
+        for fragment in delta.tool_calls.unwrap_or_default() {
+            let call = self
+                .tool_calls
+                .entry(fragment.index)
+                .or_insert_with(|| RawToolCall {
+                    id: String::new(),
+                    name: String::new(),
+                    arguments: String::new(),
+                });
+            if let Some(id) = fragment.id.filter(|id| !id.is_empty())
+                && call.id.is_empty()
+            {
+                call.id = id;
+            }
+            if let Some(function) = fragment.function {
+                if let Some(name) = function.name.filter(|n| !n.is_empty())
+                    && call.name.is_empty()
+                {
+                    call.name = name;
+                }
+                if let Some(arguments) = function.arguments {
+                    call.arguments.push_str(&arguments);
+                }
+            }
+        }
+    }
+
+    /// Assemble the response a non-streaming request would have returned.
+    /// Fails when the stream stopped short of its end.
+    fn finish(
+        self,
+        header_cached_tokens: Option<u32>,
+    ) -> Result<InferenceResponse, InferenceError> {
+        if !self.done && self.finish_reason.is_none() {
+            return Err(InferenceError::StreamInterrupted(
+                "the stream ended before the response was complete".to_string(),
+            ));
+        }
+        let (content, thinking) = self.reply.finish();
+        let truncated = self.finish_reason.as_deref() == Some("length");
+        let tool_calls = build_tool_calls(self.tool_calls.into_values().collect(), truncated)?;
+
+        let mut resp = InferenceResponse::new(content, tool_calls);
+        resp.usage = self.usage.map(|u| usage_from(u, header_cached_tokens));
+        resp.thinking = thinking;
+        resp.stop_reason = self.finish_reason.as_deref().map(map_stop_reason);
+        Ok(resp)
+    }
+}
+
 // --- OpenAI API request/response types ---
+
+/// What stays the same across a request's attempts.
+struct PreparedRequest {
+    messages: Vec<OpenAiMessage>,
+    tools: Option<Vec<OpenAiToolEntry>>,
+    response_format: Option<OpenAiResponseFormat>,
+    temperature: Option<f32>,
+    reasoning_effort: Option<String>,
+}
+
+impl PreparedRequest {
+    /// The request body for one attempt.
+    fn request<'a>(&'a self, model: &'a str, stream: bool) -> ChatCompletionRequest<'a> {
+        ChatCompletionRequest {
+            model,
+            messages: &self.messages,
+            tools: self.tools.as_deref(),
+            tool_choice: self.tools.is_some().then_some("auto"),
+            response_format: self.response_format.as_ref(),
+            temperature: self.temperature,
+            reasoning_effort: self.reasoning_effort.as_deref(),
+            stream: stream.then_some(true),
+            stream_options: stream.then_some(StreamOptions {
+                include_usage: true,
+            }),
+        }
+    }
+}
 
 #[derive(Serialize)]
 struct ChatCompletionRequest<'a> {
     model: &'a str,
-    messages: Vec<OpenAiMessage>,
+    messages: &'a [OpenAiMessage],
     #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<OpenAiToolEntry>>,
+    tools: Option<&'a [OpenAiToolEntry]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    response_format: Option<OpenAiResponseFormat>,
+    response_format: Option<&'a OpenAiResponseFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning_effort: Option<String>,
+    reasoning_effort: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<StreamOptions>,
+}
+
+/// Asks a streamed response to end with its token usage.
+#[derive(Serialize)]
+struct StreamOptions {
+    include_usage: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -411,6 +718,10 @@ struct OpenAiMessage {
     tool_calls: Option<Vec<OpenAiToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
+    /// The reasoning behind an assistant message, for hosts that want it
+    /// back within a tool-use exchange.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<String>,
 }
 
 impl From<&Message> for OpenAiMessage {
@@ -454,6 +765,7 @@ impl From<&Message> for OpenAiMessage {
                     .collect()
             }),
             tool_call_id: msg.tool_call_id.clone(),
+            reasoning_content: None,
         }
     }
 }
@@ -490,6 +802,8 @@ struct OpenAiFunction {
 
 #[derive(Serialize, Deserialize, Clone)]
 struct OpenAiToolCall {
+    /// Some compatible servers send none.
+    #[serde(default)]
     id: String,
     r#type: String,
     function: OpenAiFunctionCall,
@@ -542,6 +856,107 @@ fn map_stop_reason(raw: &str) -> StopReason {
 struct OpenAiResponseMessage {
     content: Option<String>,
     tool_calls: Option<Vec<OpenAiToolCall>>,
+    #[serde(flatten)]
+    reasoning: ReasoningFields,
+}
+
+/// The ways compatible servers return a model's reasoning beside its text:
+/// `reasoning_content` (Fireworks, `DeepSeek`), `reasoning` (vLLM,
+/// `OpenRouter`) and `reasoning_details` (`OpenRouter`). `OpenAI` itself
+/// returns none.
+#[derive(Deserialize, Default)]
+struct ReasoningFields {
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
+    reasoning: Option<String>,
+    #[serde(default)]
+    reasoning_details: Option<Vec<ReasoningDetail>>,
+}
+
+#[derive(Deserialize)]
+struct ReasoningDetail {
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    summary: Option<String>,
+}
+
+impl ReasoningFields {
+    /// The reasoning text, from whichever field carries it. A server that
+    /// sends the same reasoning both as a string and as details is read once.
+    fn text(&self) -> String {
+        let plain = [&self.reasoning_content, &self.reasoning]
+            .into_iter()
+            .flatten()
+            .find(|text| !text.is_empty());
+        if let Some(text) = plain {
+            return text.clone();
+        }
+        self.reasoning_details
+            .iter()
+            .flatten()
+            .filter_map(|detail| detail.text.as_deref().or(detail.summary.as_deref()))
+            .collect()
+    }
+}
+
+// --- Streamed chunks ---
+
+#[derive(Deserialize)]
+struct StreamChunk {
+    /// Empty on the final chunk, which carries only usage.
+    #[serde(default)]
+    choices: Vec<ChunkChoice>,
+    #[serde(default)]
+    usage: Option<OpenAiUsage>,
+    /// A failure reported in the stream after the response began.
+    #[serde(default)]
+    error: Option<ChunkError>,
+}
+
+#[derive(Deserialize)]
+struct ChunkError {
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    r#type: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ChunkChoice {
+    delta: ChunkDelta,
+    #[serde(default)]
+    finish_reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ChunkDelta {
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<ChunkToolCall>>,
+    #[serde(flatten)]
+    reasoning: ReasoningFields,
+}
+
+/// A fragment of a tool call. The call's id and name come in its first
+/// fragment and its arguments are spread over all of them.
+#[derive(Deserialize)]
+struct ChunkToolCall {
+    index: u32,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    function: Option<ChunkFunction>,
+}
+
+#[derive(Deserialize)]
+struct ChunkFunction {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -712,6 +1127,12 @@ mod tests {
     use crate::inference::CompletionOptions;
     use crate::inference::http::{HttpClientConfig, SharedHttpClient};
     use crate::inference::retry::RetryConfig;
+    use crate::inference::test_support::{
+        RecordingSink, ScriptedServer, Step, assert_same_response, at, json_response, split_bytes,
+        sse_chunks, sse_response,
+    };
+    use crate::inference::{StreamDelta, ThinkingBlock};
+    use serde_json::{Value, json};
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1817,6 +2238,722 @@ mod tests {
         assert!(
             body.get("tools").is_none(),
             "fireworks rejects web_search_preview, so no tools should be sent: {body}"
+        );
+    }
+
+    // --- Streaming ---
+
+    fn sse_data(data: impl Into<Value>) -> String {
+        let data: Value = data.into();
+        format!("data: {data}\n\n")
+    }
+
+    fn delta_chunk(delta: impl Into<Value>) -> String {
+        let delta: Value = delta.into();
+        sse_data(json!({"choices": [{"index": 0, "delta": delta, "finish_reason": null}]}))
+    }
+
+    fn finish_chunk(reason: &str) -> String {
+        sse_data(json!({"choices": [{"index": 0, "delta": {}, "finish_reason": reason}]}))
+    }
+
+    fn usage_chunk(prompt: u32, completion: u32) -> String {
+        sse_data(json!({
+            "choices": [],
+            "usage": {"prompt_tokens": prompt, "completion_tokens": completion}
+        }))
+    }
+
+    const DONE: &str = "data: [DONE]\n\n";
+
+    async fn stream_from(
+        script: Vec<Step>,
+        client: impl FnOnce(String) -> OpenAiClient,
+    ) -> (
+        Result<InferenceResponse, InferenceError>,
+        RecordingSink,
+        ScriptedServer,
+    ) {
+        let server = ScriptedServer::start(vec![script]).await;
+        let client = client(server.uri());
+        let sink = RecordingSink::default();
+        let result = client
+            .complete_streaming(
+                &[Message::user("hi")],
+                &[],
+                &CompletionOptions::default(),
+                &sink,
+            )
+            .await;
+        (result, sink, server)
+    }
+
+    fn plain_client(url: String) -> OpenAiClient {
+        make_client(url, "test-model")
+    }
+
+    /// Reasoning text as `plain_client`'s model returns it.
+    fn test_model_text(text: &str) -> ThinkingBlock {
+        ThinkingBlock::text(text).from_origin(&ThinkingOrigin::new(
+            ProviderApi::OpenAiCompatible,
+            "test-model",
+        ))
+    }
+
+    /// The same reply, streamed and whole.
+    async fn whole_response(body: Value) -> InferenceResponse {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        make_client(server.uri(), "test-model")
+            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn streamed_text_matches_the_non_streaming_response() {
+        let stream = [
+            delta_chunk(json!({"role": "assistant", "content": ""})),
+            delta_chunk(json!({"content": "Hello w"})),
+            delta_chunk(json!({"content": "\u{f6}rld"})),
+            finish_chunk("stop"),
+            usage_chunk(11, 4),
+            DONE.to_string(),
+        ]
+        .concat();
+        let (streamed, sink, server) = stream_from(sse_response(&[stream]), plain_client).await;
+        let streamed = streamed.unwrap();
+
+        let whole = whole_response(json!({
+            "choices": [{"message": {"role": "assistant", "content": "Hello w\u{f6}rld"},
+                "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 11, "completion_tokens": 4}
+        }))
+        .await;
+
+        assert_same_response(&streamed, &whole);
+        assert_eq!(streamed.content, "Hello w\u{f6}rld", "text assembled");
+        assert_eq!(sink.text(), "Hello w\u{f6}rld", "text streamed");
+        assert_eq!(
+            streamed.usage.unwrap().input_tokens,
+            11,
+            "usage from the last chunk"
+        );
+        assert_eq!(
+            streamed.stop_reason,
+            Some(StopReason::EndTurn),
+            "finish reason"
+        );
+
+        let requests = server.requests();
+        let body = requests.first().unwrap().json();
+        assert_eq!(at(&body, "/stream"), &json!(true), "asks for a stream");
+        assert_eq!(
+            at(&body, "/stream_options/include_usage"),
+            &json!(true),
+            "asks for usage at the end"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_that_ignores_the_stream_request_is_read_whole() {
+        let body = json!({
+            "choices": [{"message": {"role": "assistant", "content": "Whole answer"},
+                "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 2}
+        });
+        let (streamed, sink, _server) =
+            stream_from(json_response(200, &body.to_string()), plain_client).await;
+        let streamed = streamed.unwrap();
+
+        assert_same_response(&streamed, &whole_response(body).await);
+        assert_eq!(
+            streamed.content, "Whole answer",
+            "the whole body is the reply"
+        );
+        assert!(
+            sink.deltas().is_empty(),
+            "nothing streamed: {:?}",
+            sink.deltas()
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_does_not_ask_for_a_stream() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}]
+            })))
+            .mount(&server)
+            .await;
+        make_client(server.uri(), "m")
+            .complete(&[Message::user("hi")], &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+        let requests = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests.first().unwrap().body).unwrap();
+        assert!(
+            body.get("stream").is_none() && body.get("stream_options").is_none(),
+            "a plain completion carries no streaming fields: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn streamed_tool_call_fragments_are_assembled_per_index() {
+        let stream = [
+            delta_chunk(json!({"role": "assistant", "content": null, "tool_calls": [
+                {"index": 0, "id": "call_a", "type": "function",
+                 "function": {"name": "exec", "arguments": ""}}
+            ]})),
+            delta_chunk(json!({"tool_calls": [
+                {"index": 1, "id": "call_b", "type": "function",
+                 "function": {"name": "read", "arguments": "{\"pa"}}
+            ]})),
+            delta_chunk(json!({"tool_calls": [
+                {"index": 0, "function": {"arguments": "{\"command\":"}}
+            ]})),
+            delta_chunk(json!({"tool_calls": [
+                {"index": 1, "function": {"arguments": "th\":\"a.txt\"}"}}
+            ]})),
+            delta_chunk(json!({"tool_calls": [
+                {"index": 0, "function": {"arguments": "\"ls\"}"}}
+            ]})),
+            finish_chunk("tool_calls"),
+            usage_chunk(20, 12),
+            DONE.to_string(),
+        ]
+        .concat();
+        let (streamed, _, _) = stream_from(sse_response(&[stream]), plain_client).await;
+        let streamed = streamed.unwrap();
+
+        let whole = whole_response(json!({
+            "choices": [{"message": {"role": "assistant", "content": null, "tool_calls": [
+                {"id": "call_a", "type": "function",
+                 "function": {"name": "exec", "arguments": "{\"command\":\"ls\"}"}},
+                {"id": "call_b", "type": "function",
+                 "function": {"name": "read", "arguments": "{\"path\":\"a.txt\"}"}}
+            ]}, "finish_reason": "tool_calls"}],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 12}
+        }))
+        .await;
+
+        assert_same_response(&streamed, &whole);
+        let names: Vec<&str> = streamed
+            .tool_calls
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["exec", "read"], "calls in index order");
+        assert_eq!(
+            streamed.tool_calls.first().unwrap().arguments,
+            json!({"command": "ls"}),
+            "fragments joined and parsed"
+        );
+        assert_eq!(
+            streamed.stop_reason,
+            Some(StopReason::ToolUse),
+            "stop reason"
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_calls_without_ids_or_arguments_are_still_usable() {
+        let stream = [
+            delta_chunk(json!({"tool_calls": [
+                {"index": 0, "function": {"name": "now"}}
+            ]})),
+            finish_chunk("tool_calls"),
+            DONE.to_string(),
+        ]
+        .concat();
+        let (streamed, _, _) = stream_from(sse_response(&[stream]), plain_client).await;
+        let streamed = streamed.unwrap();
+        let call = streamed.tool_calls.first().unwrap();
+        assert_eq!(call.id, "call_0", "a call with no id is named by position");
+        assert_eq!(
+            call.arguments,
+            json!({}),
+            "no arguments is the empty object"
+        );
+
+        let whole = whole_response(json!({
+            "choices": [{"message": {"role": "assistant", "content": null, "tool_calls": [
+                {"type": "function", "function": {"name": "now", "arguments": ""}}
+            ]}, "finish_reason": "tool_calls"}]
+        }))
+        .await;
+        assert_same_response(&streamed, &whole);
+    }
+
+    #[tokio::test]
+    async fn tool_arguments_cut_off_by_the_length_limit_drop_that_call() {
+        let stream = [
+            delta_chunk(json!({"content": "Working"})),
+            delta_chunk(json!({"tool_calls": [
+                {"index": 0, "id": "c", "function": {"name": "exec", "arguments": "{\"command\": \"l"}}
+            ]})),
+            finish_chunk("length"),
+            DONE.to_string(),
+        ]
+        .concat();
+        let (streamed, _, _) = stream_from(sse_response(&[stream]), plain_client).await;
+        let streamed = streamed.unwrap();
+        assert!(
+            streamed.tool_calls.is_empty(),
+            "the half-written call is dropped"
+        );
+        assert!(streamed.was_truncated(), "the stop reason says why");
+        assert_eq!(streamed.content, "Working", "the text before it is kept");
+    }
+
+    #[tokio::test]
+    async fn every_reasoning_field_streams_as_thinking() {
+        let variants = [
+            ("reasoning_content", json!({"reasoning_content": "weigh "})),
+            ("reasoning", json!({"reasoning": "weigh "})),
+            (
+                "reasoning_details",
+                json!({"reasoning_details": [{"type": "reasoning.text", "text": "weigh "}]}),
+            ),
+            (
+                "both a string and details",
+                json!({"reasoning": "weigh ",
+                    "reasoning_details": [{"type": "reasoning.text", "text": "weigh "}]}),
+            ),
+        ];
+        for (label, first) in variants {
+            let stream = [
+                delta_chunk(first),
+                delta_chunk(json!({"reasoning_content": null, "reasoning": "it"})),
+                delta_chunk(json!({"content": "Answer"})),
+                finish_chunk("stop"),
+                DONE.to_string(),
+            ]
+            .concat();
+            let (streamed, sink, _) = stream_from(sse_response(&[stream]), plain_client).await;
+            let streamed = streamed.unwrap();
+            assert_eq!(
+                streamed.thinking,
+                vec![test_model_text("weigh it")],
+                "{label}: reasoning is captured once"
+            );
+            assert_eq!(sink.thinking(), "weigh it", "{label}: and streamed");
+            assert_eq!(
+                streamed.content, "Answer",
+                "{label}: content is only the answer"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn non_streaming_reasoning_fields_are_captured() {
+        for message in [
+            json!({"content": "A", "reasoning_content": "because"}),
+            json!({"content": "A", "reasoning": "because"}),
+            json!({"content": "A", "reasoning_details": [{"summary": "because"}]}),
+        ] {
+            let response = whole_response(json!({"choices": [{"message": message}]})).await;
+            assert_eq!(
+                response.thinking,
+                vec![test_model_text("because")],
+                "reasoning comes through complete"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn inline_think_blocks_become_thinking_even_when_a_tag_is_split() {
+        let stream = [
+            delta_chunk(json!({"content": "<thi"})),
+            delta_chunk(json!({"content": "nk>\nplan it"})),
+            delta_chunk(json!({"content": "</th"})),
+            delta_chunk(json!({"content": "ink>\n\nThe an"})),
+            delta_chunk(json!({"content": "swer"})),
+            finish_chunk("stop"),
+            DONE.to_string(),
+        ]
+        .concat();
+        let (streamed, sink, _) = stream_from(sse_response(&[stream]), plain_client).await;
+        let streamed = streamed.unwrap();
+        assert_eq!(streamed.content, "The answer", "the content has no tags");
+        assert_eq!(
+            streamed.thinking,
+            vec![test_model_text("plan it")],
+            "the tagged text is the thinking"
+        );
+        assert_eq!(sink.text(), "The answer", "only the answer streams as text");
+        assert!(
+            !sink.text().contains('<') && !sink.thinking().contains('<'),
+            "no tag fragment leaks into either stream"
+        );
+
+        let whole = whole_response(json!({
+            "choices": [{"message": {"content": "<think>\nplan it</think>\n\nThe answer"},
+                "finish_reason": "stop"}]
+        }))
+        .await;
+        assert_same_response(&streamed, &whole);
+    }
+
+    #[tokio::test]
+    async fn stream_parses_at_every_chunk_boundary_including_inside_characters() {
+        let stream = [
+            delta_chunk(json!({"reasoning_content": "caf\u{e9} "})),
+            delta_chunk(json!({"content": "<think>x</think>Hello w\u{f6}rld \u{1f600}"})),
+            delta_chunk(json!({"tool_calls": [
+                {"index": 0, "id": "c1", "function": {"name": "exec", "arguments": "{\"a\":"}}
+            ]})),
+            delta_chunk(json!({"tool_calls": [{"index": 0, "function": {"arguments": "1}"}}]})),
+            finish_chunk("tool_calls"),
+            usage_chunk(3, 4),
+            DONE.to_string(),
+        ]
+        .concat();
+        let (whole, _, _) =
+            stream_from(sse_response(std::slice::from_ref(&stream)), plain_client).await;
+        let whole = whole.unwrap();
+        for size in [1, 2, 3, 5, 17] {
+            let chunks = split_bytes(&stream, size);
+            let (result, sink, _) = stream_from(sse_response(&chunks), plain_client).await;
+            let result = result.unwrap();
+            assert_same_response(&result, &whole);
+            assert_eq!(
+                sink.text(),
+                "Hello w\u{f6}rld \u{1f600}",
+                "chunks of {size} bytes keep characters whole"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_ending_after_the_finish_reason_without_done_is_complete() {
+        let stream = [delta_chunk(json!({"content": "hi"})), finish_chunk("stop")].concat();
+        let (result, _, _) = stream_from(sse_response(&[stream]), plain_client).await;
+        assert_eq!(
+            result.unwrap().content,
+            "hi",
+            "servers that skip the [DONE] marker still finish"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_cut_off_before_it_finishes_is_interrupted() {
+        let partial = delta_chunk(json!({"content": "half an ans"}));
+
+        let (clean_end, _, _) =
+            stream_from(sse_response(std::slice::from_ref(&partial)), plain_client).await;
+        let err = clean_end.unwrap_err();
+        assert!(
+            matches!(err, InferenceError::StreamInterrupted(_)) && err.is_retryable(),
+            "ending with no finish reason is an interrupted stream: {err:?}"
+        );
+
+        let (dropped, sink, _) = stream_from(sse_chunks(&[partial]), plain_client).await;
+        let dropped_err = dropped.unwrap_err();
+        assert!(
+            matches!(dropped_err, InferenceError::StreamInterrupted(_)),
+            "a dropped connection is an interrupted stream: {dropped_err:?}"
+        );
+        assert_eq!(sink.text(), "", "what streamed is voided");
+    }
+
+    #[tokio::test]
+    async fn in_stream_error_surfaces_with_its_type() {
+        let stream = [
+            delta_chunk(json!({"content": "partial"})),
+            sse_data(
+                json!({"error": {"message": "The server had an error", "type": "server_error"}}),
+            ),
+        ]
+        .concat();
+        let (result, _, _) = stream_from(sse_response(&[stream]), plain_client).await;
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("server_error")
+                && err.to_string().contains("The server had an error"),
+            "the error carries its type and message: {err}"
+        );
+        assert!(err.is_retryable(), "a server error is retried");
+    }
+
+    #[tokio::test]
+    async fn stalled_stream_fails_after_the_idle_timeout() {
+        let mut script = sse_chunks(&[delta_chunk(json!({"content": "partial"}))]);
+        script.push(Step::pause(std::time::Duration::from_secs(5)));
+        let (result, sink, _) =
+            stream_from(script, |url| make_client_with_timeout(url, "m", 1)).await;
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, InferenceError::Stalled(1)),
+            "a silent stream is a stall: {err:?}"
+        );
+        assert_eq!(sink.text(), "", "the partial text is voided");
+    }
+
+    #[tokio::test]
+    async fn stream_longer_than_the_timeout_completes_while_bytes_keep_arriving() {
+        let mut script = vec![Step::head(200, "text/event-stream")];
+        for word in ["one ", "two ", "three ", "four "] {
+            script.push(Step::chunk(delta_chunk(json!({"content": word}))));
+            script.push(Step::pause(std::time::Duration::from_millis(600)));
+        }
+        script.push(Step::chunk(finish_chunk("stop") + DONE));
+        script.push(Step::end());
+        let (result, _, _) = stream_from(script, |url| make_client_with_timeout(url, "m", 1)).await;
+        assert_eq!(
+            result.unwrap().content,
+            "one two three four ",
+            "the idle timeout does not cap the whole stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_after_partial_output_restarts_the_stream() {
+        let first = [
+            delta_chunk(json!({"content": "par"})),
+            sse_data(json!({"error": {"message": "overloaded", "type": "server_error"}})),
+        ]
+        .concat();
+        let second = [
+            delta_chunk(json!({"content": "whole answer"})),
+            finish_chunk("stop"),
+            DONE.to_string(),
+        ]
+        .concat();
+        let server =
+            ScriptedServer::start(vec![sse_response(&[first]), sse_response(&[second])]).await;
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        let client = OpenAiClient::with_http_client(
+            http,
+            server.uri(),
+            "m",
+            RetryConfig {
+                max_retries: 1,
+                initial_delay: std::time::Duration::from_millis(5),
+                max_delay: std::time::Duration::from_millis(5),
+                backoff_multiplier: 1.0,
+            },
+        );
+        let sink = RecordingSink::default();
+        let response = client
+            .complete_streaming(
+                &[Message::user("hi")],
+                &[],
+                &CompletionOptions::default(),
+                &sink,
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.content, "whole answer", "the retry's answer");
+        assert_eq!(
+            sink.deltas(),
+            vec![
+                StreamDelta::Text("par".to_string()),
+                StreamDelta::Restart,
+                StreamDelta::Text("whole answer".to_string()),
+            ],
+            "the partial text is voided before the retry streams"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_errors_before_the_stream_surface_like_non_streaming_ones() {
+        let (result, sink, _) = stream_from(
+            json_response(401, r#"{"error":{"message":"Incorrect API key provided"}}"#),
+            plain_client,
+        )
+        .await;
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("401") && err.to_string().contains("Incorrect API key"),
+            "status and message are kept: {err}"
+        );
+        assert!(sink.deltas().is_empty(), "nothing streamed");
+    }
+
+    #[tokio::test]
+    async fn fireworks_cache_header_is_used_for_streamed_usage() {
+        let stream = [
+            delta_chunk(json!({"content": "x"})),
+            finish_chunk("stop"),
+            usage_chunk(10, 2),
+            DONE.to_string(),
+        ]
+        .concat();
+        let script = vec![
+            Step::Write(
+                b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                  fireworks-cached-prompt-tokens: 7\r\ntransfer-encoding: chunked\r\n\
+                  connection: close\r\n\r\n"
+                    .to_vec(),
+            ),
+            Step::chunk(stream),
+            Step::end(),
+        ];
+        let (result, _, _) = stream_from(script, |url| {
+            let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+            OpenAiClient::with_http_client(http, url, "m", RetryConfig::no_retry()).with_dialect(
+                OpenAiDialect::Fireworks {
+                    session_affinity: None,
+                },
+            )
+        })
+        .await;
+        assert_eq!(
+            result.unwrap().usage.unwrap().cache_read_tokens,
+            Some(7),
+            "cache hits come from the header when the body lacks them"
+        );
+    }
+
+    // --- Reasoning replay ---
+
+    /// Where the reasoning of the clients in these tests comes from.
+    fn test_origin() -> ThinkingOrigin {
+        ThinkingOrigin::new(ProviderApi::OpenAiCompatible, "m")
+    }
+
+    fn reasoning_exchange() -> Vec<Message> {
+        let call = |id: &str| ToolCall {
+            id: id.to_string(),
+            name: "exec".to_string(),
+            arguments: json!({}),
+            server: None,
+        };
+        let own = |text: &str| ThinkingBlock::text(text).from_origin(&test_origin());
+        let gemini = ThinkingOrigin::new(ProviderApi::Gemini, "gemini-3-pro-preview");
+        let mut old = Message::assistant("old", Some(vec![call("c0")]));
+        old.thinking = vec![own("old reasoning")];
+        let mut plain = Message::assistant("done", None);
+        plain.thinking = vec![own("wrap-up reasoning")];
+        let mut current = Message::assistant("", Some(vec![call("c1")]));
+        current.thinking = vec![
+            own("current reasoning"),
+            ThinkingBlock::text("readable text from another provider").from_origin(&gemini),
+            ThinkingBlock::text("readable text saved with no origin"),
+            ThinkingBlock {
+                text: "signed elsewhere".to_string(),
+                signature: Some("sig".to_string()),
+                ..ThinkingBlock::default()
+            }
+            .from_origin(&gemini),
+        ];
+        vec![
+            Message::user("one"),
+            old,
+            Message::tool("r0", "c0"),
+            plain,
+            Message::user("two"),
+            current,
+            Message::tool("r1", "c1"),
+        ]
+    }
+
+    fn replayed(client: &OpenAiClient) -> Vec<Option<String>> {
+        client
+            .convert_messages(&reasoning_exchange())
+            .into_iter()
+            .map(|m| m.reasoning_content)
+            .collect()
+    }
+
+    fn client_at(url: &str) -> OpenAiClient {
+        make_client(url, "m")
+    }
+
+    #[test]
+    fn hosts_that_want_reasoning_get_it_back_for_the_current_exchange_only() {
+        for url in [
+            "http://localhost:8000/v1",
+            "https://api.deepseek.com/v1",
+            "https://openrouter.ai/api/v1",
+        ] {
+            let replayed = replayed(&client_at(url));
+            assert_eq!(
+                replayed,
+                vec![
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("current reasoning".to_string()),
+                    None
+                ],
+                "{url}: only the tool-calling message of the exchange in progress carries reasoning, \
+                 and only what an OpenAI-compatible API returned for it, not another provider's text"
+            );
+        }
+    }
+
+    #[test]
+    fn fireworks_gets_reasoning_back() {
+        let client = client_at("https://api.fireworks.ai/inference/v1").with_dialect(
+            OpenAiDialect::Fireworks {
+                session_affinity: None,
+            },
+        );
+        assert_eq!(
+            replayed(&client).get(5).cloned().flatten(),
+            Some("current reasoning".to_string()),
+            "Fireworks understands reasoning_content"
+        );
+    }
+
+    #[test]
+    fn openai_itself_never_gets_unknown_fields() {
+        for url in [
+            "https://api.openai.com/v1",
+            "https://API.OPENAI.COM/v1/",
+            "https://my-resource.openai.azure.com/openai/v1",
+        ] {
+            assert!(
+                replayed(&client_at(url)).iter().all(Option::is_none),
+                "{url} must not receive reasoning_content"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unparseable_base_url_is_treated_like_openai() {
+        assert!(
+            replayed(&client_at("not a url"))
+                .iter()
+                .all(Option::is_none),
+            "when the host is unknown, send nothing OpenAI would reject"
+        );
+    }
+
+    #[tokio::test]
+    async fn replayed_reasoning_reaches_the_wire_as_reasoning_content() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{"message": {"content": "ok"}}]
+            })))
+            .mount(&server)
+            .await;
+        make_client(server.uri(), "m")
+            .complete(&reasoning_exchange(), &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+        let requests = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests.first().unwrap().body).unwrap();
+        assert_eq!(
+            at(&body, "/messages/5/reasoning_content"),
+            &json!("current reasoning"),
+            "the field is on the assistant message that made the tool call"
+        );
+        assert!(
+            body.pointer("/messages/1/reasoning_content").is_none(),
+            "and not on an earlier exchange's"
         );
     }
 }

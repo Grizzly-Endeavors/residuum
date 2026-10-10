@@ -837,4 +837,39 @@ mod tests {
             Some("valid obs")
         );
     }
+
+    #[test]
+    fn the_extraction_prompt_leaves_out_the_models_thinking() {
+        let recent_messages = vec![RecentMessage {
+            message: crate::inference::Message::assistant("The answer is 42.".to_string(), None)
+                .with_thinking(vec![crate::inference::ThinkingBlock {
+                    text: "private reasoning about the answer".to_string(),
+                    signature: Some("sig-opaque-token".to_string()),
+                    redacted: Some("encrypted-blob".to_string()),
+                    part: None,
+                    origin: None,
+                }]),
+            timestamp: chrono::Utc::now().naive_utc(),
+            visibility: Visibility::User,
+            turn_id: None,
+        }];
+
+        let prompt = build_extraction_prompt(&recent_messages, EXTRACTION_CONTENT_PROMPT);
+
+        let everything: String = prompt
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            everything.contains("The answer is 42."),
+            "the reply is still there"
+        );
+        for leaked in ["private reasoning", "sig-opaque-token", "encrypted-blob"] {
+            assert!(
+                !everything.contains(leaked),
+                "{leaked} must not reach the observer: {everything}"
+            );
+        }
+    }
 }

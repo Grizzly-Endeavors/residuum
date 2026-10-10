@@ -2634,6 +2634,11 @@ mod lifecycle_tools;
     clippy::indexing_slicing,
     reason = "test code indexes parsed JSON for clarity"
 )]
+mod main_conversation;
+#[expect(
+    clippy::indexing_slicing,
+    reason = "test code indexes parsed JSON for clarity"
+)]
 mod overview;
 mod push_triggers;
 mod restore;

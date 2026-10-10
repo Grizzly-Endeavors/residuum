@@ -22,8 +22,8 @@
     "format:check": "prettier --check 'src/**/*.{ts,svelte,js,json,css}' 'build/**/*.ts' 'mock/**/*.ts' 'e2e/**/*.ts' playwright.config.ts",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "e2e": "playwright test --project=desktop --project=phone --project=preview-desktop --project=preview-phone --project=visual-desktop --project=visual-phone",
-    "e2e:fast": "playwright test --project=desktop --project=phone --project=preview-desktop --project=preview-phone",
+    "e2e": "playwright test --project=desktop --project=phone --project=dev-desktop --project=dev-phone --project=preview-desktop --project=preview-phone --project=visual-desktop --project=visual-phone",
+    "e2e:fast": "playwright test --project=desktop --project=phone --project=dev-desktop --project=dev-phone --project=preview-desktop --project=preview-phone",
     "e2e:visual": "playwright test --project=visual-desktop --project=visual-phone",
     "e2e:webkit": "playwright test --project=webkit-phone",
     "e2e:report": "playwright show-report"

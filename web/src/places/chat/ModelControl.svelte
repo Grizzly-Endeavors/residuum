@@ -2,6 +2,7 @@
   import { untrack } from "svelte";
   import { MediaQuery } from "svelte/reactivity";
   import { Icon } from "../../lib/icons";
+  import { quietReloads } from "../../lib/reload-notices";
   import { router } from "../../lib/router.svelte";
   import { Button, Popover, Sheet, type FloatTriggerProps } from "../../lib/ui";
   import { ws } from "../../lib/ws.svelte";
@@ -17,7 +18,15 @@
 
   const uid = $props.id();
   const phone = new MediaQuery(PHONE_QUERY);
-  const main = untrack(() => new MainModel(agent, () => ws.send({ type: "reload" })));
+  // The popover says a change applies from the next reply, so the reload it
+  // asks for doesn't announce itself again.
+  const main = untrack(
+    () =>
+      new MainModel(agent, () => {
+        quietReloads.expect();
+        ws.send({ type: "reload" });
+      }),
+  );
   $effect(() => main.follow());
 
   let open = $state(false);

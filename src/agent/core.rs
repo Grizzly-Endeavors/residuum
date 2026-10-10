@@ -341,8 +341,11 @@ impl Agent {
     /// Process a user message through the model, executing tool calls as needed.
     ///
     /// Returns a vec containing the final text-only response. Intermediate texts
-    /// emitted alongside tool calls are sent via `reply` in real-time but not
-    /// included in the return value.
+    /// emitted alongside tool calls are published to the bus as they are
+    /// produced (the main conversation, and the topic of the chat interface
+    /// `output_endpoint` names, if it is one) but not included in the return
+    /// value. `correlation_id` names the turn in
+    /// everything it publishes.
     ///
     /// # Errors
     /// Returns an error if the model call fails or tool execution errors
@@ -357,7 +360,6 @@ impl Agent {
         user_input: &str,
         publisher: &Publisher,
         output_endpoint: Option<&EndpointName>,
-        tool_activity_endpoint: Option<&EndpointName>,
         correlation_id: &str,
         origin: Option<&MessageOrigin>,
         prompt_ctx: &PromptContext<'_>,
@@ -415,7 +417,6 @@ impl Agent {
             publisher,
             target: EventTarget::Endpoint {
                 output_endpoint,
-                tool_activity_endpoint,
                 correlation_id,
             },
             session_conversation: None,
@@ -582,7 +583,6 @@ mod tests {
                 "hi",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -608,7 +608,7 @@ mod tests {
                     cache_creation_tokens: None,
                     cache_read_tokens: None,
                 }),
-                thinking: None,
+                thinking: Vec::new(),
                 stop_reason: None,
             },
             InferenceResponse {
@@ -620,7 +620,7 @@ mod tests {
                     cache_creation_tokens: None,
                     cache_read_tokens: None,
                 }),
-                thinking: None,
+                thinking: Vec::new(),
                 stop_reason: None,
             },
         ]);
@@ -647,7 +647,6 @@ mod tests {
                     msg,
                     &publisher,
                     Some(&ep),
-                    None,
                     "",
                     None,
                     &PromptContext::default(),
@@ -743,7 +742,6 @@ mod tests {
                 "run echo test",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -805,7 +803,6 @@ mod tests {
                 "what does echo test print?",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -876,7 +873,6 @@ mod tests {
                 "loop past the old cap",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -941,7 +937,6 @@ mod tests {
                 "loop forever",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1281,7 +1276,6 @@ mod tests {
                 "hello",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1361,7 +1355,6 @@ mod tests {
                 "hello",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1426,7 +1419,6 @@ mod tests {
                 "hello",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1483,7 +1475,6 @@ mod tests {
                 "hello",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1568,7 +1559,6 @@ mod tests {
                 "hello",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1631,7 +1621,6 @@ mod tests {
                 "hello",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1840,7 +1829,6 @@ mod tests {
                 "hi",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1861,7 +1849,6 @@ mod tests {
                 "hi again",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1928,7 +1915,6 @@ mod tests {
                 "hi",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1947,7 +1933,6 @@ mod tests {
                 "hi again",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -2010,7 +1995,6 @@ mod tests {
                 "hi",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),

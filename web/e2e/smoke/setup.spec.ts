@@ -90,10 +90,25 @@ test("a reload mid-way restores the draft, without its keys", async ({ page }) =
   await page.getByRole("switch", { name: "Ollama" }).click();
   await page.getByLabel("Anthropic API key", { exact: true }).fill("sk-test-anthropic");
 
-  // The draft is written half a second after the last change.
+  // The draft is written half a second after the last change. The wizard may
+  // already have written its first draft (every provider's settings, Ollama's
+  // among them), so wait for the one that holds what was just entered.
   await expect
-    .poll(() => page.evaluate((key) => localStorage.getItem(key) ?? "", DRAFT_KEY))
-    .toContain('"ollama"');
+    .poll(async () => {
+      const raw = await page.evaluate((key) => localStorage.getItem(key), DRAFT_KEY);
+      const draft = JSON.parse(raw ?? "null") as {
+        step: number;
+        wizardState: { agentName: string; selectedProviders: string[] };
+      } | null;
+      return (
+        draft && {
+          step: draft.step,
+          agentName: draft.wizardState.agentName,
+          ollama: draft.wizardState.selectedProviders.includes("ollama"),
+        }
+      );
+    })
+    .toEqual({ step: 1, agentName: "night-owl", ollama: true });
   await page.reload();
 
   await expect(stepHeading(page, "Add model providers")).toBeVisible();

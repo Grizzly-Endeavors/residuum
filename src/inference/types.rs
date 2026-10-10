@@ -42,13 +42,188 @@ pub struct Message {
     /// the header in its text, which anyone can type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_sender: Option<AgentSender>,
+    /// The model's reasoning behind an assistant message, as its provider
+    /// returned it. Kept so the conversation's readers can show it and so a
+    /// provider that requires its reasoning back within a tool-use exchange
+    /// gets it unchanged. Providers decide which of it they replay.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thinking: Vec<ThinkingBlock>,
+}
+
+/// One piece of a model's reasoning, as its provider returned it.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ThinkingBlock {
+    /// The readable reasoning. Some providers return a summary of it rather
+    /// than the full text; empty when the provider withheld it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
+    /// Opaque token the provider requires back, unchanged, when the
+    /// conversation continues (Anthropic's `signature`, Gemini's
+    /// `thoughtSignature`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    /// Encrypted reasoning returned in place of readable text (Anthropic's
+    /// `redacted_thinking`), replayed unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redacted: Option<String>,
+    /// Which part of the response the provider attached `signature` to, for
+    /// a provider that signs individual parts (Gemini: the id of the tool
+    /// call it belongs to, or `text` for the response's text). Replayed so
+    /// each signature goes back on the part it came with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part: Option<String>,
+    /// The provider and model that produced the block, recorded by the
+    /// provider that answered. Signatures and encrypted blocks mean something
+    /// only to the provider (and model) that issued them, so a provider
+    /// replays only the blocks it produced itself. A block saved without an
+    /// origin has none to match and is never replayed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<ThinkingOrigin>,
+}
+
+impl ThinkingBlock {
+    /// A block holding readable reasoning and nothing to replay.
+    #[must_use]
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            ..Self::default()
+        }
+    }
+
+    /// This block, recorded as produced at `origin`.
+    #[must_use]
+    pub fn from_origin(mut self, origin: &ThinkingOrigin) -> Self {
+        self.origin = Some(origin.clone());
+        self
+    }
+}
+
+/// The kind of provider API a model's reply came from. Providers that speak
+/// the same wire protocol are one kind: a Fireworks host and any other
+/// OpenAI-compatible server are both [`OpenAiCompatible`](Self::OpenAiCompatible).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderApi {
+    /// The Anthropic Messages API.
+    Anthropic,
+    /// The Google Gemini `generateContent` API.
+    Gemini,
+    /// An OpenAI-compatible chat completions API, including `OpenAI` itself.
+    #[serde(rename = "openai_compatible")]
+    OpenAiCompatible,
+    /// The Ollama chat API.
+    Ollama,
+}
+
+/// Who produced a piece of reasoning: the provider API and the model behind
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThinkingOrigin {
+    /// The provider API that returned the reasoning.
+    pub provider: ProviderApi,
+    /// The model that wrote it, as the provider names it.
+    pub model: String,
+}
+
+impl ThinkingOrigin {
+    /// The origin of reasoning that `model` returned through `provider`.
+    #[must_use]
+    pub fn new(provider: ProviderApi, model: impl Into<String>) -> Self {
+        Self {
+            provider,
+            model: model.into(),
+        }
+    }
+}
+
+/// How closely a provider ties the reasoning it replays to whoever produced
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReplayScope {
+    /// Any model of the provider's own API: the reasoning goes back as plain
+    /// text, which means the same whichever model wrote it.
+    SameProvider,
+    /// Only the model that wrote it: the reasoning carries a signature or
+    /// encrypted data that the issuing model binds to itself.
+    SameModel,
+}
+
+/// The blocks of `thinking` that the provider at `reader` may replay: those
+/// whose origin matches `reader` within `scope`. Every other block (another
+/// provider's, another model's, or one saved with no origin) is left out, with
+/// a debug line saying how many, so a provider never sends a request the API
+/// refuses over reasoning it did not produce.
+pub(crate) fn blocks_produced_at<'a>(
+    thinking: &'a [ThinkingBlock],
+    reader: &ThinkingOrigin,
+    scope: ReplayScope,
+) -> Vec<&'a ThinkingBlock> {
+    let own: Vec<&ThinkingBlock> = thinking
+        .iter()
+        .filter(|block| {
+            block.origin.as_ref().is_some_and(|origin| {
+                origin.provider == reader.provider
+                    && (scope == ReplayScope::SameProvider || origin.model == reader.model)
+            })
+        })
+        .collect();
+    let skipped = thinking.len() - own.len();
+    if skipped > 0 {
+        tracing::debug!(
+            skipped,
+            provider = ?reader.provider,
+            model = %reader.model,
+            "left out thinking blocks this provider and model did not produce"
+        );
+    }
+    own
+}
+
+/// Index of the first message of the tool-use exchange the conversation is
+/// in the middle of: the message after the last assistant message that made
+/// no tool calls, or the first message when there is none. A provider that
+/// needs its reasoning replayed with the tool calls it led to replays it for
+/// the assistant messages from here on, and no earlier.
+pub(crate) fn current_exchange_start(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .rposition(|msg| {
+            msg.role == Role::Assistant && msg.tool_calls.as_ref().is_none_or(Vec::is_empty)
+        })
+        .map_or(0, |last_reply| last_reply + 1)
+}
+
+/// The readable text of each block that has some, in order, skipping blocks
+/// the provider withheld. The one place reasoning becomes text for a reader:
+/// signatures and encrypted data never leave the blocks.
+#[must_use]
+pub fn readable_thinking(blocks: &[ThinkingBlock]) -> Vec<&str> {
+    blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .filter(|text| !text.trim().is_empty())
+        .collect()
+}
+
+/// The readable text of `blocks` joined by a blank line, or `None` when there
+/// is none (see [`readable_thinking`]).
+#[must_use]
+pub fn joined_thinking_text(blocks: &[ThinkingBlock]) -> Option<String> {
+    let parts = readable_thinking(blocks);
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
 }
 
 /// The person behind a user message and where they sent it from.
 ///
 /// Stored with the message so the agent can tell participants apart in
 /// shared spaces (team channels) long after the message arrived.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct MessageSender {
     /// Display name as the interface reports it.
     pub name: String,
@@ -58,6 +233,7 @@ pub struct MessageSender {
     pub interface: String,
     /// Where on the interface it was sent (e.g. `"direct message"`, `"#general"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub location: Option<String>,
 }
 
@@ -94,6 +270,7 @@ impl Message {
             images: Vec::new(),
             sender: None,
             agent_sender: None,
+            thinking: Vec::new(),
         }
     }
 
@@ -108,6 +285,7 @@ impl Message {
             images,
             sender: None,
             agent_sender: None,
+            thinking: Vec::new(),
         }
     }
 
@@ -122,6 +300,7 @@ impl Message {
             images: Vec::new(),
             sender: None,
             agent_sender: None,
+            thinking: Vec::new(),
         }
     }
 
@@ -136,6 +315,7 @@ impl Message {
             images: Vec::new(),
             sender: None,
             agent_sender: None,
+            thinking: Vec::new(),
         }
     }
 
@@ -150,6 +330,7 @@ impl Message {
             images: Vec::new(),
             sender: None,
             agent_sender: None,
+            thinking: Vec::new(),
         }
     }
 
@@ -168,6 +349,7 @@ impl Message {
             images,
             sender: None,
             agent_sender: None,
+            thinking: Vec::new(),
         }
     }
 
@@ -183,6 +365,28 @@ impl Message {
     pub fn with_agent_sender(mut self, agent_sender: Option<AgentSender>) -> Self {
         self.agent_sender = agent_sender;
         self
+    }
+
+    /// Attach the reasoning the model produced for this message.
+    #[must_use]
+    pub fn with_thinking(mut self, thinking: Vec<ThinkingBlock>) -> Self {
+        self.thinking = thinking;
+        self
+    }
+
+    /// This message for an archive nothing replays to a provider: its
+    /// reasoning is kept as readable text only, without the signatures and
+    /// encrypted blocks a provider needs back within a conversation, which
+    /// mean nothing once the conversation is over.
+    #[must_use]
+    pub fn without_replay_data(&self) -> Self {
+        Self {
+            thinking: readable_thinking(&self.thinking)
+                .into_iter()
+                .map(ThinkingBlock::text)
+                .collect(),
+            ..self.clone()
+        }
     }
 
     /// Message text as the agent reads it in history and transcripts.
@@ -308,8 +512,8 @@ pub struct InferenceResponse {
     pub tool_calls: Vec<ToolCall>,
     /// Token usage information, if the provider reports it.
     pub usage: Option<Usage>,
-    /// Thinking/reasoning text from the model (not sent back in context).
-    pub thinking: Option<String>,
+    /// The model's reasoning for this response, in the order it was returned.
+    pub thinking: Vec<ThinkingBlock>,
     /// Why generation ended, if the provider reports it.
     pub stop_reason: Option<StopReason>,
 }
@@ -322,9 +526,21 @@ impl InferenceResponse {
             content,
             tool_calls,
             usage: None,
-            thinking: None,
+            thinking: Vec::new(),
             stop_reason: None,
         }
+    }
+
+    /// This response with every thinking block recorded as produced at
+    /// `origin`. The provider that answered calls this on what it returns,
+    /// so a chain of providers (failover) records the one that actually
+    /// answered.
+    #[must_use]
+    pub(crate) fn produced_at(mut self, origin: &ThinkingOrigin) -> Self {
+        for block in &mut self.thinking {
+            block.origin = Some(origin.clone());
+        }
+        self
     }
 
     /// Whether this response represents a complete turn (text, no tool calls).
@@ -405,6 +621,27 @@ pub struct CompletionOptions {
     pub web_search: Option<WebSearchNativeConfig>,
 }
 
+/// A piece of a model response that arrived while the call is still running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamDelta {
+    /// More of the response's text.
+    Text(String),
+    /// More of the model's readable reasoning.
+    Thinking(String),
+    /// Everything streamed so far for this call is void: the request is
+    /// being sent again (a retry, or the next provider in a failover chain),
+    /// and what follows starts over from the beginning.
+    Restart,
+}
+
+/// Receives a response's pieces as they stream in.
+///
+/// `push` must not block: providers call it from inside their read loop.
+pub trait StreamSink: Send + Sync {
+    /// Take the next piece of the response.
+    fn push(&self, delta: StreamDelta);
+}
+
 /// Trait for model provider implementations.
 #[async_trait]
 pub trait InferenceProvider: Send + Sync {
@@ -418,6 +655,24 @@ pub trait InferenceProvider: Send + Sync {
         tools: &[ToolDefinition],
         options: &CompletionOptions,
     ) -> Result<InferenceResponse, InferenceError>;
+
+    /// Like [`complete`](Self::complete), also handing the response's text
+    /// and reasoning to `sink` as they arrive. The returned response is
+    /// complete and authoritative; what the sink received previews it. A
+    /// provider that can't stream keeps this default, which streams nothing.
+    ///
+    /// # Errors
+    /// Returns `InferenceError` if the request fails, times out, or the response is malformed.
+    async fn complete_streaming(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+        sink: &dyn StreamSink,
+    ) -> Result<InferenceResponse, InferenceError> {
+        let _ = sink;
+        self.complete(messages, tools, options).await
+    }
 
     /// Get the model identifier.
     fn model_name(&self) -> &str;
@@ -656,6 +911,156 @@ mod tests {
         assert!(
             opts.temperature.is_none(),
             "default temperature should be None"
+        );
+    }
+
+    #[test]
+    fn an_archived_message_keeps_readable_reasoning_and_drops_what_only_a_provider_needs() {
+        let message = Message::assistant("42.".to_string(), None).with_thinking(vec![
+            ThinkingBlock {
+                text: "work it out".to_string(),
+                signature: Some("sig".to_string()),
+                redacted: None,
+                part: None,
+                origin: None,
+            },
+            ThinkingBlock {
+                text: String::new(),
+                signature: None,
+                redacted: Some("encrypted".to_string()),
+                part: None,
+                origin: None,
+            },
+        ]);
+
+        let archived = message.without_replay_data();
+
+        assert_eq!(archived.thinking, [ThinkingBlock::text("work it out")]);
+        assert_eq!(archived.content, "42.");
+        assert_eq!(
+            message.thinking.len(),
+            2,
+            "the original keeps its blocks whole"
+        );
+    }
+
+    #[test]
+    fn reasoning_serializes_only_when_there_is_some() {
+        let plain = serde_json::to_value(Message::assistant("hi".to_string(), None)).unwrap();
+        assert!(plain.get("thinking").is_none(), "{plain}");
+
+        let reasoned = Message::assistant("hi".to_string(), None)
+            .with_thinking(vec![ThinkingBlock::text("because")]);
+        let json = serde_json::to_value(&reasoned).unwrap();
+        assert_eq!(
+            json.get("thinking"),
+            Some(&serde_json::json!([{ "text": "because" }]))
+        );
+        let back: Message = serde_json::from_value(json).unwrap();
+        assert_eq!(back.thinking, reasoned.thinking);
+    }
+
+    #[test]
+    fn an_origin_round_trips_and_names_the_provider_in_plain_words() {
+        let block = ThinkingBlock {
+            signature: Some("sig".to_string()),
+            ..ThinkingBlock::default()
+        }
+        .from_origin(&ThinkingOrigin::new(
+            ProviderApi::OpenAiCompatible,
+            "gpt-test",
+        ));
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "signature": "sig",
+                "origin": {"provider": "openai_compatible", "model": "gpt-test"}
+            })
+        );
+        let back: ThinkingBlock = serde_json::from_value(json).unwrap();
+        assert_eq!(back, block);
+    }
+
+    #[test]
+    fn blocks_saved_before_origins_were_recorded_still_load_without_one() {
+        let saved = r#"{"role":"assistant","content":"hi","thinking":[
+            {"text":"plan","signature":"sig-old"},
+            {"redacted":"ENC"},
+            {"signature":"sig-g","part":"call_0"}
+        ]}"#;
+        let message: Message = serde_json::from_str(saved).unwrap();
+        assert_eq!(message.thinking.len(), 3, "every saved block loads");
+        assert!(
+            message.thinking.iter().all(|block| block.origin.is_none()),
+            "none of them claims an origin: {:?}",
+            message.thinking
+        );
+        let again = serde_json::to_value(&message).unwrap();
+        assert!(
+            !again.to_string().contains("origin"),
+            "and saving them back adds no origin: {again}"
+        );
+    }
+
+    fn block_from(provider: ProviderApi, model: &str, text: &str) -> ThinkingBlock {
+        ThinkingBlock::text(text).from_origin(&ThinkingOrigin::new(provider, model))
+    }
+
+    fn texts<'a>(blocks: &[&'a ThinkingBlock]) -> Vec<&'a str> {
+        blocks.iter().map(|block| block.text.as_str()).collect()
+    }
+
+    #[test]
+    fn a_reader_replays_only_blocks_its_own_provider_produced() {
+        let thinking = vec![
+            block_from(ProviderApi::Anthropic, "claude-a", "anthropic"),
+            block_from(ProviderApi::Gemini, "gemini-a", "gemini"),
+            block_from(ProviderApi::OpenAiCompatible, "gpt-a", "openai"),
+            block_from(ProviderApi::Ollama, "llama-a", "ollama"),
+            ThinkingBlock::text("no origin"),
+        ];
+        for (provider, model, expected) in [
+            (ProviderApi::Anthropic, "claude-a", "anthropic"),
+            (ProviderApi::Gemini, "gemini-a", "gemini"),
+            (ProviderApi::OpenAiCompatible, "gpt-a", "openai"),
+            (ProviderApi::Ollama, "llama-a", "ollama"),
+        ] {
+            let reader = ThinkingOrigin::new(provider, model);
+            for scope in [ReplayScope::SameProvider, ReplayScope::SameModel] {
+                assert_eq!(
+                    texts(&blocks_produced_at(&thinking, &reader, scope)),
+                    [expected],
+                    "{provider:?} reading at {scope:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_scope_decides_whether_another_model_of_the_same_provider_counts() {
+        let thinking = vec![
+            block_from(ProviderApi::Anthropic, "claude-a", "model a"),
+            block_from(ProviderApi::Anthropic, "claude-b", "model b"),
+        ];
+        let reader = ThinkingOrigin::new(ProviderApi::Anthropic, "claude-b");
+        assert_eq!(
+            texts(&blocks_produced_at(
+                &thinking,
+                &reader,
+                ReplayScope::SameModel
+            )),
+            ["model b"],
+            "a signature binds to its model"
+        );
+        assert_eq!(
+            texts(&blocks_produced_at(
+                &thinking,
+                &reader,
+                ReplayScope::SameProvider
+            )),
+            ["model a", "model b"],
+            "plain text means the same from any model of the provider"
         );
     }
 }

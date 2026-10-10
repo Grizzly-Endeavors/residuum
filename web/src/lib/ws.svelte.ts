@@ -17,8 +17,10 @@ import { scheduled } from "./scheduled.svelte";
 import { FeedStore } from "./feed.svelte";
 import { SessionsStore, isSessionFrame } from "./sessions.svelte";
 import { notifications } from "./notifications.svelte";
+import { noticeFrameNotice, reloadingNotice } from "./reload-notices";
 import { invalidate } from "./cache";
-import { userErrorMessage } from "./errors";
+import { newMessageId } from "./message-id";
+import { userErrorMessage, userErrorReason } from "./errors";
 import { normalizeWatchPrefix } from "./workspace-watch";
 import { WatchRegistry } from "./watch-registry";
 import {
@@ -43,9 +45,10 @@ class WsCoordinator {
   });
   /** The main chat's feed for the bound agent. Replaced on an agent switch. */
   store = $state<FeedStore>(this.createFeed(null));
+  /** Why the main chat's history couldn't be loaded, in plain words, until a load succeeds. */
+  historyError = $state<string | null>(null);
   /** The bound agent's sessions. Replaced on an agent switch. */
   sessions = $state<SessionsStore>(this.createSessions(null, this.store));
-  private msgCounter = 0;
   private hasConnected = false;
   /** The agent started while bound, so its chat may be behind once the connection opens. */
   private catchUpOnConnect = false;
@@ -100,9 +103,11 @@ class WsCoordinator {
         if (!this.liveUpdatesOffShown) notifications.surface("error", msg.message);
         this.liveUpdatesOffShown = true;
       } else if (msg.type === "notice") {
-        notifications.surface("notice", msg.message);
+        const notice = noticeFrameNotice(msg.message);
+        if (notice !== null) notifications.surface(notice.kind, notice.message, notice.details);
       } else if (msg.type === "reloading") {
-        notifications.surface("system", "Gateway is reloading…");
+        const notice = reloadingNotice();
+        if (notice !== null) notifications.surface(notice.kind, notice.message);
         // Gateway is reloading config from disk — anything we cached about
         // server-side state may be stale. Episode history is immutable and
         // intentionally stays cached.
@@ -194,12 +199,15 @@ class WsCoordinator {
    * running is timed from when the hub says the agent became busy.
    */
   private createFeed(agent: string | null): FeedStore {
-    return new FeedStore(() => {
-      if (agent === null) return null;
-      const since = hub.activityOf(agent).busy_since;
-      const at = since === null ? Number.NaN : Date.parse(since);
-      return Number.isNaN(at) ? null : at;
-    });
+    return new FeedStore(
+      () => {
+        if (agent === null) return null;
+        const since = hub.activityOf(agent).busy_since;
+        const at = since === null ? Number.NaN : Date.parse(since);
+        return Number.isNaN(at) ? null : at;
+      },
+      () => (agent === null ? "The agent" : hub.shownName(agent)),
+    );
   }
 
   /**
@@ -226,6 +234,7 @@ class WsCoordinator {
     this.transport.reset();
     const store = this.createFeed(name);
     this.store = store;
+    this.historyError = null;
     this.sessions = this.createSessions(name, store);
     this.hasConnected = false;
     this.catchUpOnConnect = false;
@@ -251,15 +260,13 @@ class WsCoordinator {
     const agent = this.agent;
     if (agent === null) return;
     const store = this.store;
+    this.historyError = null;
     let recent;
     try {
       recent = await fetchChatHistory(agent);
     } catch (err) {
       if (store !== this.store) return;
-      notifications.surface(
-        "error",
-        userErrorMessage(err, { action: "Couldn't load the chat history." }),
-      );
+      this.historyError = userErrorReason(err, { action: "Couldn't load the chat history." });
       return;
     }
     if (store !== this.store) return;
@@ -365,8 +372,7 @@ class WsCoordinator {
   }
 
   sendChat(content: string, images?: ImageAttachment[]): void {
-    this.msgCounter++;
-    const id = `web-${this.msgCounter}`;
+    const id = newMessageId();
     const msg: ClientMessage = {
       type: "send_message",
       id,
