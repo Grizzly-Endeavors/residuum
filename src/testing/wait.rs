@@ -75,7 +75,7 @@ pub(crate) async fn watch_until<T: Clone>(
 
 /// A receiving end a test can wait on.
 pub(crate) trait Recv {
-    type Item: Debug;
+    type Item;
 
     /// The next item, waiting for one; `None` once the sender is gone.
     async fn recv_next(&mut self) -> Option<Self::Item>;
@@ -84,7 +84,7 @@ pub(crate) trait Recv {
     fn try_next(&mut self) -> Option<Self::Item>;
 }
 
-impl<T: Debug> Recv for mpsc::Receiver<T> {
+impl<T> Recv for mpsc::Receiver<T> {
     type Item = T;
 
     async fn recv_next(&mut self) -> Option<T> {
@@ -96,7 +96,7 @@ impl<T: Debug> Recv for mpsc::Receiver<T> {
     }
 }
 
-impl<T: Debug> Recv for mpsc::UnboundedReceiver<T> {
+impl<T> Recv for mpsc::UnboundedReceiver<T> {
     type Item = T;
 
     async fn recv_next(&mut self) -> Option<T> {
@@ -122,7 +122,7 @@ impl Recv for crate::hub::agent_watch::AgentChangeReceiver {
 
 /// A lagged receiver missed messages, so a test reading it can't conclude
 /// anything from what it saw: it fails instead.
-impl<T: Clone + Debug> Recv for broadcast::Receiver<T> {
+impl<T: Clone> Recv for broadcast::Receiver<T> {
     type Item = T;
 
     async fn recv_next(&mut self) -> Option<T> {
@@ -156,13 +156,49 @@ pub(crate) async fn next<R: Recv>(what: impl Display, rx: &mut R) -> R::Item {
     }
 }
 
+/// The next event a bus subscriber receives, waiting for one. A bus subscriber
+/// has no non-blocking receive, so it is waited on here rather than through
+/// [`Recv`].
+pub(crate) async fn next_event<E>(what: impl Display, sub: &mut Subscriber<E>) -> E
+where
+    E: Clone + Send + Sync + 'static,
+{
+    match guarded(&what, sub.recv()).await {
+        Ok(Some(event)) => event,
+        Ok(None) => panic!("the broker shut down while waiting for {what}"),
+        Err(e) => panic!("a bus subscriber failed to receive while waiting for {what}: {e}"),
+    }
+}
+
+/// The first item `rx` receives that satisfies `pred`. Items before it are
+/// skipped, so unlike [`next_where`] this needs no `Debug` on the item.
+pub(crate) async fn next_matching<R: Recv>(
+    what: impl Display,
+    rx: &mut R,
+    mut pred: impl FnMut(&R::Item) -> bool,
+) -> R::Item {
+    guarded(&what, async {
+        loop {
+            match rx.recv_next().await {
+                Some(item) if pred(&item) => return item,
+                Some(_) => {}
+                None => panic!("the sender went away while waiting for {what}"),
+            }
+        }
+    })
+    .await
+}
+
 /// Receive until an item satisfies `pred`. Returns everything received, the
 /// match last, so a test can also check what came before it.
 pub(crate) async fn next_where<R: Recv>(
     what: impl Display,
     rx: &mut R,
     mut pred: impl FnMut(&R::Item) -> bool,
-) -> Vec<R::Item> {
+) -> Vec<R::Item>
+where
+    R::Item: Debug,
+{
     let mut seen = Vec::new();
     let found = tokio::time::timeout(HANG_GUARD, async {
         while let Some(item) = rx.recv_next().await {
@@ -285,6 +321,40 @@ mod tests {
         }
         assert_eq!(next("the first item", &mut rx).await, 1);
         assert_eq!(drain(&mut rx), vec![2, 3]);
+    }
+
+    #[tokio::test]
+    async fn next_matching_skips_to_the_first_match_and_leaves_the_rest_queued() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        for n in 1..=4 {
+            tx.send(n).unwrap();
+        }
+        assert_eq!(
+            next_matching("an item past 2", &mut rx, |n| *n > 2).await,
+            3
+        );
+        assert_eq!(drain(&mut rx), vec![4]);
+    }
+
+    #[tokio::test]
+    async fn next_event_reads_the_next_bus_event() {
+        let bus = crate::bus::spawn_broker();
+        let mut sub: Subscriber<WorkbenchEvent> = bus.subscribe(topics::Workbench).await.unwrap();
+        bus.publisher()
+            .publish(
+                topics::Workbench,
+                WorkbenchEvent::Updated {
+                    name: "first".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            next_event("the first workbench event", &mut sub).await,
+            WorkbenchEvent::Updated {
+                name: "first".to_string()
+            }
+        );
     }
 
     #[tokio::test]

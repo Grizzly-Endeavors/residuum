@@ -521,6 +521,7 @@ mod tests {
     use crate::inference::{InferenceError, InferenceResponse, ToolDefinition};
     use crate::mcp::McpRegistry;
     use crate::skills::{SkillDir, SkillIndex, SkillState};
+    use crate::testing::wait;
     use async_trait::async_trait;
 
     /// A turn identity with no broker behind it: these tests exercise the
@@ -1259,23 +1260,17 @@ mod tests {
 
         assert_eq!(summary, "build is green");
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), conv_sub.recv())
-            .await
-            .expect("intermediate text should reach the conversation promptly")
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event(
+            "the intermediate text to reach the conversation",
+            &mut conv_sub,
+        )
+        .await;
         assert_eq!(event.content, "checking the build now");
         assert_eq!(event.session_address, address);
         assert_eq!(event.conversation_id, "chan-1");
 
         let session_event =
-            tokio::time::timeout(std::time::Duration::from_secs(1), session_sub.recv())
-                .await
-                .expect(
-                    "the session-stream event should also be published, same as any other session",
-                )
-                .unwrap()
-                .unwrap();
+            wait::next_event("the session-stream event to be published", &mut session_sub).await;
         assert_eq!(session_event.address, address);
         assert_eq!(session_event.run_id, "run-conv-tool");
         assert!(
