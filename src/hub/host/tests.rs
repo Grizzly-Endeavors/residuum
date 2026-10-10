@@ -290,33 +290,29 @@ impl Fixture {
         .await;
     }
 
+    /// Wait until the running agent has no checkpoint still being written,
+    /// as its status reports.
+    async fn wait_for_checkpoints_to_settle(&self, name: &str) {
+        wait::until("the agent's checkpoints to finish", || async {
+            let (_, status) = self.get(&format!("/api/agents/{name}/status")).await;
+            let status: Value = serde_json::from_str(&status).ok()?;
+            (status.pointer("/checkpoints/pending") == Some(&json!(0))).then_some(())
+        })
+        .await;
+    }
+
     /// Replace the agent's workspace checkpoint repository with a plain
-    /// file, so that opening it fails.
-    ///
-    /// A checkpoint the agent records in the background may still be writing
-    /// into the repository, and which ones are is up to scheduling. Such a
-    /// writer can make deleting the directory fail, or recreate it before the
-    /// file is written, so this repeats until the file stands where the
-    /// repository was. The writers are finite, and once the file is there they
-    /// fail against it, so the path settles.
+    /// file, so that opening it fails. Call it once no checkpoint is being
+    /// written: the agent is stopped, which waits for them, or
+    /// [`Self::wait_for_checkpoints_to_settle`] has returned.
     fn make_checkpoints_unopenable(&self, name: &str) {
         let repo = crate::checkpoints::agent_repos_dir(
             &crate::config::HubPaths::new(&self.services.hub_dir).checkpoints_dir(),
             name,
         )
         .join("workspace.git");
-        let deadline = std::time::Instant::now() + HANG_GUARD;
-        loop {
-            std::fs::remove_dir_all(&repo).ok();
-            if std::fs::write(&repo, "not a repository").is_ok() {
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "a background checkpoint kept the workspace repository directory in place"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        std::fs::remove_dir_all(&repo).unwrap();
+        std::fs::write(&repo, "not a repository").unwrap();
     }
 
     /// Write a user-inbox item named `id` into the agent's workspace.
@@ -620,6 +616,7 @@ async fn a_running_agents_history_and_inbox_do_not_open_its_checkpoint_repositor
     })
     .await;
     hub.wait_for_a_turn_checkpoint("scout").await;
+    hub.wait_for_checkpoints_to_settle("scout").await;
     hub.add_inbox_item("scout", "20260930_pelican");
     hub.make_checkpoints_unopenable("scout");
 

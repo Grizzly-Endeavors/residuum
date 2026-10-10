@@ -40,6 +40,9 @@ pub(crate) struct AgentStatusState {
 /// Per-repository checkpoint stats shown in `/api/agents/{name}/status`.
 #[derive(Serialize)]
 pub(super) struct CheckpointsStatus {
+    /// How many of the agent's automatic checkpoints are still being
+    /// written; they run off the turn's path.
+    pending: usize,
     workspace: Option<crate::checkpoints::RepoStats>,
     team: Option<crate::checkpoints::RepoStats>,
     agent_config: Option<crate::checkpoints::RepoStats>,
@@ -150,6 +153,7 @@ pub(super) async fn api_status(
         version: update::CURRENT_VERSION,
         features: features::FEATURES,
         checkpoints: CheckpointsStatus {
+            pending: state.checkpoints.pending_checkpoints(),
             workspace: checkpoint_stats_or_log(&state, crate::checkpoints::RepoKind::Workspace)
                 .await,
             team: checkpoint_stats_or_log(&state, crate::checkpoints::RepoKind::Team).await,
