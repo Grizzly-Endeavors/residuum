@@ -252,6 +252,16 @@ jobs:
         id: test
         run: cargo test --quiet
 
+      # The suite again, as two concurrent copies with every CPU busy: how it
+      # runs when several agents share a machine. Reuses the binaries the Tests
+      # step built. A failure here is a test waiting on time instead of the
+      # event it checks; fix the wait (CONTRIBUTING.md, "Waiting in tests"),
+      # never rerun past it.
+      - name: Stress
+        id: stress
+        if: steps.test.outcome == 'success'
+        run: scripts/stress-tests.sh
+
       # Remote access issuance against Pebble, the Let's Encrypt test CA, in
       # Docker (see docs/systems-usage/secure-tunnel.md, "Tests"). The
       # containers run on the Docker daemon beside the runner, which shares
@@ -279,9 +289,18 @@ jobs:
             echo '| Check | Status |'
             echo '|-------|--------|'
             echo "| Tests | ${{ steps.test.outcome }} |"
+            echo "| Stress (2 copies under load) | ${{ steps.stress.outcome }} |"
             echo "| Pebble tests | ${{ steps.pebble.outcome }} |"
             echo "| Generated types | ${{ steps.types.outcome }} |"
             echo ''
+            if [ -s target/stress/summary.txt ]; then
+              echo '### Stress failures (count, test)'
+              echo ''
+              echo '```'
+              cat target/stress/summary.txt
+              echo '```'
+              echo ''
+            fi
             echo '### Compiler cache (sccache)'
             echo ''
             echo '```'
