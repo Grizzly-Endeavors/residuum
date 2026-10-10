@@ -43,3 +43,28 @@ test.describe("with a frozen clock", () => {
     expect(await page.evaluate(() => new Date().toISOString())).toBe("2026-03-14T12:00:00.000Z");
   });
 });
+
+test("manual time holds the mock still until the spec moves it, and steps until the page shows the outcome", async ({
+  page,
+  mock,
+}) => {
+  await page.goto("/agent/atlas");
+  await expect(
+    page
+      .getByRole("region", { name: "Conversation with atlas" })
+      .getByText("Hi, this is atlas. You are in my conversation, not scout's."),
+  ).toBeVisible();
+  await mock.manualTime();
+  await page.getByRole("button", { name: "More for atlas" }).click();
+  await page.getByRole("menuitem", { name: /^Stop atlas/ }).click();
+  const stopping = page.getByRole("region", { name: "Stopping atlas" });
+  await expect(stopping).toBeVisible();
+
+  // The stop's wind-down waits on simulated time, which a move of none doesn't pass.
+  expect(await mock.advance(0)).toMatchObject({ fired: 0 });
+  await expect(stopping).toBeVisible();
+
+  await mock.stepUntil((timeout) =>
+    expect(page.getByRole("region", { name: "atlas is stopped" })).toBeVisible({ timeout }),
+  );
+});

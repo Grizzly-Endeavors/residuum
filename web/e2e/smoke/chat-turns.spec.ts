@@ -189,14 +189,18 @@ test.describe("text and reasoning streaming in", () => {
     page,
     mock,
   }) => {
-    await mock.post("/api/mock/delays", { data: { scale: 8 } });
     await openAtlas(page);
+    await mock.manualTime();
     await send(page, "Tidy the wiki index");
     const feed = conversation(page);
+    // The turn head shows from the mock's `turn_started`, so the turn's timers are set.
+    await expect(feed.getByText("Working", { exact: true })).toBeVisible();
 
-    // Partway through: its first words are in, its last aren't, and it is still arriving.
+    // Partway through: the reply's last call starts writing at 1.5s, a piece every
+    // 45ms, so 1.59s in its first three pieces are in and its last aren't.
+    await mock.advance(1_590);
     const reply = feed.getByText("I've looked into that and here's what I found:");
-    await expect(reply).toBeVisible({ timeout: 30_000 });
+    await expect(reply).toBeVisible();
     await expect(feed.getByText("Would you like me to adjust any of these values?")).toHaveCount(0);
     await expect(feed.locator("[data-streaming]")).toHaveCount(1);
     await expect(feed.getByText("Working", { exact: true })).toBeVisible();
@@ -212,9 +216,8 @@ test.describe("text and reasoning streaming in", () => {
       .toBe('""');
     await expectNoAxeViolations(page);
 
-    await expect(feed.getByText("Would you like me to adjust any of these values?")).toBeVisible({
-      timeout: 30_000,
-    });
+    await mock.advance(60_000);
+    await expect(feed.getByText("Would you like me to adjust any of these values?")).toBeVisible();
     await expect(feed.locator("[data-streaming]")).toHaveCount(0);
     await expect(feed.getByText("Working", { exact: true })).toHaveCount(0);
     // It is the one message, not the draft and the message.

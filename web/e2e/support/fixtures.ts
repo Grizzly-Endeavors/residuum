@@ -14,7 +14,7 @@
  *   worker's own dev or preview server (`servers.ts`), so workers never share a mock.
  */
 import { expect, test as base, webkit, type Page, type Response } from "@playwright/test";
-import { FIXED_START_MS } from "../../mock/env";
+import { FIXED_START_MS, type TimeProgress } from "../../mock/env";
 import { hubReach, waitForApp } from "./app";
 import { serversOf, type MockServerKind } from "./servers";
 
@@ -37,7 +37,29 @@ export interface MockControls {
     path: string,
     options?: { params?: Record<string, string>; data?: Record<string, unknown> },
   ) => Promise<unknown>;
+  /**
+   * Stop simulated time: from now on nothing the mock simulates happens until
+   * the spec moves time with `advance` or `stepUntil`, so a moment of a turn
+   * stays on screen for as long as the spec looks at it. Call it before
+   * starting what you want to watch. The fixture's reset turns it off again.
+   */
+  manualTime: () => Promise<void>;
+  /** Move manual time forward by `ms`: every timer due by then runs, in order. */
+  advance: (ms: number) => Promise<TimeProgress>;
+  /**
+   * Run the mock's timers one at a time until `expectation` holds. It gets the
+   * time to allow each try, to pass on to its assertion:
+   * `mock.stepUntil((timeout) => expect(card).toBeVisible({ timeout }))`.
+   * The page gets that long to show what a timer did before the next one
+   * runs, and the steps end when no timer is left, so the bound is the turn's
+   * timers, not a wall-clock guess. A timer can close the moment it opens, so
+   * for a window that a later timer ends, `advance` to a time inside it.
+   */
+  stepUntil: (expectation: (timeout: number) => Promise<unknown>) => Promise<void>;
 }
+
+/** How long `stepUntil` lets the page show what a timer did before it runs the next. */
+const STEP_SETTLE_MS = 2000;
 
 interface E2EFixtures {
   mock: MockControls;
@@ -134,14 +156,32 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
   // before the page opens and connects.
   mock: [
     async ({ request }, use) => {
+      const post: MockControls["post"] = async (path, options) => {
+        const response = await request.post(path, options);
+        expect(response.ok(), `POST ${path} answered ${response.status()}`).toBe(true);
+        // A page loaded while the hub is out of reach is ready when it shows the banner (see `hubReach`).
+        if (path === "/api/mock/hub-socket") hubReach.lost = options?.data?.online === false;
+        if (path === "/api/mock/reset") hubReach.lost = false;
+        return (await response.json()) as unknown;
+      };
       const controls: MockControls = {
-        post: async (path, options) => {
-          const response = await request.post(path, options);
-          expect(response.ok(), `POST ${path} answered ${response.status()}`).toBe(true);
-          // A page loaded while the hub is out of reach is ready when it shows the banner (see `hubReach`).
-          if (path === "/api/mock/hub-socket") hubReach.lost = options?.data?.online === false;
-          if (path === "/api/mock/reset") hubReach.lost = false;
-          return (await response.json()) as unknown;
+        post,
+        manualTime: async () => {
+          await post("/api/mock/time", { data: { mode: "manual" } });
+        },
+        advance: async (ms) =>
+          (await post("/api/mock/time/advance", { data: { ms } })) as TimeProgress,
+        stepUntil: async (expectation) => {
+          for (;;) {
+            try {
+              await expectation(STEP_SETTLE_MS);
+              return;
+            } catch (notYet) {
+              const { fired } = (await post("/api/mock/time/step")) as TimeProgress;
+              // No timer left to run: the expectation's own failure says what never showed.
+              if (fired === 0) throw notYet;
+            }
+          }
         },
       };
       await controls.post("/api/mock/reset");
