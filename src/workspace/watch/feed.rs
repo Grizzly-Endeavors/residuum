@@ -684,7 +684,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_ne!(*health_rx.borrow(), WatchHealth::Off);
+        crate::workspace::watch::assert_native_watch(*health_rx.borrow(), "the change feed");
 
         std::fs::create_dir(root.join(".index")).unwrap();
         std::fs::write(root.join(".index").join("seg"), "x").unwrap();
@@ -725,7 +725,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_ne!(*health_rx.borrow(), WatchHealth::Off);
+        crate::workspace::watch::assert_native_watch(*health_rx.borrow(), "the change feed");
 
         crate::util::fs::atomic_write(&root.join("workbench").join("tool.html"), "hi")
             .await
