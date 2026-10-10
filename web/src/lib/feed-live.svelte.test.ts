@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { groupTurns } from "../feed/turns";
 import { FeedStore } from "./feed.svelte";
+import { localTimestamp } from "./time";
 import type { FeedItem, MessageSender, RecentMessage, ServerMessage } from "./types";
 
 // What the main chat's feed shows of turns as the agent's socket carries them:
@@ -642,5 +643,171 @@ describe("catching up on history after a turn with reasoning", () => {
       "thinking",
       "tool-group",
     ]);
+  });
+});
+
+describe("a snapshot of the turn in flight", () => {
+  // What a page shows once it asks for the turn so far: on opening partway
+  // through a turn, and on reconnecting after missing some of it.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-09T08:00:30Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const delta = (text: string, call = 0): ServerMessage => ({
+    type: "text_delta",
+    reply_to: "t1",
+    call,
+    text,
+  });
+
+  /**
+   * A snapshot of turn `t1` started at 08:00, each frame a second after the
+   * one before it, from a server whose clock is `ahead` milliseconds ahead of the page's.
+   */
+  function snapshot(frames: ServerMessage[], ahead = 0): ServerMessage {
+    const start = Date.parse("2026-10-09T08:00:00Z") + ahead;
+    return {
+      type: "turn_snapshot",
+      turn: {
+        reply_to: "t1",
+        started_at: new Date(start).toISOString(),
+        now: new Date(Date.now() + ahead).toISOString(),
+        frames: frames.map((frame, i) => ({
+          at: new Date(start + i * 1000).toISOString(),
+          frame,
+        })),
+      },
+    };
+  }
+
+  const opening = [
+    echo("t1", "Find the report"),
+    started("t1"),
+    { type: "thinking_delta", reply_to: "t1", call: 0, text: "Where is it" },
+    {
+      type: "tool_call",
+      reply_to: "t1",
+      call: 0,
+      id: "c1",
+      name: "read",
+      arguments: { path: "report.md" },
+      server: null,
+    },
+    {
+      type: "tool_result",
+      reply_to: "t1",
+      tool_call_id: "c1",
+      name: "read",
+      output: "ok",
+      is_error: false,
+    },
+    delta("Found it, here", 1),
+  ] satisfies ServerMessage[];
+
+  it("shows what the turn did before the page opened, and the stream continues from it", () => {
+    const { store, frame } = setup();
+    store.handleMessage(snapshot(opening));
+
+    expect(kinds(store.feed)).toEqual(["user", "thinking", "tool-group", "assistant"]);
+    expect(store.feed[3]).toMatchObject({ content: "Found it, here", streaming: true });
+    expect(store.activeTurnId).toBe("t1");
+    expect(store.isProcessing).toBe(true);
+    expect(store.observed.get("t1")).toMatchObject({
+      startedAt: Date.parse("2026-10-09T08:00:01Z"),
+      gaps: [],
+    });
+
+    store.handleMessage(delta(" is the summary", 1));
+    frame();
+    expect(store.feed[3]).toMatchObject({ content: "Found it, here is the summary" });
+  });
+
+  it("fills in what streamed while the page was away, showing nothing twice", () => {
+    const { store, frame } = setup();
+    store.pushUserMessage("Find the report", undefined, "t1");
+    store.handleMessage(started("t1"));
+    store.handleMessage(delta("Found"));
+    frame();
+    store.markReconnectGap();
+
+    store.handleMessage(
+      snapshot([echo("t1", "Find the report"), started("t1"), delta("Found it, here")]),
+    );
+    expect(kinds(store.feed)).toEqual(["user", "assistant"]);
+    expect(store.feed[0]).toMatchObject({ content: "Find the report", turnId: "t1" });
+    expect(store.feed[1]).toMatchObject({ content: "Found it, here", streaming: true });
+    expect(store.observed.get("t1")?.gaps).toEqual([]);
+
+    store.handleMessage(delta(" it is"));
+    frame();
+    expect(store.feed[1]).toMatchObject({ content: "Found it, here it is" });
+    store.handleMessage({
+      type: "response",
+      reply_to: "t1",
+      call: 0,
+      endpoint: "ws",
+      content: "Found it, here it is.",
+    });
+    store.handleMessage({ type: "turn_ended", reply_to: "t1" });
+    expect(kinds(store.feed)).toEqual(["user", "assistant"]);
+    expect(store.isProcessing).toBe(false);
+  });
+
+  it("keeps a message the page sent that the agent hasn't taken in yet, and a note", () => {
+    const { store } = setup();
+    store.handleMessage(echo("t1", "Find the report"));
+    store.handleMessage(started("t1"));
+    store.pushUserMessage("And the slides", undefined, "web-2");
+    store.pushLocalSystem("Commands: /help");
+
+    store.handleMessage(snapshot([echo("t1", "Find the report"), started("t1"), delta("On it")]));
+    expect(store.feed.map((item) => ("content" in item ? item.content : item.kind))).toEqual([
+      "Find the report",
+      "On it",
+      "And the slides",
+      "Commands: /help",
+    ]);
+
+    // The agent takes it in later: shown once.
+    store.handleMessage(echo("web-2", "And the slides", { turn_id: "t1" }));
+    expect(store.feed.filter((item) => item.kind === "user")).toHaveLength(2);
+  });
+
+  it("stamps messages with when they were sent, and announces nothing again", () => {
+    const { store } = setup();
+    const announced = store.announcement;
+    store.handleMessage(snapshot(opening));
+    expect(store.feed[0]?.timestamp).toBe(localTimestamp(new Date("2026-10-09T08:00:00Z")));
+    expect(store.announcement).toBe(announced);
+  });
+
+  it("places the server's times on the page's clock", () => {
+    const { store } = setup();
+    store.handleMessage(snapshot(opening, 3_600_000));
+    expect(store.feed[0]?.timestamp).toBe(localTimestamp(new Date("2026-10-09T08:00:00Z")));
+    expect(store.observed.get("t1")?.startedAt).toBe(Date.parse("2026-10-09T08:00:01Z"));
+  });
+
+  it("keeps a stop the user already asked for", () => {
+    const { store } = setup();
+    store.handleMessage(started("t1"));
+    store.askStop();
+    store.handleMessage(snapshot([started("t1"), delta("Stopping")]));
+    expect(store.observed.get("t1")?.stopAsked).toBe(true);
+  });
+
+  it("changes nothing when no turn is running", () => {
+    const { store } = setup();
+    store.handleMessage(started("t1"));
+    store.handleMessage(delta("Half"));
+    const before = kinds(store.feed);
+    store.handleMessage({ type: "turn_snapshot", turn: null });
+    expect(kinds(store.feed)).toEqual(before);
+    expect(store.activeTurnId).toBe("t1");
   });
 });

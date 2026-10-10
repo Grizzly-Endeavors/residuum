@@ -16,7 +16,7 @@ import {
   type BackgroundTurnState,
 } from "./feed-items";
 import { ObservedTurns, type TurnEnding } from "./observed-turns.svelte";
-import { localDay, localTimestamp } from "./time";
+import { localDay, localTimestamp, localTimestampAt } from "./time";
 import type {
   ServerMessage,
   RecentMessage,
@@ -29,6 +29,7 @@ import type {
   RecentHistorySegment,
   EpisodeHistorySegment,
   SessionUsageTotals,
+  TurnInProgress,
 } from "./types";
 
 /**
@@ -95,6 +96,17 @@ function recordedMessages(messages: RecentMessage[], turnId: string): number {
 }
 
 type UserMessageFrame = Extract<ServerMessage, { type: "user_message" }>;
+
+/**
+ * Whether a turn snapshot draws `item` again: the agent's output, and the
+ * messages it names (`echoed`). Anything else of the turn stays as it is.
+ */
+function redrawnBySnapshot(item: FeedItem, echoed: readonly string[]): boolean {
+  if (item.kind === "assistant" || item.kind === "thinking" || item.kind === "tool-group") {
+    return true;
+  }
+  return item.kind === "user" && item.messageId !== undefined && echoed.includes(item.messageId);
+}
 
 /**
  * Where a reply went, when that was a chat interface rather than this page: an
@@ -236,6 +248,11 @@ export class FeedStore {
   private readonly streams: LiveStreams;
   /** The ids of the messages this page sent, so the agent's echo of one isn't shown a second time. */
   private readonly sentIds = new MessageIds();
+  /**
+   * When the frame being replayed from a turn snapshot was sent, in
+   * milliseconds, or `null` outside a replay, when frames arrive as they are sent.
+   */
+  private replayClock: number | null = null;
 
   /**
    * @param joinedTurnStart When the agent became busy, for a turn this page
@@ -248,10 +265,22 @@ export class FeedStore {
     private readonly agentName: () => string = () => "The agent",
     schedule: FrameScheduler = nextAnimationFrame,
   ) {
-    this.streams = new LiveStreams(this.feed, schedule);
+    this.streams = new LiveStreams(
+      this.feed,
+      schedule,
+      () => localTimestampAt(this.now()),
+      () => this.now(),
+    );
+  }
+
+  /** When the frame being handled was sent: now, unless it is replayed from a snapshot. */
+  private now(): number {
+    return this.replayClock ?? Date.now();
   }
 
   private announce(text: string): void {
+    // A replayed turn was announced when it happened, or was already under way.
+    if (this.replayClock !== null) return;
     this.announcement = { id: ++this.announced, text };
   }
 
@@ -268,7 +297,7 @@ export class FeedStore {
         this.turnStart ??= this.feed.length;
         // The user message that started it arrived first.
         for (const item of this.feed.slice(this.turnStart)) item.turnId = msg.reply_to;
-        this.observed.start(msg.reply_to);
+        this.observed.start(msg.reply_to, this.now());
         this.turnOutputTokens = 0;
         this.turnHasUsage = false;
         this.turnToolCalls = 0;
@@ -309,12 +338,17 @@ export class FeedStore {
           msg,
           this.activeTurnId ?? undefined,
           msg.call,
+          this.now(),
         );
         break;
 
       case "tool_result":
         this.joinTurn(msg.reply_to);
-        applyToolResult(this.pendingToolCalls, msg);
+        applyToolResult(this.pendingToolCalls, msg, this.now());
+        break;
+
+      case "turn_snapshot":
+        this.applyTurnSnapshot(msg.turn);
         break;
 
       case "response": {
@@ -663,6 +697,7 @@ export class FeedStore {
       content,
       images,
       timestamp,
+      ...(id === undefined ? {} : { messageId: id }),
       ...this.reachedLiveTurn(),
     });
     this.isProcessing = true;
@@ -722,9 +757,10 @@ export class FeedStore {
    * then announces.
    */
   private receiveUserMessage(msg: UserMessageFrame): void {
-    if (this.sentIds.has(msg.id)) return;
+    // A snapshot draws the turn again, this page's own messages included.
+    if (this.replayClock === null && this.sentIds.has(msg.id)) return;
     const joins = this.activeTurnId === msg.turn_id;
-    const timestamp = localTimestamp();
+    const timestamp = localTimestampAt(this.now());
     if (!joins) {
       this.maybePushDayDivider(timestamp);
       this.turnStart ??= this.feed.length;
@@ -734,6 +770,7 @@ export class FeedStore {
       kind: "user",
       content: msg.content,
       timestamp,
+      messageId: msg.id,
       ...(msg.images === undefined || msg.images.length === 0 ? {} : { images: msg.images }),
       ...(msg.sender === undefined ? {} : { sender: msg.sender }),
       turnId: msg.turn_id,
@@ -869,6 +906,62 @@ export class FeedStore {
     }
     this.feed.splice(liveStart, 0, ...recorded);
     if (this.turnStart !== null) this.turnStart += recorded.length;
+  }
+
+  /**
+   * Show the turn in flight as the agent has run it so far, in place of what
+   * the page showed of it: what streamed before the page connected, or while
+   * it was disconnected, is in the snapshot, and the frames after it
+   * continue it.
+   */
+  private applyTurnSnapshot(turn: TurnInProgress | null): void {
+    // With no turn running, a turn the page still shows live ended while it
+    // was away, and history settles it.
+    if (turn === null || turn.reply_to === this.settledTurnId) return;
+    const echoed = turn.frames.flatMap(({ frame }) =>
+      frame.type === "user_message" ? [frame.id] : [],
+    );
+    const stopAsked = this.observed.get(turn.reply_to)?.stopAsked === true;
+    const sentTurnId = this.sentTurnId;
+    const kept = this.dropLiveTurn(echoed);
+    // The snapshot's times are on the server's clock; this places them on the page's.
+    const serverNow = Date.parse(turn.now);
+    const skew = Number.isNaN(serverNow) ? 0 : Date.now() - serverNow;
+    const onPageClock = (at: string): number => {
+      const sent = Date.parse(at);
+      return Number.isNaN(sent) ? Date.now() : sent + skew;
+    };
+    try {
+      for (const { at, frame } of turn.frames) {
+        this.replayClock = onPageClock(at);
+        this.handleMessage(frame);
+      }
+    } finally {
+      this.replayClock = null;
+    }
+    this.streams.flush();
+    if (this.observed.get(turn.reply_to) === undefined) {
+      this.observed.start(turn.reply_to, onPageClock(turn.started_at));
+    }
+    if (stopAsked) this.observed.askStop(turn.reply_to);
+    // A message this page sent that the agent hasn't taken in yet still
+    // starts the turn after this one.
+    if (sentTurnId !== null && !echoed.includes(sentTurnId)) this.sentTurnId = sentTurnId;
+    for (const item of kept) this.feed.push(item);
+  }
+
+  /**
+   * Take the turn in flight out of the feed, for a snapshot to draw again.
+   * Returns its items the snapshot doesn't draw (a message the agent hasn't
+   * taken in yet, a session's message, a note, a failure), to go back after it.
+   */
+  private dropLiveTurn(echoed: readonly string[]): FeedItem[] {
+    const start = this.turnStart;
+    const dropped = this.activeTurnId;
+    this.endLiveTurn();
+    if (dropped !== null) this.observed.forget(dropped);
+    if (start === null) return [];
+    return this.feed.splice(start).filter((item) => !redrawnBySnapshot(item, echoed));
   }
 
   /** The turn in flight is over (history records it); clear its live state. */

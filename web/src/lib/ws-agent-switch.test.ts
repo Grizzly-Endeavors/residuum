@@ -212,9 +212,11 @@ describe("switching agents leaves nothing of the old agent behind", () => {
     expect(ws.transport.pendingCount).toBe(0);
     FakeWebSocket.last.simulateOpen();
 
-    // Only the frame every connection starts with: the tool frames turned on.
+    // Only the frames every connection starts with: the tool frames turned
+    // on, and the turn in flight asked for.
     expect(FakeWebSocket.last.sent).toEqual([
       JSON.stringify({ type: "set_verbose", enabled: true }),
+      JSON.stringify({ type: "resync_turn" }),
     ]);
   });
 
