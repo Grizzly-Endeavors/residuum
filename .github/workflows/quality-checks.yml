@@ -158,6 +158,12 @@ jobs:
         if: ${{ inputs.visual }}
         run: scripts/with-playwright-container.sh npm --prefix web run e2e -- --shard=${{ matrix.shard }}/4
 
+      # How much CPU the shard had and how much the limit throttled it: the
+      # suite's timing depends on it, and runner load varies between jobs.
+      - name: CPU report
+        if: always()
+        run: scripts/ci-cpu-report.sh >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload Playwright report and traces
         if: always() && (steps.web_e2e.outcome == 'failure' || steps.web_e2e_visual.outcome == 'failure')
         uses: actions/upload-artifact@v7
