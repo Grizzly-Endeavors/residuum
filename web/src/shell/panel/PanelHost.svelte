@@ -8,7 +8,6 @@
   import { ws } from "../../lib/ws.svelte";
   import ContextPanel from "./ContextPanel.svelte";
   import ConversationSize from "../../places/chat/ConversationSize.svelte";
-  import NewSessionPanel from "../../places/activity/NewSessionPanel.svelte";
   import { NewSession } from "../../places/activity/new-session.svelte";
   import SessionPanel from "../../places/activity/SessionPanel.svelte";
   import { FileBuffer } from "../../places/files/file-buffer.svelte";
@@ -17,11 +16,16 @@
   // The context panel, open while the URL names a `panel` its place can show
   // (the router removes any other). Each kind's content renders inside the
   // frame and starts with a `PanelHeader`. The file view, with its editor,
-  // loads the first time a file opens.
+  // loads the first time a file opens, and the new-session panel the first
+  // time a session is started from Activity.
 
   const filePanel = new LazyComponent<{ buffer: FileBuffer; path: string }>(
     () => import("../../places/files/FilePanel.svelte"),
     "the file",
+  );
+  const newSessionPanel = new LazyComponent<{ session: NewSession }>(
+    () => import("../../places/activity/NewSessionPanel.svelte"),
+    "the new session",
   );
 
   const panel = $derived(router.panel);
@@ -68,9 +72,10 @@
     });
   });
 
-  // If the file view's code can't load, the panel closes so the file can be asked for again.
+  // If a panel's code can't load, the panel closes so it can be asked for again.
   $effect(() => {
     if (panel?.kind === "file") filePanel.ensure(() => void router.closePanel());
+    if (panel?.kind === "new-session") newSessionPanel.ensure(() => void router.closePanel());
   });
 
   $effect(() => {
@@ -100,7 +105,12 @@
       {/if}
     {:else if panel.kind === "new-session"}
       {#if newSession !== null}
-        <NewSessionPanel session={newSession} />
+        {#if newSessionPanel.component !== null}
+          {@const NewSessionPanel = newSessionPanel.component}
+          <NewSessionPanel session={newSession} />
+        {:else}
+          <div class="panel-loading"><Skeleton lines={4} label="Loading the new session" /></div>
+        {/if}
       {/if}
     {:else if panel.kind === "file"}
       {#if fileBuffer !== null}
