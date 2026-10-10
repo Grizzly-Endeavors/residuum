@@ -4,6 +4,9 @@
 //! behavior including ping/pong, message round-trip, verbose filtering,
 //! multi-client broadcast, and error handling.
 
+#[path = "support/guarded.rs"]
+mod guarded;
+
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(clippy::expect_used, reason = "test code uses expect for clarity")]
 #[expect(
@@ -479,10 +482,8 @@ mod gateway_integration {
             >,
         >,
     ) -> ServerMessage {
-        let timeout = tokio::time::Duration::from_secs(5);
-        let frame = tokio::time::timeout(timeout, rx.next())
+        let frame = crate::guarded::guarded("the next server message", rx.next())
             .await
-            .expect("timed out waiting for server message")
             .expect("stream ended unexpectedly");
 
         match frame {

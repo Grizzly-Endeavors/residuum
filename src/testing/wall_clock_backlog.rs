@@ -59,8 +59,6 @@ pub(super) const BACKLOG: &[(&str, usize)] = &[
     ("src/remote_access/system_tests.rs", 1),
     ("src/tunnel/v2/tests.rs", 1),
     ("src/util/fs.rs", 1),
-    ("tests/background_integration.rs", 1),
-    ("tests/gateway_integration.rs", 1),
 ];
 
 /// Test code where the clock is the stimulus rather than a guess, with why.
