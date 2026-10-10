@@ -55,7 +55,7 @@ async fn send_frame(socket: &mut PageSocket, frame: &Value) {
 
 /// Read frames until one of type `kind` arrives, and return it.
 async fn next_frame_of(socket: &mut PageSocket, kind: &str) -> Value {
-    tokio::time::timeout(POLL_TIMEOUT, async {
+    wait::guarded(format_args!("a {kind} frame"), async {
         while let Some(frame) = socket.next().await {
             let WsMessage::Text(raw) = frame.unwrap() else {
                 continue;
@@ -68,12 +68,11 @@ async fn next_frame_of(socket: &mut PageSocket, kind: &str) -> Value {
         panic!("the socket closed before a {kind} frame arrived");
     })
     .await
-    .unwrap_or_else(|_| panic!("timed out waiting for a {kind} frame"))
 }
 
 /// The next main turn the feed reports as ended.
 async fn next_turn(changes: &mut AgentChangeReceiver) -> MainTurnEnded {
-    tokio::time::timeout(POLL_TIMEOUT, async {
+    wait::guarded("a turn to end", async {
         loop {
             let change = changes.recv().await.expect("the feed stays open");
             if let AgentChangeKind::TurnEnded(turn) = change.kind {
@@ -82,7 +81,6 @@ async fn next_turn(changes: &mut AgentChangeReceiver) -> MainTurnEnded {
         }
     })
     .await
-    .expect("a turn ends within the timeout")
 }
 
 #[tokio::test]
@@ -192,13 +190,13 @@ async fn an_agent_socket_through_the_artifacts_port_does_not_reset_unread() {
         &json!({ "type": "send_message", "id": "m1", "content": "ping" }),
     )
     .await;
-    eventually("scout to be busy", || async {
+    wait::until("scout to be busy", || async {
         hub.activity_of("scout").busy.then_some(())
     })
     .await;
     ui.close(None).await.unwrap();
     drop(ui);
-    eventually("the unread reply", || async {
+    wait::until("the unread reply", || async {
         let activity = hub.activity_of("scout");
         (!activity.busy && activity.unread == 1).then_some(())
     })
@@ -216,7 +214,7 @@ async fn an_agent_socket_through_the_artifacts_port_does_not_reset_unread() {
 
     // A client of the web UI still does.
     let _ui = connect(&hub.addr, "/api/agents/scout/ws").await;
-    eventually("the unread count to reset", || async {
+    wait::until("the unread count to reset", || async {
         (hub.activity_of("scout").unread == 0).then_some(())
     })
     .await;

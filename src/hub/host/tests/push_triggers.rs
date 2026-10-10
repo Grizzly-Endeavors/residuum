@@ -69,7 +69,7 @@ impl Phone {
 
     /// Wait until `count` pushes have arrived.
     async fn until_pushes(&self, count: usize) {
-        eventually(&format!("{count} push(es) to arrive"), || async {
+        wait::until(&format!("{count} push(es) to arrive"), || async {
             (self.pushes().await >= count).then_some(())
         })
         .await;
@@ -161,7 +161,7 @@ async fn report_presence(socket: &mut HubSocketStream, device_id: &str, active: 
 
 /// Wait until the hub's book says whether `device_id` is present.
 async fn until_present(hub: &Fixture, device_id: &str, present: bool) {
-    eventually("the hub to record the device's presence", || async {
+    wait::until("the hub to record the device's presence", || async {
         (hub.services
             .push
             .presence()
@@ -372,7 +372,7 @@ async fn a_reply_is_pushed_once_when_no_client_was_connected_and_never_for_a_bac
     ))
     .await
     .unwrap();
-    eventually("scout to be busy", || async {
+    wait::until("scout to be busy", || async {
         hub.activity_of("scout").busy.then_some(())
     })
     .await;
@@ -390,9 +390,8 @@ async fn a_reply_is_pushed_once_when_no_client_was_connected_and_never_for_a_bac
         .await
         .unwrap();
     loop {
-        let change = tokio::time::timeout(POLL_TIMEOUT, changes.recv())
+        let change = wait::guarded("the background turn to end", changes.recv())
             .await
-            .expect("the background turn ends")
             .unwrap();
         if matches!(change.kind, crate::hub::agent_watch::AgentChangeKind::TurnEnded(ref turn)
             if turn.visibility == crate::memory::types::Visibility::Background)
@@ -500,7 +499,7 @@ async fn a_device_that_stops_receiving_is_told_to_the_user() {
 
     file_item(&hub, "scout", "20260930_first").await;
 
-    let notice = eventually("the notice about the removed device", || async {
+    let notice = wait::until("the notice about the removed device", || async {
         hub.push_notices.lock().unwrap().first().cloned()
     })
     .await;

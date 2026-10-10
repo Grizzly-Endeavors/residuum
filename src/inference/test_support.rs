@@ -9,6 +9,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use super::{StreamDelta, StreamSink};
+use crate::testing::gate::GateEntry;
 use crate::util::spawn_in_span;
 
 /// A sink that keeps everything pushed to it.
@@ -59,6 +60,8 @@ pub(crate) enum Step {
     Write(Vec<u8>),
     /// Send nothing for this long.
     Pause(Duration),
+    /// Send nothing until the test lets this step through its gate.
+    Hold(GateEntry),
 }
 
 impl Step {
@@ -238,6 +241,7 @@ async fn serve(
                 }
             }
             Step::Pause(duration) => tokio::time::sleep(duration).await,
+            Step::Hold(entry) => entry.pass().await,
         }
     }
     if socket.shutdown().await.is_err() {
@@ -283,4 +287,33 @@ async fn read_request(socket: &mut TcpStream) -> Option<RecordedRequest> {
         headers,
         body,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::gate::Gate;
+    use crate::testing::wait;
+
+    #[tokio::test]
+    async fn a_held_step_sends_nothing_more_until_released() {
+        let gate = Gate::closed("stream");
+        let server = ScriptedServer::start(vec![vec![
+            Step::head(200, "text/plain"),
+            Step::chunk("before"),
+            Step::Hold(gate.entry()),
+            Step::chunk(" after"),
+            Step::end(),
+        ]])
+        .await;
+        let uri = server.uri();
+        let body = crate::util::spawn_in_span(async move {
+            reqwest::get(uri).await.unwrap().text().await.unwrap()
+        });
+        gate.until_held(1).await;
+        assert!(!body.is_finished(), "the held body hasn't ended");
+        gate.release(1);
+        let body = wait::guarded("the released body", body).await.unwrap();
+        assert_eq!(body, "before after");
+    }
 }

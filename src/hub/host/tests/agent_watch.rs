@@ -30,7 +30,7 @@ async fn until(
     mut found: impl FnMut(&AgentChange) -> bool,
 ) -> Vec<AgentChange> {
     let mut seen = Vec::new();
-    let deadline = tokio::time::Instant::now() + POLL_TIMEOUT;
+    let deadline = tokio::time::Instant::now() + HANG_GUARD;
     loop {
         let left = deadline.saturating_duration_since(tokio::time::Instant::now());
         let change = tokio::time::timeout(left, changes.recv())
@@ -313,10 +313,7 @@ async fn sessions_reach_the_feed_and_the_relay_until_the_agent_stops() {
         .iter()
         .any(|kind| matches!(kind, SessionEventKind::Response { .. }))
     {
-        let event = tokio::time::timeout(POLL_TIMEOUT, relay.recv())
-            .await
-            .expect("the session answers")
-            .unwrap();
+        let event = wait::next("the session's answer", &mut relay).await;
         assert_eq!(event.agent, "scout");
         assert_eq!(
             event.source_label.as_deref(),

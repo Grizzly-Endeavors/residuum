@@ -30,7 +30,7 @@ async fn send(ws: &mut AgentSocket, frame: Value) {
 }
 
 async fn next_frame(ws: &mut AgentSocket) -> Value {
-    tokio::time::timeout(POLL_TIMEOUT, async {
+    wait::guarded("the next frame", async {
         loop {
             let frame = ws.next().await.expect("the WebSocket stays open").unwrap();
             if let WsMessage::Text(raw) = frame {
@@ -39,7 +39,6 @@ async fn next_frame(ws: &mut AgentSocket) -> Value {
         }
     })
     .await
-    .expect("a frame arrives within the timeout")
 }
 
 /// Every frame up to and including the `turn_ended` of the turn named
