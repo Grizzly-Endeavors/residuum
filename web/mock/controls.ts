@@ -171,10 +171,11 @@ async function setDelays({ req, res, hub }: RouteContext): Promise<void> {
 }
 
 /**
- * `{ held }`: how far simulated turns may get. `true` stops each at its last
- * step instead of ending it, `"steps"` stops each while its file reads are
- * still running, and `false` lets them end. Easing the hold lets the waiting
- * turns carry on. Reset lifts it.
+ * `{ held }`: how far simulated turns may get. `"reply"` stops each once its
+ * reply has streamed in, before it ends; `true` stops each at its last step,
+ * before its reply; `"steps"` stops each while its file reads are still
+ * running; and `false` lets them end. Easing the hold lets the waiting turns
+ * carry on. Reset lifts it.
  */
 async function holdTurns({ req, res, hub }: RouteContext): Promise<void> {
   const { held } = await readJsonObject(req);
@@ -182,10 +183,11 @@ async function holdTurns({ req, res, hub }: RouteContext): Promise<void> {
     [true, "end"],
     [false, "none"],
     ["steps", "steps"],
+    ["reply", "reply"],
   ]);
   const hold = holds.get(held);
   if (hold === undefined) {
-    json(res, 422, { error: 'mock: `held` must be true, false or "steps"' });
+    json(res, 422, { error: 'mock: `held` must be true, false, "steps" or "reply"' });
     return;
   }
   hub.env.holdTurns(hold);

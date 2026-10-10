@@ -10,6 +10,7 @@ import type { SessionRunStatus } from "./SessionRunStatus";
 import type { SessionState } from "./SessionState";
 import type { SessionSummary } from "./SessionSummary";
 import type { SessionUsageTotals } from "./SessionUsageTotals";
+import type { TurnInProgress } from "./TurnInProgress";
 import type { TurnOrigin } from "./TurnOrigin";
 import type { WorkspaceChange } from "./WorkspaceChange";
 import type { WorkspaceResyncReason } from "./WorkspaceResyncReason";
@@ -239,7 +240,11 @@ message: string,
 /**
  * Full technical cause chain, shown behind a details toggle.
  */
-details: string | null, } | { "type": "pong" } | { "type": "reloading" } | { "type": "notice", 
+details: string | null, } | { "type": "pong" } | { "type": "turn_snapshot", 
+/**
+ * The turn, or `null` when none is running.
+ */
+turn: TurnInProgress | null, } | { "type": "reloading" } | { "type": "notice", 
 /**
  * Human-readable result message.
  */

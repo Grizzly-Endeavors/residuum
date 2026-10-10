@@ -67,6 +67,7 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
         EndpointName::from(WEB_UI_ENDPOINT),
         state.file_registry.clone(),
         watch_set_rx,
+        &state.turn_journal,
     )
     .await
     {
@@ -77,6 +78,7 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
         }
     };
 
+    let resync = subs.resync_requests();
     // Local channel for per-connection messages (pong, errors, inbox responses)
     let (local_tx, mut local_rx) = mpsc::unbounded_channel::<ServerMessage>();
 
@@ -116,21 +118,12 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
                 }
             };
 
-            if let Some(msg) = msg {
-                if !verbose_fwd.load(Ordering::Relaxed) && is_verbose_only(&msg) {
-                    continue;
-                }
-
-                let json = match serde_json::to_string(&msg) {
-                    Ok(j) => j,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "failed to serialize server message");
-                        continue;
-                    }
-                };
-                if ws_tx.send(WsMessage::text(json)).await.is_err() {
-                    break; // client disconnected
-                }
+            let Some(msg) = msg.and_then(|m| shown_frame(m, verbose_fwd.load(Ordering::Relaxed)))
+            else {
+                continue;
+            };
+            if !send_frame(&mut ws_tx, &msg).await {
+                break; // client disconnected
             }
         }
     });
@@ -165,7 +158,13 @@ async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_cli
             }
         };
 
-        if !handle_client_message(client_msg, &state, &local_tx, &verbose, &watch_set_tx).await {
+        let channels = ConnectionChannels {
+            local: &local_tx,
+            verbose: &verbose,
+            watch_set: &watch_set_tx,
+            resync: &resync,
+        };
+        if !handle_client_message(client_msg, &state, &channels).await {
             break;
         }
     }
@@ -190,6 +189,18 @@ async fn answer_client_close(
     }
 }
 
+/// The per-connection state a client message can act on.
+struct ConnectionChannels<'a> {
+    /// Replies to this connection only.
+    local: &'a mpsc::UnboundedSender<ServerMessage>,
+    /// Whether tool events reach this connection.
+    verbose: &'a AtomicBool,
+    /// The workspace prefixes this connection watches.
+    watch_set: &'a tokio::sync::watch::Sender<WatchSet>,
+    /// Asks the forwarding task for a `turn_snapshot` frame.
+    resync: &'a mpsc::UnboundedSender<()>,
+}
+
 /// Dispatch a single client message. Returns `false` to break the read loop.
 #[expect(
     clippy::too_many_lines,
@@ -198,10 +209,14 @@ async fn answer_client_close(
 async fn handle_client_message(
     msg: ClientMessage,
     state: &GatewayState,
-    local_tx: &mpsc::UnboundedSender<ServerMessage>,
-    verbose: &AtomicBool,
-    watch_set: &tokio::sync::watch::Sender<WatchSet>,
+    channels: &ConnectionChannels<'_>,
 ) -> bool {
+    let ConnectionChannels {
+        local: local_tx,
+        verbose,
+        watch_set,
+        resync,
+    } = *channels;
     match msg {
         ClientMessage::SendMessage {
             id,
@@ -265,6 +280,9 @@ async fn handle_client_message(
         }
         ClientMessage::Ping => {
             local_tx.send(ServerMessage::Pong).ok();
+        }
+        ClientMessage::ResyncTurn => {
+            resync.send(()).ok();
         }
         ClientMessage::Reload => {
             tracing::info!("reload requested by client");
@@ -413,6 +431,37 @@ fn replace_watch_set(
 
 /// Whether `msg` is only sent to clients that turned verbose mode on: tool
 /// call and result events, the main agent's and sessions' alike.
+/// Write one frame to the client. Returns `false` once the client is gone; a
+/// frame that can't be serialized is logged and skipped.
+async fn send_frame(
+    ws_tx: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
+    msg: &ServerMessage,
+) -> bool {
+    let json = match serde_json::to_string(msg) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to serialize server message");
+            return true;
+        }
+    };
+    ws_tx.send(WsMessage::text(json)).await.is_ok()
+}
+
+/// `msg` as a connection gets it: a connection that isn't verbose gets no
+/// tool frames, neither on their own nor inside a `turn_snapshot`.
+fn shown_frame(mut msg: ServerMessage, verbose: bool) -> Option<ServerMessage> {
+    if verbose {
+        return Some(msg);
+    }
+    if is_verbose_only(&msg) {
+        return None;
+    }
+    if let ServerMessage::TurnSnapshot { turn: Some(turn) } = &mut msg {
+        turn.frames.retain(|entry| !is_verbose_only(&entry.frame));
+    }
+    Some(msg)
+}
+
 fn is_verbose_only(msg: &ServerMessage) -> bool {
     matches!(
         msg,
@@ -773,6 +822,7 @@ mod tests {
             ));
 
         GatewayState {
+            turn_journal: crate::gateway::turn_journal::TurnJournal::default(),
             reload_tx: core.reload_tx,
             command_tx: core.command_tx,
             stop_tx: core.stop_tx,
@@ -837,9 +887,12 @@ mod tests {
                 images: Vec::new(),
             },
             &state,
-            &local_tx,
-            &verbose,
-            &watch_tx,
+            &ConnectionChannels {
+                local: &local_tx,
+                verbose: &verbose,
+                watch_set: &watch_tx,
+                resync: &mpsc::unbounded_channel().0,
+            },
         )
         .await;
         assert!(keep_going);
@@ -866,9 +919,12 @@ mod tests {
                 body: "remember this".to_string(),
             },
             &state,
-            &local_tx,
-            &verbose,
-            &watch_tx,
+            &ConnectionChannels {
+                local: &local_tx,
+                verbose: &verbose,
+                watch_set: &watch_tx,
+                resync: &mpsc::unbounded_channel().0,
+            },
         )
         .await;
         assert!(keep_going);
@@ -896,9 +952,12 @@ mod tests {
                 body: "remember this".to_string(),
             },
             &state,
-            &local_tx,
-            &verbose,
-            &watch_tx,
+            &ConnectionChannels {
+                local: &local_tx,
+                verbose: &verbose,
+                watch_set: &watch_tx,
+                resync: &mpsc::unbounded_channel().0,
+            },
         )
         .await;
         assert!(keep_going);

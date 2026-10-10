@@ -112,6 +112,12 @@ export interface MockState {
    */
   broadcast: (frame: ServerMessage) => void;
   /**
+   * Note a frame of the main conversation that no page receives, because the
+   * connection is down, so a page that asks for the turn in flight once it is
+   * back still gets it. Set by the agent socket.
+   */
+  journalOnly: (frame: ServerMessage) => void;
+  /**
    * Open tasks sent to remote agents, for the sessions sidebar. `laptop`'s
    * task is unreachable, so stopping it answers `502 unreachable` and the
    * row offers "Stop watching".
@@ -351,6 +357,7 @@ export function createState(
     usage: { input_tokens: 0, output_tokens: 0, context_tokens: null, tool_calls: 0 },
     dropSockets: () => {},
     broadcast: () => {},
+    journalOnly: () => {},
     compressedAt: null,
     inboxItems: [],
     inboxArchive: [],

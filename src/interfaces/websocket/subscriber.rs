@@ -6,13 +6,16 @@ use crate::bus::{
     Subscriber, TurnUsageEvent, WorkbenchEvent, WorkspaceEvent, topics,
 };
 use crate::gateway::file_server::FileRegistry;
-use crate::gateway::protocol::ServerMessage;
+use crate::gateway::protocol::{ServerMessage, SnapshotFrame, TurnInProgress};
+use crate::gateway::turn_journal::{JournaledEvent, TurnJournal, TurnRecord};
+use tokio::sync::mpsc;
+
 use crate::workspace::watch::{
     LIVE_UPDATES_OFF_MESSAGE, WatchSet, WatchedChanges, WorkspaceResyncReason,
 };
 
 /// The frame for one event of the main agent's conversation.
-fn main_conversation_frame(event: MainConversationEvent) -> ServerMessage {
+pub(crate) fn main_conversation_frame(event: MainConversationEvent) -> ServerMessage {
     match event {
         MainConversationEvent::TurnStarted { turn_id, origin } => ServerMessage::TurnStarted {
             reply_to: turn_id,
@@ -104,6 +107,25 @@ fn main_conversation_frame(event: MainConversationEvent) -> ServerMessage {
             content,
         },
         MainConversationEvent::TurnUsage(usage) => turn_usage_frame(usage),
+    }
+}
+
+/// The turn in flight as a `turn_snapshot` frame carries it.
+fn turn_in_progress(record: TurnRecord) -> TurnInProgress {
+    let stamp =
+        |at: chrono::DateTime<chrono::Utc>| at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    TurnInProgress {
+        reply_to: record.turn_id,
+        started_at: stamp(record.started_at),
+        now: stamp(chrono::Utc::now()),
+        frames: record
+            .entries
+            .into_iter()
+            .map(|entry| SnapshotFrame {
+                at: stamp(entry.at),
+                frame: main_conversation_frame(entry.event),
+            })
+            .collect(),
     }
 }
 
@@ -202,11 +224,19 @@ async fn response_to_server_message(
 
 /// Typed subscribers for a single WebSocket connection.
 pub struct WsSubscribers {
-    /// Every main-agent turn, whatever endpoint started it, in order: the
-    /// source of all the main conversation's frames — turn lifecycle, user
-    /// messages, tool activity, thinking, streamed text, intermediate text,
-    /// replies and usage.
-    pub main: Subscriber<MainConversationEvent>,
+    /// Every main-agent turn, whatever endpoint started it, in order, as the
+    /// turn journal relays it: the source of all the main conversation's
+    /// frames — turn lifecycle, user messages, tool activity, thinking,
+    /// streamed text, intermediate text, replies and usage.
+    main: mpsc::UnboundedReceiver<JournaledEvent>,
+    /// The main conversation's turn in flight, for `turn_snapshot` frames.
+    journal: TurnJournal,
+    /// The last relayed event a `turn_snapshot` already sent covers; relayed
+    /// events up to it are dropped so none is shown twice.
+    covered_through: u64,
+    /// Requests for a `turn_snapshot`, from the connection's read loop.
+    resync_rx: mpsc::UnboundedReceiver<()>,
+    resync_tx: mpsc::UnboundedSender<()>,
     /// Messages posted to this endpoint with `send_message`, files included.
     /// Nothing else is published to the web UI's endpoint: a turn's reply
     /// arrives through `main`.
@@ -249,10 +279,16 @@ impl WsSubscribers {
         ep: EndpointName,
         file_registry: crate::gateway::file_server::FileRegistry,
         watch_set: tokio::sync::watch::Receiver<WatchSet>,
+        journal: &TurnJournal,
     ) -> Result<Self, crate::bus::BusError> {
         let system_topic = || topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL));
+        let (resync_tx, resync_rx) = mpsc::unbounded_channel();
         Ok(Self {
-            main: bus_handle.subscribe(topics::MainConversation).await?,
+            main: journal.follow(),
+            journal: journal.clone(),
+            covered_through: 0,
+            resync_rx,
+            resync_tx,
             response: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
             endpoint: ep,
             post_turn_activity: bus_handle.subscribe(system_topic()).await?,
@@ -269,6 +305,22 @@ impl WsSubscribers {
         })
     }
 
+    /// Where the connection's read loop asks for a `turn_snapshot` frame,
+    /// which then arrives in order among the others from [`Self::recv`].
+    #[must_use]
+    pub fn resync_requests(&self) -> mpsc::UnboundedSender<()> {
+        self.resync_tx.clone()
+    }
+
+    /// The turn in flight as of now; the relayed events it covers are dropped.
+    fn turn_snapshot_frame(&mut self) -> ServerMessage {
+        let snapshot = self.journal.snapshot();
+        self.covered_through = snapshot.through;
+        ServerMessage::TurnSnapshot {
+            turn: snapshot.turn.map(turn_in_progress),
+        }
+    }
+
     /// Receive the next server message from any subscribed topic.
     ///
     /// Returns `None` when all subscribers have closed.
@@ -276,9 +328,11 @@ impl WsSubscribers {
         loop {
             let msg = tokio::select! {
                 event = self.main.recv() => match event {
-                    Ok(Some(main_event)) => Some(main_conversation_frame(main_event)),
-                    _ => return None,
+                    Some(relayed) if relayed.seq <= self.covered_through => None,
+                    Some(relayed) => Some(main_conversation_frame(relayed.event)),
+                    None => return None,
                 },
+                Some(()) = self.resync_rx.recv() => Some(self.turn_snapshot_frame()),
                 event = self.response.recv() => {
                     match event {
                         Ok(Some(resp)) => Some(
@@ -390,10 +444,85 @@ mod tests {
             EndpointName::from("ws"),
             crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
+            &TurnJournal::spawn(&handle).await.unwrap(),
         )
         .await
         .unwrap();
         (handle, subs)
+    }
+
+    fn delta(text: &str) -> MainConversationEvent {
+        MainConversationEvent::TextDelta {
+            turn_id: "t1".into(),
+            call: 0,
+            text: text.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_turn_snapshot_holds_the_turn_so_far_and_nothing_after_it_repeats() {
+        let handle = crate::bus::spawn_broker();
+        let journal = TurnJournal::spawn(&handle).await.unwrap();
+        let mut subs = WsSubscribers::new(
+            &handle,
+            &handle,
+            EndpointName::from("ws"),
+            crate::gateway::file_server::FileRegistry::new("scout"),
+            no_watch_set(),
+            &journal,
+        )
+        .await
+        .unwrap();
+        // Wait for the journal itself rather than for time to pass.
+        let mut seen = journal.follow();
+        publish_main(
+            &handle,
+            MainConversationEvent::TurnStarted {
+                turn_id: "t1".into(),
+                origin: origin("ws"),
+            },
+        )
+        .await;
+        publish_main(&handle, delta("Hel")).await;
+        publish_main(&handle, delta("lo")).await;
+        for _ in 0..3 {
+            seen.recv().await.unwrap();
+        }
+        subs.resync_requests().send(()).unwrap();
+        publish_main(&handle, delta(" there")).await;
+
+        // Frames relayed before the request may come first; the snapshot
+        // covers them, and only what came after it follows.
+        let turn = loop {
+            if let ServerMessage::TurnSnapshot { turn } = subs.recv().await.unwrap() {
+                break turn.unwrap();
+            }
+        };
+        assert_eq!(turn.reply_to, "t1");
+        let frames: Vec<String> = turn
+            .frames
+            .iter()
+            .map(|f| serde_json::to_value(&f.frame).unwrap().to_string())
+            .collect();
+        let [_, streamed] = frames.as_slice() else {
+            panic!("expected the turn's start and its text, got {frames:?}");
+        };
+        assert!(streamed.contains("\"text\":\"Hello\""), "{frames:?}");
+        let next = subs.recv().await.unwrap();
+        assert!(
+            matches!(&next, ServerMessage::TextDelta { text, .. } if text == " there"),
+            "expected the delta after the snapshot, got {next:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_snapshot_with_no_turn_running_names_none() {
+        let (_handle, mut subs) = subscribed().await;
+        subs.resync_requests().send(()).unwrap();
+        assert!(matches!(
+            subs.recv().await.unwrap(),
+            ServerMessage::TurnSnapshot { turn: None }
+        ));
     }
 
     async fn publish_main(handle: &crate::bus::BusHandle, event: MainConversationEvent) {
@@ -735,6 +864,7 @@ mod tests {
             EndpointName::from("ws"),
             crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
+            &TurnJournal::spawn(&handle).await.unwrap(),
         )
         .await
         .unwrap();
@@ -774,6 +904,7 @@ mod tests {
             EndpointName::from("ws"),
             crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
+            &TurnJournal::spawn(&handle).await.unwrap(),
         )
         .await
         .unwrap();
@@ -905,6 +1036,7 @@ mod tests {
             EndpointName::from("ws"),
             crate::gateway::file_server::FileRegistry::new("scout"),
             watch_rx,
+            &TurnJournal::spawn(&handle).await.unwrap(),
         )
         .await
         .unwrap();

@@ -403,19 +403,32 @@ fn build_api_states(
     }
 }
 
+/// What `spawn_agent_tasks` built for the agent's routes before their state.
+struct RouteParts<'a> {
+    file_registry: &'a crate::gateway::file_server::FileRegistry,
+    webhooks: &'a crate::interfaces::webhook::WebhookTable,
+    workspace_watch_health: &'a tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
+    turn_journal: crate::gateway::turn_journal::TurnJournal,
+}
+
 /// Build the `GatewayState` the agent's routes share, bundling the pieces
 /// `spawn_agent_tasks` has already built or spawned by this point — split
 /// out purely to keep that function under the line-count lint.
 fn build_gateway_state(
     core: &GatewayCore,
     parts: &crate::gateway::startup::GatewayComponents,
-    file_registry: &crate::gateway::file_server::FileRegistry,
-    webhooks: &crate::interfaces::webhook::WebhookTable,
-    workspace_watch_health: &tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
+    routes: RouteParts<'_>,
     services: &HubServices,
     activity: &Arc<ActivityTracker>,
 ) -> GatewayState {
+    let RouteParts {
+        file_registry,
+        webhooks,
+        workspace_watch_health,
+        turn_journal,
+    } = routes;
     GatewayState {
+        turn_journal,
         reload_tx: core.reload_tx.clone(),
         command_tx: core.command_tx.clone(),
         stop_tx: core.stop_tx.clone(),
@@ -512,12 +525,18 @@ async fn spawn_agent_tasks(
         workspace: change_feed_handle,
         health: workspace_watch_health,
     } = spawn_change_feed_tasks(core, &parts.layout, &services.team_feed).await;
+    let turn_journal = crate::gateway::turn_journal::TurnJournal::spawn(&core.bus_handle)
+        .await
+        .map_err(|e| FatalError::Gateway(format!("failed to start the turn journal: {e}")))?;
     let state = build_gateway_state(
         core,
         parts,
-        &file_registry,
-        &webhooks,
-        &workspace_watch_health,
+        RouteParts {
+            file_registry: &file_registry,
+            webhooks: &webhooks,
+            workspace_watch_health: &workspace_watch_health,
+            turn_journal,
+        },
         services,
         activity,
     );

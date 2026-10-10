@@ -384,10 +384,11 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
       turn.cancels.push(env.after(ms, action));
     };
 
-    // Live frames stop while the connection is down.
+    // Live frames stop while the connection is down; the agent's turn journal still keeps them.
     let down = false;
     const live = (frame: ServerMessage): void => {
-      if (!down) state.broadcast(frame);
+      if (down) state.journalOnly(frame);
+      else state.broadcast(frame);
     };
 
     for (const frame of startFrames(replyTo, content, source)) live(frame);
@@ -495,7 +496,9 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
           live(frame);
         });
       });
-      later(written.length * PIECE_MS + 40, finishTurn);
+      later(written.length * PIECE_MS + 40, () => {
+        turn.cancels.push(env.whenTurnReleased("finish", finishTurn));
+      });
     }
 
     function finishTurn(): void {
