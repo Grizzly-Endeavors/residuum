@@ -1029,6 +1029,7 @@ mod tests {
     use crate::background::HopLimits;
     use crate::background::registry::SessionRegistry;
     use crate::background::store::SessionStore;
+    use crate::testing::wait;
 
     fn messenger() -> (Arc<AgentMessenger>, crate::bus::BusHandle) {
         let bus_handle = crate::bus::spawn_broker();
@@ -1116,14 +1117,10 @@ mod tests {
         );
 
         tracker.shutdown();
-
-        for _ in 0..200 {
-            if Arc::strong_count(&tracker) == 1 {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        panic!("the watchers kept running after shutdown");
+        wait::until_true("the watchers to drop the tracker after shutdown", || {
+            Arc::strong_count(&tracker) == 1
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -1343,10 +1340,9 @@ mod tests {
         // First failure starts the streak; under the 10-minute threshold,
         // so no user notice yet.
         tracker.note_unreachable("t1", "connection refused").await;
+        wait::bus_barrier(&bus).await;
         assert!(
-            tokio::time::timeout(Duration::from_millis(50), notices.recv())
-                .await
-                .is_err(),
+            notices.drain().is_empty(),
             "must not notify before the streak is 10 minutes old"
         );
 
@@ -1367,10 +1363,9 @@ mod tests {
 
         // A third failure in the same streak must not renotify.
         tracker.note_unreachable("t1", "connection refused").await;
+        wait::bus_barrier(&bus).await;
         assert!(
-            tokio::time::timeout(Duration::from_millis(50), notices.recv())
-                .await
-                .is_err(),
+            notices.drain().is_empty(),
             "must not renotify within the same unreachable streak"
         );
     }
@@ -1423,10 +1418,9 @@ mod tests {
         // reported exactly once per streak, like the unreachable notice
         // itself.
         tracker.update_state("t1", "working", None, false).await;
+        wait::bus_barrier(&bus).await;
         assert!(
-            tokio::time::timeout(Duration::from_millis(50), notices.recv())
-                .await
-                .is_err(),
+            notices.drain().is_empty(),
             "must not renotify recovery on a later successful contact"
         );
     }
@@ -1460,10 +1454,9 @@ mod tests {
 
         tracker.update_state("t1", "working", None, false).await;
 
+        wait::bus_barrier(&bus).await;
         assert!(
-            tokio::time::timeout(Duration::from_millis(50), notices.recv())
-                .await
-                .is_err(),
+            notices.drain().is_empty(),
             "a task that was never unreachable has no recovery to report"
         );
     }
@@ -1616,10 +1609,9 @@ mod tests {
 
         // A poll that changes nothing Activity shows publishes nothing.
         tracker.update_state("t1", "working", None, false).await;
+        wait::bus_barrier(&bus).await;
         assert!(
-            tokio::time::timeout(Duration::from_millis(50), events.recv())
-                .await
-                .is_err(),
+            events.drain().is_empty(),
             "an unchanged poll must not publish"
         );
 
@@ -1631,26 +1623,23 @@ mod tests {
         assert!(!finished.task.is_open());
     }
 
-    /// The task events queued on `events` right now, waiting briefly for
-    /// the broker to route any that were just published.
+    /// The task events queued on `events` right now. A bus barrier first
+    /// routes everything published before this call.
     async fn task_events_now(
+        bus: &crate::bus::BusHandle,
         events: &mut crate::bus::Subscriber<OutboundA2aTaskEvent>,
     ) -> Vec<TrackedTask> {
-        let mut seen = Vec::new();
-        while let Ok(Ok(Some(event))) =
-            tokio::time::timeout(Duration::from_millis(50), events.recv()).await
-        {
-            seen.push(event.task);
-        }
-        seen
+        wait::bus_barrier(bus).await;
+        events.drain().into_iter().map(|event| event.task).collect()
     }
 
     /// The one task event queued on `events` right now.
     async fn the_task_event(
+        bus: &crate::bus::BusHandle,
         events: &mut crate::bus::Subscriber<OutboundA2aTaskEvent>,
         what: &str,
     ) -> TrackedTask {
-        let mut seen = task_events_now(events).await;
+        let mut seen = task_events_now(bus, events).await;
         assert_eq!(seen.len(), 1, "{what}: {seen:?}");
         seen.pop().unwrap()
     }
@@ -1666,14 +1655,15 @@ mod tests {
             .await
             .unwrap();
         let tracker = tracker_with_task(dir.path(), A2aClientHub::new_shared(), messenger).await;
-        task_events_now(&mut events).await;
+        task_events_now(&bus, &mut events).await;
 
         for streak in 1..=2 {
             // The streak's start is announced, and later failures under the
             // threshold are not.
             tracker.note_unreachable("t1", "connection refused").await;
             tracker.note_unreachable("t1", "connection refused").await;
-            let started = the_task_event(&mut events, &format!("streak {streak} start")).await;
+            let started =
+                the_task_event(&bus, &mut events, &format!("streak {streak} start")).await;
             assert!(started.first_unreachable_at.is_some());
             assert!(!started.unreachable_notified);
 
@@ -1686,12 +1676,13 @@ mod tests {
             }
             tracker.note_unreachable("t1", "connection refused").await;
             tracker.note_unreachable("t1", "connection refused").await;
-            let crossed = the_task_event(&mut events, &format!("streak {streak} threshold")).await;
+            let crossed =
+                the_task_event(&bus, &mut events, &format!("streak {streak} threshold")).await;
             assert!(crossed.unreachable_notified);
 
             // Contact ends the streak, and that is announced too.
             tracker.update_state("t1", "working", None, false).await;
-            let cleared = the_task_event(&mut events, &format!("streak {streak} end")).await;
+            let cleared = the_task_event(&bus, &mut events, &format!("streak {streak} end")).await;
             assert!(cleared.first_unreachable_at.is_none());
         }
     }

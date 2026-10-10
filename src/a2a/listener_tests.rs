@@ -5,7 +5,6 @@
 
 use crate::util::test_ports::reserve_port;
 use std::sync::Arc;
-use std::time::Duration;
 
 use a2a::{
     A2AError, AgentCard, CancelTaskRequest, DeleteTaskPushNotificationConfigRequest,
@@ -27,8 +26,7 @@ use crate::a2a::listener::{A2aListener, StubHandler, agent_handler_router};
 use crate::a2a::static_directory::StaticAgentDirectory;
 use crate::config::A2aConfig;
 use crate::hub::{A2aVisibility, AgentState};
-
-const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+use crate::testing::wait;
 
 /// A handler that identifies its agent in every reply and gates its second
 /// streamed event on `gate`, so a test can prove the first event arrived
@@ -249,16 +247,13 @@ async fn fixture() -> Fixture {
     // before spawning it so no other test process can take it first.
     drop(reservation);
     crate::util::spawn_in_span(listener.start());
-    tokio::time::timeout(Duration::from_secs(20), async {
-        while tokio::net::TcpStream::connect(("127.0.0.1", port))
+    wait::until(format!("the listener on port {port}"), || async move {
+        tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
-            .is_err()
-        {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+            .ok()
+            .map(|_| ())
     })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for the listener on port {port}"));
+    .await;
     Fixture {
         port,
         keys,
@@ -293,12 +288,11 @@ async fn client_for(
         .default_headers(auth)
         .build()
         .unwrap();
-    let card = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let card = wait::guarded(
+        "the reply to resolve",
         AgentCardResolver::new(Some(http)).resolve(&fixture.url(&format!("/agents/{agent}"))),
     )
     .await
-    .expect("timed out resolving the agent card")
     .unwrap();
     A2AClientFactory::builder()
         .with_interceptor(Arc::new(AuthInterceptor::bearer(token)))
@@ -473,12 +467,11 @@ async fn a_joined_siblings_key_reaches_a_private_agent_and_a_missing_key_does_no
     );
     // The same key calls the agent: a real message round trip as `sibling:desktop`.
     let client = client_for(&fx, "vault", &inbound).await;
-    let reply = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let reply = wait::guarded(
+        "the reply to send_message",
         client.send_message(&user_message("hello from the desktop")),
     )
     .await
-    .expect("timed out sending")
     .unwrap();
     assert!(
         text_of(&reply).contains("vault"),
@@ -608,14 +601,18 @@ async fn jsonrpc_reaches_the_named_agent_through_the_prefix() {
 
     let scout = client_for(&fx, "scout", &key).await;
     let vault = client_for(&fx, "vault", &key).await;
-    let from_scout = tokio::time::timeout(TEST_TIMEOUT, scout.send_message(&user_message("x")))
-        .await
-        .unwrap()
-        .unwrap();
-    let from_vault = tokio::time::timeout(TEST_TIMEOUT, vault.send_message(&user_message("x")))
-        .await
-        .unwrap()
-        .unwrap();
+    let from_scout = wait::guarded(
+        "the reply to send_message",
+        scout.send_message(&user_message("x")),
+    )
+    .await
+    .unwrap();
+    let from_vault = wait::guarded(
+        "the reply to send_message",
+        vault.send_message(&user_message("x")),
+    )
+    .await
+    .unwrap();
     assert_eq!(text_of(&from_scout), "scout says hi");
     assert_eq!(text_of(&from_vault), "vault says hi");
 }
@@ -626,25 +623,22 @@ async fn jsonrpc_streams_events_through_the_prefix_as_they_are_produced() {
     let key = fx.key().await;
     let client = client_for(&fx, "scout", &key).await;
 
-    let mut stream = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let mut stream = wait::guarded(
+        "the reply to send_streaming_message",
         client.send_streaming_message(&user_message("stream")),
     )
     .await
-    .unwrap()
     .unwrap();
 
-    let first = tokio::time::timeout(TEST_TIMEOUT, stream.next())
+    let first = wait::guarded("the next streamed event", stream.next())
         .await
-        .expect("the first event must arrive while the stream is still open")
         .unwrap()
         .unwrap();
     assert_eq!(text_of_event(&first), "scout says first");
 
     fx.gate.notify_one();
-    let second = tokio::time::timeout(TEST_TIMEOUT, stream.next())
+    let second = wait::guarded("the next streamed event", stream.next())
         .await
-        .unwrap()
         .unwrap()
         .unwrap();
     assert_eq!(text_of_event(&second), "scout says second");
@@ -694,18 +688,16 @@ async fn rest_streams_chunks_through_the_prefix_as_they_are_produced() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let first = tokio::time::timeout(TEST_TIMEOUT, resp.chunk())
+    let first = wait::guarded("the reply to chunk", resp.chunk())
         .await
-        .expect("the first chunk must arrive while the response is still open")
         .unwrap()
         .unwrap();
     assert!(String::from_utf8_lossy(&first).contains("scout says first"));
 
     fx.gate.notify_one();
     let mut tail = String::new();
-    while let Some(chunk) = tokio::time::timeout(TEST_TIMEOUT, resp.chunk())
+    while let Some(chunk) = wait::guarded("the reply to chunk", resp.chunk())
         .await
-        .unwrap()
         .unwrap()
     {
         tail.push_str(&String::from_utf8_lossy(&chunk));
