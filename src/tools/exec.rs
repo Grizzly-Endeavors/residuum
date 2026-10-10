@@ -686,6 +686,7 @@ fn format_output(output: &Output) -> ToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::wait;
 
     /// A workspace root for tests that don't care where commands start —
     /// the system temp dir, which always exists.
@@ -837,32 +838,19 @@ mod tests {
         let Ok(pid_u32) = u32::try_from(pid) else {
             return;
         };
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                if !crate::util::process::is_process_running(pid_u32) {
-                    return;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
+        wait::until_true("the killed process to be gone", || {
+            !crate::util::process::is_process_running(pid_u32)
         })
-        .await
-        .expect("process should have been killed within 5 seconds");
+        .await;
     }
 
     #[cfg(unix)]
     async fn read_pid_file(path: &std::path::Path) -> i32 {
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                if let Ok(contents) = tokio::fs::read_to_string(path).await
-                    && let Ok(pid) = contents.trim().parse()
-                {
-                    return pid;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
+        wait::until("the pid file to be written", || async {
+            let contents = tokio::fs::read_to_string(path).await.ok()?;
+            contents.trim().parse().ok()
         })
         .await
-        .expect("pid file should have been written within 5 seconds")
     }
 
     #[cfg(unix)]

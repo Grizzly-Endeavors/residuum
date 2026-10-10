@@ -829,6 +829,7 @@ impl ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::wait;
     use crate::tools::{FileTracker, PathPolicy};
 
     #[tokio::test]
@@ -884,9 +885,8 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.is_error, "{}", result.output);
-        tokio::time::timeout(std::time::Duration::from_millis(500), added.recv())
-            .await
-            .is_ok()
+        wait::bus_barrier(bus).await;
+        !added.drain().is_empty()
     }
 
     #[tokio::test]
