@@ -154,6 +154,7 @@ mod tests {
     use super::*;
     use crate::memory::test_helpers::MockMemoryProvider;
     use crate::subconscious::SubconsciousConfig;
+    use crate::testing::wait;
     use crate::workspace::layout::WorkspaceLayout;
 
     const ACT_RESPONSE: &str = r#"{
@@ -168,13 +169,10 @@ mod tests {
     /// `maybe_spawn` and cleared last, so this is exact rather than a guess
     /// at how long the evaluation takes.
     async fn wait_until_idle(watch: &SubconsciousWatch) {
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            while watch.in_flight.load(Ordering::Acquire) {
-                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-            }
+        wait::until_true("the mid-turn evaluation to finish", || {
+            !watch.in_flight.load(Ordering::Acquire)
         })
-        .await
-        .expect("timed out waiting for the mid-turn evaluation to finish");
+        .await;
     }
 
     fn make_watch(
@@ -211,9 +209,8 @@ mod tests {
         let (watch, mut rx) = make_watch(ACT_RESPONSE, enabled_config());
         watch.maybe_spawn(0, transcript());
 
-        let interrupt = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        let interrupt = wait::guarded("a subconscious interrupt", rx.recv())
             .await
-            .unwrap()
             .unwrap();
         match interrupt {
             Interrupt::Subconscious(content) => {
@@ -257,9 +254,7 @@ mod tests {
         );
 
         watch.maybe_spawn(2, transcript());
-        let interrupt = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
-            .await
-            .unwrap();
+        let interrupt = wait::guarded("a subconscious interrupt", rx.recv()).await;
         assert!(interrupt.is_some(), "on-cadence iteration should fire");
     }
 
@@ -284,9 +279,8 @@ mod tests {
         let (watch, mut rx) = make_watch(ACT_RESPONSE, enabled_config());
 
         watch.maybe_spawn(0, transcript());
-        let first = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        let first = wait::guarded("the first subconscious interrupt", rx.recv())
             .await
-            .unwrap()
             .unwrap();
         let Interrupt::Subconscious(first_content) = first else {
             unreachable!("expected a subconscious interrupt")
@@ -299,9 +293,8 @@ mod tests {
         // Wait for in_flight to clear, then evaluate again.
         wait_until_idle(&watch).await;
         watch.maybe_spawn(1, transcript());
-        let second = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        let second = wait::guarded("the second subconscious interrupt", rx.recv())
             .await
-            .unwrap()
             .unwrap();
         let Interrupt::Subconscious(second_content) = second else {
             unreachable!("expected a subconscious interrupt")
@@ -325,9 +318,7 @@ mod tests {
         let (watch, mut rx) = make_watch(ACT_RESPONSE, enabled_config());
         watch.maybe_spawn(0, transcript());
         // Drain the interrupt so we know the eval task ran to completion.
-        tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
-            .await
-            .unwrap();
+        wait::guarded("a subconscious interrupt", rx.recv()).await;
         wait_until_idle(&watch).await;
 
         let scratch = watch.scratch();

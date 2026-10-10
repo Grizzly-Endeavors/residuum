@@ -383,16 +383,16 @@ mod tests {
         }
 
         async fn wait_for_pending(&self) -> String {
-            tokio::time::timeout(Duration::from_secs(5), async {
-                loop {
-                    if let Some(pending) = self.service.host.pending(Utc::now()).first() {
-                        return pending.approval_id.clone();
-                    }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
+            crate::testing::wait::until("a join request to arrive", || {
+                std::future::ready(
+                    self.service
+                        .host
+                        .pending(Utc::now())
+                        .first()
+                        .map(|pending| pending.approval_id.clone()),
+                )
             })
             .await
-            .expect("a join request arrived")
         }
     }
 
@@ -429,17 +429,11 @@ mod tests {
             let id = laptop.wait_for_pending().await;
             let shown = laptop.service.host.pending(Utc::now()).remove(0);
             // The code the approving person sees is the one the joiner reports.
-            let reported = tokio::time::timeout(Duration::from_secs(5), async {
-                loop {
-                    let code = log.lock().unwrap().iter().find_map(|p| p.code.clone());
-                    if let Some(code) = code {
-                        return code;
-                    }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .unwrap();
+            let reported =
+                crate::testing::wait::until("the joiner to report the approval code", || {
+                    std::future::ready(log.lock().unwrap().iter().find_map(|p| p.code.clone()))
+                })
+                .await;
             assert_eq!(shown.code, reported);
             laptop.service.approve(&laptop.approver(&client), &id).await
         };
@@ -534,18 +528,21 @@ mod tests {
         let joiner_pins = PinClient::new(pins.url()).unwrap();
         let (_log, progress) = progress_log();
         let asking = desktop.joiner(&joiner_pins, "laptop");
-        let waiting = tokio::time::timeout(
-            Duration::from_millis(500),
-            desktop.service.join(&asking, &progress),
-        );
-        let (_unfinished, (id, attempt)) = tokio::join!(waiting, async {
-            let id = laptop.wait_for_pending().await;
-            let attempt = laptop
-                .service
-                .approve(&laptop.approver(&refusing), &id)
-                .await;
-            (id, attempt)
-        });
+        // The join keeps waiting for the approval, so it is dropped once the
+        // refused approval has been tried and must not have finished first.
+        let (id, attempt) = tokio::select! {
+            _ = desktop.service.join(&asking, &progress) => {
+                panic!("the join finished before the approval was tried");
+            }
+            pair = async {
+                let id = laptop.wait_for_pending().await;
+                let attempt = laptop
+                    .service
+                    .approve(&laptop.approver(&refusing), &id)
+                    .await;
+                (id, attempt)
+            } => pair,
+        };
         assert!(matches!(attempt, Err(ApproveError::Pins(_))));
         assert!(
             laptop.service.host.find_pending(&id, Utc::now()).is_some(),

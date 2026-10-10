@@ -14,9 +14,8 @@ use super::frames::{AgentInfo, V2Frame};
 use super::test_relay::{FakeRelay, FakeRelayConfig, V2Mode, client_hello};
 use super::{ClaimError, ConnectedInfo, IncomingStream, RelayLink, SessionHandler, Verdict};
 use crate::config::{CloudConfig, RemoteAccessSettings};
+use crate::testing::wait;
 use crate::tunnel::TunnelStatus;
-
-const WAIT: Duration = Duration::from_secs(10);
 
 struct TestHandler {
     refuse: Option<String>,
@@ -117,40 +116,26 @@ fn start(relay: &FakeRelay, handler: &Arc<TestHandler>) -> Running {
 }
 
 async fn connected(running: &mut Running) -> TunnelStatus {
-    tokio::time::timeout(
-        WAIT,
-        running
-            .status
-            .wait_for(|s| matches!(s, TunnelStatus::Connected { .. })),
-    )
+    wait::watch_until("the tunnel to connect", &mut running.status, |s| {
+        matches!(s, TunnelStatus::Connected { .. })
+    })
     .await
-    .expect("tunnel never connected")
-    .expect("status channel closed")
-    .clone()
 }
 
 async fn eventually(what: &str, check: impl Fn() -> bool) {
-    tokio::time::timeout(WAIT, async {
-        while !check() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+    wait::until_true(what, check).await;
 }
 
 async fn next_stream(outputs: &mut HandlerOutputs) -> IncomingStream {
-    tokio::time::timeout(WAIT, outputs.streams.recv())
+    wait::guarded("a browser stream to arrive", outputs.streams.recv())
         .await
-        .expect("no stream arrived")
         .expect("handler closed")
 }
 
 async fn stop(running: Running) {
     running.shutdown.send(true).ok();
-    tokio::time::timeout(WAIT, running.task)
+    wait::guarded("the tunnel to stop after shutdown", running.task)
         .await
-        .expect("tunnel did not stop")
         .expect("tunnel task panicked");
 }
 
@@ -262,7 +247,10 @@ async fn a_relay_without_the_endpoint_is_reported_and_retried() {
 async fn a_relay_url_the_client_cannot_register_at_never_connects() {
     let relay = FakeRelay::start(FakeRelayConfig::default()).await;
     let (h, _outputs) = handler(None);
-    let (status_tx, status) = watch::channel(TunnelStatus::Disconnected);
+    // Starts at Connecting so the Disconnected the test waits for can only be
+    // the first attempt giving up on its URL, which is the point the loop has
+    // decided not to connect.
+    let (status_tx, mut status) = watch::channel(TunnelStatus::Connecting);
     let (shutdown, shutdown_rx) = watch::channel(false);
     let (_agents, agents_rx) = watch::channel(Vec::new());
     let cfg = CloudConfig {
@@ -278,11 +266,14 @@ async fn a_relay_url_the_client_cannot_register_at_never_connects() {
         Arc::new(status_tx),
         handler,
     ));
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait::watch_until("the tunnel to give up on its URL", &mut status, |s| {
+        *s == TunnelStatus::Disconnected
+    })
+    .await;
     assert_eq!(relay.v2_attempts(), 0);
     assert!(!matches!(*status.borrow(), TunnelStatus::Connected { .. }));
     shutdown.send(true).ok();
-    tokio::time::timeout(WAIT, task).await.unwrap().unwrap();
+    wait::guarded("the tunnel to stop", task).await.unwrap();
 }
 
 #[tokio::test]
@@ -307,15 +298,14 @@ async fn the_earlier_registration_path_in_the_config_still_reaches_the_endpoint(
         Arc::new(status_tx),
         handler,
     ));
-    tokio::time::timeout(
-        WAIT,
-        status.wait_for(|s| matches!(s, TunnelStatus::Connected { .. })),
+    wait::watch_until(
+        "the tunnel to connect on the older path",
+        &mut status,
+        |s| matches!(s, TunnelStatus::Connected { .. }),
     )
-    .await
-    .expect("tunnel never connected")
-    .expect("status channel closed");
+    .await;
     shutdown.send(true).ok();
-    tokio::time::timeout(WAIT, task).await.unwrap().unwrap();
+    wait::guarded("the tunnel to stop", task).await.unwrap();
 }
 
 #[tokio::test]
@@ -398,10 +388,12 @@ async fn relay_close_delivers_queued_data_then_eof() {
     let mut incoming = next_stream(&mut outputs).await;
     assert_eq!(incoming.peer_ip, "203.0.113.7");
     let mut all = Vec::new();
-    tokio::time::timeout(WAIT, incoming.io.read_to_end(&mut all))
-        .await
-        .unwrap()
-        .unwrap();
+    wait::guarded(
+        "the relay's queued data and EOF",
+        incoming.io.read_to_end(&mut all),
+    )
+    .await
+    .unwrap();
     assert_eq!(all, b"abcdef");
     stop(running).await;
 }
@@ -584,11 +576,12 @@ async fn tls_hello_world_flows_through_the_framing() {
     // credit machinery in both directions.
     let reply: Vec<u8> = (0..600_000_u32).map(|i| (i % 251) as u8).collect();
     let server_task = tokio::spawn(tls_serve(server, incoming.io, 11, reply.clone()));
-    let got = tokio::time::timeout(WAIT, browser).await.unwrap().unwrap();
-    assert_eq!(got, reply);
-    tokio::time::timeout(WAIT, server_task)
+    let got = wait::guarded("the browser to read the full reply", browser)
         .await
-        .unwrap()
+        .unwrap();
+    assert_eq!(got, reply);
+    wait::guarded("the server side to finish", server_task)
+        .await
         .unwrap();
     stop(running).await;
 }
@@ -624,21 +617,24 @@ async fn a_stalled_stream_does_not_stall_another() {
     let live = next_stream(&mut outputs).await;
     assert_eq!(live.host, "laptop.bear.relay.test");
     let live_task = tokio::spawn(tls_serve(server, live.io, 4, b"pong".to_vec()));
-    let got = tokio::time::timeout(WAIT, browser).await.unwrap().unwrap();
-    assert_eq!(got, b"pong");
-    tokio::time::timeout(WAIT, live_task)
+    let got = wait::guarded("the browser to read the live reply", browser)
         .await
-        .unwrap()
+        .unwrap();
+    assert_eq!(got, b"pong");
+    wait::guarded("the live stream's server side to finish", live_task)
+        .await
         .unwrap();
 
     // A never lost anything: reading it now drains every byte.
     let mut seen = 0;
     let mut buf = vec![0; 64 * 1024];
     while seen < hello_len + stalled_total {
-        let n = tokio::time::timeout(WAIT, stalled.io.read(&mut buf))
-            .await
-            .unwrap()
-            .unwrap();
+        let n = wait::guarded(
+            "the stalled stream's buffered bytes",
+            stalled.io.read(&mut buf),
+        )
+        .await
+        .unwrap();
         assert_ne!(n, 0, "stream A ended early");
         seen += n;
     }

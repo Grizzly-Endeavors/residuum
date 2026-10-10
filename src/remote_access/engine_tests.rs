@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
@@ -401,8 +400,12 @@ async fn acme_alpn_connection_ends_after_handshake() {
     if let Ok(mut client) = result {
         use tokio::io::AsyncReadExt;
         let mut buf = Vec::new();
-        let read = tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut buf)).await;
-        assert!(read.is_ok(), "connection must close");
+        crate::testing::wait::guarded(
+            "the refused connection to close",
+            client.read_to_end(&mut buf),
+        )
+        .await
+        .ok();
         assert!(buf.is_empty());
     }
 }
@@ -423,9 +426,8 @@ async fn websocket_upgrade_reaches_ui_router() {
         .send(tokio_tungstenite::tungstenite::Message::text("hi"))
         .await
         .expect("send");
-    let reply = tokio::time::timeout(Duration::from_secs(5), socket.next())
+    let reply = crate::testing::wait::guarded("the websocket's echo reply", socket.next())
         .await
-        .expect("timely reply")
         .expect("a frame")
         .expect("ok frame");
     assert_eq!(reply.into_text().expect("text").as_str(), "echo:hi");
@@ -518,17 +520,18 @@ async fn a2a_proxy_streams_sse_incrementally() {
     assert!(response.headers().get(header::SET_COOKIE).is_none());
     let mut body = response.into_body();
 
-    let first = tokio::time::timeout(Duration::from_secs(5), body.frame())
-        .await
-        .expect("first chunk arrives before the stream ends")
-        .expect("frame")
-        .expect("ok frame");
+    let first = crate::testing::wait::guarded(
+        "the first chunk to arrive before the stream ends",
+        body.frame(),
+    )
+    .await
+    .expect("frame")
+    .expect("ok frame");
     assert_eq!(first.into_data().expect("data").as_ref(), b"data: one\n\n");
 
     release.notify_one();
-    let second = tokio::time::timeout(Duration::from_secs(5), body.frame())
+    let second = crate::testing::wait::guarded("the second chunk", body.frame())
         .await
-        .expect("second chunk")
         .expect("frame")
         .expect("ok frame");
     assert_eq!(second.into_data().expect("data").as_ref(), b"data: two\n\n");

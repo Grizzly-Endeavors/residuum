@@ -493,16 +493,15 @@ fn publish_disconnected(status_tx: &watch::Sender<TunnelStatus>) {
 mod tests {
     use super::*;
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn shutdown_requested_waits_for_the_flag() {
         let (tx, mut rx) = watch::channel(false);
         let waiter = tokio::spawn(async move { shutdown_requested(&mut rx).await });
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        crate::testing::clock::elapse(Duration::from_millis(20)).await;
         assert!(!waiter.is_finished());
         tx.send(true).unwrap();
-        tokio::time::timeout(Duration::from_secs(1), waiter)
+        crate::testing::wait::guarded("the shutdown flag to end the wait", waiter)
             .await
-            .unwrap()
             .unwrap();
     }
 }

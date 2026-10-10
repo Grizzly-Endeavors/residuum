@@ -836,8 +836,6 @@ mod gateway_integration {
             let _ = recv_turn(&mut rx_a).await;
         }
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
         // Client B should still work
         let (mut tx_b, mut rx_b) = connect_client(&addr).await;
         send_msg(
