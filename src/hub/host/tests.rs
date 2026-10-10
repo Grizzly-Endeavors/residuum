@@ -260,15 +260,8 @@ impl Fixture {
     async fn wait_for_file_watcher(&self, name: &str) {
         let mut health = self
             .host
-            .slot(name)
-            .unwrap()
-            .lock()
-            .running
-            .as_ref()
-            .expect("the agent is running")
-            .control
-            .workspace_watch_health
-            .clone();
+            .workspace_watch_health(name)
+            .expect("the agent is running");
         wait::watch_until("the agent's file watcher to start", &mut health, |health| {
             *health != WatchHealth::Starting
         })
@@ -297,33 +290,29 @@ impl Fixture {
         .await;
     }
 
+    /// Wait until the running agent has no checkpoint still being written,
+    /// as its status reports.
+    async fn wait_for_checkpoints_to_settle(&self, name: &str) {
+        wait::until("the agent's checkpoints to finish", || async {
+            let (_, status) = self.get(&format!("/api/agents/{name}/status")).await;
+            let status: Value = serde_json::from_str(&status).ok()?;
+            (status.pointer("/checkpoints/pending") == Some(&json!(0))).then_some(())
+        })
+        .await;
+    }
+
     /// Replace the agent's workspace checkpoint repository with a plain
-    /// file, so that opening it fails.
-    ///
-    /// A checkpoint the agent records in the background may still be writing
-    /// into the repository, and which ones are is up to scheduling. Such a
-    /// writer can make deleting the directory fail, or recreate it before the
-    /// file is written, so this repeats until the file stands where the
-    /// repository was. The writers are finite, and once the file is there they
-    /// fail against it, so the path settles.
+    /// file, so that opening it fails. Call it once no checkpoint is being
+    /// written: the agent is stopped, which waits for them, or
+    /// [`Self::wait_for_checkpoints_to_settle`] has returned.
     fn make_checkpoints_unopenable(&self, name: &str) {
         let repo = crate::checkpoints::agent_repos_dir(
             &crate::config::HubPaths::new(&self.services.hub_dir).checkpoints_dir(),
             name,
         )
         .join("workspace.git");
-        let deadline = std::time::Instant::now() + HANG_GUARD;
-        loop {
-            std::fs::remove_dir_all(&repo).ok();
-            if std::fs::write(&repo, "not a repository").is_ok() {
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "a background checkpoint kept the workspace repository directory in place"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        std::fs::remove_dir_all(&repo).unwrap();
+        std::fs::write(&repo, "not a repository").unwrap();
     }
 
     /// Write a user-inbox item named `id` into the agent's workspace.
@@ -627,6 +616,7 @@ async fn a_running_agents_history_and_inbox_do_not_open_its_checkpoint_repositor
     })
     .await;
     hub.wait_for_a_turn_checkpoint("scout").await;
+    hub.wait_for_checkpoints_to_settle("scout").await;
     hub.add_inbox_item("scout", "20260930_pelican");
     hub.make_checkpoints_unopenable("scout");
 
@@ -1772,10 +1762,47 @@ async fn the_hub_websocket_carries_an_agents_activity_as_it_chats() {
 #[tokio::test]
 async fn one_team_change_feed_serves_every_agent_and_the_artifact_reload_watcher() {
     let hub = Fixture::new(&["atlas", "scout"], "").await;
-    hub.host.start_autostart().await;
     let team = hub.root.path().join("team");
+    let mut health = hub.services.team_feed.health.clone();
+    wait::watch_until("the team change feed to start", &mut health, |health| {
+        *health != WatchHealth::Starting
+    })
+    .await;
+    // The feed watches a directory that appears after it started once it
+    // sees the directory appear, and a file written into it before then is
+    // never reported. The agents' bootstrap creates `team/wiki`, so wait for
+    // the feed to report whichever of the two directories appeared after it
+    // started, whoever created them.
+    let mut feed = hub
+        .services
+        .team_feed
+        .bus
+        .subscribe(crate::bus::topics::Workspace)
+        .await
+        .unwrap();
+    let mut unseen: std::collections::BTreeSet<&str> = ["wiki", "workbench"]
+        .into_iter()
+        .filter(|dir| !team.join(dir).exists())
+        .collect();
+    hub.host.start_autostart().await;
     std::fs::create_dir_all(team.join("wiki")).unwrap();
     std::fs::create_dir_all(team.join("workbench")).unwrap();
+    wait::guarded("the team feed to see its new directories", async {
+        while !unseen.is_empty() {
+            match feed.recv().await {
+                Ok(Some(crate::bus::WorkspaceEvent::Changed(changes))) => {
+                    for change in changes.iter() {
+                        let in_team = change.path.strip_prefix("team/").unwrap_or_default();
+                        let top = in_team.split('/').next().unwrap_or_default();
+                        unseen.remove(top);
+                    }
+                }
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => panic!("the team change feed closed"),
+            }
+        }
+    })
+    .await;
 
     let mut sockets = Vec::new();
     for name in ["atlas", "scout"] {
@@ -1788,10 +1815,14 @@ async fn one_team_change_feed_serves_every_agent_and_the_artifact_reload_watcher
         ))
         .await
         .unwrap();
+        // The socket handles its messages in order, so the pong says the
+        // watch is in place.
+        ws.send(WsMessage::text(json!({ "type": "ping" }).to_string()))
+            .await
+            .unwrap();
+        frame_where(&mut ws, "pong", |_| true).await;
         sockets.push(ws);
     }
-    // The feed is already running; give the watches a moment to settle.
-    tokio::time::sleep(Duration::from_millis(300)).await;
 
     std::fs::write(team.join("wiki").join("note.md"), "a note").unwrap();
     std::fs::write(team.join("workbench").join("chart.html"), "<p>chart</p>").unwrap();

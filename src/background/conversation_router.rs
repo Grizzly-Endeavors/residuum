@@ -103,6 +103,7 @@ impl ConversationRouter {
 mod tests {
     use super::*;
     use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOrigin};
+    use crate::testing::wait;
 
     fn inbound(endpoint: &str, conversation_id: &str, location: Option<&str>) -> MessageEvent {
         MessageEvent {
@@ -165,16 +166,12 @@ mod tests {
             .await;
 
         let address = conversation_session_address("discord", "chan-1");
-        let first = tokio::time::timeout(std::time::Duration::from_secs(1), spawns.recv())
-            .await
-            .expect("first message should start a session")
-            .unwrap()
-            .unwrap();
-        let second = tokio::time::timeout(std::time::Duration::from_secs(1), spawns.recv())
-            .await
-            .expect("second message in the same conversation should route the same way")
-            .unwrap()
-            .unwrap();
+        let first = wait::next_event("the first message to start a session", &mut spawns).await;
+        let second = wait::next_event(
+            "the second message in the same conversation to route the same way",
+            &mut spawns,
+        )
+        .await;
         assert_eq!(first.address, address);
         assert_eq!(
             second.address, address,
@@ -280,25 +277,27 @@ mod tests {
         // Drain the channel the way a live turn's own tool loop would, one
         // interrupt at a time, freeing capacity for the router's detached
         // retry task to land the new message.
-        let mut delivered = false;
-        for _ in 0..crate::background::registry::INTERRUPT_CHANNEL_CAPACITY + 5 {
-            let Ok(Some(interrupt)) =
-                tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await
-            else {
-                break;
-            };
-            if let crate::agent::interrupt::Interrupt::UserMessage(m) = interrupt
-                && m.id == "the-new-message"
-            {
+        let interrupt = wait::next_matching(
+            "the new user message to be delivered, never dropped",
+            &mut rx,
+            |interrupt| {
+                matches!(
+                    interrupt,
+                    crate::agent::interrupt::Interrupt::UserMessage(m) if m.id == "the-new-message"
+                )
+            },
+        )
+        .await;
+        match interrupt {
+            crate::agent::interrupt::Interrupt::UserMessage(m) => {
                 assert_eq!(m.content, "can anyone see this?");
-                delivered = true;
-                break;
+            }
+            crate::agent::interrupt::Interrupt::AgentMessage(_)
+            | crate::agent::interrupt::Interrupt::Subconscious(_)
+            | crate::agent::interrupt::Interrupt::Stopped => {
+                panic!("the new user message should be the one delivered")
             }
         }
-        assert!(
-            delivered,
-            "the new user message must eventually be delivered, never dropped"
-        );
     }
 
     #[tokio::test]
@@ -306,7 +305,7 @@ mod tests {
         // The `Completing` branch (a run whose teardown is in progress)
         // must keep working exactly as before this fix — only the `Full`
         // handling changed. The run never actually clears in this test, so
-        // this only asserts `route()` itself returns promptly rather than
+        // this only asserts `route()` itself returns rather than
         // blocking on however long that teardown takes.
         let (router, _bus_handle, registry) = router();
         let address = conversation_session_address("discord", "chan-2");
@@ -334,11 +333,10 @@ mod tests {
             .register(info, tokio_util::sync::CancellationToken::new())
             .unwrap();
 
-        tokio::time::timeout(
-            std::time::Duration::from_millis(500),
+        wait::guarded(
+            "route() to hand off to a detached task, never block on a completing run",
             router.route(inbound("discord", "chan-2", Some("#builds"))),
         )
-        .await
-        .expect("route() must hand off to a detached task, never block on a completing run");
+        .await;
     }
 }

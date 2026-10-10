@@ -234,12 +234,21 @@ impl AgentChangeReceiver {
         }
         change
     }
+
+    /// The next change if one is already queued, without waiting. Since
+    /// [`AgentChangeFeed::publish`] queues for every subscriber before it
+    /// returns, a caller that knows a change was published can read it here.
+    pub fn try_recv(&mut self) -> Option<AgentChange> {
+        let change = self.rx.try_recv().ok();
+        if change.is_some() {
+            self.backlog.fetch_sub(1, Ordering::Relaxed);
+        }
+        change
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
 
     fn change(agent: &str, item: &str) -> AgentChange {
@@ -251,15 +260,14 @@ mod tests {
         }
     }
 
-    async fn next(receiver: &mut AgentChangeReceiver) -> Option<AgentChange> {
-        tokio::time::timeout(Duration::from_millis(50), receiver.recv())
-            .await
-            .ok()
-            .flatten()
+    /// What `publish` already queued: it queues for every subscriber before
+    /// returning, so nothing more can be on its way.
+    fn next(receiver: &mut AgentChangeReceiver) -> Option<AgentChange> {
+        receiver.try_recv()
     }
 
-    #[tokio::test]
-    async fn every_subscriber_gets_every_change_in_order() {
+    #[test]
+    fn every_subscriber_gets_every_change_in_order() {
         let feed = AgentChangeFeed::new();
         let mut first = feed.subscribe();
         let mut second = feed.subscribe();
@@ -268,35 +276,35 @@ mod tests {
         }
         for receiver in [&mut first, &mut second] {
             for n in 0..3 {
-                let got = next(receiver).await.expect("a queued change");
+                let got = next(receiver).expect("a queued change");
                 assert_eq!(got.agent, "scout");
                 assert!(
                     matches!(got.kind, AgentChangeKind::UserInboxAdded { ref item_id } if *item_id == n.to_string()),
                     "change {n} arrives in order: {got:?}"
                 );
             }
-            assert!(next(receiver).await.is_none());
+            assert!(next(receiver).is_none());
         }
     }
 
-    #[tokio::test]
-    async fn a_subscriber_hears_only_what_comes_after_it_subscribes() {
+    #[test]
+    fn a_subscriber_hears_only_what_comes_after_it_subscribes() {
         let feed = AgentChangeFeed::new();
         feed.publish(&change("scout", "before"));
         let mut late = feed.subscribe();
-        assert!(next(&mut late).await.is_none(), "nothing is replayed");
+        assert!(next(&mut late).is_none(), "nothing is replayed");
         feed.publish(&change("scout", "after"));
-        assert!(next(&mut late).await.is_some());
+        assert!(next(&mut late).is_some());
     }
 
-    #[tokio::test]
-    async fn a_dropped_receiver_stops_costing_the_feed_anything() {
+    #[test]
+    fn a_dropped_receiver_stops_costing_the_feed_anything() {
         let feed = AgentChangeFeed::new();
         let gone = feed.subscribe();
         let mut kept = feed.subscribe();
         drop(gone);
         feed.publish(&change("scout", "1"));
-        assert!(next(&mut kept).await.is_some());
+        assert!(next(&mut kept).is_some());
         assert_eq!(
             feed.subscribers.lock().unwrap().len(),
             1,
@@ -304,15 +312,15 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_receiver_never_reading_loses_nothing() {
+    #[test]
+    fn a_receiver_never_reading_loses_nothing() {
         let feed = AgentChangeFeed::new();
         let mut receiver = feed.subscribe();
         for n in 0..BACKLOG_WARN_THRESHOLD + 5 {
             feed.publish(&change("scout", &n.to_string()));
         }
         let mut count = 0;
-        while next(&mut receiver).await.is_some() {
+        while next(&mut receiver).is_some() {
             count += 1;
         }
         assert_eq!(count, BACKLOG_WARN_THRESHOLD + 5);

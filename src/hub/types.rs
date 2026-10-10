@@ -355,6 +355,8 @@ pub struct DeletedAgentListResponse {
 pub enum HubSocketFrame {
     /// The first frame of every connection: which hub process answered.
     HubBoot { boot_id: String },
+    /// The answer to a client's `ping`.
+    Pong,
     /// The agents with their activity, sent after `hub_boot` and again
     /// whenever the connection fell behind and lost events.
     AgentsSnapshot(AgentListResponse),
@@ -440,6 +442,10 @@ pub enum HubClientMessage {
     SubscribeArtifactSessions { artifact: String },
     /// Stop following an artifact's sessions.
     UnsubscribeArtifactSessions { artifact: String },
+    /// Answered with `pong`. The socket handles a connection's messages in
+    /// order, so a `pong` also confirms that everything sent before the
+    /// `ping` (a `watch_team`, say) has taken effect.
+    Ping,
 }
 
 /// Why a lifecycle or lookup call failed. The HTTP layer maps these to

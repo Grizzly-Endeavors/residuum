@@ -24,7 +24,7 @@ The workspace API responses that carry a checkpoint (`DELETE /api/agents/{name}/
 
 The agent-config repository is checkpointed immediately before any write to the agent's own `config.toml` or `providers.toml`: a raw PUT or a settings-patch save, or the setup wizard's writes. The hub-config repository is checkpointed immediately before any write to the hub's `config.toml` or an encrypted key store: every set/delete of a secret, an agent key (from Settings), or an A2A caller key, the agent's own `agent_key_delete` tool and the `exec` tool's `store_output_as` parameter, and the equivalent `residuum secret`, `residuum agent-keys`, `residuum a2a keys`, and `residuum setup` CLI commands. The CLI commands open their own short-lived `CheckpointEngine` against the same on-disk repositories the gateway uses, rather than sharing the running gateway's instance.
 
-Every checkpoint commit records which session/address caused it, its run id and turn/correlation id when it has them, why it was taken, and a short summary. Checkpointing never blocks or fails whatever triggered it: a failure is logged with structured fields and surfaces as a notice on the system notification channel (or, for a CLI command with no running gateway to notify, just a warning log), then the turn, action, or command proceeds as if nothing happened.
+Every checkpoint commit records which session/address caused it, its run id and turn/correlation id when it has them, why it was taken, and a short summary. Checkpointing never blocks or fails whatever triggered it: a failure is logged with structured fields and surfaces as a notice on the system notification channel (or, for a CLI command with no running gateway to notify, just a warning log), then the turn, action, or command proceeds as if nothing happened. The turn-start and turn-end checkpoints are written off the turn's path, after it moves on; the agent counts the ones still being written, shows the count as `checkpoints.pending` in `/api/agents/{name}/status`, and waits for them (up to 30 seconds, logging a warning past that) when it stops, so a stop, restart, delete or restore that follows doesn't race them.
 
 Concurrent commits to the same repository — from the gateway, a `residuum` CLI command, or several of either at once — are serialized rather than interleaved or lost. Each repository's git-dir holds a lock file that every committer acquires (with a brief bounded retry, never an indefinite wait) before reading the current tip, building the new commit, and moving the branch ref; the ref move itself is additionally a compare-and-swap against the exact tip that was read, so a commit can never silently overwrite a sibling written by another process in the gap between reading the tip and writing the ref.
 
@@ -60,7 +60,7 @@ Backs the web UI's history view: every route takes `repo` (`workspace`, `team`, 
 | `POST /checkpoints/{id}/restore` | Restores `path` to this checkpoint. |
 | `POST /checkpoints/{id}/undo` | Undoes this checkpoint's changes. |
 
-`/api/agents/{name}/status` additionally carries a `checkpoints` field with each repository's stats, so size is visible without the routes above.
+`/api/agents/{name}/status` additionally carries a `checkpoints` field with each repository's stats, so size is visible without the routes above, and `pending`, the number of automatic checkpoints still being written.
 
 ## Web UI
 

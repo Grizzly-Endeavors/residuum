@@ -364,6 +364,9 @@ export class HubStore {
       case "system_one_status":
         this.systemOne = msg.status;
         break;
+      case "pong":
+        // The answer to a `ping`, which the app itself never sends.
+        break;
       case "hub_boot":
       case "hub_config_reloaded":
       case "team_event":

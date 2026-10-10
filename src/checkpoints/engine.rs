@@ -155,6 +155,10 @@ pub struct CheckpointEngine {
     /// long as this engine is in use: a test fixture's directory, or the
     /// scratch agent repositories of a hub-config-only CLI engine.
     scratch_guard: Option<tempfile::TempDir>,
+    /// How many automatic checkpoints are still being written. Counted up
+    /// before each one is spawned and down when it has finished and
+    /// reported, so zero means none is in flight.
+    pending: Arc<tokio::sync::watch::Sender<usize>>,
 }
 
 impl CheckpointEngine {
@@ -222,6 +226,7 @@ impl CheckpointEngine {
             publisher,
             team_coordinator: None,
             scratch_guard: None,
+            pending: Arc::new(tokio::sync::watch::channel(0).0),
         })
     }
 
@@ -322,6 +327,29 @@ impl CheckpointEngine {
 
     // ─── Automatic checkpoints (never block or fail the caller) ────────
 
+    /// How many automatic checkpoints (the turn hooks') are still being
+    /// written.
+    #[must_use]
+    pub fn pending_checkpoints(&self) -> usize {
+        *self.pending.borrow()
+    }
+
+    /// Follow [`Self::pending_checkpoints`] as it changes.
+    #[must_use]
+    pub fn subscribe_pending(&self) -> tokio::sync::watch::Receiver<usize> {
+        self.pending.subscribe()
+    }
+
+    /// Wait until no automatic checkpoint is being written. A checkpoint
+    /// spawned while this waits is waited for too.
+    pub async fn settled(&self) {
+        let mut pending = self.pending.subscribe();
+        // The sender lives in `self`, so it can't go away while this waits.
+        if pending.wait_for(|count| *count == 0).await.is_err() {
+            tracing::debug!("the checkpoint engine went away while its checkpoints settled");
+        }
+    }
+
     /// Turn-start hook: if the workspace tree changed since the last
     /// checkpoint (an edit made outside Residuum), record it. Runs off the
     /// hot path — this returns immediately, before the checkpoint is
@@ -346,7 +374,10 @@ impl CheckpointEngine {
         let repo = self.repo(kind);
         let root = self.dest_root(kind);
         let publisher = self.publisher.clone();
+        let in_flight = PendingCheckpoint::start(&self.pending);
         crate::util::spawn_in_span(async move {
+            // Dropped when the task ends, however it ends.
+            let _in_flight = in_flight;
             let task_ctx = ctx.clone();
             let result = crate::util::spawn_blocking_in_span(move || {
                 commit_tree(kind, &repo, &root, &task_ctx).map(|commit| commit.recorded_id())
@@ -1272,6 +1303,22 @@ fn id_and_report(
 /// Log and, on failure, publish a notice describing what happened. Called
 /// after every automatic checkpoint attempt so a failure is never silent
 /// but never blocks or fails whatever triggered the checkpoint either.
+/// Counts one automatic checkpoint as in flight until dropped.
+struct PendingCheckpoint(Arc<tokio::sync::watch::Sender<usize>>);
+
+impl PendingCheckpoint {
+    fn start(pending: &Arc<tokio::sync::watch::Sender<usize>>) -> Self {
+        pending.send_modify(|count| *count += 1);
+        Self(Arc::clone(pending))
+    }
+}
+
+impl Drop for PendingCheckpoint {
+    fn drop(&mut self) {
+        self.0.send_modify(|count| *count = count.saturating_sub(1));
+    }
+}
+
 async fn report_outcome(
     publisher: Option<&Publisher>,
     repo_label: &str,
@@ -1357,24 +1404,52 @@ mod tests {
         .unwrap()
     }
 
-    /// Poll `list_checkpoints` until at least `count` checkpoints appear,
-    /// for asserting on a fire-and-forget `spawn_*_checkpoint` call.
+    /// Wait for the spawned checkpoints to finish, then expect at least
+    /// `count` checkpoints in `kind`'s history.
     async fn wait_for_checkpoint_count(
         engine: &CheckpointEngine,
         kind: RepoKind,
         count: usize,
     ) -> Vec<CheckpointSummary> {
-        for _ in 0..200 {
-            let page = engine
-                .list_checkpoints(kind, None, None, None, Some(count))
-                .await
-                .unwrap();
-            if page.items.len() >= count {
-                return page.items;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!("expected {count} checkpoint(s) within the timeout");
+        crate::testing::wait::guarded("the spawned checkpoints to finish", engine.settled()).await;
+        let page = engine
+            .list_checkpoints(kind, None, None, None, Some(count))
+            .await
+            .unwrap();
+        assert!(
+            page.items.len() >= count,
+            "expected {count} checkpoint(s), found {}",
+            page.items.len()
+        );
+        page.items
+    }
+
+    #[tokio::test]
+    async fn pending_counts_spawned_checkpoints_until_they_finish() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let engine = new_engine(dir.path());
+        let mut pending = engine.subscribe_pending();
+        assert_eq!(engine.pending_checkpoints(), 0);
+        std::fs::write(workspace.join("a.txt"), "one").unwrap();
+
+        engine.spawn_turn_end_checkpoint(ctx(CheckpointTrigger::TurnEnd, "a turn"));
+        assert_eq!(
+            engine.pending_checkpoints(),
+            2,
+            "a turn hook checkpoints the workspace and the team, counted before it returns"
+        );
+        crate::testing::wait::watch_until("the checkpoints to finish", &mut pending, |count| {
+            *count == 0
+        })
+        .await;
+        engine.settled().await;
+        let page = engine
+            .list_checkpoints(RepoKind::Workspace, None, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 1, "the finished checkpoint is recorded");
     }
 
     #[test]

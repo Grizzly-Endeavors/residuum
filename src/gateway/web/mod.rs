@@ -51,6 +51,7 @@ mod embedded {
     pub(super) struct WebAssets;
 }
 pub(crate) use assets::static_assets;
+pub(crate) use config::AgentStatusState;
 use embedded::WebAssets;
 
 pub use agent_files::{AgentFilesState, CheckpointAccess, agent_files_api_router};
@@ -501,7 +502,7 @@ pub(crate) fn team_workspace_api_router(state: ConfigApiState) -> axum::Router {
 
 /// The running agent's `status` route: the one per-agent data route that
 /// describes the live process, so it needs a running agent.
-pub(crate) fn agent_status_api_router(state: ConfigApiState) -> axum::Router {
+pub(crate) fn agent_status_api_router(state: AgentStatusState) -> axum::Router {
     axum::Router::new()
         .route("/api/status", get(config::api_status))
         .with_state(state)

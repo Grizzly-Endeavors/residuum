@@ -64,6 +64,7 @@ describe("hub types", () => {
   it("covers every frame the hub sends", () => {
     expectTypeOf<HubServerMessage["type"]>().toEqualTypeOf<
       | "hub_boot"
+      | "pong"
       | "agents_snapshot"
       | "agent_state"
       | "agent_stopping"
@@ -110,6 +111,7 @@ describe("hub types", () => {
       | "unsubscribe_session"
       | "subscribe_artifact_sessions"
       | "unsubscribe_artifact_sessions"
+      | "ping"
     >();
   });
 

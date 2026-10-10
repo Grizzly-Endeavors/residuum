@@ -1024,6 +1024,12 @@ async fn check_and_run_due_actions(rt: &mut AgentRuntime) {
 /// startup recovery.
 const SESSION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Maximum time to wait for the automatic checkpoints still being written
+/// during graceful shutdown. A stop, restart, delete or restore that follows
+/// would otherwise race them over the agent's repositories; one cut short
+/// here is logged, and the next turn's checkpoint records what it missed.
+const CHECKPOINT_SETTLE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Maximum time to wait for an in-flight post-turn background cycle
 /// (observe or subconscious) to finish during graceful shutdown before
 /// giving up on it — its own writes are already atomic, so a cycle cut
@@ -1074,6 +1080,17 @@ async fn graceful_shutdown(rt: &mut AgentRuntime) {
     // router included) are still running, so their results are recorded and
     // delivered rather than left for startup recovery on the next boot.
     rt.session_runtime.shutdown(SESSION_SHUTDOWN_TIMEOUT).await;
+    // After the sessions, which take checkpoints of their own.
+    if tokio::time::timeout(CHECKPOINT_SETTLE_TIMEOUT, rt.checkpoints.settled())
+        .await
+        .is_err()
+    {
+        tracing::warn!(
+            pending = rt.checkpoints.pending_checkpoints(),
+            timeout_secs = CHECKPOINT_SETTLE_TIMEOUT.as_secs(),
+            "stopping without waiting longer for checkpoints still being written"
+        );
+    }
     for h in rt.notify_handles.drain(..) {
         h.abort();
     }

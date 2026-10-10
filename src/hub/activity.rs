@@ -65,6 +65,15 @@ impl ActivityTracker {
         Self::activity_of(&state)
     }
 
+    /// How many web clients are connected to the agent's `/ws` now.
+    #[must_use]
+    pub fn connected_clients(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clients
+    }
+
     fn activity_of(state: &ActivityState) -> AgentActivity {
         AgentActivity {
             busy: state.busy_since.is_some(),
@@ -337,6 +346,25 @@ mod tests {
     }
 
     #[test]
+    fn connected_clients_counts_open_guards_of_the_current_run() {
+        let (tracker, _rx) = tracker();
+        assert_eq!(tracker.connected_clients(), 0);
+        let first = tracker.client_connected();
+        let second = tracker.client_connected();
+        assert_eq!(tracker.connected_clients(), 2);
+        drop(first);
+        assert_eq!(tracker.connected_clients(), 1);
+        tracker.run_ended();
+        assert_eq!(
+            tracker.connected_clients(),
+            0,
+            "a stop disconnects everyone"
+        );
+        drop(second);
+        assert_eq!(tracker.connected_clients(), 0);
+    }
+
+    #[test]
     fn a_guard_from_an_ended_run_does_not_unbalance_the_next_run() {
         let (tracker, _rx) = tracker();
         let old_client = tracker.client_connected();
@@ -375,10 +403,7 @@ mod tests {
     async fn next_turn(
         receiver: &mut crate::hub::agent_watch::AgentChangeReceiver,
     ) -> MainTurnEnded {
-        let change = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
-            .await
-            .expect("the turn hook reports")
-            .expect("the feed is open");
+        let change = crate::testing::wait::next("the turn hook's report", receiver).await;
         assert_eq!(change.agent, "scout");
         let AgentChangeKind::TurnEnded(turn) = change.kind else {
             panic!("expected a turn ending, got {:?}", change.kind);
@@ -400,12 +425,9 @@ mod tests {
         assert_eq!(turn.reply.as_deref(), Some("Two meetings."));
         assert_eq!(turn.visibility, Visibility::User);
         assert!(before <= turn.at && turn.at <= Utc::now());
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), changes.recv())
-                .await
-                .is_err(),
-            "one call, one event"
-        );
+        // The hook publishes before it returns, so a second event would
+        // already be queued.
+        assert!(changes.try_recv().is_none(), "one call, one event");
 
         tracker.main_turn_ended(
             None,

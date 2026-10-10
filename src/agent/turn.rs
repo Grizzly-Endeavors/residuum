@@ -1502,6 +1502,8 @@ async fn update_and_publish_usage(
 mod tests {
     use super::*;
     use crate::inference::Role;
+    use crate::testing::gate::{Gate, GateEntry};
+    use crate::testing::wait;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
 
@@ -1701,11 +1703,7 @@ mod tests {
             .publish_intermediate("checking the build now", 0)
             .await;
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), conv_sub.recv())
-            .await
-            .expect("a SessionResponseEvent should be published promptly")
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event("a SessionResponseEvent to be published", &mut conv_sub).await;
         assert_eq!(event.content, "checking the build now");
         assert_eq!(event.session_address, address);
         assert_eq!(event.conversation_id, "chan-1");
@@ -1715,26 +1713,16 @@ mod tests {
             "intermediate turn text must not be marked as the run's final output"
         );
 
+        wait::bus_barrier(&bus_handle).await;
         assert!(
-            tokio::time::timeout(
-                std::time::Duration::from_millis(50),
-                intermediate_sub.recv()
-            )
-            .await
-            .is_err(),
+            intermediate_sub.drain().is_empty(),
             "a conversation session's intermediate text must never publish IntermediateEvent, \
              which would route through main's correlation-id target lookup and log the \
              misleading \"owner has not messaged the bot yet\" line"
         );
 
         let session_event =
-            tokio::time::timeout(std::time::Duration::from_secs(1), session_sub.recv())
-                .await
-                .expect(
-                    "the session-stream event should still be published, same as any other session",
-                )
-                .unwrap()
-                .unwrap();
+            wait::next_event("the session-stream event to be published", &mut session_sub).await;
         assert_eq!(session_event.address, address);
         assert_eq!(session_event.run_id, "run-1");
         assert!(
@@ -1767,11 +1755,7 @@ mod tests {
 
         events.publish_intermediate("thinking...", 0).await;
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
-            .await
-            .expect("an IntermediateEvent should be published promptly")
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event("an IntermediateEvent to be published", &mut sub).await;
         assert_eq!(event.content, "thinking...");
         assert_eq!(event.correlation_id, "corr-1");
     }
@@ -1800,11 +1784,7 @@ mod tests {
         };
         events.publish_intermediate("thinking...", 0).await;
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), main_sub.recv())
-            .await
-            .expect("the main conversation should get the text promptly")
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event("the main conversation to get the text", &mut main_sub).await;
         assert!(
             matches!(
                 &event,
@@ -1813,10 +1793,9 @@ mod tests {
             ),
             "{event:?}"
         );
+        wait::bus_barrier(&bus_handle).await;
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), endpoint_sub.recv())
-                .await
-                .is_err(),
+            endpoint_sub.drain().is_empty(),
             "the web UI's endpoint topic has no subscriber for a turn's intermediate text"
         );
     }
@@ -1839,10 +1818,9 @@ mod tests {
         };
         events.publish_intermediate("nothing to see", 0).await;
 
+        wait::bus_barrier(&bus_handle).await;
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), sub.recv())
-                .await
-                .is_err(),
+            sub.drain().is_empty(),
             "with no output endpoint there is nowhere to publish intermediate text"
         );
     }
@@ -2125,7 +2103,18 @@ mod tests {
     /// `execute_cancellable()` can only return via its cancellation branch —
     /// proving dispatch actually races against the stop token instead of
     /// waiting for the tool to finish.
-    struct BlockingTool;
+    /// Holds at its gate, so a test can stop the turn while the tool runs.
+    struct BlockingTool {
+        entry: GateEntry,
+    }
+
+    impl BlockingTool {
+        fn new(gate: &Gate) -> Self {
+            Self {
+                entry: gate.entry(),
+            }
+        }
+    }
 
     #[async_trait]
     impl crate::tools::Tool for BlockingTool {
@@ -2142,14 +2131,16 @@ mod tests {
         }
 
         async fn execute(&self, _arguments: serde_json::Value) -> Result<ToolResult, ToolError> {
+            self.entry.pass().await;
             std::future::pending().await
         }
     }
 
     #[tokio::test]
     async fn execute_tool_reports_cancellation_when_stopped_mid_execution() {
+        let tool_gate = Gate::closed("the blocking tool");
         let mut tools = ToolRegistry::new();
-        tools.register(Box::new(BlockingTool));
+        tools.register(Box::new(BlockingTool::new(&tool_gate)));
 
         let tool_call = ToolCall {
             id: "call-1".to_string(),
@@ -2188,23 +2179,26 @@ mod tests {
             session_conversation: None,
         };
 
-        let cancel_after_a_moment = {
+        let cancel_once_the_tool_hangs = {
             let stop_token = stop_token.clone();
+            let tool_gate = &tool_gate;
             async move {
-                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                tool_gate.until_held(1).await;
                 stop_token.cancel();
             }
         };
 
         let mut recent = RecentMessages::new();
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            tokio::join!(
-                execute_tool(&tool_call, &resources, &mut recent, &events, 0, None),
-                cancel_after_a_moment,
-            )
-        })
-        .await
-        .expect("a stop should let execute_tool return well within 2s of a hung tool");
+        wait::guarded(
+            "execute_tool to return once stopped",
+            Box::pin(async {
+                tokio::join!(
+                    execute_tool(&tool_call, &resources, &mut recent, &events, 0, None),
+                    cancel_once_the_tool_hangs,
+                )
+            }),
+        )
+        .await;
 
         let msg = recent
             .messages()
@@ -2314,8 +2308,9 @@ mod tests {
 
     #[tokio::test]
     async fn execute_turn_skips_remaining_tool_calls_after_a_mid_batch_stop() {
+        let tool_gate = Gate::closed("the blocking tool");
         let mut tools = ToolRegistry::new();
-        tools.register(Box::new(BlockingTool));
+        tools.register(Box::new(BlockingTool::new(&tool_gate)));
 
         let provider = TwoToolCallsProvider {
             served: AtomicBool::new(false),
@@ -2357,31 +2352,34 @@ mod tests {
         let mut recent = RecentMessages::new();
         recent.push(Message::user("go"));
 
-        let cancel_after_a_moment = {
+        let cancel_once_the_tool_hangs = {
             let stop_token = stop_token.clone();
+            let tool_gate = &tool_gate;
             async move {
-                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                tool_gate.until_held(1).await;
                 stop_token.cancel();
             }
         };
 
-        let (turn_result, ()) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            tokio::join!(
-                execute_turn(
-                    &resources,
-                    &memory_ctx,
-                    &prompt_ctx,
-                    &mut recent,
-                    &events,
-                    None,
-                    &mut interrupt_rx,
-                    None,
-                ),
-                cancel_after_a_moment,
-            )
-        })
-        .await
-        .expect("the turn should end well within 2s of the stop");
+        let (turn_result, ()) = wait::guarded(
+            "the turn to end once stopped",
+            Box::pin(async {
+                tokio::join!(
+                    execute_turn(
+                        &resources,
+                        &memory_ctx,
+                        &prompt_ctx,
+                        &mut recent,
+                        &events,
+                        None,
+                        &mut interrupt_rx,
+                        None,
+                    ),
+                    cancel_once_the_tool_hangs,
+                )
+            }),
+        )
+        .await;
 
         let texts = turn_result.expect("a stopped turn is not a turn error");
         assert!(texts.is_empty(), "a stopped turn produces no final text");
@@ -2582,11 +2580,7 @@ mod tests {
         /// The next usage event, passing over the conversation's other events.
         async fn next(&mut self) -> TurnUsageEvent {
             loop {
-                let event = tokio::time::timeout(std::time::Duration::from_secs(1), self.0.recv())
-                    .await
-                    .expect("a usage event should be published promptly")
-                    .unwrap()
-                    .unwrap();
+                let event = wait::next_event("a usage event to be published", &mut self.0).await;
                 if let MainConversationEvent::TurnUsage(usage) = event {
                     return usage;
                 }
@@ -2680,11 +2674,7 @@ mod tests {
             )
             .await;
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
-            .await
-            .expect("a SessionEvent should be published promptly")
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event("a SessionEvent to be published", &mut sub).await;
         assert_eq!(event.address, address);
         assert_eq!(event.run_id, "run-1");
         assert!(matches!(
@@ -3137,11 +3127,7 @@ mod tests {
         .expect("a truncated response is still a completed turn, not an error");
         assert_eq!(texts, vec!["cut off mid-sen".to_string()]);
 
-        let notice = tokio::time::timeout(std::time::Duration::from_secs(1), notices.recv())
-            .await
-            .expect("a truncation notice should be published")
-            .unwrap()
-            .unwrap();
+        let notice = wait::next_event("a truncation notice to be published", &mut notices).await;
         assert!(
             notice.message.contains("64-token output limit"),
             "the notice should name the configured limit: {}",
@@ -3476,9 +3462,9 @@ mod tests {
         let mut recent = RecentMessages::new();
         recent.push(Message::user("loop forever"));
 
-        let texts = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            execute_turn(
+        let texts = wait::guarded(
+            "the repeat-call guard to end the turn",
+            Box::pin(execute_turn(
                 &resources,
                 &memory_ctx,
                 &prompt_ctx,
@@ -3487,10 +3473,9 @@ mod tests {
                 None,
                 &mut interrupt_rx,
                 None,
-            ),
+            )),
         )
         .await
-        .expect("the repeat-call guard should end the turn well within 2s")
         .expect("a guard-stopped turn is not a turn error");
 
         assert_eq!(texts.len(), 1);

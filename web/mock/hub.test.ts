@@ -580,6 +580,12 @@ describe("hub socket", () => {
       return (await answer(frame)).find((f) => f.type === "notice");
     }
 
+    it("answers a ping with a pong, after the frames sent before it", async () => {
+      socket.send({ type: "watch_team", prefixes: ["team"] });
+      socket.send({ type: "ping" });
+      expect(await socket.next()).toEqual({ type: "pong" });
+    });
+
     it("accepts team paths quietly", async () => {
       expect(await answer({ type: "watch_team", prefixes: ["team", "team/wiki"] })).toEqual([]);
       expect(await answer({ type: "watch_team", prefixes: [] })).toEqual([]);

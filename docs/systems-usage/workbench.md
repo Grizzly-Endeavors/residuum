@@ -119,7 +119,7 @@ The web UI has no login of its own locally, and remotely it answers only paired 
 
 ## Change feed
 
-One watcher covers the whole workspace recursively, using the operating system's file notifications (inotify, FSEvents, ReadDirectoryChangesW through the `notify` crate). If native notifications can't start (the Linux inotify watch limit, an unusual filesystem), Residuum logs a `warn` naming the cause and polls the workspace every 2 seconds instead; hitting the watch limit later, as new folders appear, switches to polling the same way. If neither can start, Residuum logs an `error` and any view that starts watching is told live updates are off, which the web UI shows as an error notice. Symlinks are not followed.
+One watcher covers the whole workspace recursively, using the operating system's file notifications (inotify, FSEvents, ReadDirectoryChangesW through the `notify` crate). If native notifications can't start (the Linux inotify watch limit, an unusual filesystem), Residuum logs a `warn` naming the cause and polls the workspace every 2 seconds instead; hitting the watch limit later, as new folders appear, switches to polling the same way. If neither can start, Residuum logs an `error` and any view that starts watching is told live updates are off, which the web UI shows as an error notice. An agent's `GET /api/agents/{name}/status` reports which of these its directory's watcher is on, as `live_updates`. Symlinks are not followed.
 
 A second watcher, built the same way, covers the team directory and publishes its changes with `team/`-prefixed paths (`team/workbench/tool.html`, `team/wiki/a.md`); see [Team files](team-files.md). Everything below applies to both.
 

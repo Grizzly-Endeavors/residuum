@@ -23,11 +23,26 @@ pub(super) struct StatusResponse {
     /// growth is visible.
     /// `null` for a repo whose stats couldn't be read just now.
     checkpoints: CheckpointsStatus,
+    /// Whether file changes in the agent's directory reach open pages and
+    /// the agent's watchers: `starting`, `native` (OS notifications),
+    /// `polling` (the fallback, up to two seconds late) or `off`.
+    live_updates: crate::workspace::watch::WatchHealth,
+}
+
+/// What the running agent's status route reads: its config state and the
+/// health of the change feed over its directory.
+#[derive(Clone)]
+pub(crate) struct AgentStatusState {
+    pub(crate) config: ConfigApiState,
+    pub(crate) live_updates: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
 }
 
 /// Per-repository checkpoint stats shown in `/api/agents/{name}/status`.
 #[derive(Serialize)]
 pub(super) struct CheckpointsStatus {
+    /// How many of the agent's automatic checkpoints are still being
+    /// written; they run off the turn's path.
+    pending: usize,
     workspace: Option<crate::checkpoints::RepoStats>,
     team: Option<crate::checkpoints::RepoStats>,
     agent_config: Option<crate::checkpoints::RepoStats>,
@@ -125,12 +140,20 @@ pub(super) struct CompleteSetupRequest {
 }
 
 /// `GET /api/agents/{name}/status` — returns `{ mode, version, features, checkpoints }`.
-pub(super) async fn api_status(State(state): State<ConfigApiState>) -> Json<StatusResponse> {
+pub(super) async fn api_status(
+    State(AgentStatusState {
+        config: state,
+        live_updates,
+    }): State<AgentStatusState>,
+) -> Json<StatusResponse> {
+    let live_updates = *live_updates.borrow();
     Json(StatusResponse {
+        live_updates,
         mode: "running",
         version: update::CURRENT_VERSION,
         features: features::FEATURES,
         checkpoints: CheckpointsStatus {
+            pending: state.checkpoints.pending_checkpoints(),
             workspace: checkpoint_stats_or_log(&state, crate::checkpoints::RepoKind::Workspace)
                 .await,
             team: checkpoint_stats_or_log(&state, crate::checkpoints::RepoKind::Team).await,
@@ -865,12 +888,53 @@ mod tests {
         }
     }
 
+    fn status_state(
+        live_updates: crate::workspace::watch::WatchHealth,
+    ) -> (
+        AgentStatusState,
+        tokio::sync::watch::Sender<crate::workspace::watch::WatchHealth>,
+    ) {
+        let (tx, rx) = tokio::sync::watch::channel(live_updates);
+        (
+            AgentStatusState {
+                config: state(),
+                live_updates: rx,
+            },
+            tx,
+        )
+    }
+
     #[tokio::test]
     async fn status_reports_mode_version_and_features() {
-        let Json(running) = api_status(State(state())).await;
+        let (state, _tx) = status_state(crate::workspace::watch::WatchHealth::Native);
+        let Json(running) = api_status(State(state)).await;
         assert_eq!(running.mode, "running");
         assert_eq!(running.version, update::CURRENT_VERSION);
         assert_eq!(running.features, features::FEATURES);
+    }
+
+    #[tokio::test]
+    async fn status_reports_how_live_updates_reach_the_agent() {
+        use crate::workspace::watch::WatchHealth;
+
+        let (state, tx) = status_state(WatchHealth::Starting);
+        let read = |current: AgentStatusState| async move {
+            let Json(status) = api_status(State(current)).await;
+            serde_json::to_value(&status)
+                .unwrap()
+                .get("live_updates")
+                .cloned()
+                .unwrap()
+        };
+        assert_eq!(read(state.clone()).await, "starting");
+        tx.send_replace(WatchHealth::Polling);
+        assert_eq!(
+            read(state.clone()).await,
+            "polling",
+            "a fallback to polling shows in the status"
+        );
+        tx.send_replace(WatchHealth::Off);
+        assert_eq!(read(state).await, "off");
     }
 
     /// A state backed by a real temp directory, for tests that read/write
