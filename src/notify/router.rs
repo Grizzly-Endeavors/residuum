@@ -262,6 +262,7 @@ async fn publish_to_targets(
 mod tests {
     use super::*;
     use crate::bus::{EndpointCapabilities, EndpointEntry, TopicId};
+    use crate::testing::{clock, wait};
     use chrono::NaiveDate;
 
     fn sample_timestamp() -> chrono::NaiveDateTime {
@@ -345,7 +346,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn silent_result_is_delivered_nowhere() {
         let handle = crate::bus::spawn_broker();
         let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
@@ -356,9 +357,7 @@ mod tests {
 
         route_agent_result(&sample_event(ResultDisposition::Silent), &router).await;
 
-        let got = tokio::time::timeout(std::time::Duration::from_millis(100), inbox_sub.recv())
-            .await
-            .ok();
+        let got = clock::within(std::time::Duration::from_millis(100), inbox_sub.recv()).await;
         assert!(got.is_none(), "silent results must not reach the inbox");
     }
 
@@ -377,24 +376,21 @@ mod tests {
 
         route_agent_result(&sample_event(ResultDisposition::Urgent), &router).await;
 
-        let inbox_item =
-            tokio::time::timeout(std::time::Duration::from_millis(200), inbox_sub.recv())
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap();
-        assert!(inbox_item.urgent, "urgency must survive to the channel");
-
-        let pushed = tokio::time::timeout(std::time::Duration::from_millis(200), ntfy_sub.recv())
+        let inbox_item = wait::guarded("the inbox item", inbox_sub.recv())
             .await
             .unwrap()
+            .unwrap();
+        assert!(inbox_item.urgent, "urgency must survive to the channel");
+
+        let pushed = wait::guarded("the ntfy push", ntfy_sub.recv())
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(pushed.title, "pulse:email_check");
         assert!(pushed.urgent);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn normal_result_does_not_reach_a_channel() {
         let handle = crate::bus::spawn_broker();
         let mut ntfy_sub: Subscriber<NotificationEvent> = handle
@@ -408,13 +404,11 @@ mod tests {
 
         route_agent_result(&sample_event(ResultDisposition::Normal), &router).await;
 
-        let got = tokio::time::timeout(std::time::Duration::from_millis(100), ntfy_sub.recv())
-            .await
-            .ok();
+        let got = clock::within(std::time::Duration::from_millis(100), ntfy_sub.recv()).await;
         assert!(got.is_none(), "only urgent results should push");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn agent_spawned_result_is_discarded_here_not_relayed_to_main() {
         // The per-turn relay to a spawned session's direct spawner now
         // happens straight from the session runtime via `AgentMessenger` —
@@ -434,20 +428,20 @@ mod tests {
         route_agent_result(&event, &router).await;
 
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(100), user_sub.recv())
+            clock::within(std::time::Duration::from_millis(100), user_sub.recv())
                 .await
-                .is_err(),
+                .is_none(),
             "an agent-spawned result must not be relayed to main by this router"
         );
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(100), inbox_sub.recv())
+            clock::within(std::time::Duration::from_millis(100), inbox_sub.recv())
                 .await
-                .is_err(),
+                .is_none(),
             "an agent-spawned result must not leak into the inbox either"
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn conversation_session_result_reaches_neither_inbox_nor_channels_even_when_urgent() {
         let handle = crate::bus::spawn_broker();
         let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
@@ -467,16 +461,16 @@ mod tests {
 
         let wait = std::time::Duration::from_millis(100);
         assert!(
-            tokio::time::timeout(wait, inbox_sub.recv()).await.is_err(),
+            clock::within(wait, inbox_sub.recv()).await.is_none(),
             "an urgent conversation session's result must not be filed to the inbox"
         );
         assert!(
-            tokio::time::timeout(wait, ntfy_sub.recv()).await.is_err(),
+            clock::within(wait, ntfy_sub.recv()).await.is_none(),
             "an urgent conversation session's result must not push to notification channels"
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn conversation_session_result_stays_out_of_the_inbox_when_normal() {
         let handle = crate::bus::spawn_broker();
         let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
@@ -491,9 +485,9 @@ mod tests {
         route_agent_result(&event, &router).await;
 
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(100), inbox_sub.recv())
+            clock::within(std::time::Duration::from_millis(100), inbox_sub.recv())
                 .await
-                .is_err(),
+                .is_none(),
             "a normal conversation session's result must not be filed to the inbox either"
         );
     }
@@ -512,16 +506,14 @@ mod tests {
         event.source_label = "webhook:gh".to_string();
         route_agent_result(&event, &router).await;
 
-        let inbox_item =
-            tokio::time::timeout(std::time::Duration::from_millis(200), inbox_sub.recv())
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap();
+        let inbox_item = wait::guarded("the inbox item", inbox_sub.recv())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(inbox_item.title, "webhook:gh");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn artifact_session_result_reaches_neither_inbox_nor_channels_even_when_urgent() {
         let handle = crate::bus::spawn_broker();
         let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
@@ -542,15 +534,15 @@ mod tests {
 
         let wait = std::time::Duration::from_millis(100);
         assert!(
-            tokio::time::timeout(wait, inbox_sub.recv()).await.is_err(),
+            clock::within(wait, inbox_sub.recv()).await.is_none(),
             "an artifact session's result must not be filed to the inbox"
         );
         assert!(
-            tokio::time::timeout(wait, ntfy_sub.recv()).await.is_err(),
+            clock::within(wait, ntfy_sub.recv()).await.is_none(),
             "an artifact session's result must not push to notification channels"
         );
         assert!(
-            tokio::time::timeout(wait, user_sub.recv()).await.is_err(),
+            clock::within(wait, user_sub.recv()).await.is_none(),
             "an artifact session's result must not reach the main conversation"
         );
     }
@@ -574,12 +566,10 @@ mod tests {
         event.summary = String::new();
         route_agent_result(&event, &router).await;
 
-        let inbox_item =
-            tokio::time::timeout(std::time::Duration::from_millis(200), inbox_sub.recv())
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap();
+        let inbox_item = wait::guarded("the inbox item", inbox_sub.recv())
+            .await
+            .unwrap()
+            .unwrap();
         assert!(
             inbox_item.content.contains("the model call timed out"),
             "the inbox item body must name why the run failed, not just the timestamp line: {}",
@@ -601,12 +591,10 @@ mod tests {
         event.summary = String::new();
         route_agent_result(&event, &router).await;
 
-        let inbox_item =
-            tokio::time::timeout(std::time::Duration::from_millis(200), inbox_sub.recv())
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap();
+        let inbox_item = wait::guarded("the inbox item", inbox_sub.recv())
+            .await
+            .unwrap()
+            .unwrap();
         assert!(
             inbox_item.content.contains("stopped"),
             "the inbox item body must say the run was stopped: {}",
@@ -643,9 +631,8 @@ mod tests {
         };
         route_agent_result(&event, &router).await;
 
-        let notice = tokio::time::timeout(std::time::Duration::from_millis(200), notice_sub.recv())
+        let notice = wait::guarded("the owner notice", notice_sub.recv())
             .await
-            .unwrap()
             .unwrap()
             .unwrap();
         assert!(notice.message.contains("email_check"));
@@ -673,9 +660,8 @@ mod tests {
         };
         route_agent_result(&event, &router).await;
 
-        let notice = tokio::time::timeout(std::time::Duration::from_millis(200), notice_sub.recv())
+        let notice = wait::guarded("the owner notice", notice_sub.recv())
             .await
-            .unwrap()
             .unwrap()
             .unwrap();
         assert!(notice.message.contains("scheduled action"));
@@ -683,7 +669,7 @@ mod tests {
         assert!(notice.message.contains("skill not found"));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn completed_pulse_publishes_no_failure_notice() {
         let handle = crate::bus::spawn_broker();
         let mut notice_sub: Subscriber<NoticeEvent> = handle
@@ -698,14 +684,14 @@ mod tests {
         route_agent_result(&sample_event(ResultDisposition::Normal), &router).await;
 
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(100), notice_sub.recv())
+            clock::within(std::time::Duration::from_millis(100), notice_sub.recv())
                 .await
-                .is_err(),
+                .is_none(),
             "a completed run must never publish a failure notice"
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn failed_spawned_session_publishes_no_owner_notice() {
         // Spawned-session results are relayed per-turn to their spawner
         // (see `relay_result_to_spawner`), never routed through this
@@ -730,9 +716,9 @@ mod tests {
         route_agent_result(&event, &router).await;
 
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(100), notice_sub.recv())
+            clock::within(std::time::Duration::from_millis(100), notice_sub.recv())
                 .await
-                .is_err()
+                .is_none()
         );
     }
 }
