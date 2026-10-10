@@ -132,6 +132,7 @@ fn test_config(dir: &std::path::Path) -> Config {
         cloud: None,
         discord: None,
         telegram: None,
+        slack: None,
         teams: None,
         a2a: A2aConfig::default(),
         webhooks: HashMap::new(),

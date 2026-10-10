@@ -1,4 +1,4 @@
-//! Discord, Telegram, Teams, webhooks, and idle settings.
+//! Discord, Telegram, Teams, Slack, webhooks, and idle settings.
 
 use std::collections::HashMap;
 
@@ -7,12 +7,13 @@ use super::super::constants::{
     DEFAULT_TEAMS_PORT, DEFAULT_TELEGRAM_CONTEXT_MESSAGES,
 };
 use super::super::deserialize::{
-    AgentConfigFile, DiscordConfigFile, TeamsConfigFile, TelegramConfigFile, WebhookEntryFile,
+    AgentConfigFile, DiscordConfigFile, SlackConfigFile, TeamsConfigFile, TelegramConfigFile,
+    WebhookEntryFile,
 };
 use super::super::secrets::SecretStore;
 use super::super::types::{
-    DiscordConfig, IdleConfig, TeamsConfig, TelegramConfig, WebhookEntry, WebhookFormat,
-    WebhookRouting,
+    DiscordConfig, IdleConfig, SlackConfig, TeamsConfig, TelegramConfig, WebhookEntry,
+    WebhookFormat, WebhookRouting,
 };
 
 /// Resolve a bot token from the raw TOML value, with `${ENV_VAR}` / `secret:name`
@@ -52,6 +53,34 @@ pub(super) fn resolve_discord_config(
             None
         }
         (None, None) => None,
+    }
+}
+
+/// Resolve Slack configuration from the TOML section.
+///
+/// Token resolution: `bot_token` / `app_token` fields in TOML (with
+/// `${ENV_VAR}` / `secret:name` expansion). Both are required — the section
+/// resolves to `None` unless both are present.
+pub(super) fn resolve_slack_config(
+    section: Option<&SlackConfigFile>,
+    secrets: &SecretStore,
+) -> Option<SlackConfig> {
+    let bot_token = resolve_bot_token(section.and_then(|s| s.bot_token.as_deref()), secrets);
+    let app_token = resolve_bot_token(section.and_then(|s| s.app_token.as_deref()), secrets);
+
+    match (section, bot_token, app_token) {
+        (_, Some(bot), Some(app)) => Some(SlackConfig {
+            bot_token: bot,
+            app_token: app,
+        }),
+        (Some(_), _, _) => {
+            tracing::warn!(
+                section = "slack",
+                "section present but bot_token/app_token incomplete; set both in config"
+            );
+            None
+        }
+        (None, _, _) => None,
     }
 }
 
@@ -232,6 +261,7 @@ pub(super) fn resolve_idle_config(
     telegram: Option<&TelegramConfig>,
     discord: Option<&DiscordConfig>,
     teams: Option<&TeamsConfig>,
+    slack: Option<&SlackConfig>,
     notices: &mut Vec<String>,
 ) -> IdleConfig {
     let section = file.and_then(|f| f.idle.as_ref());
@@ -252,8 +282,9 @@ pub(super) fn resolve_idle_config(
             "telegram" if telegram.is_some() => return Some(channel),
             "discord" if discord.is_some() => return Some(channel),
             "teams" if teams.is_some() => return Some(channel),
+            "slack" if slack.is_some() => return Some(channel),
             "ws" => return Some(channel),
-            "telegram" | "discord" | "teams" => {
+            "telegram" | "discord" | "teams" | "slack" => {
                 format!("idle_channel \"{channel}\" configured but [{channel}] section is missing")
             }
             other => format!("idle_channel \"{other}\" is not a recognized interface"),
@@ -271,9 +302,9 @@ pub(super) fn resolve_idle_config(
     }
 }
 
-/// Discord, Telegram, Teams, and the idle channel that names one of them.
+/// Discord, Telegram, Teams, Slack, and the idle channel that names one of them.
 ///
-/// Idle validation needs the three chat configs, so they are resolved together.
+/// Idle validation needs the chat configs, so they are resolved together.
 #[must_use]
 pub(super) fn resolve_configured_chats(
     file: Option<&AgentConfigFile>,
@@ -283,17 +314,20 @@ pub(super) fn resolve_configured_chats(
     Option<DiscordConfig>,
     Option<TelegramConfig>,
     Option<TeamsConfig>,
+    Option<SlackConfig>,
     IdleConfig,
 ) {
     let discord = resolve_discord_config(file.and_then(|f| f.discord.as_ref()), secrets);
     let telegram = resolve_telegram_config(file.and_then(|f| f.telegram.as_ref()), secrets);
     let teams = resolve_teams_config(file.and_then(|f| f.teams.as_ref()), secrets, notices);
+    let slack = resolve_slack_config(file.and_then(|f| f.slack.as_ref()), secrets);
     let idle = resolve_idle_config(
         file,
         telegram.as_ref(),
         discord.as_ref(),
         teams.as_ref(),
+        slack.as_ref(),
         notices,
     );
-    (discord, telegram, teams, idle)
+    (discord, telegram, teams, slack, idle)
 }
