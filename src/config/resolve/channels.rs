@@ -72,6 +72,9 @@ pub(super) fn resolve_telegram_config(
             context_messages: section
                 .and_then(|s| s.context_messages)
                 .unwrap_or(DEFAULT_TELEGRAM_CONTEXT_MESSAGES),
+            mirror_system_notices: section
+                .and_then(|s| s.mirror_system_notices)
+                .unwrap_or(true),
         }),
         (Some(_), None) => {
             tracing::warn!(

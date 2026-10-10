@@ -436,6 +436,9 @@ pub(super) struct TelegramConfigFile {
     pub(super) respond_to_others: Option<bool>,
     /// How many earlier unmentioned group messages to hand the agent when addressed.
     pub(super) context_messages: Option<usize>,
+    /// Whether system notices and errors mirror to the owner's Telegram DM
+    /// (default true, preserving stock behavior).
+    pub(super) mirror_system_notices: Option<bool>,
 }
 
 /// Raw TOML `[teams]` section.

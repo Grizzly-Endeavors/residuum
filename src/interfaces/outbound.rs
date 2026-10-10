@@ -51,6 +51,13 @@ pub(crate) trait ChatOutbound: Send + Sync {
     /// Human-readable place name for an owner-facing delivery failure.
     async fn describe(&self, conversation_id: &str, target: &Self::Target) -> String;
 
+    /// Whether system notices and errors mirror to the owner's direct
+    /// messages on this platform. Adapters without a knob keep the stock
+    /// always-on behavior.
+    fn mirror_system_notices(&self) -> bool {
+        true
+    }
+
     /// Log-facing label for a target (an id or a conversation name).
     fn target_label(&self, target: &Self::Target) -> String;
 
@@ -156,7 +163,9 @@ pub(crate) async fn run<C: ChatOutbound>(mut subs: BaseSubscribers, chat: C) {
                         break;
                     }
                     ControlFlow::Continue(NoticeEvent { message }) => {
-                        send_to_owner(&chat, &message).await;
+                        if chat.mirror_system_notices() {
+                            send_to_owner(&chat, &message).await;
+                        }
                     }
                 }
             }
@@ -167,7 +176,9 @@ pub(crate) async fn run<C: ChatOutbound>(mut subs: BaseSubscribers, chat: C) {
                         break;
                     }
                     ControlFlow::Continue(ErrorEvent { message, .. }) => {
-                        send_to_owner(&chat, &format!("**Error:** {message}")).await;
+                        if chat.mirror_system_notices() {
+                            send_to_owner(&chat, &format!("**Error:** {message}")).await;
+                        }
                     }
                 }
             }

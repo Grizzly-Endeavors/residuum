@@ -82,6 +82,10 @@ impl ChatOutbound for TelegramOutbound {
         target.to_string()
     }
 
+    fn mirror_system_notices(&self) -> bool {
+        self.state.mirror_system_notices
+    }
+
     fn start_typing(&self, chat_id: ChatId) -> tokio::sync::watch::Sender<()> {
         let bot = self.bot.clone();
         let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(());

@@ -34,6 +34,9 @@ const ENDPOINT: &str = "telegram";
 /// State shared by the polling loop and the outbound subscriber.
 pub(super) struct TelegramState {
     respond_to_others: bool,
+    /// Whether system notices and errors mirror to the owner's DM
+    /// (see `[telegram] mirror_system_notices`).
+    mirror_system_notices: bool,
     /// The owner and every chat the bot has seen, keyed by chat ID.
     store: ChatStateStore<ChatRef>,
     /// Chat each in-flight turn should answer in, by correlation ID.
@@ -133,6 +136,7 @@ impl TelegramInterface {
         }
         let state = Arc::new(TelegramState {
             respond_to_others: self.cfg.respond_to_others,
+            mirror_system_notices: self.cfg.mirror_system_notices,
             store: chat_store,
             reply_targets: ReplyTargets::default(),
             context_buffer: ContextBuffer::new(self.cfg.context_messages),

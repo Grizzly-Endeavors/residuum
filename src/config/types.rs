@@ -189,6 +189,9 @@ pub struct TelegramConfig {
     pub respond_to_others: bool,
     /// How many earlier unmentioned group messages to hand the agent when addressed.
     pub context_messages: usize,
+    /// Whether system notices and errors mirror to the owner's Telegram DM.
+    /// When false, they stay on the web UI (and the agent's `[Bus]` feed) only.
+    pub mirror_system_notices: bool,
 }
 
 impl std::fmt::Debug for TelegramConfig {
@@ -197,6 +200,7 @@ impl std::fmt::Debug for TelegramConfig {
             .field("token", &"[redacted]")
             .field("respond_to_others", &self.respond_to_others)
             .field("context_messages", &self.context_messages)
+            .field("mirror_system_notices", &self.mirror_system_notices)
             .finish()
     }
 }

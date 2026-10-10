@@ -1174,12 +1174,14 @@ mod tests {
             token: "old-tg-token".to_string(),
             respond_to_others: false,
             context_messages: 20,
+            mirror_system_notices: true,
         });
         let mut new = old.clone();
         new.telegram = Some(TelegramConfig {
             token: "new-tg-token".to_string(),
             respond_to_others: false,
             context_messages: 20,
+            mirror_system_notices: true,
         });
 
         let diff = diff_config(&old, &new);
