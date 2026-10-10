@@ -99,18 +99,17 @@ test.describe("chat feed", { tag: "@visual" }, () => {
   });
 
   test("a turn running, with its steps", async ({ page, mock }) => {
-    test.setTimeout(90_000);
-    // Seconds between steps, so the line holds still for the shot: one read
-    // done and the other running, from 13.5s into the turn to 18s.
-    await mock.post("/api/mock/delays", { data: { scale: 15 } });
     await page.goto("/agent/atlas");
     const feed = conversation(page);
     await expect(feed.getByText(GREETING)).toBeInViewport();
+    await mock.manualTime();
     await page.getByRole("combobox", { name: "Message atlas" }).fill("Check the wiki index");
     await sendFromComposer(page.getByRole("combobox", { name: "Message atlas" }));
-    await expect(feed.getByRole("button", { name: "Read team/wiki/index.md" })).toBeVisible({
-      timeout: 30_000,
-    });
+    await expect(feed.getByText("Working", { exact: true })).toBeVisible();
+    // Time stands still for the shot, at 1s into the turn: one read done (it ends at 0.9s)
+    // and the other running (it ends at 1.2s).
+    await mock.advance(1_000);
+    await expect(feed.getByRole("button", { name: "Read team/wiki/index.md" })).toBeVisible();
     await expect(
       feed.getByRole("button", { name: "Reading team/wiki/projects/residuum.md, running" }),
     ).toBeVisible();
