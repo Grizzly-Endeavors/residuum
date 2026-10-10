@@ -23,9 +23,6 @@ test.beforeEach(async ({ page, mock }) => {
 });
 
 test("completes the wizard and opens the app on the new agent", async ({ page }) => {
-  // Every step of the wizard, each with an accessibility scan: about 7s on a
-  // workstation, and close to the default 30s on a shared CI runner.
-  test.slow();
   const steps = page.getByRole("list", { name: "Setup steps" });
   await expect(steps.locator("[aria-current=step]")).toHaveText("Welcome");
   await expect(page.getByLabel("Time zone")).toHaveValue("America/New_York");

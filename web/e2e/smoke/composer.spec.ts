@@ -193,9 +193,6 @@ test.describe("images", () => {
 });
 
 test("a draft is kept for its agent across navigation and reload", async ({ page }) => {
-  // Five full page loads: about 6s on a workstation, but each load of the dev
-  // server takes 4–6s on a shared CI runner, which reaches the default 30s.
-  test.slow();
   await openChat(page);
   await box(page).fill("Half a thought for atlas");
 

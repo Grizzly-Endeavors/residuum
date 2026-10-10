@@ -9,7 +9,11 @@ import { workerCount, workerServers } from "./e2e/support/servers";
  * Specs are sorted into projects by tag:
  * - `@visual`  renders in the Playwright container (`visual-*`),
  * - `@preview` needs the production build (`preview-*`),
- * - everything else runs against the Vite dev server (`desktop`, `phone`, `webkit-phone`).
+ * - `@dev` needs the dev server: the component gallery, which builds leave
+ *   out, or the dev server's own state, such as having no service worker
+ *   (`dev-*`),
+ * - everything else runs against the Vite dev server (`desktop`, `phone`, `webkit-phone`),
+ *   or on CI against the production build (see `smokeServer` below).
  *
  * A project never picks up another kind's specs, so a tag changes where a spec
  * runs and nothing else. Tags go on a test or a describe block:
@@ -65,6 +69,21 @@ if (allInContainer && containerBrowser === "") {
 }
 const chromiumBrowser = allInContainer ? inContainer : {};
 
+/**
+ * On CI (or with `E2E_SMOKE_ON_BUILD=1`) the `desktop` and `phone` specs run
+ * against the production build, as the `preview-*` ones do. The dev server
+ * serves every module as its own request, and a shared runner queues each of
+ * them, so a page load there takes seconds and a spec with a few of them
+ * reaches its timeout; the build loads in a handful of requests. Its service
+ * worker is blocked, so these specs see the app as the dev server serves it,
+ * and the `preview-*` specs cover the worker. Locally they keep the dev
+ * server, which needs no build to try a change.
+ */
+const smokeOnBuild = process.env.CI !== undefined || process.env.E2E_SMOKE_ON_BUILD === "1";
+const smokeServer = smokeOnBuild
+  ? ({ mockServer: "preview", serviceWorkers: "block" } as const)
+  : ({} as const);
+
 /** What makes a screenshot repeatable: the container's browser, the mock's time and no motion. */
 const visualUse = {
   ...inContainer,
@@ -75,7 +94,10 @@ const visualUse = {
 
 const visualTag = /@visual/;
 const previewTag = /@preview/;
+const devTag = /@dev/;
 const eitherTag = /@visual|@preview/;
+/** What the `desktop` and `phone` projects leave to the others. */
+const notSmoke = /@visual|@preview|@dev/;
 
 export default defineConfig<E2EOptions>({
   testDir: "e2e",
@@ -113,12 +135,24 @@ export default defineConfig<E2EOptions>({
   projects: [
     {
       name: "desktop",
-      use: { ...desktop, ...chromiumBrowser },
-      grepInvert: eitherTag,
+      use: { ...desktop, ...chromiumBrowser, ...smokeServer },
+      grepInvert: notSmoke,
     },
     {
       name: "phone",
+      use: { ...phone, ...chromiumBrowser, ...smokeServer },
+      grepInvert: notSmoke,
+    },
+    {
+      name: "dev-desktop",
+      use: { ...desktop, ...chromiumBrowser },
+      grep: devTag,
+      grepInvert: eitherTag,
+    },
+    {
+      name: "dev-phone",
       use: { ...phone, ...chromiumBrowser },
+      grep: devTag,
       grepInvert: eitherTag,
     },
     {

@@ -648,13 +648,16 @@ The projects:
 
 | Project | Browser and size | Runs specs |
 |---|---|---|
-| `desktop` | Chromium, 1440×900 | without a tag, against the Vite dev server |
-| `phone` | Chromium, 390×844, touch, mobile user agent | without a tag, against the Vite dev server |
+| `desktop` | Chromium, 1440×900 | without a tag, against the Vite dev server; on CI (or with `E2E_SMOKE_ON_BUILD=1`) against the production build, its service worker blocked |
+| `phone` | Chromium, 390×844, touch, mobile user agent | the same as `desktop` |
+| `dev-desktop`, `dev-phone` | The same two | tagged `@dev`, against the Vite dev server everywhere |
 | `preview-desktop`, `preview-phone` | The same two | tagged `@preview`, against the production build |
 | `visual-desktop`, `visual-phone` | The same two, rendered in the Playwright container, with the page's clock frozen | tagged `@visual` |
 | `webkit-phone` | WebKit as an iPhone 13, 390×844 | without a tag, against the Vite dev server; local only, the release workflow leaves it out |
 
-A spec runs in every project that matches its tag, so one spec covers both sizes. Branch on the size only when behavior differs, with Playwright's `isMobile` fixture. Tags go on a test or a describe block: `test("installs", { tag: "@preview" }, async ({ page }) => { ... })`. Use `@preview` for what the dev server can't show (the service worker, installability, the bundle as shipped) and `@visual` for screenshot comparisons. Give a spec one of them: a spec tagged with both matches no project and never runs.
+A spec runs in every project that matches its tag, so one spec covers both sizes. Branch on the size only when behavior differs, with Playwright's `isMobile` fixture. Tags go on a test or a describe block: `test("installs", { tag: "@preview" }, async ({ page }) => { ... })`. Use `@preview` for what the dev server can't show (the service worker, installability, the bundle as shipped), `@dev` for what only the dev server has (the component gallery, which builds leave out, or its having no service worker), and `@visual` for screenshot comparisons.
+
+CI runs the untagged specs against the production build because the dev server serves every module as a request of its own: on a shared runner each one waits in a queue, a page load takes seconds, and a spec with a few of them reaches its timeout, while the build loads in a handful of requests. Locally they stay on the dev server, which needs no build to try a change; `E2E_SMOKE_ON_BUILD=1` runs them the way CI does. Give a spec one of them: a spec tagged with both matches no project and never runs.
 
 ### Servers and state
 

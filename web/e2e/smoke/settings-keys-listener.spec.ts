@@ -228,40 +228,44 @@ test.describe("Notifications", () => {
   // `push.spec.ts` covers it on the production build.
   const thisDevice = (page: Page): Locator => page.getByRole("region", { name: "This device" });
 
-  test("lists other devices, removes one, and stages the contact for push services", async ({
-    page,
-  }) => {
-    await page.request.put("/api/hub/push/devices", {
-      data: {
-        subscription: {
-          endpoint: "https://push.example.test/send/tablet",
-          keys: { p256dh: MOCK_VAPID_PUBLIC_KEY, auth: "AAAAAAAAAAAAAAAAAAAAAA" },
+  test(
+    "lists other devices, removes one, and stages the contact for push services",
+    {
+      tag: "@dev",
+    },
+    async ({ page }) => {
+      await page.request.put("/api/hub/push/devices", {
+        data: {
+          subscription: {
+            endpoint: "https://push.example.test/send/tablet",
+            keys: { p256dh: MOCK_VAPID_PUBLIC_KEY, auth: "AAAAAAAAAAAAAAAAAAAAAA" },
+          },
+          label: "Old tablet",
         },
-        label: "Old tablet",
-      },
-    });
-    await openSection(page, "notifications");
-    await expect(thisDevice(page)).toContainText("background worker isn't running");
-    const others = page.getByRole("list", { name: "Other devices" });
-    await expect(others).toContainText("Old tablet");
-    await expect(others).toContainText("No notifications sent yet.");
-    await expectNoAxeViolations(page, { within: OVERLAY });
+      });
+      await openSection(page, "notifications");
+      await expect(thisDevice(page)).toContainText("background worker isn't running");
+      const others = page.getByRole("list", { name: "Other devices" });
+      await expect(others).toContainText("Old tablet");
+      await expect(others).toContainText("No notifications sent yet.");
+      await expectNoAxeViolations(page, { within: OVERLAY });
 
-    await others.getByRole("button", { name: "Remove Old tablet" }).click();
-    await expect(toastWith(page, "Old tablet no longer gets notifications.")).toBeVisible();
-    await expect(page.getByText("No other devices get notifications.")).toBeVisible();
-    expect(await names(page, "/api/hub/push/devices", "devices")).toEqual([]);
+      await others.getByRole("button", { name: "Remove Old tablet" }).click();
+      await expect(toastWith(page, "Old tablet no longer gets notifications.")).toBeVisible();
+      await expect(page.getByText("No other devices get notifications.")).toBeVisible();
+      expect(await names(page, "/api/hub/push/devices", "devices")).toEqual([]);
 
-    await page.getByRole("button", { name: "More options" }).click();
-    const contact = page.getByLabel("Contact", { exact: true });
-    await contact.fill("me@example.com");
-    await expect(page.getByText(/uses only a mailto: or https:\/\/ contact/)).toBeVisible();
-    await contact.fill("mailto:me@example.com");
-    await saveBar(page).getByRole("button", { name: "Save changes" }).click();
-    await expect(saveBar(page)).toBeHidden();
-    const written = await (await page.request.get(HUB_CONFIG)).text();
-    expect(written).toMatch(/\[push\]\s+contact = "mailto:me@example\.com"/);
-  });
+      await page.getByRole("button", { name: "More options" }).click();
+      const contact = page.getByLabel("Contact", { exact: true });
+      await contact.fill("me@example.com");
+      await expect(page.getByText(/uses only a mailto: or https:\/\/ contact/)).toBeVisible();
+      await contact.fill("mailto:me@example.com");
+      await saveBar(page).getByRole("button", { name: "Save changes" }).click();
+      await expect(saveBar(page)).toBeHidden();
+      const written = await (await page.request.get(HUB_CONFIG)).text();
+      expect(written).toMatch(/\[push\]\s+contact = "mailto:me@example\.com"/);
+    },
+  );
 
   test("says why there are no notifications without a secure connection", async ({ page }) => {
     await page.addInitScript(() => {
