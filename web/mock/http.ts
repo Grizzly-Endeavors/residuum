@@ -45,6 +45,11 @@ export function text(res: ServerResponse, status: number, body: string): void {
   res.end(body);
 }
 
+/** Whether the request carries an `X-Residuum-Artifact` header, valid or not. */
+export function hasArtifactHeader(req: IncomingMessage): boolean {
+  return req.headers["x-residuum-artifact"] !== undefined;
+}
+
 /** The `X-Residuum-Artifact` header, or `null` when it's absent or isn't an artifact's name. */
 export function artifactIdentity(req: IncomingMessage): string | null {
   const raw = req.headers["x-residuum-artifact"];

@@ -152,6 +152,10 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
   fetchSessionTranscript: [(a) => a.fetchSessionTranscript(AGENT, "run-1")],
   messageSession: [(a) => a.messageSession(AGENT, "spawned-research-3f9a", "hello")],
   stopSession: [(a) => a.stopSession(AGENT, "spawned-research-3f9a")],
+  startSession: [
+    (a) => a.startSession(AGENT, { prompt: "plan the garden" }),
+    (a) => a.startSession(AGENT, { prompt: "price the paint", model: "large", fork: true }),
+  ],
   fetchScheduledPulses: [(a) => a.fetchScheduledPulses(AGENT)],
   setPulseEnabled: [(a) => a.setPulseEnabled(AGENT, "inbox_check", false)],
   fetchScheduledActions: [(a) => a.fetchScheduledActions(AGENT)],
