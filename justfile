@@ -137,7 +137,7 @@ web-dev *args: _web-deps
 web-build: _web-deps
     cd web && npm run build
 
-# Gzipped size of the initial route (the scripts and styles loaded before the first screen), from a fresh build, against its budget: fails when the route outgrows it, as CI does
+# Gzipped size of the initial route (the scripts and styles loaded before the first screen), from a fresh build, as CI's web job reports it
 [group('web')]
 web-size: web-build
     scripts/web-initial-route-size.sh web/dist
@@ -199,7 +199,7 @@ web-e2e-webkit *args: _web-deps
 
 # --- checks ------------------------------------------------------------------
 
-# CI's web job except the end-to-end suite, which has its own recipes (web-e2e-fast, web-e2e); web-size builds, then checks the initial route's budget
+# CI's web job except the end-to-end suite, which has its own recipes (web-e2e-fast, web-e2e); web-size builds, then prints the initial route's size
 [group('check')]
 web-check: web-fmt-check web-lint web-typecheck web-test web-size
 
