@@ -42,7 +42,6 @@ pub(super) const BACKLOG: &[(&str, usize)] = &[
     ("src/hub/host/tests/review_fixes.rs", 1),
     ("src/hub/http/tests/overview.rs", 3),
     ("src/hub/http/tests/session_relay.rs", 3),
-    ("src/hub/push/service.rs", 10),
     ("src/hub/relay_agents.rs", 2),
     ("src/hub/runtime.rs", 6),
     ("src/hub/team_events/recorder/tests.rs", 2),
