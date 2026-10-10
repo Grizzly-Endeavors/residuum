@@ -555,8 +555,9 @@ pub struct SpawnRequestEvent {
     /// Model tier to run the session at.
     pub model_tier: BackgroundModelTier,
     /// The agent that requested this spawn: `Some(address)` for a `spawned`
-    /// session (main or another session), `None` for `scheduled` and
-    /// `external` sessions, which have no spawner.
+    /// session an agent started (main or another session), `None` for one the
+    /// owner started and for `scheduled`, `external`, and `artifact`
+    /// sessions, which have no spawner to relay results to.
     pub spawner: Option<SessionAddress>,
     /// Depth from the main agent this session will run at (main = 0). A
     /// `scheduled`/`external` session is always depth 1; a spawned session is
