@@ -760,6 +760,37 @@ export async function fetchSessionTranscript(
   );
 }
 
+/** Which of the agent's models a session runs on. */
+export type SessionModelSize = "small" | "medium" | "large";
+
+/** What the owner starts a session with. */
+export interface StartSessionRequest {
+  /** The task, the session's first message. */
+  prompt: string;
+  /** The agent's medium model when left out. */
+  model?: SessionModelSize;
+  /** Start from the main conversation (`/multitask`) instead of clean. */
+  fork?: boolean;
+}
+
+/**
+ * Start a session of the owner's own on `agent`: a clean one, or with `fork`
+ * a fork of the main conversation. Resolves to its address as soon as the
+ * agent takes the request; the run announces itself with `session_started`.
+ *
+ * Throws `ApiError` with `{ error }`: `400` for a blank prompt or a bad
+ * model, `500` when a fork couldn't read the main conversation, `503` while
+ * Residuum shuts down.
+ */
+export async function startSession(agent: string, request: StartSessionRequest): Promise<string> {
+  const reply = await apiFetch<{ address: string }>(agentPath(agent, "/sessions"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  return reply.address;
+}
+
 /**
  * Send the session at `address` a message as the owner: delivered to a live
  * run, or starting a new run of a finished one. Resolves to where it landed.

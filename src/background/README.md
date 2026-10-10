@@ -12,6 +12,7 @@ The module owns:
 - **The session store** (`store.rs`): durable on-disk record of every run — a metadata JSON file under `memory/sessions/YYYY-MM/DD/<run-id>.json`, plus a sibling `<run-id>.transcript.jsonl` appended to as the run progresses (see "Incremental Transcript Persistence" below).
 - **Per-run memory** (`session_memory.rs`): threshold-based staging, run after every turn, and the completion pipeline that merges a finished run's observations into global memory through the `MemoryMergeWriter` (`crate::memory::merge_writer`).
 - **Fork construction** (`spawn_context.rs`, `subagent.rs`): resolves the model tier, activates the requested skill, snapshots the global observation log and recent-context narrative, and builds the isolated `SubAgentResources` a session's turn runs with — including its own `Observer`, a shared handle to the `MemoryMergeWriter`, and its own `message_agent` tool identifying it as the sender.
+- **Owner sessions** (`owner_session.rs`): builds the spawn request for a session the owner starts by hand — a clean one, or a fork of the main conversation (`/multitask`) carrying main's saved conversation — used by the sessions HTTP API and the chat interfaces' `/multitask`. It is a `spawned` session with no spawner, so nothing relays its results.
 - **Agent messaging** (`messaging.rs`): routes a `message_agent` call to its target by address — an interrupt into a running or idle session's channel, a fresh `SpawnRequestEvent` to resume a completed one, or a `MessageEvent` to main's own inbound path.
 
 The module does **not** handle:
@@ -43,7 +44,8 @@ The module does **not** handle:
 SpawnRequestEvent { address, skill, source_label, prompt, context, source, model_tier }
     ↓ published on the bus Background topic by the pulse executor,
       gateway action spawning, a webhook handler, the subconscious learner,
-      the subagent_spawn tool, or the sessions HTTP API (an artifact's start)
+      the subagent_spawn tool, the sessions HTTP API (an artifact's or the
+      owner's start), or a chat interface's /multitask
 spawn listener (listener.rs)
     ├─ build_spawn_resources() → resolve tier → provider, activate skill,
     │  snapshot observations + recent-context narrative
@@ -93,6 +95,8 @@ Main's own turn loop (`gateway/event_loop/turns.rs`) folds the kickoff hop into 
 A session's transcript is not just written once at completion. `agent::turn::TranscriptSink` is a trait with one method, `append()`, called by `execute_turn()`/`execute_tool()` after every model response and every tool result is pushed onto the turn's message buffer. `RunTranscriptSink` (`store.rs`) implements it by binding a `SessionStore` to one run's address and start time, appending each message to the run's `.transcript.jsonl` file as it happens. The main agent's own turns pass `None` for this field (its persistence path is `recent_messages.json`, written after the whole turn) — sessions are the only caller that needs crash-mid-turn durability, since a session's transcript is otherwise only written at fork time (empty) and at completion.
 
 #### Fork Contents
+
+A fork of the main conversation is the one session that starts with history: `run_session()` seeds its `RunHistory` with `SubAgentConfig::carried_history`, so the model sees main's conversation ahead of the task on every turn, and `RunHistory::own()` (everything after it) is what staging, the memory merge, and the completed record use. The incremental transcript never sees the carried messages, since only messages a turn produces are appended.
 
 `execute_subagent()` builds each turn's opening user message from a `TurnKickoff` — `TurnKickoff::Initial` (the task prompt, pulse/action/webhook payload, or a resume pointer, plus any explicit context) for a run's first turn, `TurnKickoff::AgentMessage` (the delivered message, formatted with the sender's address and category) for any later one — and **only** that; no identity, wiki, or skills content goes into it. Everything else — `SOUL.md`, `AGENTS.md`, `HARNESS`, `USER.md`, the wiki index, the skills index, and the fork-time observation/recent-context snapshot — flows through `MemoryContext`/`PromptContext` into the *system* message, assembled once per iteration by `execute_turn()`'s own `assemble_system_prompt()`, exactly as it is for the main agent. This is deliberate: putting identity content in both the user message and the system message (as the old sub-agent path did) would show up twice in every model call.
 

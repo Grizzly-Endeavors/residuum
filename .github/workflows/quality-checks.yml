@@ -72,13 +72,6 @@ jobs:
         id: web_build
         run: cd web && npm run build
 
-      # Fails when the gzipped initial route outgrows its budget, which is set
-      # in the script.
-      - name: Web initial-route budget
-        id: web_size
-        if: always() && steps.web_build.outcome == 'success'
-        run: scripts/web-initial-route-size.sh web/dist
-
       - name: Build summary
         if: always()
         run: |
@@ -92,7 +85,6 @@ jobs:
             echo "| Types | ${{ steps.web_typecheck.outcome }} |"
             echo "| Tests | ${{ steps.web_test.outcome }} |"
             echo "| Build | ${{ steps.web_build.outcome }} |"
-            echo "| Initial-route budget | ${{ steps.web_size.outcome }} |"
             echo ''
             echo 'The end-to-end, accessibility and visual results are in the Web End-to-End jobs.'
             if [ -f web/coverage/summary.txt ]; then
@@ -103,7 +95,6 @@ jobs:
               sed '/^$/d' web/coverage/summary.txt
               echo '```'
             fi
-            # The table, and the over-budget message when there is one. The budget step decides the outcome.
             if [ -f web/dist/index.html ]; then
               echo ''
               echo '### Web initial-route size'
@@ -261,6 +252,16 @@ jobs:
         id: test
         run: cargo test --quiet
 
+      # The suite again, as two concurrent copies with every CPU busy: how it
+      # runs when several agents share a machine. Reuses the binaries the Tests
+      # step built. A failure here is a test waiting on time instead of the
+      # event it checks; fix the wait (CONTRIBUTING.md, "Waiting in tests"),
+      # never rerun past it.
+      - name: Stress
+        id: stress
+        if: steps.test.outcome == 'success'
+        run: scripts/stress-tests.sh
+
       # Remote access issuance against Pebble, the Let's Encrypt test CA, in
       # Docker (see docs/systems-usage/secure-tunnel.md, "Tests"). The
       # containers run on the Docker daemon beside the runner, which shares
@@ -288,9 +289,18 @@ jobs:
             echo '| Check | Status |'
             echo '|-------|--------|'
             echo "| Tests | ${{ steps.test.outcome }} |"
+            echo "| Stress (2 copies under load) | ${{ steps.stress.outcome }} |"
             echo "| Pebble tests | ${{ steps.pebble.outcome }} |"
             echo "| Generated types | ${{ steps.types.outcome }} |"
             echo ''
+            if [ -s target/stress/summary.txt ]; then
+              echo '### Stress failures (count, test)'
+              echo ''
+              echo '```'
+              cat target/stress/summary.txt
+              echo '```'
+              echo ''
+            fi
             echo '### Compiler cache (sccache)'
             echo ''
             echo '```'

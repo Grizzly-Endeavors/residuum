@@ -12,9 +12,7 @@ use std::sync::Arc;
 use axum::extract::Request;
 use chrono::{DateTime, Duration as TimeDelta, TimeZone as _};
 
-use super::overview::{
-    changed, expect_no_frame, frame_within, move_to, next_overview, overview_of,
-};
+use super::overview::{changed, expect_no_frame, move_to, next_overview, overview_of};
 use super::*;
 use crate::a2a::TrackedTask;
 use crate::a2a::client::tracker::UNREACHABLE_NOTICE_AFTER;
@@ -422,7 +420,7 @@ async fn times_are_told_in_the_hubs_timezone() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_stopped_agents_upcoming_is_read_again_on_every_request() {
     let h = Harness::new();
     let _tracker = h.track_overview();
@@ -442,7 +440,7 @@ async fn a_stopped_agents_upcoming_is_read_again_on_every_request() {
     expect_no_frame(&mut frames).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_running_agents_upcoming_follows_the_changes_its_watcher_reports() {
     let h = Harness::new();
     let _tracker = h.track_overview();
@@ -575,7 +573,7 @@ async fn the_pulses_endpoint_and_the_overview_give_a_pulse_the_same_next_time() 
 
 // ---- outbound problems --------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn an_unreachable_task_is_a_problem_once_its_streak_passes_the_threshold_and_until_it_ends() {
     let h = Harness::new();
     let _tracker = h.track_overview();
@@ -696,7 +694,27 @@ async fn a_task_becomes_a_problem_when_its_streak_passes_the_threshold_with_no_e
     );
     assert_eq!(problem_ids(&frame), ["task-1"]);
     assert_eq!(frame.outbound_problems[0].unreachable_since, since);
-    expect_no_frame(&mut frames).await;
+    nothing_pending(&h).await;
+    assert!(
+        frames.try_recv().is_err(),
+        "the crossing is one frame, and nothing else is due"
+    );
+}
+
+/// Wait until the wall clock is past `at`. The crossings these tests check
+/// are wall-clock times, so the clock passing one is the event itself.
+async fn until_past(at: DateTime<Utc>) {
+    wait::until_true("the wall clock to pass the crossing", || Utc::now() > at).await;
+}
+
+/// Wait until the overview has nothing pending: no frame due and no notice
+/// threshold waited for. Every frame the changes so far called for has then
+/// been sent.
+async fn nothing_pending(h: &Harness) {
+    wait::until("the overview to have nothing pending", || async {
+        h.overview.next_due().await.is_none().then_some(())
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -717,10 +735,12 @@ async fn a_task_that_ends_its_streak_before_the_threshold_never_becomes_a_proble
     write_outbound(&h, "scout", &[task.clone()]);
     task_changed(&h, "scout", &task);
 
+    // Past the old crossing, with nothing left pending: a frame the crossing
+    // had called for would have gone out by now.
+    until_past(crossing).await;
+    nothing_pending(&h).await;
     assert!(
-        frame_within(&mut frames, std::time::Duration::from_secs(3))
-            .await
-            .is_none(),
+        frames.try_recv().is_err(),
         "no frame, at the old crossing or any other time"
     );
     assert!(

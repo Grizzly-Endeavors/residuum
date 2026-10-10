@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -198,28 +197,43 @@ async fn ping_is_answered_with_pong() {
 }
 
 #[tokio::test]
-async fn refuse_closes_without_publishing_connected() {
+async fn refuse_closes_and_backs_off_instead_of_reconnecting() {
     let relay = FakeRelay::start(FakeRelayConfig::default()).await;
     let (h, _outputs) = handler(Some("wrong relay"));
-    let running = start(&relay, &h);
+    let cfg = CloudConfig {
+        relay_url: relay.ws_url(),
+        token: "rst_test".to_string(),
+        remote: RemoteAccessSettings::default(),
+    };
+    let handler: Arc<dyn SessionHandler> = Arc::clone(&h) as Arc<dyn SessionHandler>;
+    let (status_tx, status) = watch::channel(TunnelStatus::Connecting);
+    let (_shutdown, mut shutdown_rx) = watch::channel(false);
+    let (_agents, mut agents_rx) = watch::channel(Vec::new());
 
-    eventually("the relay to see the connection drop", || {
-        relay.v2_connections() == 1 && relay.connected_instances() == 0
-    })
+    // One attempt, run to its decision: a refused relay is not reconnected to
+    // until the longest backoff has passed.
+    let attempt = crate::tunnel::connection::Attempt {
+        cfg: &cfg,
+        handler: &handler,
+    };
+    let step = wait::guarded(
+        "the refused attempt to end",
+        Box::pin(attempt.run(&mut agents_rx, &mut shutdown_rx, &status_tx)),
+    )
     .await;
+    assert_eq!(
+        step,
+        crate::tunnel::connection::Step::Wait(Some(crate::tunnel::connection::MAX_BACKOFF))
+    );
+    assert_eq!(*status.borrow(), TunnelStatus::Disconnected);
     eventually("on_disconnected", || {
         h.disconnects.load(Ordering::SeqCst) == 1
     })
     .await;
-    assert!(!matches!(
-        *running.status.borrow(),
-        TunnelStatus::Connected { .. }
-    ));
-    assert_eq!(*running.status.borrow(), TunnelStatus::Disconnected);
-    // The refusal backs off for a long time instead of reconnecting.
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(relay.v2_connections(), 1);
-    stop(running).await;
+    eventually("the relay to see the connection drop", || {
+        relay.v2_connections() == 1 && relay.connected_instances() == 0
+    })
+    .await;
 }
 
 #[tokio::test]

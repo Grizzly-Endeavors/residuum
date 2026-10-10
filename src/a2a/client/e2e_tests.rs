@@ -8,7 +8,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use a2a::*;
 use a2a_server::*;
@@ -93,7 +92,6 @@ impl AgentExecutor for TestExecutor {
                 std::future::pending::<()>().await;
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
             if followup {
                 tx.send(Ok(StreamResponse::ArtifactUpdate(
                     TaskArtifactUpdateEvent {
@@ -475,6 +473,9 @@ async fn stop_agent_cancels_the_open_task_exactly_once() {
         Arc::clone(&f.hub),
         Arc::clone(&f.tracker),
     );
+    // The task's watcher holds the tracker while it runs; this many holders
+    // means it has stopped.
+    let holders_without_watchers = Arc::strong_count(&f.tracker);
     let sent_result = message_tool
         .execute(serde_json::json!({ "to": "a2a:agent1", "message": "hold this open" }))
         .await
@@ -505,13 +506,17 @@ async fn stop_agent_cancels_the_open_task_exactly_once() {
         .unwrap();
     assert!(agent_message_content(&interrupt).contains("canceled"));
 
-    // The background watcher may have observed the same cancellation
-    // independently; `notified_this_turn` must stop it from delivering a
-    // second time for this turn.
-    let second = tokio::time::timeout(Duration::from_secs(2), interrupt_rx.recv()).await;
+    // The background watcher observes the same cancellation independently;
+    // `notified_this_turn` must stop it from delivering a second time for
+    // this turn. Once it has stopped, anything it delivered is queued.
+    drop(stop_tool);
+    wait::until_true("the task's watcher to stop", || {
+        Arc::strong_count(&f.tracker) == holders_without_watchers
+    })
+    .await;
     assert!(
-        second.is_err(),
-        "expected exactly one delivery (a timeout), but a second one arrived"
+        interrupt_rx.try_recv().is_err(),
+        "expected exactly one delivery, but a second one arrived"
     );
 }
 

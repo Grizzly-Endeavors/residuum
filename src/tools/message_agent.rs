@@ -189,6 +189,9 @@ impl MessageAgentTool {
                         hop,
                     )
                     .await;
+                if let a2a::SendMessageResponse::Task(task) = resp {
+                    self.a2a_tracker.apply_sent_task(task).await;
+                }
                 Ok(ToolResult::success(format!(
                     "Sent to remote agent a2a:{agent_name} (task {task_id}). Its reply will \
                      arrive as an agent message."

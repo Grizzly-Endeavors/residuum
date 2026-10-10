@@ -66,6 +66,8 @@ pub(super) struct TeamsRuntime {
     stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
     session_registry: Arc<SessionRegistry>,
     inbox_dir: PathBuf,
+    /// Main's saved conversation, which `/multitask` forks.
+    main_conversation: PathBuf,
     tz: chrono_tz::Tz,
 }
 
@@ -196,6 +198,7 @@ impl TeamsInterface {
             stop_tx: self.senders.stop,
             session_registry: self.senders.session_registry,
             inbox_dir: self.layout.agent_inbox_dir(),
+            main_conversation: self.layout.recent_messages_json(),
             tz: self.tz,
             cfg: self.cfg,
         });

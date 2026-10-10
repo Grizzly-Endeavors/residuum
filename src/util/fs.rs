@@ -325,7 +325,7 @@ mod tests {
         let releaser = {
             let to = to.clone();
             crate::util::spawn_in_span(async move {
-                tokio::time::sleep(release_after).await;
+                crate::testing::clock::elapse(release_after).await;
                 tokio::fs::remove_dir_all(&to).await.unwrap();
             })
         };

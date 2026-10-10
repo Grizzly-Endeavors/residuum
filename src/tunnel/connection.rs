@@ -24,7 +24,7 @@ const TLS_PASSTHROUGH_CAPABILITY: &str = "tls-passthrough";
 const MIN_BACKOFF: Duration = Duration::from_secs(1);
 
 /// Maximum backoff duration between reconnection attempts.
-const MAX_BACKOFF: Duration = Duration::from_mins(1);
+pub(super) const MAX_BACKOFF: Duration = Duration::from_mins(1);
 
 /// Calculate the next backoff duration by doubling the current value, capped at
 /// [`MAX_BACKOFF`], with random jitter (0.5x–1.5x) to avoid thundering herd.
@@ -89,7 +89,8 @@ pub(crate) async fn start_tunnel(
 }
 
 /// What to do after one connection attempt.
-enum Step {
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Step {
     /// Shutdown was requested and handled.
     Done,
     /// The session ended after a successful connection; reconnect now.
@@ -107,14 +108,14 @@ async fn sleep_unless_shutdown(wait: Duration, shutdown_rx: &mut watch::Receiver
 }
 
 /// What one attempt on the relay's registration endpoint needs to know.
-struct Attempt<'a> {
-    cfg: &'a CloudConfig,
-    handler: &'a Arc<dyn SessionHandler>,
+pub(super) struct Attempt<'a> {
+    pub(super) cfg: &'a CloudConfig,
+    pub(super) handler: &'a Arc<dyn SessionHandler>,
 }
 
 impl Attempt<'_> {
     /// Connect once and run the session until it ends.
-    async fn run(
+    pub(super) async fn run(
         &self,
         agents_rx: &mut watch::Receiver<Vec<AgentInfo>>,
         shutdown_rx: &mut watch::Receiver<bool>,

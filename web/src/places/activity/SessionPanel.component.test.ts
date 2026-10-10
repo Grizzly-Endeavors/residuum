@@ -85,6 +85,28 @@ describe("the session panel", () => {
     expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
   });
 
+  it("says the owner started a run, and when it forked the conversation", async () => {
+    await show(
+      summary({
+        address: "spawned-multitask-1a2b",
+        source_label: "owner:multitask",
+        spawner: null,
+        depth: 1,
+      }),
+    );
+    expect(screen.getByText("Started by you")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Details" }));
+    expect(screen.getByText("You, forking atlas's conversation with /multitask")).toBeVisible();
+  });
+
+  it("says plainly that the owner started a clean run", async () => {
+    await show(summary({ source_label: "owner:session", spawner: null, depth: 1 }));
+    await userEvent.click(screen.getByRole("button", { name: "Details" }));
+    expect(screen.getByText("Started by", { selector: "dt" }).nextElementSibling).toHaveTextContent(
+      /^You$/,
+    );
+  });
+
   it("shows how a finished run failed, and offers to start it again", async () => {
     await show(
       summary({

@@ -35,6 +35,8 @@ struct TelegramContext<'a> {
     bot_id: UserId,
     publisher: &'a Publisher,
     inbox_dir: &'a Path,
+    /// Main's saved conversation, which `/multitask` forks.
+    main_conversation: &'a Path,
     reload_tx: &'a crate::gateway::types::ReloadSender,
     command_tx: &'a tokio::sync::mpsc::Sender<ServerCommand>,
     stop_tx: &'a tokio::sync::mpsc::Sender<StopRequest>,
@@ -81,8 +83,9 @@ pub(super) async fn run_telegram_polling(
         .pool_idle_timeout(Duration::from_secs(90))
         .build()?;
     let bot = Bot::with_client(token, http_client);
-    let inbox_dir =
-        crate::workspace::layout::WorkspaceLayout::new(&workspace_dir).agent_inbox_dir();
+    let layout = crate::workspace::layout::WorkspaceLayout::new(&workspace_dir);
+    let inbox_dir = layout.agent_inbox_dir();
+    let main_conversation = layout.recent_messages_json();
 
     // Verify the bot token is valid. A network blip or a momentary API
     // error here used to leave the adapter dead until a config reload;
@@ -162,6 +165,7 @@ pub(super) async fn run_telegram_polling(
             bot_id: me.id,
             publisher: &publisher,
             inbox_dir: &inbox_dir,
+            main_conversation: &main_conversation,
             reload_tx: &reload_tx,
             command_tx: &command_tx,
             stop_tx: &stop_tx,
@@ -547,6 +551,8 @@ async fn handle_command(
         session_registry: ctx.session_registry,
         inbox_dir: ctx.inbox_dir,
         tz: ctx.tz,
+        publisher: ctx.publisher,
+        main_conversation: ctx.main_conversation,
     };
     let response_text = crate::interfaces::run_chat_command(
         cmd_name,
@@ -807,6 +813,7 @@ mod tests {
         user_messages: Subscriber<MessageEvent>,
         publisher: Publisher,
         inbox_dir: PathBuf,
+        main_conversation: PathBuf,
         reload_tx: crate::gateway::types::ReloadSender,
         command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
         stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
@@ -834,6 +841,7 @@ mod tests {
             user_messages,
             publisher: bus.publisher(),
             inbox_dir: dir.path().to_path_buf(),
+            main_conversation: dir.path().join("recent_messages.json"),
             reload_tx: tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>(
             )
             .0,
@@ -851,6 +859,7 @@ mod tests {
             bot_id: BOT_ID,
             publisher: &h.publisher,
             inbox_dir: &h.inbox_dir,
+            main_conversation: &h.main_conversation,
             reload_tx: &h.reload_tx,
             command_tx: &h.command_tx,
             stop_tx: &h.stop_tx,

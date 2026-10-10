@@ -22,7 +22,7 @@ export const SESSION_CATEGORIES: readonly SessionCategory[] = [
 export const KIND_NAMES: Readonly<Record<SessionCategory, string>> = {
   external: "From another app",
   scheduled: "Scheduled",
-  spawned: "Started by an agent",
+  spawned: "Started by an agent or you",
   artifact: "From a workbench page",
 };
 
@@ -37,12 +37,19 @@ export function runIcon(category: SessionCategory): IconName {
   return KIND_ICONS[category];
 }
 
+/**
+ * Whether the owner started a run by hand (a new session, or `/multitask`):
+ * every spawned run an agent starts names its spawner.
+ */
+export function startedByOwner(run: Pick<SessionSummary, "category" | "spawner">): boolean {
+  return run.category === "spawned" && run.spawner === null;
+}
+
 /** How a run started, in plain words. A spawner of `main` is the agent's own conversation. */
 export function runKind(agent: string, run: Pick<SessionSummary, "category" | "spawner">): string {
   if (run.category !== "spawned") return KIND_NAMES[run.category];
-  return run.spawner === null || run.spawner === "main"
-    ? `Started by ${agent}`
-    : `Started by ${run.spawner}`;
+  if (run.spawner === null) return "Started by you";
+  return run.spawner === "main" ? `Started by ${agent}` : `Started by ${run.spawner}`;
 }
 
 /** States in which a stop request can still take effect. */

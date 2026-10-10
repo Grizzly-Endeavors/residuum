@@ -210,7 +210,7 @@ fn agent_router(
 }
 
 /// Two agents behind one listener: `scout` (public) and `vault` (private).
-async fn fixture() -> Fixture {
+fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let reservation = reserve_port();
     let port = reservation.port();
@@ -242,18 +242,11 @@ async fn fixture() -> Fixture {
     )
     .with_sibling_keys(
         Arc::clone(&siblings) as Arc<dyn crate::remote_access::siblings::SiblingKeyVerifier>
-    );
-    // `listener.start()` binds `port` for real; drop the reservation right
-    // before spawning it so no other test process can take it first.
-    drop(reservation);
+    )
+    // The listener serves on the reserved socket itself, so no other process
+    // can take the port, and connections queue on it until it accepts them.
+    .with_bound_listener(reservation.into_tokio_listener());
     crate::util::spawn_in_span(listener.start());
-    wait::until(format!("the listener on port {port}"), || async move {
-        tokio::net::TcpStream::connect(("127.0.0.1", port))
-            .await
-            .ok()
-            .map(|_| ())
-    })
-    .await;
     Fixture {
         port,
         keys,
@@ -320,7 +313,7 @@ fn text_of_event(event: &StreamResponse) -> &str {
 
 #[tokio::test]
 async fn each_agent_serves_its_own_card_with_its_own_url() {
-    let fx = fixture().await;
+    let fx = fixture();
     let key = fx.key().await;
     let http = reqwest::Client::new();
 
@@ -355,7 +348,7 @@ async fn each_agent_serves_its_own_card_with_its_own_url() {
 
 #[tokio::test]
 async fn a_public_agent_serves_its_card_without_a_key_but_nothing_else() {
-    let fx = fixture().await;
+    let fx = fixture();
     let http = reqwest::Client::new();
 
     let card = http
@@ -385,7 +378,7 @@ async fn a_public_agent_serves_its_card_without_a_key_but_nothing_else() {
 
 #[tokio::test]
 async fn a_private_agent_is_404_on_every_route_without_a_key_and_served_with_one() {
-    let fx = fixture().await;
+    let fx = fixture();
     let http = reqwest::Client::new();
 
     for path in [
@@ -425,7 +418,7 @@ async fn a_private_agent_is_404_on_every_route_without_a_key_and_served_with_one
 #[tokio::test]
 async fn a_joined_siblings_key_reaches_a_private_agent_and_a_missing_key_does_not() {
     use crate::remote_access::siblings::keys::{NewSibling, issue_key};
-    let fx = fixture().await;
+    let fx = fixture();
     let inbound = issue_key();
     fx.siblings
         .upsert(NewSibling {
@@ -494,7 +487,7 @@ async fn a_joined_siblings_key_reaches_a_private_agent_and_a_missing_key_does_no
 
 #[tokio::test]
 async fn an_unknown_agent_is_404_even_with_a_valid_key() {
-    let fx = fixture().await;
+    let fx = fixture();
     let key = fx.key().await;
     let http = reqwest::Client::new();
 
@@ -515,7 +508,7 @@ async fn an_unknown_agent_is_404_even_with_a_valid_key() {
 
 #[tokio::test]
 async fn a_stopped_agent_is_503_with_a_body_saying_it_isnt_running() {
-    let fx = fixture().await;
+    let fx = fixture();
     let key = fx.key().await;
     let http = reqwest::Client::new();
     fx.directory.set_state("scout", AgentState::Stopped);
@@ -562,7 +555,7 @@ async fn a_stopped_agent_is_503_with_a_body_saying_it_isnt_running() {
 
 #[tokio::test]
 async fn paths_outside_an_agent_prefix_are_404() {
-    let fx = fixture().await;
+    let fx = fixture();
     let key = fx.key().await;
     let http = reqwest::Client::new();
 
@@ -596,7 +589,7 @@ async fn paths_outside_an_agent_prefix_are_404() {
 
 #[tokio::test]
 async fn jsonrpc_reaches_the_named_agent_through_the_prefix() {
-    let fx = fixture().await;
+    let fx = fixture();
     let key = fx.key().await;
 
     let scout = client_for(&fx, "scout", &key).await;
@@ -619,7 +612,7 @@ async fn jsonrpc_reaches_the_named_agent_through_the_prefix() {
 
 #[tokio::test]
 async fn jsonrpc_streams_events_through_the_prefix_as_they_are_produced() {
-    let fx = fixture().await;
+    let fx = fixture();
     let key = fx.key().await;
     let client = client_for(&fx, "scout", &key).await;
 
@@ -657,7 +650,7 @@ fn rest_body(text: &str) -> serde_json::Value {
 
 #[tokio::test]
 async fn rest_reaches_the_named_agent_through_the_prefix() {
-    let fx = fixture().await;
+    let fx = fixture();
     let key = fx.key().await;
     let http = reqwest::Client::new();
 
@@ -675,7 +668,7 @@ async fn rest_reaches_the_named_agent_through_the_prefix() {
 
 #[tokio::test]
 async fn rest_streams_chunks_through_the_prefix_as_they_are_produced() {
-    let fx = fixture().await;
+    let fx = fixture();
     let key = fx.key().await;
     let http = reqwest::Client::new();
 
@@ -707,7 +700,7 @@ async fn rest_streams_chunks_through_the_prefix_as_they_are_produced() {
 
 #[tokio::test]
 async fn the_query_string_survives_prefix_stripping() {
-    let fx = fixture().await;
+    let fx = fixture();
     let key = fx.key().await;
     let http = reqwest::Client::new();
 

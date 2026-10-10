@@ -61,7 +61,7 @@ Testing is a first-class operation — NEVER skip test implementation.
 - Always run `cargo test --quiet` — never plain `cargo test`. The `--quiet` flag suppresses per-test noise and only shows failures and the summary.
 - Unit tests: `#[cfg(test)] mod tests` at file bottom
 - Integration tests: `tests/` directory
-- A test waits on the event it checks, never on elapsed time. A flaky test is fixed by making it wait on an event the code exposes (adding the signal to the code when there is none), never by widening a timeout, adding a sleep, or rerunning past it. `just stress <filter>` runs tests as two concurrent copies under CPU load, which is how they run when several agents share a machine; a test you add or fix must pass it. Tests wait through `crate::testing` (waits under one hang guard, gates, a paused-clock helper); `CONTRIBUTING.md`, "Waiting in tests", says which fits where, and a source-scan test enforces it.
+- A test waits on the event it checks, never on elapsed time. A flaky test is fixed by making it wait on an event the code exposes (adding the signal to the code when there is none), never by widening a timeout, adding a sleep, or rerunning past it. `just stress <filter>` runs tests as two concurrent copies under CPU load, which is how they run when several agents share a machine; a test you add or fix must pass it. CI runs the whole suite that way in the Stress step of the Rust tests, and a red Stress step blocks the merge: fix the wait, never rerun past it. Tests wait through `crate::testing` (waits under one hang guard, gates, a paused-clock helper); `CONTRIBUTING.md`, "Waiting in tests", says which fits where, and a source-scan test enforces it.
 
 ## Code Style
 

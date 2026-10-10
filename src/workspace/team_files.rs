@@ -190,6 +190,16 @@ impl TeamWriteCoordinator {
         }
     }
 
+    /// How many callers hold or are waiting for `path`'s write lock: a writer
+    /// stuck behind another shows up here as a count above one.
+    #[must_use]
+    pub fn lock_contenders(&self, path: &Path) -> usize {
+        lock(&self.inner.locks)
+            .get(&canonical_key(path))
+            // The table keeps one reference; every holder and waiter keeps one more.
+            .map_or(0, |held| Arc::strong_count(held).saturating_sub(1))
+    }
+
     /// Take the write locks for every path in `paths` at once. Locks are
     /// taken in a fixed order, so two callers locking overlapping sets can't
     /// deadlock, and a path listed twice is locked once. The guards come

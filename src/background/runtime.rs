@@ -423,6 +423,7 @@ fn deliver_losing_spawn_input(
                 inbound: config.inbound.clone(),
                 images: config.images.clone(),
                 overlap: None,
+                carried_history: Vec::new(),
             };
             let registry = Arc::clone(registry);
             let publisher = publisher.clone();
@@ -705,7 +706,7 @@ async fn after_turn(
     resources: Option<&SubAgentResources>,
     env: &RunEnv,
     memory: &mut SessionMemory,
-    recent_messages: &mut RecentMessages,
+    history: &mut RunHistory,
 ) {
     // Per-turn threshold check: mirrors the main agent's own rotation, run
     // after every turn (not just once) since a run can now span several.
@@ -713,10 +714,9 @@ async fn after_turn(
     // observation on completion.
     if let Some(res) = resources {
         let mem_env = session_memory_env(res, env.tz);
-        memory
-            .maybe_stage(recent_messages.messages(), &mem_env)
-            .await;
+        memory.maybe_stage(history.own(), &mem_env).await;
     }
+    let recent_messages = &mut history.messages;
 
     // Relay this turn's outcome to a spawned session's direct spawner, after
     // every turn (not only at run completion) — this generalizes the old
@@ -729,6 +729,30 @@ async fn after_turn(
     // started by a conversation message. Every other session category has
     // `conversation_target: None` and this is a no-op.
     maybe_output_to_conversation(info, status, summary, env).await;
+}
+
+/// A run's conversation as the model sees it: a fork's carried-over main
+/// conversation (see [`SubAgentConfig::carried_history`]) followed by the
+/// run's own messages. Only the run's own part is staged, merged into memory,
+/// and recorded as its transcript, since the carried part is main's and is
+/// already main's to remember.
+struct RunHistory {
+    messages: RecentMessages,
+    carried: usize,
+}
+
+impl RunHistory {
+    fn new(carried_history: Vec<crate::inference::Message>) -> Self {
+        let carried = carried_history.len();
+        let mut messages = RecentMessages::new();
+        messages.extend(carried_history);
+        Self { messages, carried }
+    }
+
+    /// The messages this run produced itself, after anything it carried in.
+    fn own(&self) -> &[crate::inference::Message] {
+        self.messages.messages_since(self.carried)
+    }
 }
 
 /// Build a run's first-turn kickoff from its `SubAgentConfig`.
@@ -746,21 +770,21 @@ fn initial_kickoff(config: SubAgentConfig) -> TurnKickoff {
 ///
 /// A run is one or more turns: the first is always the fork's task prompt;
 /// any later one is an agent message that arrived while the session was
-/// idle, per the design's messaging rules. `recent_messages` accumulates
-/// across every turn in the run, so a session woken from idle still has its
-/// earlier context, and staging/the final merge see the whole run's
-/// transcript regardless of how many turns produced it.
+/// idle, per the design's messaging rules. `history` accumulates across
+/// every turn in the run, so a session woken from idle still has its earlier
+/// context, and staging/the final merge see the whole run's own transcript
+/// regardless of how many turns produced it.
 #[tracing::instrument(skip_all, fields(session.address = %info.address, run.id = %info.run_id))]
 async fn run_session(
     mut info: SessionInfo,
-    config: SubAgentConfig,
+    mut config: SubAgentConfig,
     resources: Option<SubAgentResources>,
     stop_token: CancellationToken,
     mut interrupt_rx: mpsc::Receiver<Interrupt>,
     idle_timeout: Duration,
     env: RunEnv,
 ) {
-    let mut recent_messages = RecentMessages::new();
+    let mut history = RunHistory::new(std::mem::take(&mut config.carried_history));
     let mut memory = SessionMemory::new();
     let mut kickoff = initial_kickoff(config);
     // Assigned on the loop's first iteration, which always runs at least
@@ -791,7 +815,7 @@ async fn run_session(
                         turn_number += 1;
                         let ctx = turn_ctx(&info, resources.as_ref(), &stop_token, &env);
                         let turn_id = format!("{}-t{turn_number}", info.run_id);
-                        run_turn(&ctx, &turn_id, &mut recent_messages, kickoff, &mut interrupt_rx).await
+                        run_turn(&ctx, &turn_id, &mut history.messages, kickoff, &mut interrupt_rx).await
                     }
                     Err(_closed) => {
                         tracing::warn!("concurrency semaphore closed before session could acquire a permit");
@@ -814,7 +838,7 @@ async fn run_session(
             resources.as_ref(),
             &env,
             &mut memory,
-            &mut recent_messages,
+            &mut history,
         )
         .await;
 
@@ -871,7 +895,7 @@ async fn run_session(
             status,
             summary,
             memory,
-            recent_messages,
+            history,
             leftover_messages,
         },
         &env,
@@ -901,7 +925,7 @@ struct RunOutcome {
     status: AgentResultStatus,
     summary: String,
     memory: SessionMemory,
-    recent_messages: RecentMessages,
+    history: RunHistory,
     /// Agent messages and conversation messages still queued in the run's
     /// interrupt channel when [`drain_pending_interrupts`] drained it — must
     /// be routed to the resumed run rather than silently dropped.
@@ -927,7 +951,7 @@ async fn finish_run(
         status,
         summary,
         memory,
-        recent_messages,
+        history,
         leftover_messages,
     } = outcome;
 
@@ -950,7 +974,7 @@ async fn finish_run(
             info.run_id.clone(),
             info.category.as_str(),
         );
-        complete_session_memory(tag, &summary, recent_messages.messages(), memory, &mem_env).await
+        complete_session_memory(tag, &summary, history.own(), memory, &mem_env).await
     } else {
         None
     };
@@ -966,7 +990,7 @@ async fn finish_run(
             info,
             SessionState::Completed.as_str(),
             &status,
-            recent_messages.messages().to_vec(),
+            history.own().to_vec(),
             episode_id.clone(),
         )
         .await;
@@ -1166,10 +1190,18 @@ async fn maybe_output_to_conversation(
         );
         return;
     }
+    // A fork the owner started from a chat app with `/multitask` (the only
+    // spawned session with a conversation) posts into the same direct
+    // messages main answers in, so it names itself to be told apart.
+    let content = if info.category == SessionCategory::Spawned {
+        format!("{}:\n{summary}", info.address)
+    } else {
+        summary.to_string()
+    };
     let event = SessionResponseEvent {
         session_address: info.address.clone(),
         conversation_id: target.conversation_id.clone(),
-        content: summary.to_string(),
+        content,
         attachment: None,
         timestamp: crate::time::now_local(env.tz),
         is_final: true,
@@ -1768,6 +1800,7 @@ mod tests {
                 sender: None,
                 inbound: None,
                 images: Vec::new(),
+                carried_history: Vec::new(),
             },
             conversation_target: None,
             overlap: None,
@@ -1814,6 +1847,7 @@ mod tests {
                 sender: None,
                 inbound: None,
                 images: Vec::new(),
+                carried_history: Vec::new(),
             },
             conversation_target: Some(ConversationTarget {
                 endpoint: "discord".to_string(),
@@ -1869,6 +1903,7 @@ mod tests {
             sender: None,
             inbound: Some(losing_inbound),
             images: Vec::new(),
+            carried_history: Vec::new(),
         };
         let register_error = super::super::registry::RegisterError {
             address: address.clone(),
@@ -1956,6 +1991,7 @@ mod tests {
             sender: None,
             inbound: Some(sample_inbound_message("can anyone see this?")),
             images: Vec::new(),
+            carried_history: Vec::new(),
         };
         let register_error = super::super::registry::RegisterError {
             address: address.clone(),
@@ -2014,6 +2050,7 @@ mod tests {
             sender: None,
             inbound: Some(sample_inbound_message("can anyone see this?")),
             images: Vec::new(),
+            carried_history: Vec::new(),
         };
         let register_error = super::super::registry::RegisterError {
             address: address.clone(),
@@ -2173,6 +2210,81 @@ mod tests {
         assert!(
             transcript.len() >= 2,
             "transcript should hold at least the user prompt and the assistant reply"
+        );
+    }
+
+    /// Answers every call with `response` and keeps the texts of the
+    /// messages each call was sent, so a test can check what the model saw.
+    struct RecordingProvider {
+        response: String,
+        calls: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+    }
+
+    #[async_trait]
+    impl crate::inference::InferenceProvider for RecordingProvider {
+        async fn complete(
+            &self,
+            messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(messages.iter().map(|m| m.content.clone()).collect());
+            Ok(InferenceResponse::new(self.response.clone(), vec![]))
+        }
+
+        fn model_name(&self) -> &'static str {
+            "recording"
+        }
+    }
+
+    #[tokio::test]
+    async fn a_fork_sends_main_s_conversation_to_the_model_but_keeps_it_out_of_its_transcript() {
+        let (runtime, mut sub) = test_runtime(3).await;
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut resources = make_resources("unused");
+        resources.provider = Box::new(RecordingProvider {
+            response: "forked answer".to_string(),
+            calls: Arc::clone(&calls),
+        });
+        let mut request = sample_request("spawned-multitask-0001");
+        request.subagent_config.carried_history = vec![
+            Message::user("what did we decide about the cabin?"),
+            Message::assistant("we're booking it for june", None),
+        ];
+
+        runtime.spawn(request, Some(resources));
+        let event = wait::next_event("the fork's result to be published", &mut sub).await;
+        assert_eq!(event.summary, "forked answer");
+
+        let seen = calls.lock().unwrap().first().cloned().unwrap();
+        let carried_at = seen
+            .iter()
+            .position(|m| m == "what did we decide about the cabin?")
+            .expect("the model sees main's conversation");
+        let task_at = seen
+            .iter()
+            .position(|m| m.contains("do the thing"))
+            .expect("the model sees the task");
+        assert!(
+            carried_at < task_at,
+            "main's conversation comes before the task: {seen:?}"
+        );
+
+        let record: serde_json::Value = serde_json::from_str(
+            &tokio::fs::read_to_string(event.transcript_path.unwrap())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let transcript = record.get("transcript").unwrap().to_string();
+        assert!(transcript.contains("do the thing"), "{transcript}");
+        assert!(transcript.contains("forked answer"), "{transcript}");
+        assert!(
+            !transcript.contains("cabin") && !transcript.contains("june"),
+            "main's conversation stays out of the fork's own transcript: {transcript}"
         );
     }
 
@@ -3553,14 +3665,17 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn conversation_session_turn_output_is_published_to_its_conversation() {
+    /// A runtime whose sessions' conversation output can be read from the
+    /// `discord` endpoint, as a chat adapter would.
+    async fn conversation_output_runtime() -> (
+        SessionRuntime,
+        crate::bus::Subscriber<crate::bus::SessionResponseEvent>,
+    ) {
         let bus_handle = crate::bus::spawn_broker();
-        let mut session_output: crate::bus::Subscriber<crate::bus::SessionResponseEvent> =
-            bus_handle
-                .subscribe(topics::Endpoint(crate::bus::EndpointName::from("discord")))
-                .await
-                .unwrap();
+        let session_output: crate::bus::Subscriber<crate::bus::SessionResponseEvent> = bus_handle
+            .subscribe(topics::Endpoint(crate::bus::EndpointName::from("discord")))
+            .await
+            .unwrap();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
         let dir_path = dir.path().to_path_buf();
@@ -3593,6 +3708,13 @@ mod tests {
             },
         );
 
+        (runtime, session_output)
+    }
+
+    #[tokio::test]
+    async fn conversation_session_turn_output_is_published_to_its_conversation() {
+        let (runtime, mut session_output) = conversation_output_runtime().await;
+
         let address = SessionAddress::from("external-discord-output");
         runtime.spawn(
             sample_conversation_request(address.as_ref()),
@@ -3610,6 +3732,26 @@ mod tests {
         assert!(
             event.is_final,
             "a run's completed turn output must be marked final"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fork_posting_into_the_owner_s_chat_names_itself() {
+        let (runtime, mut session_output) = conversation_output_runtime().await;
+        let mut request = sample_request("spawned-multitask-0001");
+        request.spawner = None;
+        request.conversation_target = Some(ConversationTarget {
+            endpoint: "discord".to_string(),
+            conversation_id: "owner-dm".to_string(),
+        });
+
+        runtime.spawn(request, Some(make_resources("paint is $40 a gallon")));
+
+        let event = wait::next_event("the fork's reply to be posted", &mut session_output).await;
+        assert_eq!(event.conversation_id, "owner-dm");
+        assert_eq!(
+            event.content, "spawned-multitask-0001:\npaint is $40 a gallon",
+            "a fork's reply shares main's chat, so it says whose it is"
         );
     }
 

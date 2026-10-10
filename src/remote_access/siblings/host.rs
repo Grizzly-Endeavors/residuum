@@ -68,6 +68,9 @@ pub(crate) struct PendingView {
     pub(crate) slug: String,
     pub(crate) display_name: String,
     pub(crate) expires_at: DateTime<Utc>,
+    /// How often the requester has asked where its request stands: a
+    /// request still being polled has a requester still waiting on it.
+    pub(crate) polls: u32,
 }
 
 /// A request that can be approved: everything the approval records.
@@ -95,6 +98,7 @@ struct Entry {
     code: String,
     decision: Decision,
     expires_at: DateTime<Utc>,
+    polls: u32,
 }
 
 struct NonceEntry {
@@ -209,6 +213,7 @@ impl JoinHost {
             code,
             decision: Decision::Pending,
             expires_at: now + Duration::seconds(LIFETIME_SECS),
+            polls: 0,
         });
         Ok(SubmitReply { join_id })
     }
@@ -218,7 +223,8 @@ impl JoinHost {
     pub(crate) fn poll(&self, join_id: &str, now: DateTime<Utc>) -> Option<PollReply> {
         let mut state = self.state();
         state.prune(now);
-        let entry = state.entries.iter().find(|e| e.join_id == join_id)?;
+        let entry = state.entries.iter_mut().find(|e| e.join_id == join_id)?;
+        entry.polls = entry.polls.saturating_add(1);
         Some(match &entry.decision {
             Decision::Pending => PollReply::Pending,
             Decision::Approved(reply) => reply.clone(),
@@ -240,6 +246,7 @@ impl JoinHost {
                 slug: e.request.slug.clone(),
                 display_name: e.request.display_name.clone(),
                 expires_at: e.expires_at,
+                polls: e.polls,
             })
             .collect()
     }

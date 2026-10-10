@@ -7,7 +7,6 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
 
 use axum::Router;
 use axum::routing::get;
@@ -649,8 +648,13 @@ async fn pebble_an_email_reset_keeps_its_recovery_code_until_the_reset_takes_eff
     let kept = stored_recovery_code(&second_env).expect("the new code is stored");
 
     // A pass through the needs-join path doesn't discard it.
+    let checked_before = second.status().checked_at;
     second.remote.retry_now();
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    second
+        .wait_for("a check after the retry", |status| {
+            status.checked_at != checked_before
+        })
+        .await;
     assert_eq!(second.status().state, RemoteAccessState::NeedsJoin);
     assert_eq!(stored_recovery_code(&second_env).as_ref(), Some(&kept));
 
