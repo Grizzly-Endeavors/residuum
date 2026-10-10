@@ -132,8 +132,107 @@ fn item_start(lines: &[String], at: usize) -> usize {
     idx
 }
 
+/// Where the lexer stands at the end of a line.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Lexed {
+    Code,
+    /// Inside `"..."`; a trailing `\` escapes the newline, which changes nothing here.
+    Str,
+    /// Inside `r#"..."#` with this many `#`.
+    RawStr(usize),
+    /// Inside `/* ... */`, nested this deep.
+    BlockComment(usize),
+}
+
+/// For each line, whether it starts inside a string literal or block comment.
+/// Such a line's indentation is the literal's content, not rustfmt's, so a `}`
+/// at column 0 in an embedded shell script must not end the item around it.
+fn starts_inside_literal(lines: &[String]) -> Vec<bool> {
+    let mut state = Lexed::Code;
+    let mut inside = Vec::with_capacity(lines.len());
+    for line in lines {
+        inside.push(state != Lexed::Code);
+        let chars: Vec<char> = line.chars().collect();
+        let mut i = 0;
+        while let Some(&c) = chars.get(i) {
+            let next = chars.get(i + 1).copied();
+            match state {
+                Lexed::Code => match c {
+                    '/' if next == Some('/') => break,
+                    '/' if next == Some('*') => {
+                        state = Lexed::BlockComment(1);
+                        i += 1;
+                    }
+                    '"' => state = Lexed::Str,
+                    'r' if !i
+                        .checked_sub(1)
+                        .and_then(|p| chars.get(p))
+                        .is_some_and(|p| p.is_alphanumeric() || *p == '_') =>
+                    {
+                        let hashes = chars
+                            .iter()
+                            .skip(i + 1)
+                            .take_while(|ch| **ch == '#')
+                            .count();
+                        if chars.get(i + 1 + hashes) == Some(&'"') {
+                            state = Lexed::RawStr(hashes);
+                            i += 1 + hashes;
+                        }
+                    }
+                    '\'' => {
+                        // A char literal ('"', '\'', '\u{7f}'); a lifetime has no closing quote.
+                        if next == Some('\\') {
+                            if let Some(close) = chars.iter().skip(i + 2).position(|ch| *ch == '\'')
+                            {
+                                i += 2 + close;
+                            }
+                        } else if chars.get(i + 2) == Some(&'\'') {
+                            i += 2;
+                        }
+                    }
+                    _ => {}
+                },
+                Lexed::Str => match c {
+                    '\\' => i += 1,
+                    '"' => state = Lexed::Code,
+                    _ => {}
+                },
+                Lexed::RawStr(hashes) => {
+                    if c == '"'
+                        && chars
+                            .iter()
+                            .skip(i + 1)
+                            .take(hashes)
+                            .filter(|ch| **ch == '#')
+                            .count()
+                            == hashes
+                    {
+                        state = Lexed::Code;
+                        i += hashes;
+                    }
+                }
+                Lexed::BlockComment(depth) => {
+                    if c == '*' && next == Some('/') {
+                        state = if depth == 1 {
+                            Lexed::Code
+                        } else {
+                            Lexed::BlockComment(depth - 1)
+                        };
+                        i += 1;
+                    } else if c == '/' && next == Some('*') {
+                        state = Lexed::BlockComment(depth + 1);
+                        i += 1;
+                    }
+                }
+            }
+            i += 1;
+        }
+    }
+    inside
+}
+
 /// The index of the last line of the item starting at `start`.
-fn item_end(lines: &[String], start: usize) -> usize {
+fn item_end(lines: &[String], in_literal: &[bool], start: usize) -> usize {
     let Some(first) = lines.get(start) else {
         return start;
     };
@@ -143,7 +242,7 @@ fn item_end(lines: &[String], start: usize) -> usize {
     let item_indent = indent(first);
     for (idx, line) in lines.iter().enumerate().skip(start + 1) {
         let trimmed = line.trim_start();
-        if trimmed.is_empty() {
+        if trimmed.is_empty() || in_literal.get(idx).copied().unwrap_or(false) {
             continue;
         }
         let line_indent = indent(line);
@@ -221,13 +320,14 @@ fn crate_sources() -> Vec<SourceFile> {
         .map(|(path, lines)| {
             let mut test = vec![test_files.contains(&path); lines.len()];
             if !test_files.contains(&path) {
+                let in_literal = starts_inside_literal(&lines);
                 let mut idx = 0;
                 while idx < lines.len() {
                     if lines
                         .get(idx)
                         .is_some_and(|line| line.trim() == "#[cfg(test)]")
                     {
-                        let end = item_end(&lines, item_start(&lines, idx));
+                        let end = item_end(&lines, &in_literal, item_start(&lines, idx));
                         for flag in test.iter_mut().take(end + 1).skip(idx) {
                             *flag = true;
                         }
@@ -352,6 +452,11 @@ mod tests {
                 "src/hub/host.rs",
                 ".map(|running| *running.control.reload_done.borrow())",
             ),
+            // Below fake-tool scripts whose raw strings hold a column-0 `}`.
+            (
+                "src/interfaces/teams/setup_job.rs",
+                "async fn test_job_failure_mid_provision_records_created_and_retry() {",
+            ),
         ];
         for (path, needle) in test {
             assert!(
@@ -457,6 +562,28 @@ mod tests {
         assert!(
             problems.is_empty(),
             "test code waits on elapsed time. Wait on the event instead, with crate::testing::wait (channels, watches, polled conditions under one hang guard), crate::testing::gate (hold a call open until the test releases it) or crate::testing::clock (a paused clock, for code with no real I/O); CONTRIBUTING.md, \"Waiting in tests\", says which fits where.\n{problems}"
+        );
+    }
+
+    #[test]
+    fn lines_inside_strings_and_block_comments_are_marked() {
+        let lines: Vec<String> = [
+            r##"let script = r#"#!/bin/sh"##,
+            "}",
+            r##""#;"##,
+            r#"let quote = '"';"#,
+            "let s = \"two",
+            "lines\";",
+            "/* outer /* inner */",
+            "still */",
+            "fn after<'a>() {}",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        assert_eq!(
+            starts_inside_literal(&lines),
+            [false, true, true, false, false, true, false, true, false]
         );
     }
 

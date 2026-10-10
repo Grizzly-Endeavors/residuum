@@ -1209,6 +1209,7 @@ async fn spawn_login_process(atk_bin: &Path, log: &BoundedLog) -> Result<LoginSp
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::wait;
     use std::time::Duration;
 
     /// Write an executable fake tool at `path`, ready to exec on return.
@@ -1695,19 +1696,12 @@ exit 0
         let _ = mgr.start_job("agent-1", req).await.unwrap();
 
         // Poll job until Succeeded
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        let mut final_job = None;
-        while tokio::time::Instant::now() < deadline {
-            if let Some(job) = mgr.get_job("agent-1", None).await
-                && (job.state == TeamsSetupState::Succeeded || job.state == TeamsSetupState::Failed)
-            {
-                final_job = Some(job);
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-
-        let job = final_job.expect("job should finish");
+        let job = wait::until("the setup job to finish", || async {
+            mgr.get_job("agent-1", None).await.filter(|job| {
+                job.state == TeamsSetupState::Succeeded || job.state == TeamsSetupState::Failed
+            })
+        })
+        .await;
         assert_eq!(
             job.state,
             TeamsSetupState::Succeeded,
@@ -1764,34 +1758,25 @@ exit 0
 
         // Wait until it reaches Provision phase and grandchild.pid exists
         let pid_file = root.join("agent-1/teams-app/grandchild.pid");
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        let mut grandchild_pid = None;
-        while tokio::time::Instant::now() < deadline {
-            if let Some(j) = mgr.get_job("agent-1", None).await
-                && j.phase == TeamsSetupPhase::Provision
-                && let Ok(content) = tokio::fs::read_to_string(&pid_file).await
-                && let Ok(pid) = content.trim().parse::<u32>()
-            {
-                grandchild_pid = Some(pid);
-                break;
+        let pid = wait::until("the grandchild to write its pid", || async {
+            let j = mgr.get_job("agent-1", None).await?;
+            if j.phase != TeamsSetupPhase::Provision {
+                return None;
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-
-        let pid = grandchild_pid.expect("grandchild should have spawned and written pid");
+            let content = tokio::fs::read_to_string(&pid_file).await.ok()?;
+            content.trim().parse::<u32>().ok()
+        })
+        .await;
         assert!(crate::util::process::is_process_running(pid));
 
         let cancelled = mgr.cancel_job("agent-1").await.unwrap();
         assert_eq!(cancelled.state, TeamsSetupState::Cancelled);
 
         // Verify that the grandchild process tree is actually gone
-        let kill_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        while tokio::time::Instant::now() < kill_deadline {
-            if !crate::util::process::is_process_running(pid) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        wait::until_true("the grandchild process tree to terminate", || {
+            !crate::util::process::is_process_running(pid)
+        })
+        .await;
         assert!(
             !crate::util::process::is_process_running(pid),
             "grandchild process tree should be terminated after cancel"
@@ -1827,21 +1812,15 @@ exit 0
         mgr.start_job("agent-1", req).await.unwrap();
 
         // Wait until it reaches SignIn phase and WaitingForUser state
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        let mut sign_in_prompt = None;
-        while tokio::time::Instant::now() < deadline {
-            if let Some(j) = mgr.get_job("agent-1", None).await
-                && j.phase == TeamsSetupPhase::SignIn
-                && j.state == TeamsSetupState::WaitingForUser
-                && let Some(p) = j.sign_in
-            {
-                sign_in_prompt = Some(p);
-                break;
+        let prompt = wait::until("the job to wait for sign-in", || async {
+            let j = mgr.get_job("agent-1", None).await?;
+            if j.phase == TeamsSetupPhase::SignIn && j.state == TeamsSetupState::WaitingForUser {
+                j.sign_in
+            } else {
+                None
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-
-        let prompt = sign_in_prompt.expect("job should enter sign_in waiting_for_user");
+        })
+        .await;
         let port = prompt.redirect_port;
 
         // Port mismatch rejection
@@ -1872,18 +1851,17 @@ exit 0
             .expect("forward_redirect should succeed with matching port");
 
         // The job should now advance past SignIn to Scaffold/Provision/Succeeded
-        let advance_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        let mut advanced = false;
-        while tokio::time::Instant::now() < advance_deadline {
-            if let Some(j) = mgr.get_job("agent-1", None).await
-                && (j.phase != TeamsSetupPhase::SignIn || j.state == TeamsSetupState::Succeeded)
-            {
-                advanced = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        assert!(advanced, "job should advance past sign-in after redirect");
+        let advanced = wait::until("the job to advance past sign-in", || async {
+            mgr.get_job("agent-1", None).await.filter(|j| {
+                j.phase != TeamsSetupPhase::SignIn || j.state == TeamsSetupState::Succeeded
+            })
+        })
+        .await;
+        assert!(
+            advanced.phase != TeamsSetupPhase::SignIn
+                || advanced.state == TeamsSetupState::Succeeded,
+            "job should advance past sign-in after redirect"
+        );
     }
 
     #[tokio::test]
@@ -1916,19 +1894,12 @@ exit 0
         mgr.start_job("agent-1", req).await.unwrap();
 
         // Wait for failure
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        let mut failed_job = None;
-        while tokio::time::Instant::now() < deadline {
-            if let Some(j) = mgr.get_job("agent-1", None).await
-                && j.state == TeamsSetupState::Failed
-            {
-                failed_job = Some(j);
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-
-        let job = failed_job.expect("job should have failed");
+        let job = wait::until("the job to fail", || async {
+            mgr.get_job("agent-1", None)
+                .await
+                .filter(|j| j.state == TeamsSetupState::Failed)
+        })
+        .await;
         assert_eq!(job.phase, TeamsSetupPhase::Provision);
         assert_eq!(job.created.bot_id.as_deref(), Some("partial-bot-id-4444"));
         assert!(job.error.is_some());
@@ -1939,19 +1910,12 @@ exit 0
         mgr.retry_job("agent-1").await.unwrap();
 
         // Wait for success
-        let retry_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        let mut succeeded_job = None;
-        while tokio::time::Instant::now() < retry_deadline {
-            if let Some(j) = mgr.get_job("agent-1", None).await
-                && j.state == TeamsSetupState::Succeeded
-            {
-                succeeded_job = Some(j);
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-
-        let retried = succeeded_job.expect("retried job should succeed");
+        let retried = wait::until("the retried job to succeed", || async {
+            mgr.get_job("agent-1", None)
+                .await
+                .filter(|j| j.state == TeamsSetupState::Succeeded)
+        })
+        .await;
         assert_eq!(retried.created.bot_id.as_deref(), Some("bot-mock-1234"));
     }
 

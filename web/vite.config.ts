@@ -6,6 +6,7 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { svelteTesting } from "@testing-library/svelte/vite";
 import { serviceWorkerPlugin } from "./build/service-worker";
 import { mockServerPlugin } from "./mock/plugin";
+import { HANG_GUARD_MS } from "./src/test/guard";
 
 const isMock = process.env.VITE_MOCK === "1";
 // Vitest sets this before loading the config. HMR stays on for `vite dev`.
@@ -69,6 +70,11 @@ export default defineConfig(({ command }) => ({
     }),
   },
   test: {
+    // A hang guard, not a speed budget: tests wait on events, and a loaded
+    // machine can take far longer than the 5s default to render and settle.
+    // src/test/guard.ts holds it and the matching bound for waits in a test.
+    testTimeout: HANG_GUARD_MS,
+    hookTimeout: HANG_GUARD_MS,
     // Reported in CI's job summary, with no threshold. `npm run test:coverage` runs it locally.
     coverage: {
       provider: "v8",

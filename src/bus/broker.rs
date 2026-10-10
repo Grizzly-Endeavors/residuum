@@ -292,6 +292,7 @@ mod tests {
     use crate::bus::topics;
     use crate::bus::types::{EndpointName, NotifyName, SYSTEM_CHANNEL};
     use crate::interfaces::types::MessageOrigin;
+    use crate::testing::clock;
 
     fn test_timestamp() -> chrono::NaiveDateTime {
         NaiveDate::from_ymd_opt(2026, 3, 13)
@@ -388,7 +389,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn subscriber_recv_returns_none_after_drop() {
         let handle = spawn_broker();
         let ep = EndpointName::from("ws");
@@ -399,8 +400,8 @@ mod tests {
 
         // The broker is still alive because sub holds a cmd_tx clone.
         // Verify recv doesn't immediately return None (it would block).
-        let result = tokio::time::timeout(tokio::time::Duration::from_millis(50), sub.recv()).await;
-        assert!(result.is_err(), "recv should timeout while broker is alive");
+        let result = clock::within(tokio::time::Duration::from_millis(50), sub.recv()).await;
+        assert!(result.is_none(), "recv should wait while broker is alive");
     }
 
     #[tokio::test]
@@ -459,7 +460,7 @@ mod tests {
     }
 
     /// Verify that different event types on the same topic are routed independently.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn multi_event_routing_on_same_topic() {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
@@ -492,11 +493,10 @@ mod tests {
         assert_eq!(resp.content, "hello");
 
         // sub_lifecycle should NOT have received anything
-        let timeout_result: Result<Result<Option<TurnLifecycleEvent>, _>, _> =
-            tokio::time::timeout(tokio::time::Duration::from_millis(50), sub_lifecycle.recv())
-                .await;
+        let timeout_result: Option<Result<Option<TurnLifecycleEvent>, _>> =
+            clock::within(tokio::time::Duration::from_millis(50), sub_lifecycle.recv()).await;
         assert!(
-            timeout_result.is_err(),
+            timeout_result.is_none(),
             "lifecycle subscriber should not receive ResponseEvent"
         );
     }
@@ -528,7 +528,7 @@ mod tests {
     /// `WorkbenchEvent` on `Workbench` is a lossy route: a subscriber that
     /// falls behind past its capacity drops the overflow instead of blocking
     /// the broker, and catches up once drained.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn backpressure_drops_and_recovers() {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
@@ -560,9 +560,9 @@ mod tests {
         }
 
         // Overflow must not appear in sub's channel.
-        let result = tokio::time::timeout(tokio::time::Duration::from_millis(50), sub.recv()).await;
+        let result = clock::within(tokio::time::Duration::from_millis(50), sub.recv()).await;
         assert!(
-            result.is_err(),
+            result.is_none(),
             "full subscriber should not receive overflow event"
         );
 
@@ -601,7 +601,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn backpressure_drops_event_and_recovers() {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
@@ -650,10 +650,9 @@ mod tests {
         let first = small_sub.recv().await.unwrap().unwrap();
         assert_eq!(first.id, "bp1");
 
-        let dropped =
-            tokio::time::timeout(tokio::time::Duration::from_millis(50), small_sub.recv()).await;
+        let dropped = clock::within(tokio::time::Duration::from_millis(50), small_sub.recv()).await;
         assert!(
-            dropped.is_err(),
+            dropped.is_none(),
             "second event should have been dropped due to backpressure"
         );
 

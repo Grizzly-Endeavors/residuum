@@ -11,6 +11,9 @@ use std::time::Duration;
 
 use tokio::sync::{broadcast, mpsc, watch};
 
+use crate::bus::WorkbenchEvent;
+use crate::bus::{BusHandle, Subscriber, topics};
+
 /// The suite's one deadline: how long a wait runs before the test is taken to
 /// have hung.
 pub(crate) const HANG_GUARD: Duration = Duration::from_secs(60);
@@ -193,6 +196,30 @@ pub(crate) fn drain<R: Recv>(rx: &mut R) -> Vec<R::Item> {
     std::iter::from_fn(|| rx.try_next()).collect()
 }
 
+/// Returns once every event `bus` was sent before this call has been handed
+/// to every subscriber. The broker takes commands in order and fans each one
+/// out before the next, so a barrier event that comes back proves the earlier
+/// publishes were fanned out too. Then `drain` on a subscriber shows exactly
+/// what it was sent.
+pub(crate) async fn bus_barrier(bus: &BusHandle) {
+    let mut barrier: Subscriber<WorkbenchEvent> = bus
+        .subscribe(topics::Workbench)
+        .await
+        .expect("the broker is running");
+    bus.publisher()
+        .publish(
+            topics::Workbench,
+            WorkbenchEvent::Updated {
+                name: "barrier".to_string(),
+            },
+        )
+        .await
+        .expect("the broker is running");
+    guarded("the bus barrier", barrier.recv())
+        .await
+        .expect("the broker is running");
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -281,6 +308,33 @@ mod tests {
         tx.send(2).unwrap();
         drop(tx);
         next_where("a 3", &mut rx, |n| *n == 3).await;
+    }
+
+    #[tokio::test]
+    async fn bus_barrier_follows_every_earlier_publish() {
+        let bus = crate::bus::spawn_broker();
+        let mut sub: Subscriber<WorkbenchEvent> = bus.subscribe(topics::Workbench).await.unwrap();
+        bus.publisher()
+            .publish(
+                topics::Workbench,
+                WorkbenchEvent::Updated {
+                    name: "earlier".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        bus_barrier(&bus).await;
+        assert_eq!(
+            sub.drain(),
+            vec![
+                WorkbenchEvent::Updated {
+                    name: "earlier".to_string()
+                },
+                WorkbenchEvent::Updated {
+                    name: "barrier".to_string()
+                },
+            ]
+        );
     }
 
     #[tokio::test]

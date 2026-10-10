@@ -321,6 +321,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::config::WebhookRouting;
+    use crate::testing::wait;
 
     async fn make_app(
         webhooks: HashMap<String, WebhookEndpointState>,
@@ -430,9 +431,8 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
-        let notification = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
+        let notification = wait::guarded("the webhook notification", sub.recv())
             .await
-            .unwrap()
             .unwrap()
             .unwrap();
         assert_eq!(notification.content, "hello from webhook");
@@ -452,9 +452,8 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
-        let notification = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
+        let notification = wait::guarded("the webhook notification", sub.recv())
             .await
-            .unwrap()
             .unwrap()
             .unwrap();
         assert_eq!(notification.content, "plain text message");
@@ -532,9 +531,8 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
-        let notification = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
+        let notification = wait::guarded("the webhook notification", sub.recv())
             .await
-            .unwrap()
             .unwrap()
             .unwrap();
         assert_eq!(notification.content, "hello");
@@ -560,9 +558,8 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
-        let notification = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
+        let notification = wait::guarded("the webhook notification", sub.recv())
             .await
-            .unwrap()
             .unwrap()
             .unwrap();
         assert_eq!(notification.content, body);
@@ -589,9 +586,8 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
-        let notification = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
+        let notification = wait::guarded("the webhook notification", sub.recv())
             .await
-            .unwrap()
             .unwrap()
             .unwrap();
         assert_eq!(notification.content, "Bug report\n\nSomething broke");
@@ -678,9 +674,8 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
         let event: crate::bus::SpawnRequestEvent =
-            tokio::time::timeout(std::time::Duration::from_millis(100), preset_sub.recv())
+            wait::guarded("the webhook spawn request", preset_sub.recv())
                 .await
-                .unwrap()
                 .unwrap()
                 .unwrap();
         assert_eq!(event.prompt, "review this");
@@ -706,9 +701,8 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
-        let notification = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
+        let notification = wait::guarded("the webhook notification", sub.recv())
             .await
-            .unwrap()
             .unwrap()
             .unwrap();
         assert_eq!(notification.content, "notify me");
