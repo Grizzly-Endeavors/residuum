@@ -1172,6 +1172,7 @@ fn pointer_note(point: &ResumePoint) -> String {
 mod tests {
     use super::*;
     use crate::bus::{EventTrigger, SkillName, Subscriber};
+    use crate::testing::wait;
     use tokio_util::sync::CancellationToken;
 
     const NO_LIMIT: HopLimits = HopLimits { soft: 8, hard: 32 };
@@ -1419,15 +1420,14 @@ mod tests {
             "error message should be actionable: {err}"
         );
 
+        wait::bus_barrier(&bus_handle).await;
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), spawn_sub.recv())
-                .await
-                .is_err(),
+            spawn_sub.drain().is_empty(),
             "a busy channel must never trigger a duplicate resume spawn"
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn send_to_a_completing_session_returns_immediately_and_resumes_once_it_clears() {
         // The whole point of the non-blocking redesign: `send` must not
         // await the completing run's own teardown (which can include a slow
@@ -1453,8 +1453,8 @@ mod tests {
         let address = info.address.clone();
         let run_id = info.run_id.clone();
 
-        let outcome = tokio::time::timeout(
-            std::time::Duration::from_millis(200),
+        let outcome = wait::guarded(
+            "send to return for a completing target, not block on its teardown",
             messenger.send(
                 address.as_ref(),
                 SessionAddress::from(MAIN_ADDRESS),
@@ -1464,26 +1464,25 @@ mod tests {
             ),
         )
         .await
-        .expect("send must return promptly for a completing target, not block on its teardown")
         .unwrap();
         assert!(matches!(outcome, DeliveryOutcome::Queued(addr) if addr == address));
 
         // Nothing should be published yet: the deferred task is still
         // waiting for the entry to clear.
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), spawn_sub.recv())
+            crate::testing::clock::within(std::time::Duration::from_millis(50), spawn_sub.recv())
                 .await
-                .is_err(),
+                .is_none(),
             "the resume must wait for the completing run to clear before publishing"
         );
 
         registry.remove(&address, &run_id);
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), spawn_sub.recv())
-            .await
-            .expect("the deferred resume should publish once the entry clears")
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event(
+            "the deferred resume to publish once the entry clears",
+            &mut spawn_sub,
+        )
+        .await;
         assert_eq!(event.address, address);
         assert!(event.prompt.contains("any updates?"));
         assert_eq!(event.model_tier, crate::config::BackgroundModelTier::Large);
@@ -1538,10 +1537,9 @@ mod tests {
             }
         }
 
+        wait::bus_barrier(&bus_handle).await;
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(100), spawn_sub.recv())
-                .await
-                .is_err(),
+            spawn_sub.drain().is_empty(),
             "no resume should ever be published once the address is already live"
         );
     }
@@ -1573,11 +1571,8 @@ mod tests {
             resume_or_deliver_after_clear(&registry, &publisher, &store, &address, &msg).await;
         assert!(done, "resuming is a final outcome");
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), spawn_sub.recv())
-            .await
-            .expect("a genuinely free address must be resumed")
-            .unwrap()
-            .unwrap();
+        let event =
+            wait::next_event("a genuinely free address to be resumed", &mut spawn_sub).await;
         assert_eq!(event.address, address);
         assert!(event.prompt.contains("still there?"));
     }
@@ -1882,7 +1877,7 @@ mod tests {
         assert_eq!(target.conversation_id, "chan-1");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn deliver_conversation_to_a_completing_session_queues_and_resumes_once_clear() {
         let (messenger, registry, bus_handle) = messenger();
         let mut sub: Subscriber<crate::bus::SpawnRequestEvent> =
@@ -1904,8 +1899,8 @@ mod tests {
         let address = info.address.clone();
         let run_id = info.run_id.clone();
 
-        let outcome = tokio::time::timeout(
-            std::time::Duration::from_millis(200),
+        let outcome = wait::guarded(
+            "deliver_conversation to return for a completing target",
             messenger.deliver_conversation(
                 &address,
                 sample_inbound("any updates?", None),
@@ -1913,24 +1908,23 @@ mod tests {
             ),
         )
         .await
-        .expect("deliver_conversation must return promptly for a completing target")
         .unwrap();
         assert!(matches!(outcome, ConversationDeliveryOutcome::Queued(addr) if addr == address));
 
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), sub.recv())
+            crate::testing::clock::within(std::time::Duration::from_millis(50), sub.recv())
                 .await
-                .is_err(),
+                .is_none(),
             "the resume must wait for the completing run to clear before publishing"
         );
 
         registry.remove(&address, &run_id);
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
-            .await
-            .expect("the deferred resume should publish once the entry clears")
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event(
+            "the deferred resume to publish once the entry clears",
+            &mut sub,
+        )
+        .await;
         assert_eq!(event.address, address);
         assert!(event.prompt.contains("any updates?"));
     }
@@ -2059,10 +2053,9 @@ mod tests {
             "error should name the config setting that controls the limit, got: {err}"
         );
 
+        wait::bus_barrier(&bus_handle).await;
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), sub.recv())
-                .await
-                .is_err(),
+            sub.drain().is_empty(),
             "a refused message must never actually reach the target"
         );
     }

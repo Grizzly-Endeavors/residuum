@@ -416,6 +416,7 @@ mod tests {
     use crate::config::BackgroundModelTier;
     use crate::inference::MessageSender;
     use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOrigin};
+    use crate::testing::wait;
     use tokio_util::sync::CancellationToken;
 
     fn sample_inbound(id: &str, content: &str, sender_name: &str) -> MessageEvent {
@@ -637,25 +638,18 @@ mod tests {
         deliver_race_guard_content(&registry, &publisher, new_event)
             .expect("a saturated channel must hand off to a retry, not error");
 
-        let mut delivered = false;
-        for _ in 0..crate::background::registry::INTERRUPT_CHANNEL_CAPACITY + 5 {
-            let Ok(Some(interrupt)) =
-                tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await
-            else {
-                break;
-            };
-            if let Interrupt::UserMessage(m) = interrupt
-                && m.id == "the-new-message"
-            {
-                assert_eq!(m.content, "can anyone see this?");
-                delivered = true;
-                break;
+        let interrupt = wait::next_matching(
+            "the race-guard user message to be delivered, never dropped",
+            &mut rx,
+            |interrupt| matches!(interrupt, Interrupt::UserMessage(m) if m.id == "the-new-message"),
+        )
+        .await;
+        match interrupt {
+            Interrupt::UserMessage(m) => assert_eq!(m.content, "can anyone see this?"),
+            Interrupt::AgentMessage(_) | Interrupt::Subconscious(_) | Interrupt::Stopped => {
+                panic!("the race-guard user message should be the one delivered")
             }
         }
-        assert!(
-            delivered,
-            "the race-guard user message must eventually be delivered, never dropped"
-        );
     }
 
     #[tokio::test]
@@ -682,11 +676,8 @@ mod tests {
         deliver_race_guard_content(&registry, &publisher, new_event)
             .expect("a target that just finished must hand off to a retry, not error");
 
-        let republished = tokio::time::timeout(std::time::Duration::from_secs(1), spawns.recv())
-            .await
-            .expect("a fresh spawn request should be republished promptly")
-            .unwrap()
-            .unwrap();
+        let republished =
+            wait::next_event("a fresh spawn request to be republished", &mut spawns).await;
         assert_eq!(republished.address, SessionAddress::from(address));
         assert_eq!(
             republished.inbound.map(|m| m.content),
@@ -696,14 +687,6 @@ mod tests {
     }
 
     // ── handle_spawn_failure dedup ───────────────────────────────────────
-
-    async fn recv_notice(sub: &mut Subscriber<NoticeEvent>) -> Option<NoticeEvent> {
-        tokio::time::timeout(std::time::Duration::from_millis(150), sub.recv())
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .flatten()
-    }
 
     #[tokio::test]
     async fn first_pulse_spawn_failure_publishes_a_notice() {
@@ -723,9 +706,7 @@ mod tests {
         )
         .await;
 
-        let notice = recv_notice(&mut sub)
-            .await
-            .expect("first failure should notice");
+        let notice = wait::next_event("the first failure's notice", &mut sub).await;
         assert!(notice.message.contains("email_check"));
         assert!(notice.message.contains("skill 'ghost' not found"));
     }
@@ -748,7 +729,7 @@ mod tests {
             &err,
         )
         .await;
-        assert!(recv_notice(&mut sub).await.is_some(), "first call notices");
+        wait::next_event("the first call's notice", &mut sub).await;
 
         handle_spawn_failure(
             &bus.publisher(),
@@ -758,8 +739,9 @@ mod tests {
             &err,
         )
         .await;
+        wait::bus_barrier(&bus).await;
         assert!(
-            recv_notice(&mut sub).await.is_none(),
+            sub.drain().is_empty(),
             "an unchanged, still-failing retry must not notice again"
         );
     }
@@ -781,7 +763,7 @@ mod tests {
             &anyhow::anyhow!("skill 'ghost' not found"),
         )
         .await;
-        assert!(recv_notice(&mut sub).await.is_some());
+        wait::next_event("the first pulse failure's notice", &mut sub).await;
 
         handle_spawn_failure(
             &bus.publisher(),
@@ -791,9 +773,7 @@ mod tests {
             &anyhow::anyhow!("a different failure now"),
         )
         .await;
-        let notice = recv_notice(&mut sub)
-            .await
-            .expect("a genuinely new error should notice again");
+        let notice = wait::next_event("a genuinely new error's notice", &mut sub).await;
         assert!(notice.message.contains("a different failure now"));
     }
 
@@ -815,7 +795,7 @@ mod tests {
         )
         .await;
 
-        let notice = recv_notice(&mut sub).await.expect("should notice");
+        let notice = wait::next_event("the scheduled action's notice", &mut sub).await;
         assert!(notice.message.contains("scheduled action"));
         assert!(notice.message.contains("nightly digest"));
     }
@@ -844,6 +824,7 @@ mod tests {
             .await;
         }
 
-        assert!(recv_notice(&mut sub).await.is_none());
+        wait::bus_barrier(&bus).await;
+        assert!(sub.drain().is_empty());
     }
 }

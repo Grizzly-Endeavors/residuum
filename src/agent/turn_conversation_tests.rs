@@ -123,7 +123,7 @@ impl InferenceProvider for ScriptedProvider {
         for push in step.pushes {
             match push {
                 Push::Delta(delta) => sink.push(delta),
-                Push::Wait(time) => tokio::time::sleep(time).await,
+                Push::Wait(time) => crate::testing::clock::elapse(time).await,
                 Push::Hang => std::future::pending().await,
             }
         }
@@ -716,7 +716,7 @@ async fn a_stopped_call_keeps_the_text_it_had_streamed_and_ends_quietly() {
     let stop = CancellationToken::new();
     let stopper = stop.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        crate::testing::clock::elapse(Duration::from_millis(10)).await;
         stopper.cancel();
     });
 
