@@ -613,6 +613,9 @@ impl Inner {
                     retry_delay(failures)
                 }
             };
+            let checked_at = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            self.status
+                .send_modify(|status| status.checked_at = Some(checked_at));
             tokio::select! {
                 () = tokio::time::sleep(wait) => {}
                 () = self.kick.notified() => {}

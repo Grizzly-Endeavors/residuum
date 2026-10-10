@@ -183,6 +183,12 @@ pub struct RemoteAccessStatus {
     pub join: Option<JoinProgress>,
     /// Instances waiting for this one to approve them.
     pub pending_joins: Vec<PendingJoinInfo>,
+    /// When Residuum last finished checking this instance's remote access,
+    /// failed checks included (RFC 3339, UTC, to the millisecond). Absent
+    /// until the first check ends. A retry has run once this moves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub checked_at: Option<String>,
 }
 
 impl RemoteAccessStatus {
@@ -204,6 +210,7 @@ impl RemoteAccessStatus {
             siblings: Vec::new(),
             join: None,
             pending_joins: Vec::new(),
+            checked_at: None,
         }
     }
 
