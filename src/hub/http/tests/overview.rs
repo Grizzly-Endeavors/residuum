@@ -662,7 +662,7 @@ async fn a_burst_of_changes_is_gathered_into_frames_a_window_apart_and_the_last_
         let id = format!("20260930_{n:02}");
         place_item(&h, "scout", &id).await;
         changed(&h, "scout", AgentChangeKind::UserInboxAdded { item_id: id });
-        tokio::time::sleep(BURST_GAP).await;
+        crate::testing::clock::elapse(BURST_GAP).await;
     }
     let received = collector.await.unwrap();
 
@@ -705,7 +705,7 @@ async fn a_change_during_the_wait_is_in_the_frame_the_wait_ends_with() {
             item_id: "20260930_first".to_string(),
         },
     );
-    tokio::time::sleep(OVERVIEW_WINDOW / 2).await;
+    crate::testing::clock::elapse(OVERVIEW_WINDOW / 2).await;
     place_item(&h, "scout", "20260930_second").await;
     changed(
         &h,

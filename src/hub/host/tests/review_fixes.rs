@@ -102,16 +102,22 @@ async fn a_create_chain_stops_at_the_hop_limit() {
         result.output
     );
     assert!(hub.host.summary("nova").is_ok());
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The notice is sent only after the delivery has been refused, so once it
+    // arrives, nothing is on its way to the creator's model.
+    wait::next_matching(
+        "the refusal to be shown to the user",
+        &mut events,
+        |event| {
+            matches!(
+                event,
+                HubEvent::Notice { message, .. }
+                    if message.contains("role description couldn't be delivered")
+            )
+        },
+    )
+    .await;
     assert!(
         !model_was_told(hub.mock("scout"), "keeps the wiki tidy").await,
         "a message past the hop limit is not delivered"
-    );
-    assert!(
-        drain_events(&mut events).iter().any(|event| matches!(
-            event,
-            HubEvent::Notice { message, .. } if message.contains("role description couldn't be delivered")
-        )),
-        "the refusal is shown to the user"
     );
 }

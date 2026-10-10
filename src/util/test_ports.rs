@@ -33,8 +33,9 @@ static NEXT_SLOT: AtomicU16 = AtomicU16::new(0);
 /// binds the same port number.
 pub(crate) struct ReservedPort {
     port: u16,
-    /// Never read; held only so dropping this value frees the port.
-    _listener: std::net::TcpListener,
+    /// Held open so the port stays reserved until this value is dropped or
+    /// converted with [`ReservedPort::into_tokio_listener`].
+    listener: std::net::TcpListener,
 }
 
 impl ReservedPort {
@@ -42,6 +43,21 @@ impl ReservedPort {
     #[must_use]
     pub(crate) fn port(&self) -> u16 {
         self.port
+    }
+
+    /// The reserved socket as a tokio listener on the same port. The port
+    /// stays bound throughout, so no other process can take it on the way to
+    /// the component that serves on it.
+    ///
+    /// # Panics
+    /// Panics outside a tokio runtime, or if the socket can't go non-blocking.
+    #[must_use]
+    pub(crate) fn into_tokio_listener(self) -> tokio::net::TcpListener {
+        self.listener
+            .set_nonblocking(true)
+            .expect("a reserved port can go non-blocking");
+        tokio::net::TcpListener::from_std(self.listener)
+            .expect("a reserved port converts to a tokio listener")
     }
 }
 
@@ -93,8 +109,5 @@ pub(crate) fn free_port() -> u16 {
 #[must_use]
 pub(crate) fn reserve_port() -> ReservedPort {
     let (port, listener) = probe_free_port();
-    ReservedPort {
-        port,
-        _listener: listener,
-    }
+    ReservedPort { port, listener }
 }

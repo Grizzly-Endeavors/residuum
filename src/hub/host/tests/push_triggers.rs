@@ -354,15 +354,11 @@ async fn a_reply_is_pushed_once_when_no_client_was_connected_and_never_for_a_bac
     // A reply the connected client saw.
     assert_eq!(hub.chat("scout", "hello").await, "scout here");
 
-    // A reply the client left before: a slow model, and the client closes
-    // its socket while the turn runs.
+    // A reply the client left before: the model holds its reply, and the
+    // client closes its socket while the turn runs.
     hub.mock("scout").reset().await;
-    mount_reply(
-        hub.mock("scout"),
-        "**Away** reply",
-        Duration::from_millis(600),
-    )
-    .await;
+    mount_reply(hub.mock("scout"), "**Away** reply").await;
+    hub.gate("scout").close();
     let (mut ws, _) =
         tokio_tungstenite::connect_async(format!("ws://{}/api/agents/scout/ws", hub.addr))
             .await
@@ -372,12 +368,14 @@ async fn a_reply_is_pushed_once_when_no_client_was_connected_and_never_for_a_bac
     ))
     .await
     .unwrap();
-    wait::until("scout to be busy", || async {
-        hub.activity_of("scout").busy.then_some(())
-    })
-    .await;
+    hub.gate("scout").until_held(1).await;
     ws.close(None).await.unwrap();
     drop(ws);
+    wait::until("the client to leave", || async {
+        (hub.host.connected_clients("scout") == Some(0)).then_some(())
+    })
+    .await;
+    hub.gate("scout").open_all();
     phone.until_pushes(1).await;
 
     // A teammate's message starts a background turn that still replies.

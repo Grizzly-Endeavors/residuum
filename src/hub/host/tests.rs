@@ -19,8 +19,9 @@ use crate::hub::push::{PushTriggers, TriggerInputs};
 use crate::hub::runtime::build_app;
 use crate::hub::team_events::{TeamEventLog, TeamEventRecorder};
 use crate::hub::test_support::{mount_reply, reserve_port, write_agent};
+use crate::testing::gate::Gate;
 use crate::testing::model::GatedModel;
-use crate::testing::wait::{self, HANG_GUARD};
+use crate::testing::wait::{self};
 use crate::workspace::watch::WatchHealth;
 
 /// A hub over a temp residuum root with running-capable agents, each talking
@@ -33,7 +34,7 @@ struct Fixture {
     mocks: BTreeMap<String, MockServer>,
     /// The gated proxy each agent's model calls go through, in front of its
     /// mock server; holding it keeps it serving.
-    _models: BTreeMap<String, GatedModel>,
+    models: BTreeMap<String, GatedModel>,
     http: reqwest::Client,
     /// What the hub's recorder has written since the fixture was built.
     team_events: Arc<TeamEventLog>,
@@ -77,7 +78,7 @@ impl Fixture {
         let mut models = BTreeMap::new();
         for name in names {
             let server = MockServer::start().await;
-            mount_reply(&server, &format!("{name} here"), Duration::ZERO).await;
+            mount_reply(&server, &format!("{name} here")).await;
             let model = GatedModel::in_front_of(&server.uri()).await;
             write_agent(root.path(), name, &model.uri());
             mocks.insert((*name).to_string(), server);
@@ -128,7 +129,7 @@ impl Fixture {
             services,
             addr,
             mocks,
-            _models: models,
+            models,
             http: reqwest::Client::new(),
             team_events,
             _recorder: recorder,
@@ -137,6 +138,14 @@ impl Fixture {
             _push_triggers: push_triggers,
             push_notices,
         }
+    }
+
+    /// The gate every model call from the agent `name` waits at.
+    fn gate(&self, name: &str) -> &Gate {
+        self.models
+            .get(name)
+            .unwrap_or_else(|| panic!("no model server for {name}"))
+            .gate()
     }
 
     fn url(&self, path: &str) -> String {
@@ -932,9 +941,9 @@ async fn patching_a_stopped_agent_writes_its_config_without_starting_it() {
 #[tokio::test]
 async fn unread_counts_messages_while_no_client_is_connected_and_resets_on_connect() {
     let hub = Fixture::new(&["scout"], "").await;
-    // A slow model, so the client can leave before the reply is published.
-    hub.mock("scout").reset().await;
-    mount_reply(hub.mock("scout"), "scout here", Duration::from_millis(600)).await;
+    // The model holds its reply until the client has left, so the reply is
+    // published while no client is connected.
+    hub.gate("scout").close();
     hub.host.start("scout").await.unwrap();
     let mut events = hub.host.subscribe();
 
@@ -947,12 +956,14 @@ async fn unread_counts_messages_while_no_client_is_connected_and_resets_on_conne
     ))
     .await
     .unwrap();
-    wait::until("scout to be busy", || async {
-        hub.activity_of("scout").busy.then_some(())
-    })
-    .await;
+    hub.gate("scout").until_held(1).await;
     ws.close(None).await.unwrap();
     drop(ws);
+    wait::until("the client to leave", || async {
+        (hub.host.connected_clients("scout") == Some(0)).then_some(())
+    })
+    .await;
+    hub.gate("scout").open_all();
 
     wait::until("the unread reply", || async {
         let activity = hub.activity_of("scout");
@@ -996,19 +1007,16 @@ async fn unread_counts_messages_while_no_client_is_connected_and_resets_on_conne
 #[tokio::test]
 async fn the_listing_and_the_hub_snapshot_show_a_turn_in_progress_and_then_its_end() {
     let hub = Fixture::new(&["scout"], "").await;
-    // A slow model, so the turn is still running when the listing is read.
-    hub.mock("scout").reset().await;
-    mount_reply(hub.mock("scout"), "scout here", Duration::from_millis(1500)).await;
+    // The model holds its reply, so the turn is still running when the
+    // listing is read.
+    hub.gate("scout").close();
     hub.host.start("scout").await.unwrap();
     let idle = json!({ "busy": false, "busy_since": null, "unread": 0 });
     assert_eq!(hub.listing().await.pointer("/activity/scout"), Some(&idle));
 
     let before = Utc::now();
     let _ws = hub.start_a_turn("scout").await;
-    wait::until("scout to be busy", || async {
-        hub.activity_of("scout").busy.then_some(())
-    })
-    .await;
+    hub.gate("scout").until_held(1).await;
     let after = Utc::now();
 
     let during = hub.listing().await;
@@ -1027,6 +1035,7 @@ async fn the_listing_and_the_hub_snapshot_show_a_turn_in_progress_and_then_its_e
     let snapshot = frame_where(&mut hub_ws, "agents_snapshot", |_| true).await;
     assert_eq!(snapshot.pointer("/activity/scout"), Some(scout));
 
+    hub.gate("scout").open_all();
     wait::until("the turn to end", || async {
         (!hub.activity_of("scout").busy).then_some(())
     })
@@ -1086,19 +1095,22 @@ async fn the_listing_and_snapshot_show_an_agent_as_stopping_from_the_stop_reques
 #[tokio::test]
 async fn stopping_an_agent_records_its_live_sessions_as_interrupted() {
     let hub = Fixture::new(&["scout"], "").await;
-    hub.mock("scout").reset().await;
-    mount_reply(hub.mock("scout"), "slow", Duration::from_secs(30)).await;
+    // The session's model call is held, so the stop lands mid-call.
+    hub.gate("scout").close();
     hub.host.start("scout").await.unwrap();
     hub.start_session("scout", "a long task").await;
     wait::until("the session to run", || async {
         (hub.sessions("scout").await.0 == ["running"]).then_some(())
     })
     .await;
+    hub.gate("scout").until_held(1).await;
 
-    tokio::time::timeout(Duration::from_secs(60), hub.host.stop("scout"))
-        .await
-        .expect("stop returns once sessions are recorded")
-        .unwrap();
+    wait::guarded(
+        "the stop to return once sessions are recorded",
+        hub.host.stop("scout"),
+    )
+    .await
+    .unwrap();
     hub.host.start("scout").await.unwrap();
 
     let (live, completed) = hub.sessions("scout").await;
@@ -2358,10 +2370,9 @@ async fn a_teammate_message_is_attributed_and_the_reply_finds_its_way_back() {
 #[tokio::test]
 async fn a_message_sent_during_the_final_model_call_gets_its_own_reply() {
     let hub = Fixture::new(&["alpha"], "").await;
-    // A slow model, so the second message lands while the first turn's only
-    // (and therefore last) model call is still running.
-    hub.mock("alpha").reset().await;
-    mount_reply(hub.mock("alpha"), "alpha here", Duration::from_millis(600)).await;
+    // The first turn's only (and therefore last) model call is held, so the
+    // second message lands while it is still running.
+    hub.gate("alpha").close();
     start_all(&hub, &["alpha"]).await;
 
     let (mut ws, _) =
@@ -2373,17 +2384,33 @@ async fn a_message_sent_during_the_final_model_call_gets_its_own_reply() {
     ))
     .await
     .unwrap();
-    wait::until("alpha's model call to start", || async {
-        model_was_told(hub.mock("alpha"), "first-question")
-            .await
-            .then_some(())
-    })
-    .await;
+    hub.gate("alpha").until_held(1).await;
     ws.send(WsMessage::text(
         json!({ "type": "send_message", "id": "m2", "content": "second-question" }).to_string(),
     ))
     .await
     .unwrap();
+    // The socket answers a ping only after the frames before it, so the pong
+    // shows the second message was handled, and the barrier shows it has
+    // reached the agent's bus subscribers before the held call goes on.
+    ws.send(WsMessage::text(json!({ "type": "ping" }).to_string()))
+        .await
+        .unwrap();
+    wait::guarded("the socket to answer the ping", async {
+        while let Some(frame) = ws.next().await {
+            let WsMessage::Text(raw) = frame.unwrap() else {
+                continue;
+            };
+            let value: Value = serde_json::from_str(&raw).unwrap();
+            if value.get("type") == Some(&json!("pong")) {
+                return;
+            }
+        }
+        panic!("the WebSocket closed before it answered the ping");
+    })
+    .await;
+    wait::bus_barrier(&agent_watch::agent_bus(&hub, "alpha")).await;
+    hub.gate("alpha").open_all();
 
     let replies = wait::guarded("both messages to be answered", async {
         let mut replies = 0;
@@ -2472,9 +2499,10 @@ async fn a_sessions_teammate_message_is_answered_at_the_sessions_own_address() {
 
 #[tokio::test]
 async fn a_two_agent_loop_hits_the_hard_hop_limit_and_the_refusal_is_seen() {
+    const HARD_LIMIT: u32 = 5;
     let hub = Fixture::new(
         &["alpha", "beta"],
-        "[background]\nhop_soft_limit = 2\nhop_hard_limit = 5\n",
+        &format!("[background]\nhop_soft_limit = 2\nhop_hard_limit = {HARD_LIMIT}\n"),
     )
     .await;
     let bounce = |peer: &'static str| {
@@ -2513,15 +2541,20 @@ async fn a_two_agent_loop_hits_the_hard_hop_limit_and_the_refusal_is_seen() {
             || model_was_told(hub.mock("beta"), soft_note).await,
         "the soft limit asked a receiver to reply only if needed"
     );
-    // The loop ended: nothing more is sent once both agents settle.
-    let total_requests = || async {
-        hub.mock("alpha").received_requests().await.unwrap().len()
-            + hub.mock("beta").received_requests().await.unwrap().len()
-    };
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let settled = total_requests().await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(settled, total_requests().await, "the refused loop stops");
+    // Stopping both agents ends whatever the loop still had in flight, so the
+    // requests they made are final. Each delivered message is one turn, and
+    // the hard limit refuses the message that would be hop `HARD_LIMIT`, so
+    // at most `HARD_LIMIT` turns start, and a turn makes at most two model
+    // calls: the tool call and the follow-up that reads its result.
+    hub.host.stop("alpha").await.unwrap();
+    hub.host.stop("beta").await.unwrap();
+    let requests = hub.mock("alpha").received_requests().await.unwrap().len()
+        + hub.mock("beta").received_requests().await.unwrap().len();
+    let bound = usize::try_from(HARD_LIMIT * 2).unwrap();
+    assert!(
+        requests <= bound,
+        "the refused loop stops: {requests} model calls, more than the {bound} the hard limit allows"
+    );
 }
 
 #[tokio::test]
