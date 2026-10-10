@@ -8,6 +8,8 @@
   import { ws } from "../../lib/ws.svelte";
   import ContextPanel from "./ContextPanel.svelte";
   import ConversationSize from "../../places/chat/ConversationSize.svelte";
+  import NewSessionPanel from "../../places/activity/NewSessionPanel.svelte";
+  import { NewSession } from "../../places/activity/new-session.svelte";
   import SessionPanel from "../../places/activity/SessionPanel.svelte";
   import { FileBuffer } from "../../places/files/file-buffer.svelte";
   import { fileSourceFor } from "../../places/files/file-source";
@@ -29,10 +31,11 @@
       ? `${fileSource.scope}:${fileSource.agent ?? ""}`
       : null,
   );
-  // The open file and the shown run live here, not in their views: the frame
-  // draws its content again when the layout changes (a phone's sheet, a
-  // column), and the edits, transcript and subscription stay. A new one
-  // starts when the panel shows a file from another tree, or another run.
+  // The open file, the shown run and a new session live here, not in their
+  // views: the frame draws its content again when the layout changes (a
+  // phone's sheet, a column), and the edits, transcript, subscription and
+  // task typed stay. A new one starts when the panel shows a file from
+  // another tree, another run, or a new session on another agent.
   const fileBuffer = $derived.by(() => {
     if (fileTree === null) return null;
     return untrack(() => (fileSource === null ? null : new FileBuffer(fileSource)));
@@ -52,6 +55,16 @@
         address: live?.address ?? null,
       });
       return shownRun;
+    });
+  });
+
+  let shownNewSession: NewSession | null = null;
+  const newSession = $derived.by(() => {
+    if (panel?.kind !== "new-session") return (shownNewSession = null);
+    const { agent } = panel;
+    return untrack(() => {
+      if (shownNewSession?.agent !== agent) shownNewSession = new NewSession(agent);
+      return shownNewSession;
     });
   });
 
@@ -84,6 +97,10 @@
     {#if panel.kind === "session"}
       {#if sessionRun !== null}
         <SessionPanel run={sessionRun} />
+      {/if}
+    {:else if panel.kind === "new-session"}
+      {#if newSession !== null}
+        <NewSessionPanel session={newSession} />
       {/if}
     {:else if panel.kind === "file"}
       {#if fileBuffer !== null}

@@ -169,6 +169,24 @@ describe("Activity", () => {
     expect(requests).toContain("GET /api/agents/atlas/sessions?limit=25");
   });
 
+  it("opens a new session in the panel, and names runs the owner started", async () => {
+    const openPanel = vi.spyOn(router, "openPanel").mockResolvedValue(true);
+    await showAtlas([run("run-3", { spawner: null, source_label: "owner:session" })]);
+
+    expect(screen.getByRole("button", { name: /^Purpose of run-3 Started by you/ })).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "New session" }));
+    expect(openPanel).toHaveBeenCalledWith({ kind: "new-session", agent: "atlas" });
+  });
+
+  it("holds New session back while the agent stops, and says why", async () => {
+    await showAtlas([]);
+    hub.handleFrame({ type: "agent_stopping", name: "atlas" });
+    await settle();
+    const button = screen.getByRole("button", { name: "New session" });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAccessibleDescription("atlas is stopping.");
+  });
+
   it("offers Start for an agent that isn't running", async () => {
     setViewedAgent("drifter");
     render(Activity, { agent: "drifter" });
