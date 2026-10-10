@@ -119,11 +119,7 @@ async fn artifact_events_reach_the_socket_with_no_agent_running() {
     .await
     .expect("the team change feed never started its watcher")
     .unwrap();
-    assert_ne!(
-        *health.borrow(),
-        WatchHealth::Off,
-        "the team change feed couldn't watch the team directory"
-    );
+    crate::workspace::watch::assert_native_watch(*health.borrow(), "the team change feed");
 
     let workbench = team_root.join("workbench");
     std::fs::create_dir_all(&workbench).unwrap();

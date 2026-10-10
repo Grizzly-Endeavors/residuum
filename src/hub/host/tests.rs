@@ -270,11 +270,7 @@ impl Fixture {
         .await
         .expect("the agent's file watcher never started")
         .unwrap();
-        assert_ne!(
-            *health.borrow(),
-            WatchHealth::Off,
-            "the agent's files couldn't be watched"
-        );
+        crate::workspace::watch::assert_native_watch(*health.borrow(), "the agent's file watcher");
     }
 
     /// Wait until a chat turn has a workspace checkpoint in the agent's

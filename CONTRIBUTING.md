@@ -88,6 +88,8 @@ CI repeats these checks and adds four. Its Rust half runs on every pull request 
 
 Tests are required for new functionality. Unit tests go in `#[cfg(test)] mod tests` at the bottom of the file. Integration tests go in `tests/`.
 
+A test waits on the event it checks, never on elapsed time: a duration that holds on an idle machine fails when several builds share it. A flaky test is fixed by making it wait on an event the code exposes, adding that signal to the code when there is none, never by widening a timeout, adding a sleep, or rerunning past it. `just stress <filter>` runs the tests as two concurrent copies with CPU burners alongside (`STRESS_COPIES`, `STRESS_ROUNDS` and `STRESS_BURN` tune it), and a test you add or fix must pass it.
+
 `clippy.toml` exempts `unwrap_used`, `expect_used`, `panic`, and `dbg_macro` inside `#[cfg(test)]` modules and `#[test]` functions, so unit tests use unwrap, expect, panic, and `dbg!` with no suppression. Do not add `#[expect(clippy::unwrap_used)]` (or `expect_used`, `panic`, `dbg_macro`) on that code: the lint is already exempt, the expectation never fires, and `-D warnings` fails the build.
 
 `clippy::tests_outside_test_module` is denied and is not controllable from `clippy.toml`. Integration tests under `tests/` need `#[expect(clippy::tests_outside_test_module, reason = "...")]`. A helper at the top level of a `tests/*.rs` file — not inside `#[cfg(test)]`, and not itself a `#[test]` — still needs its own `#[expect]` when it uses unwrap, expect, panic, or `dbg!`.
