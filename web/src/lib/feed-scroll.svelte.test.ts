@@ -201,6 +201,25 @@ describe("FeedScroller", () => {
       expect(scroller.scrolledUp).toBe(false);
     });
 
+    it("doesn't pull back a reader whose scroll lands before its event does", () => {
+      const { feed, observer, scroller } = attached();
+      feed.scrollBy(1500);
+      expect(scroller.isFollowing).toBe(true);
+
+      // The reader scrolls up; before the scroll event arrives, a streamed
+      // reply adds content and the page tells the scroller.
+      feed.scrollTo.mockClear();
+      feed.geometry.scrollTop = 600;
+      feed.geometry.scrollHeight = 2100;
+      scroller.contentChanged();
+      observer.notify();
+
+      expect(feed.scrollTo).not.toHaveBeenCalled();
+      expect(feed.geometry.scrollTop).toBe(600);
+      expect(scroller.isFollowing).toBe(false);
+      expect(scroller.scrolledUp).toBe(true);
+    });
+
     it("keeps a pinned reader at the bottom when the room for an unchanged composer lands late", () => {
       // The feed pinned the reader with the composer's 109px already measured,
       // but the browser restyled the column with its room a frame later.
@@ -247,7 +266,7 @@ describe("FeedScroller", () => {
       // The reserved room is the composer plus a 200px buffer, and the reader sits at the true bottom.
       result.feed.geometry.padding = 300;
       result.observer.notify();
-      result.feed.geometry.scrollTop = 1500;
+      result.feed.scrollBy(1500);
       result.feed.scrollTo.mockClear();
       return {
         ...result,

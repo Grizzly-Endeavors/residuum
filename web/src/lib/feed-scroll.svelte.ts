@@ -145,6 +145,21 @@ export class FeedScroller {
     this.measure();
   };
 
+  /**
+   * Take in a scroll whose event hasn't arrived yet. The reader (or the page)
+   * can move the scroll position in the same frame as new content lands, and
+   * the scroll event only follows a frame later: pinning a following reader
+   * first would undo their move, as a streamed reply arriving every few
+   * frames made it do. A position that differs from the one the scroller last
+   * saw or set is someone else's move, judged before the scroller acts.
+   */
+  private catchUpWithScroll(): void {
+    const top = this.el?.scrollTop;
+    if (top === undefined || this.seenTop === null || Math.abs(top - this.seenTop) <= 1) return;
+    this.seenTop = top;
+    this.measure();
+  }
+
   /** Scroll at once to `top`, as the scroller's own move rather than the reader's. */
   private scrollInstantly(top: number): void {
     const el = this.el;
@@ -174,6 +189,7 @@ export class FeedScroller {
   private readonly onResize = (): void => {
     const el = this.el;
     if (!el || isHidden(el)) return;
+    this.catchUpWithScroll();
     const end = this.contentEnd();
     const viewport = el.clientHeight;
     const room = this.bottomRoom();
@@ -244,6 +260,7 @@ export class FeedScroller {
    */
   contentChanged(force = false, arrived = false): void {
     if (force) this.following = true;
+    else this.catchUpWithScroll();
     if (this.following) {
       this.pinToBottom();
       return;
