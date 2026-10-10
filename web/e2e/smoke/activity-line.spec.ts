@@ -47,20 +47,18 @@ async function openAtlas(page: Page): Promise<void> {
 }
 
 test.describe("a live turn", () => {
-  test.beforeEach(async ({ mock }) => {
-    // Steps a few hundred milliseconds apart, so the line is seen while it runs.
-    await mock.post("/api/mock/delays", { data: { scale: 6 } });
-  });
-
   test("shows its steps as they run, then collapses to its summary", async ({ page, mock }) => {
     // The turn stays running until the checks of its live line are done.
     await mock.post("/api/mock/turn-hold", { data: { held: true } });
     await openAtlas(page);
+    await mock.manualTime();
     await send(page, "fail: check the wiki pages");
     const feed = conversation(page);
 
     await expect(feed.getByText("Working")).toBeVisible();
     await expect(page.getByRole("button", { name: "Stop the reply" })).toBeVisible();
+    // The search is sent at 300ms, the two reads at 600ms and their results at 900ms and 1.2s.
+    await mock.advance(1_300);
     await expect(
       feed.getByRole("button", { name: /^Search(ing|ed) memory for “fail: check/ }),
     ).toBeVisible();
@@ -71,10 +69,11 @@ test.describe("a live turn", () => {
     await expectNoAxeViolations(page);
 
     await mock.post("/api/mock/turn-hold", { data: { held: false } });
+    await mock.advance(60_000);
     const line = summary(feed, /^Searched memory, read 2 files(?: · \d+s)? · 1 step failed$/);
-    await expect(line).toBeVisible({ timeout: 20_000 });
+    await expect(line).toBeVisible();
     await expect(line).toHaveAttribute("aria-expanded", "false");
-    await expect(feed.getByText("Working")).toHaveCount(0, { timeout: 20_000 });
+    await expect(feed.getByText("Working")).toHaveCount(0);
     // The turn did work worth timing, so its close says how long.
     await expect(feed.getByText(/^Worked for \d+s$/)).toBeVisible();
     await expect(feed.getByRole("button", { name: "Read team/wiki/index.md" })).toHaveCount(0);
@@ -85,10 +84,14 @@ test.describe("a live turn", () => {
     ).toBeVisible();
   });
 
-  test("Stop mid-turn ends it, and its line says so", async ({ page }) => {
+  test("Stop mid-turn ends it, and its line says so", async ({ page, mock }) => {
     await openAtlas(page);
+    await mock.manualTime();
     await send(page, "Tidy the wiki index");
     const feed = conversation(page);
+    await expect(feed.getByText("Working")).toBeVisible();
+    // The reads are sent at 600ms and finish at 900ms and 1.2s, so stop them while the first runs.
+    await mock.advance(700);
     await expect(
       feed.getByRole("button", { name: /^Reading team\/wiki\/index\.md/ }),
     ).toBeVisible();
@@ -104,8 +107,10 @@ test.describe("a live turn", () => {
 
   test("Esc in the composer closes an open menu first, then stops it on a second press", async ({
     page,
+    mock,
   }) => {
     await openAtlas(page);
+    await mock.manualTime();
     await send(page, "Tidy the wiki index");
     const feed = conversation(page);
     await expect(feed.getByText("Working")).toBeVisible();
@@ -168,7 +173,11 @@ test.describe("connecting while a turn runs", () => {
     // second page can finish connecting however slowly it loads.
     await mock.post("/api/mock/turn-hold", { data: { held: "steps" } });
     await openAtlas(page);
+    await mock.manualTime();
     await send(page, "Check the routing doc");
+    await expect(conversation(page).getByText("Working")).toBeVisible();
+    // The reads are sent at 600ms; the hold keeps them running.
+    await mock.advance(700);
     await expect(
       conversation(page).getByRole("button", { name: /^Reading team\/wiki\/index\.md/ }),
     ).toBeVisible();
@@ -189,10 +198,9 @@ test.describe("connecting while a turn runs", () => {
     await expect(feed.getByText(/before this page connected/)).toHaveCount(0);
     await expectNoAxeViolations(other);
     await mock.post("/api/mock/turn-hold", { data: { held: false } });
+    await mock.advance(60_000);
 
-    await expect(summary(feed, /^Searched memory, read 2 files(?: · \d+s)?$/)).toBeVisible({
-      timeout: 20_000,
-    });
+    await expect(summary(feed, /^Searched memory, read 2 files(?: · \d+s)?$/)).toBeVisible();
     await other.close();
   });
 
@@ -200,41 +208,48 @@ test.describe("connecting while a turn runs", () => {
     page,
     mock,
   }) => {
-    // Losing and regaining the connection takes real time.
-    await mock.post("/api/mock/delays", { data: { scale: 1 } });
     await openAtlas(page);
+    await mock.manualTime();
     await send(page, "drop: keep going");
     const feed = conversation(page);
+    await expect(feed.getByText("Working")).toBeVisible();
 
-    await expect(summary(feed, /^Searched memory, read 2 files(?: · \d+s)?$/)).toBeVisible({
-      timeout: 15_000,
-    });
+    // The connection drops at 600ms, and the reads finish at 900ms and 1.2s while it is down.
+    // The page reconnects about a second of real time later, and asks for the turn in flight.
+    await mock.advance(1_300);
+    await expect(
+      feed.getByRole("button", { name: /^Read(ing)? team\/wiki\/index\.md/ }),
+    ).toBeVisible();
+
+    // Frames are live again from 3.5s, so the turn's end at 4s reaches the page as it happens.
+    await mock.advance(60_000);
+    await expect(summary(feed, /^Searched memory, read 2 files(?: · \d+s)?$/)).toBeVisible();
     await expect(feed.getByText(/may be missing/)).toHaveCount(0);
   });
 });
 
 test("a session's transcript shows its live line too", async ({ page, isMobile, mock }) => {
-  await mock.post("/api/mock/delays", { data: { scale: 3 } });
   await page.goto(`/agent/atlas/activity?panel=session:atlas:run-live-research`);
   const panel = page.getByRole(isMobile ? "dialog" : "complementary", { name: RESEARCH });
-  await expect(panel.getByText("Starting with what's already in the wiki.")).toBeVisible({
-    timeout: 15_000,
-  });
+  await expect(panel.getByText("Starting with what's already in the wiki.")).toBeVisible();
 
+  await mock.manualTime();
   const box = panel.getByRole("textbox", { name: "Message this session" });
   await box.fill("Weigh safety over speed");
   await box.press("Enter");
+  // The turn's start shows once the mock has set its timers, so the advances below reach them.
+  await expect(panel.getByText("Working", { exact: true })).toBeVisible();
+  // The search is sent at 500ms.
+  await mock.advance(500);
   await expect(
     panel.getByRole("button", { name: /^Search(ing|ed) memory for “fallback”/ }),
-  ).toBeVisible({
-    timeout: 15_000,
-  });
+  ).toBeVisible();
   if (isMobile) await expectNoAxeViolations(page, { within: "[data-overlay-host]" });
   else await expectNoAxeViolations(page);
 
+  // The result comes at 1.2s, and the reply ends the turn at 2.4s.
+  await mock.advance(2_000);
   // The turn's work before the message and after it are separate lines; the one after it is last.
-  await expect(summary(panel, /^Searched memory(?: · \d+s)?$/).last()).toBeVisible({
-    timeout: 15_000,
-  });
+  await expect(summary(panel, /^Searched memory(?: · \d+s)?$/).last()).toBeVisible();
   await expect(panel.getByText('Understood: "Weigh safety over speed".')).toBeVisible();
 });
