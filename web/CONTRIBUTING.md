@@ -633,6 +633,8 @@ Tests sit in five layers. Use the lowest one that can show the behavior: a lower
 | Accessibility | axe-core, inside an end-to-end spec | Every place and overlay a change touches | `expectNoAxeViolations` in `e2e/support/axe.ts` |
 | Visual | Playwright screenshots, in the Playwright container | How a surface looks: a few baselines per surface, at desktop and phone size | `e2e/visual/` |
 
+A unit or component test waits on the condition it checks, never on elapsed time. Use `findBy*` for an element that shows up, and `waitFor` from `src/test/wait.ts` for any other condition (not `vi.waitFor`). Their bounds come from `src/test/guard.ts`, which also sets the per-test timeout. They are hang guards, set well above how long a machine shared with other suites takes, so a wait that ends on its condition never notices them. A slow machine is never a reason to raise them.
+
 The unit and component layers run in `npm test`, and the pre-commit hook runs them. The other three run through Playwright and are not part of the hook. A pull request that changes `web/` runs the whole suite in CI (`.github/workflows/web-pr.yml`), and so does the release workflow; `just web-e2e` runs it locally first.
 
 ### Running the end-to-end suite

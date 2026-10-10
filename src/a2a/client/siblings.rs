@@ -298,8 +298,7 @@ mod tests {
 
     use super::*;
     use crate::a2a::client::hub::{AgentSnapshot, AgentSource, AgentStatus};
-
-    const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+    use crate::testing::wait;
 
     /// A fanout with `hub` registered as agent `solo`.
     async fn fanout_of(hub: &Arc<A2aClientHub>) -> Arc<SiblingFanout> {
@@ -418,20 +417,13 @@ mod tests {
         (format!("http://{addr}"), relay)
     }
 
-    /// Poll `hub.snapshot()` until `pred` matches, bounded by
-    /// [`TEST_TIMEOUT`].
+    /// Poll `hub.snapshot()` until `pred` matches.
     async fn wait_for(hub: &A2aClientHub, pred: impl Fn(&[AgentSnapshot]) -> bool) {
-        tokio::time::timeout(TEST_TIMEOUT, async {
-            loop {
-                let snap = hub.snapshot().await;
-                if pred(&snap) {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
+        let pred = &pred;
+        wait::until("the hub snapshot to match", || async move {
+            pred(&hub.snapshot().await).then_some(())
         })
-        .await
-        .expect("condition was never met within the timeout");
+        .await;
     }
 
     fn sibling_names(snap: &[AgentSnapshot]) -> Vec<&str> {
@@ -571,23 +563,16 @@ mod tests {
 
         tx.send(Some(secure(&origin, "alpha", &[("beta", "key2")])))
             .ok();
-        tokio::time::timeout(TEST_TIMEOUT, async {
-            loop {
-                if relay
-                    .card_auth_seen
-                    .lock()
-                    .unwrap()
-                    .get("beta/atlas")
-                    .map(String::as_str)
-                    == Some("Bearer key2")
-                {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
+        wait::until_true("the sibling's card request to carry the new key", || {
+            relay
+                .card_auth_seen
+                .lock()
+                .unwrap()
+                .get("beta/atlas")
+                .map(String::as_str)
+                == Some("Bearer key2")
         })
-        .await
-        .expect("header was never updated to the new key");
+        .await;
 
         task.abort();
     }

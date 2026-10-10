@@ -6,6 +6,8 @@
 //! Declared as `#[cfg(test)] mod server_e2e_tests;` from `mod.rs`, so this
 //! whole file (harness and tests alike) only exists in test builds.
 
+use crate::testing::gate::{Gate, GateEntry};
+use crate::testing::wait;
 use crate::util::test_ports::{ReservedPort, reserve_port};
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -70,10 +72,11 @@ type SharedSeenMessages = Arc<AsyncMutex<Vec<Vec<Message>>>>;
 struct ScriptedProvider {
     queue: SharedResponseQueue,
     seen: SharedSeenMessages,
-    /// Artificial delay before returning, so a test can reliably observe a
-    /// task in `WORKING` (e.g. to cancel it, or to register a fake spawned
-    /// child) before the scripted turn resolves.
-    delay: Duration,
+    /// Every call waits here before it takes a response, so a test can hold a
+    /// task in `WORKING` (to cancel it, or to register a fake spawned child)
+    /// for as long as it needs. The harness's gate is open unless a test
+    /// closes it.
+    gate: GateEntry,
 }
 
 #[async_trait]
@@ -85,9 +88,7 @@ impl InferenceProvider for ScriptedProvider {
         _options: &CompletionOptions,
     ) -> Result<InferenceResponse, InferenceError> {
         self.seen.lock().await.push(messages.to_vec());
-        if !self.delay.is_zero() {
-            tokio::time::sleep(self.delay).await;
-        }
+        self.gate.pass().await;
         self.queue
             .lock()
             .await
@@ -171,6 +172,8 @@ struct Harness {
     card_state: SharedCardState,
     queue: SharedResponseQueue,
     seen: SharedSeenMessages,
+    /// Holds every scripted model call. Open unless a test closes it.
+    model_gate: Gate,
     workspace_dir: PathBuf,
     shutdown_tx: tokio::sync::watch::Sender<bool>,
     // Kept alive for the harness's lifetime.
@@ -200,8 +203,6 @@ struct HarnessOptions {
     card_skills: Vec<crate::a2a::card::AgentCardSkillFile>,
     workspace_skill: Option<(&'static str, &'static str)>,
     idle_timeout: Duration,
-    /// Artificial delay every scripted model turn takes before resolving.
-    response_delay: Duration,
 }
 
 impl Default for HarnessOptions {
@@ -210,7 +211,6 @@ impl Default for HarnessOptions {
             card_skills: vec![],
             workspace_skill: None,
             idle_timeout: Duration::from_millis(50),
-            response_delay: Duration::ZERO,
         }
     }
 }
@@ -218,16 +218,13 @@ impl Default for HarnessOptions {
 /// Poll until `port` accepts TCP connections, so a request never races the
 /// listener's bind.
 async fn wait_until_listening(port: u16) {
-    tokio::time::timeout(TEST_TIMEOUT, async {
-        while tokio::net::TcpStream::connect(("127.0.0.1", port))
+    wait::until(format!("the listener on port {port}"), || async move {
+        tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
-            .is_err()
-        {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+            .ok()
+            .map(|_| ())
     })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for the listener on port {port}"));
+    .await;
 }
 
 /// Set up the tempdir-backed workspace a harness runs against: required
@@ -330,8 +327,8 @@ struct RuntimeDeps {
 fn start_scripted_sessions(
     runtime: Arc<SessionRuntime>,
     deps: RuntimeDeps,
-    response_delay: Duration,
-) -> (SharedResponseQueue, SharedSeenMessages) {
+) -> (SharedResponseQueue, SharedSeenMessages, Gate) {
+    let model_gate = Gate::open("scripted model");
     let queue: SharedResponseQueue = Arc::new(AsyncMutex::new(VecDeque::new()));
     let seen: SharedSeenMessages = Arc::new(AsyncMutex::new(Vec::new()));
     let (hybrid_searcher, tracing_service, tracing_client_context) =
@@ -361,10 +358,10 @@ fn start_scripted_sessions(
         a2a_hub: deps.a2a_hub,
         a2a_tracker: deps.a2a_tracker,
         checkpoints: deps.checkpoints,
-        response_delay,
+        gate: model_gate.entry(),
     };
     spawn_mini_background_listener(deps.bus_handle, mini_deps);
-    (queue, seen)
+    (queue, seen, model_gate)
 }
 
 /// Build the real executor/handler and start the real `A2aListener` on
@@ -502,7 +499,7 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
     )
     .await;
 
-    let (queue, seen) = start_scripted_sessions(
+    let (queue, seen, model_gate) = start_scripted_sessions(
         Arc::clone(&runtime),
         RuntimeDeps {
             session_registry: Arc::clone(&session_registry),
@@ -515,7 +512,6 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
             a2a_tracker,
             checkpoints: Arc::clone(&checkpoints),
         },
-        opts.response_delay,
     );
 
     let task_store = FileTaskStore::load(&layout.a2a_tasks_dir()).await.unwrap();
@@ -542,6 +538,7 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
         card_state,
         queue,
         seen,
+        model_gate,
         workspace_dir,
         shutdown_tx,
         _tempdir: tempdir,
@@ -576,7 +573,7 @@ struct MiniListenerDeps {
     a2a_hub: Arc<crate::a2a::A2aClientHub>,
     a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
     checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
-    response_delay: Duration,
+    gate: GateEntry,
 }
 
 fn spawn_mini_background_listener(bus_handle: BusHandle, deps: MiniListenerDeps) {
@@ -669,7 +666,7 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
         provider: Box::new(ScriptedProvider {
             queue: Arc::clone(&deps.queue),
             seen: Arc::clone(&deps.seen),
-            delay: deps.response_delay,
+            gate: deps.gate.clone(),
         }),
         tools,
         mcp_registry: McpRegistry::new_shared(),
@@ -687,22 +684,16 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
     }
 }
 
-/// The longest this suite ever waits on one operation. Every await below is
-/// bounded by this (directly or via [`drain_until_terminal`]) — a hang here
-/// is a test failure, not a slow pass.
-const TEST_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// Resolve the harness's card and build an authenticated client for `token`.
 async fn client_for(
     harness: &Harness,
     token: &str,
 ) -> a2a_client::A2AClient<Box<dyn a2a_client::Transport>> {
-    let card = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let card = wait::guarded(
+        "the agent card",
         AgentCardResolver::new(None).resolve(&harness.base_url),
     )
     .await
-    .expect("timed out resolving the agent card")
     .unwrap();
     A2AClientFactory::builder()
         .with_interceptor(Arc::new(AuthInterceptor::bearer(token)))
@@ -758,9 +749,7 @@ async fn drain_until_terminal(
 ) -> Vec<a2a::StreamResponse> {
     let mut events = Vec::new();
     loop {
-        let next = tokio::time::timeout(TEST_TIMEOUT, stream.next())
-            .await
-            .expect("timed out waiting for the next streamed event");
+        let next = wait::guarded("the next streamed event", stream.next()).await;
         match next {
             Some(item) => events.push(item.unwrap()),
             None => return events,
@@ -798,18 +787,14 @@ async fn wait_for_task_state(
     task_id: &str,
     state: TaskState,
 ) -> a2a::Task {
-    tokio::time::timeout(TEST_TIMEOUT, async {
-        loop {
-            if let Some(task) = task_store.get(task_id).await.unwrap()
-                && task.status.state == state
-            {
-                return task;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    wait::until(format!("task {task_id} to reach {state:?}"), || async {
+        task_store
+            .get(task_id)
+            .await
+            .unwrap()
+            .filter(|task| task.status.state == state)
     })
     .await
-    .unwrap_or_else(|_| panic!("timed out waiting for task {task_id} to reach {state:?}"))
 }
 
 #[tokio::test]
@@ -834,12 +819,11 @@ async fn send_streams_working_then_completes_with_an_artifact() {
     }
 
     let client = client_for(&harness, &token).await;
-    let stream = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let stream = wait::guarded(
+        "the reply to send_streaming_message",
         client.send_streaming_message(&send_request("please write a report", None, None)),
     )
     .await
-    .unwrap()
     .unwrap();
     let events = drain_until_terminal(stream).await;
 
@@ -864,8 +848,8 @@ async fn send_streams_working_then_completes_with_an_artifact() {
     );
 
     let task_id = task_id_of(&events);
-    let task = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let task = wait::guarded(
+        "the reply to get_task",
         client.get_task(&GetTaskRequest {
             id: task_id,
             history_length: None,
@@ -873,7 +857,6 @@ async fn send_streams_working_then_completes_with_an_artifact() {
         }),
     )
     .await
-    .unwrap()
     .unwrap();
     assert_eq!(task.status.state, TaskState::Completed);
     assert_eq!(task.artifacts.map(|a| a.len()), Some(1));
@@ -916,12 +899,11 @@ async fn input_required_then_followup_resumes_across_an_idle_session_and_complet
     }
 
     let client = client_for(&harness, &token).await;
-    let stream = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let stream = wait::guarded(
+        "the reply to send_streaming_message",
         client.send_streaming_message(&send_request("write something", None, None)),
     )
     .await
-    .unwrap()
     .unwrap();
     let events = drain_until_terminal(stream).await;
     let task_id = task_id_of(&events);
@@ -933,20 +915,15 @@ async fn input_required_then_followup_resumes_across_an_idle_session_and_complet
     // Let the session's own run idle out and complete, recording a resume
     // point — the same mechanism a follow-up after a long silence relies on.
     let address = SessionExecutor::address_for("key:bob", &context_id_of(&events));
-    tokio::time::timeout(TEST_TIMEOUT, async {
-        while harness.session_registry.resume_point(&address).is_none()
-            || harness.session_registry.get(&address).is_some()
-        {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    wait::until_true("the session to idle out and record a resume point", || {
+        harness.session_registry.resume_point(&address).is_some()
+            && harness.session_registry.get(&address).is_none()
     })
-    .await
-    .expect("timed out waiting for the session to idle out and record a resume point");
+    .await;
 
     let followup = send_request("markdown please", Some(&task_id), None);
-    let response = tokio::time::timeout(TEST_TIMEOUT, client.send_message(&followup))
+    let response = wait::guarded("the reply to send_message", client.send_message(&followup))
         .await
-        .unwrap()
         .unwrap();
     let task = match response {
         a2a::SendMessageResponse::Task(t) => t,
@@ -969,11 +946,8 @@ async fn input_required_then_followup_resumes_across_an_idle_session_and_complet
 
 #[tokio::test]
 async fn cancel_marks_the_task_canceled() {
-    let harness = spawn_harness(HarnessOptions {
-        response_delay: Duration::from_millis(500),
-        ..Default::default()
-    })
-    .await;
+    let harness = spawn_harness(HarnessOptions::default()).await;
+    harness.model_gate.close();
     let token = harness.keys.create("cara", None).await.unwrap();
     {
         let mut queue = harness.queue.lock().await;
@@ -984,22 +958,20 @@ async fn cancel_marks_the_task_canceled() {
     }
 
     let client = client_for(&harness, &token).await;
-    let mut stream = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let mut stream = wait::guarded(
+        "the reply to send_streaming_message",
         client.send_streaming_message(&send_request("take your time", None, None)),
     )
     .await
-    .unwrap()
     .unwrap();
-    let first = tokio::time::timeout(TEST_TIMEOUT, stream.next())
+    let first = wait::guarded("the next streamed event", stream.next())
         .await
-        .unwrap()
         .unwrap()
         .unwrap();
     let task_id = task_id_of(std::slice::from_ref(&first));
 
-    let canceled = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let canceled = wait::guarded(
+        "the reply to cancel_task",
         client.cancel_task(&CancelTaskRequest {
             id: task_id.clone(),
             metadata: None,
@@ -1007,12 +979,11 @@ async fn cancel_marks_the_task_canceled() {
         }),
     )
     .await
-    .unwrap()
     .unwrap();
     assert_eq!(canceled.status.state, TaskState::Canceled);
 
-    let task = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let task = wait::guarded(
+        "the reply to get_task",
         client.get_task(&GetTaskRequest {
             id: task_id,
             history_length: None,
@@ -1020,7 +991,6 @@ async fn cancel_marks_the_task_canceled() {
         }),
     )
     .await
-    .unwrap()
     .unwrap();
     assert_eq!(task.status.state, TaskState::Canceled);
 
@@ -1038,12 +1008,11 @@ async fn ownership_isolation_prevents_cross_caller_access() {
     }
 
     let client_a = client_for(&harness, &token_a).await;
-    let response = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let response = wait::guarded(
+        "the reply to send_message",
         client_a.send_message(&send_request("hi", None, None)),
     )
     .await
-    .unwrap()
     .unwrap();
     let task_id = match response {
         a2a::SendMessageResponse::Task(t) => t.id,
@@ -1116,19 +1085,17 @@ async fn one_open_task_per_context_is_rejected() {
     }
 
     let client = client_for(&harness, &token).await;
-    let stream = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let stream = wait::guarded(
+        "the reply to send_streaming_message",
         client.send_streaming_message(&send_request("start", None, Some("ctx-fixed"))),
     )
     .await
-    .unwrap()
     .unwrap();
     drain_until_terminal(stream).await;
 
     let second = send_request("a second, unrelated task", None, Some("ctx-fixed"));
-    let err = tokio::time::timeout(TEST_TIMEOUT, client.send_message(&second))
+    let err = wait::guarded("the reply to send_message", client.send_message(&second))
         .await
-        .unwrap()
         .unwrap_err();
     assert_eq!(err.code, a2a::error_code::INVALID_REQUEST);
 
@@ -1196,12 +1163,11 @@ async fn restart_continuation_resumes_a_task_left_in_progress() {
         Arc::clone(&harness.task_store),
     ));
 
-    tokio::time::timeout(
-        TEST_TIMEOUT,
+    wait::guarded(
+        "the reply to resume_in_progress_tasks",
         resume_in_progress_tasks(rebuilt_handler, Arc::clone(&harness.task_store)),
     )
-    .await
-    .expect("resume_in_progress_tasks must not hang");
+    .await;
 
     let completed = wait_for_task_state(&harness.task_store, &task.id, TaskState::Completed).await;
     let text = completed
@@ -1226,12 +1192,11 @@ async fn run_completes_with_last_final_text_when_no_signal_is_sent() {
     }
 
     let client = client_for(&harness, &token).await;
-    let response = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let response = wait::guarded(
+        "the reply to send_message",
         client.send_message(&send_request("question", None, None)),
     )
     .await
-    .unwrap()
     .unwrap();
     let task = match response {
         a2a::SendMessageResponse::Task(t) => t,
@@ -1288,7 +1253,7 @@ async fn wait_for_first_run_completion_handled(
     address: &SessionAddress,
 ) {
     let mut first_turn = None;
-    tokio::time::timeout(TEST_TIMEOUT, async {
+    wait::guarded("the reply to recv", async {
         loop {
             let event = session_events.recv().await.unwrap().unwrap();
             if event.address != *address {
@@ -1301,8 +1266,7 @@ async fn wait_for_first_run_completion_handled(
             }
         }
     })
-    .await
-    .expect("the parent's first run completes");
+    .await;
     let first_turn = first_turn.expect("the first run started a turn");
     bus_handle
         .publisher()
@@ -1323,11 +1287,8 @@ async fn wait_for_first_run_completion_handled(
 
 #[tokio::test]
 async fn run_stays_working_while_a_live_spawned_child_exists() {
-    let harness = spawn_harness(HarnessOptions {
-        response_delay: Duration::from_millis(200),
-        ..Default::default()
-    })
-    .await;
+    let harness = spawn_harness(HarnessOptions::default()).await;
+    harness.model_gate.close();
     let token = harness.keys.create("ivy", None).await.unwrap();
     {
         let mut queue = harness.queue.lock().await;
@@ -1347,26 +1308,26 @@ async fn run_stays_working_while_a_live_spawned_child_exists() {
         .unwrap();
 
     let client = client_for(&harness, &token).await;
-    let stream = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let stream = wait::guarded(
+        "the reply to send_streaming_message",
         client.send_streaming_message(&send_request("go do the thing", None, None)),
     )
     .await
-    .unwrap()
     .unwrap();
     let mut stream = stream;
-    let first = tokio::time::timeout(TEST_TIMEOUT, stream.next())
+    let first = wait::guarded("the next streamed event", stream.next())
         .await
-        .unwrap()
         .unwrap()
         .unwrap();
     let task_id = task_id_of(std::slice::from_ref(&first));
     let context_id = context_id_of(std::slice::from_ref(&first));
     let address = SessionExecutor::address_for("key:ivy", &context_id);
 
-    // Register a fake live child while the parent's turn is still resolving
-    // (the 200ms response delay gives us the window).
+    // Register a fake live child while the parent's turn is held at the model
+    // gate, so the child is in place before that turn can resolve.
+    harness.model_gate.until_held(1).await;
     let child_address = register_fake_live_child(&harness, &address);
+    harness.model_gate.open_all();
 
     // The executor only keeps the task working if the child is still
     // registered when it handles the parent's first-run completion, so the
@@ -1384,9 +1345,8 @@ async fn run_stays_working_while_a_live_spawned_child_exists() {
     // Reads until the marker arrives, which means the executor has already
     // handled the first run's completion.
     loop {
-        let item = tokio::time::timeout(TEST_TIMEOUT, stream.next())
+        let item = wait::guarded("the next streamed event", stream.next())
             .await
-            .expect("the marker reaches the stream")
             .expect("the stream stays open")
             .unwrap();
         let is_marker = matches!(
@@ -1469,22 +1429,15 @@ async fn skill_metadata_maps_to_a_matching_workspace_skill() {
     request.message.metadata = Some(metadata);
 
     let client = client_for(&harness, &token).await;
-    tokio::time::timeout(TEST_TIMEOUT, client.send_message(&request))
+    wait::guarded("the reply to send_message", client.send_message(&request))
         .await
-        .unwrap()
         .unwrap();
 
     let address = SessionExecutor::address_for("key:jax", "ctx-skill");
-    let point = tokio::time::timeout(TEST_TIMEOUT, async {
-        loop {
-            if let Some(point) = harness.session_registry.resume_point(&address) {
-                return point;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    let point = wait::until("the session to record a resume point", || {
+        std::future::ready(harness.session_registry.resume_point(&address))
     })
-    .await
-    .expect("timed out waiting for the session to record a resume point");
+    .await;
     assert_eq!(
         point.agent_skill.as_ref().map(AsRef::as_ref),
         Some("reporter"),
@@ -1511,9 +1464,8 @@ async fn raw_image_part_reaches_the_model_as_an_inline_image() {
     );
 
     let client = client_for(&harness, &token).await;
-    tokio::time::timeout(TEST_TIMEOUT, client.send_message(&request))
+    wait::guarded("the reply to send_message", client.send_message(&request))
         .await
-        .unwrap()
         .unwrap();
 
     let seen = harness.seen.lock().await;
@@ -1528,11 +1480,8 @@ async fn raw_image_part_reaches_the_model_as_an_inline_image() {
 
 #[tokio::test]
 async fn closing_text_of_the_signaling_turn_never_reaches_the_next_execution() {
-    let harness = spawn_harness(HarnessOptions {
-        response_delay: Duration::from_millis(400),
-        ..Default::default()
-    })
-    .await;
+    let harness = spawn_harness(HarnessOptions::default()).await;
+    harness.model_gate.close();
     let token = harness.keys.create("dana", None).await.unwrap();
     {
         let mut queue = harness.queue.lock().await;
@@ -1558,24 +1507,29 @@ async fn closing_text_of_the_signaling_turn_never_reaches_the_next_execution() {
     }
 
     let client = client_for(&harness, &token).await;
-    let first = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let first = wait::guarded(
+        "the streaming reply to the first request",
         client.send_streaming_message(&send_request("write a haiku", None, None)),
     )
     .await
-    .unwrap()
     .unwrap();
+    // The signaling turn's tool call goes through; its closing call is then
+    // held, so the turn is still producing its text when the follow-up arrives.
+    harness.model_gate.until_held(1).await;
+    harness.model_gate.release(1);
     let first_events = drain_until_terminal(first).await;
     let task_id = task_id_of(&first_events);
+    harness.model_gate.until_held(1).await;
 
     // Follow up at once, while the first turn's closing text is still pending.
-    let second = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let second = wait::guarded(
+        "the streaming reply to the follow-up",
         client.send_streaming_message(&send_request("autumn", Some(&task_id), None)),
     )
     .await
-    .unwrap()
     .unwrap();
+    harness.model_gate.release(1);
+    harness.model_gate.open_all();
     let second_events = drain_until_terminal(second).await;
 
     let leaked = second_events.iter().any(|e| {
