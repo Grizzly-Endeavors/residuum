@@ -1,6 +1,11 @@
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, setup as setupTestingLibrary } from "@testing-library/svelte";
+import { act, cleanup, configure, setup as setupTestingLibrary } from "@testing-library/svelte";
 import { afterEach, beforeEach, vi } from "vitest";
+import { QUERY_GUARD_MS } from "./guard";
+
+// `findBy*` and `waitFor` end when their element shows up; the bound only
+// catches one that never does (see ./guard.ts).
+configure({ asyncUtilTimeout: QUERY_GUARD_MS });
 
 /**
  * jsdom lays nothing out, and has no ResizeObserver. A component that watches

@@ -263,6 +263,7 @@ pub trait Tool: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::clock;
 
     #[test]
     fn tool_result_success() {
@@ -313,12 +314,12 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn default_execute_cancellable_drops_execute_on_cancellation() {
         let cancel = CancellationToken::new();
         cancel.cancel();
 
-        let result = tokio::time::timeout(
+        let result = clock::within(
             std::time::Duration::from_secs(2),
             ForeverTool.execute_cancellable(serde_json::json!({}), &cancel),
         )

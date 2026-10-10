@@ -759,13 +759,13 @@ async fn handle_attachment(
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::time::Duration as StdDuration;
 
     use super::*;
     use crate::bus::{MessageEvent, Subscriber, topics};
     use crate::interfaces::chat_state::ChatStateStore;
     use crate::interfaces::context_buffer::ContextBuffer;
     use crate::interfaces::reply_targets::ReplyTargets;
+    use crate::testing::wait;
 
     const BOT_USERNAME: &str = "resibot";
     const BOT_ID: UserId = UserId(9_999);
@@ -864,11 +864,11 @@ mod tests {
         dispatch_message(&h.bot, msg, &from, &context(h)).await;
     }
 
-    async fn next_user_message(h: &mut Harness) -> Option<MessageEvent> {
-        tokio::time::timeout(StdDuration::from_millis(200), h.user_messages.recv())
+    async fn next_user_message(h: &mut Harness, what: &str) -> MessageEvent {
+        wait::guarded(what, h.user_messages.recv())
             .await
-            .ok()
-            .map(|r| r.unwrap().unwrap())
+            .unwrap()
+            .unwrap()
     }
 
     #[tokio::test]
@@ -876,7 +876,7 @@ mod tests {
         let mut h = harness(false, 10).await;
         deliver(&h, &telegram_message(dm_json(1, 111, "Bear", "hello"))).await;
 
-        let event = next_user_message(&mut h).await.expect("dm published");
+        let event = next_user_message(&mut h, "dm published").await;
         assert_eq!(event.content, "hello");
         assert_eq!(event.context, None, "no buffered context for a DM");
         let conversation = event
@@ -893,7 +893,7 @@ mod tests {
         let mut h = harness(true, 10).await;
         // Claim the owner via a DM first, so the group sender is a non-owner.
         deliver(&h, &telegram_message(dm_json(1, 111, "Bear", "hi"))).await;
-        next_user_message(&mut h).await.expect("dm published");
+        next_user_message(&mut h, "dm published").await;
 
         deliver(
             &h,
@@ -907,11 +907,6 @@ mod tests {
             )),
         )
         .await;
-        assert!(
-            next_user_message(&mut h).await.is_none(),
-            "unmentioned chatter is buffered, not sent"
-        );
-
         deliver(
             &h,
             &telegram_message(group_json(
@@ -924,8 +919,12 @@ mod tests {
             )),
         )
         .await;
-        let event = next_user_message(&mut h).await.expect("mention published");
-        assert_eq!(event.content, "can you look?");
+        // Events arrive in publish order, so a published chatter would come before the mention.
+        let event = next_user_message(&mut h, "mention published").await;
+        assert_eq!(
+            event.content, "can you look?",
+            "unmentioned chatter is buffered, not sent"
+        );
         let context = event.context.expect("background context attached");
         assert!(context.contains("Sam: build is red"), "{context}");
         let conversation = event
@@ -948,7 +947,7 @@ mod tests {
             )),
         )
         .await;
-        let again = next_user_message(&mut h).await.expect("second mention");
+        let again = next_user_message(&mut h, "second mention").await;
         assert_eq!(
             again.context, None,
             "already-delivered chatter is not repeated"
@@ -959,7 +958,7 @@ mod tests {
     async fn context_buffer_is_bounded_by_context_messages() {
         let mut h = harness(true, 1).await;
         deliver(&h, &telegram_message(dm_json(1, 111, "Bear", "hi"))).await;
-        next_user_message(&mut h).await.expect("dm published");
+        next_user_message(&mut h, "dm published").await;
 
         deliver(
             &h,
@@ -984,7 +983,7 @@ mod tests {
             )),
         )
         .await;
-        let event = next_user_message(&mut h).await.expect("mention published");
+        let event = next_user_message(&mut h, "mention published").await;
         let context = event.context.expect("one buffered message fits");
         assert!(!context.contains("first"), "{context}");
         assert!(context.contains("second"), "{context}");

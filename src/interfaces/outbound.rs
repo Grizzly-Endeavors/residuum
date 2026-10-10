@@ -319,6 +319,7 @@ mod tests {
 
     use super::*;
     use crate::bus::{BusHandle, EndpointName, NoticeEvent, NotifyName, SYSTEM_CHANNEL};
+    use crate::testing::{clock, wait};
 
     const ENDPOINT: &str = "fakechat";
 
@@ -430,16 +431,13 @@ mod tests {
     }
 
     async fn wait_for_sends(chat: &FakeChat, count: usize) {
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while chat.sent().len() < count {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
+        wait::until_true(format!("{count} send(s) to the chat"), || {
+            chat.sent().len() >= count
         })
-        .await
-        .unwrap();
+        .await;
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn system_notices_and_errors_never_reach_the_chat() {
         let handle = crate::bus::spawn_broker();
         let chat = FakeChat::new(&handle);
@@ -478,7 +476,7 @@ mod tests {
             .unwrap();
 
         wait_for_sends(&chat, 1).await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        clock::elapse(Duration::from_millis(50)).await;
         assert_eq!(
             chat.sent(),
             vec![("owner-dm".to_string(), "hello".to_string())],

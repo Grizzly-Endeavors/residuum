@@ -12,6 +12,7 @@ import {
 import { fakeAgentConfig, type FakeAgentConfig } from "../../test/fake-config";
 import { chooseOnConflict } from "./changed-on-disk.svelte";
 import ModelSection from "./ModelSection.svelte";
+import { waitFor } from "../../test/wait";
 
 // The Model section drawn on its own, with a real scope over a fake agent's
 // files: the roles it shows, what an edit stages, what a save writes, and
@@ -132,7 +133,7 @@ describe("Model", () => {
     render(ModelSection, { scope: settingsModel.agent(agent), section: "model" });
 
     const reviewing = job("Reviewing replies");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect([...reviewing.model().options].map((option) => option.text)).toContain("Claude A");
     });
     expect(reviewing.model().value).toBe("claude-b");
@@ -235,7 +236,7 @@ describe("Model", () => {
     scope.requestFocus({ kind: "role", role: "main" });
     render(ModelSection, { scope, section: "model" });
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(document.activeElement).toBe(mainModel());
     });
     expect(mainModel()).toHaveAttribute("aria-invalid", "true");
@@ -249,7 +250,7 @@ describe("Model", () => {
     scope.requestFocus({ kind: "role", role: "subconscious" });
     render(ModelSection, { scope, section: "model" });
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(document.activeElement).toBe(job("Reviewing replies").provider);
     });
     expect(

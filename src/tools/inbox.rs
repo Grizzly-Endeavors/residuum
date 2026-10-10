@@ -512,6 +512,7 @@ impl Tool for UserInboxAddTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::wait;
 
     #[test]
     fn tool_names_correct() {
@@ -853,9 +854,8 @@ mod tests {
             .unwrap();
         assert!(!result.is_error, "{}", result.output);
 
-        let announced = tokio::time::timeout(std::time::Duration::from_secs(5), added.recv())
+        let announced = wait::guarded("the item is announced", added.recv())
             .await
-            .expect("the item is announced")
             .unwrap()
             .unwrap();
         assert!(
@@ -870,12 +870,8 @@ mod tests {
                 .is_file(),
             "the announced item is already saved"
         );
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), added.recv())
-                .await
-                .is_err(),
-            "one item, one announcement"
-        );
+        wait::bus_barrier(&bus).await;
+        assert!(added.drain().is_empty(), "one item, one announcement");
     }
 
     #[tokio::test]
@@ -898,10 +894,9 @@ mod tests {
             .execute(serde_json::json!({"title": "lost", "body": "never saved"}))
             .await;
         assert!(result.is_err(), "saving into a file path fails");
+        wait::bus_barrier(&bus).await;
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), added.recv())
-                .await
-                .is_err(),
+            added.drain().is_empty(),
             "an item that wasn't saved is not announced"
         );
     }
