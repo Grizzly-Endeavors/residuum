@@ -115,6 +115,8 @@ pub(crate) struct AgentConfigFile {
     pub(super) discord: Option<DiscordConfigFile>,
     /// Telegram bot configuration.
     pub(super) telegram: Option<TelegramConfigFile>,
+    /// Slack bot configuration.
+    pub(super) slack: Option<SlackConfigFile>,
     /// Microsoft Teams bot configuration.
     pub(super) teams: Option<TeamsConfigFile>,
     /// Named webhook endpoint configurations.
@@ -436,6 +438,17 @@ pub(super) struct TelegramConfigFile {
     pub(super) respond_to_others: Option<bool>,
     /// How many earlier unmentioned group messages to hand the agent when addressed.
     pub(super) context_messages: Option<usize>,
+}
+
+/// Raw TOML `[slack]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SlackConfigFile {
+    /// Bot user token, `xoxb-…` (supports `${ENV_VAR}` / `secret:name` syntax).
+    pub(super) bot_token: Option<String>,
+    /// App-level token for Socket Mode, `xapp-…` (supports `${ENV_VAR}` /
+    /// `secret:name` syntax).
+    pub(super) app_token: Option<String>,
 }
 
 /// Raw TOML `[teams]` section.
