@@ -57,12 +57,13 @@ async fn frames_until_turn_ends(ws: &mut AgentSocket, turn_id: Option<&str>) -> 
 }
 
 /// The `type` of each frame, without the usage ticks that come and go with
-/// each model call.
+/// each model call, or the `artifact_updated` frames, which come from the
+/// workbench on its own timing and are not part of a turn's ordering.
 fn kinds(frames: &[Value]) -> Vec<&str> {
     frames
         .iter()
         .map(|frame| str_at(frame, "type"))
-        .filter(|kind| *kind != "turn_usage")
+        .filter(|kind| !matches!(*kind, "turn_usage" | "artifact_updated"))
         .collect()
 }
 
@@ -177,25 +178,23 @@ async fn a_message_from_the_web_starts_its_own_turn_and_is_echoed_under_its_id()
     assert_eq!(str_at(frame_of(&frames, "response"), "endpoint"), "ws");
 }
 
-/// A model that asks for one tool call, slowly, then answers.
-async fn script_one_tool_call_then_a_reply(hub: &Fixture, agent: &str, call_delay: Duration) {
+/// A model that asks for one tool call, then answers. The agent's model
+/// calls go through the hub's gate, so a test holds this call to look at the
+/// turn while it runs.
+async fn script_one_tool_call_then_a_reply(hub: &Fixture, agent: &str) {
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_delay(call_delay)
-                .set_body_json(json!({
-                    "choices": [{ "message": {
-                        "role": "assistant",
-                        "content": "Looking.",
-                        "tool_calls": [{
-                            "id": "call_1",
-                            "type": "function",
-                            "function": { "name": "list_endpoints", "arguments": "{}" }
-                        }]
-                    } }]
-                })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{ "message": {
+                "role": "assistant",
+                "content": "Looking.",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": { "name": "list_endpoints", "arguments": "{}" }
+                }]
+            } }]
+        })))
         .up_to_n_times(1)
         .with_priority(1)
         .mount(hub.mock(agent))
@@ -205,7 +204,8 @@ async fn script_one_tool_call_then_a_reply(hub: &Fixture, agent: &str, call_dela
 #[tokio::test]
 async fn a_web_message_sent_during_a_telegram_turn_joins_it_and_the_web_sees_it_end() {
     let hub = Fixture::new(&["scout"], "").await;
-    script_one_tool_call_then_a_reply(&hub, "scout", Duration::from_millis(800)).await;
+    script_one_tool_call_then_a_reply(&hub, "scout").await;
+    hub.gate("scout").close();
     hub.host.start("scout").await.unwrap();
     let mut ws = connect(&hub, "scout").await;
 
@@ -224,13 +224,27 @@ async fn a_web_message_sent_during_a_telegram_turn_joins_it_and_the_web_sees_it_
             break;
         }
     }
-    // The turn is in its first, slow model call: this message is folded in
-    // at the next checkpoint instead of starting a turn of its own.
+    // The turn is held in its first model call: this message is folded in at
+    // the next checkpoint instead of starting a turn of its own.
+    hub.gate("scout").until_held(1).await;
     send(
         &mut ws,
         json!({ "type": "send_message", "id": "web-2", "content": "and the inbox" }),
     )
     .await;
+    // The socket answers a ping only after the frames before it, so the pong
+    // shows the message was handled, and the barrier shows it has reached the
+    // agent's bus subscribers before the held call goes on.
+    send(&mut ws, json!({ "type": "ping" })).await;
+    loop {
+        let frame = next_frame(&mut ws).await;
+        if str_at(&frame, "type") == "pong" {
+            break;
+        }
+        frames.push(frame);
+    }
+    wait::bus_barrier(&agent_bus(&hub, "scout")).await;
+    hub.gate("scout").open_all();
     frames.extend(frames_until_turn_ends(&mut ws, Some("tg-2")).await);
 
     assert_eq!(
@@ -290,15 +304,21 @@ async fn a_background_turn_is_announced_with_its_visibility_live_and_in_history(
     assert!(started["origin"].get("sender").is_none(), "{started}");
     assert_eq!(str_at(frame_of(&frames, "response"), "endpoint"), "ws");
 
-    let (status, body) = hub.get("/api/agents/scout/chat/history").await;
-    assert_eq!(status, 200, "{body}");
-    let history: Value = serde_json::from_str(&body).unwrap();
     let turn_id = str_at(started, "reply_to");
-    let of_turn: Vec<&Value> = array_at(&history, "messages")
-        .iter()
-        .filter(|message| message.get("turn_id") == Some(&json!(turn_id)))
-        .collect();
-    assert!(!of_turn.is_empty(), "history records the background turn");
+    // `turn_ended` is sent before the turn's messages are written to history,
+    // so wait until they are there.
+    let of_turn: Vec<Value> = wait::until("the background turn in history", || async {
+        let (status, body) = hub.get("/api/agents/scout/chat/history").await;
+        assert_eq!(status, 200, "{body}");
+        let history: Value = serde_json::from_str(&body).unwrap();
+        let of_turn: Vec<Value> = array_at(&history, "messages")
+            .iter()
+            .filter(|message| message.get("turn_id") == Some(&json!(turn_id)))
+            .cloned()
+            .collect();
+        (!of_turn.is_empty()).then_some(of_turn)
+    })
+    .await;
     assert!(
         of_turn
             .iter()

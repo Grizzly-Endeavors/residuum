@@ -178,9 +178,9 @@ async fn another_sites_requests_are_refused_on_the_artifacts_port() {
 #[tokio::test]
 async fn an_agent_socket_through_the_artifacts_port_does_not_reset_unread() {
     let hub = Fixture::new(&["scout"], "").await;
-    // A slow model, so the client can leave before the reply is published.
-    hub.mock("scout").reset().await;
-    mount_reply(hub.mock("scout"), "scout here", Duration::from_millis(600)).await;
+    // The model holds its reply until the client has left, so the reply is
+    // published while no client is connected.
+    hub.gate("scout").close();
     hub.host.start("scout").await.unwrap();
     let artifacts = artifacts_port(&hub).await;
 
@@ -190,12 +190,14 @@ async fn an_agent_socket_through_the_artifacts_port_does_not_reset_unread() {
         &json!({ "type": "send_message", "id": "m1", "content": "ping" }),
     )
     .await;
-    wait::until("scout to be busy", || async {
-        hub.activity_of("scout").busy.then_some(())
-    })
-    .await;
+    hub.gate("scout").until_held(1).await;
     ui.close(None).await.unwrap();
     drop(ui);
+    wait::until("the client to leave", || async {
+        (hub.host.connected_clients("scout") == Some(0)).then_some(())
+    })
+    .await;
+    hub.gate("scout").open_all();
     wait::until("the unread reply", || async {
         let activity = hub.activity_of("scout");
         (!activity.busy && activity.unread == 1).then_some(())
