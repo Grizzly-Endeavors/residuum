@@ -978,8 +978,8 @@ pub async fn handle_inbound_message(
 mod tests {
     use super::*;
     use crate::bus::Subscriber;
+    use crate::testing::wait;
     use crate::util::telemetry::{SpanBufferConfig, SpanBufferLayer};
-    use std::time::Duration;
 
     const TEST_TZ: chrono_tz::Tz = chrono_tz::Tz::UTC;
 
@@ -1075,11 +1075,18 @@ mod tests {
         assert_eq!(background_output_endpoint(None, None), None);
     }
 
-    /// Assert a subscriber receives no event within a short window, proving the
-    /// unit published nothing on that topic/type.
-    async fn assert_no_event<E: Clone + Send + Sync + 'static>(sub: &mut Subscriber<E>) {
-        let recv = tokio::time::timeout(Duration::from_millis(50), sub.recv()).await;
-        assert!(recv.is_err(), "expected no event, but one was published");
+    /// Assert `sub` was sent nothing. A bus barrier proves every event published
+    /// before it has been handed to every subscriber, so what `sub` holds is
+    /// everything it was sent.
+    async fn assert_no_event<E: Clone + Send + Sync + 'static>(
+        bus: &crate::bus::BusHandle,
+        sub: &mut Subscriber<E>,
+    ) {
+        wait::bus_barrier(bus).await;
+        assert!(
+            sub.drain().is_empty(),
+            "expected no event, but one was published"
+        );
     }
 
     #[tokio::test]
@@ -1147,7 +1154,7 @@ mod tests {
         assert!(
             matches!(ended, TurnLifecycleEvent::Ended { correlation_id } if correlation_id == "corr-2")
         );
-        assert_no_event(&mut responses).await;
+        assert_no_event(&handle, &mut responses).await;
     }
 
     #[tokio::test]
@@ -1174,8 +1181,8 @@ mod tests {
         )
         .await;
 
-        assert_no_event(&mut responses).await;
-        assert_no_event(&mut lifecycle).await;
+        assert_no_event(&handle, &mut responses).await;
+        assert_no_event(&handle, &mut lifecycle).await;
     }
 
     #[tokio::test]
@@ -1201,7 +1208,7 @@ mod tests {
             matches!(started, TurnLifecycleEvent::Started { correlation_id } if correlation_id == "corr-chat"),
             "the chat interface hears its turn start, and only its own"
         );
-        assert_no_event(&mut web).await;
+        assert_no_event(&handle, &mut web).await;
     }
 
     /// The web UI follows a turn through the main conversation and the system
@@ -1244,9 +1251,9 @@ mod tests {
             )
             .await;
 
-            assert_no_event(&mut responses).await;
-            assert_no_event(&mut lifecycle).await;
-            assert_no_event(&mut endpoint_errors).await;
+            assert_no_event(&handle, &mut responses).await;
+            assert_no_event(&handle, &mut lifecycle).await;
+            assert_no_event(&handle, &mut endpoint_errors).await;
             let ended = main.recv().await.unwrap().unwrap();
             assert!(
                 matches!(&ended, MainConversationEvent::TurnEnded { turn_id } if turn_id == "corr-web"),
@@ -1259,7 +1266,7 @@ mod tests {
                     "the web hears of a failure on the system channel"
                 );
             } else {
-                assert_no_event(&mut system_errors).await;
+                assert_no_event(&handle, &mut system_errors).await;
             }
         }
     }
@@ -1286,8 +1293,10 @@ mod tests {
         )
         .await;
 
-        match tokio::time::timeout(Duration::from_millis(200), main.recv()).await {
-            Ok(Ok(Some(MainConversationEvent::TurnEnded { turn_id }))) => Some(turn_id),
+        // The bus barrier proves every event the turn published has reached `main`.
+        wait::bus_barrier(&handle).await;
+        match main.drain().into_iter().next() {
+            Some(MainConversationEvent::TurnEnded { turn_id }) => Some(turn_id),
             _ => None,
         }
     }
@@ -1373,7 +1382,7 @@ mod tests {
         assert!(
             matches!(ended, TurnLifecycleEvent::Ended { correlation_id } if correlation_id == "corr-4")
         );
-        assert_no_event(&mut responses).await;
+        assert_no_event(&handle, &mut responses).await;
     }
 
     #[tokio::test]
@@ -1411,8 +1420,8 @@ mod tests {
             Some("kaboom"),
             "the raw cause must survive in details even with no output endpoint"
         );
-        assert_no_event(&mut lifecycle).await;
-        assert_no_event(&mut endpoint_errors).await;
+        assert_no_event(&handle, &mut lifecycle).await;
+        assert_no_event(&handle, &mut endpoint_errors).await;
     }
 
     #[tokio::test]
@@ -1663,19 +1672,17 @@ mod tests {
 
         // Poll the shared hop counter until the mid-turn bump lands, rather
         // than sleeping a guessed duration.
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while hop_counter.get() < 7 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("hop counter should bump to 7 once the mid-turn message is drained");
+        wait::until_true(
+            "the hop counter to bump to 7 once the mid-turn message is drained",
+            || hop_counter.get() >= 7,
+        )
+        .await;
 
         gate.notify_one();
-        let finished_agent = tokio::time::timeout(Duration::from_secs(2), turn_task)
-            .await
-            .expect("turn should complete once the gate releases")
-            .unwrap();
+        let finished_agent =
+            wait::guarded("turn should complete once the gate releases", turn_task)
+                .await
+                .unwrap();
         assert_eq!(
             finished_agent.hop_counter().get(),
             7,
@@ -1861,11 +1868,11 @@ mod tests {
         // ever reaching main's turn.
         let address =
             crate::background::registry::conversation_session_address("discord", "chan-1");
-        let spawn_event = tokio::time::timeout(Duration::from_secs(2), spawns.recv())
-            .await
-            .expect("the group-chat message should have started its own conversation session")
-            .unwrap()
-            .unwrap();
+        let spawn_event = wait::next_event(
+            "the group-chat message to start its own conversation session",
+            &mut spawns,
+        )
+        .await;
         assert_eq!(spawn_event.address, address);
         assert_eq!(spawn_event.prompt, "anyone around?");
 
@@ -1876,10 +1883,10 @@ mod tests {
         );
 
         gate.notify_one();
-        let finished_agent = tokio::time::timeout(Duration::from_secs(2), turn_task)
-            .await
-            .expect("turn should complete once the gate releases")
-            .unwrap();
+        let finished_agent =
+            wait::guarded("turn should complete once the gate releases", turn_task)
+                .await
+                .unwrap();
         assert!(
             !finished_agent
                 .messages_since(0)
@@ -2241,7 +2248,7 @@ mod tests {
         /// Kept alive for the rig's lifetime: the broker, and the stop
         /// channels' senders (a closed channel would make the turn's select
         /// arm for it fire on every poll).
-        _keep_alive: (
+        keep_alive: (
             crate::bus::BusHandle,
             mpsc::Sender<StopRequest>,
             mpsc::Sender<()>,
@@ -2249,6 +2256,10 @@ mod tests {
     }
 
     impl TurnRig {
+        fn bus(&self) -> &crate::bus::BusHandle {
+            &self.keep_alive.0
+        }
+
         async fn new(provider: impl crate::inference::InferenceProvider + 'static) -> Self {
             let handle = crate::bus::spawn_broker();
             let publisher = handle.publisher();
@@ -2276,7 +2287,7 @@ mod tests {
                 publisher,
                 messenger,
                 router,
-                _keep_alive: (handle, stop_tx, agent_stop_tx),
+                keep_alive: (handle, stop_tx, agent_stop_tx),
             }
         }
 
@@ -2341,9 +2352,7 @@ mod tests {
 
         // The turn's only checkpoint drain precedes the model call, so once
         // the call has started any message is necessarily late.
-        tokio::time::timeout(Duration::from_secs(2), started.notified())
-            .await
-            .expect("the first turn reaches its model call");
+        wait::guarded("the first turn to reach its model call", started.notified()).await;
         // A teammate's message lands while the model is still producing the
         // turn's final answer. Its hop count doubles as the signal that the
         // turn's select loop has taken it into the interrupt queue, so the
@@ -2358,19 +2367,17 @@ mod tests {
             )
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while hop_counter.get() < 5 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("the turn takes the message into its interrupt queue");
+        wait::until_true(
+            "the turn to take the message into its interrupt queue",
+            || hop_counter.get() >= 5,
+        )
+        .await;
         gate.notify_one();
 
-        let (mut rig, late) = tokio::time::timeout(Duration::from_secs(2), first_turn)
-            .await
-            .expect("the first turn ends once the gate releases")
-            .unwrap();
+        let (mut rig, late) =
+            wait::guarded("the first turn ends once the gate releases", first_turn)
+                .await
+                .unwrap();
 
         let [message] = late.as_slice() else {
             panic!("expected the late message back, got {}", late.len());
@@ -2380,10 +2387,9 @@ mod tests {
             0,
             "not injected as context on top of being delivered as a turn"
         );
+        wait::bus_barrier(rig.bus()).await;
         assert!(
-            tokio::time::timeout(Duration::from_millis(50), rig.subscriber.recv())
-                .await
-                .is_err(),
+            rig.subscriber.drain().is_empty(),
             "requeueing is local, not a second broadcast on the bus"
         );
 
@@ -2476,11 +2482,12 @@ mod tests {
         // agent to stop, the way a stop, restart, or hub shutdown does.
         agent_stop_tx.send(()).await.unwrap();
 
-        let (turn_result, _leftovers, _scratch, stopped) =
-            tokio::time::timeout(std::time::Duration::from_secs(2), turn_task)
-                .await
-                .expect("a stop request should stop the turn well within 2s")
-                .unwrap();
+        let (turn_result, _leftovers, _scratch, stopped) = wait::guarded(
+            "a stop request should stop the turn well within 2s",
+            turn_task,
+        )
+        .await
+        .unwrap();
 
         assert!(
             stopped,

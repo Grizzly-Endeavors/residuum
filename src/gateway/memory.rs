@@ -404,6 +404,7 @@ mod tests {
     use crate::memory::recent_messages::append_recent_messages;
     use crate::memory::reflector::{Reflector, ReflectorConfig};
     use crate::memory::search::MemoryIndex;
+    use crate::testing::wait;
 
     const TEST_TZ: chrono_tz::Tz = chrono_tz::UTC;
 
@@ -493,11 +494,7 @@ mod tests {
             "a failed cycle must not report a reload"
         );
         let first_notice =
-            tokio::time::timeout(std::time::Duration::from_millis(200), notices.recv())
-                .await
-                .expect("a notice should have been published")
-                .expect("subscriber should still be open")
-                .expect("event should deserialize");
+            wait::next_event("the first observer failure notice", &mut notices).await;
         assert!(
             first_notice.message.contains("observer"),
             "got: {}",
@@ -521,10 +518,9 @@ mod tests {
             !execute_observation(&mem, &tokio_util::sync::CancellationToken::new()).await,
             "backed off, so nothing should have run"
         );
-        let second =
-            tokio::time::timeout(std::time::Duration::from_millis(100), notices.recv()).await;
+        wait::bus_barrier(&handle).await;
         assert!(
-            second.is_err(),
+            notices.drain().is_empty(),
             "must not renotify while backing off from the same failure streak"
         );
     }
@@ -643,11 +639,7 @@ mod tests {
 
         run_forced_observe(&mem, &mut agent, &publisher).await;
 
-        let notice = tokio::time::timeout(std::time::Duration::from_millis(200), notices.recv())
-            .await
-            .expect("a notice should have been published")
-            .expect("subscriber should still be open")
-            .expect("event should deserialize");
+        let notice = wait::next_event("the published notice", &mut notices).await;
         assert_eq!(notice.message, "There are no recent messages to summarize.");
     }
 
@@ -682,11 +674,7 @@ mod tests {
 
         run_forced_observe(&mem, &mut agent, &publisher).await;
 
-        let error = tokio::time::timeout(std::time::Duration::from_millis(200), errors.recv())
-            .await
-            .expect("an error should have been published")
-            .expect("subscriber should still be open")
-            .expect("event should deserialize");
+        let error = wait::next_event("the published error", &mut errors).await;
         assert_eq!(
             error.message,
             "Couldn't summarize older messages. Try again."
@@ -743,11 +731,7 @@ mod tests {
 
         run_forced_observe(&mem, &mut agent, &publisher).await;
 
-        let notice = tokio::time::timeout(std::time::Duration::from_millis(200), notices.recv())
-            .await
-            .expect("a notice should have been published")
-            .expect("subscriber should still be open")
-            .expect("event should deserialize");
+        let notice = wait::next_event("the published notice", &mut notices).await;
         assert_eq!(notice.message, "Summarized 2 older messages.");
     }
 
@@ -782,11 +766,7 @@ mod tests {
 
         run_forced_reflect(&mw, &layout, &mut agent, &publisher).await;
 
-        let error = tokio::time::timeout(std::time::Duration::from_millis(200), errors.recv())
-            .await
-            .expect("an error should have been published")
-            .expect("subscriber should still be open")
-            .expect("event should deserialize");
+        let error = wait::next_event("the published error", &mut errors).await;
         assert_eq!(
             error.message,
             "Couldn't condense the memory log. Try again."
@@ -823,11 +803,7 @@ mod tests {
 
         run_forced_reflect(&mw, &layout, &mut agent, &publisher).await;
 
-        let notice = tokio::time::timeout(std::time::Duration::from_millis(200), notices.recv())
-            .await
-            .expect("a notice should have been published")
-            .expect("subscriber should still be open")
-            .expect("event should deserialize");
+        let notice = wait::next_event("the published notice", &mut notices).await;
         assert_eq!(
             notice.message,
             "Condensed the memory log into 1 observations."

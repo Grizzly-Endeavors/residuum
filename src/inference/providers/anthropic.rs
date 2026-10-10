@@ -1367,6 +1367,8 @@ struct AnthropicErrorDetail {
     reason = "test code uses get().unwrap() for clarity"
 )]
 mod tests {
+    use crate::testing::gate::Gate;
+    use crate::testing::model::GatedModel;
     use serde_json::json;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1788,19 +1790,10 @@ mod tests {
 
     #[tokio::test]
     async fn timeout_handling() {
-        let server = MockServer::start().await;
-        // Respond with a delay longer than the client timeout (5s)
-        Mock::given(method("POST"))
-            .and(path("/v1/messages"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(success_response_body())
-                    .set_delay(std::time::Duration::from_secs(10)),
-            )
-            .mount(&server)
-            .await;
-
-        let client = test_client(&server.uri());
+        // The reply waits at a gate that never opens, so only the client's own
+        // 5 second timeout can end the call.
+        let model = GatedModel::replying("unused").await;
+        let client = test_client(&model.uri());
         let result = client
             .complete(&simple_user_message(), &[], &CompletionOptions::default())
             .await;
@@ -3420,7 +3413,9 @@ mod tests {
         ]
         .concat();
         let mut script = sse_chunks(&[started]);
-        script.push(Step::pause(std::time::Duration::from_secs(5)));
+        // Held rather than paused: nothing more arrives, so only the idle timeout ends the stream.
+        let stall = Gate::closed("stalled stream");
+        script.push(Step::Hold(stall.entry()));
 
         let (result, sink, _) = stream_from(script, |url| {
             let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(1)).unwrap();
@@ -3457,8 +3452,9 @@ mod tests {
             0,
             json!({"type": "text", "text": ""}),
         )));
-        for word in ["one ", "two ", "three ", "four "] {
-            script.push(Step::pause(std::time::Duration::from_millis(600)));
+        let words: Vec<String> = (0..20).map(|n| format!("w{n} ")).collect();
+        for word in &words {
+            script.push(Step::pause(std::time::Duration::from_millis(100)));
             script.push(Step::chunk(delta(
                 0,
                 json!({"type": "text_delta", "text": word}),
@@ -3485,10 +3481,11 @@ mod tests {
         .await;
         let response = result.unwrap();
         assert_eq!(
-            response.content, "one two three four ",
+            response.content,
+            words.concat(),
             "a stream longer than the timeout completes while bytes keep arriving"
         );
-        assert_eq!(sink.text(), "one two three four ", "and streams all of it");
+        assert_eq!(sink.text(), words.concat(), "and streams all of it");
     }
 
     #[tokio::test]

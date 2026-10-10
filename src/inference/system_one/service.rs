@@ -250,6 +250,7 @@ async fn recovery_check(service: Weak<SystemOneService>, interval: Duration) {
 
 #[cfg(test)]
 mod tests {
+    use crate::testing::wait;
     use serde_json::json;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -331,13 +332,12 @@ mod tests {
             "a repeat of the same outage is not published again"
         );
 
-        tokio::time::timeout(Duration::from_secs(5), async {
+        wait::guarded("the recovery check to clear the outage", async {
             while service.status().outage.is_some() {
                 rx.changed().await.unwrap();
             }
         })
-        .await
-        .expect("the recovery check should clear the outage");
+        .await;
     }
 
     #[tokio::test]
