@@ -7,11 +7,9 @@
 
 /// Files whose test code waits on the clock, and how many such waits each has.
 pub(super) const BACKLOG: &[(&str, usize)] = &[
-    ("src/a2a/client/e2e_tests.rs", 11),
-    ("src/a2a/client/siblings.rs", 7),
-    ("src/a2a/client/tracker.rs", 7),
-    ("src/a2a/listener_tests.rs", 11),
-    ("src/a2a/server_e2e_tests.rs", 33),
+    ("src/a2a/client/e2e_tests.rs", 2),
+    ("src/a2a/client/siblings.rs", 3),
+    ("src/a2a/server_e2e_tests.rs", 1),
     ("src/agent/turn.rs", 15),
     ("src/agent/turn_conversation_tests.rs", 2),
     ("src/background/conversation_router.rs", 4),
