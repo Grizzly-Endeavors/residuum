@@ -635,7 +635,7 @@ mod tests {
         assert!(io.write_all(b"x").await.is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn writes_stop_without_credit_and_resume_when_granted() {
         let (table, mut rx) = setup();
         let id = Uuid::new_v4();
@@ -643,13 +643,16 @@ mod tests {
         let shared = table.get(id).unwrap();
         let drain = tokio::spawn(async move { while rx.ordered.recv().await.is_some() {} });
         io.write_all(&vec![0; WINDOW]).await.unwrap();
-        let blocked = tokio::time::timeout(Duration::from_millis(100), io.write_all(b"more")).await;
-        assert!(blocked.is_err(), "no credit means no progress");
+        let blocked =
+            crate::testing::clock::within(Duration::from_millis(100), io.write_all(b"more")).await;
+        assert!(blocked.is_none(), "no credit means no progress");
         shared.add_credit(10);
-        tokio::time::timeout(Duration::from_secs(2), io.write_all(b"more"))
-            .await
-            .unwrap()
-            .unwrap();
+        crate::testing::wait::guarded(
+            "the write to resume once credit is granted",
+            io.write_all(b"more"),
+        )
+        .await
+        .unwrap();
         drain.abort();
     }
 
@@ -676,9 +679,8 @@ mod tests {
             seen
         });
         live.write_all(&[9; 1000]).await.unwrap();
-        let seen = tokio::time::timeout(Duration::from_secs(2), data)
+        let seen = crate::testing::wait::guarded("the live stream's bytes to arrive", data)
             .await
-            .unwrap()
             .unwrap();
         assert_eq!(seen, 1000);
         assert!(!stalled_task.is_finished());

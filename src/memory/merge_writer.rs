@@ -1010,24 +1010,18 @@ mod tests {
         // wait on the first merge's embedding step. The gate is still closed,
         // so the second episode appearing on disk at all proves it; the
         // timeout only bounds how long a regression takes to fail.
-        let second_persisted = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            loop {
+        crate::testing::wait::until(
+            "the second merge's episode id allocation and durable writes to complete \
+             while the first merge is still inside its embedding step",
+            || async {
                 let latest =
                     crate::memory::episode_store::latest_episode_id(&layout.episodes_dir())
                         .await
                         .unwrap();
-                if latest.as_deref() == Some("ep-002") {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
+                (latest.as_deref() == Some("ep-002")).then_some(())
+            },
+        )
         .await;
-        assert!(
-            second_persisted.is_ok(),
-            "the second merge's episode id allocation and durable writes must complete \
-             while the first merge is still inside its embedding step"
-        );
 
         release.add_permits(2);
         let first_outcome = first.await.unwrap();

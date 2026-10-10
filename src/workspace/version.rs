@@ -47,8 +47,7 @@ mod tests {
         std::fs::write(&path, "one").unwrap();
         let v1 = version_token(&std::fs::metadata(&path).unwrap());
 
-        // Force a distinguishable mtime, then change the size too.
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        // The size changes too, so the token changes whatever the mtime's resolution.
         std::fs::write(&path, "two-longer").unwrap();
         let v2 = version_token(&std::fs::metadata(&path).unwrap());
 

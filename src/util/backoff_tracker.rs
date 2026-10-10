@@ -187,7 +187,6 @@ mod tests {
         let tracker = BackoffTracker::new();
         tracker.record_failure();
         let first_deadline = tracker.lock().backoff_until;
-        std::thread::sleep(Duration::from_millis(5));
         tracker.record_failure();
         let second_deadline = tracker.lock().backoff_until;
         assert!(
