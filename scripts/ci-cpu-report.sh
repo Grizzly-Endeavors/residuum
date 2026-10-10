@@ -1,57 +1,67 @@
 #!/usr/bin/env bash
 #
-# Report how much CPU a CI job had and how much of its time the CPU limit
-# throttled away, as a Markdown table for the job summary.
+# Report how much CPU a CI job had and how long it waited for CPU, as a
+# Markdown table for the job summary.
 #
-# Runners are ephemeral pods, so the cgroup counters cover this job alone:
-# run it once, at the end. It reads the runner container's cgroup and, when a
-# Docker daemon is beside the runner, the daemon's (the browsers of the web
-# end-to-end suite run there, in the Playwright container).
+#   scripts/ci-cpu-report.sh start                                  # first step
+#   scripts/ci-cpu-report.sh report | tee -a "$GITHUB_STEP_SUMMARY" # last step
 #
-#   scripts/ci-cpu-report.sh [image-for-the-docker-probe] | tee -a "$GITHUB_STEP_SUMMARY"
-#
-# Without an image argument it probes with the Playwright image already pulled.
+# Two kinds of slowness look alike from inside a job: the job's own CPU limit
+# throttling it, and other work on the same node keeping it waiting. The
+# cgroup's `cpu.stat` shows the first. Pressure stall information (PSI) shows
+# the second: the share of time some task was ready to run but had no CPU.
+# The runner container's PSI covers this job (the pod is ephemeral). The
+# node's PSI (/proc/pressure/cpu, not namespaced) covers everything on the
+# node, so it is taken as the difference between `start` and `report`. The
+# browsers of the web end-to-end suite run in the Docker sidecar, whose cgroup
+# a job can't read, so the node's pressure is what shows their contention.
 #
 # Called from .github/workflows/quality-checks.yml (web-e2e). A counter it
 # can't read shows as "unavailable" rather than failing the job.
 set -uo pipefail
 
-# Any image already on the daemon will do for the probe; the Playwright one is.
-probe_image="${1:-$(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -m1 playwright)}"
+mode="${1:-report}"
+snapshot="${RUNNER_TEMP:-/tmp}/ci-cpu-start"
 
-# One row per cgroup: CPU limit, time used, and throttling.
-row() {
-    local label="$1" stat="$2" max="$3"
-    if [ -z "$stat" ]; then
-        echo "| $label | unavailable | | | |"
-        return
-    fi
-    local usage periods throttled throttled_usec limit
-    usage="$(awk '$1=="usage_usec"{print $2}' <<<"$stat")"
-    periods="$(awk '$1=="nr_periods"{print $2}' <<<"$stat")"
-    throttled="$(awk '$1=="nr_throttled"{print $2}' <<<"$stat")"
-    throttled_usec="$(awk '$1=="throttled_usec"{print $2}' <<<"$stat")"
-    limit="$(awk '{ if ($1=="max") print "none"; else if ($2 > 0) printf "%.1f CPU", $1/$2 }' <<<"$max")"
-    limit="${limit:-unknown}"
-    local pct="0"
-    if [ "${periods:-0}" -gt 0 ]; then
-        pct="$(awk -v t="$throttled" -v p="$periods" 'BEGIN{printf "%.1f", 100*t/p}')"
-    fi
-    printf '| %s | %s | %.0f s | %s%% of %s periods | %.0f s |\n' \
-        "$label" "$limit" "$((${usage:-0} / 1000000))" "$pct" "${periods:-0}" "$((${throttled_usec:-0} / 1000000))"
+# Microseconds that some task waited for CPU, from a PSI file.
+psi_total() {
+    awk '$1=="some" { for (i = 2; i <= NF; i++) if ($i ~ /^total=/) { sub("total=", "", $i); print $i } }' "$1" 2>/dev/null
 }
+
+if [ "$mode" = "start" ]; then
+    { date +%s; psi_total /proc/pressure/cpu; } >"$snapshot"
+    exit 0
+fi
+
+started="$(sed -n 1p "$snapshot" 2>/dev/null)"
+node_waited_before="$(sed -n 2p "$snapshot" 2>/dev/null)"
+now="$(date +%s)"
+elapsed=$((now - ${started:-$now}))
+
+stat="$(cat /sys/fs/cgroup/cpu.stat 2>/dev/null)"
+max="$(cat /sys/fs/cgroup/cpu.max 2>/dev/null)"
+field() { awk -v k="$1" '$1==k {print $2}' <<<"$stat"; }
+
+limit="$(awk '{ if ($1=="max") print "none"; else if ($2 > 0) printf "%.1f CPU", $1/$2 }' <<<"$max")"
+used_s=$(($(field usage_usec || echo 0) / 1000000))
+periods="$(field nr_periods)"
+throttled_pct="$(awk -v t="$(field nr_throttled)" -v p="${periods:-0}" 'BEGIN{ if (p > 0) printf "%.1f%%", 100*t/p; else print "n/a" }')"
+runner_waited_s=$(($(psi_total /sys/fs/cgroup/cpu.pressure || echo 0) / 1000000))
+node_waited_after="$(psi_total /proc/pressure/cpu)"
+if [ -n "$node_waited_before" ] && [ -n "$node_waited_after" ] && [ "$elapsed" -gt 0 ]; then
+    node_pct="$(awk -v a="$node_waited_after" -v b="$node_waited_before" -v e="$elapsed" 'BEGIN{ printf "%.0f%%", 100*(a-b)/1000000/e }')"
+else
+    node_pct="unavailable"
+fi
 
 echo '### CPU'
 echo ''
-echo "Host: $(nproc) CPUs visible, $(awk -F': ' '/model name/{print $2; exit}' /proc/cpuinfo)${NODE_NAME:+, node $NODE_NAME}"
+echo "Node: $(nproc) CPUs, $(awk -F': ' '/model name/{print $2; exit}' /proc/cpuinfo). Job ran ${elapsed}s."
 echo ''
-echo '| cgroup | limit | CPU used | throttled | time throttled |'
-echo '|---|---|---|---|---|'
-row "runner" "$(cat /sys/fs/cgroup/cpu.stat 2>/dev/null)" "$(cat /sys/fs/cgroup/cpu.max 2>/dev/null)"
-if [ -n "$probe_image" ] && command -v docker >/dev/null 2>&1; then
-    # With the daemon's cgroup namespace, the probe's cgroup root is the
-    # Docker sidecar's own cgroup, which holds every container the job ran.
-    dind_stat="$(docker run --rm --cgroupns=host -v /sys/fs/cgroup:/cg:ro --entrypoint cat "$probe_image" /cg/cpu.stat 2>/dev/null)"
-    dind_max="$(docker run --rm --cgroupns=host -v /sys/fs/cgroup:/cg:ro --entrypoint cat "$probe_image" /cg/cpu.max 2>/dev/null)"
-    row "docker (browsers)" "$dind_stat" "$dind_max"
-fi
+echo '| measure | value |'
+echo '|---|---|'
+echo "| runner limit | ${limit:-unknown} |"
+echo "| runner CPU used | ${used_s}s |"
+echo "| runner periods throttled by its limit | ${throttled_pct} |"
+echo "| runner time waiting for CPU (PSI) | ${runner_waited_s}s |"
+echo "| node time with a task waiting for CPU (PSI) | ${node_pct} of the job |"

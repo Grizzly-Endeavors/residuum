@@ -143,6 +143,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The node's CPU pressure is counted from here (scripts/ci-cpu-report.sh).
+      - name: Start the CPU report
+        run: scripts/ci-cpu-report.sh start
+
       # Playwright builds the app itself for the preview projects
       # (web/playwright.config.ts, `webServer`).
       - name: Install web dependencies
@@ -158,11 +162,11 @@ jobs:
         if: ${{ inputs.visual }}
         run: scripts/with-playwright-container.sh npm --prefix web run e2e -- --shard=${{ matrix.shard }}/4
 
-      # How much CPU the shard had and how much the limit throttled it: the
-      # suite's timing depends on it, and runner load varies between jobs.
+      # How much CPU the shard had, whether its limit throttled it, and how
+      # long the node kept it waiting: the suite's timing depends on all three.
       - name: CPU report
         if: always()
-        run: scripts/ci-cpu-report.sh | tee -a "$GITHUB_STEP_SUMMARY"
+        run: scripts/ci-cpu-report.sh report | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Playwright report and traces
         if: always() && (steps.web_e2e.outcome == 'failure' || steps.web_e2e_visual.outcome == 'failure')
