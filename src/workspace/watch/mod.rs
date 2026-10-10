@@ -63,8 +63,10 @@ pub enum WorkspaceResyncReason {
     WatcherRestarted,
 }
 
-/// Whether the change feed is running, and how.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Whether the change feed is running, and how. An agent's
+/// `/api/agents/{name}/status` reports it as `live_updates`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum WatchHealth {
     /// The watcher has not started yet.
     Starting,

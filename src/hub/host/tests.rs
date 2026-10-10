@@ -260,15 +260,8 @@ impl Fixture {
     async fn wait_for_file_watcher(&self, name: &str) {
         let mut health = self
             .host
-            .slot(name)
-            .unwrap()
-            .lock()
-            .running
-            .as_ref()
-            .expect("the agent is running")
-            .control
-            .workspace_watch_health
-            .clone();
+            .workspace_watch_health(name)
+            .expect("the agent is running");
         wait::watch_until("the agent's file watcher to start", &mut health, |health| {
             *health != WatchHealth::Starting
         })
@@ -1772,10 +1765,47 @@ async fn the_hub_websocket_carries_an_agents_activity_as_it_chats() {
 #[tokio::test]
 async fn one_team_change_feed_serves_every_agent_and_the_artifact_reload_watcher() {
     let hub = Fixture::new(&["atlas", "scout"], "").await;
-    hub.host.start_autostart().await;
     let team = hub.root.path().join("team");
+    let mut health = hub.services.team_feed.health.clone();
+    wait::watch_until("the team change feed to start", &mut health, |health| {
+        *health != WatchHealth::Starting
+    })
+    .await;
+    // The feed watches a directory that appears after it started once it
+    // sees the directory appear, and a file written into it before then is
+    // never reported. The agents' bootstrap creates `team/wiki`, so wait for
+    // the feed to report whichever of the two directories appeared after it
+    // started, whoever created them.
+    let mut feed = hub
+        .services
+        .team_feed
+        .bus
+        .subscribe(crate::bus::topics::Workspace)
+        .await
+        .unwrap();
+    let mut unseen: std::collections::BTreeSet<&str> = ["wiki", "workbench"]
+        .into_iter()
+        .filter(|dir| !team.join(dir).exists())
+        .collect();
+    hub.host.start_autostart().await;
     std::fs::create_dir_all(team.join("wiki")).unwrap();
     std::fs::create_dir_all(team.join("workbench")).unwrap();
+    wait::guarded("the team feed to see its new directories", async {
+        while !unseen.is_empty() {
+            match feed.recv().await {
+                Ok(Some(crate::bus::WorkspaceEvent::Changed(changes))) => {
+                    for change in changes.iter() {
+                        let in_team = change.path.strip_prefix("team/").unwrap_or_default();
+                        let top = in_team.split('/').next().unwrap_or_default();
+                        unseen.remove(top);
+                    }
+                }
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => panic!("the team change feed closed"),
+            }
+        }
+    })
+    .await;
 
     let mut sockets = Vec::new();
     for name in ["atlas", "scout"] {
@@ -1788,10 +1818,14 @@ async fn one_team_change_feed_serves_every_agent_and_the_artifact_reload_watcher
         ))
         .await
         .unwrap();
+        // The socket handles its messages in order, so the pong says the
+        // watch is in place.
+        ws.send(WsMessage::text(json!({ "type": "ping" }).to_string()))
+            .await
+            .unwrap();
+        frame_where(&mut ws, "pong", |_| true).await;
         sockets.push(ws);
     }
-    // The feed is already running; give the watches a moment to settle.
-    tokio::time::sleep(Duration::from_millis(300)).await;
 
     std::fs::write(team.join("wiki").join("note.md"), "a note").unwrap();
     std::fs::write(team.join("workbench").join("chart.html"), "<p>chart</p>").unwrap();

@@ -127,6 +127,7 @@ pub fn build_gateway_app(
     use axum::routing::get;
 
     let state_tunnel_status_rx = extra.tunnel_status_rx.clone();
+    let live_updates = state.workspace_watch_health.clone();
     let routers = build_feature_routers(&state, extra);
 
     axum::Router::new()
@@ -147,7 +148,10 @@ pub fn build_gateway_app(
         .merge(web::agent_files_api_router(web::AgentFilesState::from(
             &config_api_state,
         )))
-        .merge(web::agent_status_api_router(config_api_state))
+        .merge(web::agent_status_api_router(web::AgentStatusState {
+            config: config_api_state,
+            live_updates,
+        }))
 }
 
 /// Spawn the Discord, Telegram, and Teams adapters that are configured.
