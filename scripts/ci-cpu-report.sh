@@ -8,7 +8,7 @@
 # Docker daemon is beside the runner, the daemon's (the browsers of the web
 # end-to-end suite run there, in the Playwright container).
 #
-#   scripts/ci-cpu-report.sh [image-for-the-docker-probe] >> "$GITHUB_STEP_SUMMARY"
+#   scripts/ci-cpu-report.sh [image-for-the-docker-probe] | tee -a "$GITHUB_STEP_SUMMARY"
 #
 # Without an image argument it probes with the Playwright image already pulled.
 #

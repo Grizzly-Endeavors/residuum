@@ -162,7 +162,7 @@ jobs:
       # suite's timing depends on it, and runner load varies between jobs.
       - name: CPU report
         if: always()
-        run: scripts/ci-cpu-report.sh >> "$GITHUB_STEP_SUMMARY"
+        run: scripts/ci-cpu-report.sh | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Playwright report and traces
         if: always() && (steps.web_e2e.outcome == 'failure' || steps.web_e2e_visual.outcome == 'failure')
