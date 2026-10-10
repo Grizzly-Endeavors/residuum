@@ -295,17 +295,30 @@ impl PebbleHarness {
         Ok(())
     }
 
-    /// Wait for a container to accept connections. On failure the hang guard
-    /// names the containers, whose logs are `docker logs <name>`.
+    /// Wait for a container to accept connections. A container that never
+    /// listens fails the wait with the last lines of every container's log.
     async fn wait_for_port(&self, what: &str, port: u16) {
-        let containers = self.containers.join(", ");
-        wait::until(
-            format!("the {what} on port {port} to start listening (containers: {containers})"),
+        wait::until_reporting(
+            format!("the {what} on port {port} to start listening"),
             || async {
                 TcpStream::connect(("127.0.0.1", port))
                     .await
                     .ok()
                     .map(|_| ())
+            },
+            || {
+                self.containers
+                    .iter()
+                    .map(|name| match docker(["logs", "--tail", "20", name]) {
+                        Ok(o) => format!(
+                            "{name}: {}{}",
+                            String::from_utf8_lossy(&o.stdout),
+                            String::from_utf8_lossy(&o.stderr)
+                        ),
+                        Err(error) => format!("{name}: {error:#}"),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
             },
         )
         .await;

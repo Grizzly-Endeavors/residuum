@@ -192,10 +192,14 @@ impl Stack {
         what: &str,
         matches: impl Fn(&RemoteAccessStatus) -> bool,
     ) -> RemoteAccessStatus {
-        crate::testing::wait::until(what, || {
-            let status = self.status();
-            std::future::ready(matches(&status).then_some(status))
-        })
+        crate::testing::wait::until_reporting(
+            what,
+            || {
+                let status = self.status();
+                std::future::ready(matches(&status).then_some(status))
+            },
+            || format!("last status: {:?}", self.status()),
+        )
         .await
     }
 

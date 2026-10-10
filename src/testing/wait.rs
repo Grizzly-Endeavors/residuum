@@ -54,6 +54,37 @@ where
     .await
 }
 
+/// [`until`], but a hang also reports what `report` says: the state the wait
+/// last saw, or logs from the processes it was waiting on, so the failure can
+/// be diagnosed without reproducing it.
+pub(crate) async fn until_reporting<T, F, Fut>(
+    what: impl Display,
+    mut check: F,
+    report: impl FnOnce() -> String,
+) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Option<T>>,
+{
+    let poll = async {
+        loop {
+            if let Some(found) = check().await {
+                return found;
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+    };
+    match tokio::time::timeout(HANG_GUARD, poll).await {
+        Ok(found) => found,
+        Err(tokio::time::error::Elapsed { .. }) => {
+            panic!(
+                "gave up after {HANG_GUARD:?} waiting for {what}\n{}",
+                report()
+            )
+        }
+    }
+}
+
 /// Poll `check` until it holds.
 pub(crate) async fn until_true(what: impl Display, mut check: impl FnMut() -> bool) {
     until(&what, || std::future::ready(check().then_some(()))).await;
