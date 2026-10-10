@@ -578,6 +578,7 @@ fn validate_images(images: &[ImageData]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::wait;
 
     #[test]
     fn set_verbose_updates_flag() {
@@ -860,13 +861,10 @@ mod tests {
         }
     }
 
-    async fn recv_with_timeout(
+    async fn next_server_message(
         local_rx: &mut mpsc::UnboundedReceiver<ServerMessage>,
     ) -> ServerMessage {
-        tokio::time::timeout(std::time::Duration::from_millis(500), local_rx.recv())
-            .await
-            .expect("a message should have been sent")
-            .expect("channel should still be open")
+        wait::next("a message to be sent", local_rx).await
     }
 
     #[tokio::test]
@@ -931,7 +929,7 @@ mod tests {
         .await;
         assert!(keep_going);
 
-        let msg = recv_with_timeout(&mut local_rx).await;
+        let msg = next_server_message(&mut local_rx).await;
         assert!(
             matches!(&msg, ServerMessage::Notice { message } if message == "Added a note to the inbox."),
             "expected a plain-language Notice, got {msg:?}"
@@ -964,7 +962,7 @@ mod tests {
         .await;
         assert!(keep_going);
 
-        let msg = recv_with_timeout(&mut local_rx).await;
+        let msg = next_server_message(&mut local_rx).await;
         assert!(
             matches!(
                 &msg,

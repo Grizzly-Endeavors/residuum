@@ -15,6 +15,7 @@ import { setViewedAgent } from "./viewed-agent";
 import type { WatchHandler, WatchOwner, WatchOwnerOptions } from "./watch-registry";
 import { ws } from "./ws.svelte";
 import type { WorkspaceChange } from "./types";
+import { waitFor } from "../test/wait";
 
 const modified = (...paths: string[]): WorkspaceChange[] =>
   paths.map((path) => ({ path, kind: "modified" as const }));
@@ -316,7 +317,7 @@ describe("the app's coordinator, through the real sockets", () => {
       type: "workspace_changed",
       changes: modified("config/providers.toml", "notes.md"),
     });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(heard.providers).toEqual(["external"]);
     });
 
@@ -336,7 +337,7 @@ describe("the app's coordinator, through the real sockets", () => {
       type: "workspace_changed",
       changes: modified("config/providers.toml"),
     });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(heard.lake).toEqual(["external"]);
     });
 
@@ -347,7 +348,7 @@ describe("the app's coordinator, through the real sockets", () => {
     const heard = hearEach(configCoordinator, { hub: HUB_CONFIG_FILE });
 
     hub.handleFrame({ type: "hub_config_reloaded", ok: true, changed: true, message: null });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(heard.hub).toEqual(["external"]);
     });
   });

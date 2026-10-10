@@ -21,6 +21,7 @@ import { fakeAgentConfig, type FakeAgentConfig } from "../../test/fake-config";
 import { snapshot } from "../../test/hub-frames";
 import SettingsModal from "../SettingsModal.svelte";
 import { conflictQuestion } from "./changed-on-disk.svelte";
+import { waitFor } from "../../test/wait";
 
 let agent = "";
 let server: FakeAgentConfig;
@@ -59,7 +60,7 @@ async function open(section: SectionId, files: { config?: string } = {}): Promis
   render(SettingsModal);
   await router.openSettings({ scope: agent, section });
   await settle();
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(document.querySelector(".settings-content")).not.toBeNull();
     expect(screen.queryByText("Loading settings")).toBeNull();
   });
@@ -80,7 +81,7 @@ async function click(
 
 async function save(): Promise<void> {
   await fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(saveBar()).toBeNull();
   });
 }

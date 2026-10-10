@@ -11,38 +11,14 @@ use crate::hub::agent_watch::{
 use crate::hub::team::{TeamLink, parse_team_address};
 use crate::memory::types::Visibility;
 
-/// Every change that arrives until the feed has been quiet for a moment.
-async fn settled(changes: &mut AgentChangeReceiver) -> Vec<AgentChange> {
-    let mut seen = Vec::new();
-    while let Ok(Some(change)) =
-        tokio::time::timeout(Duration::from_millis(400), changes.recv()).await
-    {
-        seen.push(change);
-    }
-    seen
-}
-
 /// Collect changes until one satisfies `found`, returning everything seen up
 /// to and including it.
 async fn until(
     what: &str,
     changes: &mut AgentChangeReceiver,
-    mut found: impl FnMut(&AgentChange) -> bool,
+    found: impl FnMut(&AgentChange) -> bool,
 ) -> Vec<AgentChange> {
-    let mut seen = Vec::new();
-    let deadline = tokio::time::Instant::now() + HANG_GUARD;
-    loop {
-        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
-        let change = tokio::time::timeout(left, changes.recv())
-            .await
-            .unwrap_or_else(|_| panic!("timed out waiting for {what}; saw {seen:?}"))
-            .expect("the feed stays open");
-        let done = found(&change);
-        seen.push(change);
-        if done {
-            return seen;
-        }
-    }
+    wait::next_where(what, changes, found).await
 }
 
 fn turns(changes: &[AgentChange]) -> Vec<&MainTurnEnded> {
@@ -128,7 +104,10 @@ async fn a_started_agent_is_resynced_and_each_main_turn_is_reported_once() {
     assert_eq!(background_turn.visibility, Visibility::Background);
     assert!(!background_turn.client_connected);
 
-    let rest = settled(&mut changes).await;
+    // A stop returns once the agent's watcher has drained, so every change it
+    // made is already in the feed.
+    hub.host.stop("scout").await.unwrap();
+    let rest = wait::drain(&mut changes);
     assert!(
         turns(&rest).is_empty(),
         "each turn is reported once: {rest:?}"
@@ -188,7 +167,6 @@ async fn changes_to_the_files_the_hub_follows_reach_the_feed() {
     let mut changes = hub.host.agent_changes().subscribe();
     hub.host.start("scout").await.unwrap();
     hub.wait_for_file_watcher("scout").await;
-    settled(&mut changes).await;
 
     let dir = agent_dir(&hub, "scout");
     std::fs::create_dir_all(dir.join("notes")).unwrap();
@@ -326,12 +304,7 @@ async fn sessions_reach_the_feed_and_the_relay_until_the_agent_stops() {
     // completion still reaches the feed before the stop returns.
     let bus = agent_bus(&hub, "scout");
     hub.host.stop("scout").await.unwrap();
-    let mut after_stop = Vec::new();
-    while let Ok(Some(change)) =
-        tokio::time::timeout(Duration::from_millis(50), changes.recv()).await
-    {
-        after_stop.push(change);
-    }
+    let after_stop = wait::drain(&mut changes);
     assert!(
         after_stop.iter().any(|change| matches!(
             &change.kind,
@@ -351,7 +324,10 @@ async fn sessions_reach_the_feed_and_the_relay_until_the_agent_stops() {
         )
         .await
         .unwrap();
-    assert!(settled(&mut changes).await.is_empty());
+    // The barrier proves the publish has reached every subscriber of the bus.
+    // The stopped agent's watcher has none left to reach the feed.
+    wait::bus_barrier(&bus).await;
+    assert!(wait::drain(&mut changes).is_empty());
 }
 
 #[tokio::test]
@@ -364,18 +340,20 @@ async fn a_restarted_agent_is_watched_once_and_resynced_again() {
     hub.host.restart("scout").await.unwrap();
     until("the second start", &mut changes, is_resync).await;
     hub.wait_for_file_watcher("scout").await;
-    settled(&mut changes).await;
 
-    std::fs::write(
-        agent_dir(&hub, "scout").join("scheduled_actions.json"),
-        "[]",
-    )
-    .unwrap();
-    let seen = until("the file change", &mut changes, |change| {
-        matches!(change.kind, AgentChangeKind::WatchedPathChanged(_))
+    let dir = agent_dir(&hub, "scout");
+    std::fs::write(dir.join("scheduled_actions.json"), "[]").unwrap();
+    // File notifications arrive in order, so once the sentinel's change is
+    // reported, every report for the write above has been too.
+    std::fs::write(dir.join("config/mcp.json"), "{}").unwrap();
+    let seen = until("the sentinel's change", &mut changes, |change| {
+        matches!(
+            change.kind,
+            AgentChangeKind::WatchedPathChanged(WatchedPath::Config)
+        )
     })
     .await;
-    let rest = settled(&mut changes).await;
+    let rest = wait::drain(&mut changes);
     assert_eq!(
         seen.iter()
             .chain(&rest)
@@ -410,7 +388,10 @@ async fn a_turn_that_fails_is_still_reported_once_without_a_reply() {
     assert_eq!(failed.reply, None);
     assert_eq!(failed.visibility, Visibility::User);
     assert!(failed.client_connected);
-    let rest = settled(&mut changes).await;
+    // A stop returns once the agent's watcher has drained, so any second report
+    // is already in the feed.
+    hub.host.stop("scout").await.unwrap();
+    let rest = wait::drain(&mut changes);
     assert!(turns(&rest).is_empty(), "reported once: {rest:?}");
     ws.close(None).await.ok();
 }
@@ -424,5 +405,8 @@ async fn an_agent_that_never_runs_is_never_reported() {
         "[]",
     )
     .unwrap();
-    assert!(settled(&mut changes).await.is_empty());
+    // Only a running agent has a watcher to report its files, and this one
+    // has none, so there is nothing that could report the write.
+    assert!(hub.host.workspace_watch_health("quiet").is_none());
+    assert!(wait::drain(&mut changes).is_empty());
 }

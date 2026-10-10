@@ -10,6 +10,7 @@ import { RailAccordion } from "./accordion.svelte";
 import { registerAppActions } from "./app-actions.svelte";
 import Rail from "./Rail.svelte";
 import type { ShellActions } from "./shell-actions";
+import { waitFor } from "../test/wait";
 
 function agent(name: string, overrides: Partial<AgentSummary> = {}): AgentSummary {
   return {
@@ -134,12 +135,12 @@ describe("Rail", () => {
 
     await user.click(screen.getByRole("button", { name: "Help" }));
     await user.click(await screen.findByRole("menuitem", { name: "Recent notifications" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(shell.openNotifications).toHaveBeenCalled();
     });
     await user.click(screen.getByRole("button", { name: "Help" }));
     await user.click(await screen.findByRole("menuitem", { name: "Report a bug" }));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(shell.openFeedback).toHaveBeenCalledWith("bug");
     });
     unregister();

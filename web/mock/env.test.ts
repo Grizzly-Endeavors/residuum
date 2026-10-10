@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createClock, createMockEnv, FIXED_START_MS, MockResetError } from "./env";
 
 describe("the clock", () => {
@@ -58,20 +58,36 @@ describe("the mock environment", () => {
   });
 
   it("scales the delay it waits", async () => {
-    const env = createMockEnv({ delayScale: 0.01 });
-    const start = Date.now();
-    await env.sleep(2000);
-    expect(Date.now() - start).toBeLessThan(1000);
+    vi.useFakeTimers();
+    try {
+      const env = createMockEnv({ delayScale: 0.01 });
+      let woke = false;
+      const waiting = env.sleep(2000).then(() => {
+        woke = true;
+      });
+      await vi.advanceTimersByTimeAsync(19);
+      expect(woke).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await waiting;
+      expect(woke).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("cancels a timer, and every pending timer on reset", async () => {
-    const env = createMockEnv({ delayScale: 1 });
-    const ran: string[] = [];
-    env.after(20, () => ran.push("cancelled"))();
-    env.after(20, () => ran.push("reset"));
-    env.reset();
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    expect(ran).toEqual([]);
+    vi.useFakeTimers();
+    try {
+      const env = createMockEnv({ delayScale: 1 });
+      const ran: string[] = [];
+      env.after(20, () => ran.push("cancelled"))();
+      env.after(20, () => ran.push("reset"));
+      env.reset();
+      await vi.advanceTimersByTimeAsync(60);
+      expect(ran).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rejects a sleep the reset cut short", async () => {

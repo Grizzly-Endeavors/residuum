@@ -582,6 +582,7 @@ pub(crate) async fn api_session_message(
 
 #[cfg(test)]
 mod tests {
+    use crate::testing::wait;
     use chrono::{Duration, TimeZone, Utc};
     use tokio_util::sync::CancellationToken;
 
@@ -1030,11 +1031,7 @@ mod tests {
     async fn next_spawn(
         spawns: &mut crate::bus::Subscriber<SpawnRequestEvent>,
     ) -> SpawnRequestEvent {
-        tokio::time::timeout(std::time::Duration::from_secs(1), spawns.recv())
-            .await
-            .expect("a spawn request should be published")
-            .unwrap()
-            .unwrap()
+        wait::next_event("a spawn request", spawns).await
     }
 
     async fn subscribe_spawns(fx: &Fixture) -> crate::bus::Subscriber<SpawnRequestEvent> {
@@ -1058,10 +1055,9 @@ mod tests {
         let malformed = start(&state, artifact_headers("Not A Name"), prompt).await;
         assert_eq!(malformed.status, StatusCode::BAD_REQUEST);
 
+        wait::bus_barrier(&fx.bus).await;
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(100), spawns.recv())
-                .await
-                .is_err(),
+            spawns.drain().is_empty(),
             "a refused start must not spawn anything"
         );
     }

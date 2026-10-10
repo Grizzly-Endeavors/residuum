@@ -4,6 +4,7 @@ import type { EntryState } from "./history-entry";
 import type { AppLocation, Panel, Place } from "./routes";
 
 import type { router as routerInstance } from "./router.svelte";
+import { waitFor } from "../test/wait";
 
 type Router = typeof routerInstance;
 
@@ -1008,7 +1009,7 @@ describe("the unsaved-edit guard", () => {
     expect(page.router.place).toEqual(files("scout"));
     expect(page.entry()).toEqual({ idx: 1 });
     window.history.back();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(page.router.place).toEqual(chat("scout"));
     });
   });
@@ -1042,7 +1043,7 @@ describe("the unsaved-edit guard", () => {
     page.router.guard.setConfirm(confirmOnOverlay(page.router, true));
     page.router.guard.register(() => "unsaved changes");
     window.history.back();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(page.router.place).toEqual(chat("scout"));
       expect(page.url()).toBe("/agent/scout");
       expect(page.entry().idx).toBe(0);
@@ -1074,12 +1075,12 @@ describe("following overlay entries only", () => {
     router.openOverlay(first);
     router.openOverlay(second);
     window.history.back();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(second).toHaveBeenCalledTimes(1);
     });
     expect(first).not.toHaveBeenCalled();
     window.history.back();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(first).toHaveBeenCalledTimes(1);
     });
     expect(url()).toBe("/dev/gallery");

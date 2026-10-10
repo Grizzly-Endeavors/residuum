@@ -273,6 +273,8 @@ pub struct A2aListener {
     directory: Arc<dyn AgentDirectory>,
     auth: AuthState,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    /// A socket already bound to the address, served instead of binding at start.
+    bound: Option<tokio::net::TcpListener>,
 }
 
 impl A2aListener {
@@ -295,7 +297,16 @@ impl A2aListener {
                 sibling_keys: Arc::new(NoSiblings),
             },
             shutdown_rx,
+            bound: None,
         }
+    }
+
+    /// Serve on `listener`, which the caller bound to this listener's address,
+    /// rather than binding at start.
+    #[must_use]
+    pub fn with_bound_listener(mut self, listener: tokio::net::TcpListener) -> Self {
+        self.bound = Some(listener);
+        self
     }
 
     /// Accept the keys issued to joined siblings as calls from those siblings.
@@ -313,9 +324,12 @@ impl A2aListener {
         let app = hub_a2a_app(self.directory, self.auth);
 
         let addr = format!("{}:{}", self.bind, self.port);
-        let listener = tokio::net::TcpListener::bind(&addr)
-            .await
-            .with_context(|| format!("failed to bind the A2A listener on {addr}"))?;
+        let listener = match self.bound {
+            Some(listener) => listener,
+            None => tokio::net::TcpListener::bind(&addr)
+                .await
+                .with_context(|| format!("failed to bind the A2A listener on {addr}"))?,
+        };
         tracing::info!(addr = %addr, "a2a interface listening");
 
         let mut shutdown_rx = self.shutdown_rx;

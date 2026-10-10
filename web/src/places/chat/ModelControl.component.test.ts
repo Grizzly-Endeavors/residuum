@@ -8,6 +8,7 @@ import { toast } from "../../lib/toast.svelte";
 import { ws } from "../../lib/ws.svelte";
 import { jsonResponse, mockFetch, render, screen, settle } from "../../test/component";
 import ModelControl from "./ModelControl.svelte";
+import { waitFor } from "../../test/wait";
 
 const FILE = `[models.main]
 model = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]
@@ -63,7 +64,7 @@ describe("the model and thinking popover", () => {
     expect(popover).toHaveTextContent("Model, from Anthropic");
     const current = screen.getByRole("button", { name: "Claude Sonnet 4.6" });
     expect(current).toHaveAttribute("aria-pressed", "true");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(current).toHaveFocus();
     });
     expect(screen.getByRole("button", { name: "Low" })).toHaveAttribute("aria-pressed", "true");
@@ -73,7 +74,7 @@ describe("the model and thinking popover", () => {
     await opened();
     const sonnet = screen.getByRole("button", { name: "Claude Sonnet 4.6" });
     const haiku = screen.getByRole("button", { name: "Claude Haiku 4.5" });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(sonnet).toHaveFocus();
     });
 

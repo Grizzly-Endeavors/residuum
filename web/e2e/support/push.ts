@@ -10,6 +10,7 @@
  */
 import type { BrowserContext, Page, Worker } from "@playwright/test";
 import { MOCK_VAPID_PUBLIC_KEY } from "../../mock/push";
+import { expect } from "./fixtures";
 
 /** The subscription's address, which the hub never shows. */
 export const FAKE_ENDPOINT = "https://push.example.test/send/e2e-device";
@@ -90,37 +91,37 @@ async function serviceWorkerOf(context: BrowserContext): Promise<Worker> {
 }
 
 /**
- * Have the worker note when its next `showNotification` has resolved, which
- * is when the browser has stored the notification and put it on display. The
- * call itself is left as it was.
+ * Have the worker note when its next `showNotification` has settled, which is
+ * when the browser has stored the notification and put it on display. The
+ * call itself is left as it was. `pushSettled` turns true then, and the caller
+ * waits on it with a bound.
  */
-function watchNextShown(worker: Worker, timeoutMs: number): Promise<void> {
-  return worker.evaluate((timeout) => {
+function watchNextShown(worker: Worker): Promise<void> {
+  return worker.evaluate(() => {
     // The worker's globals, which the page's types don't have.
     const scope = self as unknown as {
       registration: ServiceWorkerRegistration;
       pushShown: Promise<void>;
+      pushSettled: boolean;
     };
     const registration = scope.registration;
     const original = registration.showNotification.bind(registration);
     const restore = (): boolean => Reflect.deleteProperty(registration, "showNotification");
     const shown = new Promise<void>((resolve, reject) => {
-      const gaveUp = setTimeout(() => {
-        restore();
-        reject(new Error("the worker showed no notification for the push"));
-      }, timeout);
       registration.showNotification = (...args) => {
         restore();
         const result = original(...args);
-        result.then(resolve, reject).finally(() => {
-          clearTimeout(gaveUp);
-        });
+        result.then(resolve, reject);
         return result;
       };
     });
-    shown.catch(() => undefined);
+    const settled = (): void => {
+      scope.pushSettled = true;
+    };
+    scope.pushSettled = false;
     scope.pushShown = shown;
-  }, timeoutMs);
+    void shown.then(settled, settled);
+  });
 }
 
 /**
@@ -139,7 +140,7 @@ function watchNextShown(worker: Worker, timeoutMs: number): Promise<void> {
 export async function deliverPush(page: Page, payload: unknown): Promise<void> {
   const context = page.context();
   const worker = await serviceWorkerOf(context);
-  await watchNextShown(worker, SHOWN_TIMEOUT_MS);
+  await watchNextShown(worker);
   const cdp = await context.newCDPSession(page);
   const registered = new Promise<string>((resolve) => {
     cdp.on("ServiceWorker.workerRegistrationUpdated", ({ registrations }) => {
@@ -154,6 +155,12 @@ export async function deliverPush(page: Page, payload: unknown): Promise<void> {
     data: JSON.stringify(payload),
   });
   await cdp.detach();
+  await expect
+    .poll(() => worker.evaluate(() => (self as unknown as { pushSettled: boolean }).pushSettled), {
+      message: "the worker showed no notification for the push",
+      timeout: SHOWN_TIMEOUT_MS,
+    })
+    .toBe(true);
   await worker.evaluate(() => (self as unknown as { pushShown: Promise<void> }).pushShown);
 }
 

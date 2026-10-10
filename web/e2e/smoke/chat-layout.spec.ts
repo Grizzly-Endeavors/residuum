@@ -315,14 +315,20 @@ test.describe("the message box", () => {
 
 test.describe("the history", () => {
   test("shows a skeleton while it loads", async ({ page }) => {
+    // The history answer waits until the skeleton has been seen.
+    let releaseHistory: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => {
+      releaseHistory = resolve;
+    });
     await page.route("**/api/agents/atlas/chat/history", async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await released;
       await route.continue();
     });
     await page.goto("/agent/atlas");
     const feed = conversation(page);
     await expect(feed.getByText("Loading the conversation")).toBeAttached();
     await expect(feed.getByText("No messages yet")).toHaveCount(0);
+    releaseHistory();
     await expect(feed.getByText(GREETING)).toBeVisible({ timeout: 15_000 });
     await expect(feed.getByText("Loading the conversation")).toHaveCount(0);
   });

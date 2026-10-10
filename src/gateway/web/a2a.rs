@@ -1132,7 +1132,6 @@ mod tests {
         );
         let state = test_state(dir.path());
         write_card(&state, VALID_CARD);
-        tokio::time::sleep(Duration::from_millis(50)).await;
 
         let status = api_a2a_status(State(status_state(state))).await.0;
         assert!(status.listener_running);

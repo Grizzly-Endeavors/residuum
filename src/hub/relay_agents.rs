@@ -186,11 +186,8 @@ async fn settle(events: &mut broadcast::Receiver<HubEvent>) -> bool {
 mod tests {
     use super::*;
     use crate::a2a::StaticAgentDirectory;
+    use crate::testing::{clock, wait};
     use axum::Router;
-
-    /// Bound on every wait, so a missing update fails the test instead of
-    /// hanging the suite.
-    const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
     fn summary(name: &str, state: AgentState, visibility: A2aVisibility) -> AgentSummary {
         AgentSummary {
@@ -214,16 +211,15 @@ mod tests {
     }
 
     async fn next_list(rx: &mut watch::Receiver<Vec<AgentInfo>>) -> Vec<AgentInfo> {
-        tokio::time::timeout(TEST_TIMEOUT, rx.changed())
+        wait::guarded("an agent list update", rx.changed())
             .await
-            .expect("no agent list update arrived")
             .expect("the list sender was dropped");
         rx.borrow_and_update().clone()
     }
 
     async fn no_update_within(rx: &mut watch::Receiver<Vec<AgentInfo>>, window: Duration) {
         assert!(
-            tokio::time::timeout(window, rx.changed()).await.is_err(),
+            clock::within(window, rx.changed()).await.is_none(),
             "an unrelated event must not produce an update"
         );
     }
@@ -274,7 +270,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn the_initial_list_describes_every_agent() {
         let directory = directory(&[
             ("scout", A2aVisibility::Public),
@@ -295,7 +291,7 @@ mod tests {
         relay_agents.stop();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn creating_an_agent_republishes_the_list() {
         let directory = directory(&[("scout", A2aVisibility::Public)]);
         let relay_agents = RelayAgents::spawn(Arc::clone(&directory) as _, true);
@@ -309,7 +305,7 @@ mod tests {
         relay_agents.stop();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn deleting_an_agent_republishes_the_list() {
         let directory = directory(&[
             ("scout", A2aVisibility::Public),
@@ -326,7 +322,7 @@ mod tests {
         relay_agents.stop();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn stopping_and_starting_an_agent_toggles_its_a2a_enablement() {
         let directory = directory(&[("scout", A2aVisibility::Public)]);
         let relay_agents = RelayAgents::spawn(Arc::clone(&directory) as _, true);
@@ -342,7 +338,7 @@ mod tests {
         relay_agents.stop();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn an_agent_that_begins_stopping_is_disabled_before_it_finishes() {
         let directory = directory(&[("scout", A2aVisibility::Public)]);
         let relay_agents = RelayAgents::spawn(Arc::clone(&directory) as _, true);
@@ -361,7 +357,7 @@ mod tests {
         relay_agents.stop();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_visibility_change_republishes_the_list() {
         let directory = directory(&[("scout", A2aVisibility::Public)]);
         let relay_agents = RelayAgents::spawn(Arc::clone(&directory) as _, true);
@@ -374,7 +370,7 @@ mod tests {
         relay_agents.stop();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn turning_the_a2a_listener_off_disables_every_agent() {
         let directory = directory(&[
             ("scout", A2aVisibility::Public),
@@ -395,7 +391,7 @@ mod tests {
         relay_agents.stop();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_burst_of_changes_is_one_update() {
         let directory = directory(&[("scout", A2aVisibility::Public)]);
         let relay_agents = RelayAgents::spawn(Arc::clone(&directory) as _, true);
@@ -416,7 +412,7 @@ mod tests {
         relay_agents.stop();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn events_that_do_not_change_the_list_send_nothing() {
         let directory = directory(&[("scout", A2aVisibility::Public)]);
         let relay_agents = RelayAgents::spawn(Arc::clone(&directory) as _, true);

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { waitFor } from "../src/test/wait";
 import {
   startMockServer,
   type Frame,
@@ -254,7 +255,9 @@ describe("a deterministic mock", () => {
   it("answers a request that was waiting on simulated time when the mock was reset with 503", async () => {
     const server = await start({ delayScale: 1 });
     const waiting = fetch(`${server.baseUrl}/api/hub/agents/drifter/start`, { method: "POST" });
-    await sleep(50);
+    await waitFor(() => {
+      expect(server.hub.agents.get("drifter")?.runState).toBe("starting");
+    });
     await reset(server);
     const res = await waiting;
     expect(res.status).toBe(503);

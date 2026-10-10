@@ -374,6 +374,7 @@ mod tests {
 
     use super::*;
     use crate::bus::{AgentResultStatus, SessionEventKind, ToolCallEvent};
+    use crate::testing::{clock, wait};
     use crate::workspace::watch::{WorkspaceChangeKind, WorkspaceResyncReason};
 
     /// A watcher over a bare agent bus, with a receiver on the hub's feed.
@@ -423,19 +424,13 @@ mod tests {
             self.publish(topics::Workspace, event).await;
         }
 
-        /// The next change, within `within`.
+        /// The next change, if one arrives within `within` of paused time.
         async fn next_within(&mut self, within: Duration) -> Option<AgentChange> {
-            tokio::time::timeout(within, self.changes.recv())
-                .await
-                .ok()
-                .flatten()
+            clock::within(within, self.changes.recv()).await.flatten()
         }
 
         async fn next(&mut self) -> AgentChangeKind {
-            let change = self
-                .next_within(Duration::from_secs(5))
-                .await
-                .expect("a change reaches the stream");
+            let change = wait::next("a change to reach the stream", &mut self.changes).await;
             assert_eq!(change.agent, "scout");
             change.kind
         }
@@ -526,7 +521,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_batch_is_one_change_per_kind_of_watched_file_it_touched() {
         let mut rig = Rig::new().await;
         rig.workspace(batch(&[
@@ -554,7 +549,7 @@ mod tests {
         rig.quiet().await;
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn lifecycle_outbound_and_inbox_events_reach_the_stream() {
         let mut rig = Rig::new().await;
         let info = session_info("spawned-research-1", "run-1", "subagent:research");
@@ -646,7 +641,7 @@ mod tests {
         rig.quiet().await;
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn every_session_event_is_relayed_with_the_label_its_session_started_with() {
         let mut rig = Rig::new().await;
         let mut relay = rig.feed.subscribe_sessions();
@@ -677,10 +672,7 @@ mod tests {
                 .await;
         }
         for _ in 0..5 {
-            let relayed = tokio::time::timeout(Duration::from_secs(5), relay.recv())
-                .await
-                .unwrap()
-                .unwrap();
+            let relayed = wait::next("a relayed session event", &mut relay).await;
             assert_eq!(relayed.agent, "scout");
             assert_eq!(relayed.source_label.as_deref(), Some("artifact:notes"));
         }
@@ -697,10 +689,7 @@ mod tests {
             ),
         )
         .await;
-        let late = tokio::time::timeout(Duration::from_secs(5), relay.recv())
-            .await
-            .unwrap()
-            .unwrap();
+        let late = wait::next("the late relayed session event", &mut relay).await;
         assert_eq!(late.source_label, None);
         // Only the start and the completion were changes; the turn, tool and
         // response events were relayed and nothing else.
@@ -715,7 +704,7 @@ mod tests {
         rig.quiet().await;
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_workspace_resync_is_a_resync_whatever_its_reason() {
         let mut rig = Rig::new().await;
         for reason in [
@@ -790,7 +779,7 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn the_watcher_keeps_draining_while_nothing_reads_its_output() {
         let mut rig = Rig::new().await;
         // More than the bus's stuck-consumer threshold: a watcher that
@@ -826,7 +815,7 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn the_watcher_drains_its_subscriptions_with_no_one_subscribed_to_the_feed() {
         let bus = crate::bus::spawn_broker();
         let feed = AgentChangeFeed::new();
@@ -864,23 +853,21 @@ mod tests {
             )
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while let Some(change) = late.recv().await {
-                if matches!(
+        wait::next_matching(
+            "the watcher to read everything and keep reading",
+            &mut late,
+            |change| {
+                matches!(
                     change.kind,
                     AgentChangeKind::UserInboxAdded { ref item_id } if item_id == "after"
-                ) {
-                    return;
-                }
-            }
-            panic!("the feed closed");
-        })
-        .await
-        .expect("the watcher reads everything and keeps reading");
+                )
+            },
+        )
+        .await;
         watcher.stop().await;
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn nothing_is_published_once_the_watcher_has_stopped() {
         let mut rig = Rig::new().await;
         rig.publish(
@@ -916,7 +903,7 @@ mod tests {
         rig.quiet().await;
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn changes_queued_when_the_watcher_stops_are_still_published() {
         let mut rig = Rig::new().await;
         // A second subscriber on the topic, registered after the watcher's,

@@ -1,5 +1,5 @@
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentSummary, DeletedAgent } from "../../lib/hub-types";
 import { hub } from "../../lib/hub.svelte";
 import { notifications } from "../../lib/notifications.svelte";
@@ -7,6 +7,7 @@ import { toast } from "../../lib/toast.svelte";
 import { jsonResponse, mockFetch, render, screen } from "../../test/component";
 import { snapshot } from "../../test/hub-frames";
 import RecentlyDeleted from "./RecentlyDeleted.svelte";
+import { waitFor } from "../../test/wait";
 
 const NOW = Date.parse("2026-03-14T12:00:00Z");
 
@@ -75,7 +76,7 @@ function disclosure(): Promise<HTMLElement> {
 describe("RecentlyDeleted", () => {
   it("shows nothing while no agent can be restored", async () => {
     render(RecentlyDeleted, { now: NOW });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(hub.deletedLoaded).toBe(true);
     });
     expect(screen.queryByRole("button", { name: "Recently deleted" })).not.toBeInTheDocument();
@@ -105,7 +106,7 @@ describe("RecentlyDeleted", () => {
     await screen.findByText("Nothing to restore.");
     expect(restores).toEqual([{ name: "drifter", checkpoint_id: "ckpt-drifter" }]);
     expect(hub.agent("drifter")).toBeDefined();
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       expect(await disclosure()).toHaveFocus();
     });
   });
