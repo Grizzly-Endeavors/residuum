@@ -513,11 +513,13 @@ async fn init_mcp_servers(
     layout: &WorkspaceLayout,
     tools_path: SharedToolsPath,
     agent_keys: crate::agent_keys::SharedAgentKeys,
+    secrets_dir: std::path::PathBuf,
     degradations: &mut Vec<String>,
 ) -> SharedMcpRegistry {
     let mcp_registry = crate::mcp::McpRegistry::new_shared_with_spawn_env(
         tools_path,
         agent_keys,
+        secrets_dir,
         layout.root().to_path_buf(),
     );
     match crate::workspace::config::load_mcp_servers(&layout.mcp_json()) {
@@ -687,6 +689,7 @@ struct NetworkingComponents {
 async fn init_networking(
     cfg: &Config,
     agent_keys: crate::agent_keys::SharedAgentKeys,
+    secrets_dir: std::path::PathBuf,
     layout: &WorkspaceLayout,
     degradations: &mut Vec<String>,
 ) -> NetworkingComponents {
@@ -696,6 +699,7 @@ async fn init_networking(
         layout,
         Arc::clone(&tools_path),
         Arc::clone(&agent_keys),
+        secrets_dir,
         degradations,
     )
     .await;
@@ -1205,7 +1209,14 @@ async fn init_supporting_infra(
     agent_messenger: Arc<AgentMessenger>,
     shared: &HubServices,
 ) -> SupportingInfra {
-    let net = init_networking(cfg, Arc::clone(&shared.agent_keys), layout, degradations).await;
+    let net = init_networking(
+        cfg,
+        Arc::clone(&shared.agent_keys),
+        hub.config_dir.clone(),
+        layout,
+        degradations,
+    )
+    .await;
     let tracing_client_context = init_tracing_client_context(cfg);
     let path_policy = build_path_policy(cfg, layout, hub, &shared.team);
     let (a2a_hub, a2a_tracker) = init_a2a_client(layout, &net.agent_keys, agent_messenger).await;

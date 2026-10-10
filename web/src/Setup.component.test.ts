@@ -10,7 +10,20 @@ describe("Setup wizard", () => {
     localStorage.clear();
     mockFetch((url) => {
       if (url.includes("/system/timezone")) return jsonResponse({ timezone: "Europe/Oslo" });
-      if (url.includes("/mcp-catalog")) return jsonResponse([]);
+      if (url.includes("/mcp-catalog")) {
+        return jsonResponse([
+          {
+            name: "tavily",
+            description: "Web search",
+            command: "npx",
+            args: ["tavily"],
+            env: {},
+            category: "tools",
+            requires_input: [{ field: "env.TAVILY_API_KEY", label: "Tavily API key" }],
+            install_hint: "",
+          },
+        ]);
+      }
       if (url.includes("/providers/models")) return jsonResponse({ models: [] });
       throw new Error(`unexpected fetch ${url}`);
     });
@@ -77,6 +90,42 @@ describe("Setup wizard", () => {
       { interval: 100, timeout: 5000 },
     );
     expect(localStorage.getItem(DRAFT_KEY)).not.toContain("sk-secret");
+  });
+
+  it("saves the draft without a tool server key typed into it", async () => {
+    vi.useFakeTimers();
+    const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
+    render(Setup, { onComplete: () => {} });
+    await settle();
+
+    // Welcome -> Providers -> Roles -> Tool servers
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await vi.waitFor(() => screen.getByRole("button", { name: "Add tavily" }));
+
+    await user.click(screen.getByRole("button", { name: "Add tavily" }));
+    await user.type(screen.getByLabelText("Tavily API key"), "tvly-secret");
+    await user.click(screen.getByRole("button", { name: "Add tavily" }));
+
+    await vi.waitFor(
+      () => {
+        expect(JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "null")).toMatchObject({ step: 3 });
+      },
+      { interval: 100, timeout: 5000 },
+    );
+    const stored = localStorage.getItem(DRAFT_KEY) ?? "";
+    expect(stored).not.toContain("tvly-secret");
+    const parsed = JSON.parse(stored) as { wizardState: { mcpServers: unknown[] } };
+    expect(parsed.wizardState.mcpServers).toEqual([
+      {
+        name: "tavily",
+        command: "npx",
+        args: ["tavily"],
+        env: { TAVILY_API_KEY: "" },
+        secretEnvKeys: ["TAVILY_API_KEY"],
+      },
+    ]);
   });
 
   it("drops a draft save still waiting when the wizard closes", async () => {

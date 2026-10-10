@@ -102,6 +102,12 @@ pub struct McpRegistry {
     /// `env` and `headers` resolve against. `None` in bare registries
     /// (tests), where any such reference fails the connection.
     agent_keys: Option<SharedAgentKeys>,
+    /// Hub config directory the secret store loads from, for `secret:<name>`
+    /// references in an entry's `env` and `headers` — the same store the
+    /// settings model exchanges provider keys and chat tokens into. `None`
+    /// in bare registries (tests), where any such reference fails the
+    /// connection.
+    secrets_dir: Option<PathBuf>,
     /// Names of built-in agent tools that reserve the shared tool namespace.
     ///
     /// A built-in always wins a name collision (it is dispatched first in the
@@ -133,6 +139,7 @@ impl McpRegistry {
             servers: Vec::new(),
             tools_path: None,
             agent_keys: None,
+            secrets_dir: None,
             reserved_tool_names: HashSet::new(),
             workspace_root: None,
         }
@@ -146,18 +153,21 @@ impl McpRegistry {
 
     /// Create a new shared registry that prepends the configured tool
     /// directories to the `PATH` of spawned stdio servers, resolves
-    /// `${agent-key:<name>}` references from `agent_keys`, and starts every
+    /// `${agent-key:<name>}` references from `agent_keys` and `secret:<name>`
+    /// references from the secret store in `secrets_dir`, and starts every
     /// spawned stdio server in `workspace_root`.
     #[must_use]
     pub fn new_shared_with_spawn_env(
         tools_path: SharedToolsPath,
         agent_keys: SharedAgentKeys,
+        secrets_dir: PathBuf,
         workspace_root: PathBuf,
     ) -> SharedMcpRegistry {
         Arc::new(RwLock::new(Self {
             servers: Vec::new(),
             tools_path: Some(tools_path),
             agent_keys: Some(agent_keys),
+            secrets_dir: Some(secrets_dir),
             reserved_tool_names: HashSet::new(),
             workspace_root: Some(workspace_root),
         }))
@@ -200,6 +210,69 @@ impl McpRegistry {
                         })
                 })
                 .collect::<Result<std::collections::HashMap<_, _>, _>>()
+        };
+        let mut resolved = entry.clone();
+        resolved.env = expand(&entry.env, "env var")?;
+        resolved.headers = expand(&entry.headers, "header")?;
+        Ok(std::borrow::Cow::Owned(resolved))
+    }
+
+    /// `entry` with every exact `secret:<name>` value in its `env` and
+    /// `headers` resolved against the hub's secret store — the same store
+    /// the settings model exchanges provider keys and chat tokens into
+    /// (`crate::config::secrets::SecretStore`). Borrows the entry unchanged
+    /// when it has no such value, so a broken secret store never blocks a
+    /// server that doesn't use one.
+    ///
+    /// Unlike `${agent-key:<name>}`, which may appear anywhere inside a
+    /// larger string, a `secret:<name>` reference must be the entry's whole
+    /// value, matching how every other `secret:<name>` consumer in the
+    /// config system (`crate::config::resolve::resolve_secret_value`)
+    /// recognizes it.
+    async fn resolve_secrets<'e>(
+        &self,
+        entry: &'e McpServerEntry,
+    ) -> Result<std::borrow::Cow<'e, McpServerEntry>, anyhow::Error> {
+        let referenced = entry
+            .env
+            .values()
+            .chain(entry.headers.values())
+            .any(|v| v.starts_with("secret:"));
+        if !referenced {
+            return Ok(std::borrow::Cow::Borrowed(entry));
+        }
+        let Some(dir) = self.secrets_dir.clone() else {
+            anyhow::bail!(
+                "mcp server '{}' references a secret, but no secret store is available",
+                entry.name
+            );
+        };
+        let store = crate::util::spawn_blocking_in_span(move || {
+            crate::config::secrets::SecretStore::load(&dir)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("mcp server '{}': secret store task failed: {e}", entry.name))?
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "mcp server '{}': failed to load the secret store: {e}",
+                entry.name
+            )
+        })?;
+        let expand = |map: &std::collections::HashMap<String, String>, kind: &str| {
+            map.iter()
+                .map(|(k, v)| {
+                    let resolved = match v.strip_prefix("secret:") {
+                        Some(name) => store.get(name).map(String::from).ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "mcp server '{}' {kind} '{k}' references no secret named '{name}'",
+                                entry.name
+                            )
+                        })?,
+                        None => v.clone(),
+                    };
+                    Ok((k.clone(), resolved))
+                })
+                .collect::<Result<std::collections::HashMap<_, _>, anyhow::Error>>()
         };
         let mut resolved = entry.clone();
         resolved.env = expand(&entry.env, "env var")?;
@@ -298,7 +371,14 @@ impl McpRegistry {
             Some(handle) => handle.read().await.clone(),
             None => None,
         };
-        let resolved = match self.resolve_agent_keys(entry).await {
+        let secret_resolved = match self.resolve_secrets(entry).await {
+            Ok(r) => r,
+            Err(e) => {
+                self.mark_failed_if_tracked(&entry.name, &e.to_string());
+                return Err(e);
+            }
+        };
+        let resolved = match self.resolve_agent_keys(&secret_resolved).await {
             Ok(r) => r,
             Err(e) => {
                 self.mark_failed_if_tracked(&entry.name, &e.to_string());
@@ -1095,6 +1175,81 @@ mod tests {
         assert!(
             matches!(resolved, std::borrow::Cow::Borrowed(_)),
             "an entry without references must not need a key store"
+        );
+    }
+
+    #[tokio::test]
+    async fn secret_references_resolve_from_the_hub_secret_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = crate::config::secrets::SecretStore::load(dir.path()).unwrap();
+        store
+            .set("mcp_tavily_api_key", "tvly-real-value", dir.path())
+            .unwrap();
+        let registry = McpRegistry {
+            secrets_dir: Some(dir.path().to_path_buf()),
+            ..McpRegistry::new()
+        };
+
+        let mut with_ref = entry("tavily", "tavily-mcp");
+        with_ref.env.insert(
+            "TAVILY_API_KEY".to_string(),
+            "secret:mcp_tavily_api_key".to_string(),
+        );
+        let resolved = registry.resolve_secrets(&with_ref).await.unwrap();
+        assert_eq!(
+            resolved.env.get("TAVILY_API_KEY").map(String::as_str),
+            Some("tvly-real-value"),
+            "env reference should resolve to the stored secret value"
+        );
+
+        let mut with_header_ref = entry("remote", "x");
+        with_header_ref.headers.insert(
+            "Authorization".to_string(),
+            "secret:mcp_tavily_api_key".to_string(),
+        );
+        let resolved_header = registry.resolve_secrets(&with_header_ref).await.unwrap();
+        assert_eq!(
+            resolved_header
+                .headers
+                .get("Authorization")
+                .map(String::as_str),
+            Some("tvly-real-value"),
+            "header reference should resolve to the stored secret value too"
+        );
+
+        let mut missing = entry("broken", "x");
+        missing
+            .env
+            .insert("TOKEN".to_string(), "secret:nope".to_string());
+        let err = registry.resolve_secrets(&missing).await.unwrap_err();
+        assert!(
+            err.to_string().contains("no secret named 'nope'"),
+            "unknown secret should fail the connection visibly: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn entries_without_secret_references_skip_the_secret_store() {
+        let registry = McpRegistry::new();
+        let plain = entry("plain", "x");
+        let resolved = registry.resolve_secrets(&plain).await.unwrap();
+        assert!(
+            matches!(resolved, std::borrow::Cow::Borrowed(_)),
+            "an entry without secret references must not need a secret store"
+        );
+    }
+
+    #[tokio::test]
+    async fn secret_reference_with_no_store_configured_fails_visibly() {
+        let registry = McpRegistry::new();
+        let mut with_ref = entry("tavily", "tavily-mcp");
+        with_ref
+            .env
+            .insert("TAVILY_API_KEY".to_string(), "secret:anything".to_string());
+        let err = registry.resolve_secrets(&with_ref).await.unwrap_err();
+        assert!(
+            err.to_string().contains("no secret store is available"),
+            "a bare registry (no secrets_dir) should fail a secret reference clearly: {err}"
         );
     }
 }

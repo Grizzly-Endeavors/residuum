@@ -140,6 +140,12 @@
       teamsTenantId: clone.integrations.teamsTenantId,
       teamsAppPassword: "",
     };
+    clone.mcpServers = clone.mcpServers.map((srv) => {
+      if (!srv.secretEnvKeys || srv.secretEnvKeys.length === 0) return srv;
+      const env = { ...srv.env };
+      for (const field of srv.secretEnvKeys) env[field] = "";
+      return { ...srv, env };
+    });
     return clone;
   }
 
@@ -253,7 +259,7 @@
       {#if showDraftKeyNotice}
         <Banner tone="info" ondismiss={() => (showDraftKeyNotice = false)}>
           Picked up where you left off. Keys and tokens aren't kept in the draft, so enter them
-          again on the Providers and Connections steps before you finish.
+          again on the Providers, Tool servers and Connections steps before you finish.
         </Banner>
       {/if}
 
