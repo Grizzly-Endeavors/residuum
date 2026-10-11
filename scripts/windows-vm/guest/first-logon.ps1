@@ -25,7 +25,13 @@ net accounts /maxpwage:unlimited | Out-Null
 
 # Client editions default to the Restricted execution policy, which blocks the
 # harness scripts the host runs over SSH (provision.ps1, session-run.ps1).
-Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy RemoteSigned -Force
+# This script runs under -ExecutionPolicy Bypass, so Set-ExecutionPolicy saves
+# the setting but reports the process-scope override as an error; the saved
+# value is checked instead.
+Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy RemoteSigned -Force -ErrorAction SilentlyContinue
+if ((Get-ExecutionPolicy -Scope LocalMachine) -ne 'RemoteSigned') {
+    throw 'failed to set the LocalMachine execution policy to RemoteSigned'
+}
 
 # Keep the session awake and unlocked so screenshots show the desktop.
 powercfg /change standby-timeout-ac 0
