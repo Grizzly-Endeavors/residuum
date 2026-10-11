@@ -1,1 +1,7 @@
-{"envelope_id": "env-unknown-1", "type": "slash_commands", "payload": {"command": "/who", "team_id": "T0001"}, "response_url": "https://hooks.slack.com/response/xyz789"}
+{
+  "envelope_id": "env-unknown-1",
+  "type": "slash_commands",
+  "payload": {"command": "/who", "team_id": "T0001", "response_url": "https://hooks.slack.com/response/xyz789"},
+  "retry_attempt": 0,
+  "retry_context": {"retries_this_hour": 0, "retries_today": 0}
+}

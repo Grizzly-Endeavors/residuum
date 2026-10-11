@@ -1,1 +1,5 @@
-{"envelope_id": "env-hello-1", "type": "hello"}
+{
+  "type": "hello",
+  "connection_info": {"app_id": "A0001"},
+  "debug_info": {"host": "applink", "build_number": 1, "approximate_connection_time": 3600}
+}
