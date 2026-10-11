@@ -115,6 +115,8 @@ test.describe("chat feed", { tag: "@visual" }, () => {
     ).toBeVisible();
     // The hub has heard the agent is busy: the header's mark is working.
     await expect(page.getByRole("main").locator("[data-working]").first()).toBeAttached();
+    // The page's clock stands at 1s of the turn too; the head shows it from its next tick.
+    await expect(feed.locator("[data-turn-head]").getByText("1s", { exact: true })).toBeVisible();
     await chatScreenshot(page, "chat-live-turn");
   });
 

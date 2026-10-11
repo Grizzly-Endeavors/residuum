@@ -28,7 +28,7 @@ async function send(page: Page, text: string): Promise<void> {
 
 /** The summary of a run of steps that is over: a button that opens to its steps. */
 function summary(scope: Locator, text: string | RegExp): Locator {
-  return scope.getByRole("button", { name: text });
+  return scope.getByRole("button", { name: text, exact: true });
 }
 
 /** How many pages have atlas's chat socket open, by the mock's count. */
@@ -70,12 +70,15 @@ test.describe("a live turn", () => {
 
     await mock.post("/api/mock/turn-hold", { data: { held: false } });
     await mock.advance(60_000);
-    const line = summary(feed, /^Searched memory, read 2 files(?: · \d+s)? · 1 step failed$/);
+    // The page read every step's start and end in the move to 1.3s, so the
+    // steps took no time it can count, and the line names none.
+    const line = summary(feed, /^Searched memory, read 2 files · 1 step failed$/);
     await expect(line).toBeVisible();
     await expect(line).toHaveAttribute("aria-expanded", "false");
     await expect(feed.getByText("Working")).toHaveCount(0);
-    // The turn did work worth timing, so its close says how long.
-    await expect(feed.getByText(/^Worked for \d+s$/)).toBeVisible();
+    // The turn did work worth timing, so its close says how long: from 0 to
+    // the move that reached 61.3s.
+    await expect(feed.getByText("Worked for 1m 01s", { exact: true })).toBeVisible();
     await expect(feed.getByRole("button", { name: "Read team/wiki/index.md" })).toHaveCount(0);
 
     await line.click();
@@ -200,7 +203,9 @@ test.describe("connecting while a turn runs", () => {
     await mock.post("/api/mock/turn-hold", { data: { held: false } });
     await mock.advance(60_000);
 
-    await expect(summary(feed, /^Searched memory, read 2 files(?: · \d+s)?$/)).toBeVisible();
+    // The steps' starts come with the turn so far, at the mock's times (from
+    // 300ms); their ends are read in the move that reached 60.7s.
+    await expect(summary(feed, "Searched memory, read 2 files · 1m 00s")).toBeVisible();
     await other.close();
   });
 
@@ -223,7 +228,7 @@ test.describe("connecting while a turn runs", () => {
 
     // Frames are live again from 3.5s, so the turn's end at 4s reaches the page as it happens.
     await mock.advance(60_000);
-    await expect(summary(feed, /^Searched memory, read 2 files(?: · \d+s)?$/)).toBeVisible();
+    await expect(summary(feed, "Searched memory, read 2 files")).toBeVisible();
     await expect(feed.getByText(/may be missing/)).toHaveCount(0);
   });
 });
@@ -250,6 +255,6 @@ test("a session's transcript shows its live line too", async ({ page, isMobile, 
   // The result comes at 1.2s, and the reply ends the turn at 2.4s.
   await mock.advance(2_000);
   // The turn's work before the message and after it are separate lines; the one after it is last.
-  await expect(summary(panel, /^Searched memory(?: · \d+s)?$/).last()).toBeVisible();
+  await expect(summary(panel, "Searched memory").last()).toBeVisible();
   await expect(panel.getByText('Understood: "Weigh safety over speed".')).toBeVisible();
 });

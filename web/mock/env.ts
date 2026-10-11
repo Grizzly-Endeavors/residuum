@@ -120,6 +120,12 @@ export interface MockEnv {
   /** How many timers wait. */
   pendingTimers: () => number;
   /**
+   * In manual time, how much simulated time until the next timer that waits
+   * comes due, or `null` when none waits. A test reads it to know when what
+   * a `step` runs happens.
+   */
+  nextTimerIn: () => number | null;
+  /**
    * How far simulated turns may get, so a test can look at a running turn for
    * as long as it needs, however slowly the browser keeps up:
    * - `"reply"`: a turn writes its reply, then waits with the reply still
@@ -346,6 +352,11 @@ export function createMockEnv(options: EnvOptions = {}): MockEnv {
       return progress(1);
     },
     pendingTimers: () => timers.size,
+    nextTimerIn: () => {
+      if (mode !== "manual") return null;
+      const next = nextDue(Number.POSITIVE_INFINITY);
+      return next === undefined ? null : Math.max(0, next.due - simulatedMs);
+    },
     holdTurns: (hold) => {
       turnHold = hold;
       for (const entry of [...heldTurns]) {

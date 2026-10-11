@@ -276,6 +276,22 @@ describe("test controls", () => {
       await socket.nextOfType("turn_ended");
     });
 
+    it("says when the next timer is due, on the mock's clock", async () => {
+      const set = await post("time", { mode: "manual" });
+      expect(set.body).toMatchObject({ next: null });
+      const socket = await harness.openSocket("/api/agents/atlas/ws");
+      socket.send({ type: "send_message", id: "m1", content: "hello there" });
+      await socket.nextOfType("turn_started");
+
+      const stepped = (await post("time/step")).body as { now: string; next: string | null };
+      expect(stepped.next).not.toBeNull();
+      expect(Date.parse(stepped.next ?? "")).toBeGreaterThanOrEqual(Date.parse(stepped.now));
+      const after = (await post("time/step")).body as { now: string };
+      // The step reached the time the next timer was due. This harness's clock
+      // follows the wall clock too, so it may read a little later.
+      expect(Date.parse(after.now)).toBeGreaterThanOrEqual(Date.parse(stepped.next ?? ""));
+    });
+
     it("steps one timer at a time, and says when none waits", async () => {
       await post("time", { mode: "manual" });
       const socket = await harness.openSocket("/api/agents/atlas/ws");

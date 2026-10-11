@@ -38,6 +38,14 @@ export type HubState = "connected" | "lost";
  */
 export const hubReach = { lost: false };
 
+/**
+ * Where the page's clock (`Date`) stands, when the fixtures hold it still:
+ * at the mock's fixed start in a visual project, and at the mock's simulated
+ * time once a test is in manual time. `null` while it follows the wall clock.
+ * The fixtures keep it, and the screenshot helper checks the page against it.
+ */
+export const pageClock: { fixedAt: number | null } = { fixedAt: null };
+
 export interface AppReadyOptions {
   /**
    * Where the hub socket should stand. Left out, it follows `hubReach`:

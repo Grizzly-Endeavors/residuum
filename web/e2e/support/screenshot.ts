@@ -4,17 +4,18 @@
  * Rendering is only repeatable inside the Playwright container, so visual specs
  * run in the `visual-*` projects, which skip everywhere else (see
  * `fixtures.ts`). Those projects also freeze the page's clock at the mock's
- * clock, and the helper disables animations and hides the caret on top of it.
+ * clock (moving it only with the mock's manual time), and the helper disables
+ * animations and hides the caret on top of it.
  *
  * Put `data-visual-mask` on an element whose content legitimately changes from
  * run to run and every screenshot paints over it. Pass `mask` for a region one
  * screenshot needs covered.
  */
 import { expect, type Locator, type Page } from "@playwright/test";
-import { FIXED_START_MS } from "../../mock/env";
 import {
   fontsLoaded,
   imagesLoaded,
+  pageClock,
   settleAnimations,
   waitForApp,
   type AppReadyOptions,
@@ -43,8 +44,8 @@ export async function expectScreenshot(
   const now = await page.evaluate(() => Date.now());
   expect(
     now,
-    "the page's clock must be frozen for screenshots: run the spec in a visual project",
-  ).toBe(FIXED_START_MS);
+    "the page's clock must stand at the mock's time for screenshots: run the spec in a visual project",
+  ).toBe(pageClock.fixedAt);
 
   // The socket can drop between the spec's last wait and here, which shows the
   // "Can't reach Residuum" banner until it reconnects.

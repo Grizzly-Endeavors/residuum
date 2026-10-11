@@ -173,7 +173,8 @@ async function setDelays({ req, res, hub }: RouteContext): Promise<void> {
 /**
  * `{ mode }`: how simulated time passes, `"manual"` or `"scaled"` (see
  * `TimeMode`). A spec sets it before it starts what it wants to watch; reset
- * puts it back to scaled. Answers with the time the mock reads.
+ * puts it back to scaled. Answers with the time the mock reads and when the
+ * next waiting timer is due.
  */
 async function setTimeMode({ req, res, hub }: RouteContext): Promise<void> {
   const { mode } = await readJsonObject(req);
@@ -182,22 +183,35 @@ async function setTimeMode({ req, res, hub }: RouteContext): Promise<void> {
     return;
   }
   hub.env.setTimeMode(mode);
-  json(res, 200, { mode, pending: hub.env.pendingTimers(), now: hub.env.clock.iso() });
+  json(res, 200, { mode, pending: hub.env.pendingTimers(), ...readings(hub) });
 }
 
-/** Answer a move of manual time with what it did and the time the mock now reads. */
+/**
+ * The time the mock reads, and in manual time when the next waiting timer
+ * comes due (`null` when none waits, or in scaled time). The e2e fixture
+ * sets the page's clock from these, so the page and the mock agree on time.
+ */
+function readings(hub: RouteContext["hub"]): { now: string; next: string | null } {
+  const nextIn = hub.env.nextTimerIn();
+  return {
+    now: hub.env.clock.iso(),
+    next: nextIn === null ? null : hub.env.clock.isoIn(nextIn),
+  };
+}
+
+/** Answer a move of manual time with what it did, the time the mock now reads, and when the next timer is due. */
 function timeMoved(
   res: RouteContext["res"],
   hub: RouteContext["hub"],
   progress: TimeProgress,
 ): void {
-  json(res, 200, { ...progress, now: hub.env.clock.iso() });
+  json(res, 200, { ...progress, ...readings(hub) });
 }
 
 /**
  * `{ ms }`: in manual time, move simulated time forward. Every timer that
  * comes due runs, in order, along with the timers their work sets within the
- * span. Answers `{ fired, pending, elapsedMs, now }` once they have.
+ * span. Answers `{ fired, pending, elapsedMs, now, next }` once they have.
  */
 async function advanceTime({ req, res, hub }: RouteContext): Promise<void> {
   const { ms } = await readJsonObject(req);
@@ -214,7 +228,7 @@ async function advanceTime({ req, res, hub }: RouteContext): Promise<void> {
 
 /**
  * In manual time, run the next timer that waits, however far ahead it is.
- * Answers `{ fired, pending, elapsedMs, now }`; `fired` is 0 when none waits.
+ * Answers `{ fired, pending, elapsedMs, now, next }`; `fired` is 0 when none waits.
  */
 async function stepTime({ res, hub }: RouteContext): Promise<void> {
   if (hub.env.timeMode() !== "manual") {

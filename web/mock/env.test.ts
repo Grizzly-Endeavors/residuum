@@ -199,6 +199,18 @@ describe("manual time", () => {
     expect(await env.step()).toEqual({ fired: 0, pending: 0, elapsedMs: 60_000 });
   });
 
+  it("says how long until the next timer comes due, and nothing when none waits", async () => {
+    const env = manualEnv();
+    expect(env.nextTimerIn()).toBeNull();
+    env.after(900, () => undefined);
+    env.after(300, () => undefined);
+    expect(env.nextTimerIn()).toBe(300);
+    await env.advance(100);
+    expect(env.nextTimerIn()).toBe(200);
+    await env.advance(1000);
+    expect(env.nextTimerIn()).toBeNull();
+  });
+
   it("breaks a tie between timers due together by the order they were set", async () => {
     const env = manualEnv();
     const ran: string[] = [];

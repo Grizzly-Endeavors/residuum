@@ -112,6 +112,12 @@ export default defineConfig<E2EOptions>({
   fullyParallel: true,
   forbidOnly: process.env.CI !== undefined,
   retries: 0,
+  // A hang guard, not a speed budget: every step waits on what it needs, so
+  // only a test that would never finish reaches it. A spec of several page
+  // loads takes many times longer on a machine other suites share than on a
+  // quiet one, and the 30s default failed such specs there. The same rule
+  // bounds the unit tests (src/test/guard.ts).
+  timeout: 180_000,
 
   reporter: [["list"], ["html", { open: "never" }]],
 
