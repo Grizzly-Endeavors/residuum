@@ -815,9 +815,15 @@ mod tests {
     #[tokio::test]
     async fn exec_timeout() {
         let tool = ExecTool::new(None, None, None, workspace_root());
+        // cmd has no sleep; only Git's usr\bin provides one on PATH.
+        let command = if cfg!(windows) {
+            "powershell -NoProfile -Command \"Start-Sleep -Seconds 10\""
+        } else {
+            "sleep 10"
+        };
         let result = tool
             .execute(serde_json::json!({
-                "command": "sleep 10",
+                "command": command,
                 "timeout_secs": 1
             }))
             .await
