@@ -23,6 +23,10 @@ Set-ItemProperty $winlogon -Name DefaultPassword -Value $password
 Remove-ItemProperty $winlogon -Name AutoLogonCount -ErrorAction SilentlyContinue
 net accounts /maxpwage:unlimited | Out-Null
 
+# Client editions default to the Restricted execution policy, which blocks the
+# harness scripts the host runs over SSH (provision.ps1, session-run.ps1).
+Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy RemoteSigned -Force
+
 # Keep the session awake and unlocked so screenshots show the desktop.
 powercfg /change standby-timeout-ac 0
 powercfg /change monitor-timeout-ac 0

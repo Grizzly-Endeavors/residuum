@@ -54,8 +54,13 @@ if ($CommandBase64) {
     Set-Content -Encoding UTF8 $jobScript @"
 Set-Location '$harnessRoot\src'
 `$env:CARGO_TARGET_DIR = '$harnessRoot\target'
-& { $command } *>&1 | Out-File -Encoding utf8 '$logFile'
-`$code = if (`$LASTEXITCODE) { `$LASTEXITCODE } elseif (`$?) { 0 } else { 1 }
+`$global:LASTEXITCODE = `$null
+`$script:succeeded = `$true
+& {
+$command
+`$script:succeeded = `$?
+} *>&1 | Out-File -Encoding utf8 '$logFile'
+`$code = if (`$null -ne `$LASTEXITCODE) { `$LASTEXITCODE } elseif (`$script:succeeded) { 0 } else { 1 }
 Set-Content '$exitFile' `$code
 "@
     $wait = if ($Detach) { 0 } else { $TimeoutSeconds }

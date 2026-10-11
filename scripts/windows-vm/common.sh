@@ -137,11 +137,14 @@ ssh_opts() {
 }
 
 # Run a PowerShell snippet in the guest. The snippet is base64-encoded so no
-# quoting survives (or breaks on) the trip through ssh and PowerShell.
+# quoting survives (or breaks on) the trip through ssh and PowerShell. Any
+# PowerShell error stops the snippet and exits nonzero, since an error inside
+# iex otherwise leaves the exit code at 0. A native command's exit code is the
+# snippet's to check.
 guest_ps() {
     local encoded
     encoded="$(printf '%s' "$1" | base64 -w0)"
-    local remote_command="iex ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$encoded')))"
+    local remote_command="\$ErrorActionPreference = 'Stop'; iex ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$encoded')))"
     local opts
     mapfile -t opts < <(ssh_opts)
     ssh "${opts[@]}" "$GUEST_USER@127.0.0.1" "$remote_command"
