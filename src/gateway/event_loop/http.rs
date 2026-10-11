@@ -150,7 +150,7 @@ pub fn build_gateway_app(
         .merge(web::agent_status_api_router(config_api_state))
 }
 
-/// Spawn the Discord, Telegram, and Teams adapters that are configured.
+/// Spawn the Discord, Telegram, Slack, and Teams adapters that are configured.
 pub fn spawn_adapters(
     cfg: &Config,
     senders: &AdapterSenders,

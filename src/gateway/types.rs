@@ -349,7 +349,7 @@ pub(crate) struct AgentRuntime {
     pub hub_dir: std::path::PathBuf,
     /// When the last user message was received (for idle deadline recalculation on reload).
     pub last_user_message_instant: Option<tokio::time::Instant>,
-    /// Discord, Telegram, and Teams, addressed by name for reload and shutdown.
+    /// Discord, Telegram, Slack, and Teams, addressed by name for reload and shutdown.
     pub chat_adapters: super::chat_adapters::ChatAdapters,
     /// The agent's A2A server state: its card and the router the hub's A2A
     /// listener serves for it. `None` when A2A is disabled.

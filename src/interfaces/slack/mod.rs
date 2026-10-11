@@ -704,6 +704,64 @@ mod tests {
             .expect("start_with_api returns Ok on shutdown");
     }
 
+    /// Slack redelivers an envelope whose ack was slow or lost; the dedup
+    /// cache absorbs the overlap. The same envelope delivered twice → the
+    /// ack fires both times (ack-first: Slack stops retrying on the ack)
+    /// but exactly one `UserMessage` reaches the bus.
+    #[tokio::test]
+    async fn a_redelivered_envelope_is_acked_again_but_published_once() {
+        let mut e2e = end_to_end().await;
+        e2e.boot();
+
+        let conn = e2e.connected("the socket mode connection").await;
+        conn.send(ServerCmd::Text(
+            include_str!("fixtures/envelope-hello.json").to_string(),
+        ))
+        .expect("the scripted connection is open");
+
+        // First delivery: acked, published.
+        let envelope = e2e.dm_envelope("env-dup-1");
+        conn.send(ServerCmd::Text(envelope.clone()))
+            .expect("the scripted connection is open");
+        let (ack_id, _) = e2e.ack_post("the ack for the first delivery").await;
+        assert_eq!(ack_id, "env-dup-1");
+        let first = e2e.next_user_message("the first delivery published").await;
+        assert_eq!(first.id, "slack-D0001-1728558000.000100");
+
+        // Redelivery of the SAME envelope: acked again — Slack's retries
+        // stop at the ack, which the socket owes for every delivery.
+        conn.send(ServerCmd::Text(envelope))
+            .expect("the scripted connection is open");
+        let (redelivered_ack_id, _) = e2e.ack_post("the ack for the redelivery").await;
+        assert_eq!(
+            redelivered_ack_id, "env-dup-1",
+            "a redelivery is acked again"
+        );
+
+        // ...but publishes nothing. The handler processes envelopes in
+        // order, so once a FRESH envelope's message lands, the duplicate
+        // has already been through the filter chain; a bus barrier then
+        // proves anything it tried to publish was fanned out, and the
+        // subscriber holds no leftovers.
+        conn.send(ServerCmd::Text(e2e.dm_envelope("env-dup-2")))
+            .expect("the scripted connection is open");
+        let fresh = e2e.next_user_message("the fresh envelope published").await;
+        assert_eq!(fresh.id, "slack-D0001-1728558000.000100");
+
+        wait::bus_barrier(&e2e.core.bus_handle).await;
+        let leftover = e2e.user_messages.drain();
+        assert!(
+            leftover.is_empty(),
+            "the redelivered envelope published nothing: {leftover:?}"
+        );
+
+        e2e.shutdown_tx.send(true).unwrap();
+        wait::guarded("the interface exits on shutdown", e2e.take_interface())
+            .await
+            .expect("the task itself joined")
+            .expect("start_with_api returns Ok on shutdown");
+    }
+
     /// A corrupt `slack_state.json` surfaces the same notice Telegram's
     /// corrupt `telegram_state.json` does — moved aside, fresh start, the
     /// owner told — and the interface comes up anyway.
