@@ -1,10 +1,10 @@
 # Slack Interface (Socket Mode, DM-only MVP)
 
-Status: **Draft — open for review** · Refs #490 · Approach discussion: #490 (comment)
+Status: **Implemented — final review complete, awaiting merge (PR #498)** · Refs #490 · Approach discussion: #490 (comment). Shipped behavior is described in [../systems-usage/slack.md](../systems-usage/slack.md); on merge this document moves to `../archive/` per [README.md](README.md).
 
 A design for a Slack chat interface: residuum agents answering direct messages in Slack, over
-Socket Mode, with no new dependencies. Written before any code exists; every decision below is
-open to revision until the implementation plan is cut.
+Socket Mode, with no new dependencies. Written before any code exists, and kept as the record
+of the reasoning behind the interface — not of how it currently works.
 
 ## Summary
 

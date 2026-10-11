@@ -57,7 +57,7 @@ Open Slack, find the app (search its name, or under the workspace's apps), and s
 
 The round trip is your verification: you DM the app, the agent answers in the same DM. If the answer comes back, every piece — socket, event subscription, tokens, reply posting — works.
 
-By default the agent answers only its owner; anyone else who DMs it is told so. To open it to others, set `respond_to_others = true` in the `[slack]` section — the agent still knows who is asking and keeps your private information out of its replies to them.
+By default the agent answers only its owner. Anyone else who DMs the app gets no reply at all — the message is silently ignored, and the log records it (`slack message from someone other than the owner; respond_to_others is off`). To open it to others, set `respond_to_others = true` in the `[slack]` section — the agent still knows who is asking and keeps your private information out of its replies to them.
 
 ## 6. First deployment: probe the wire format
 
@@ -68,10 +68,10 @@ The Slack interface ships with envelope fixtures (`src/interfaces/slack/fixtures
 Messages you send never reach the agent:
 
 - No `slack socket connected` in the log: the app token can't open the connection. Check it starts with `xapp-`, was generated with the `connections:write` scope (step 3), and matches the installed app.
-- `slack interface started` never appears: the `[slack]` section didn't load — the log names which token is missing or unreadable (check your `secret:` references with `residuum secret list`).
+- `slack interface started` never appears: the `[slack]` section didn't load — the log warns `section present but bot_token/app_token incomplete; set both in config`. It doesn't say which token is the problem, so check both (your `secret:` references with `residuum secret list`, or the `${ENV_VAR}` spellings).
 
 The agent gets messages but replies never show up in Slack:
 
 - The bot token is wrong or lacks `chat:write`: check it starts with `xoxb-` and comes from **Features → OAuth & Permissions** of the same app. The log records post failures.
 
-The app says it only takes requests from someone else: someone else DMed it first. The owner is the `owner` entry in `slack_state.json` in the agent's workspace — remove it (or the file) and reload; the next DM re-claims ownership.
+You DM the app and nothing comes back (no reply, no error): the app never answers anyone but its owner, and it doesn't say so — non-owner DMs are silently ignored. If someone else DMed it first, they claimed ownership; every ignored DM leaves a line in the log (`slack message from someone other than the owner; respond_to_others is off`). The owner is the `owner` entry in `slack_state.json` in the agent's workspace — remove it (or the file) and reload; the next DM re-claims ownership. Or set `respond_to_others = true` to let everyone in.
