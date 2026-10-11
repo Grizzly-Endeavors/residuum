@@ -26,9 +26,13 @@ net accounts /maxpwage:unlimited | Out-Null
 # Client editions default to the Restricted execution policy, which blocks the
 # harness scripts the host runs over SSH (provision.ps1, session-run.ps1).
 # This script runs under -ExecutionPolicy Bypass, so Set-ExecutionPolicy saves
-# the setting but reports the process-scope override as an error; the saved
-# value is checked instead.
-Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy RemoteSigned -Force -ErrorAction SilentlyContinue
+# the setting and then throws a terminating error about the process-scope
+# override. That one error is expected; the saved value is checked instead.
+try {
+    Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy RemoteSigned -Force
+} catch [System.Security.SecurityException] {
+    if ($_.FullyQualifiedErrorId -notlike 'ExecutionPolicyOverride*') { throw }
+}
 if ((Get-ExecutionPolicy -Scope LocalMachine) -ne 'RemoteSigned') {
     throw 'failed to set the LocalMachine execution policy to RemoteSigned'
 }
