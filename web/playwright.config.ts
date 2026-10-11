@@ -202,6 +202,7 @@ export default defineConfig<E2EOptions>({
       env: {
         MOCK_DETERMINISTIC: "1",
         MOCK_ARTIFACTS_PORT: String(dev.artifactsPort),
+        VITE_CACHE_DIR: `node_modules/.vite-e2e/${String(dev.port)}`,
       },
       // A server left over from another run would carry its state and its code into this one.
       reuseExistingServer: false,

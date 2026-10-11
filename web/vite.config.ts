@@ -38,6 +38,10 @@ function fontLicenses(): Plugin {
 }
 
 export default defineConfig(({ command }) => ({
+  // Each e2e dev server gets its own dependency cache: dev servers sharing one
+  // run the optimizer at once and race on renaming its output directory, which
+  // failed a release run with ENOTEMPTY and a 504 for a pre-bundled dependency.
+  ...(process.env.VITE_CACHE_DIR && { cacheDir: process.env.VITE_CACHE_DIR }),
   define: {
     // The primitives gallery (`/dev/gallery`) is served by the dev server and
     // built into mock builds. Production builds compile it out.
