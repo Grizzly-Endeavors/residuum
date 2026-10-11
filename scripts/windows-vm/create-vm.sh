@@ -76,10 +76,14 @@ EXTRA_QEMU_ARGS=(
 start_vm
 
 # The Windows DVD waits for a key press ("Press any key to boot from CD or
-# DVD") before it boots, so keep pressing Enter while firmware hands off.
+# DVD") before it boots, so keep pressing a key while firmware hands off.
+# Under KVM, Setup's window is up well within this loop and the later presses
+# reach it. Enter there activated the focused Cancel button and stopped the
+# install at "Are you sure you want to quit?", and a letter can match a
+# button's mnemonic. A digit does neither.
 info "booting the installer"
 for _ in $(seq 1 30); do
-    monitor_cmd "sendkey ret" 2>/dev/null || true
+    monitor_cmd "sendkey 1" 2>/dev/null || true
     sleep 1
 done
 

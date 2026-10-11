@@ -87,7 +87,7 @@ The Enterprise evaluation runs for 90 days. After that, Windows shows a watermar
 ## Troubleshooting
 
 - **`/dev/kvm is missing`.** Virtualization is off in the firmware; see Prerequisites. Then `sudo modprobe kvm_amd` (or `kvm_intel`).
-- **`create-vm.sh` waits for SSH forever.** Watch over VNC (`127.0.0.1:5959`). If setup shows the language screen, the answer ISO wasn't found. If it stopped at "Press any key to boot from CD", the Enter key presses were missed; stop the VM, delete the VM directory, and run `create-vm.sh` again. If the desktop is up but SSH isn't, read `C:\first-logon.log` in the guest over VNC.
+- **`create-vm.sh` waits for SSH forever.** Watch over VNC (`127.0.0.1:5959`). If setup shows the language screen, the answer ISO wasn't found. If it stopped at "Press any key to boot from CD", the key presses were missed; stop the VM, delete the VM directory, and run `create-vm.sh` again. If the desktop is up but SSH isn't, read `C:\first-logon.log` in the guest over VNC.
 - **`SSH not reachable`** after a restart. Windows may still be booting; `vm.sh status` shows whether QEMU is running. Something else may be using port 2222; set `RESIDUUM_WINVM_SSH_PORT` to a different port before starting.
 - **`no desktop session`** from `run-interactive.sh`. Autologon is off, or the user signed out over VNC. Restart with `vm.sh restart`.
 - **Toolchain problems.** Rerun `vm.sh provision`, which only installs what's missing, or `vm.sh provision -Upgrade` to move everything to the current releases.
