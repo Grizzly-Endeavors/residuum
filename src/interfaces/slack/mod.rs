@@ -4,4 +4,5 @@
 //! mirroring the Telegram adapter's shape. Inbound DM events deliver into the
 //! agent's main conversation; outbound replies ride the conversation-only
 //! contract shared by every external chat interface.
+pub(crate) mod api;
 pub(crate) mod events;
