@@ -65,7 +65,9 @@ scripts/windows-vm/run-interactive.sh --detach --delay 15 --screenshot /tmp/toas
 scripts/windows-vm/run-interactive.sh --screenshot /tmp/desktop.png
 ```
 
-To verify a toast, trigger the notification with the gateway running in the desktop session, then take a screenshot. Reminder-scenario toasts (urgent results) stay on screen until dismissed, so they show up reliably. Normal toasts disappear after a few seconds, so use a short `--delay`, or open the notification center over VNC. Stop a detached command with `vm.sh ssh 'Stop-Process -Name residuum'`.
+To verify a toast, trigger the notification with the gateway running in the desktop session, then take a screenshot. Reminder-scenario toasts (urgent results) stay on screen until dismissed, so they show up reliably. Normal toasts disappear after a few seconds, so use a short `--delay`, or open the notification center over VNC.
+
+One detached command runs at a time; starting another while it runs fails with an error. Stop it, and everything it started, with `scripts/windows-vm/run-interactive.sh --stop`. Screenshots work while it runs.
 
 ## Snapshots
 

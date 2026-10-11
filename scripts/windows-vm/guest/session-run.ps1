@@ -12,14 +12,52 @@ param(
     # Seconds to wait for the command to exit when not detached.
     [int]$TimeoutSeconds = 1800,
     # Guest path to write a PNG of the desktop to after the command.
-    [string]$Screenshot = ''
+    [string]$Screenshot = '',
+    # Stop a detached command and everything it started, then exit.
+    [switch]$Stop,
+    # Fail if a detached command is still running, then exit. The host checks
+    # this before syncing, since the running command holds the source tree.
+    [switch]$CheckIdle
 )
 
 $ErrorActionPreference = 'Stop'
 
 $harnessRoot = 'C:\residuum-harness'
 $jobDir = Join-Path $harnessRoot 'interactive'
-$taskName = 'ResiduumHarnessInteractive'
+# Separate tasks, because Task Scheduler won't start a task that is already
+# running: a screenshot taken while a detached command runs needs its own.
+$jobTask = 'ResiduumHarnessJob'
+$screenshotTask = 'ResiduumHarnessScreenshot'
+
+# The job's PowerShell process. Ending the scheduled task only kills the
+# conhost wrapper and leaves this running, so liveness and stopping go by it.
+function Get-JobProcess {
+    Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" |
+        Where-Object { $_.CommandLine -like '*\interactive\job.ps1*' }
+}
+
+if ($Stop) {
+    $running = @(Get-JobProcess)
+    if (-not $running) {
+        Write-Output 'no detached command is running'
+        exit 0
+    }
+    foreach ($process in $running) {
+        taskkill /F /T /PID $process.ProcessId | Out-Null
+    }
+    schtasks /End /TN $jobTask 2>&1 | Out-Null
+    if (@(Get-JobProcess)) { throw 'the detached command is still running after taskkill' }
+    Write-Output 'stopped the detached command'
+    exit 0
+}
+
+if ($CheckIdle -or $CommandBase64) {
+    # A new job would overwrite the files a running one is still using.
+    if (@(Get-JobProcess)) {
+        throw 'a detached command from an earlier run is still running. Stop it with: scripts/windows-vm/run-interactive.sh --stop'
+    }
+    if ($CheckIdle) { exit 0 }
+}
 
 if (-not (Get-Process explorer -IncludeUserName -ErrorAction SilentlyContinue |
         Where-Object { $_.UserName -like "*\$env:USERNAME" })) {
@@ -28,9 +66,11 @@ if (-not (Get-Process explorer -IncludeUserName -ErrorAction SilentlyContinue |
 
 # Registers and runs a one-shot task in the interactive session, then waits
 # for $doneFile to appear.
-function Invoke-InSession([string]$scriptPath, [string]$doneFile, [int]$timeout) {
+function Invoke-InSession([string]$taskName, [string]$scriptPath, [string]$doneFile, [int]$timeout) {
     Remove-Item $doneFile -ErrorAction SilentlyContinue
-    $action = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`""
+    # Windows Terminal, the default console host on Windows 11, ignores
+    # -WindowStyle Hidden and would leave a window over the desktop under test.
+    $action = "conhost.exe --headless powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
     schtasks /Create /F /TN $taskName /TR $action /SC ONCE /ST 23:59 /RU $env:USERNAME /IT 2>&1 | Out-Null
     if ($LASTEXITCODE) { throw "schtasks /Create failed with exit code $LASTEXITCODE" }
     schtasks /Run /TN $taskName | Out-Null
@@ -49,6 +89,7 @@ $logFile = Join-Path $jobDir 'output.log'
 $exitFile = Join-Path $jobDir 'exit-code'
 
 if ($CommandBase64) {
+    Remove-Item $logFile -ErrorAction SilentlyContinue
     $command = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($CommandBase64))
     $jobScript = Join-Path $jobDir 'job.ps1'
     Set-Content -Encoding UTF8 $jobScript @"
@@ -64,11 +105,12 @@ $command
 Set-Content '$exitFile' `$code
 "@
     $wait = if ($Detach) { 0 } else { $TimeoutSeconds }
-    Invoke-InSession $jobScript $exitFile $wait
+    Invoke-InSession $jobTask $jobScript $exitFile $wait
     if ($Detach) { Start-Sleep -Seconds $DelaySeconds }
 }
 
 if ($Screenshot) {
+    Remove-Item $Screenshot -ErrorAction SilentlyContinue
     $shotScript = Join-Path $jobDir 'screenshot.ps1'
     $shotDone = Join-Path $jobDir 'screenshot.done'
     Set-Content -Encoding UTF8 $shotScript @"
@@ -80,8 +122,8 @@ Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 `$bitmap.Save('$Screenshot', [System.Drawing.Imaging.ImageFormat]::Png)
 Set-Content '$shotDone' ok
 "@
-    Invoke-InSession $shotScript $shotDone 60
+    Invoke-InSession $screenshotTask $shotScript $shotDone 60
 }
 
-if (Test-Path $logFile) { Get-Content $logFile }
+if ($CommandBase64 -and (Test-Path $logFile)) { Get-Content $logFile }
 if ($CommandBase64 -and -not $Detach) { exit [int](Get-Content $exitFile) }
