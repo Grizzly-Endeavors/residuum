@@ -54,9 +54,13 @@ if ($capability.State -ne 'Installed') {
 }
 Set-Service sshd -StartupType Automatic
 Start-Service sshd
-if (-not (Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue)) {
+# The capability's own rule allows only the Private profile, and the QEMU
+# user-mode network comes up as Public, so the rule is widened to every profile.
+if (Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue) {
+    Set-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -Enabled True -Profile Any
+} else {
     New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' `
-        -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 | Out-Null
+        -Enabled True -Profile Any -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 | Out-Null
 }
 
 $openSshKey = 'HKLM:\SOFTWARE\OpenSSH'
