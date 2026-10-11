@@ -259,7 +259,7 @@ test("the model control switches the model and keeps its failover list", async (
   expect(raw).not.toContain("thinking");
 });
 
-test("messages wait while the connection is down, and say so", async ({ page }) => {
+test("messages wait while the connection is down, and say so", async ({ page, mock }) => {
   let online = true;
   const open: WebSocketRoute[] = [];
   await page.routeWebSocket(/\/api\/agents\/atlas\/ws$/, (socket) => {
@@ -272,6 +272,7 @@ test("messages wait while the connection is down, and say so", async ({ page }) 
   });
   await openChat(page);
   await expect(page.getByRole("status").filter({ hasText: "Reconnecting" })).toHaveCount(0);
+  await mock.manualTime();
 
   online = false;
   for (const socket of open.splice(0)) await socket.close();
@@ -283,12 +284,12 @@ test("messages wait while the connection is down, and say so", async ({ page }) 
   ).toBeVisible();
 
   online = true;
-  await expect(page.getByText(/^Reconnecting/)).toHaveCount(0, { timeout: 20_000 });
-  await expect(
-    page
-      .getByRole("region", { name: "Conversation with atlas" })
-      .getByText("I've looked into that and here's what I found:"),
-  ).toBeVisible();
+  await expect(page.getByText(/^Reconnecting/)).toHaveCount(0);
+  // The queued message reaches the mock on reconnect, and its turn's start shows; then time runs on.
+  const feed = page.getByRole("region", { name: "Conversation with atlas" });
+  await expect(feed.getByText("Working")).toBeVisible();
+  await mock.advance(60_000);
+  await expect(feed.getByText("I've looked into that and here's what I found:")).toBeVisible();
 });
 
 test.describe("the conversation size", () => {
@@ -350,13 +351,20 @@ test.describe("the conversation size", () => {
 });
 
 test("the memory work after a reply shows under it until it's done", async ({ page, mock }) => {
-  await mock.post("/api/mock/delays", { data: { scale: 1 } });
   await openChat(page);
+  await mock.manualTime();
+  // The reply waits before its end, so the memory work starts when the spec lets the turn finish.
+  await mock.post("/api/mock/turn-hold", { data: { held: "reply" } });
   await box(page).fill("remember that the plants need water");
   await sendFromComposer(box(page));
+  const feed = page.getByRole("region", { name: "Conversation with atlas" });
+  await expect(feed.getByText("Working")).toBeVisible();
+  await mock.advance(60_000);
+
+  await mock.post("/api/mock/turn-hold", { data: { held: false } });
   const status = page.getByRole("status").filter({ hasText: "Noting what matters" });
-  await expect(status).toHaveText("Noting what matters from this conversation", {
-    timeout: 15_000,
-  });
-  await expect(status).toHaveCount(0, { timeout: 15_000 });
+  await expect(status).toHaveText("Noting what matters from this conversation");
+  // The memory work is done two seconds of simulated time after the reply ends.
+  await mock.advance(2_000);
+  await expect(status).toHaveCount(0);
 });

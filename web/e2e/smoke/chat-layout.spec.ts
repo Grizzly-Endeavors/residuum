@@ -159,13 +159,16 @@ test.describe("opening and closing in the conversation", () => {
     mock,
     page,
   }) => {
-    await mock.post("/api/mock/delays", { data: { scale: 0 } });
     const feed = await openChat(page);
+    await mock.manualTime();
     await box(page).fill("Look at the wiki");
     await sendFromComposer(box(page));
+    // The turn's start shows once the mock has set its timers; then time runs to the turn's end.
+    await expect(feed.getByText("Working")).toBeVisible();
+    await mock.advance(60_000);
     await expect(feed.getByText("Looking through recent notes first.").first()).toBeVisible();
     const summary = feed.getByRole("button", { name: /^Searched memory, read 2 files/ }).last();
-    await expect(summary).toHaveAttribute("aria-expanded", "false", { timeout: 20_000 });
+    await expect(summary).toHaveAttribute("aria-expanded", "false");
     await summary.evaluate((el) => {
       el.scrollIntoView({ block: "center" });
     });
@@ -217,7 +220,6 @@ test.describe("opening and closing in the conversation", () => {
     mock,
     page,
   }) => {
-    await mock.post("/api/mock/delays", { data: { scale: 0 } });
     const feed = await openChat(page);
     const summary = feed.getByRole("button", { name: /^Ran 1 command/ }).first();
     await summary.evaluate((el) => {
@@ -329,7 +331,7 @@ test.describe("the history", () => {
     await expect(feed.getByText("Loading the conversation")).toBeAttached();
     await expect(feed.getByText("No messages yet")).toHaveCount(0);
     releaseHistory();
-    await expect(feed.getByText(GREETING)).toBeVisible({ timeout: 15_000 });
+    await expect(feed.getByText(GREETING)).toBeVisible();
     await expect(feed.getByText("Loading the conversation")).toHaveCount(0);
   });
 
