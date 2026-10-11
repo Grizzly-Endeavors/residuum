@@ -9,14 +9,6 @@
 //! deserializes to [`EnvelopeKind::Unknown`] carrying the type string, is
 //! logged, skipped, and still acknowledged — never an error.
 
-// Staged build: this module's consumers (socket.rs, handler.rs — plan Tasks 4-5)
-// land in later commits; until then the lib target sees these items as dead.
-// REMOVE this allow when Task 7 wires the interface end-to-end.
-#![allow(
-    dead_code,
-    reason = "staged build: consumed by socket.rs/handler.rs (plan Tasks 4-5); remove when Task 7 wires the interface"
-)]
-
 use serde::Deserialize;
 use serde_json::Value;
 

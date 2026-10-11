@@ -5,14 +5,6 @@
 //! Knows nothing about sockets or conversations — [`super::events`] and the
 //! socket task own those.
 
-// Staged build: this module's consumers (socket.rs, subscriber.rs — plan
-// Tasks 4/6) land in later commits; until then the lib target sees these
-// items as dead. REMOVE this allow when Task 7 wires the interface.
-#![allow(
-    dead_code,
-    reason = "staged build: consumed by socket.rs/subscriber.rs (plan Tasks 4/6); remove when Task 7 wires the interface"
-)]
-
 use anyhow::Context as _;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -76,6 +68,11 @@ pub(crate) trait SlackApi: Send + Sync {
 }
 
 /// [`SlackApi`] backed by the real Slack Web API.
+///
+/// `Clone` is cheap (the reqwest client is handle-based): the interface
+/// constructor clones one instance into the boot-time connect probe and the
+/// socket task keeps the original — both talk to the same Slack app.
+#[derive(Clone)]
 pub(crate) struct ReqwestSlackApi {
     http: reqwest::Client,
     bot_token: String,

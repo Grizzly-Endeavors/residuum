@@ -35,14 +35,6 @@
 //! from `WorkspaceLayout::slack_state_json`, call [`SlackInbound::spawn`],
 //! and pass [`SlackInbound::forwarder`]'s callback to `run_socket`.
 
-// Staged build: the only consumer (the interface constructor, plan Task 7)
-// lands in a later commit; until then the lib target sees these items as
-// dead. REMOVE this allow when Task 7 wires the interface.
-#![allow(
-    dead_code,
-    reason = "staged build: spawned by the Task 7 interface constructor; remove when Task 7 wires the interface"
-)]
-
 use std::sync::Arc;
 
 use tokio::sync::mpsc;

@@ -200,6 +200,27 @@ pub fn spawn_adapters(
         tracing::info!("telegram interface started");
     }
 
+    if let Some(ref slack_cfg) = cfg.slack {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let iface = crate::interfaces::slack::SlackInterface::new(
+            slack_cfg.clone(),
+            senders.clone(),
+            cfg.workspace_dir.clone(),
+            tz,
+            rx,
+        );
+        chat.insert(
+            "slack",
+            crate::util::spawn_monitored("slack", async move {
+                if let Err(e) = iface.start().await {
+                    tracing::error!(error = %e, "slack interface failed");
+                }
+            }),
+            tx,
+        );
+        tracing::info!("slack interface started");
+    }
+
     if let Some(ref teams_cfg) = cfg.teams {
         let (tx, rx) = tokio::sync::watch::channel(false);
         let iface = crate::interfaces::teams::TeamsInterface::new(

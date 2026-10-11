@@ -11,17 +11,9 @@
 //! (`telegram/handler.rs`'s polling cycle and `boot_retry.rs`'s transition
 //! logging).
 //!
-//! Shutdown: Task 7's interface constructor owns the spawned task and aborts
-//! it on teardown, the same guard pattern as the Telegram outbound
+//! Shutdown: the interface constructor (`mod.rs`) owns the spawned task and
+//! aborts it on teardown, the same guard pattern as the Telegram outbound
 //! subscriber.
-
-// Staged build: the only consumer (the interface constructor, plan Task 7)
-// lands in a later commit; until then the lib target sees these items as
-// dead. REMOVE this allow when Task 7 wires the interface.
-#![allow(
-    dead_code,
-    reason = "staged build: run_socket is spawned by the Task 7 interface constructor; remove when Task 7 wires the interface"
-)]
 
 use std::time::Duration;
 
@@ -40,6 +32,25 @@ const BACKOFF_MAX: Duration = Duration::from_secs(60);
 /// Budget for one ack POST. Slack answers acks in well under a second; a
 /// stuck one must not stall envelope processing for good.
 const ACK_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Liveness (Task 4 review I-1): tokio-tungstenite 0.26's connect helpers
+/// build their own `TcpStream` with no hook to set TCP keepalive on it (the
+/// Telegram adapter's `tcp_keepalive(60s)` route is unreachable for us), so
+/// dead-connection detection is client-side at the websocket protocol level
+/// instead: a ping every 30 s — conservative next to the official Slack
+/// SDKs' ~5 s — plus the read-silence timeout below. A silently-dropped
+/// connection (NAT idle timeout, half-open TCP) receives no frame and no
+/// pong; the timeout turns that into an error, which flows into the
+/// existing reconnect path with backoff.
+const KEEPALIVE_PING_INTERVAL: Duration = Duration::from_secs(30);
+
+/// How long the connection may go without any inbound frame — data, ping,
+/// or pong — before it is declared dead. Three ping intervals (spelled out:
+/// `Duration` multiplication is not const): a healthy connection answers
+/// each of our pings with a pong and Slack sends its own pings besides, so
+/// real silence for this long means the connection is gone. Bounds a silent
+/// drop's detection at ~90 s, well inside "minutes".
+const READ_SILENCE_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// The connected socket [`tokio_tungstenite::connect_async`] yields.
 type SlackSocket =
@@ -74,7 +85,7 @@ where
     loop {
         // Every cycle starts with a fresh apps.connections.open — Slack
         // rotates the wss host between connections.
-        let mut socket = match connect_once(&api).await {
+        let socket = match connect_once(&api).await {
             Ok(socket) => socket,
             Err(error) => {
                 back_off_and_retry(&mut consecutive_failures, &mut backoff, error).await;
@@ -83,7 +94,7 @@ where
         };
 
         match read_cycle(
-            &mut socket,
+            socket,
             &ack_http,
             &mut on_envelope,
             &mut consecutive_failures,
@@ -130,8 +141,14 @@ enum Cycle {
 
 /// Read envelopes off one live connection until it ends, acking each
 /// `events_api` and unknown envelope before it is dispatched or skipped.
+///
+/// Liveness runs alongside the reads (see [`KEEPALIVE_PING_INTERVAL`]): the
+/// socket is split so keepalive pings and pongs can be written while a read
+/// is pending, and the read-silence timeout — refreshed by every inbound
+/// frame — returns [`Cycle::Lost`] for a connection that has gone quiet,
+/// feeding the caller's reconnect path exactly like a read error.
 async fn read_cycle<F>(
-    socket: &mut SlackSocket,
+    socket: SlackSocket,
     ack_http: &reqwest::Client,
     on_envelope: &mut F,
     consecutive_failures: &mut u32,
@@ -141,68 +158,96 @@ async fn read_cycle<F>(
 where
     F: FnMut(Envelope),
 {
-    while let Some(frame) = socket.next().await {
-        let frame = match frame {
-            Ok(frame) => frame,
-            Err(error) => {
-                return Cycle::Lost(anyhow::Error::new(error).context("socket read failed"));
-            }
-        };
-        match frame {
-            Message::Text(text) => {
-                let envelope: Envelope = match serde_json::from_str(text.as_str()) {
-                    Ok(envelope) => envelope,
+    let (mut sink, mut stream) = socket.split();
+    let mut next_ping = tokio::time::Instant::now() + KEEPALIVE_PING_INTERVAL;
+    let mut silence_deadline = tokio::time::Instant::now() + READ_SILENCE_TIMEOUT;
+    loop {
+        tokio::select! {
+            frame = stream.next() => {
+                let Some(frame) = frame else {
+                    return Cycle::Lost(anyhow::anyhow!("slack socket stream ended"));
+                };
+                let frame = match frame {
+                    Ok(frame) => frame,
                     Err(error) => {
-                        tracing::warn!(
-                            error = %error,
-                            "slack socket: unparseable frame — skipping it, the connection stays up"
-                        );
-                        continue;
+                        return Cycle::Lost(anyhow::Error::new(error).context("socket read failed"));
                     }
                 };
-                match &envelope.kind {
-                    EnvelopeKind::Hello => {
-                        if *consecutive_failures > 0 {
-                            tracing::info!(
-                                attempts = *consecutive_failures,
-                                "slack socket reconnected"
-                            );
-                        } else if !*ever_connected {
-                            tracing::info!("slack socket connected");
+                silence_deadline = tokio::time::Instant::now() + READ_SILENCE_TIMEOUT;
+                match frame {
+                    Message::Text(text) => {
+                        let envelope: Envelope = match serde_json::from_str(text.as_str()) {
+                            Ok(envelope) => envelope,
+                            Err(error) => {
+                                tracing::warn!(
+                                    error = %error,
+                                    "slack socket: unparseable frame — skipping it, the connection stays up"
+                                );
+                                continue;
+                            }
+                        };
+                        match &envelope.kind {
+                            EnvelopeKind::Hello => {
+                                if *consecutive_failures > 0 {
+                                    tracing::info!(
+                                        attempts = *consecutive_failures,
+                                        "slack socket reconnected"
+                                    );
+                                } else if !*ever_connected {
+                                    tracing::info!("slack socket connected");
+                                }
+                                *ever_connected = true;
+                                *consecutive_failures = 0;
+                                *backoff = BACKOFF_START;
+                            }
+                            // Ack-first (design, Lifecycle §4): Slack redelivers
+                            // un-acked envelopes; upstream dedup absorbs the overlap.
+                            EnvelopeKind::EventsApi => {
+                                ack(ack_http, &envelope).await;
+                                on_envelope(envelope);
+                            }
+                            EnvelopeKind::Unknown(kind) => {
+                                tracing::debug!(
+                                    envelope_type = %kind,
+                                    "slack socket: unknown envelope type — acked when it carries a response_url, then skipped"
+                                );
+                                ack(ack_http, &envelope).await;
+                            }
+                            EnvelopeKind::Disconnect => return Cycle::GracefulDisconnect,
                         }
-                        *ever_connected = true;
-                        *consecutive_failures = 0;
-                        *backoff = BACKOFF_START;
                     }
-                    // Ack-first (design, Lifecycle §4): Slack redelivers
-                    // un-acked envelopes; upstream dedup absorbs the overlap.
-                    EnvelopeKind::EventsApi => {
-                        ack(ack_http, &envelope).await;
-                        on_envelope(envelope);
+                    // Slack pings the client; answer or it drops the connection.
+                    Message::Ping(payload) => {
+                        if let Err(error) = sink.send(Message::Pong(payload)).await {
+                            return Cycle::Lost(anyhow::Error::new(error).context("socket pong failed"));
+                        }
                     }
-                    EnvelopeKind::Unknown(kind) => {
-                        tracing::debug!(
-                            envelope_type = %kind,
-                            "slack socket: unknown envelope type — acked when it carries a response_url, then skipped"
-                        );
-                        ack(ack_http, &envelope).await;
+                    Message::Close(_) => {
+                        return Cycle::Lost(anyhow::anyhow!("slack socket closed by the server"));
                     }
-                    EnvelopeKind::Disconnect => return Cycle::GracefulDisconnect,
+                    Message::Pong(_) | Message::Binary(_) | Message::Frame(_) => {}
                 }
             }
-            // Slack pings the client; answer or it drops the connection.
-            Message::Ping(payload) => {
-                if let Err(error) = socket.send(Message::Pong(payload)).await {
-                    return Cycle::Lost(anyhow::Error::new(error).context("socket pong failed"));
+            () = tokio::time::sleep_until(next_ping) => {
+                // A protocol-level keepalive ping (RFC 6455 allows any
+                // payload; an empty one is the cheapest heartbeat). A send
+                // failure means the write side is dead — same reconnect
+                // path as a read failure.
+                if let Err(error) = sink
+                    .send(Message::Ping(tokio_tungstenite::tungstenite::Bytes::new()))
+                    .await
+                {
+                    return Cycle::Lost(anyhow::Error::new(error).context("socket keepalive ping failed"));
                 }
+                next_ping = tokio::time::Instant::now() + KEEPALIVE_PING_INTERVAL;
             }
-            Message::Close(_) => {
-                return Cycle::Lost(anyhow::anyhow!("slack socket closed by the server"));
+            () = tokio::time::sleep_until(silence_deadline) => {
+                return Cycle::Lost(anyhow::anyhow!(
+                    "slack socket read silent for {READ_SILENCE_TIMEOUT:?} — treating the connection as dead and reconnecting"
+                ));
             }
-            Message::Pong(_) | Message::Binary(_) | Message::Frame(_) => {}
         }
     }
-    Cycle::Lost(anyhow::anyhow!("slack socket stream ended"))
 }
 
 /// POST `{}` to the envelope's ack URL — before any dispatch.
@@ -310,6 +355,10 @@ mod tests {
         /// The client answered the server's ping — proof its read loop is
         /// live and every frame sent before the ping was processed.
         Pong,
+        /// The client sent one of its keepalive pings (liveness, Task 4
+        /// review I-1) — proof the ping cadence runs while the connection
+        /// is otherwise quiet.
+        ClientPing,
     }
 
     /// Driver → live fake-Slack connection.
@@ -365,7 +414,12 @@ mod tests {
                                     .send(Observed::Pong)
                                     .expect("the driver is still observing");
                             }
-                            Some(Ok(WsMessage::Text(_) | WsMessage::Binary(_) | WsMessage::Ping(_))) => {}
+                            Some(Ok(WsMessage::Ping(_))) => {
+                                shared.obs
+                                    .send(Observed::ClientPing)
+                                    .expect("the driver is still observing");
+                            }
+                            Some(Ok(WsMessage::Text(_) | WsMessage::Binary(_))) => {}
                         }
                     }
                 }
@@ -464,7 +518,10 @@ mod tests {
             let observed = self.next(what).await;
             match observed {
                 Observed::Connected { cmds } => cmds,
-                Observed::Ack { .. } | Observed::Dispatch { .. } | Observed::Pong => panic!(
+                Observed::Ack { .. }
+                | Observed::Dispatch { .. }
+                | Observed::Pong
+                | Observed::ClientPing => panic!(
                     "expected a socket connection while waiting for {what}, saw {observed:?}"
                 ),
             }
@@ -474,7 +531,10 @@ mod tests {
             let observed = self.next(what).await;
             match observed {
                 Observed::Ack { id, body } => (id, body),
-                Observed::Connected { .. } | Observed::Dispatch { .. } | Observed::Pong => {
+                Observed::Connected { .. }
+                | Observed::Dispatch { .. }
+                | Observed::Pong
+                | Observed::ClientPing => {
                     panic!("expected an ack POST while waiting for {what}, saw {observed:?}")
                 }
             }
@@ -484,7 +544,10 @@ mod tests {
             let observed = self.next(what).await;
             match observed {
                 Observed::Dispatch { id } => id,
-                Observed::Connected { .. } | Observed::Ack { .. } | Observed::Pong => panic!(
+                Observed::Connected { .. }
+                | Observed::Ack { .. }
+                | Observed::Pong
+                | Observed::ClientPing => panic!(
                     "expected an envelope dispatch while waiting for {what}, saw {observed:?}"
                 ),
             }
@@ -494,8 +557,26 @@ mod tests {
             let observed = self.next(what).await;
             match observed {
                 Observed::Pong => {}
-                Observed::Connected { .. } | Observed::Ack { .. } | Observed::Dispatch { .. } => {
+                Observed::Connected { .. }
+                | Observed::Ack { .. }
+                | Observed::Dispatch { .. }
+                | Observed::ClientPing => {
                     panic!("expected the client's pong while waiting for {what}, saw {observed:?}");
+                }
+            }
+        }
+
+        async fn client_ping(&mut self, what: &str) {
+            let observed = self.next(what).await;
+            match observed {
+                Observed::ClientPing => {}
+                Observed::Connected { .. }
+                | Observed::Ack { .. }
+                | Observed::Dispatch { .. }
+                | Observed::Pong => {
+                    panic!(
+                        "expected a client keepalive ping while waiting for {what}, saw {observed:?}"
+                    );
                 }
             }
         }
@@ -814,6 +895,93 @@ mod tests {
         harness.pong("the pong on the reconnected socket").await;
 
         harness.client.abort();
+    }
+
+    #[tokio::test]
+    async fn a_malformed_text_frame_is_skipped_and_the_connection_stays_up() {
+        let fake = spawn_fake_slack().await;
+        let http_base = fake.http_base.clone();
+        let ws_url = fake.ws_url.clone();
+        let mut harness = fake.drive(ScriptedApi::live(ws_url));
+
+        let conn1 = harness.connected("the socket connection").await;
+        conn1
+            .send(ServerCmd::Text(hello_text()))
+            .expect("the scripted connection is still open");
+        // Mid-stream garbage: not JSON at all. The client warns, skips the
+        // frame, and keeps reading the same connection (Task 4 review I-2).
+        conn1
+            .send(ServerCmd::Text("not json".to_string()))
+            .expect("the scripted connection is still open");
+        conn1
+            .send(ServerCmd::Text(events_envelope(
+                "env-after-garbage",
+                Some(&format!("{http_base}/ack/env-after-garbage")),
+            )))
+            .expect("the scripted connection is still open");
+
+        let (ack_id, _) = harness
+            .ack_post("the ack for the envelope after the garbage frame")
+            .await;
+        assert_eq!(ack_id, "env-after-garbage");
+        let dispatched = harness
+            .dispatched("the dispatch of the envelope after the garbage frame")
+            .await;
+        assert_eq!(dispatched, "env-after-garbage");
+
+        harness.client.abort();
+        let log = &harness.log;
+        let connections = log
+            .iter()
+            .filter(|observed| matches!(observed, Observed::Connected { .. }))
+            .count();
+        assert_eq!(
+            connections, 1,
+            "a malformed frame must not drop the connection: {log:?}"
+        );
+        assert!(
+            !log.iter().any(|observed| matches!(
+                observed,
+                Observed::Dispatch { id } if id.is_empty()
+            )),
+            "the garbage frame dispatched nothing: {log:?}"
+        );
+    }
+
+    /// Liveness (Task 4 review I-1): with no traffic at all, the client
+    /// still pings on its keepalive cadence. Paused clock with a quiet fake:
+    /// the runtime jumps straight to each ping timer, so the 30 s cadence is
+    /// observable without waiting a real minute — and the fake's pong
+    /// answers (axum auto-pongs at the protocol layer) refresh the silence
+    /// deadline, proving the timeout does not fire on a healthy connection.
+    #[tokio::test(start_paused = true)]
+    async fn the_client_pings_on_the_keepalive_cadence_when_the_connection_is_quiet() {
+        let fake = spawn_fake_slack().await;
+        let ws_url = fake.ws_url.clone();
+        let mut harness = fake.drive(ScriptedApi::live(ws_url));
+
+        let conn1 = harness.connected("the socket connection").await;
+        conn1
+            .send(ServerCmd::Text(hello_text()))
+            .expect("the scripted connection is still open");
+        // Nothing further is scripted: the client is alone with its timers.
+        harness
+            .client_ping("the first keepalive ping after 30 quiet seconds")
+            .await;
+        harness
+            .client_ping("the second keepalive ping on the cadence")
+            .await;
+
+        harness.client.abort();
+        let log = &harness.log;
+        let connections = log
+            .iter()
+            .filter(|observed| matches!(observed, Observed::Connected { .. }))
+            .count();
+        assert_eq!(
+            connections, 1,
+            "keepalive pings on a healthy connection must not trip a reconnect: {log:?}"
+        );
     }
 
     /// Backoff schedule only, on a paused clock with no real I/O (the house

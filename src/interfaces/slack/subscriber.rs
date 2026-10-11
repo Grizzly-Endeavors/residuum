@@ -18,14 +18,6 @@
 //!   sleeps (Task 3 review note) — a slow send backpressures the loop
 //!   instead of piling up an unbounded queue behind it.
 
-// Staged build: the only consumer (the interface constructor, plan Task 7)
-// lands in a later commit; until then the lib target sees these items as
-// dead. REMOVE this allow when Task 7 wires the interface.
-#![allow(
-    dead_code,
-    reason = "staged build: started by the Task 7 interface constructor; remove when Task 7 wires the interface"
-)]
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -40,8 +32,9 @@ use super::format::markdown_to_mrkdwn;
 
 /// Maximum message length for Slack, beside Telegram's 4,096 and Discord's
 /// 2,000 in their subscribers. Slack documents ~4,000 characters as the
-/// `chat.postMessage` text budget this MVP holds itself to.
-const SLACK_MAX_CHARS: usize = 4000;
+/// `chat.postMessage` text budget this MVP holds itself to. `pub(super)`:
+/// the module's end-to-end test sizes its chunk expectations from it.
+pub(super) const SLACK_MAX_CHARS: usize = 4000;
 
 /// The outbound side: the rate-limited sender plus the state shared with
 /// the inbound handler.

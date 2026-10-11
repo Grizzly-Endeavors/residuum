@@ -44,6 +44,6 @@ pub use types::{
     BackgroundModelTier, BackgroundModelsConfig, CloudConfig, Config, DiscordConfig, GatewayConfig,
     IdleConfig, LearningConfig, LogLevel, MemoryConfig, OtelEndpoint, ProviderNativeSearchConfig,
     RemoteAccessSettings, RepeatCallGuardConfig, RoleOverrides, SearchConfig, SkillsConfig,
-    StandaloneBackendConfig, SubconsciousSettings, TeamsConfig, TelegramConfig, ToolsConfig,
-    TracingConfig, WebSearchConfig, WebhookEntry, WebhookFormat, WebhookRouting,
+    SlackConfig, StandaloneBackendConfig, SubconsciousSettings, TeamsConfig, TelegramConfig,
+    ToolsConfig, TracingConfig, WebSearchConfig, WebhookEntry, WebhookFormat, WebhookRouting,
 };
