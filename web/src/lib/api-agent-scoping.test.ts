@@ -61,6 +61,17 @@ async function requestsOf(call: () => Promise<unknown>): Promise<string[]> {
 
 beforeEach(() => {
   stubStorage();
+  // The fetch cache lives for the module's lifetime; each test starts empty.
+  for (const agent of AGENTS) {
+    for (const key of [
+      api.cacheKeyStatus,
+      api.cacheKeyConfigRaw,
+      api.cacheKeyProvidersRaw,
+      api.cacheKeyMcpRaw,
+    ]) {
+      invalidate(key(agent));
+    }
+  }
 });
 
 afterEach(() => {
@@ -458,15 +469,15 @@ describe("cache keys are per agent", () => {
     expect(fetch).toHaveBeenCalledTimes(4);
   });
 
-  it("keeps an episode cached for one agent from answering another's", async () => {
+  it("asks the agent for every episode, never answering from an earlier read", async () => {
     const seen = recordRequests();
-    invalidate("GET /api/agents/scout/chat/history?episode=ep-1");
-    invalidate("GET /api/agents/atlas/chat/history?episode=ep-1");
     await api.fetchChatSegment("scout", "ep-1").catch(() => undefined);
     await api.fetchChatSegment("atlas", "ep-1").catch(() => undefined);
+    await api.fetchChatSegment("scout", "ep-1").catch(() => undefined);
     expect(seen).toEqual([
       "GET /api/agents/scout/chat/history?episode=ep-1",
       "GET /api/agents/atlas/chat/history?episode=ep-1",
+      "GET /api/agents/scout/chat/history?episode=ep-1",
     ]);
   });
 

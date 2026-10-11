@@ -109,8 +109,7 @@ class WsCoordinator {
         const notice = reloadingNotice();
         if (notice !== null) notifications.surface(notice.kind, notice.message);
         // Gateway is reloading config from disk — anything we cached about
-        // server-side state may be stale. Episode history is immutable and
-        // intentionally stays cached.
+        // server-side state may be stale.
         invalidate(CACHE_KEY_TIMEZONE);
         invalidate(CACHE_KEY_MCP_CATALOG);
         if (this.agent !== null) {

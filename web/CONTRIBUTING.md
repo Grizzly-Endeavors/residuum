@@ -150,7 +150,7 @@ web/
 │       ├── api.ts                # REST API client (typed fetch wrappers); every agent-scoped call takes the agent name first
 │       ├── paths.ts              # API and WebSocket URL builders for the agent, hub and team scopes
 │       ├── errors.ts             # Plain-language messages for failures, with the raw error logged
-│       ├── cache.ts              # The fetch cache behind the API client's GET wrappers: in-flight deduplication, kept in local storage
+│       ├── cache.ts              # The fetch cache behind the API client's GET wrappers: in-flight deduplication, kept in memory for the page's lifetime
 │       ├── transport.svelte.ts   # The WebSocket transport: connecting, reconnecting, and holding what is sent while the connection is down
 │       ├── hub.svelte.ts         # The hub's state from `/api/hub/ws`: each agent's state, activity and stopping set, hub notices, deleted agents; up across agent switches
 │       ├── hub-types.ts          # Shapes for the hub API and frames: the generated ones, and the bodies the backend builds inline
