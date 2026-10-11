@@ -279,8 +279,9 @@ export async function fetchUsageTotals(agent: string): Promise<SessionUsageTotal
 }
 
 /**
- * Fetch an episode segment by cursor. Episodes are immutable, so the result
- * is cached for the life of the browser session (and across reloads).
+ * Fetch an episode segment by cursor. Not cached: an episode id names a
+ * different conversation on another instance behind the same address, or
+ * after an agent is created again under the same name.
  *
  * Throws `ApiError` on failure — callers must decide how to surface the
  * error. A 404 (episode not found) is surfaced the same as any other
@@ -290,11 +291,9 @@ export async function fetchChatSegment(
   agent: string,
   episodeId: string,
 ): Promise<EpisodeHistorySegment> {
-  // Built inline rather than as a CACHE_KEY_* constant because it's per-episode.
-  // The key string must match the url string exactly — if you change one, change
-  // the other, or cache lookups will miss.
-  const url = agentPath(agent, `/chat/history?episode=${encodeURIComponent(episodeId)}`);
-  const segment = await cachedFetch(`GET ${url}`, () => apiFetch<ChatHistorySegment>(url));
+  const segment = await apiFetch<ChatHistorySegment>(
+    agentPath(agent, `/chat/history?episode=${encodeURIComponent(episodeId)}`),
+  );
   if (segment.kind === "episode") return segment;
   throw new Error(
     `unexpected chat history kind "${segment.kind}" — server must return Episode for ?episode=`,

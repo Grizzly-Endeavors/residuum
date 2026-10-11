@@ -888,9 +888,8 @@ mod tests {
             1,
             "the duplicate merge must not append a second observation"
         );
-        let latest = crate::memory::episode_store::latest_episode_id(&layout.episodes_dir())
-            .await
-            .unwrap();
+        let latest =
+            crate::memory::episode_store::latest_episode_id(&layout.episodes_dir()).unwrap();
         assert_eq!(
             latest,
             Some(first.id),
@@ -1016,7 +1015,6 @@ mod tests {
             || async {
                 let latest =
                     crate::memory::episode_store::latest_episode_id(&layout.episodes_dir())
-                        .await
                         .unwrap();
                 (latest.as_deref() == Some("ep-002")).then_some(())
             },

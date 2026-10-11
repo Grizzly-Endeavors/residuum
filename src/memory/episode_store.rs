@@ -487,7 +487,8 @@ pub async fn next_episode_id(episodes_dir: &Path) -> anyhow::Result<String> {
 ///
 /// # Errors
 /// Returns an error if the directory cannot be read.
-pub async fn latest_episode_id(episodes_dir: &Path) -> anyhow::Result<Option<String>> {
+#[cfg(test)]
+pub(crate) fn latest_episode_id(episodes_dir: &Path) -> anyhow::Result<Option<String>> {
     let max_num = max_episode_num(episodes_dir)?;
     if max_num == 0 {
         Ok(None)
@@ -496,35 +497,69 @@ pub async fn latest_episode_id(episodes_dir: &Path) -> anyhow::Result<Option<Str
     }
 }
 
-/// Return the ID of the episode immediately older than `cursor`, skipping gaps.
+/// Return the ID of the newest main-conversation episode older than `before`,
+/// or the newest one on disk when `before` is `None`.
 ///
-/// Parses `NNN` from a cursor like `"ep-042"`, then walks backwards probing
-/// for `ep-(NNN-1)`, `ep-(NNN-2)`, ... until an existing JSONL file is found
-/// or `NNN` hits 0. Returns `None` if no older episode exists. Gaps from
-/// hand-deleted files don't break pagination.
+/// Session runs (pulses, scheduled actions, spawned and external sessions)
+/// are merged into the same episodes directory, tagged with their session;
+/// those are skipped, so paging back through the main chat never lands on a
+/// session's transcript. Gaps in the numbering (hand-deleted files) are
+/// skipped the same way. A transcript whose meta line can't be read is
+/// logged and skipped, so one damaged file doesn't end the history before
+/// it. Returns `None` when no older main episode exists or `before` isn't an
+/// `ep-NNN` id.
 ///
 /// # Errors
 /// Returns an error if the directory cannot be traversed.
-pub async fn previous_episode_id(
+pub(crate) async fn older_main_episode_id(
     episodes_dir: &Path,
-    cursor: &str,
+    before: Option<&str>,
 ) -> anyhow::Result<Option<String>> {
-    let Some(num) = cursor
-        .strip_prefix("ep-")
-        .and_then(|s| s.parse::<u32>().ok())
-    else {
-        return Ok(None);
+    let limit = match before {
+        None => None,
+        Some(cursor) => {
+            let Some(num) = cursor
+                .strip_prefix("ep-")
+                .and_then(|s| s.parse::<u32>().ok())
+            else {
+                return Ok(None);
+            };
+            Some(num)
+        }
     };
 
-    let mut candidate = num;
-    while candidate > 1 {
-        candidate -= 1;
-        let id = format!("ep-{candidate:03}");
-        if find_episode_path(episodes_dir, &id)?.is_some() {
-            return Ok(Some(id));
+    for transcript in transcripts_newest_first(episodes_dir)? {
+        let num = episode_number(&transcript);
+        if limit.is_some_and(|limit| num >= limit) {
+            continue;
+        }
+        match read_episode_meta(&transcript).await {
+            Ok(meta) if meta.source.is_session() => {}
+            Ok(meta) => return Ok(Some(meta.id)),
+            Err(err) => tracing::warn!(
+                error = format!("{err:#}"),
+                path = %transcript.display(),
+                "skipping an episode whose meta line can't be read while paging main chat history",
+            ),
         }
     }
     Ok(None)
+}
+
+/// Read only the meta line (line 1) of an episode transcript.
+async fn read_episode_meta(path: &Path) -> anyhow::Result<EpisodeMeta> {
+    use tokio::io::AsyncBufReadExt;
+
+    let file = tokio::fs::File::open(path)
+        .await
+        .with_context(|| format!("failed to open episode file at {}", path.display()))?;
+    let mut first = String::new();
+    tokio::io::BufReader::new(file)
+        .read_line(&mut first)
+        .await
+        .with_context(|| format!("failed to read episode file at {}", path.display()))?;
+    serde_json::from_str(&first)
+        .with_context(|| format!("failed to parse episode meta at {}", path.display()))
 }
 
 /// Recursively walk `dir` for `ep-NNN.jsonl` files and return the maximum `NNN` found.
@@ -1031,7 +1066,7 @@ mod tests {
     #[tokio::test]
     async fn latest_episode_id_empty_dir() {
         let dir = tempfile::tempdir().unwrap();
-        let id = latest_episode_id(dir.path()).await.unwrap();
+        let id = latest_episode_id(dir.path()).unwrap();
         assert!(id.is_none(), "empty dir should return None");
     }
 
@@ -1048,62 +1083,115 @@ mod tests {
             .await
             .unwrap();
 
-        let id = latest_episode_id(&episodes_dir).await.unwrap();
+        let id = latest_episode_id(&episodes_dir).unwrap();
         assert_eq!(id, Some("ep-003".to_string()));
     }
 
-    #[tokio::test]
-    async fn previous_episode_id_returns_decrement_when_exists() {
-        let dir = tempfile::tempdir().unwrap();
-        let ep1 = sample_episode();
-        let mut ep2 = sample_episode();
-        ep2.id = "ep-002".to_string();
-        write_episode_transcript(dir.path(), &ep1, &[Message::user("a")])
+    async fn write_tagged(dir: &Path, id: &str, tag: &SourceTag) {
+        let mut episode = sample_episode();
+        episode.id = id.to_string();
+        write_episode_transcript_tagged(dir, &episode, &[Message::user(id)], tag, None)
             .await
             .unwrap();
-        write_episode_transcript(dir.path(), &ep2, &[Message::user("b")])
-            .await
-            .unwrap();
+    }
 
-        let prev = previous_episode_id(dir.path(), "ep-002").await.unwrap();
-        assert_eq!(prev, Some("ep-001".to_string()));
+    fn pulse_tag() -> SourceTag {
+        SourceTag::session("scheduled-wiki-lint-2b42", "run-1", "scheduled")
     }
 
     #[tokio::test]
-    async fn previous_episode_id_skips_gap() {
+    async fn older_main_episode_id_starts_at_the_newest_main_episode() {
         let dir = tempfile::tempdir().unwrap();
-        let ep1 = sample_episode();
-        let mut ep3 = sample_episode();
-        ep3.id = "ep-003".to_string();
-        // ep-002 is intentionally missing
-        write_episode_transcript(dir.path(), &ep1, &[Message::user("a")])
-            .await
-            .unwrap();
-        write_episode_transcript(dir.path(), &ep3, &[Message::user("c")])
-            .await
-            .unwrap();
+        write_tagged(dir.path(), "ep-001", &SourceTag::main()).await;
+        write_tagged(dir.path(), "ep-002", &SourceTag::main()).await;
+        write_tagged(dir.path(), "ep-003", &pulse_tag()).await;
 
-        let prev = previous_episode_id(dir.path(), "ep-003").await.unwrap();
-        assert_eq!(prev, Some("ep-001".to_string()), "should skip the gap");
+        let newest = older_main_episode_id(dir.path(), None).await.unwrap();
+        assert_eq!(newest.as_deref(), Some("ep-002"));
     }
 
     #[tokio::test]
-    async fn previous_episode_id_none_when_at_first() {
+    async fn older_main_episode_id_skips_session_runs_and_gaps() {
         let dir = tempfile::tempdir().unwrap();
-        let ep1 = sample_episode();
-        write_episode_transcript(dir.path(), &ep1, &[Message::user("a")])
+        write_tagged(dir.path(), "ep-001", &SourceTag::main()).await;
+        // ep-002 is missing, ep-003 and ep-004 are session runs.
+        write_tagged(dir.path(), "ep-003", &pulse_tag()).await;
+        write_tagged(
+            dir.path(),
+            "ep-004",
+            &SourceTag::session("spawned-a", "run-2", "spawned"),
+        )
+        .await;
+        write_tagged(dir.path(), "ep-005", &SourceTag::main()).await;
+
+        let older = older_main_episode_id(dir.path(), Some("ep-005"))
             .await
             .unwrap();
-
-        let prev = previous_episode_id(dir.path(), "ep-001").await.unwrap();
-        assert!(prev.is_none());
+        assert_eq!(older.as_deref(), Some("ep-001"));
     }
 
     #[tokio::test]
-    async fn previous_episode_id_malformed_cursor() {
+    async fn older_main_episode_id_is_none_with_only_session_runs() {
         let dir = tempfile::tempdir().unwrap();
-        let prev = previous_episode_id(dir.path(), "garbage").await.unwrap();
-        assert!(prev.is_none());
+        write_tagged(dir.path(), "ep-001", &pulse_tag()).await;
+
+        assert!(
+            older_main_episode_id(dir.path(), None)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn older_main_episode_id_none_when_at_first() {
+        let dir = tempfile::tempdir().unwrap();
+        write_tagged(dir.path(), "ep-001", &SourceTag::main()).await;
+
+        let older = older_main_episode_id(dir.path(), Some("ep-001"))
+            .await
+            .unwrap();
+        assert!(older.is_none());
+    }
+
+    #[tokio::test]
+    async fn older_main_episode_id_malformed_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        write_tagged(dir.path(), "ep-001", &SourceTag::main()).await;
+
+        let older = older_main_episode_id(dir.path(), Some("garbage"))
+            .await
+            .unwrap();
+        assert!(older.is_none());
+    }
+
+    #[tokio::test]
+    async fn older_main_episode_id_reads_an_untagged_legacy_episode_as_main() {
+        let dir = tempfile::tempdir().unwrap();
+        let day_dir = dir.path().join("2026-02/19");
+        tokio::fs::create_dir_all(&day_dir).await.unwrap();
+        tokio::fs::write(
+            day_dir.join("ep-001.jsonl"),
+            "{\"type\":\"meta\",\"id\":\"ep-001\",\"date\":\"2026-02-19\"}\n",
+        )
+        .await
+        .unwrap();
+
+        let newest = older_main_episode_id(dir.path(), None).await.unwrap();
+        assert_eq!(newest.as_deref(), Some("ep-001"));
+    }
+
+    #[tokio::test]
+    async fn older_main_episode_id_steps_past_an_unreadable_meta_line() {
+        let dir = tempfile::tempdir().unwrap();
+        write_tagged(dir.path(), "ep-001", &SourceTag::main()).await;
+        let day_dir = dir.path().join("2026-02/19");
+        tokio::fs::write(day_dir.join("ep-002.jsonl"), "not json\n")
+            .await
+            .unwrap();
+
+        let newest = older_main_episode_id(dir.path(), None).await.unwrap();
+        assert_eq!(newest.as_deref(), Some("ep-001"));
     }
 
     // --- completion marker & reconciliation tests ---
