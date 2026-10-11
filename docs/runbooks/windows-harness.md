@@ -9,7 +9,7 @@ For quick cross-platform signal without a VM, the opt-in CI checks (the `cross-c
 - **Hardware virtualization enabled in the firmware.** AMD: "SVM Mode". Intel: "Intel Virtualization Technology (VT-x)". A BIOS or CMOS reset turns it off on some boards. Check with `ls /dev/kvm`. If it's missing, `sudo dmesg | grep -i svm` shows `SVM disabled (by BIOS)` when this is the cause.
 - **KVM access.** Your user must be in the `kvm` group (`sudo usermod -aG kvm $USER`, then log in again).
 - **Host packages** (Debian/Ubuntu): `sudo apt install qemu-system-x86 qemu-utils ovmf swtpm xorriso`.
-- **Disk and memory.** The VM uses 4 vCPUs, 8 GiB of RAM, and an 80 GiB sparse disk (about 30 GiB used after provisioning); `create-vm.sh` requires 40 GiB free in the VM directory, which must be on a real disk, not a tmpfs such as `/tmp`. Override with `RESIDUUM_WINVM_CPUS`, `RESIDUUM_WINVM_MEMORY_MIB`, and `RESIDUUM_WINVM_DISK_SIZE`.
+- **Disk and memory.** The VM uses 4 vCPUs, 16 GiB of RAM, and an 80 GiB sparse disk (about 30 GiB used after provisioning); `create-vm.sh` requires 40 GiB free in the VM directory, which must be on a real disk, not a tmpfs such as `/tmp`. Override with `RESIDUUM_WINVM_CPUS`, `RESIDUUM_WINVM_MEMORY_MIB`, and `RESIDUUM_WINVM_DISK_SIZE`. Compiling the library's tests takes about 8 GiB in a single rustc, so with 8 GiB of RAM a cold `cargo test` runs out of virtual memory, and rustc reports it as "can't find crate" or "required to be available in rlib format".
 - **A built web UI** (`npm run build` in `web/`). The harness copies `web/dist` into the guest because `build.rs` requires it.
 
 ## One-time setup
@@ -18,7 +18,7 @@ For quick cross-platform signal without a VM, the opt-in CI checks (the `cross-c
 2. Verify it against the SHA256 in Microsoft's hash list, linked from the same page ("Windows 11 Enterprise hash values"): `sha256sum ~/vms/win11-enterprise-eval.iso`.
 3. Create the VM: `scripts/windows-vm/create-vm.sh`.
 
-`create-vm.sh` does the whole setup unattended and prints progress. It generates an account password and an SSH key in the VM directory (`~/vms/residuum-win11`, or `RESIDUUM_WINVM_DIR`). It builds an answer ISO, boots the installer, and waits 20–40 minutes for Windows to install and log in automatically. Then it installs the toolchain (`vm.sh provision`), restarts without the install media, and takes a `provisioned` snapshot. To watch the install, connect a VNC viewer to `127.0.0.1:5959`.
+`create-vm.sh` does the whole setup unattended and prints progress. It generates an account password and an SSH key in the VM directory (`~/vms/residuum-win11`, or `RESIDUUM_WINVM_DIR`). It builds an answer ISO, boots the installer, and waits 15–40 minutes for Windows to install and log in automatically. Then it installs the toolchain (`vm.sh provision`), restarts without the install media, and takes a `provisioned` snapshot. To watch the install, connect a VNC viewer to `127.0.0.1:5959`.
 
 The guest is set up as follows:
 
@@ -84,7 +84,7 @@ Restoring to `provisioned` resets the guest to a clean toolchain install. Firmwa
 
 ## Evaluation expiry
 
-The Enterprise evaluation runs for 90 days. After that, Windows shows a watermark and shuts down periodically. To extend it, run `vm.sh ssh 'slmgr /rearm'` and then `vm.sh restart`; the number of rearms is limited. Otherwise, recreate the VM: stop it, delete `~/vms/residuum-win11`, download the current evaluation ISO, and run `create-vm.sh` again (about an hour, unattended).
+The Enterprise evaluation runs for 90 days. After that, Windows shows a watermark and shuts down periodically. To extend it, run `vm.sh ssh 'slmgr /rearm'` and then `vm.sh restart`; the number of rearms is limited. Otherwise, recreate the VM: stop it, delete `~/vms/residuum-win11`, download the current evaluation ISO, and run `create-vm.sh` again (under an hour, unattended).
 
 ## Troubleshooting
 
@@ -92,6 +92,7 @@ The Enterprise evaluation runs for 90 days. After that, Windows shows a watermar
 - **`create-vm.sh` waits for SSH forever.** Watch over VNC (`127.0.0.1:5959`). If setup shows the language screen, the answer ISO wasn't found. If it stopped at "Press any key to boot from CD", the key presses were missed; stop the VM, delete the VM directory, and run `create-vm.sh` again. If the desktop is up but SSH isn't, read `C:\first-logon.log` in the guest over VNC.
 - **`SSH not reachable`** after a restart. Windows may still be booting; `vm.sh status` shows whether QEMU is running. Something else may be using port 2222; set `RESIDUUM_WINVM_SSH_PORT` to a different port before starting.
 - **`no desktop session`** from `run-interactive.sh`. Autologon is off, or the user signed out over VNC. Restart with `vm.sh restart`.
+- **`can't find crate` or `required to be available in rlib format` on Windows only.** The guest ran out of virtual memory mid-build; `vm.sh ssh "Get-WinEvent -FilterHashtable @{LogName='System'; Id=2004} -MaxEvents 1"` shows the low-memory event. Give the VM more memory with `RESIDUUM_WINVM_MEMORY_MIB` and `vm.sh restart`.
 - **Toolchain problems.** Rerun `vm.sh provision`, which only installs what's missing, or `vm.sh provision -Upgrade` to move everything to the current releases.
 - **`RESIDUUM_WINVM_DIR is too long`.** swtpm and the QEMU monitor use UNIX sockets in the VM directory, and socket paths are limited to 108 bytes. Use a shorter directory.
 - **Two VMs at once.** Give each its own `RESIDUUM_WINVM_NAME` (or `RESIDUUM_WINVM_DIR`), `RESIDUUM_WINVM_SSH_PORT`, and `RESIDUUM_WINVM_VNC_DISPLAY`.

@@ -87,7 +87,7 @@ for _ in $(seq 1 30); do
     sleep 1
 done
 
-info "installing Windows unattended; this takes 20-40 minutes (watch with a VNC viewer on 127.0.0.1:$((5900 + VNC_DISPLAY)))"
+info "installing Windows unattended; this takes 15-40 minutes (watch with a VNC viewer on 127.0.0.1:$((5900 + VNC_DISPLAY)))"
 wait_for_ssh "$INSTALL_TIMEOUT_SECS"
 info "SSH is up"
 
