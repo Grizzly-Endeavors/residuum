@@ -5,6 +5,7 @@
  * - resets the mock before every test, so no test sees what another left behind,
  * - keeps the page on loopback, so a font or script on the internet can't change a run,
  * - freezes the page's clock at the mock's clock when a project asks for it,
+ *   and in manual time keeps it with the mock's simulated time (see `MockControls`),
  * - makes `page.goto` and `page.reload` wait until the app is usable (`waitForApp`
  *   in `app.ts`), so a spec's first action never lands on a half-built page,
  * - skips, with the reason, what can't run here: visual specs outside the
@@ -15,7 +16,7 @@
  */
 import { expect, test as base, webkit, type Page, type Response } from "@playwright/test";
 import { FIXED_START_MS, type TimeProgress } from "../../mock/env";
-import { hubReach, waitForApp } from "./app";
+import { hubReach, pageClock, waitForApp } from "./app";
 import { serversOf, type MockServerKind } from "./servers";
 
 export { expect };
@@ -42,9 +43,19 @@ export interface MockControls {
    * the spec moves time with `advance` or `stepUntil`, so a moment of a turn
    * stays on screen for as long as the spec looks at it. Call it before
    * starting what you want to watch. The fixture's reset turns it off again.
+   *
+   * The page's clock (`Date`) stops at the mock's time too, and moves only
+   * with it, so what the page times itself, such as "Worked for 2s", follows
+   * simulated time. Its timers keep running, so a reconnect still happens.
    */
   manualTime: () => Promise<void>;
-  /** Move manual time forward by `ms`: every timer due by then runs, in order. */
+  /**
+   * Move manual time forward by `ms`: every timer due by then runs, in order.
+   * The page's clock moves to the end of the span first, so the page reads
+   * every frame the move sends at that time: a turn that starts at 0 and ends
+   * within `advance(1_500)` took 1.5s. Before moving time again, wait for what
+   * this move shows, so its frames are read at this move's time.
+   */
   advance: (ms: number) => Promise<TimeProgress>;
   /**
    * Run the mock's timers one at a time until `expectation` holds. It gets the
@@ -53,13 +64,21 @@ export interface MockControls {
    * The page gets that long to show what a timer did before the next one
    * runs, and the steps end when no timer is left, so the bound is the turn's
    * timers, not a wall-clock guess. A timer can close the moment it opens, so
-   * for a window that a later timer ends, `advance` to a time inside it.
+   * for a window that a later timer ends, `advance` to a time inside it. The
+   * page's clock is set to each timer's time before it runs, but the page may
+   * read its frames after the next step, so assert durations after `advance`.
    */
   stepUntil: (expectation: (timeout: number) => Promise<unknown>) => Promise<void>;
 }
 
 /** How long `stepUntil` lets the page show what a timer did before it runs the next. */
 const STEP_SETTLE_MS = 2000;
+
+/** What the mock's time controls answer: the time it reads, and when its next timer is due. */
+interface TimeReading {
+  now: string;
+  next: string | null;
+}
 
 interface E2EFixtures {
   mock: MockControls;
@@ -155,7 +174,7 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
   // Automatic fixtures are set up before the test's own, so the reset lands
   // before the page opens and connects.
   mock: [
-    async ({ request }, use) => {
+    async ({ request, context }, use) => {
       const post: MockControls["post"] = async (path, options) => {
         const response = await request.post(path, options);
         expect(response.ok(), `POST ${path} answered ${response.status()}`).toBe(true);
@@ -164,22 +183,36 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
         if (path === "/api/mock/reset") hubReach.lost = false;
         return (await response.json()) as unknown;
       };
+      // In manual time, what the mock last said its clock reads; the page's clock follows it.
+      let reading: TimeReading | undefined;
+      const pageClockAt = async (ms: number): Promise<void> => {
+        await context.clock.setFixedTime(ms);
+        pageClock.fixedAt = ms;
+      };
       const controls: MockControls = {
         post,
         manualTime: async () => {
-          await post("/api/mock/time", { data: { mode: "manual" } });
+          reading = (await post("/api/mock/time", { data: { mode: "manual" } })) as TimeReading;
+          await pageClockAt(Date.parse(reading.now));
         },
-        advance: async (ms) =>
-          (await post("/api/mock/time/advance", { data: { ms } })) as TimeProgress,
+        advance: async (ms) => {
+          if (reading !== undefined) await pageClockAt(Date.parse(reading.now) + ms);
+          const moved = (await post("/api/mock/time/advance", { data: { ms } })) as TimeProgress &
+            TimeReading;
+          reading = moved;
+          return moved;
+        },
         stepUntil: async (expectation) => {
           for (;;) {
             try {
               await expectation(STEP_SETTLE_MS);
               return;
             } catch (notYet) {
-              const { fired } = (await post("/api/mock/time/step")) as TimeProgress;
+              if (reading?.next != null) await pageClockAt(Date.parse(reading.next));
+              const stepped = (await post("/api/mock/time/step")) as TimeProgress & TimeReading;
+              reading = stepped;
               // No timer left to run: the expectation's own failure says what never showed.
-              if (fired === 0) throw notYet;
+              if (stepped.fired === 0) throw notYet;
             }
           }
         },
@@ -220,6 +253,7 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
 
   context: async ({ context, frozenClock }, use) => {
     await context.route(leavesLoopback, (route) => route.abort("blockedbyclient"));
+    pageClock.fixedAt = frozenClock ? FIXED_START_MS : null;
     if (frozenClock) await context.clock.setFixedTime(FIXED_START_MS);
     // With the network off the hub can't be reached, so a page that loads then is ready showing the banner (see `hubReach`).
     const setOffline = context.setOffline.bind(context);

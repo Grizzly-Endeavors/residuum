@@ -1,6 +1,10 @@
 # Test synchronization: wait on events, not elapsed time
 
-**Status:** in progress. Tracking issue: #488.
+**Status:** done, October 2026. Tracking issue: #488 (closed). Kept as the record of the work; the current rules are in `CONTRIBUTING.md` ("Waiting in tests"), `web/CONTRIBUTING.md` ("Waiting", "Manual time") and the `CLAUDE.md` Testing section.
+
+**What shipped.** `just stress` and a required Stress step in the Rust tests job (#489, #537). The `src/testing/` toolkit and the source scan, whose wall-clock backlog went from 357 waits in 81 files to none (three reasoned `ALLOWED` entries remain) (#491, #497, then #496, #502, #506, #516, #524, #526, #535, #536). Production signals that tests and users both read: live-update health and pending checkpoints in agent status, push delivery reports with a retry that ends when its device goes, config pollers primed before spawning, the hub socket's `ping`, connected-client counts (#499, #507, #508). Real bugs fixed on the way: a turn reaching clients before history (#527), a2a results landing before their watch (#536), a reply counted unread although read (#538), and the hub's reserve-then-bind port gap (#526). On the web: one hang guard for Vitest (#500), condition waits and lint bans in unit tests (#532), the e2e CPU report (#509), manual mock time with the page's clock following it (#521, #540, #542, and the page-clock PR that closed this).
+
+**Outcome.** The baseline below had six tests failing up to 4 in 10 runs under stress. At the end, five rounds of the whole suite as two copies under CPU burners (load up to 50 on 16 CPUs) ran every test 10 times with no failures. The runner resize W1 planned was not needed: the shards were throttled in 0.3% of periods.
 
 ## Problem
 

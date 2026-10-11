@@ -76,8 +76,10 @@ test.describe("a turn that works in rounds", () => {
     await mock.advance(60_000);
     await expect(feed.getByText("Done. The port is set once now")).toBeVisible();
     // Over, the head gives way to how long it took, and the last round is a line too.
+    // The page read the turn's start at 0 and its end in the move that reached
+    // 62s of simulated time (`advance` sets the page's clock to a move's end).
     await expect(feed.getByText("Working", { exact: true })).toHaveCount(0);
-    await expect(feed.getByText(/^Worked for \d+s$/)).toBeVisible();
+    await expect(feed.getByText("Worked for 1m 02s", { exact: true })).toBeVisible();
     await expect(feed.getByRole("button", { name: /^Edited 1 file/ })).toHaveAttribute(
       "aria-expanded",
       "false",
@@ -281,7 +283,7 @@ test.describe("text and reasoning streaming in", () => {
     await expect(feed.getByText("Working", { exact: true })).toHaveCount(0);
   });
 
-  test("reasoning streams in muted, then folds to Thought for and opens to all of it", async ({
+  test("reasoning streams in muted, then folds to its line and opens to all of it", async ({
     page,
     mock,
   }) => {
@@ -298,8 +300,10 @@ test.describe("text and reasoning streaming in", () => {
     await expectNoAxeViolations(page);
 
     // The reasoning is complete at 625ms, and the reply's first pieces follow at 665ms.
+    // The page read its start in the move to 100ms and its end in the move to
+    // 650ms: 550ms, under a second, so its line names no time.
     await mock.advance(550);
-    const thought = feed.getByRole("button", { name: /^Thought for \d+s$/ });
+    const thought = feed.getByRole("button", { name: "Thought", exact: true });
     await expect(thought).toBeVisible();
     await expect(feed.getByText("Thinking", { exact: true })).toHaveCount(0);
     await expect(thought).toHaveAttribute("aria-expanded", "false");
@@ -363,7 +367,6 @@ test.describe("turns from other places", () => {
     page,
     mock,
   }) => {
-    await mock.post("/api/mock/delays", { data: { scale: 3 } });
     await openAtlas(page);
     const other = await page.context().newPage();
     await other.goto("/agent/atlas");
@@ -377,14 +380,17 @@ test.describe("turns from other places", () => {
       })
       .toBe(2);
 
+    // Both pages share the context's clock, which follows the mock's simulated time.
+    await mock.manualTime();
     await send(other, "Check the routing doc, please");
-    await expect(conversation(page).getByText("Check the routing doc, please")).toBeVisible({
-      timeout: 15_000,
-    });
+    await expect(conversation(page).getByText("Check the routing doc, please")).toBeVisible();
     await expect(conversation(page).getByText("Working", { exact: true })).toBeVisible();
+    await expect(conversation(other).getByText("Working", { exact: true })).toBeVisible();
     await expect(conversation(other).getByText("Check the routing doc, please")).toHaveCount(1);
 
-    await expect(conversation(page).getByText(/^Worked for/)).toBeVisible({ timeout: 30_000 });
+    await mock.advance(60_000);
+    // Started at 0 and read as ended in the move that reached 60s.
+    await expect(conversation(page).getByText("Worked for 1m 00s", { exact: true })).toBeVisible();
     await expect(conversation(page).getByText("Check the routing doc, please")).toHaveCount(1);
     await other.close();
   });
