@@ -49,11 +49,23 @@
       scope.config.teams_app_password,
     ].filter((value) => value !== "").length,
   );
+  // Both tokens are needed before the interface can connect, so unlike the
+  // one-token channels, "set" here means both fields hold something.
+  const slackOn = $derived(saved.slack_bot_token !== "" && saved.slack_app_token !== "");
+  const slackFilled = $derived(
+    [scope.config.slack_bot_token, scope.config.slack_app_token].filter((value) => value !== "")
+      .length,
+  );
 
   function disconnectTeams(): void {
     scope.config.teams_app_id = "";
     scope.config.teams_tenant_id = "";
     scope.config.teams_app_password = "";
+  }
+
+  function disconnectSlack(): void {
+    scope.config.slack_bot_token = "";
+    scope.config.slack_app_token = "";
   }
 
   // The messaging endpoint exists only while Residuum Cloud is connected and
@@ -205,6 +217,44 @@
       `Off: only you, the first person to message the bot. On: anyone who can message the bot can talk to ${agent}.`,
       `In groups, ${agent} reads this many earlier messages when it's mentioned. Needs privacy mode turned off in @BotFather, or the bot made a group admin.`,
     )}
+  </ChannelGroup>
+
+  <ChannelGroup
+    title="Slack"
+    lede="{agent} can chat in direct messages. Socket Mode connects out to Slack, so no public address is needed."
+    state={stateOf(slackOn, slackFilled === 2)}
+    ondisconnect={slackOn && slackFilled > 0 ? disconnectSlack : undefined}
+    guide={{
+      href: "https://github.com/Grizzly-Endeavors/residuum/blob/main/docs/guides/slack-setup.md",
+      label: "Create the Slack app from Residuum's manifest",
+    }}
+  >
+    <SecretConfigField
+      label="Bot token"
+      bind:value={scope.config.slack_bot_token}
+      saved={saved.slack_bot_token}
+      placeholder="Paste the Bot User OAuth Token (xoxb-…)"
+      error={configFieldError(scope, "slack_bot_token")}
+    />
+    <SecretConfigField
+      label="App token"
+      bind:value={scope.config.slack_app_token}
+      saved={saved.slack_app_token}
+      placeholder="Paste the app-level token (xapp-…)"
+      error={configFieldError(scope, "slack_app_token")}
+    />
+    {#if slackFilled > 0 && slackFilled < 2}
+      <Banner tone="warn">
+        Slack stays off until the bot token and app token are both filled in. Fill in both, or clear
+        them to leave Slack unconfigured.
+      </Banner>
+    {/if}
+    <ConfigToggle
+      {scope}
+      field="slack_respond_to_others"
+      label="Let others talk to this agent"
+      hint={`Off: only you, the first person to DM the app. On: anyone who can DM the app can talk to ${agent}.`}
+    />
   </ChannelGroup>
 
   <ChannelGroup

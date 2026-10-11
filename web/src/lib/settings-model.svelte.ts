@@ -451,6 +451,10 @@ const SECRET_FIELDS = [
   { field: "discord_token", name: "discord" },
   { field: "telegram_token", name: "telegram" },
   { field: "teams_app_password", name: "teams" },
+  // The guide stores these under the same names on the CLI, so a token set
+  // up by hand and one replaced here share one secret.
+  { field: "slack_bot_token", name: "slack_bot_token" },
+  { field: "slack_app_token", name: "slack_app_token" },
   { field: "cloud_token", name: "cloud_token" },
   { field: "system_one_api_key", name: "system_one" },
   { field: "ws_brave_api_key", name: "ws_brave" },
