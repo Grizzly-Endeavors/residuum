@@ -1382,8 +1382,6 @@ fn short_id(id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::testing::wait;
-
     use super::super::types::CheckpointTrigger;
     use super::*;
 
@@ -1586,7 +1584,7 @@ mod tests {
             .join("objects");
         std::fs::set_permissions(&objects_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
 
-        wait::guarded(
+        crate::testing::wait::guarded(
             "checkpoint_workspace_before_action to return when the commit fails",
             engine.checkpoint_workspace_before_action(ctx(
                 CheckpointTrigger::PreAction,
