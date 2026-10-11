@@ -6,4 +6,5 @@
 //! contract shared by every external chat interface.
 pub(crate) mod api;
 pub(crate) mod events;
+pub(crate) mod handler;
 pub(crate) mod socket;

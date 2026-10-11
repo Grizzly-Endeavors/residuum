@@ -72,6 +72,7 @@ pub(super) fn resolve_slack_config(
         (_, Some(bot), Some(app)) => Some(SlackConfig {
             bot_token: bot,
             app_token: app,
+            respond_to_others: section.and_then(|s| s.respond_to_others).unwrap_or(false),
         }),
         (Some(_), _, _) => {
             tracing::warn!(

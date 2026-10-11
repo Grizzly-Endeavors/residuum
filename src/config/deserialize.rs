@@ -449,6 +449,8 @@ pub(super) struct SlackConfigFile {
     /// App-level token for Socket Mode, `xapp-…` (supports `${ENV_VAR}` /
     /// `secret:name` syntax).
     pub(super) app_token: Option<String>,
+    /// Whether people other than the owner can talk to the agent.
+    pub(super) respond_to_others: Option<bool>,
 }
 
 /// Raw TOML `[teams]` section.

@@ -1267,7 +1267,8 @@ candidate_multiplier = 8
 
     fn chat_bots_config(extra: &str) -> Config {
         let cfg_toml = format!(
-            "[discord]\ntoken = \"d-token\"\n{extra}\n[telegram]\ntoken = \"t-token\"\n{extra}"
+            "[discord]\ntoken = \"d-token\"\n{extra}\n[telegram]\ntoken = \"t-token\"\n{extra}\n\
+             [slack]\nbot_token = \"xoxb-token\"\napp_token = \"xapp-token\"\n{extra}"
         );
         resolve_test(
             &cfg_toml,
@@ -1281,6 +1282,7 @@ candidate_multiplier = 8
         let cfg = chat_bots_config("");
         assert_eq!(cfg.discord.map(|d| d.respond_to_others), Some(false));
         assert_eq!(cfg.telegram.map(|t| t.respond_to_others), Some(false));
+        assert_eq!(cfg.slack.map(|s| s.respond_to_others), Some(false));
     }
 
     #[test]
@@ -1288,6 +1290,7 @@ candidate_multiplier = 8
         let cfg = chat_bots_config("respond_to_others = true\n");
         assert_eq!(cfg.discord.map(|d| d.respond_to_others), Some(true));
         assert_eq!(cfg.telegram.map(|t| t.respond_to_others), Some(true));
+        assert_eq!(cfg.slack.map(|s| s.respond_to_others), Some(true));
     }
 
     // ── Teams config ───────────────────────────────────────────────────────

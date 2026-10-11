@@ -208,6 +208,8 @@ pub struct SlackConfig {
     pub bot_token: String,
     /// App-level token (`xapp-…`) — opens the Socket Mode websocket.
     pub app_token: String,
+    /// Whether people other than the owner can talk to the agent.
+    pub respond_to_others: bool,
 }
 
 impl std::fmt::Debug for SlackConfig {
@@ -215,6 +217,7 @@ impl std::fmt::Debug for SlackConfig {
         f.debug_struct("SlackConfig")
             .field("bot_token", &"[redacted]")
             .field("app_token", &"[redacted]")
+            .field("respond_to_others", &self.respond_to_others)
             .finish()
     }
 }
