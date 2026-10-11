@@ -184,6 +184,8 @@ require_ssh() {
 
 # Copy the working tree (tracked and untracked-but-not-ignored files, plus the
 # built web/dist that build.rs needs) to a fresh source directory in the guest.
+# Some web/dist files are tracked, so the list is deduplicated: the guest's tar
+# fails on a repeated entry.
 sync_tree() {
     [ -f "$REPO_ROOT/web/dist/index.html" ] || die "web/dist is not built. Run 'npm run build' in web/ first."
     local tarball
@@ -195,7 +197,7 @@ sync_tree() {
                 [ -e "$f" ] && printf '%s\0' "$f"
             done
             find web/dist -type f -print0
-        } | tar --null -cf "$tarball" -T -
+        } | sort -zu | tar --null -cf "$tarball" -T -
     )
     guest_ps "New-Item -ItemType Directory -Force '$GUEST_ROOT' | Out-Null"
     guest_copy_to "$tarball" "$GUEST_ROOT_FWD/sync.tar"
