@@ -1,0 +1,1 @@
+{"envelope_id": "env-dc-1", "type": "disconnect", "payload": {"reason": "too_many_websockets", "debug_info": {}}}

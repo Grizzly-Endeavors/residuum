@@ -1,0 +1,1 @@
+{"envelope_id": "env-unknown-1", "type": "slash_commands", "payload": {"command": "/who", "team_id": "T0001"}, "response_url": "https://hooks.slack.com/response/xyz789"}

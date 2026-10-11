@@ -10,6 +10,7 @@ pub(crate) mod conversations;
 pub mod discord;
 mod outbound;
 pub(crate) mod reply_targets;
+pub mod slack;
 pub mod teams;
 pub mod telegram;
 pub mod types;
