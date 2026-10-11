@@ -139,8 +139,8 @@ test("Copy puts the reply's Markdown on the clipboard and says Copied", async ({
 });
 
 test("a reply that has streamed in gets its time once it is whole", async ({ page, mock }) => {
-  await mock.post("/api/mock/delays", { data: { scale: 4 } });
   await page.goto("/agent/atlas");
+  await mock.manualTime();
   const feed = conversation(page);
   // Recorded in the page as the reply streams, since a slow machine can see
   // the stream end before a separate check looks at it.
@@ -161,9 +161,13 @@ test("a reply that has streamed in gets its time once it is whole", async ({ pag
     });
   });
   await send(page, "Tidy the wiki index");
+  await expect(feed.getByText("Working", { exact: true })).toBeVisible();
 
-  await expect(feed.locator(".reply[data-streaming]")).toHaveCount(1, { timeout: 30_000 });
-  await expect(feed.locator(".reply[data-streaming]")).toHaveCount(0, { timeout: 30_000 });
+  // The reply's first pieces are in at 1.59s, and it streams until the next advance.
+  await mock.advance(1_590);
+  await expect(feed.locator(".reply[data-streaming]")).toHaveCount(1);
+  await mock.advance(60_000);
+  await expect(feed.locator(".reply[data-streaming]")).toHaveCount(0);
   // A streaming reply's row is out of reach, so nothing in it can be focused or read.
   const inert = await page.evaluate(
     () => (window as unknown as { streamingFootInert: boolean[] }).streamingFootInert,
