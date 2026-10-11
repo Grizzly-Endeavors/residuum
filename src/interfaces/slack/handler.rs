@@ -22,10 +22,14 @@
 //!    `respond_to_others` is on.
 //! 5. **Owner gate** — [`should_process`]: the owner always passes, anyone
 //!    else passes only when `respond_to_others` is set.
-//! 6. **Dispatch** — a `UserMessage` bus event built like Telegram's
-//!    (`telegram/handler.rs`'s `dispatch_message`), published to
-//!    [`crate::bus::topics::UserMessage`]; a publish failure is logged and
-//!    the loop continues.
+//! 6. **Dispatch** — the DM channel is recorded in the shared
+//!    [`SlackState`] store (Telegram records every addressed chat the same
+//!    way, so `list_conversations` and delivery labels work), the
+//!    correlation→channel reply mapping is tracked for the outbound
+//!    subscriber (Telegram's `reply_targets.track`), and a `UserMessage`
+//!    bus event built like Telegram's (`telegram/handler.rs`'s
+//!    `dispatch_message`) is published to [`crate::bus::topics::UserMessage`];
+//!    a publish failure is logged and the loop continues.
 //!
 //! Task 7 wires this into the interface constructor: load the state store
 //! from `WorkspaceLayout::slack_state_json`, call [`SlackInbound::spawn`],
@@ -39,18 +43,16 @@
     reason = "staged build: spawned by the Task 7 interface constructor; remove when Task 7 wires the interface"
 )]
 
+use std::sync::Arc;
+
 use tokio::sync::mpsc;
 
 use super::events::{DmMessageEvent, Envelope};
-use crate::bus::{Publisher, topics};
+use super::{ENDPOINT, SlackState};
+use crate::bus::topics;
 use crate::inference::MessageSender;
-use crate::interfaces::chat_state::{ChatRef, ChatStateStore, Owner};
+use crate::interfaces::chat_state::{ChatRef, Owner};
 use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOrigin};
-
-/// Endpoint and interface name for Slack on the bus. Telegram keeps its
-/// equivalent in `telegram/mod.rs`; this one lives here until Task 7's
-/// interface constructor and subscriber need it too — hoist it then.
-const ENDPOINT: &str = "slack";
 
 /// How many envelope ids [`EnvelopeDedup`] remembers.
 const DEDUP_CAPACITY: usize = 256;
@@ -107,15 +109,14 @@ impl EnvelopeDedup {
     }
 }
 
-/// Everything the handler task owns: the dedup ring, the persisted owner
-/// state, the config flag, and the bus publisher.
+/// Everything the handler task owns: the dedup ring, the config flag, and
+/// the state shared with the outbound subscriber.
 struct InboundHandler {
     dedup: EnvelopeDedup,
-    /// Owner (and, once Task 7 wires the outbound side, conversation
-    /// references) persisted in `slack_state.json`.
-    store: ChatStateStore<ChatRef>,
+    /// Owner, DM channel references, reply mappings, and the bus publisher,
+    /// shared with the outbound subscriber (`subscriber.rs`).
+    state: Arc<SlackState>,
     respond_to_others: bool,
-    publisher: Publisher,
     tz: chrono_tz::Tz,
 }
 
@@ -152,8 +153,9 @@ impl InboundHandler {
             );
             return;
         }
+        self.remember_conversation(&event).await;
         self.claim_owner_if_unset(&event).await;
-        let owner = self.store.owner().await;
+        let owner = self.state.store.owner().await;
         let owner_id = owner.as_ref().map(|owner| owner.user_id.as_str());
         if !should_process(&event, owner_id, self.respond_to_others) {
             tracing::info!(
@@ -175,6 +177,22 @@ impl InboundHandler {
         self.publish_message(&event, is_owner).await;
     }
 
+    /// Record the DM channel in the shared store — Telegram's
+    /// `addressed_to_agent` records every addressed chat before its owner
+    /// gate, so `list_conversations`, `send_message` target checks, and the
+    /// subscriber's delivery labels all work. Slack's MVP is DM-only, so
+    /// every admitted-shape human DM records one channel.
+    async fn remember_conversation(&self, ev: &DmMessageEvent) {
+        let reference = ChatRef::direct_message(&ev.user);
+        if let Err(e) = self.state.store.remember(&ev.channel, reference).await {
+            tracing::warn!(
+                error = %e,
+                channel = %ev.channel,
+                "failed to save slack conversation"
+            );
+        }
+    }
+
     /// Make the sender the owner if nobody is yet; only called for messages
     /// that already cleared the bot exclusion, mirroring Telegram's
     /// `claim_owner_if_unset`. Slack v1 has no user-lookup call, so the raw
@@ -185,7 +203,7 @@ impl InboundHandler {
             name: ev.user.clone(),
             dm_conversation_id: ev.channel.clone(),
         };
-        match self.store.claim_owner(owner).await {
+        match self.state.store.claim_owner(owner).await {
             Ok(true) => {
                 tracing::info!(user = %ev.user, "slack owner set from first direct message");
             }
@@ -216,6 +234,12 @@ impl InboundHandler {
         // A Slack message ts is unique within its channel, so channel + ts
         // identifies the message the way Telegram's chat id + message id does.
         let correlation_id = format!("slack-{}-{}", ev.channel, ev.ts);
+        // Where the turn this message starts should reply — Telegram tracks
+        // the chat at this exact spot in `dispatch_message`; the outbound
+        // subscriber reads the mapping when the turn's output arrives.
+        self.state
+            .reply_targets
+            .track(&correlation_id, ev.channel.clone());
         let msg_event = crate::bus::MessageEvent {
             id: correlation_id,
             content: ev.text.clone(),
@@ -224,7 +248,12 @@ impl InboundHandler {
             images: Vec::new(),
             context: None,
         };
-        if let Err(e) = self.publisher.publish(topics::UserMessage, msg_event).await {
+        if let Err(e) = self
+            .state
+            .publisher
+            .publish(topics::UserMessage, msg_event)
+            .await
+        {
             tracing::error!(
                 user = %ev.user,
                 channel = %ev.channel,
@@ -250,20 +279,20 @@ impl SlackInbound {
     /// Spawn the handler task. The caller (Task 7's interface constructor)
     /// loads the state store from `WorkspaceLayout::slack_state_json` —
     /// surfacing a corrupt-file notice the way Telegram's `start` does —
-    /// and passes `cfg.respond_to_others` from the resolved
-    /// [`crate::config::SlackConfig`].
+    /// builds the shared [`SlackState`] around it, and passes
+    /// `cfg.respond_to_others` from the resolved [`crate::config::SlackConfig`].
+    /// The same state object goes to `subscriber::run_slack_subscriber`, so
+    /// the reply mappings recorded here reach the outbound side.
     pub(super) fn spawn(
         respond_to_others: bool,
-        publisher: Publisher,
-        store: ChatStateStore<ChatRef>,
+        state: Arc<SlackState>,
         tz: chrono_tz::Tz,
     ) -> Self {
         let (tx, mut rx) = mpsc::channel(ENVELOPE_QUEUE_CAPACITY);
         let mut handler = InboundHandler {
             dedup: EnvelopeDedup::default(),
-            store,
+            state,
             respond_to_others,
-            publisher,
             tz,
         };
         let task = crate::util::spawn_in_span(async move {
@@ -309,9 +338,13 @@ impl Drop for SlackInbound {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     use crate::bus::{MessageEvent, Subscriber, spawn_broker, topics};
+    use crate::interfaces::chat_state::ChatStateStore;
+    use crate::interfaces::reply_targets::ReplyTargets;
     use crate::testing::wait;
 
     /// A test harness: a spawned handler on a real bus and a real state
@@ -319,6 +352,7 @@ mod tests {
     /// callback will use.
     struct Harness {
         inbound: SlackInbound,
+        state: Arc<SlackState>,
         user_messages: Subscriber<MessageEvent>,
         bus: crate::bus::BusHandle,
         state_path: std::path::PathBuf,
@@ -332,10 +366,15 @@ mod tests {
         assert!(notice.is_none(), "a fresh state file has nothing to report");
         let bus = spawn_broker();
         let user_messages = bus.subscribe(topics::UserMessage).await.unwrap();
-        let inbound =
-            SlackInbound::spawn(respond_to_others, bus.publisher(), store, chrono_tz::UTC);
+        let state = Arc::new(SlackState {
+            store,
+            reply_targets: ReplyTargets::default(),
+            publisher: bus.publisher(),
+        });
+        let inbound = SlackInbound::spawn(respond_to_others, Arc::clone(&state), chrono_tz::UTC);
         Harness {
             inbound,
+            state,
             user_messages,
             bus,
             state_path,
@@ -458,6 +497,30 @@ mod tests {
         assert!(!d.seen("e1"));
         assert!(d.seen("e1"));
         assert!(!d.seen("e2"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_records_the_reply_target_and_the_conversation() {
+        let mut h = harness(false).await;
+        h.feed(dm_envelope("env-1", "U1", "hello from slack", "1234.0001"));
+
+        let event = h.next_user_message("the DM published").await;
+
+        // The correlation the subscriber will see on the bus resolves back
+        // to the channel the message arrived in.
+        assert_eq!(
+            h.state.target_for(&event.id).await.as_deref(),
+            Some("D0001"),
+            "the handler must track correlation -> channel at dispatch"
+        );
+        // The channel itself is recorded, so list_conversations and the
+        // subscriber's delivery labels know it.
+        let known = h.state.store.known_conversations().await;
+        let [only] = known.as_slice() else {
+            panic!("exactly the DM channel is recorded: {known:?}")
+        };
+        assert_eq!(only.id, "D0001");
+        assert_eq!(only.label, "direct message with U1");
     }
 
     #[test]
