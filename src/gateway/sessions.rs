@@ -1,6 +1,6 @@
 //! Web-facing view of agent sessions: turning registry entries, store
 //! records, and bus events into protocol types, and carrying out the
-//! send-message and stop commands the sessions sidebar (over the WebSocket)
+//! send-message and stop commands the session panel (over the WebSocket)
 //! and workbench artifacts (over HTTP) share.
 
 use crate::background::messaging::{AgentMessenger, DeliveryOutcome, SendError};
@@ -15,7 +15,7 @@ use crate::gateway::protocol::{
     SessionSummary,
 };
 
-/// Category label a sidebar message carries as its sender's category.
+/// Category label a message from the owner carries as its sender's category.
 const OWNER_CATEGORY: &str = "owner";
 
 /// Summarize a live run from its registry entry.
@@ -148,6 +148,7 @@ pub(crate) fn session_event_to_server_message(event: SessionEvent) -> ServerMess
             id: call.tool_call_id,
             name: call.name,
             arguments: call.arguments,
+            server: call.server,
         },
         SessionEventKind::ToolResult(result) => ServerMessage::SessionToolResult {
             address,
@@ -156,6 +157,7 @@ pub(crate) fn session_event_to_server_message(event: SessionEvent) -> ServerMess
             name: result.name,
             output: result.output,
             is_error: result.is_error,
+            auto_mode: result.auto_mode,
         },
         SessionEventKind::Intermediate { content } => ServerMessage::SessionBroadcastResponse {
             address,
@@ -165,12 +167,14 @@ pub(crate) fn session_event_to_server_message(event: SessionEvent) -> ServerMess
         SessionEventKind::TurnUsage {
             output_tokens,
             has_usage,
+            tool_calls,
             session_totals,
         } => ServerMessage::SessionTurnUsage {
             address,
             run_id,
             output_tokens,
             has_usage,
+            tool_calls,
             session_totals,
         },
         SessionEventKind::Response { turn_id, content } => ServerMessage::SessionResponse {
@@ -193,7 +197,7 @@ pub(crate) fn session_event_to_server_message(event: SessionEvent) -> ServerMess
     }
 }
 
-/// A session command the sidebar sent could not be carried out.
+/// A session command the web UI sent could not be carried out.
 #[derive(Debug, Clone)]
 pub(crate) struct SessionCommandError {
     /// Machine-readable reason.
@@ -214,10 +218,10 @@ impl SessionCommandError {
 /// Who a message sent to a session from outside the agent system comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SessionMessageAuthor {
-    /// The owner, typing into the web UI (the sessions sidebar, or an HTTP
+    /// The owner, typing into the web UI (a session panel, or an HTTP
     /// request without an artifact identity).
     Owner,
-    /// The workbench artifact with this name, through the bridge.
+    /// The workbench artifact with this name, identified by its SDK's header.
     Artifact(String),
 }
 
@@ -305,8 +309,8 @@ pub(crate) async fn send_session_message(
     }
 }
 
-/// Stop the live session at `address`, as the sidebar's stop button and the
-/// `POST /api/sessions/{address}/stop` endpoint do.
+/// Stop the live session at `address`, as the Stop button in Activity and the
+/// `POST /api/agents/{name}/sessions/{address}/stop` endpoint do.
 ///
 /// # Errors
 /// Returns a [`SessionCommandError`] when `address` is `main` or doesn't name
@@ -403,7 +407,7 @@ mod tests {
         let Some(Interrupt::AgentMessage(msg)) = rx.try_recv().ok() else {
             panic!("the session should have received an agent message");
         };
-        assert_eq!(msg.hop_count, 0, "sidebar input is hop count 0");
+        assert_eq!(msg.hop_count, 0, "owner input is hop count 0");
         assert_eq!(msg.from.as_ref(), OWNER_ADDRESS);
         assert!(
             msg.format_for_agent()
@@ -663,6 +667,7 @@ mod tests {
                         "input_tokens": 0,
                         "output_tokens": 0,
                         "context_tokens": null,
+                        "tool_calls": 0,
                     },
                     "outcome": null,
                     "error": null,
@@ -683,6 +688,7 @@ mod tests {
                 tool_call_id: "tc-1".to_string(),
                 name: "memory_search".to_string(),
                 arguments: serde_json::json!({"q": "x"}),
+                server: None,
             }),
         });
         let json = serde_json::to_value(&msg).unwrap();
@@ -731,7 +737,7 @@ mod tests {
         assert_eq!(
             summary.error_details.as_deref(),
             Some("connect timeout after 30s: api.example.com:443"),
-            "the full cause chain must survive into the summary behind the details toggle"
+            "the full cause chain must survive into the summary behind the Details disclosure"
         );
     }
 

@@ -6,6 +6,15 @@ pub(super) const DEFAULT_ANTHROPIC_URL: &str = "https://api.anthropic.com";
 /// Default base URL for a local Ollama instance.
 pub(super) const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 
+/// Default base URL for `TypeSafe`'s System 1 API.
+pub(super) const DEFAULT_TYPESAFE_URL: &str = "https://api.typesafe.ai";
+
+/// Default `TypeSafe` model: the alias for the latest stable Jev.
+pub(super) const DEFAULT_TYPESAFE_MODEL: &str = "jev-latest";
+
+/// Environment variable `TypeSafe`'s own SDKs read the API key from.
+pub(super) const TYPESAFE_API_KEY_ENV: &str = "TYPESAFE_API_KEY";
+
 /// Default base URL for the `OpenAI` API.
 pub(super) const DEFAULT_OPENAI_URL: &str = "https://api.openai.com/v1";
 
@@ -29,7 +38,10 @@ pub(super) const DEFAULT_GATEWAY_PORT: u16 = 7700;
 pub(super) const DEFAULT_FEEDBACK_ENDPOINT: &str = "https://agent-residuum.com";
 
 /// Default max tokens for model responses.
-pub(super) const DEFAULT_MAX_TOKENS: u32 = 8192;
+pub(super) const DEFAULT_MAX_TOKENS: u32 = 16_384;
+
+/// Whether an agent's pulse system runs when its `config.toml` doesn't say.
+pub(crate) const DEFAULT_PULSE_ENABLED: bool = true;
 
 /// Default observer token threshold before firing.
 pub(crate) const DEFAULT_OBSERVER_THRESHOLD: usize = 30_000;
@@ -132,7 +144,7 @@ pub(crate) const DEFAULT_TEAMS_PORT: u16 = 7701;
 pub(crate) const DEFAULT_A2A_PORT: u16 = 7702;
 
 /// Default relay WebSocket URL.
-pub(super) const DEFAULT_CLOUD_RELAY_URL: &str = "wss://agent-residuum.com/tunnel/register";
+pub(super) const DEFAULT_CLOUD_RELAY_URL: &str = "wss://agent-residuum.com/tunnel/v2/register";
 
 /// Default consecutive identical tool-call count at which the repeat-call
 /// guard appends a steering note to the tool's result.

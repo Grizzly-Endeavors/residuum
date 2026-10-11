@@ -8,7 +8,6 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde::Deserialize;
 
-use crate::background::registry::SessionRegistry;
 use crate::config::OtelEndpoint;
 use crate::tracing_service::{
     BugReport, ClientContext, ExportResult, ExportTarget, Feedback, Severity, SubmissionReceipt,
@@ -25,12 +24,12 @@ pub(crate) struct TracingApiState {
     /// `active_subagents` read from `session_registry` so the user-facing
     /// forms only carry user-typed fields.
     pub client_context: Arc<ClientContext>,
-    /// Session registry, read fresh on each bug report to populate
-    /// `active_subagents` (closes #99).
-    pub session_registry: Arc<SessionRegistry>,
+    /// Live subagent sessions across the hub, read fresh on each bug report
+    /// to populate `active_subagents` (closes #99).
+    pub active_subagents: Arc<dyn Fn() -> Vec<crate::tracing_service::Subagent> + Send + Sync>,
 }
 
-/// `GET /api/tracing/status`
+/// `GET /api/hub/tracing/status`
 pub(crate) async fn api_tracing_status(
     State(state): State<TracingApiState>,
 ) -> Json<TracingStatus> {
@@ -43,7 +42,7 @@ pub(crate) struct ToggleRequest {
     enabled: bool,
 }
 
-/// `POST /api/tracing/error-reporting`
+/// `POST /api/hub/tracing/error-reporting`
 pub(crate) async fn api_tracing_error_reporting(
     State(state): State<TracingApiState>,
     Json(body): Json<ToggleRequest>,
@@ -52,7 +51,7 @@ pub(crate) async fn api_tracing_error_reporting(
     StatusCode::OK
 }
 
-/// `POST /api/tracing/sanitize`
+/// `POST /api/hub/tracing/sanitize`
 pub(crate) async fn api_tracing_sanitize(
     State(state): State<TracingApiState>,
     Json(body): Json<ToggleRequest>,
@@ -69,7 +68,7 @@ pub(crate) struct AddEndpointRequest {
     headers: Option<HashMap<String, String>>,
 }
 
-/// `GET /api/tracing/otel/endpoints`
+/// `GET /api/hub/tracing/otel/endpoints`
 pub(crate) async fn api_tracing_otel_list(
     State(state): State<TracingApiState>,
 ) -> Json<Vec<crate::tracing_service::OtelEndpointStatus>> {
@@ -85,7 +84,7 @@ pub(crate) async fn api_tracing_otel_list(
     )
 }
 
-/// `POST /api/tracing/otel/endpoints`
+/// `POST /api/hub/tracing/otel/endpoints`
 pub(crate) async fn api_tracing_otel_add(
     State(state): State<TracingApiState>,
     Json(body): Json<AddEndpointRequest>,
@@ -109,7 +108,7 @@ pub(crate) struct RemoveEndpointRequest {
     url: String,
 }
 
-/// `DELETE /api/tracing/otel/endpoints`
+/// `DELETE /api/hub/tracing/otel/endpoints`
 pub(crate) async fn api_tracing_otel_remove(
     State(state): State<TracingApiState>,
     Json(body): Json<RemoveEndpointRequest>,
@@ -128,7 +127,7 @@ pub(crate) struct TestConnectivityRequest {
     url: String,
 }
 
-/// `POST /api/tracing/otel/test`
+/// `POST /api/hub/tracing/otel/test`
 pub(crate) async fn api_tracing_otel_test(
     State(state): State<TracingApiState>,
     Json(body): Json<TestConnectivityRequest>,
@@ -141,7 +140,7 @@ pub(crate) async fn api_tracing_otel_test(
     Ok(StatusCode::OK)
 }
 
-/// `POST /api/tracing/dump`
+/// `POST /api/hub/tracing/dump`
 pub(crate) async fn api_tracing_dump(
     State(state): State<TracingApiState>,
 ) -> Result<Json<ExportResult>, (StatusCode, String)> {
@@ -153,7 +152,7 @@ pub(crate) async fn api_tracing_dump(
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e}")))
 }
 
-/// `POST /api/tracing/stream/start`
+/// `POST /api/hub/tracing/stream/start`
 pub(crate) async fn api_tracing_stream_start(
     State(state): State<TracingApiState>,
 ) -> Result<StatusCode, (StatusCode, String)> {
@@ -165,7 +164,7 @@ pub(crate) async fn api_tracing_stream_start(
     Ok(StatusCode::OK)
 }
 
-/// `POST /api/tracing/stream/stop`
+/// `POST /api/hub/tracing/stream/stop`
 pub(crate) async fn api_tracing_stream_stop(
     State(state): State<TracingApiState>,
 ) -> Result<StatusCode, (StatusCode, String)> {
@@ -188,13 +187,13 @@ pub(crate) struct BugReportRequest {
     severity: Severity,
 }
 
-/// `POST /api/tracing/bug-report`
+/// `POST /api/hub/tracing/bug-report`
 pub(crate) async fn api_tracing_bug_report(
     State(state): State<TracingApiState>,
     Json(body): Json<BugReportRequest>,
 ) -> Result<Json<SubmissionReceipt>, (StatusCode, String)> {
     let mut client = (*state.client_context).clone();
-    client.active_subagents = state.session_registry.subagent_snapshot();
+    client.active_subagents = (state.active_subagents)();
     let report = BugReport {
         what_happened: body.what_happened,
         what_expected: body.what_expected,
@@ -218,7 +217,7 @@ pub(crate) struct FeedbackRequest {
     category: Option<String>,
 }
 
-/// `POST /api/tracing/feedback`
+/// `POST /api/hub/tracing/feedback`
 pub(crate) async fn api_tracing_feedback(
     State(state): State<TracingApiState>,
     Json(body): Json<FeedbackRequest>,

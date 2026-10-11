@@ -30,6 +30,10 @@ Do **not** author for:
 
 If a real fix would make the skill unnecessary, make the fix instead.
 
+## Where a Skill Lives
+
+A skill only this agent needs goes in the agent's own `skills/<name>/SKILL.md`. A skill every agent on the team should have goes in `team/skills/<name>/SKILL.md`. An agent's skill with the same name hides the team's copy for that agent.
+
 ## Prefer Editing Over Creating
 
 Before creating a new skill directory, walk this order and stop at the first that

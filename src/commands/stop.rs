@@ -1,4 +1,4 @@
-//! Stop subcommand: gracefully shut down a running gateway daemon.
+//! Stop subcommand: gracefully shut down the running hub and every agent in it.
 
 use residuum::util::FatalError;
 
@@ -19,7 +19,7 @@ pub(super) struct StopArgs;
 pub(super) async fn run_stop_command(_args: &StopArgs) -> Result<(), FatalError> {
     use residuum::daemon::{is_pid_locked, read_pid_file, remove_pid_file, send_sigterm};
 
-    let pid_path = residuum::config::Config::config_dir()?.join("residuum.pid");
+    let pid_path = residuum::daemon::pid_file_path()?;
     let label = "gateway";
 
     // Layer 1: File lock check
@@ -39,8 +39,7 @@ pub(super) async fn run_stop_command(_args: &StopArgs) -> Result<(), FatalError>
     let pid = read_pid_file(&pid_path)?;
 
     // Layer 2: HTTP graceful shutdown
-    let config_dir = residuum::config::Config::config_dir()?;
-    let gateway_addr = super::resolve_gateway_addr(&config_dir);
+    let gateway_addr = super::resolve_gateway_addr(&residuum::config::residuum_root()?);
 
     let http_ok = try_http_shutdown(&gateway_addr).await;
 
@@ -73,7 +72,7 @@ pub(super) async fn run_stop_command(_args: &StopArgs) -> Result<(), FatalError>
 ///
 /// Returns `true` if the server accepted the shutdown request.
 async fn try_http_shutdown(gateway_addr: &str) -> bool {
-    let url = format!("http://{gateway_addr}/api/shutdown");
+    let url = format!("http://{gateway_addr}/api/hub/shutdown");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
         .build();
@@ -133,5 +132,24 @@ async fn poll_for_exit(
         }
 
         tokio::time::sleep(poll_interval).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::try_http_shutdown;
+
+    #[tokio::test]
+    async fn http_shutdown_posts_to_the_hub_route() {
+        let app = axum::Router::new().route(
+            "/api/hub/shutdown",
+            axum::routing::post(|| async { axum::http::StatusCode::OK }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        assert!(try_http_shutdown(&addr).await);
     }
 }

@@ -12,4 +12,4 @@ mod types;
 pub use index::SkillIndex;
 pub(crate) use parser::diagnose_skill_md;
 pub use state::{SharedSkillState, SkillState};
-pub use types::{ActiveSkill, SkillIndexEntry, SkillSource};
+pub use types::{ActiveSkill, SkillDir, SkillIndexEntry, SkillSource};

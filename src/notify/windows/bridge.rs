@@ -63,7 +63,7 @@ async fn post_toast(bridge: &WindowsBridge, title: &str, body: &str, urgent: boo
     // spawn_blocking because tauri-winrt-notification's show() is synchronous; the
     // join result is only interesting if the task panicked, which we can't
     // act on here, so it's intentionally not inspected.
-    let _join_result = tokio::task::spawn_blocking(move || {
+    let _join_result = crate::util::spawn_blocking_in_span(move || {
         use tauri_winrt_notification::{Scenario, Toast};
         let mut toast = Toast::new(&app_id).title(&title).text1(&body);
         if !sound {

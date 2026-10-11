@@ -6,7 +6,8 @@ use ts_rs::TS;
 
 use crate::agent::usage::SessionUsageTotals;
 use crate::background::registry::{SessionCategory, SessionState};
-use crate::inference::ImageData;
+use crate::bus::TurnOrigin;
+use crate::inference::{ImageData, MessageSender};
 use crate::workspace::watch::{WorkspaceChange, WorkspaceResyncReason};
 
 /// Messages sent from a WebSocket client to the server.
@@ -24,13 +25,18 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<ImageData>,
     },
-    /// Toggle verbose mode (tool call/result events).
+    /// Turn tool call/result events on or off for this connection (verbose mode). The web UI
+    /// turns them on at every connect, since its activity line is built from them.
     SetVerbose {
         /// Whether to receive tool events.
         enabled: bool,
     },
     /// Keepalive ping.
     Ping,
+    /// Ask for everything the main agent's turn in flight has done so far,
+    /// answered with a `turn_snapshot` frame. Frames already received for
+    /// that turn are covered by the snapshot; the ones after it continue it.
+    ResyncTurn,
     /// Request the gateway to reload its configuration.
     Reload,
     /// A named server command (observe, reflect, context, etc.).
@@ -53,8 +59,8 @@ pub enum ClientMessage {
         /// ended is silently ignored.
         reply_to: String,
     },
-    /// Send the owner's message to an agent session from the sessions
-    /// sidebar. Delivered like any agent message (hop count 0): an interrupt
+    /// Send the owner's message to an agent session from its session
+    /// panel. Delivered like any agent message (hop count 0): an interrupt
     /// if the session's turn is running, a new turn if it is idle, or a new
     /// run if it has completed. Answered with `SessionMessageDelivered` or
     /// `SessionCommandFailed`, both carrying `id`.
@@ -84,7 +90,7 @@ pub enum ClientMessage {
     },
 }
 
-/// One run of an agent session, as listed in the web UI's sessions sidebar
+/// One run of an agent session, as listed in the web UI's Activity place
 /// and carried by `SessionStarted`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -116,8 +122,8 @@ pub struct SessionSummary {
     /// `true` when the run was completed at startup because the process
     /// exited before it finished on its own.
     pub interrupted: bool,
-    /// This run's cumulative token usage, for the `SessionView` footer —
-    /// live for a run still going, final for a completed one. See
+    /// This run's cumulative token usage, for the session panel's spent
+    /// tokens — live for a run still going, final for a completed one. See
     /// `docs/systems-usage/turn-control.md`.
     pub usage: SessionUsageTotals,
     /// How the run ended — completed, cancelled, or failed. `None` while the
@@ -138,7 +144,7 @@ pub struct SessionSummary {
     pub overlap: Option<crate::bus::PulseOverlap>,
 }
 
-/// `GET /api/sessions` response: live sessions plus one page of completed
+/// `GET /api/agents/{name}/sessions` response: live sessions plus one page of completed
 /// runs.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -151,6 +157,50 @@ pub struct SessionListResponse {
     /// Opaque cursor for the next page of completed runs (pass back as
     /// `?before=`), or `null` when there are no more.
     pub next_cursor: Option<String>,
+}
+
+/// A task this instance sent to a remote agent (`message_agent a2a:<name>`),
+/// as listed in the web UI's Activity place by `GET /api/agents/{name}/a2a/outbound` and
+/// carried by `SessionOutboundA2aTask`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct OutboundA2aTaskSummary {
+    /// The remote agent's task id.
+    pub task_id: String,
+    /// The remote agent's name, as registered in `config/a2a.json`.
+    pub agent: String,
+    /// The session (or `main`) that sent the task.
+    pub sender_address: String,
+    /// The task's A2A state as a plain word: `submitted`, `working`,
+    /// `input_required`, `auth_required`, `completed`, `failed`, `canceled`,
+    /// `rejected`.
+    pub state: String,
+    /// The remote agent's latest status message, if it sent one.
+    pub status_text: Option<String>,
+    /// Still being watched: not in a terminal state.
+    pub open: bool,
+    /// When the task was sent (RFC 3339, UTC).
+    #[ts(type = "string")]
+    pub started_at: DateTime<Utc>,
+    /// When the remote agent was first found unreachable in the current
+    /// run of failed checks, or `null` while it answers.
+    #[ts(type = "string | null")]
+    pub unreachable_since: Option<DateTime<Utc>>,
+}
+
+impl From<&crate::a2a::TrackedTask> for OutboundA2aTaskSummary {
+    fn from(task: &crate::a2a::TrackedTask) -> Self {
+        Self {
+            task_id: task.task_id.clone(),
+            agent: task.agent.clone(),
+            sender_address: task.sender_address.clone(),
+            state: task.state.clone(),
+            status_text: task.last_status_text.clone(),
+            open: task.is_open(),
+            started_at: task.created_at,
+            unreachable_since: task.first_unreachable_at,
+        }
+    }
 }
 
 /// How a session's run ended, as reported by `SessionCompleted`.
@@ -191,7 +241,7 @@ impl SessionRunStatus {
 }
 
 /// One run's outcome, for a pulse's or action's "last outcome" in the
-/// Scheduled view.
+/// Schedule place.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ScheduledRunOutcome {
@@ -202,7 +252,7 @@ pub struct ScheduledRunOutcome {
 }
 
 /// A pulse's or action's currently live run, if it has one, in the
-/// Scheduled view.
+/// Schedule place.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ScheduledCurrentRun {
@@ -212,7 +262,7 @@ pub struct ScheduledCurrentRun {
     pub overlap: Option<crate::bus::PulseOverlap>,
 }
 
-/// One pulse, as listed by `GET /api/scheduled/pulses`.
+/// One pulse, as listed by `GET /api/agents/{name}/scheduled/pulses`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct PulseInfo {
@@ -223,9 +273,11 @@ pub struct PulseInfo {
     pub schedule: Option<String>,
     pub active_hours: Option<String>,
     pub agent: Option<String>,
-    /// Estimated from the schedule and `pulse_state.json`'s last run time;
-    /// does not account for an `active_hours` window that would delay the
-    /// actual fire.
+    /// When the pulse next fires, from `pulse::next_run`: the schedule since
+    /// `pulse_state.json`'s last run, moved into `active_hours`. `None` for a
+    /// disabled pulse, one whose schedule or active hours can't be read or
+    /// never open, and every pulse when the agent's `[pulse]` is off or its
+    /// `config.toml` can't be read.
     #[ts(type = "string | null")]
     pub next_fire_at: Option<DateTime<Utc>>,
     pub last_outcome: Option<ScheduledRunOutcome>,
@@ -236,7 +288,7 @@ pub struct PulseInfo {
     pub problems: Vec<String>,
 }
 
-/// One pending scheduled action, as listed by `GET /api/scheduled/actions`.
+/// One pending scheduled action, as listed by `GET /api/agents/{name}/scheduled/actions`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ActionInfo {
@@ -283,7 +335,7 @@ pub enum SessionCommandErrorCode {
     DeliveryFailed,
 }
 
-/// One artifact in `GET /api/workbench/artifacts`.
+/// One artifact in `GET /api/team/workbench/artifacts`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ArtifactSummary {
@@ -299,7 +351,7 @@ pub struct ArtifactSummary {
     pub size: u64,
 }
 
-/// `GET /api/workbench/info`: where workbench artifacts are served.
+/// `GET /api/team/workbench/info`: where workbench artifacts are served.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct WorkbenchInfo {
@@ -323,15 +375,57 @@ pub struct WorkbenchRelayOrigins {
     pub artifacts_origin: String,
 }
 
+/// Which background post-turn cycle a [`ServerMessage::PostTurnActivity`]
+/// is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum PostTurnActivityKind {
+    /// The automatic observer/reflector cycle.
+    Memory,
+    /// The end-of-turn subconscious evaluation.
+    Subconscious,
+}
+
+/// The main agent's turn in flight, as a `turn_snapshot` frame carries it.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TurnInProgress {
+    /// Correlation ID of the turn.
+    pub reply_to: String,
+    /// When the turn began (RFC 3339, UTC).
+    pub started_at: String,
+    /// The server's clock when the snapshot was taken (RFC 3339, UTC), so a
+    /// client whose clock differs can place the other times on its own.
+    pub now: String,
+    /// The frames the turn has sent so far, in order, with each model call's
+    /// streamed pieces joined into one `text_delta` or `thinking_delta`.
+    pub frames: Vec<SnapshotFrame>,
+}
+
+/// One frame of a turn in flight and when it was sent.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SnapshotFrame {
+    /// When the frame was sent (RFC 3339, UTC); for joined stream pieces,
+    /// when the first was.
+    pub at: String,
+    /// The frame, as it went out live.
+    pub frame: ServerMessage,
+}
+
 /// Messages sent from the server to WebSocket clients.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export)]
 pub enum ServerMessage {
-    /// The agent began processing a queued message.
+    /// A turn of the main agent began, whatever started it: a message from
+    /// the web, a chat interface, or no person at all (a background turn).
     TurnStarted {
         /// Correlation ID of the message being processed.
         reply_to: String,
+        /// Where the turn came from.
+        origin: TurnOrigin,
     },
     /// The agent turn has finished (success or error), whether or not any
     /// response text was produced. Marks the end of a turn that a
@@ -341,11 +435,12 @@ pub enum ServerMessage {
         /// Correlation ID of the message whose turn just completed.
         reply_to: String,
     },
-    /// Token usage progress for the main agent's turn still running: this
-    /// turn's own output tokens so far (for the running-turn indicator)
-    /// and, once at least one call has reported usage, the updated
-    /// cumulative session totals (for the chat footer). Never delivered
-    /// to the agent itself. See `docs/systems-usage/turn-control.md`.
+    /// Token usage and tool-call progress for the main agent's turn still
+    /// running: this turn's own output tokens and executed tool calls so
+    /// far (for the activity line) and, once at least one call
+    /// has reported usage, the updated cumulative session totals (for the
+    /// conversation size). Never delivered to the agent itself. See
+    /// `docs/systems-usage/turn-control.md`.
     TurnUsage {
         /// Correlation ID of the message being processed.
         reply_to: String,
@@ -353,21 +448,44 @@ pub enum ServerMessage {
         output_tokens: u32,
         /// Whether any model call so far this turn reported usage.
         has_usage: bool,
+        /// Tool calls executed so far this turn.
+        #[serde(default)]
+        tool_calls: u32,
         /// Updated cumulative session totals, once known.
         #[serde(skip_serializing_if = "Option::is_none")]
         session_totals: Option<SessionUsageTotals>,
     },
+    /// A background post-turn cycle (the automatic observer/reflector, or
+    /// the end-of-turn subconscious evaluation — see
+    /// `crate::gateway::post_turn`) started or finished running. Drives a
+    /// quiet "updating memory…" / "reviewing turn…" indicator; never blocks
+    /// anything, since this work no longer runs on the event loop.
+    PostTurnActivity {
+        kind: PostTurnActivityKind,
+        active: bool,
+    },
     /// A tool was invoked during the agent turn (verbose only).
     ToolCall {
+        /// Correlation ID of the turn.
+        reply_to: String,
+        /// Index of the model call that requested it, counting from zero
+        /// within the turn.
+        call: u32,
         /// Unique tool call ID for correlating with results.
         id: String,
         /// Name of the tool.
         name: String,
         /// Tool arguments as JSON.
         arguments: serde_json::Value,
+        /// The MCP server (its name in `mcp.json`) that owns this tool, or
+        /// `None` for a built-in.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        server: Option<String>,
     },
     /// A tool completed execution (verbose only).
     ToolResult {
+        /// Correlation ID of the turn.
+        reply_to: String,
         /// Correlation ID matching the original tool call.
         tool_call_id: String,
         /// Name of the tool.
@@ -376,11 +494,25 @@ pub enum ServerMessage {
         output: String,
         /// Whether the tool returned an error.
         is_error: bool,
+        /// Auto Mode's verdict on the call, when Auto Mode checked it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        auto_mode: Option<crate::agent::auto_mode::AutoModeVerdict>,
     },
-    /// The agent's final text response.
+    /// The agent's text response: the reply that ends a turn, or a message
+    /// the agent posted to this endpoint with `send_message` (an empty
+    /// `reply_to`).
     Response {
         /// Correlation ID of the original message.
         reply_to: String,
+        /// Index of the model call that produced the text, counting from
+        /// zero within the turn. Absent for text no model call wrote: the
+        /// notice that a limit ended the turn, or a `send_message` post.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        call: Option<u32>,
+        /// Endpoint the reply was delivered to; empty when it went nowhere.
+        endpoint: String,
         /// The response content.
         content: String,
     },
@@ -395,9 +527,11 @@ pub enum ServerMessage {
         /// File size in bytes.
         #[ts(type = "number")]
         size: u64,
-        /// URL to fetch the file: a durable workspace-relative link (e.g.
-        /// "/api/files/workspace?path=...") for a file inside the
-        /// workspace, else an expiring token link (e.g. "/api/files/{id}").
+        /// URL to fetch the file, under the agent's own routes: a durable
+        /// workspace-relative link (e.g.
+        /// "/api/agents/scout/files/workspace?path=...") for a file inside
+        /// the workspace, else an expiring token link (e.g.
+        /// "/api/agents/scout/files/{id}"). Use it as given.
         url: String,
         /// Optional caption text.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -405,8 +539,74 @@ pub enum ServerMessage {
     },
     /// Intermediate text the agent emitted alongside tool calls.
     BroadcastResponse {
+        /// Correlation ID of the turn.
+        reply_to: String,
+        /// Index of the model call that wrote the text, counting from zero
+        /// within the turn.
+        call: u32,
         /// The intermediate content.
         content: String,
+    },
+    /// A person's message entered the main conversation, from any channel
+    /// including the web: the message that started a turn, or one injected
+    /// into a turn already running. Not sent for one agent's message to
+    /// another. A client that sent the message recognizes the echo by `id`.
+    UserMessage {
+        /// The message's id: the id its sender gave it.
+        id: String,
+        /// Correlation ID of the turn the message started or joined.
+        turn_id: String,
+        /// The message text.
+        content: String,
+        /// Images attached to the message.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImageData>,
+        /// The person who sent it, for interfaces that identify one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        sender: Option<MessageSender>,
+        /// Endpoint the message arrived on.
+        endpoint: String,
+    },
+    /// More of a model call's text, as the provider produces it. The call's
+    /// `broadcast_response` or `response` frame carries the authoritative
+    /// text.
+    TextDelta {
+        /// Correlation ID of the turn.
+        reply_to: String,
+        /// Index of the model call, counting from zero within the turn.
+        call: u32,
+        /// The new text.
+        text: String,
+    },
+    /// More of a model call's readable reasoning, as the provider produces
+    /// it. The call's `thinking` frame carries the complete reasoning.
+    ThinkingDelta {
+        /// Correlation ID of the turn.
+        reply_to: String,
+        /// Index of the model call, counting from zero within the turn.
+        call: u32,
+        /// The new reasoning text.
+        text: String,
+    },
+    /// A model call's complete readable reasoning, sent once the call has
+    /// returned and before that call's `broadcast_response`, `response` and
+    /// `tool_call` frames. Only sent when the model produced some.
+    Thinking {
+        /// Correlation ID of the turn.
+        reply_to: String,
+        /// Index of the model call, counting from zero within the turn.
+        call: u32,
+        /// The reasoning text.
+        content: String,
+    },
+    /// Everything streamed so far for a model call is void: the call is
+    /// being sent again, and what follows starts over from the beginning.
+    StreamRestart {
+        /// Correlation ID of the turn.
+        reply_to: String,
+        /// Index of the model call, counting from zero within the turn.
+        call: u32,
     },
     /// An error related to a specific request.
     Error {
@@ -420,6 +620,14 @@ pub enum ServerMessage {
     },
     /// Keepalive pong.
     Pong,
+    /// The main agent's turn in flight as it has run so far, answering
+    /// `resync_turn`. It replaces whatever the client showed of that turn:
+    /// the frames that follow it on this connection continue from where it
+    /// ends.
+    TurnSnapshot {
+        /// The turn, or `null` when none is running.
+        turn: Option<TurnInProgress>,
+    },
     /// The gateway is reloading its configuration.
     Reloading,
     /// Result of a manual memory operation (observe or reflect).
@@ -499,6 +707,10 @@ pub enum ServerMessage {
         name: String,
         /// Tool arguments as JSON.
         arguments: serde_json::Value,
+        /// The MCP server (its name in `mcp.json`) that owns this tool, or
+        /// `None` for a built-in.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        server: Option<String>,
     },
     /// A tool a session invoked returned (verbose only).
     SessionToolResult {
@@ -514,9 +726,13 @@ pub enum ServerMessage {
         output: String,
         /// Whether the tool returned an error.
         is_error: bool,
+        /// Auto Mode's verdict on the call, when Auto Mode checked it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        auto_mode: Option<crate::agent::auto_mode::AutoModeVerdict>,
     },
-    /// Token usage progress for a session's turn still running — the
-    /// session counterpart of `TurnUsage`.
+    /// Token usage and tool-call progress for a session's turn still
+    /// running — the session counterpart of `TurnUsage`.
     SessionTurnUsage {
         /// Session address.
         address: String,
@@ -526,6 +742,9 @@ pub enum ServerMessage {
         output_tokens: u32,
         /// Whether any model call so far this turn reported usage.
         has_usage: bool,
+        /// Tool calls executed so far this turn.
+        #[serde(default)]
+        tool_calls: u32,
         /// Updated cumulative session totals, once known.
         #[serde(skip_serializing_if = "Option::is_none")]
         session_totals: Option<SessionUsageTotals>,
@@ -603,6 +822,9 @@ pub enum ServerMessage {
         /// Human-readable explanation, suitable to show the user.
         message: String,
     },
+    /// A task sent to a remote agent was recorded, changed state, or was
+    /// stopped. A task no longer `open` leaves Activity's list.
+    SessionOutboundA2aTask { task: OutboundA2aTaskSummary },
     /// A workbench artifact's page was created or modified.
     ArtifactUpdated {
         /// Artifact name, as used in `/workbench/{name}`.
@@ -674,17 +896,148 @@ mod tests {
     fn server_message_serialize_response() {
         let msg = ServerMessage::Response {
             reply_to: "id-1".to_string(),
+            call: Some(2),
+            endpoint: "telegram".to_string(),
             content: "hello back".to_string(),
         };
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(
-            json.contains("\"type\":\"response\""),
-            "should have type tag"
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::json!({
+                "type": "response",
+                "reply_to": "id-1",
+                "call": 2,
+                "endpoint": "telegram",
+                "content": "hello back",
+            })
         );
-        assert!(
-            json.contains("\"reply_to\":\"id-1\""),
-            "should have reply_to"
+    }
+
+    #[test]
+    fn a_response_no_model_call_wrote_has_no_call() {
+        let msg = ServerMessage::Response {
+            reply_to: String::new(),
+            call: None,
+            endpoint: "ws".to_string(),
+            content: "posted with send_message".to_string(),
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert!(json.get("call").is_none(), "{json}");
+    }
+
+    #[test]
+    fn server_message_serialize_turn_started_with_its_origin() {
+        let msg = ServerMessage::TurnStarted {
+            reply_to: "turn-1".to_string(),
+            origin: TurnOrigin {
+                endpoint: "telegram".to_string(),
+                sender: Some(MessageSender {
+                    name: "Bear".to_string(),
+                    id: "42".to_string(),
+                    interface: "telegram".to_string(),
+                    location: None,
+                }),
+                visibility: crate::memory::types::Visibility::User,
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::json!({
+                "type": "turn_started",
+                "reply_to": "turn-1",
+                "origin": {
+                    "endpoint": "telegram",
+                    "sender": { "name": "Bear", "id": "42", "interface": "telegram" },
+                    "visibility": "user",
+                },
+            })
         );
+    }
+
+    #[test]
+    fn server_message_serialize_user_message() {
+        let msg = ServerMessage::UserMessage {
+            id: "m1".to_string(),
+            turn_id: "turn-1".to_string(),
+            content: "hello".to_string(),
+            images: Vec::new(),
+            sender: None,
+            endpoint: "ws".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::json!({
+                "type": "user_message",
+                "id": "m1",
+                "turn_id": "turn-1",
+                "content": "hello",
+                "endpoint": "ws",
+            })
+        );
+    }
+
+    #[test]
+    fn server_message_serialize_streaming_frames() {
+        let frames = [
+            (
+                ServerMessage::TextDelta {
+                    reply_to: "t".to_string(),
+                    call: 1,
+                    text: "Hel".to_string(),
+                },
+                serde_json::json!({ "type": "text_delta", "reply_to": "t", "call": 1, "text": "Hel" }),
+            ),
+            (
+                ServerMessage::ThinkingDelta {
+                    reply_to: "t".to_string(),
+                    call: 1,
+                    text: "hm".to_string(),
+                },
+                serde_json::json!({ "type": "thinking_delta", "reply_to": "t", "call": 1, "text": "hm" }),
+            ),
+            (
+                ServerMessage::Thinking {
+                    reply_to: "t".to_string(),
+                    call: 1,
+                    content: "hmm, so".to_string(),
+                },
+                serde_json::json!({ "type": "thinking", "reply_to": "t", "call": 1, "content": "hmm, so" }),
+            ),
+            (
+                ServerMessage::StreamRestart {
+                    reply_to: "t".to_string(),
+                    call: 1,
+                },
+                serde_json::json!({ "type": "stream_restart", "reply_to": "t", "call": 1 }),
+            ),
+        ];
+        for (frame, expected) in frames {
+            assert_eq!(serde_json::to_value(&frame).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn server_message_serialize_tool_frames_name_their_turn_and_call() {
+        let call = ServerMessage::ToolCall {
+            reply_to: "t".to_string(),
+            call: 3,
+            id: "tc".to_string(),
+            name: "exec".to_string(),
+            arguments: serde_json::json!({}),
+            server: None,
+        };
+        let result = ServerMessage::ToolResult {
+            reply_to: "t".to_string(),
+            tool_call_id: "tc".to_string(),
+            name: "exec".to_string(),
+            output: "ok".to_string(),
+            is_error: false,
+            auto_mode: None,
+        };
+        let call = serde_json::to_value(&call).unwrap();
+        let result = serde_json::to_value(&result).unwrap();
+        assert_eq!(call.get("reply_to"), Some(&serde_json::json!("t")));
+        assert_eq!(call.get("call"), Some(&serde_json::json!(3)));
+        assert_eq!(result.get("reply_to"), Some(&serde_json::json!("t")));
     }
 
     #[test]
@@ -797,6 +1150,8 @@ mod tests {
     #[test]
     fn server_message_serialize_broadcast_response() {
         let msg = ServerMessage::BroadcastResponse {
+            reply_to: "id-1".to_string(),
+            call: 0,
             content: "checking that for you".to_string(),
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -1083,6 +1438,7 @@ mod tests {
             reply_to: "id-1".to_string(),
             output_tokens: 42,
             has_usage: true,
+            tool_calls: 3,
             session_totals: None,
         };
         assert_eq!(
@@ -1092,6 +1448,7 @@ mod tests {
                 "reply_to": "id-1",
                 "output_tokens": 42,
                 "has_usage": true,
+                "tool_calls": 3,
             }),
             "session_totals should be omitted, not serialized as null"
         );
@@ -1103,10 +1460,12 @@ mod tests {
             reply_to: "id-1".to_string(),
             output_tokens: 42,
             has_usage: true,
+            tool_calls: 3,
             session_totals: Some(SessionUsageTotals {
                 input_tokens: 100,
                 output_tokens: 42,
                 context_tokens: Some(100),
+                tool_calls: 3,
             }),
         };
         assert_eq!(
@@ -1116,13 +1475,38 @@ mod tests {
                 "reply_to": "id-1",
                 "output_tokens": 42,
                 "has_usage": true,
+                "tool_calls": 3,
                 "session_totals": {
                     "input_tokens": 100,
                     "output_tokens": 42,
                     "context_tokens": 100,
+                    "tool_calls": 3,
                 },
             })
         );
+    }
+
+    /// A `turn_usage` frame received without a `tool_calls` field (e.g.
+    /// from a client built against an older protocol version) still
+    /// deserializes, defaulting the count to zero rather than failing.
+    #[test]
+    fn server_message_deserialize_turn_usage_without_tool_calls_field() {
+        let old_payload = serde_json::json!({
+            "type": "turn_usage",
+            "reply_to": "id-1",
+            "output_tokens": 42,
+            "has_usage": true,
+        });
+        let msg: ServerMessage = serde_json::from_value(old_payload).unwrap();
+        assert!(matches!(
+            msg,
+            ServerMessage::TurnUsage {
+                tool_calls: 0,
+                output_tokens: 42,
+                has_usage: true,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1132,6 +1516,7 @@ mod tests {
             run_id: "run-1".into(),
             output_tokens: 7,
             has_usage: true,
+            tool_calls: 2,
             session_totals: None,
         };
         assert_eq!(
@@ -1142,6 +1527,7 @@ mod tests {
                 "run_id": "run-1",
                 "output_tokens": 7,
                 "has_usage": true,
+                "tool_calls": 2,
             })
         );
     }

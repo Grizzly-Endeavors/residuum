@@ -24,8 +24,9 @@ pub(crate) struct Episode {
 }
 
 /// Visibility of an observation relative to the conversation context.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export)]
 pub enum Visibility {
     /// Observation came from a user-visible conversation turn.
     #[default]
@@ -79,7 +80,7 @@ impl DocSource {
 
     /// Parse a caller's user-facing source filter name (`"observations"`,
     /// `"episodes"`, `"wiki"`) onto this vocabulary. Shared by the
-    /// `memory_search` tool and the `/api/memory/search` HTTP endpoint, the
+    /// `memory_search` tool and the `/api/agents/{name}/memory/search` HTTP endpoint, the
     /// only two boundaries where this name is user-supplied. `None` means
     /// the value isn't one of the three names; callers distinguish that from
     /// "no filter given" themselves, since this function only sees a value

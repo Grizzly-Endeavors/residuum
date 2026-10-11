@@ -56,6 +56,13 @@ pub struct Agent {
     /// Workspace layout for per-turn identity reloads. `None` pins identity to
     /// the construction-time snapshot (test constructors).
     layout: Option<crate::workspace::layout::WorkspaceLayout>,
+    /// The agent's handle on the hub's team router, read for the `TEAM`
+    /// roster at each turn entry. `None` leaves the prompt without a roster.
+    team: Option<crate::hub::team::TeamLink>,
+    /// Told as each endpoint reply of a turn reaches the main conversation,
+    /// so the hub counts it read or unread at that moment. `None` counts
+    /// nothing.
+    reply_audience: Option<std::sync::Arc<dyn super::ReplyAudience>>,
     last_user_message_at: Option<chrono::NaiveDateTime>,
     /// Main's current-turn hop count: the highest hop count among the
     /// inputs (kickoff message, agent-message interrupts drained mid-turn)
@@ -104,6 +111,8 @@ impl Agent {
             recent_context: None,
             tz: config.tz,
             layout: config.layout,
+            team: None,
+            reply_audience: None,
             last_user_message_at: None,
             hop_counter,
             usage_totals: std::sync::Arc::new(tokio::sync::Mutex::new(
@@ -113,7 +122,7 @@ impl Agent {
         }
     }
 
-    /// Restore persisted usage totals at startup, so the chat footer shows
+    /// Restore persisted usage totals at startup, so the conversation size shows
     /// correct totals across a restart instead of resetting to zero.
     pub async fn restore_usage_totals(&mut self, totals: SessionUsageTotals) {
         *self.usage_totals.lock().await = totals;
@@ -133,12 +142,27 @@ impl Agent {
             return self.identity.clone();
         };
         match IdentityFiles::load(layout).await {
-            Ok(identity) => identity,
+            Ok(identity) => match &self.team {
+                Some(team) => identity.with_team_roster(team),
+                None => identity,
+            },
             Err(e) => {
                 tracing::error!(error = %e, "identity reload failed; using last-known-good snapshot from previous turn");
                 self.identity.clone()
             }
         }
+    }
+
+    /// Show this agent's teammates in its prompt: the `TEAM` block is rebuilt
+    /// from `team` at every turn entry.
+    pub fn set_team(&mut self, team: crate::hub::team::TeamLink) {
+        self.team = Some(team);
+    }
+
+    /// Tell `audience` as each of a turn's endpoint replies reaches the main
+    /// conversation.
+    pub fn set_reply_audience(&mut self, audience: std::sync::Arc<dyn super::ReplyAudience>) {
+        self.reply_audience = Some(audience);
     }
 
     /// Get a reference to the MCP registry.
@@ -171,6 +195,25 @@ impl Agent {
         );
         self.provider = provider;
         self.options = options;
+    }
+
+    /// Apply a new user timezone to future turns: the turn timestamps and
+    /// every tool that captured the timezone when it was registered.
+    pub fn set_timezone(
+        &mut self,
+        tz: chrono_tz::Tz,
+        action_store: std::sync::Arc<tokio::sync::Mutex<crate::actions::store::ActionStore>>,
+        action_notify: std::sync::Arc<tokio::sync::Notify>,
+        layout: &crate::workspace::layout::WorkspaceLayout,
+    ) {
+        self.tz = tz;
+        self.tools.reload_timezone_tools(
+            action_store,
+            action_notify,
+            layout.user_inbox_dir(),
+            layout.user_inbox_attachments_dir(),
+            tz,
+        );
     }
 
     /// Set the maximum tool-call iterations for future turns (e.g. at
@@ -286,7 +329,7 @@ impl Agent {
     /// LLM call and were drained after the turn completed. Ensures the message
     /// (with its sender, images, and background context) is visible in the next
     /// turn without being lost.
-    pub fn inject_inbound_message(&mut self, message: crate::interfaces::types::InboundMessage) {
+    pub fn inject_inbound_message(&mut self, message: crate::bus::MessageEvent) {
         self.recent_messages.extend(message.into_history_messages());
     }
 
@@ -309,8 +352,11 @@ impl Agent {
     /// Process a user message through the model, executing tool calls as needed.
     ///
     /// Returns a vec containing the final text-only response. Intermediate texts
-    /// emitted alongside tool calls are sent via `reply` in real-time but not
-    /// included in the return value.
+    /// emitted alongside tool calls are published to the bus as they are
+    /// produced (the main conversation, and the topic of the chat interface
+    /// `output_endpoint` names, if it is one) but not included in the return
+    /// value. `correlation_id` names the turn in
+    /// everything it publishes.
     ///
     /// # Errors
     /// Returns an error if the model call fails or tool execution errors
@@ -325,7 +371,6 @@ impl Agent {
         user_input: &str,
         publisher: &Publisher,
         output_endpoint: Option<&EndpointName>,
-        tool_activity_endpoint: Option<&EndpointName>,
         correlation_id: &str,
         origin: Option<&MessageOrigin>,
         prompt_ctx: &PromptContext<'_>,
@@ -345,13 +390,18 @@ impl Agent {
         self.last_user_message_at = Some(now);
 
         let sender = origin.and_then(|o| o.sender.clone());
-        if images.is_empty() {
-            self.recent_messages
-                .push(Message::user(user_input).with_sender(sender));
+        // A teammate's or session's message can start a turn (it may arrive
+        // when no turn is running, or after the last checkpoint of one), so
+        // the kickoff carries the structured sender the way a message
+        // injected mid-turn does.
+        let agent_sender = origin.and_then(|o| o.agent_sender.as_deref().cloned());
+        let kickoff = if images.is_empty() {
+            Message::user(user_input)
         } else {
-            self.recent_messages
-                .push(Message::user_with_images(user_input, images.to_vec()).with_sender(sender));
-        }
+            Message::user_with_images(user_input, images.to_vec())
+        };
+        self.recent_messages
+            .push(kickoff.with_sender(sender).with_agent_sender(agent_sender));
 
         let memory_ctx =
             Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());
@@ -376,9 +426,9 @@ impl Agent {
         };
         let events = EventContext {
             publisher,
+            reply_audience: self.reply_audience.as_deref(),
             target: EventTarget::Endpoint {
                 output_endpoint,
-                tool_activity_endpoint,
                 correlation_id,
             },
             session_conversation: None,
@@ -468,6 +518,7 @@ mod tests {
         crate::diagnostics::DiagnosticsPaths {
             config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
             workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace-unused"),
+            hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub-unused"),
         }
     }
 
@@ -544,7 +595,6 @@ mod tests {
                 "hi",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -570,7 +620,7 @@ mod tests {
                     cache_creation_tokens: None,
                     cache_read_tokens: None,
                 }),
-                thinking: None,
+                thinking: Vec::new(),
                 stop_reason: None,
             },
             InferenceResponse {
@@ -582,7 +632,7 @@ mod tests {
                     cache_creation_tokens: None,
                     cache_read_tokens: None,
                 }),
-                thinking: None,
+                thinking: Vec::new(),
                 stop_reason: None,
             },
         ]);
@@ -609,7 +659,6 @@ mod tests {
                     msg,
                     &publisher,
                     Some(&ep),
-                    None,
                     "",
                     None,
                     &PromptContext::default(),
@@ -679,6 +728,7 @@ mod tests {
                     id: "call_1".to_string(),
                     name: "exec".to_string(),
                     arguments: serde_json::json!({"command": "echo test"}),
+                    server: None,
                 }],
             ),
             InferenceResponse::new("the result was: test".to_string(), vec![]),
@@ -704,7 +754,6 @@ mod tests {
                 "run echo test",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -740,6 +789,7 @@ mod tests {
                     id: "call_1".to_string(),
                     name: "exec".to_string(),
                     arguments: serde_json::json!({"command": "echo test"}),
+                    server: None,
                 }],
             ),
             InferenceResponse::new("Done! The output was: test".to_string(), vec![]),
@@ -765,7 +815,6 @@ mod tests {
                 "what does echo test print?",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -799,6 +848,7 @@ mod tests {
                         id: format!("call_{i}"),
                         name: "exec".to_string(),
                         arguments: serde_json::json!({"command": format!("echo loop {i}")}),
+                        server: None,
                     }],
                 )
             })
@@ -835,7 +885,6 @@ mod tests {
                 "loop past the old cap",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -864,6 +913,7 @@ mod tests {
                         id: format!("call_{i}"),
                         name: "exec".to_string(),
                         arguments: serde_json::json!({"command": "echo loop"}),
+                        server: None,
                     }],
                 )
             })
@@ -899,7 +949,6 @@ mod tests {
                 "loop forever",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1166,8 +1215,8 @@ mod tests {
         }
     }
 
-    fn make_inbound(id: &str, content: &str) -> crate::interfaces::types::InboundMessage {
-        crate::interfaces::types::InboundMessage {
+    fn make_inbound(id: &str, content: &str) -> crate::bus::MessageEvent {
+        crate::bus::MessageEvent {
             id: id.to_string(),
             content: content.to_string(),
             origin: crate::interfaces::types::MessageOrigin {
@@ -1176,7 +1225,7 @@ mod tests {
                 conversation: None,
                 agent_sender: None,
             },
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Utc::now().naive_utc(),
             images: vec![],
             context: None,
         }
@@ -1203,6 +1252,7 @@ mod tests {
                         id: "call_1".to_string(),
                         name: "exec".to_string(),
                         arguments: serde_json::json!({"command": "echo test"}),
+                        server: None,
                     }],
                 ),
                 // Call 1: final text
@@ -1238,7 +1288,6 @@ mod tests {
                 "hello",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1283,6 +1332,7 @@ mod tests {
                         id: "call_1".to_string(),
                         name: "exec".to_string(),
                         arguments: serde_json::json!({"command": "echo test"}),
+                        server: None,
                     }],
                 ),
                 InferenceResponse::new("done".to_string(), vec![]),
@@ -1317,7 +1367,6 @@ mod tests {
                 "hello",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1382,7 +1431,6 @@ mod tests {
                 "hello",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1439,7 +1487,6 @@ mod tests {
                 "hello",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1493,6 +1540,7 @@ mod tests {
                         id: "call_1".to_string(),
                         name: "exec".to_string(),
                         arguments: serde_json::json!({"command": "echo test"}),
+                        server: None,
                     }],
                 ),
                 // A second response exists only to fail the test loudly if
@@ -1523,7 +1571,6 @@ mod tests {
                 "hello",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1586,7 +1633,6 @@ mod tests {
                 "hello",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1795,7 +1841,6 @@ mod tests {
                 "hi",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1816,7 +1861,6 @@ mod tests {
                 "hi again",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1883,7 +1927,6 @@ mod tests {
                 "hi",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1902,7 +1945,6 @@ mod tests {
                 "hi again",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),
@@ -1965,7 +2007,6 @@ mod tests {
                 "hi",
                 &publisher,
                 Some(&ep),
-                None,
                 "",
                 None,
                 &PromptContext::default(),

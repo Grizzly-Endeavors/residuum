@@ -19,8 +19,8 @@ struct InputBar: View {
     }
 
     private var canSend: Bool {
-        let connected = store.selectedTab?.connection.state == .connected
-        let notThinking = store.selectedTab?.isThinking == false
+        let connected = store.connectionState == .connected
+        let notThinking = !store.isThinking
         let hasContent = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return connected && notThinking && hasContent
     }
@@ -73,7 +73,7 @@ struct InputBar: View {
                         .onKeyPress(.downArrow) { moveMenu(by: 1) }
                         .onKeyPress(.escape)    { dismissMenu(); return .handled }
                         .placeholder(when: text.isEmpty) {
-                            Text("Message \(store.selectedTab?.name ?? "agent")…")
+                            Text("Message \(store.agentName ?? "agent")…")
                                 .font(Style.literata(size: 13))
                                 .foregroundStyle(Style.textMuted)
                         }
@@ -165,38 +165,34 @@ struct InputBar: View {
             )
 
         case "/verbose":
-            guard let idx = store.selectedTabIndex else { return }
-            store.tabs[idx].verboseEnabled.toggle()
-            let enabled = store.tabs[idx].verboseEnabled
-            store.tabs[idx].connection.send(.setVerbose(enabled: enabled))
-            store.appendSystemMessage("Verbose mode \(enabled ? "enabled" : "disabled").")
+            store.toggleVerbose()
+            store.appendSystemMessage("Verbose mode \(store.verboseEnabled ? "enabled" : "disabled").")
 
         case "/status":
-            let tab = store.selectedTab
             let stateStr: String
-            switch tab?.connection.state ?? .disconnected {
+            switch store.connectionState {
             case .connected:    stateStr = "connected"
             case .connecting:   stateStr = "connecting…"
             case .disconnected: stateStr = "disconnected"
             }
-            let verbose = tab?.verboseEnabled == true ? "on" : "off"
+            let verbose = store.verboseEnabled ? "on" : "off"
             store.appendSystemBlock(
-                "agent    \(tab?.name ?? "Default") · port \(tab?.port ?? 7700)\n" +
+                "agent    \(store.agentName ?? "none") · port \(store.port)\n" +
                 "status   \(stateStr)\n" +
                 "verbose  \(verbose)"
             )
 
         case "/observe":
-            store.sendToSelectedTab(.serverCommand(name: "observe", args: nil))
+            store.send(.serverCommand(name: "observe", args: nil))
 
         case "/reflect":
-            store.sendToSelectedTab(.serverCommand(name: "reflect", args: nil))
+            store.send(.serverCommand(name: "reflect", args: nil))
 
         case "/context":
-            store.sendToSelectedTab(.serverCommand(name: "context", args: nil))
+            store.send(.serverCommand(name: "context", args: nil))
 
         case "/reload":
-            store.sendToSelectedTab(.reload)
+            store.send(.reload)
 
         default:
             // /inbox is handled via sendMessage (hasArgs path never reaches here).
@@ -223,7 +219,7 @@ struct InputBar: View {
                 body = ""
             }
             guard !body.isEmpty else { return }
-            store.sendToSelectedTab(.inboxAdd(body: body))
+            store.send(.inboxAdd(body: body))
             text = ""
             attachedImages = []
             return

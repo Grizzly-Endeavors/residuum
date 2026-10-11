@@ -2,6 +2,7 @@
 
 use std::fmt::Write as _;
 use std::io;
+use std::path::PathBuf;
 use std::process::{ExitStatus, Output, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,12 +13,14 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
-use super::{SharedToolsPath, Tool, ToolError, ToolResult};
+use super::{SharedToolsPath, Tool, ToolError, ToolResult, publish_notice};
 use crate::agent_keys::{
     AgentKeysSnapshot, KeyCreator, Redactor, SharedAgentKeys, env_var_for, validate_name,
 };
+use crate::bus::Publisher;
 use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger};
 use crate::inference::ToolDefinition;
+use crate::util::process::{ProcessTreeGuard, kill_process_tree};
 
 /// Maximum output size from a command (100KB).
 const MAX_OUTPUT_BYTES: usize = 100 * 1024;
@@ -37,6 +40,15 @@ pub struct ExecTool {
     /// Checkpoint engine, checkpointed before `store_output_as` mints a new
     /// agent key. `None` means minting isn't checkpointed.
     checkpoints: Option<Arc<CheckpointEngine>>,
+    /// Publishes a notice when `store_output_as` overwrites a key the user
+    /// created. `None` (e.g. in tests) means the overwrite still happens but
+    /// goes unannounced.
+    publisher: Option<Publisher>,
+    /// The agent's workspace root. Every spawned command starts here
+    /// (`Command::current_dir`) rather than inheriting the process's current
+    /// directory, which is shared across every agent hosted in the same
+    /// process.
+    workspace_root: PathBuf,
 }
 
 /// Where a minted key goes: the `store_output_as` parameter.
@@ -51,18 +63,30 @@ impl ExecTool {
     /// Pass the shared tools-`PATH` handle to prepend the configured tool
     /// directories to spawned commands' `PATH`; pass `None` to inherit the
     /// process `PATH` unchanged. Pass the agent key store to enable the
-    /// `keys` and `store_output_as` parameters.
+    /// `keys` and `store_output_as` parameters. Every spawned command starts
+    /// in `workspace_root`.
     #[must_use]
     pub fn new(
         tools_path: Option<SharedToolsPath>,
         agent_keys: Option<SharedAgentKeys>,
         checkpoints: Option<Arc<CheckpointEngine>>,
+        workspace_root: PathBuf,
     ) -> Self {
         Self {
             tools_path,
             agent_keys,
             checkpoints,
+            publisher: None,
+            workspace_root,
         }
+    }
+
+    /// Publish a notice naming the key whenever `store_output_as` overwrites
+    /// a key the user created.
+    #[must_use]
+    pub fn with_publisher(mut self, publisher: Publisher) -> Self {
+        self.publisher = Some(publisher);
+        self
     }
 
     async fn agent_key_snapshot(&self) -> Result<Arc<AgentKeysSnapshot>, ToolResult> {
@@ -120,18 +144,14 @@ impl ExecTool {
     }
 
     /// Refuse a `store_output_as` target before running anything, so a
-    /// minting command isn't run only to have its output discarded.
+    /// minting command isn't run only to have its output discarded — a bad
+    /// name is the only thing that still fails here. The agent may
+    /// overwrite a key the user created (checkpointed and reported to the
+    /// user; see [`Self::store_output`]).
     async fn check_store_target(&self, target: &StoreTarget) -> Result<(), ToolResult> {
         validate_name(&target.name)
             .map_err(|e| ToolResult::error(format!("{e}. Nothing was run.")))?;
-        let snapshot = self.agent_key_snapshot().await?;
-        if snapshot.store.creator(&target.name) == Some(KeyCreator::User) {
-            return Err(ToolResult::error(format!(
-                "agent key '{}' was created by the user and can't be replaced; choose another \
-                 name. Nothing was run.",
-                target.name
-            )));
-        }
+        self.agent_key_snapshot().await?;
         Ok(())
     }
 
@@ -167,6 +187,15 @@ impl ExecTool {
             return ToolResult::error("agent keys are not available in this context");
         };
 
+        // Read before the write to know whether this overwrites a key the
+        // user created — that's the only case worth telling the user
+        // about; a failed snapshot just means the notice is skipped, not
+        // that the mint itself fails.
+        let overwrites_user_key = keys
+            .snapshot()
+            .await
+            .is_ok_and(|s| s.store.creator(&target.name) == Some(KeyCreator::User));
+
         if let Some(checkpoints) = &self.checkpoints {
             checkpoints
                 .checkpoint_config_before_write(CheckpointContext::system(
@@ -186,6 +215,17 @@ impl ExecTool {
             .await
         {
             Ok(warning) => {
+                if overwrites_user_key {
+                    publish_notice(
+                        self.publisher.as_ref(),
+                        format!(
+                            "The agent replaced agent key '{}', which you created. Restore it \
+                             from Settings → All agents → History if this wasn't intended.",
+                            target.name
+                        ),
+                    )
+                    .await;
+                }
                 let mut message = format!(
                     "stored agent key '{name}' ({len} bytes). Use it with keys: [\"{name}\"] as ${var}.",
                     name = target.name,
@@ -342,6 +382,7 @@ impl Tool for ExecTool {
         );
 
         let mut cmd = shell_command(command);
+        cmd.current_dir(&self.workspace_root);
 
         // Prepend configured tool dirs to the child's PATH (read live so config
         // reloads apply). Leaves PATH inherited when no override is configured.
@@ -413,61 +454,6 @@ fn shell_command(command: &str) -> Command {
     }
 }
 
-/// Kill every process in the tree rooted at a spawned command's shell, not
-/// just the shell itself — the command runs via a shell, so a plain kill of
-/// that one process would orphan whatever it spawned.
-///
-/// A no-op if the process has already been reaped (`pid` is `None`).
-async fn kill_process_tree(pid: Option<u32>) {
-    let Some(pid) = pid else {
-        return;
-    };
-
-    #[cfg(unix)]
-    {
-        let Ok(pid) = i32::try_from(pid) else {
-            tracing::warn!(
-                pid,
-                "exec pid doesn't fit a pid_t, skipping process-group kill"
-            );
-            return;
-        };
-        // The kill syscall itself is synchronous; run it on a blocking-pool
-        // thread rather than the async worker thread that's awaiting this.
-        let result = tokio::task::spawn_blocking(move || {
-            use nix::sys::signal::{Signal, killpg};
-            use nix::unistd::Pid;
-            // Safe: `shell_command` puts the shell in its own process
-            // group, so this reaches only the command's own tree.
-            killpg(Pid::from_raw(pid), Signal::SIGKILL)
-        })
-        .await;
-        match result {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                tracing::warn!(error = %e, pid, "failed to kill exec command's process group");
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, pid, "process-group kill task panicked");
-            }
-        }
-    }
-    #[cfg(windows)]
-    {
-        // `/T` kills the whole process tree, not just the immediate
-        // `cmd.exe` — `Child::kill` alone only signals that one process and
-        // would orphan anything it spawned.
-        if let Err(e) = Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &pid.to_string()])
-            .kill_on_drop(true)
-            .output()
-            .await
-        {
-            tracing::warn!(error = %e, pid, "failed to kill exec command's process tree");
-        }
-    }
-}
-
 /// How a spawned command's run ended.
 enum RunOutcome {
     /// The command exited on its own before the timeout or a stop.
@@ -507,6 +493,12 @@ async fn run_with_timeout_and_cancel(
 
     let mut child = cmd.spawn()?;
     let pid = child.id();
+    // Guards the window between spawn and the point below where the
+    // process tree has already been killed or the child already reaped —
+    // covers the case where this future itself is dropped (not cancelled
+    // through the `select!` below), e.g. the caller's turn future being
+    // dropped while this is still suspended awaiting the child.
+    let mut tree_guard = ProcessTreeGuard::new(pid);
     let stdout_pipe = child
         .stdout
         .take()
@@ -531,13 +523,19 @@ async fn run_with_timeout_and_cancel(
     };
 
     let (outcome, status) = match wait {
-        Wait::Exited(status) => (RunOutcome::Finished, status),
+        Wait::Exited(status) => {
+            // The child already exited on its own; nothing left to kill.
+            tree_guard.disarm();
+            (RunOutcome::Finished, status)
+        }
         Wait::TimedOut => {
             kill_process_tree(pid).await;
+            tree_guard.disarm();
             (RunOutcome::TimedOut, child.wait().await?)
         }
         Wait::Cancelled => {
             kill_process_tree(pid).await;
+            tree_guard.disarm();
             (RunOutcome::Cancelled, child.wait().await?)
         }
     };
@@ -557,7 +555,7 @@ fn spawn_pipe_reader<R>(mut pipe: R) -> tokio::task::JoinHandle<io::Result<Vec<u
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
-    tokio::spawn(async move {
+    crate::util::spawn_in_span(async move {
         let mut buf = Vec::new();
         pipe.read_to_end(&mut buf).await?;
         Ok(buf)
@@ -688,24 +686,32 @@ fn format_output(output: &Output) -> ToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::wait;
+
+    /// A workspace root for tests that don't care where commands start —
+    /// the system temp dir, which always exists.
+    fn workspace_root() -> PathBuf {
+        std::env::temp_dir()
+    }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn exec_resolves_binary_from_tools_path() {
-        use std::os::unix::fs::PermissionsExt;
-
-        // A uniquely-named script in a temp dir that is NOT on the base PATH.
+        // A uniquely-named link to `echo` in a temp dir that is NOT on the
+        // base PATH. It is a link, not a script written here: executing a file
+        // this process just wrote fails with "Text file busy" when a test on
+        // another thread forks while the file is still open for writing,
+        // because the forked child holds a copy of the descriptor until it
+        // execs.
         let dir = std::env::temp_dir().join(format!(
             "residuum-exec-tools-{}-{}",
             std::process::id(),
             "toolbox"
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let script = dir.join("residuum_only_in_tools_dir");
-        std::fs::write(&script, "#!/bin/sh\necho tool-ran\n").unwrap();
-        let mut perms = std::fs::metadata(&script).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&script, perms).unwrap();
+        let link = dir.join("residuum_only_in_tools_dir");
+        std::fs::remove_file(&link).ok();
+        std::os::unix::fs::symlink("/bin/echo", &link).unwrap();
 
         // Effective PATH = tools dir prepended to the inherited PATH.
         let mut parts = vec![dir.clone()];
@@ -716,9 +722,9 @@ mod tests {
         let handle: SharedToolsPath = std::sync::Arc::new(tokio::sync::RwLock::new(Some(path)));
 
         // With the handle, the bare binary name resolves.
-        let tool = ExecTool::new(Some(handle), None, None);
+        let tool = ExecTool::new(Some(handle), None, None, workspace_root());
         let result = tool
-            .execute(serde_json::json!({ "command": "residuum_only_in_tools_dir" }))
+            .execute(serde_json::json!({ "command": "residuum_only_in_tools_dir tool-ran" }))
             .await
             .unwrap();
         assert!(
@@ -733,9 +739,9 @@ mod tests {
         );
 
         // Without the handle, the same bare name is not on PATH → fails.
-        let bare = ExecTool::new(None, None, None);
+        let bare = ExecTool::new(None, None, None, workspace_root());
         let missing = bare
-            .execute(serde_json::json!({ "command": "residuum_only_in_tools_dir" }))
+            .execute(serde_json::json!({ "command": "residuum_only_in_tools_dir tool-ran" }))
             .await
             .unwrap();
         assert!(
@@ -749,7 +755,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_simple_command() {
-        let tool = ExecTool::new(None, None, None);
+        let tool = ExecTool::new(None, None, None, workspace_root());
         let result = tool
             .execute(serde_json::json!({ "command": "echo hello" }))
             .await
@@ -762,9 +768,32 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_starts_in_the_workspace_root_not_the_process_cwd() {
+        // The process's own current directory here is whatever `cargo test`
+        // was invoked from, not this tempdir — so the command only sees
+        // this directory if `current_dir` is set explicitly.
+        let dir = tempfile::tempdir().unwrap();
+        let expected = tokio::fs::canonicalize(dir.path()).await.unwrap();
+
+        let tool = ExecTool::new(None, None, None, dir.path().to_path_buf());
+        let result = tool
+            .execute(serde_json::json!({ "command": "pwd" }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "pwd should succeed: {}", result.output);
+        let printed = tokio::fs::canonicalize(result.output.trim()).await.unwrap();
+        assert_eq!(
+            printed, expected,
+            "the command should start in the configured workspace root"
+        );
+    }
+
     #[tokio::test]
     async fn exec_failing_command() {
-        let tool = ExecTool::new(None, None, None);
+        let tool = ExecTool::new(None, None, None, workspace_root());
         let result = tool
             .execute(serde_json::json!({ "command": "false" }))
             .await
@@ -785,7 +814,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_timeout() {
-        let tool = ExecTool::new(None, None, None);
+        let tool = ExecTool::new(None, None, None, workspace_root());
         let result = tool
             .execute(serde_json::json!({
                 "command": "sleep 10",
@@ -806,35 +835,22 @@ mod tests {
     /// killed, not merely abandoned.
     #[cfg(unix)]
     async fn wait_for_pid_to_die(pid: i32) {
-        use nix::sys::signal::kill;
-        use nix::unistd::Pid;
-
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                if kill(Pid::from_raw(pid), None).is_err() {
-                    return; // ESRCH: no such process.
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
+        let Ok(pid_u32) = u32::try_from(pid) else {
+            return;
+        };
+        wait::until_true("the killed process to be gone", || {
+            !crate::util::process::is_process_running(pid_u32)
         })
-        .await
-        .expect("process should have been killed within 5 seconds");
+        .await;
     }
 
     #[cfg(unix)]
     async fn read_pid_file(path: &std::path::Path) -> i32 {
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                if let Ok(contents) = tokio::fs::read_to_string(path).await
-                    && let Ok(pid) = contents.trim().parse()
-                {
-                    return pid;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
+        wait::until("the pid file to be written", || async {
+            let contents = tokio::fs::read_to_string(path).await.ok()?;
+            contents.trim().parse().ok()
         })
         .await
-        .expect("pid file should have been written within 5 seconds")
     }
 
     #[cfg(unix)]
@@ -842,7 +858,7 @@ mod tests {
     async fn exec_timeout_kills_the_whole_process_tree() {
         let dir = tempfile::tempdir().unwrap();
         let pid_path = dir.path().join("pid");
-        let tool = ExecTool::new(None, None, None);
+        let tool = ExecTool::new(None, None, None, workspace_root());
 
         // The shell's own pid doubles as the process group id (see
         // `shell_command`), so reading it back is enough to check the
@@ -869,7 +885,7 @@ mod tests {
     async fn exec_cancellation_kills_the_process_and_returns_partial_output() {
         let dir = tempfile::tempdir().unwrap();
         let pid_path = dir.path().join("pid");
-        let tool = ExecTool::new(None, None, None);
+        let tool = ExecTool::new(None, None, None, workspace_root());
         let cancel = CancellationToken::new();
 
         let command = format!(
@@ -905,16 +921,43 @@ mod tests {
         wait_for_pid_to_die(pid).await;
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_future_dropped_before_completion_kills_grandchildren() {
+        // Regression test for the drop-guard: dropping the turn future
+        // (simulated here with `select!` dropping the losing branch) must
+        // still kill the whole process tree, not just the immediate shell
+        // that `kill_on_drop` alone would reach.
+        let dir = tempfile::tempdir().unwrap();
+        let pid_path = dir.path().join("grandchild-pid");
+        let tool = ExecTool::new(None, None, None, workspace_root());
+        let cancel = CancellationToken::new();
+
+        let command = format!("sleep 10 & echo $! > {}; wait", pid_path.display());
+
+        let grandchild_pid = tokio::select! {
+            result = tool.execute_cancellable(serde_json::json!({ "command": command }), &cancel) => {
+                panic!(
+                    "command should still be running when dropped, got: {:?}",
+                    result.map(|r| r.output)
+                );
+            }
+            pid = read_pid_file(&pid_path) => pid,
+        };
+
+        wait_for_pid_to_die(grandchild_pid).await;
+    }
+
     #[tokio::test]
     async fn exec_missing_command() {
-        let tool = ExecTool::new(None, None, None);
+        let tool = ExecTool::new(None, None, None, workspace_root());
         let result = tool.execute(serde_json::json!({})).await;
         assert!(result.is_err(), "missing command should return ToolError");
     }
 
     #[tokio::test]
     async fn exec_stderr_output() {
-        let tool = ExecTool::new(None, None, None);
+        let tool = ExecTool::new(None, None, None, workspace_root());
         let result = tool
             .execute(serde_json::json!({ "command": "echo error >&2" }))
             .await
@@ -930,7 +973,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_passes_quotes_through_to_the_shell() {
-        let tool = ExecTool::new(None, None, None);
+        let tool = ExecTool::new(None, None, None, workspace_root());
         let result = tool
             .execute(serde_json::json!({ "command": "echo \"hello  world\"" }))
             .await
@@ -951,7 +994,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_output_truncated() {
-        let tool = ExecTool::new(None, None, None);
+        let tool = ExecTool::new(None, None, None, workspace_root());
         // Generate more than 100KB of output
         let command = if cfg!(windows) {
             "powershell -NoProfile -Command \"'x' * 204800\""
@@ -985,7 +1028,10 @@ mod tests {
             keys.set("api_key", "sk-test-abcdef123", None, KeyCreator::User)
                 .await
                 .unwrap();
-            (ExecTool::new(None, Some(Arc::clone(&keys)), None), keys)
+            (
+                ExecTool::new(None, Some(Arc::clone(&keys)), None, workspace_root()),
+                keys,
+            )
         }
 
         #[tokio::test]
@@ -1050,7 +1096,7 @@ mod tests {
 
         #[tokio::test]
         async fn keys_without_store_explain_unavailability() {
-            let result = ExecTool::new(None, None, None)
+            let result = ExecTool::new(None, None, None, workspace_root())
                 .execute(serde_json::json!({ "command": "true", "keys": ["api_key"] }))
                 .await
                 .unwrap();
@@ -1135,8 +1181,11 @@ mod tests {
             let checkpoints_dir = dir.path().join("checkpoints");
             let engine = std::sync::Arc::new(
                 crate::checkpoints::CheckpointEngine::new(
+                    "test-agent",
                     dir.path().join("workspace"),
-                    dir.path().to_path_buf(),
+                    &crate::config::paths::TeamPaths::new(dir.path().to_path_buf().join("team")),
+                    dir.path().join("agent-config"),
+                    dir.path(),
                     &checkpoints_dir,
                     None,
                 )
@@ -1150,7 +1199,12 @@ mod tests {
             keys.set("first", "value-one-abc123", None, KeyCreator::Agent)
                 .await
                 .unwrap();
-            let tool = ExecTool::new(None, Some(keys), Some(std::sync::Arc::clone(&engine)));
+            let tool = ExecTool::new(
+                None,
+                Some(keys),
+                Some(std::sync::Arc::clone(&engine)),
+                workspace_root(),
+            );
 
             let result = tool
                 .execute(serde_json::json!({
@@ -1162,7 +1216,7 @@ mod tests {
             assert!(!result.is_error, "store should succeed: {}", result.output);
 
             let page = engine
-                .list_checkpoints(crate::checkpoints::RepoKind::Config, None, None, None)
+                .list_checkpoints(crate::checkpoints::RepoKind::Hub, None, None, None, None)
                 .await
                 .unwrap();
             assert_eq!(
@@ -1225,7 +1279,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn store_over_user_key_is_refused_before_running() {
+        async fn store_over_user_key_replaces_it() {
             let dir = tempfile::tempdir().unwrap();
             let (tool, keys) = tool_with_key(dir.path()).await;
             let marker = dir.path().join("ran");
@@ -1236,19 +1290,69 @@ mod tests {
                 }))
                 .await
                 .unwrap();
-            assert!(result.is_error, "overwriting a user key should fail");
-            assert!(!marker.exists(), "command must not run");
+            assert!(
+                !result.is_error,
+                "the agent may overwrite a key the user created: {}",
+                result.output
+            );
+            assert!(marker.exists(), "command should run");
             assert_eq!(
                 keys.snapshot().await.unwrap().store.value("api_key"),
-                Some("sk-test-abcdef123"),
-                "user key must be untouched"
+                Some("replacement-value"),
+                "user key should be replaced"
+            );
+            assert_eq!(
+                keys.snapshot().await.unwrap().store.creator("api_key"),
+                Some(KeyCreator::Agent)
+            );
+        }
+
+        #[tokio::test]
+        async fn store_over_user_key_publishes_a_notice() {
+            use crate::bus::{self, NoticeEvent, NotifyName, SYSTEM_CHANNEL, topics};
+
+            let dir = tempfile::tempdir().unwrap();
+            let keys = AgentKeys::new_shared(dir.path());
+            keys.set("api_key", "sk-test-abcdef123", None, KeyCreator::User)
+                .await
+                .unwrap();
+            let bus_handle = bus::spawn_broker();
+            let mut notices: bus::Subscriber<NoticeEvent> = bus_handle
+                .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+                .await
+                .unwrap();
+            let tool = ExecTool::new(None, Some(keys), None, workspace_root())
+                .with_publisher(bus_handle.publisher());
+
+            let result = tool
+                .execute(serde_json::json!({
+                    "command": "echo replacement-value",
+                    "store_output_as": { "name": "api_key" }
+                }))
+                .await
+                .unwrap();
+            assert!(
+                !result.is_error,
+                "overwrite should succeed: {}",
+                result.output
+            );
+
+            let notice = notices
+                .recv()
+                .await
+                .unwrap()
+                .expect("a notice was published");
+            assert!(
+                notice.message.contains("api_key") && notice.message.contains("created"),
+                "notice should name the key and that the user created it: {}",
+                notice.message
             );
         }
     }
 
     #[test]
     fn exec_tool_definition() {
-        let tool = ExecTool::new(None, None, None);
+        let tool = ExecTool::new(None, None, None, workspace_root());
         assert_eq!(tool.name(), "exec", "tool name should match");
     }
 }

@@ -13,6 +13,7 @@ pub mod recent_context;
 pub mod recent_messages;
 pub mod reflector;
 pub mod search;
+pub mod team_wiki;
 pub mod tokens;
 pub mod types;
 pub mod vector_store;

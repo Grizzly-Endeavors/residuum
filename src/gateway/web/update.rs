@@ -18,7 +18,7 @@ pub(crate) struct UpdateApiState {
     pub gateway_shutdown_tx: mpsc::Sender<()>,
     /// Where to look for a rollback notice the update-rollback watchdog may
     /// have left behind (see `crate::update::RollbackNotice`).
-    pub config_dir: PathBuf,
+    pub hub_dir: PathBuf,
 }
 
 /// Why an update-rollback watchdog restored the previous version, for the
@@ -56,7 +56,7 @@ impl From<crate::update::UnverifiedUpdate> for UnverifiedUpdateResponse {
     }
 }
 
-/// Response from `GET /api/update/status` and `POST /api/update/check`.
+/// Response from `GET /api/hub/update/status` and `POST /api/hub/update/check`.
 #[derive(Serialize)]
 pub(crate) struct UpdateStatusResponse {
     current: String,
@@ -73,14 +73,14 @@ pub(crate) struct UpdateStatusResponse {
     unverified_update: Option<UnverifiedUpdateResponse>,
 }
 
-/// `GET /api/update/status` — return current update state.
+/// `GET /api/hub/update/status` — return current update state.
 pub(crate) async fn api_update_status(
     State(state): State<UpdateApiState>,
 ) -> Json<UpdateStatusResponse> {
     Json(current_status(&state).await)
 }
 
-/// `POST /api/update/check` — trigger an immediate check, return refreshed status.
+/// `POST /api/hub/update/check` — trigger an immediate check, return refreshed status.
 pub(crate) async fn api_update_check(
     State(state): State<UpdateApiState>,
 ) -> Json<UpdateStatusResponse> {
@@ -89,9 +89,8 @@ pub(crate) async fn api_update_check(
 }
 
 async fn current_status(state: &UpdateApiState) -> UpdateStatusResponse {
-    let rollback_notice = crate::update::read_rollback_notice(&state.config_dir).map(Into::into);
-    let unverified_update =
-        crate::update::read_unverified_update(&state.config_dir).map(Into::into);
+    let rollback_notice = crate::update::read_rollback_notice(&state.hub_dir).map(Into::into);
+    let unverified_update = crate::update::read_unverified_update(&state.hub_dir).map(Into::into);
     let s = state.update_status.read().await;
     UpdateStatusResponse {
         current: s.current.clone(),
@@ -104,7 +103,7 @@ async fn current_status(state: &UpdateApiState) -> UpdateStatusResponse {
     }
 }
 
-/// `POST /api/update/apply` — download, install, then restart.
+/// `POST /api/hub/update/apply` — download, install, then restart.
 pub(crate) async fn api_update_apply(
     State(state): State<UpdateApiState>,
 ) -> Result<Json<UpdateStatusResponse>, (StatusCode, String)> {
@@ -151,7 +150,7 @@ pub(crate) async fn api_update_apply(
     Ok(Json(current_status(&state).await))
 }
 
-/// `POST /api/update/restart` — send restart signal only (binary already replaced).
+/// `POST /api/hub/update/restart` — send restart signal only (binary already replaced).
 pub(crate) async fn api_update_restart(
     State(state): State<UpdateApiState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
@@ -165,7 +164,7 @@ pub(crate) async fn api_update_restart(
     Ok(Json(serde_json::json!({ "restarting": true })))
 }
 
-/// `POST /api/shutdown` — trigger graceful gateway shutdown.
+/// `POST /api/hub/shutdown` — trigger graceful gateway shutdown.
 pub(crate) async fn api_shutdown(
     State(state): State<UpdateApiState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
@@ -187,14 +186,14 @@ pub(crate) async fn api_shutdown(
 mod tests {
     use super::*;
 
-    fn test_state(config_dir: PathBuf) -> UpdateApiState {
+    fn test_state(hub_dir: PathBuf) -> UpdateApiState {
         let (restart_tx, _restart_rx) = mpsc::channel(1);
         let (gateway_shutdown_tx, _shutdown_rx) = mpsc::channel(1);
         UpdateApiState {
             update_status: crate::update::SharedUpdateStatus::default(),
             restart_tx,
             gateway_shutdown_tx,
-            config_dir,
+            hub_dir,
         }
     }
 

@@ -229,6 +229,7 @@ mod tests {
             model_name: Some("claude-opus-4-7".to_string()),
             active_subagents: Vec::new(),
             config_flags: std::collections::BTreeMap::new(),
+            agent: Some("scout".to_string()),
         }
     }
 
@@ -251,6 +252,10 @@ mod tests {
         assert_eq!(
             json["client"]["active_subagents"].as_array().unwrap().len(),
             0
+        );
+        assert!(
+            json["client"].get("agent").is_none(),
+            "the ingest service rejects unknown client fields, so the agent travels in the report text and trace instead"
         );
     }
 

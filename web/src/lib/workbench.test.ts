@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveArtifactsOrigin, artifactUrl } from "./workbench";
+import { artifactUrl, NO_SECURE_ORIGIN_REASON, resolveArtifactsOrigin } from "./workbench";
 import type { WorkbenchInfo } from "./types";
 
 const local = { origin: "http://localhost:7700", protocol: "http:", hostname: "localhost" };
@@ -54,6 +54,41 @@ describe("resolveArtifactsOrigin", () => {
   it("explains a missing relay origin rather than pointing at an unreachable port", () => {
     const result = resolveArtifactsOrigin(info({ port: null, relay: null }), relayed);
     expect(result.ok).toBe(false);
+  });
+
+  it("does not invent a :port HTTPS origin on Residuum Cloud while the relay hasn't announced one", () => {
+    const cloud = {
+      origin: "https://bear.agent-residuum.com",
+      protocol: "https:",
+      hostname: "bear.agent-residuum.com",
+    };
+    const result = resolveArtifactsOrigin(info({ relay: null }), cloud);
+    expect(result).toEqual({ ok: false, reason: NO_SECURE_ORIGIN_REASON });
+  });
+
+  it("does not point an HTTPS reverse proxy at the plain-HTTP artifacts port", () => {
+    const proxied = {
+      origin: "https://workbench.example.com",
+      protocol: "https:",
+      hostname: "workbench.example.com",
+    };
+    expect(resolveArtifactsOrigin(info({ relay: null }), proxied)).toEqual({
+      ok: false,
+      reason: NO_SECURE_ORIGIN_REASON,
+    });
+    // A relay announcing another UI origin doesn't make this one its UI.
+    expect(resolveArtifactsOrigin(info(), proxied)).toEqual({
+      ok: false,
+      reason: NO_SECURE_ORIGIN_REASON,
+    });
+  });
+
+  it("still surfaces the listener's own unavailable reason over HTTPS", () => {
+    const result = resolveArtifactsOrigin(
+      info({ port: null, relay: null, unavailable_reason: "port 7702 is in use" }),
+      relayed,
+    );
+    expect(result).toEqual({ ok: false, reason: "port 7702 is in use" });
   });
 });
 

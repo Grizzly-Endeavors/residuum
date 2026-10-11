@@ -77,7 +77,7 @@ pub(super) async fn run_bug_report_command(
         _ => parse_markdown(&open_editor()?)?,
     };
 
-    let url = format!("http://{gateway_addr}/api/tracing/bug-report");
+    let url = format!("http://{gateway_addr}/api/hub/tracing/bug-report");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(45))
         .build()

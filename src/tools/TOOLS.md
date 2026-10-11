@@ -15,7 +15,7 @@ This document is the source of truth for every tool exposed to the LLM. It must 
 
 | Parameter | Type    | Required | Description                                      |
 |-----------|---------|----------|--------------------------------------------------|
-| `path`    | string  | yes      | Absolute or relative path to the file to read    |
+| `path`    | string  | yes      | Absolute or relative path to the file to read. A path starting with "team/" is in the shared team folder |
 | `offset`  | integer | no       | Line number to start reading from (0-based, default: 0) |
 | `limit`   | integer | no       | Maximum number of lines to read (default: 2000)  |
 
@@ -29,7 +29,9 @@ On error (returned as `is_error = true`):
 - File does not exist or cannot be read
 - Image exceeds the model API's inline size limit
 
-**Side effect:** Records the path in the `FileTracker` (enables subsequent `write_file`/`edit_file`).
+**Side effect:** Records the path in the `FileTracker` (enables subsequent `write_file`/`edit_file`). For a file under `team/`, the tracker also records the file's version (the mtime-based token the web file API uses, plus the number of writes the team write coordinator has recorded for it), taken just before the file is read.
+
+A relative `path` resolves against the agent's workspace root, not the process's current directory. A relative `path` starting with `team/` (or exactly `team`) resolves in the shared team directory instead; see [Team files](../../docs/systems-usage/team-files.md).
 
 ---
 
@@ -38,13 +40,13 @@ On error (returned as `is_error = true`):
 **Source:** `write.rs` · `WriteTool`
 
 **Description sent to LLM:**
-> Write content to a file. Creates parent directories if they don't exist. Overwrites the file if it already exists. Existing files must be read with read_file before overwriting.
+> Write content to a file. Creates parent directories if they don't exist. Overwrites the file if it already exists. Existing files must be read with read_file before overwriting. Files under team/ are shared with teammates: if one changed after you read it, nothing is written and the error names who changed it, so read it again and redo your change.
 
 ### Input
 
 | Parameter | Type   | Required | Description                                   |
 |-----------|--------|----------|-----------------------------------------------|
-| `path`    | string | yes      | Absolute or relative path to the file to write |
+| `path`    | string | yes      | Absolute or relative path to the file to write. A path starting with "team/" is in the shared team folder |
 | `content` | string | yes      | The content to write to the file              |
 
 ### Output
@@ -54,12 +56,16 @@ On success: `"wrote {N} bytes to {path}"`, followed by one line per diagnostic i
 On error:
 - `PathPolicy` rejects the write path (targets a protected config or credential-store file)
 - File already exists but has not been read via `read_file` first
+- The path is inside a `team` entry of the agent's own directory (`team` is reserved for the shared team folder)
+- The file is under `team/` and changed since this tool set read it (or was created since, when the write meant to create it). Nothing is written. The error names the path (as `team/...`), says who changed it (`teammate {name}`, `the user`, `another session of yours`, or `an unknown writer (a change made outside Residuum)`), and tells the agent to read it again and reapply its change
 - Directory creation fails
 - Write fails
 
-**Side effect:** Records the path in the `FileTracker` after a successful write.
+**Side effect:** Records the path in the `FileTracker` after a successful write. A write under `team/` takes that path's lock, compares the file's current version with the one recorded at the last read or write, writes atomically only when they match, and records the agent as the path's last writer.
 
 **Note:** `config.toml` and `providers.toml` are writable (the agent may edit them on the user's behalf); `config.example.toml`/`providers.example.toml` are always blocked — Residuum regenerates them from its own defaults on every startup. See the `residuum-system` skill's [config reference](../../assets/bundled-skills/residuum-system/references/config.md) for which file holds what and how to edit them.
+
+A relative `path` resolves against the agent's workspace root, not the process's current directory. A relative `path` starting with `team/` resolves in the shared team directory; see [Team files](../../docs/systems-usage/team-files.md).
 
 ---
 
@@ -68,13 +74,13 @@ On error:
 **Source:** `edit.rs` · `EditTool`
 
 **Description sent to LLM:**
-> Edit an existing file by replacing exact text. Each entry in 'edits' replaces old_string with new_string; old_string must match the file exactly once (include surrounding lines to make it unique) unless replace_all is true. Edits apply in order, each seeing the result of the ones before it, and the file is only written if every edit succeeds. Copy old_string from read_file output without the line-number prefix. To delete text, use an empty new_string. The file must have been read with read_file first. Use this over write_file when changing part of an existing file.
+> Edit an existing file by replacing exact text. Each entry in 'edits' replaces old_string with new_string; old_string must match the file exactly once (include surrounding lines to make it unique) unless replace_all is true. Edits apply in order, each seeing the result of the ones before it, and the file is only written if every edit succeeds. Copy old_string from read_file output without the line-number prefix. To delete text, use an empty new_string. The file must have been read with read_file first. Files under team/ are shared with teammates: if one changed after you read it, nothing is written and the error names who changed it, so read it again and redo your change. Use this over write_file when changing part of an existing file.
 
 ### Input
 
 | Parameter | Type   | Required | Description                                          |
 |-----------|--------|----------|------------------------------------------------------|
-| `path`    | string | yes      | Path to the file to edit                             |
+| `path`    | string | yes      | Path to the file to edit. A path starting with "team/" is in the shared team folder |
 | `edits`   | array  | yes      | Replacements to apply, in order (at least one entry) |
 
 Each `edits` entry:
@@ -100,12 +106,16 @@ On error (returned as `is_error = true`; nothing is written):
 - `PathPolicy` rejects the path (targets a protected config or credential-store file)
 - File does not exist (points to `write_file`)
 - File has not been read via `read_file` first
+- The path is inside a `team` entry of the agent's own directory (reserved for the shared team folder)
+- The file is under `team/` and changed since this tool set read it: same refusal and message as `write_file`; nothing is written
 - An edit fails, reported as `"edit {i} of {n}: {reason}. No changes were written to {path}"`, where the reason is one of:
   - `old_string` matches several places without `replace_all` (lists up to 10 line numbers)
   - `old_string` is not found (with a hint when it includes `read_file`'s line-number prefix)
   - no exact match, and the whitespace-insensitive retry matches several places (lists line numbers)
 
 Malformed arguments (missing `path` or `edits`, an empty `edits` list, an entry missing `old_string`/`new_string`, an empty `old_string`, or identical `old_string` and `new_string`) return a `ToolError::InvalidArguments`.
+
+A relative `path` resolves against the agent's workspace root, not the process's current directory. A relative `path` starting with `team/` resolves in the shared team directory, and the edit runs under that file's write lock exactly as `write_file` does; see [Team files](../../docs/systems-usage/team-files.md).
 
 ---
 
@@ -142,11 +152,11 @@ Output is capped at 100 KB; larger output is truncated with `\n... (output trunc
 With `keys`: an unknown name returns `"unknown agent key(s): {names}. Available: {names}. Nothing was run."` without spawning anything. Without an agent key store: `"agent keys are not available in this context. Nothing was run."`
 
 With `store_output_as`:
-- Exit 0 with non-empty stdout: stdout (trailing newline trimmed) is stored as an agent-created key, and the result is `"stored agent key '{name}' ({N} bytes). Use it with keys: [\"{name}\"] as ${NAME}."` plus any stderr. **Stdout is never returned.** There is no minimum length; a value under 8 characters is still stored, with `" Warning: {reason}."` appended naming that it can't be redacted from output reliably.
+- Exit 0 with non-empty stdout: stdout (trailing newline trimmed) is stored as an agent-created key, and the result is `"stored agent key '{name}' ({N} bytes). Use it with keys: [\"{name}\"] as ${NAME}."` plus any stderr. **Stdout is never returned.** There is no minimum length; a value under 8 characters is still stored, with `" Warning: {reason}."` appended naming that it can't be redacted from output reliably. Naming an existing key — the agent's own or one the user created — replaces it; replacing a key the user created also publishes a notice naming it (see [Agent keys](../../docs/systems-usage/agent-keys.md)).
 - Non-zero exit: `"command exited with code {N}; nothing was stored and stdout was discarded"` plus stderr.
 - Empty stdout: `"command produced no stdout; nothing was stored"`.
-- A name that is invalid or belongs to a user-created key is refused before the command runs (`"... Nothing was run."`).
-- A value that fails storage rules (contains a NUL byte, or the name conflicts): `"command succeeded but its output was not stored: {reason}. stdout was discarded."`
+- An invalid name is refused before the command runs (`"... Nothing was run."`).
+- A value that fails storage rules (contains a NUL byte): `"command succeeded but its output was not stored: {reason}. stdout was discarded."`
 - Timeout or cancellation: nothing is stored and stdout is discarded from the message too, the same as a non-zero exit — `"{reason}; nothing was stored and stdout was discarded"` plus stderr.
 
 stderr in a `store_output_as` result is redacted against the new value as well as every existing key.
@@ -154,13 +164,15 @@ stderr in a `store_output_as` result is redacted against the new value as well a
 ### Side effects
 
 Commands are resolved against the configured tool `PATH`: the directories in
-`[tools].path` and the default `~/.residuum/bin`, prepended to the inherited
+`[tools].path` and the default `~/.residuum/hub/bin`, prepended to the inherited
 `PATH`. Binaries dropped into those dirs are runnable without a rebuild. See
 [Tool PATH](../../docs/systems-usage/tools.md).
 
 Named keys are set only in the spawned child's environment. `store_output_as` writes to the agent key store. Every agent-key value in the result — this tool's or any other — is replaced with `[agent-key:<name>]` by the turn loop before the result is recorded or sent anywhere. See [Agent keys](../../docs/systems-usage/agent-keys.md).
 
 The spawned command runs in its own process group (Unix) so a timeout or cancellation can kill the whole tree it started, not just the immediate shell — killed via `killpg` on Unix, `taskkill /T /F` on Windows. A stop or timeout races against the running command rather than waiting for the tool call to return; the call's own child process is what gets killed, not any process a future background-command feature hands off elsewhere. See [Stopping a Turn](../../docs/systems-usage/turn-control.md).
+
+The command starts in the agent's workspace root (`Command::current_dir`), not the process's current directory.
 
 ---
 
@@ -179,7 +191,7 @@ None.
 
 `"{N} agent key(s). Expose one to a command with exec's \`keys\` parameter; values are redacted from all output."` followed by one line per key: `"- {name} -> ${ENV_VAR} (created by user|agent): {description}"` (`(no description)` when empty).
 
-With no keys: a message saying the user can add one with `residuum agent-keys set <name>` or in the web UI, and that the agent can mint one with exec's `store_output_as`.
+With no keys: a message saying the user can add one with `residuum agent-keys set <name>` or in the web UI under Settings → All agents → Saved keys, and that the agent can mint one with exec's `store_output_as`.
 
 On error: `"couldn't read the agent key store: {reason}"`.
 
@@ -190,7 +202,7 @@ On error: `"couldn't read the agent key store: {reason}"`.
 **Source:** `agent_keys.rs` · `AgentKeyDeleteTool`
 
 **Description sent to LLM:**
-> Delete an agent key you created (e.g. a minted token that is no longer needed). Keys the user created can't be deleted this way.
+> Delete an agent key, including one the user created. Deleting a key the user created is checkpointed and reported to the user, who can restore it from checkpoint history.
 
 ### Input
 
@@ -200,9 +212,9 @@ On error: `"couldn't read the agent key store: {reason}"`.
 
 ### Output
 
-On success: `"deleted agent key '{name}'"`.
+On success: `"deleted agent key '{name}'"`. Deleting a key the user created also publishes a notice naming it (see [Agent keys](../../docs/systems-usage/agent-keys.md)).
 
-On error: `"no agent key named '{name}'"`, or `"agent key '{name}' was created by the user; only keys the agent created can be replaced or deleted by the agent"`, or a store read/write failure.
+On error: `"no agent key named '{name}'"`, or a store read/write failure.
 
 ---
 
@@ -414,9 +426,10 @@ On error: action not found, or save failure.
 
 ### Input
 
-| Parameter     | Type    | Required | Description                                  |
-|---------------|---------|----------|----------------------------------------------|
-| `unread_only` | boolean | no       | Only show unread items (default false)       |
+| Parameter     | Type    | Required | Description                                                                          |
+|---------------|---------|----------|---------------------------------------------------------------------------------------|
+| `unread_only` | boolean | no       | Only show unread items (default false). Ignored when `archived` is true.             |
+| `archived`    | boolean | no       | List archived items instead of active ones (default false). Pair with `inbox_restore`. |
 
 ### Output
 
@@ -426,7 +439,9 @@ On success: count header followed by one entry per item:
   [{read|unread}] {filename} — {title} ({source}, {timestamp})
 ```
 
-When no items match: `"No inbox items found."`
+With `archived: true`, the header reads `{N} archived item(s):` instead.
+
+When no items match: `"No inbox items found."` (or `"No archived items found."` with `archived: true`)
 
 ---
 
@@ -486,6 +501,31 @@ On total failure: error with failure details.
 
 ---
 
+## `inbox_restore`
+
+**Source:** `inbox.rs` · `InboxRestoreTool`
+
+**Description sent to LLM:**
+> Restore one or more archived inbox items by filename stem. Moves them back to the active inbox. Use inbox_list with archived=true to find the filename stem to restore.
+
+### Input
+
+| Parameter | Type            | Required | Description                                  |
+|-----------|-----------------|----------|-----------------------------------------------|
+| `ids`     | array\<string\> | yes      | Filename stems of archived inbox items to restore |
+
+### Output
+
+On success: `"Restored {N} item(s): {list}"`
+
+On partial failure: success message plus `"Failed to restore {N} item(s): {errors}"`
+
+On total failure: error with failure details.
+
+**Side effect:** Moves `.json` files from `archive/inbox/` back to inbox.
+
+---
+
 ## `user_inbox_add`
 
 **Source:** `inbox.rs` · `UserInboxAddTool`
@@ -511,7 +551,7 @@ On error:
 - Missing `title` or `body`
 - Failed to write the item to disk
 
-**Side effect:** Writes a new `.json` file to `inbox/user/`, tagged with source `"agent"`. When `attachments` is given, each file is validated (must exist and be readable — there is no size cap on a local file) and copied into `inbox/user/attachments/{item id}/` (traversal-style source names are reduced to their basename; same-name collisions within one call get a `_2`, `_3`, ... suffix rather than clobbering), and the item's `attachments` field records the copies. A file that fails to copy is skipped, not fatal to the item — the item is saved with whichever attachments did succeed, and the tool result names what failed. This is a separate inbox from the agent inbox (`inbox_list`/`inbox_read`/`inbox_archive`) — the agent has no tool to list, read, or archive items here; only the user reads and archives them via the web UI, where attachments are downloadable from `GET /api/inbox/{id}/attachments/{index}`.
+**Side effect:** Writes a new `.json` file to `inbox/user/`, tagged with source `"agent"`. When `attachments` is given, each file is validated (must exist and be readable — there is no size cap on a local file) and copied into `inbox/user/attachments/{item id}/` (traversal-style source names are reduced to their basename; same-name collisions within one call get a `_2`, `_3`, ... suffix rather than clobbering), and the item's `attachments` field records the copies. A file that fails to copy is skipped, not fatal to the item — the item is saved with whichever attachments did succeed, and the tool result names what failed. Once the item is saved, its ID is published on the agent's bus for the hub's watcher; an item that fails to save publishes nothing. This is a separate inbox from the agent inbox (`inbox_list`/`inbox_read`/`inbox_archive`) — the agent has no tool to list, read, or archive items here; only the user reads and archives them via the web UI, where attachments are downloadable from `GET /api/inbox/{id}/attachments/{index}`.
 
 ---
 
@@ -696,7 +736,7 @@ On error (the remote agent can't be reached to cancel, `is_error = true`): the h
 **Source:** `background.rs` · `ListAgentsTool`
 
 **Description sent to LLM:**
-> List the main agent, every live (running or idle) session, and every remote agent reachable over A2A (address "a2a:<name>"): for sessions, address, category, source, state, depth, spawner, elapsed time, and purpose; for remote agents, online status, description, skills, and your own open tasks with them. Completed sessions are not listed, but their addresses remain valid.
+> List the main agent, live (running or idle) sessions, teammates ("agent:<name>", with state and role; you are marked), and remote agents ("a2a:<name>", with online status, description, skills, and your open tasks with them). Sessions show address, category, source, state, depth, spawner, elapsed time, tool calls, and purpose. Completed sessions are not listed but their addresses stay valid.
 
 ### Input
 
@@ -709,12 +749,15 @@ main — always live
 {N} live session(s):
   [{address}] {source_label} — category: {scheduled|external|spawned} — state: {forking|running|idle|completing} — depth: {N} — spawner: {address|-} — running {elapsed}s — purpose: {prompt/task preview, up to 120 chars}
 
+{N} teammate(s):
+  [agent:{name}]{ (you)} {starting|running|stopped|failed} — {role line|no role line yet}
+
 {N} remote agent(s):
   [a2a:{name}]{ (your instance)} {resolving its agent card|online — {description}|error — {reachability message}} — skills: {name} ({id}), ...
     task {task_id} — {state} — {last_status_text|(no status yet)}
 ```
 
-`main` is always listed first, even when no sessions are live. `spawner` is `-` for `scheduled` and `external` sessions — only `spawned` sessions have one. Remote agents come from `config/a2a.json` and from relay-sibling discovery via the `A2aClientHub`; a sibling (one of the user's own other instances) carries the ` (your instance)` marker, a `config/a2a.json` entry doesn't. The skills line is omitted when the card hasn't resolved yet or declares none. Task lines list only the caller's own open (non-terminal) tasks with that agent, from the `RemoteTaskTracker`. See `docs/systems-usage/a2a.md`.
+The teammate section lists every agent in the hub, sorted by name, from the hub's agent directory; the count `{N}` excludes the caller's own `(you)` entry. The role line is the `description` of the teammate's wiki role page (`team/wiki/agents/<name>.md`). `main` is always listed first, even when no sessions are live. `spawner` is `-` for `scheduled` and `external` sessions — only `spawned` sessions have one. Remote agents come from `config/a2a.json` and from relay-sibling discovery via the `A2aClientHub`; a sibling (one of the user's own other instances) carries the ` (your instance)` marker, a `config/a2a.json` entry doesn't. The skills line is omitted when the card hasn't resolved yet or declares none. Task lines list only the caller's own open (non-terminal) tasks with that agent, from the `RemoteTaskTracker`. See `docs/systems-usage/a2a.md`.
 
 ---
 
@@ -767,13 +810,13 @@ The session runs in the background via the session runtime. Every turn's outcome
 **Source:** `message_agent.rs` · `MessageAgentTool`
 
 **Description sent to LLM:**
-> Send a text message to another agent by address — main, any session (running, idle, or previously completed), or a remote agent reachable over A2A (address "a2a:<name>"). A running session sees it as an interrupt at its next tool-call boundary; an idle one starts a new turn with it; a completed one is resumed as a new run at the same address. A remote agent's reply does not arrive immediately — it comes back later as an agent message from "a2a:<name>", once its task reaches a state that needs your attention. Every delivered message names your own address and category so the recipient can reply. Use list_agents to find addresses and remote agents.
+> Send a text message to another agent. Address forms: "main" or a session address (yours; see list_agents); "agent:<name>" (a teammate's main); "agent:<name>/<session-address>" (a teammate's session; copy the exact address from its message); "a2a:<name>" (a remote agent). Fire-and-forget: a running recipient sees the message at its next tool-call boundary, an idle one starts a turn, a completed session resumes at the same address. Replies arrive later as separate messages addressed to you; a remote agent replies from "a2a:<name>". A stopped or failed teammate returns an error and nothing is queued. Use list_agents for addresses.
 
 ### Input
 
 | Parameter | Type   | Required | Description                                                  |
 |-----------|--------|----------|----------------------------------------------------------------|
-| `to`      | string | yes      | Address to message: `"main"`, a session address from `list_agents`, or `"a2a:<name>"` for a remote agent. |
+| `to`      | string | yes      | Address to message: `"main"`, a session address from `list_agents`, `"agent:<name>"` or `"agent:<name>/<session-address>"` for a teammate, or `"a2a:<name>"` for a remote agent. |
 | `message` | string | yes      | The message body.                                             |
 | `skill`   | string | no       | Only meaningful when `to` is a remote agent: the id of one of its advertised skills, sent as `message.metadata.skill`. |
 
@@ -788,8 +831,14 @@ The session runs in the background via the session runtime. Every turn's outcome
 - Unknown remote agent (`is_error = true`): `"no remote agent named 'a2a:{name}'. Check config/a2a.json or list_agents for known remote agents."`
 - Remote agent not currently reachable (`is_error = true`): the hub's plain-language reachability error (e.g. its card hasn't resolved, or the last attempt failed).
 - Remote agent rejected the request (`is_error = true`): `"remote agent a2a:{name} couldn't complete the request: {error}"`
+- Delivered to a teammate: `"Message delivered to agent:{name}."` or `"...agent:{name}/{session}."`; a completed or completing teammate session gives the resumed/completing wording above with the `agent:` address.
+- Teammate not running (`is_error = true`): `"teammate '{name}' is {stopped|failed}; nothing was queued. Tell the user if this message matters; they can start it from Home in the web UI."`, or `"teammate '{name}' is starting; nothing was queued. Try again shortly."`
+- Unknown teammate (`is_error = true`): `"no teammate named '{name}'. Your teammates are: {a, b}. Use list_agents for their state."` (or `"... You have no teammates."`)
+- Teammate has no such session (`is_error = true`): `"teammate '{name}' has no session '{session}'. Use the exact address from a message it sent you."`
+- Malformed teammate address (`is_error = true`): a message naming the problem and the two valid forms (`agent:<name>`, `agent:<name>/<session-address>`).
+- Addressing your own name as a teammate (`is_error = true`): `"'agent:{you}' is you. Use \"main\" or a session address to reach your own agent."`
 - Messaging yourself (`is_error = true`): `"cannot message yourself"`
-- An `artifact` session messaging `main` (`is_error = true`): `"artifact sessions can't reach the main conversation: your responses are shown to the artifact that started you. To bring something to the user's attention, file an inbox item with user_inbox_add instead."` Nothing is delivered. Every other target works as usual for an artifact session.
+- An `artifact` session messaging `main` or a teammate's main (`is_error = true`): `"artifact sessions can't reach the main conversation: your responses are shown to the artifact that started you. To bring something to the user's attention, file an inbox item with user_inbox_add instead."` Nothing is delivered. Every other target works as usual for an artifact session.
 - Target's interrupt channel is saturated (`is_error = true`, vanishingly unlikely): `"agent {address} is busy, try again shortly"` — never falls back to a resume, which would double-register the address.
 - Hop count at or above the configured hard limit (`is_error = true`): a message explaining the loop limit was reached and delivery was refused. The message never reaches `to`; logged at `warn` with both addresses and the hop count, and a best-effort note is recorded in the transcript of whichever side is a live, addressable session.
 - A publish (to main, or as a resume spawn request) failed at the bus (`is_error = true`): a message naming what failed. The tool never reports success when delivery didn't actually happen.
@@ -797,6 +846,10 @@ The session runs in the background via the session runtime. Every turn's outcome
 ### Errors
 
 - Missing or empty `to`/`message` → `InvalidArguments`
+
+### Teammates (`to: "agent:<name>"` or `"agent:<name>/<session-address>"`)
+
+Routed through the hub's `TeamRouter` (`crate::hub::team`), reached from the tool through the agent's `AgentMessenger::team()` link. The router checks the target against the agent host (existence and state), takes the target's registered messenger, and calls its `send` with the sender's fully qualified address (`agent:<you>` for main, `agent:<you>/<session>` for a session) and category `"teammate"`, so delivery to main, a live session, or a completed session is the messenger's ordinary delivery. The receiver sees a header (`[Message from teammate agent:… , not the user. … to reply, call message_agent with to="agent:…".]`) and its history entry carries the structured `agent_sender`. The hop count passes through unchanged; the target's messenger applies the hub-level soft note and hard refusal, and on a refusal the sender's messenger notes it in the sender's transcript when the sender is a live session. Nothing queues for a teammate that isn't running.
 
 ### Remote agents (`to: "a2a:<name>"`)
 
@@ -811,6 +864,77 @@ Routed through `crate::a2a::client`'s `A2aClientHub` (resolves the agent's card 
 - **completed session** — publishes a fresh `SpawnRequestEvent` at the same address, carrying the previous run's model tier, the delivered message's own hop count as the new run's starting hop count, and a pointer to its episode id (or run id, retrievable with `memory_get`) in the new run's context. Goes through the ordinary spawn-listener path, exactly like any other session fork. `SessionRegistry::register` is a compare-and-swap: if a spawn/resume for this address raced another one that already registered it live, the loser delivers its own input into the winning run as a message instead of clobbering it. The listener applies the same fallback for a spawn/resume request that arrives for an address it can see is already running/idle/forking — the normal outcome of two messages resuming the same completing session, not an error case.
 
 **Available to sessions:** registered in both the main agent's registry and `build_subagent_registry()`, each instance identifying itself with its own address and category (`"main"` for the main agent), and holding a clone of that agent's current-turn `HopCounter`.
+
+---
+
+## `agent_create`
+
+**Source:** `agent_lifecycle.rs` · `AgentCreateTool`
+
+**Description sent to LLM:**
+> Create a new teammate: a long-lived agent with its own workspace, memory, and conversation. Use it when the work needs a durable specialist (a researcher, an inbox triager) that keeps its own notes and improves over time. For a one-off task whose result you need now, use subagent_spawn instead.
+>
+> It inherits your model settings and A2A visibility. Write a `description`: it is delivered as the teammate's first message and becomes its SOUL.md notes and team role page. State its purpose, how it should work, and what to hand it. Message the teammate afterwards at agent:<name>.
+>
+> Names are up to 32 characters: letters from any language, numbers, spaces, hyphens, and apostrophes. They can't start or end with a hyphen or an apostrophe, and two names that differ only by case are the same agent.
+
+### Input
+
+| Parameter     | Type   | Required | Description |
+|---------------|--------|----------|-------------|
+| `name`        | string | yes      | The new agent's name, for example `Research Desk`. |
+| `description` | string | no       | What the agent is for and how it should work. Becomes its own SOUL.md notes and role page. |
+
+### Output
+
+- Created and started: `"Created agent '{name}' (running). Reach it with message_agent at agent:{name}."`
+- Created but it failed to start: `"Created agent '{name}', but it failed to start: {reason}"` followed by a line saying it exists on disk, received no first message, and can be fixed and started from Home in the user's web UI (`is_error = false`: the agent exists, so a retry would hit "already exists").
+- Invalid name, name taken, or any other refusal (`is_error = true`): `"can't create the agent: ..."` with the reason. A taken name suggests messaging the existing agent.
+- The hub is shutting down (`is_error = true`): says agents can't be created right now.
+
+### Errors
+
+- Missing `name` → `InvalidArguments`
+
+### Side effects
+
+Calls `AgentDirectory::create` as `Actor::Agent(<caller>)` with `models_from` set to the caller and the caller's A2A visibility. The hub copies the caller's `providers.toml`, starts the agent, delivers the description as its first message when one was given, publishes `agent_created` naming the caller (a toast for the user), and files an item in the caller's user inbox. The creation runs on its own task, so cancelling the calling turn does not stop it half-way. See `docs/systems-usage/agent-lifecycle.md`.
+
+**Available to sessions:** registered in both the main agent's registry and `build_subagent_registry()`; a session acts as the agent it belongs to.
+
+---
+
+## `agent_delete`
+
+**Source:** `agent_lifecycle.rs` · `AgentDeleteTool`
+
+**Description sent to LLM:**
+> Stop a teammate and remove its directory, role page, and roster entry. Its files are checkpointed first; the result gives the checkpoint id. The user can restore the teammate from Recently deleted on the web UI's Home or with `residuum agent restore <name>`; you have no tool to restore one.
+>
+> You can delete yourself. That stops your turn the moment this call returns, so send your messages and save your files first, and call it last.
+
+### Input
+
+| Parameter | Type   | Required | Description |
+|-----------|--------|----------|-------------|
+| `name`    | string | yes      | The name of the agent to delete. |
+
+### Output
+
+- Deleted: `"Deleted agent '{name}'. Its files were checkpointed as {id}; the user can restore it from Recently deleted on the web UI's Home or with `residuum agent restore {name}`."` When no checkpoint could be recorded the second sentence says it can't be restored.
+- Unknown agent or failure (`is_error = true`): `"can't delete the agent: ..."` with the reason.
+- Deleting yourself: `"Deleting yourself now. You are stopped as soon as this call returns; ..."`. The checkpoint id is not available yet.
+- The hub is shutting down (`is_error = true`): says agents can't be deleted right now.
+
+### Errors
+
+- Missing `name` → `InvalidArguments`
+
+### Side effects
+
+Calls `AgentDirectory::delete` as `Actor::Agent(<caller>)`: the agent is stopped, checkpointed, and removed, `agent_deleted` naming the caller is published (a toast), and an item is filed in the caller's user inbox. Deleting another agent runs on its own task, so cancelling the calling turn does not stop it half-way. Deleting yourself stops the turn running the call, so the delete runs on a detached task and the tool returns at once; if it fails, the hub publishes a warning notice naming the agent and the agent is left stopped.
+
+**Available to sessions:** registered in both registries, as for `agent_create`.
 
 ---
 
@@ -950,7 +1074,7 @@ On submission failure: `is_error = true` with the upstream error message; for 42
 |-------------|---------------|----------|-----------------------------------------------------------------------------------------------------------------|
 | `state`     | string (enum) | yes      | `"completed"` when the work is done, `"input_required"` when you need more information before continuing, `"failed"` when the task cannot be completed. |
 | `message`   | string        | yes      | The message the caller sees: your final answer for `"completed"`, the question for `"input_required"`, or an explanation for `"failed"`. |
-| `artifacts` | array<string> | no       | Workspace-relative paths of files to attach as artifacts.                                                       |
+| `artifacts` | array<string> | no       | Workspace-relative paths of files to attach as artifacts. A path starting with "team/" is in the shared team folder. |
 
 ### Output
 

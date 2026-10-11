@@ -18,13 +18,15 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::hop::HopCounter;
 use crate::agent::interrupt::Interrupt;
 use crate::agent::recent_messages::RecentMessages;
+use crate::bus::MessageEvent;
 use crate::bus::{
-    AgentMessageEvent, AgentResultEvent, AgentResultStatus, ConversationTarget, EndpointName,
-    EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, Publisher, PulseOverlap, ResultDisposition,
-    SessionAddress, SessionEventKind, SessionResponseEvent, SkillName, ends_with_sentinel, topics,
+    AgentMessageEvent, AgentResultEvent, AgentResultStatus, ConversationTarget,
+    ConversationTypingEvent, EndpointName, EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, Publisher,
+    PulseOverlap, ResultDisposition, SessionAddress, SessionEventKind, SessionResponseEvent,
+    SkillName, ends_with_sentinel, topics,
 };
 use crate::config::BackgroundConfig;
-use crate::interfaces::types::InboundMessage;
+use crate::tracing_service::{ClientContext, TracingService};
 
 use super::events::publish_session_event;
 use super::messaging::{AgentMessenger, DeliveryOutcome, PendingInput};
@@ -117,6 +119,10 @@ pub(crate) struct SessionRuntimeHandles {
     /// Checkpoints the workspace at the start and end of every turn this
     /// runtime drives. See `crate::checkpoints`.
     pub(crate) checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    /// Auto-reports an unexpected turn failure through `TracingService::on_error`
+    /// (a no-op unless the user has enabled auto error reporting).
+    pub(crate) tracing_service: Arc<TracingService>,
+    pub(crate) tracing_client_context: Arc<ClientContext>,
 }
 
 /// Executes session turns with bounded concurrency, tracking each session's
@@ -136,6 +142,8 @@ pub struct SessionRuntime {
     /// Checkpoints the workspace at the start and end of every turn this
     /// runtime drives. See `crate::checkpoints`.
     checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    tracing_service: Arc<TracingService>,
+    tracing_client_context: Arc<ClientContext>,
 }
 
 /// Shared handles a session run needs for the lifetime of its driver task,
@@ -148,20 +156,27 @@ struct RunEnv {
     tz: chrono_tz::Tz,
     messenger: Arc<AgentMessenger>,
     checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    tracing_service: Arc<TracingService>,
+    tracing_client_context: Arc<ClientContext>,
 }
 
 impl SessionRuntime {
-    /// Create a new runtime with the given concurrency limit.
+    /// Create a new runtime whose session turns draw permits from
+    /// `session_budget`.
+    ///
+    /// The budget is the hub's one semaphore, shared by every agent's
+    /// runtime, so a session that finds it exhausted waits (shown as
+    /// `Queued`) behind sessions of any agent.
     #[must_use]
     pub(crate) fn new(
         registry: Arc<SessionRegistry>,
         store: Arc<SessionStore>,
-        max_concurrent: usize,
+        session_budget: Arc<Semaphore>,
         idle_timeouts: impl Into<IdleTimeouts>,
         handles: SessionRuntimeHandles,
     ) -> Self {
         Self {
-            semaphore: Arc::new(Semaphore::new(max_concurrent)),
+            semaphore: session_budget,
             registry,
             store,
             idle_timeouts: idle_timeouts.into(),
@@ -169,6 +184,8 @@ impl SessionRuntime {
             tz: handles.tz,
             messenger: handles.messenger,
             checkpoints: handles.checkpoints,
+            tracing_service: handles.tracing_service,
+            tracing_client_context: handles.tracing_client_context,
         }
     }
 
@@ -227,10 +244,12 @@ impl SessionRuntime {
             tz: self.tz,
             messenger: Arc::clone(&self.messenger),
             checkpoints: Arc::clone(&self.checkpoints),
+            tracing_service: Arc::clone(&self.tracing_service),
+            tracing_client_context: Arc::clone(&self.tracing_client_context),
         };
         let config = req.subagent_config;
 
-        tokio::spawn(async move {
+        crate::util::spawn_in_span(async move {
             publish_session_event(
                 &env.publisher,
                 &info.address,
@@ -404,11 +423,12 @@ fn deliver_losing_spawn_input(
                 inbound: config.inbound.clone(),
                 images: config.images.clone(),
                 overlap: None,
+                carried_history: Vec::new(),
             };
             let registry = Arc::clone(registry);
             let publisher = publisher.clone();
             let address = info.address.clone();
-            tokio::spawn(async move {
+            crate::util::spawn_in_span(async move {
                 super::messaging::retry_race_guard_user_message(
                     registry,
                     publisher,
@@ -629,7 +649,7 @@ enum IdleOutcome {
     Woken(AgentMessageEvent),
     /// A new message arrived in this session's conversation; it becomes the
     /// next turn's kickoff.
-    WokenExternal(InboundMessage),
+    WokenExternal(MessageEvent),
 }
 
 /// Wait for a session's idle period to end: a stop, the idle timeout, or a
@@ -686,7 +706,7 @@ async fn after_turn(
     resources: Option<&SubAgentResources>,
     env: &RunEnv,
     memory: &mut SessionMemory,
-    recent_messages: &mut RecentMessages,
+    history: &mut RunHistory,
 ) {
     // Per-turn threshold check: mirrors the main agent's own rotation, run
     // after every turn (not just once) since a run can now span several.
@@ -694,10 +714,9 @@ async fn after_turn(
     // observation on completion.
     if let Some(res) = resources {
         let mem_env = session_memory_env(res, env.tz);
-        memory
-            .maybe_stage(recent_messages.messages(), &mem_env)
-            .await;
+        memory.maybe_stage(history.own(), &mem_env).await;
     }
+    let recent_messages = &mut history.messages;
 
     // Relay this turn's outcome to a spawned session's direct spawner, after
     // every turn (not only at run completion) — this generalizes the old
@@ -710,6 +729,30 @@ async fn after_turn(
     // started by a conversation message. Every other session category has
     // `conversation_target: None` and this is a no-op.
     maybe_output_to_conversation(info, status, summary, env).await;
+}
+
+/// A run's conversation as the model sees it: a fork's carried-over main
+/// conversation (see [`SubAgentConfig::carried_history`]) followed by the
+/// run's own messages. Only the run's own part is staged, merged into memory,
+/// and recorded as its transcript, since the carried part is main's and is
+/// already main's to remember.
+struct RunHistory {
+    messages: RecentMessages,
+    carried: usize,
+}
+
+impl RunHistory {
+    fn new(carried_history: Vec<crate::inference::Message>) -> Self {
+        let carried = carried_history.len();
+        let mut messages = RecentMessages::new();
+        messages.extend(carried_history);
+        Self { messages, carried }
+    }
+
+    /// The messages this run produced itself, after anything it carried in.
+    fn own(&self) -> &[crate::inference::Message] {
+        self.messages.messages_since(self.carried)
+    }
 }
 
 /// Build a run's first-turn kickoff from its `SubAgentConfig`.
@@ -727,21 +770,21 @@ fn initial_kickoff(config: SubAgentConfig) -> TurnKickoff {
 ///
 /// A run is one or more turns: the first is always the fork's task prompt;
 /// any later one is an agent message that arrived while the session was
-/// idle, per the design's messaging rules. `recent_messages` accumulates
-/// across every turn in the run, so a session woken from idle still has its
-/// earlier context, and staging/the final merge see the whole run's
-/// transcript regardless of how many turns produced it.
+/// idle, per the design's messaging rules. `history` accumulates across
+/// every turn in the run, so a session woken from idle still has its earlier
+/// context, and staging/the final merge see the whole run's own transcript
+/// regardless of how many turns produced it.
 #[tracing::instrument(skip_all, fields(session.address = %info.address, run.id = %info.run_id))]
 async fn run_session(
     mut info: SessionInfo,
-    config: SubAgentConfig,
+    mut config: SubAgentConfig,
     resources: Option<SubAgentResources>,
     stop_token: CancellationToken,
     mut interrupt_rx: mpsc::Receiver<Interrupt>,
     idle_timeout: Duration,
     env: RunEnv,
 ) {
-    let mut recent_messages = RecentMessages::new();
+    let mut history = RunHistory::new(std::mem::take(&mut config.carried_history));
     let mut memory = SessionMemory::new();
     let mut kickoff = initial_kickoff(config);
     // Assigned on the loop's first iteration, which always runs at least
@@ -770,17 +813,9 @@ async fn run_session(
                     Ok(_permit) => {
                         transition_state(&env.registry, &env.publisher, &info, SessionState::Running).await;
                         turn_number += 1;
-                        let ctx = TurnCtx {
-                            info: &info,
-                            resources: resources.as_ref(),
-                            stop_token: &stop_token,
-                            store: &env.store,
-                            publisher: &env.publisher,
-                            registry: env.registry.as_ref(),
-                            checkpoints: &env.checkpoints,
-                        };
+                        let ctx = turn_ctx(&info, resources.as_ref(), &stop_token, &env);
                         let turn_id = format!("{}-t{turn_number}", info.run_id);
-                        run_turn(&ctx, &turn_id, &mut recent_messages, kickoff, &mut interrupt_rx).await
+                        run_turn(&ctx, &turn_id, &mut history.messages, kickoff, &mut interrupt_rx).await
                     }
                     Err(_closed) => {
                         tracing::warn!("concurrency semaphore closed before session could acquire a permit");
@@ -803,7 +838,7 @@ async fn run_session(
             resources.as_ref(),
             &env,
             &mut memory,
-            &mut recent_messages,
+            &mut history,
         )
         .await;
 
@@ -860,7 +895,7 @@ async fn run_session(
             status,
             summary,
             memory,
-            recent_messages,
+            history,
             leftover_messages,
         },
         &env,
@@ -890,7 +925,7 @@ struct RunOutcome {
     status: AgentResultStatus,
     summary: String,
     memory: SessionMemory,
-    recent_messages: RecentMessages,
+    history: RunHistory,
     /// Agent messages and conversation messages still queued in the run's
     /// interrupt channel when [`drain_pending_interrupts`] drained it — must
     /// be routed to the resumed run rather than silently dropped.
@@ -916,7 +951,7 @@ async fn finish_run(
         status,
         summary,
         memory,
-        recent_messages,
+        history,
         leftover_messages,
     } = outcome;
 
@@ -939,7 +974,7 @@ async fn finish_run(
             info.run_id.clone(),
             info.category.as_str(),
         );
-        complete_session_memory(tag, &summary, recent_messages.messages(), memory, &mem_env).await
+        complete_session_memory(tag, &summary, history.own(), memory, &mem_env).await
     } else {
         None
     };
@@ -955,7 +990,7 @@ async fn finish_run(
             info,
             SessionState::Completed.as_str(),
             &status,
-            recent_messages.messages().to_vec(),
+            history.own().to_vec(),
             episode_id.clone(),
         )
         .await;
@@ -1155,10 +1190,18 @@ async fn maybe_output_to_conversation(
         );
         return;
     }
+    // A fork the owner started from a chat app with `/multitask` (the only
+    // spawned session with a conversation) posts into the same direct
+    // messages main answers in, so it names itself to be told apart.
+    let content = if info.category == SessionCategory::Spawned {
+        format!("{}:\n{summary}", info.address)
+    } else {
+        summary.to_string()
+    };
     let event = SessionResponseEvent {
         session_address: info.address.clone(),
         conversation_id: target.conversation_id.clone(),
-        content: summary.to_string(),
+        content,
         attachment: None,
         timestamp: crate::time::now_local(env.tz),
         is_final: true,
@@ -1176,6 +1219,36 @@ async fn maybe_output_to_conversation(
             conversation = %target.conversation_id,
             error = %e,
             "failed to publish conversation session output to the bus"
+        );
+    }
+}
+
+/// Tell a conversation session's own interface that its turn started or
+/// ended, so it can show a typing indicator the same way it does for the
+/// main agent's turns — see [`ConversationTypingEvent`]. A no-op for every
+/// other session (`target` is `None`).
+async fn publish_conversation_typing(
+    publisher: &Publisher,
+    target: Option<&crate::bus::ConversationTarget>,
+    active: bool,
+) {
+    let Some(target) = target else {
+        return;
+    };
+    if let Err(e) = publisher
+        .publish(
+            topics::Endpoint(EndpointName::from(target.endpoint.as_str())),
+            ConversationTypingEvent {
+                conversation_id: target.conversation_id.clone(),
+                active,
+            },
+        )
+        .await
+    {
+        tracing::warn!(
+            conversation = %target.conversation_id,
+            error = %e,
+            "failed to publish conversation typing signal"
         );
     }
 }
@@ -1208,6 +1281,30 @@ struct TurnCtx<'a> {
     /// [`super::registry::SessionUsageSink`].
     registry: &'a SessionRegistry,
     checkpoints: &'a crate::checkpoints::CheckpointEngine,
+    /// Auto-reports an unexpected turn failure — see
+    /// `execute_turn_outcome`'s `Err` arm.
+    tracing_service: &'a TracingService,
+    tracing_client_context: &'a ClientContext,
+}
+
+/// Build a turn's `TurnCtx` from a run's per-turn locals and its shared `RunEnv`.
+fn turn_ctx<'a>(
+    info: &'a SessionInfo,
+    resources: Option<&'a SubAgentResources>,
+    stop_token: &'a CancellationToken,
+    env: &'a RunEnv,
+) -> TurnCtx<'a> {
+    TurnCtx {
+        info,
+        resources,
+        stop_token,
+        store: &env.store,
+        publisher: &env.publisher,
+        registry: env.registry.as_ref(),
+        checkpoints: &env.checkpoints,
+        tracing_service: &env.tracing_service,
+        tracing_client_context: &env.tracing_client_context,
+    }
 }
 
 /// Run one turn of a session's run, translating a missing-resources or
@@ -1237,6 +1334,7 @@ async fn run_turn(
         turn_id: turn_id.to_string(),
     })
     .await;
+    publish_conversation_typing(ctx.publisher, ctx.info.conversation_target.as_ref(), true).await;
     ctx.checkpoints
         .spawn_turn_start_checkpoint(turn_checkpoint_context(
             ctx,
@@ -1268,6 +1366,7 @@ async fn run_turn(
         turn_id: turn_id.to_string(),
     })
     .await;
+    publish_conversation_typing(ctx.publisher, ctx.info.conversation_target.as_ref(), false).await;
     ctx.checkpoints
         .spawn_turn_end_checkpoint(turn_checkpoint_context(
             ctx,
@@ -1370,6 +1469,11 @@ async fn execute_turn_outcome(
         Err(e) => {
             let described = crate::inference::describe_turn_failure(&e);
             tracing::warn!(error = %described.details, "session turn failed");
+            let mut client = (*ctx.tracing_client_context).clone();
+            client.active_subagents = ctx.registry.subagent_snapshot();
+            ctx.tracing_service
+                .on_error(&described.details, client)
+                .await;
             (
                 AgentResultStatus::Failed {
                     error: described.message,
@@ -1425,6 +1529,9 @@ mod tests {
     };
     use crate::mcp::McpRegistry;
     use crate::skills::{SkillIndex, SkillState};
+    use crate::testing::gate::Gate;
+    use crate::testing::model::GatedProvider;
+    use crate::testing::wait;
     use crate::workspace::identity::IdentityFiles;
     use async_trait::async_trait;
 
@@ -1437,13 +1544,43 @@ mod tests {
     fn test_checkpoints(dir: &std::path::Path) -> Arc<crate::checkpoints::CheckpointEngine> {
         Arc::new(
             crate::checkpoints::CheckpointEngine::new(
+                "test-agent",
                 dir.join("workspace"),
-                dir.join("config"),
+                &crate::config::paths::TeamPaths::new(dir.join("team")),
+                dir.join("agent-config"),
+                dir.join("hub"),
                 &dir.join("checkpoints"),
                 None,
             )
             .unwrap(),
         )
+    }
+
+    /// A `TracingService` with auto error reporting off, for tests that need
+    /// a `SessionRuntime` but don't exercise auto-reporting behavior
+    /// themselves — `on_error` calls through it are a guaranteed no-op.
+    fn test_tracing_service() -> Arc<TracingService> {
+        let (_, handle) = crate::util::telemetry::SpanBufferLayer::new(
+            &crate::util::telemetry::SpanBufferConfig::default(),
+        );
+        Arc::new(TracingService::new(
+            crate::config::TracingConfig::default(),
+            handle,
+        ))
+    }
+
+    fn test_tracing_client_context() -> Arc<ClientContext> {
+        Arc::new(ClientContext {
+            version: "test".to_string(),
+            commit: None,
+            os: std::env::consts::OS.to_string(),
+            arch: std::env::consts::ARCH.to_string(),
+            model_provider: None,
+            model_name: None,
+            active_subagents: Vec::new(),
+            config_flags: std::collections::BTreeMap::new(),
+            agent: None,
+        })
     }
 
     /// Build a runtime wired to a fresh in-process bus, returning it plus a
@@ -1455,7 +1592,10 @@ mod tests {
         let sub = bus_handle.subscribe(topics::Background).await.unwrap();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let dir_path = dir.path().to_path_buf();
+        // The store owns the guard so the directory outlives this helper and
+        // is removed when the runtime (and so the store) is dropped.
+        let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
         let idle_timeouts = IdleTimeouts {
             scheduled: Duration::from_millis(20),
             spawned: Duration::from_millis(20),
@@ -1471,16 +1611,109 @@ mod tests {
         let runtime = SessionRuntime::new(
             registry,
             store,
-            max_concurrent,
+            Arc::new(tokio::sync::Semaphore::new(max_concurrent)),
             idle_timeouts,
             SessionRuntimeHandles {
                 publisher: bus_handle.publisher(),
                 tz: chrono_tz::UTC,
                 messenger,
-                checkpoints: test_checkpoints(dir.path()),
+                checkpoints: test_checkpoints(&dir_path),
+                tracing_service: test_tracing_service(),
+                tracing_client_context: test_tracing_client_context(),
             },
         );
         (runtime, sub)
+    }
+
+    /// Like `test_runtime`, but wired to a caller-supplied `TracingService`
+    /// (e.g. one pointed at a mock bug-report endpoint with auto-reporting
+    /// enabled), so a test can assert on `on_error`'s wiring into a real turn
+    /// failure.
+    async fn test_runtime_with_tracing_service(
+        max_concurrent: usize,
+        tracing_service: Arc<TracingService>,
+    ) -> (SessionRuntime, crate::bus::Subscriber<AgentResultEvent>) {
+        let bus_handle = crate::bus::spawn_broker();
+        let sub = bus_handle.subscribe(topics::Background).await.unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_path_buf();
+        // The store owns the guard so the directory outlives this helper and
+        // is removed when the runtime (and so the store) is dropped.
+        let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
+        let idle_timeouts = IdleTimeouts {
+            scheduled: Duration::from_millis(20),
+            spawned: Duration::from_millis(20),
+            external: Duration::from_millis(20),
+            artifact: Duration::from_millis(20),
+        };
+        let messenger = Arc::new(AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+            Arc::clone(&store),
+            crate::background::HopLimits { soft: 8, hard: 32 },
+        ));
+        let runtime = SessionRuntime::new(
+            registry,
+            store,
+            Arc::new(tokio::sync::Semaphore::new(max_concurrent)),
+            idle_timeouts,
+            SessionRuntimeHandles {
+                publisher: bus_handle.publisher(),
+                tz: chrono_tz::UTC,
+                messenger,
+                checkpoints: test_checkpoints(&dir_path),
+                tracing_service,
+                tracing_client_context: test_tracing_client_context(),
+            },
+        );
+        (runtime, sub)
+    }
+
+    #[tokio::test]
+    async fn publish_conversation_typing_is_a_noop_with_no_target() {
+        let bus_handle = crate::bus::spawn_broker();
+        let mut sub = bus_handle
+            .subscribe::<_, ConversationTypingEvent>(topics::Endpoint(EndpointName::from(
+                "discord",
+            )))
+            .await
+            .unwrap();
+        let publisher = bus_handle.publisher();
+
+        publish_conversation_typing(&publisher, None, true).await;
+
+        wait::bus_barrier(&bus_handle).await;
+        assert!(
+            sub.drain().is_empty(),
+            "a session with no conversation target must publish nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_conversation_typing_reaches_the_targets_endpoint() {
+        let bus_handle = crate::bus::spawn_broker();
+        let mut sub = bus_handle
+            .subscribe::<_, ConversationTypingEvent>(topics::Endpoint(EndpointName::from(
+                "discord",
+            )))
+            .await
+            .unwrap();
+        let publisher = bus_handle.publisher();
+        let target = ConversationTarget {
+            endpoint: "discord".to_string(),
+            conversation_id: "555".to_string(),
+        };
+
+        publish_conversation_typing(&publisher, Some(&target), true).await;
+        let started = sub.recv().await.unwrap().unwrap();
+        assert_eq!(started.conversation_id, "555");
+        assert!(started.active);
+
+        publish_conversation_typing(&publisher, Some(&target), false).await;
+        let ended = sub.recv().await.unwrap().unwrap();
+        assert_eq!(ended.conversation_id, "555");
+        assert!(!ended.active);
     }
 
     struct MockProvider {
@@ -1500,31 +1733,6 @@ mod tests {
 
         fn model_name(&self) -> &'static str {
             "mock"
-        }
-    }
-
-    /// Like [`MockProvider`], but holds its turn's concurrency permit for a
-    /// while before responding — used to prove a second session waiting on
-    /// the same `max_concurrent` permit shows as `Queued` in the meantime.
-    struct SlowMockProvider {
-        response: String,
-        delay: Duration,
-    }
-
-    #[async_trait]
-    impl crate::inference::InferenceProvider for SlowMockProvider {
-        async fn complete(
-            &self,
-            _messages: &[Message],
-            _tools: &[ToolDefinition],
-            _options: &CompletionOptions,
-        ) -> Result<InferenceResponse, InferenceError> {
-            tokio::time::sleep(self.delay).await;
-            Ok(InferenceResponse::new(self.response.clone(), vec![]))
-        }
-
-        fn model_name(&self) -> &'static str {
-            "mock-slow"
         }
     }
 
@@ -1552,15 +1760,14 @@ mod tests {
         }
     }
 
-    fn make_slow_resources(response: &str, delay: Duration) -> SubAgentResources {
+    /// Answers only once `gate` is released, so a test decides how long the
+    /// turn holds its concurrency permit.
+    fn make_gated_resources(response: &str, gate: &Gate) -> SubAgentResources {
         let (layout, observer, merge_writer) = test_memory_extras();
         SubAgentResources {
             max_tool_iterations: None,
             repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
-            provider: Box::new(SlowMockProvider {
-                response: response.to_string(),
-                delay,
-            }),
+            provider: Box::new(GatedProvider::new(gate, response)),
             tools: crate::tools::ToolRegistry::new(),
             mcp_registry: McpRegistry::new_shared(),
             skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
@@ -1593,6 +1800,7 @@ mod tests {
                 sender: None,
                 inbound: None,
                 images: Vec::new(),
+                carried_history: Vec::new(),
             },
             conversation_target: None,
             overlap: None,
@@ -1600,8 +1808,8 @@ mod tests {
     }
 
     /// A minimal inbound conversation message for interrupt-channel tests.
-    fn sample_inbound_message(content: &str) -> InboundMessage {
-        InboundMessage {
+    fn sample_inbound_message(content: &str) -> MessageEvent {
+        MessageEvent {
             id: "conv-msg-1".to_string(),
             content: content.to_string(),
             origin: crate::interfaces::types::MessageOrigin {
@@ -1614,7 +1822,7 @@ mod tests {
                 }),
                 agent_sender: None,
             },
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Utc::now().naive_utc(),
             images: vec![],
             context: None,
         }
@@ -1639,6 +1847,7 @@ mod tests {
                 sender: None,
                 inbound: None,
                 images: Vec::new(),
+                carried_history: Vec::new(),
             },
             conversation_target: Some(ConversationTarget {
                 endpoint: "discord".to_string(),
@@ -1694,6 +1903,7 @@ mod tests {
             sender: None,
             inbound: Some(losing_inbound),
             images: Vec::new(),
+            carried_history: Vec::new(),
         };
         let register_error = super::super::registry::RegisterError {
             address: address.clone(),
@@ -1781,6 +1991,7 @@ mod tests {
             sender: None,
             inbound: Some(sample_inbound_message("can anyone see this?")),
             images: Vec::new(),
+            carried_history: Vec::new(),
         };
         let register_error = super::super::registry::RegisterError {
             address: address.clone(),
@@ -1793,23 +2004,17 @@ mod tests {
             &register_error,
         );
 
-        let mut delivered = false;
-        for _ in 0..crate::background::registry::INTERRUPT_CHANNEL_CAPACITY + 5 {
-            let Ok(Some(interrupt)) = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await
-            else {
-                break;
-            };
-            if let Interrupt::UserMessage(m) = interrupt
-                && m.content == "can anyone see this?"
-            {
-                delivered = true;
-                break;
-            }
-        }
-        assert!(
-            delivered,
-            "the losing spawn's user message must eventually be delivered, never dropped"
-        );
+        wait::next_matching(
+            "the losing spawn's user message to be delivered, never dropped",
+            &mut rx,
+            |interrupt| {
+                matches!(
+                    interrupt,
+                    Interrupt::UserMessage(m) if m.content == "can anyone see this?"
+                )
+            },
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1845,6 +2050,7 @@ mod tests {
             sender: None,
             inbound: Some(sample_inbound_message("can anyone see this?")),
             images: Vec::new(),
+            carried_history: Vec::new(),
         };
         let register_error = super::super::registry::RegisterError {
             address: address.clone(),
@@ -1857,11 +2063,8 @@ mod tests {
             &register_error,
         );
 
-        let republished = tokio::time::timeout(Duration::from_secs(1), spawns.recv())
-            .await
-            .expect("a fresh spawn request should be republished promptly")
-            .unwrap()
-            .unwrap();
+        let republished =
+            wait::next_event("a fresh spawn request to be republished", &mut spawns).await;
         assert_eq!(republished.address, address);
         assert_eq!(
             republished.inbound.map(|m| m.content),
@@ -1918,7 +2121,7 @@ mod tests {
         // avoids this in the ordinary case). A losing `spawn()` call must
         // never clobber the winner's live entry, and must not silently drop
         // its own input either.
-        let (runtime, mut sub) = test_runtime(3).await;
+        let (runtime, mut sub, bus_handle) = test_runtime_with_bus(3).await;
         let address = SessionAddress::from("spawned-researcher-cas-race");
 
         let winner = SessionInfo {
@@ -1945,16 +2148,11 @@ mod tests {
 
         runtime.spawn(sample_request(address.as_ref()), None);
 
-        let delivered = tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                if let Ok(msg) = winner_rx.try_recv() {
-                    return msg;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("the losing spawn's input must be delivered into the run that won");
+        let delivered = wait::next(
+            "the losing spawn's input to be delivered into the run that won",
+            &mut winner_rx,
+        )
+        .await;
         match delivered {
             Interrupt::AgentMessage(m) => assert!(m.content.contains("do the thing")),
             Interrupt::UserMessage(_) | Interrupt::Subconscious(_) | Interrupt::Stopped => {
@@ -1962,10 +2160,9 @@ mod tests {
             }
         }
 
+        wait::bus_barrier(&bus_handle).await;
         assert!(
-            tokio::time::timeout(Duration::from_millis(150), sub.recv())
-                .await
-                .is_err(),
+            sub.drain().is_empty(),
             "a losing registration attempt must never itself produce a published result"
         );
         assert_eq!(
@@ -1980,29 +2177,22 @@ mod tests {
         let (runtime, mut sub) = test_runtime(3).await;
         let address = SessionAddress::from("spawned-researcher-0002");
 
+        let gate = Gate::closed("the turn's model call");
         runtime.spawn(
             sample_request(address.as_ref()),
-            Some(make_resources("all done")),
+            Some(make_gated_resources("all done", &gate)),
         );
 
-        // Wait for the session to reach running or idle before it completes.
-        let mut saw_running_or_idle = false;
-        for _ in 0..50 {
-            if let Some(info) = runtime.registry.get(&address)
-                && matches!(info.state, SessionState::Running | SessionState::Idle)
-            {
-                saw_running_or_idle = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
-        assert!(saw_running_or_idle, "session should reach running or idle");
+        // Hold the turn at its model call so the session is observably running.
+        gate.until_held(1).await;
+        assert_eq!(
+            runtime.registry.get(&address).map(|info| info.state),
+            Some(SessionState::Running),
+            "session should be running while its model call is held"
+        );
+        gate.release(1);
 
-        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
-            .await
-            .expect("result should be published before test timeout")
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event("the run's result to be published", &mut sub).await;
         assert_eq!(event.summary, "all done");
         assert!(matches!(event.status, AgentResultStatus::Completed));
 
@@ -2023,17 +2213,166 @@ mod tests {
         );
     }
 
+    /// Answers every call with `response` and keeps the texts of the
+    /// messages each call was sent, so a test can check what the model saw.
+    struct RecordingProvider {
+        response: String,
+        calls: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+    }
+
+    #[async_trait]
+    impl crate::inference::InferenceProvider for RecordingProvider {
+        async fn complete(
+            &self,
+            messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(messages.iter().map(|m| m.content.clone()).collect());
+            Ok(InferenceResponse::new(self.response.clone(), vec![]))
+        }
+
+        fn model_name(&self) -> &'static str {
+            "recording"
+        }
+    }
+
+    #[tokio::test]
+    async fn a_fork_sends_main_s_conversation_to_the_model_but_keeps_it_out_of_its_transcript() {
+        let (runtime, mut sub) = test_runtime(3).await;
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut resources = make_resources("unused");
+        resources.provider = Box::new(RecordingProvider {
+            response: "forked answer".to_string(),
+            calls: Arc::clone(&calls),
+        });
+        let mut request = sample_request("spawned-multitask-0001");
+        request.subagent_config.carried_history = vec![
+            Message::user("what did we decide about the cabin?"),
+            Message::assistant("we're booking it for june", None),
+        ];
+
+        runtime.spawn(request, Some(resources));
+        let event = wait::next_event("the fork's result to be published", &mut sub).await;
+        assert_eq!(event.summary, "forked answer");
+
+        let seen = calls.lock().unwrap().first().cloned().unwrap();
+        let carried_at = seen
+            .iter()
+            .position(|m| m == "what did we decide about the cabin?")
+            .expect("the model sees main's conversation");
+        let task_at = seen
+            .iter()
+            .position(|m| m.contains("do the thing"))
+            .expect("the model sees the task");
+        assert!(
+            carried_at < task_at,
+            "main's conversation comes before the task: {seen:?}"
+        );
+
+        let record: serde_json::Value = serde_json::from_str(
+            &tokio::fs::read_to_string(event.transcript_path.unwrap())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let transcript = record.get("transcript").unwrap().to_string();
+        assert!(transcript.contains("do the thing"), "{transcript}");
+        assert!(transcript.contains("forked answer"), "{transcript}");
+        assert!(
+            !transcript.contains("cabin") && !transcript.contains("june"),
+            "main's conversation stays out of the fork's own transcript: {transcript}"
+        );
+    }
+
     #[tokio::test]
     async fn missing_resources_produces_failed_result() {
         let (runtime, mut sub) = test_runtime(3).await;
         runtime.spawn(sample_request("spawned-researcher-0003"), None);
 
-        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event("the run's result to be published", &mut sub).await;
         assert!(matches!(event.status, AgentResultStatus::Failed { .. }));
+    }
+
+    /// A real, unexpected turn failure (missing `SubAgentResources` — never
+    /// something a user did) must auto-report through the session's
+    /// `TracingService` when auto error reporting is enabled.
+    #[tokio::test]
+    async fn failed_turn_auto_reports_through_tracing_service_when_enabled() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/bug-report"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "public_id": "RR-SESSION-FAILURE",
+                "submitted_at": "2026-04-16T14:23:00Z"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (_, span_handle) = crate::util::telemetry::SpanBufferLayer::new(
+            &crate::util::telemetry::SpanBufferConfig::default(),
+        );
+        let tracing_service = Arc::new(TracingService::new(
+            crate::config::TracingConfig {
+                feedback_endpoint: server.uri(),
+                auto_error_reporting: true,
+                ..crate::config::TracingConfig::default()
+            },
+            span_handle,
+        ));
+
+        let (runtime, mut sub) = test_runtime_with_tracing_service(3, tracing_service).await;
+        runtime.spawn(sample_request("spawned-researcher-report1"), None);
+
+        let event = wait::next_event("the run's result to be published", &mut sub).await;
+        assert!(matches!(event.status, AgentResultStatus::Failed { .. }));
+    }
+
+    /// A session turn that completes normally is an expected outcome, not an
+    /// error — it must never auto-report even with auto error reporting on.
+    #[tokio::test]
+    async fn completed_turn_never_auto_reports_even_when_enabled() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/bug-report"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "public_id": "RR-SHOULD-NOT-FIRE",
+                "submitted_at": "2026-04-16T14:23:00Z"
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let (_, span_handle) = crate::util::telemetry::SpanBufferLayer::new(
+            &crate::util::telemetry::SpanBufferConfig::default(),
+        );
+        let tracing_service = Arc::new(TracingService::new(
+            crate::config::TracingConfig {
+                feedback_endpoint: server.uri(),
+                auto_error_reporting: true,
+                ..crate::config::TracingConfig::default()
+            },
+            span_handle,
+        ));
+
+        let (runtime, mut sub) = test_runtime_with_tracing_service(3, tracing_service).await;
+        runtime.spawn(
+            sample_request("spawned-researcher-report2"),
+            Some(make_resources("all good")),
+        );
+
+        let event = wait::next_event("the run's result to be published", &mut sub).await;
+        assert!(matches!(event.status, AgentResultStatus::Completed));
     }
 
     /// Like `test_runtime`, but also returns the bus handle so a test can
@@ -2050,7 +2389,10 @@ mod tests {
         let sub = bus_handle.subscribe(topics::Background).await.unwrap();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let dir_path = dir.path().to_path_buf();
+        // The store owns the guard so the directory outlives this helper and
+        // is removed when the runtime (and so the store) is dropped.
+        let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
         let idle_timeouts = IdleTimeouts {
             scheduled: Duration::from_millis(20),
             spawned: Duration::from_millis(20),
@@ -2066,13 +2408,15 @@ mod tests {
         let runtime = SessionRuntime::new(
             registry,
             store,
-            max_concurrent,
+            Arc::new(tokio::sync::Semaphore::new(max_concurrent)),
             idle_timeouts,
             SessionRuntimeHandles {
                 publisher: bus_handle.publisher(),
                 tz: chrono_tz::UTC,
                 messenger,
-                checkpoints: test_checkpoints(dir.path()),
+                checkpoints: test_checkpoints(&dir_path),
+                tracing_service: test_tracing_service(),
+                tracing_client_context: test_tracing_client_context(),
             },
         );
         (runtime, sub, bus_handle)
@@ -2089,18 +2433,10 @@ mod tests {
             bus_handle.subscribe(topics::UserMessage).await.unwrap();
         runtime.spawn(sample_request("spawned-researcher-fail1"), None);
 
-        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event("the run's result to be published", &mut sub).await;
         assert!(matches!(event.status, AgentResultStatus::Failed { .. }));
 
-        let relayed = tokio::time::timeout(Duration::from_secs(10), main_sub.recv())
-            .await
-            .expect("a failed turn must still relay something to its spawner")
-            .unwrap()
-            .unwrap();
+        let relayed = wait::next_event("a failed turn's relay to its spawner", &mut main_sub).await;
         assert!(
             relayed.content.contains("status: failed"),
             "the relay must say clearly that the turn failed, got: {}",
@@ -2143,18 +2479,13 @@ mod tests {
         assert_eq!(info.category, SessionCategory::Artifact);
         assert_eq!(info.spawner, None);
 
-        let event = tokio::time::timeout(Duration::from_secs(5), sub.recv())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event("the artifact run's result to be published", &mut sub).await;
         assert!(matches!(event.source, EventTrigger::Artifact(ref name) if name == "wiki"));
         assert!(matches!(event.status, AgentResultStatus::Completed));
 
+        wait::bus_barrier(&bus_handle).await;
         let mut streamed = None;
-        while let Ok(Ok(Some(e))) =
-            tokio::time::timeout(Duration::from_millis(200), session_sub.recv()).await
-        {
+        for e in session_sub.drain() {
             if let SessionEventKind::Response { content, .. } = e.kind {
                 streamed = Some(content);
             }
@@ -2165,15 +2496,11 @@ mod tests {
         );
 
         assert!(
-            tokio::time::timeout(Duration::from_millis(200), main_sub.recv())
-                .await
-                .is_err(),
+            main_sub.drain().is_empty(),
             "an artifact session's output must never be relayed to main"
         );
         assert!(
-            tokio::time::timeout(Duration::from_millis(200), inbox_sub.recv())
-                .await
-                .is_err(),
+            inbox_sub.drain().is_empty(),
             "an artifact session's completion must not be routed to the inbox"
         );
         router.abort();
@@ -2188,18 +2515,11 @@ mod tests {
         runtime.spawn(sample_request(address.as_ref()), None);
         assert!(runtime.registry.stop(&address));
 
-        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event("the run's result to be published", &mut sub).await;
         assert!(matches!(event.status, AgentResultStatus::Cancelled));
 
-        let relayed = tokio::time::timeout(Duration::from_secs(10), main_sub.recv())
-            .await
-            .expect("a cancelled turn must still relay something to its spawner")
-            .unwrap()
-            .unwrap();
+        let relayed =
+            wait::next_event("a cancelled turn's relay to its spawner", &mut main_sub).await;
         assert!(
             relayed.content.contains("status: cancelled"),
             "the relay must say clearly that the turn was cancelled, got: {}",
@@ -2217,7 +2537,10 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let dir_path = dir.path().to_path_buf();
+        // The store owns the guard, so the directory lives as long as any
+        // session task still writing through it.
+        let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
         let messenger = AgentMessenger::new(
             Arc::clone(&registry),
             bus_handle.publisher(),
@@ -2333,19 +2656,17 @@ mod tests {
             }),
         );
 
-        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
-            info.state == SessionState::Running
-        })
-        .await
-        .expect("session should reach running while blocked on the model call");
+        wait_for(
+            &runtime,
+            &address,
+            "the session to reach running while blocked on the model call",
+            |info| info.state == SessionState::Running,
+        )
+        .await;
 
         assert!(runtime.registry.stop(&address));
 
-        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
-            .await
-            .expect("result should be published after the running turn is stopped")
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event("the stopped running turn's result", &mut sub).await;
         assert!(
             matches!(event.status, AgentResultStatus::Cancelled),
             "a session stopped mid-turn must report cancelled, not completed"
@@ -2379,11 +2700,13 @@ mod tests {
             }),
         );
 
-        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
-            info.state == SessionState::Running
-        })
-        .await
-        .expect("session should reach running while blocked on the model call");
+        wait_for(
+            &runtime,
+            &address,
+            "the session to reach running while blocked on the model call",
+            |info| info.state == SessionState::Running,
+        )
+        .await;
         let info = runtime.registry.get(&address).unwrap();
 
         let point = runtime
@@ -2396,10 +2719,10 @@ mod tests {
     }
 
     // `start_paused` isn't about idle-timeout logic here (the one-minute
-    // idle timeouts below are never actually reached) — it protects the
-    // `tokio::time::timeout` backstops from firing spuriously. Those wrap a
+    // idle timeouts below are never actually reached) — it protects the hang
+    // guard in `crate::testing::wait` from firing spuriously. The guard wraps a
     // *real* timer: if the OS starves this test's single worker thread for
-    // longer than the backstop under heavy contention (many parallel test
+    // longer than the guard under heavy contention (many parallel test
     // threads plus a concurrent build reproduces this locally), the timer
     // has already elapsed the instant the thread resumes, even though the
     // awaited event was sitting ready the whole time — a false failure, not
@@ -2420,7 +2743,10 @@ mod tests {
             bus_handle.subscribe(topics::Background).await.unwrap();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let dir_path = dir.path().to_path_buf();
+        // The store owns the guard, so the directory lives as long as any
+        // session task still writing through it.
+        let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
             bus_handle.publisher(),
@@ -2430,7 +2756,7 @@ mod tests {
         let runtime = SessionRuntime::new(
             registry,
             store,
-            3,
+            Arc::new(tokio::sync::Semaphore::new(3)),
             IdleTimeouts {
                 scheduled: Duration::from_mins(1),
                 spawned: Duration::from_mins(1),
@@ -2441,7 +2767,9 @@ mod tests {
                 publisher: bus_handle.publisher(),
                 tz: chrono_tz::UTC,
                 messenger,
-                checkpoints: test_checkpoints(dir.path()),
+                checkpoints: test_checkpoints(&dir_path),
+                tracing_service: test_tracing_service(),
+                tracing_client_context: test_tracing_client_context(),
             },
         );
 
@@ -2470,16 +2798,16 @@ mod tests {
         );
 
         // `wait_for` polls observable registry state rather than sleeping a
-        // guessed duration; the recv() timeouts below are a bounded backstop
-        // against a genuine hang, not the primary means of pacing the test —
-        // both events are driven by BlockingProvider's deterministic
-        // never-resolves-until-cancelled gate and the bus's own delivery,
+        // guessed duration. Both events are driven by BlockingProvider's
+        // never-resolves-until-cancelled call and the bus's own delivery,
         // neither of which depends on wall-clock timing.
-        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
-            info.state == SessionState::Running
-        })
-        .await
-        .expect("session should reach running while blocked on the model call");
+        wait_for(
+            &runtime,
+            &address,
+            "the session to reach running while blocked on the model call",
+            |info| info.state == SessionState::Running,
+        )
+        .await;
 
         assert_eq!(
             runtime.registry.deliver(
@@ -2496,18 +2824,11 @@ mod tests {
 
         assert!(runtime.registry.stop(&address));
 
-        let result_event = tokio::time::timeout(Duration::from_secs(10), result_sub.recv())
-            .await
-            .expect("stopped run should still publish a result")
-            .unwrap()
-            .unwrap();
+        let result_event = wait::next_event("the stopped run's result", &mut result_sub).await;
         assert!(matches!(result_event.status, AgentResultStatus::Cancelled));
 
-        let spawn_event = tokio::time::timeout(Duration::from_secs(10), spawn_sub.recv())
-            .await
-            .expect("the pending message must resume the session as a new run rather than vanish")
-            .unwrap()
-            .unwrap();
+        let spawn_event =
+            wait::next_event("the pending message's resume as a new run", &mut spawn_sub).await;
         assert_eq!(spawn_event.address, address);
         assert!(spawn_event.prompt.contains("don't forget this"));
     }
@@ -2557,11 +2878,7 @@ mod tests {
             }),
         );
 
-        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
-            .await
-            .expect("a panicked session must still publish a result")
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event("the panicked session's result", &mut sub).await;
         assert!(
             matches!(event.status, AgentResultStatus::Failed { .. }),
             "a panicked turn should be reported as failed, got {:?}",
@@ -2618,18 +2935,11 @@ mod tests {
             }),
         );
 
-        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
-            .await
-            .expect("a panicked session must still publish a result")
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event("the panicked session's result", &mut sub).await;
         assert!(matches!(event.status, AgentResultStatus::Failed { .. }));
 
-        let relayed = tokio::time::timeout(Duration::from_secs(10), main_sub.recv())
-            .await
-            .expect("a panicked turn must still relay something to its spawner")
-            .unwrap()
-            .unwrap();
+        let relayed =
+            wait::next_event("a panicked turn's relay to its spawner", &mut main_sub).await;
         assert!(
             relayed.content.contains("status: failed"),
             "the relay must say clearly that the turn failed, got: {}",
@@ -2747,11 +3057,7 @@ mod tests {
         )
         .await;
 
-        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
-            .await
-            .expect("panic recovery should publish a result")
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event("panic recovery's result", &mut sub).await;
         assert!(matches!(event.status, AgentResultStatus::Failed { .. }));
         assert!(
             registry.get(&info.address).is_none(),
@@ -2802,11 +3108,13 @@ mod tests {
             }),
         );
 
-        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
-            info.state == SessionState::Running
-        })
-        .await
-        .expect("session should reach running before shutdown stops it");
+        wait_for(
+            &runtime,
+            &address,
+            "the session to reach running before shutdown stops it",
+            |info| info.state == SessionState::Running,
+        )
+        .await;
 
         runtime.shutdown(Duration::from_secs(2)).await;
 
@@ -2814,37 +3122,36 @@ mod tests {
             runtime.registry.get(&address).is_none(),
             "shutdown should wait for the stopped session to finish completing"
         );
-        let event = tokio::time::timeout(Duration::from_millis(200), sub.recv())
-            .await
-            .expect("shutdown should have let the session publish its result")
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event("the session's result after shutdown", &mut sub).await;
         assert!(matches!(event.status, AgentResultStatus::Cancelled));
     }
 
     #[tokio::test]
     async fn shutdown_with_no_live_sessions_returns_immediately() {
         let (runtime, _sub) = test_runtime(3).await;
-        tokio::time::timeout(
-            Duration::from_millis(100),
+        wait::guarded(
+            "shutdown with nothing to stop to return",
             runtime.shutdown(Duration::from_secs(5)),
         )
-        .await
-        .expect("shutdown must not block when there is nothing to stop");
+        .await;
     }
 
     #[tokio::test]
     async fn idle_session_releases_its_permit_for_a_new_run() {
         // max_concurrent = 1: if an idle session held its permit, a second
         // session could not start running until the first's idle timeout
-        // elapsed. Give the first session an idle window long enough that
-        // waiting it out would be obviously slow, then prove the second
-        // reaches running/idle almost immediately instead.
-        let idle_window = Duration::from_millis(300);
+        // ended it. The first session's idle window is far longer than the
+        // test waits, so the second starting at all proves it didn't wait on
+        // that timeout — and the check doesn't depend on how fast a loaded
+        // CI runner forks a session.
+        let idle_window = Duration::from_mins(10);
         let bus_handle = crate::bus::spawn_broker();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let dir_path = dir.path().to_path_buf();
+        // The store owns the guard, so the directory lives as long as any
+        // session task still writing through it.
+        let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
             bus_handle.publisher(),
@@ -2854,7 +3161,7 @@ mod tests {
         let runtime = SessionRuntime::new(
             registry,
             store,
-            1,
+            Arc::new(tokio::sync::Semaphore::new(1)),
             IdleTimeouts {
                 scheduled: idle_window,
                 spawned: idle_window,
@@ -2865,7 +3172,9 @@ mod tests {
                 publisher: bus_handle.publisher(),
                 tz: chrono_tz::UTC,
                 messenger,
-                checkpoints: test_checkpoints(dir.path()),
+                checkpoints: test_checkpoints(&dir_path),
+                tracing_service: test_tracing_service(),
+                tracing_client_context: test_tracing_client_context(),
             },
         );
 
@@ -2876,11 +3185,13 @@ mod tests {
         );
 
         // Wait for the first session to go idle (releasing its permit).
-        let idle_at = wait_for(&runtime, &first, Duration::from_secs(1), |info| {
-            info.state == SessionState::Idle
-        })
-        .await
-        .expect("first session should reach idle");
+        wait_for(
+            &runtime,
+            &first,
+            "the first session to reach idle",
+            |info| info.state == SessionState::Idle,
+        )
+        .await;
 
         let second = SessionAddress::from("spawned-second-0002");
         runtime.spawn(
@@ -2888,37 +3199,35 @@ mod tests {
             Some(make_resources("second done")),
         );
         // Any state past `Forking` means the permit was acquired and the
-        // turn at least started — must happen well inside the first
-        // session's idle window to prove it didn't wait on that timeout.
-        let second_started = wait_for(&runtime, &second, idle_window, |info| {
-            info.state != SessionState::Forking
-        })
+        // turn at least started.
+        wait_for(
+            &runtime,
+            &second,
+            "the second session to start while the first is idle",
+            |info| info.state != SessionState::Forking,
+        )
         .await;
-        let elapsed = idle_at.elapsed();
-        assert!(
-            second_started.is_some(),
-            "second session should start running without waiting for the first's idle timeout \
-             (waited {elapsed:?} against an idle window of {idle_window:?})"
+        assert_eq!(
+            runtime.registry.get(&first).map(|info| info.state),
+            Some(SessionState::Idle),
+            "the first session must still be idle: the second started without it ending"
         );
     }
 
-    /// Poll a runtime's registry until `address`'s info satisfies `pred`, or the deadline elapses.
+    /// Wait until `address`'s info in the runtime's registry satisfies `pred`.
     async fn wait_for(
         runtime: &SessionRuntime,
         address: &SessionAddress,
-        deadline: Duration,
+        what: &str,
         pred: impl Fn(&SessionInfo) -> bool,
-    ) -> Option<std::time::Instant> {
-        let start = std::time::Instant::now();
-        while start.elapsed() < deadline {
-            if let Some(info) = runtime.registry.get(address)
-                && pred(&info)
-            {
-                return Some(std::time::Instant::now());
-            }
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
-        None
+    ) {
+        crate::testing::wait::until_true(what, || {
+            runtime
+                .registry
+                .get(address)
+                .is_some_and(|info| pred(&info))
+        })
+        .await;
     }
 
     #[test]
@@ -3144,12 +3453,19 @@ mod tests {
     /// timeout that would complete the run out from under it.
     async fn test_runtime_with_idle_window(
         idle_window: Duration,
-    ) -> (SessionRuntime, crate::bus::Subscriber<AgentResultEvent>) {
+    ) -> (
+        SessionRuntime,
+        crate::bus::Subscriber<AgentResultEvent>,
+        crate::bus::BusHandle,
+    ) {
         let bus_handle = crate::bus::spawn_broker();
         let sub = bus_handle.subscribe(topics::Background).await.unwrap();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let dir_path = dir.path().to_path_buf();
+        // The store owns the guard, so the directory lives as long as any
+        // session task still writing through it.
+        let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
             bus_handle.publisher(),
@@ -3159,7 +3475,7 @@ mod tests {
         let runtime = SessionRuntime::new(
             registry,
             store,
-            3,
+            Arc::new(tokio::sync::Semaphore::new(3)),
             IdleTimeouts {
                 scheduled: idle_window,
                 spawned: idle_window,
@@ -3170,10 +3486,12 @@ mod tests {
                 publisher: bus_handle.publisher(),
                 tz: chrono_tz::UTC,
                 messenger,
-                checkpoints: test_checkpoints(dir.path()),
+                checkpoints: test_checkpoints(&dir_path),
+                tracing_service: test_tracing_service(),
+                tracing_client_context: test_tracing_client_context(),
             },
         );
-        (runtime, sub)
+        (runtime, sub, bus_handle)
     }
 
     #[tokio::test]
@@ -3235,18 +3553,21 @@ mod tests {
 
     #[tokio::test]
     async fn idle_session_wakes_for_agent_message_and_runs_a_second_turn() {
-        let (runtime, mut sub) = test_runtime_with_idle_window(Duration::from_millis(300)).await;
+        let (runtime, mut sub, bus_handle) =
+            test_runtime_with_idle_window(Duration::from_millis(300)).await;
         let address = SessionAddress::from("spawned-researcher-0008");
         runtime.spawn(
             sample_request(address.as_ref()),
             Some(make_sequenced_resources(vec!["first done", "second done"])),
         );
 
-        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
-            info.state == SessionState::Idle
-        })
-        .await
-        .expect("session should go idle after its first turn");
+        wait_for(
+            &runtime,
+            &address,
+            "the session to go idle after its first turn",
+            |info| info.state == SessionState::Idle,
+        )
+        .await;
 
         // Exactly what `AgentMessenger::send` does to deliver to a live
         // session — see `crate::background::messaging`.
@@ -3264,11 +3585,7 @@ mod tests {
             "the idle session should still be live in the registry"
         );
 
-        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
-            .await
-            .expect("the run should eventually complete")
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event("the run to complete", &mut sub).await;
         assert_eq!(
             event.summary, "second done",
             "the run should complete with its second turn's own summary"
@@ -3298,30 +3615,37 @@ mod tests {
             "transcript should include the second turn's output: {joined}"
         );
 
-        // One run, one completion — the wake extended the existing run
-        // rather than starting a new one.
+        // One run, one completion: the wake extended the existing run rather
+        // than starting a new one. The run leaves the registry only after its
+        // result is published, so once it is gone no second run can be pending.
+        wait::until_true("the run to leave the registry", || {
+            runtime.registry.get(&address).is_none()
+        })
+        .await;
+        wait::bus_barrier(&bus_handle).await;
         assert!(
-            tokio::time::timeout(Duration::from_millis(150), sub.recv())
-                .await
-                .is_err(),
+            sub.drain().is_empty(),
             "a single message-driven wake should not produce a second run"
         );
     }
 
     #[tokio::test]
     async fn idle_conversation_session_wakes_for_a_new_message_and_runs_a_second_turn() {
-        let (runtime, mut sub) = test_runtime_with_idle_window(Duration::from_millis(300)).await;
+        let (runtime, mut sub, _bus_handle) =
+            test_runtime_with_idle_window(Duration::from_millis(300)).await;
         let address = SessionAddress::from("external-discord-idle-wake");
         runtime.spawn(
             sample_conversation_request(address.as_ref()),
             Some(make_sequenced_resources(vec!["first done", "second done"])),
         );
 
-        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
-            info.state == SessionState::Idle
-        })
-        .await
-        .expect("session should go idle after its first turn");
+        wait_for(
+            &runtime,
+            &address,
+            "the session to go idle after its first turn",
+            |info| info.state == SessionState::Idle,
+        )
+        .await;
 
         // Exactly what `AgentMessenger::deliver_conversation` does to deliver
         // to a live session.
@@ -3334,28 +3658,30 @@ mod tests {
             "the idle session should still be live in the registry"
         );
 
-        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
-            .await
-            .expect("the run should eventually complete")
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event("the run to complete", &mut sub).await;
         assert_eq!(
             event.summary, "second done",
             "the run should complete with its second turn's own summary"
         );
     }
 
-    #[tokio::test]
-    async fn conversation_session_turn_output_is_published_to_its_conversation() {
+    /// A runtime whose sessions' conversation output can be read from the
+    /// `discord` endpoint, as a chat adapter would.
+    async fn conversation_output_runtime() -> (
+        SessionRuntime,
+        crate::bus::Subscriber<crate::bus::SessionResponseEvent>,
+    ) {
         let bus_handle = crate::bus::spawn_broker();
-        let mut session_output: crate::bus::Subscriber<crate::bus::SessionResponseEvent> =
-            bus_handle
-                .subscribe(topics::Endpoint(crate::bus::EndpointName::from("discord")))
-                .await
-                .unwrap();
+        let session_output: crate::bus::Subscriber<crate::bus::SessionResponseEvent> = bus_handle
+            .subscribe(topics::Endpoint(crate::bus::EndpointName::from("discord")))
+            .await
+            .unwrap();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let dir_path = dir.path().to_path_buf();
+        // The store owns the guard, so the directory lives as long as any
+        // session task still writing through it.
+        let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
             bus_handle.publisher(),
@@ -3365,7 +3691,7 @@ mod tests {
         let runtime = SessionRuntime::new(
             registry,
             store,
-            3,
+            Arc::new(tokio::sync::Semaphore::new(3)),
             IdleTimeouts {
                 scheduled: Duration::from_millis(50),
                 spawned: Duration::from_millis(50),
@@ -3376,9 +3702,18 @@ mod tests {
                 publisher: bus_handle.publisher(),
                 tz: chrono_tz::UTC,
                 messenger,
-                checkpoints: test_checkpoints(dir.path()),
+                checkpoints: test_checkpoints(&dir_path),
+                tracing_service: test_tracing_service(),
+                tracing_client_context: test_tracing_client_context(),
             },
         );
+
+        (runtime, session_output)
+    }
+
+    #[tokio::test]
+    async fn conversation_session_turn_output_is_published_to_its_conversation() {
+        let (runtime, mut session_output) = conversation_output_runtime().await;
 
         let address = SessionAddress::from("external-discord-output");
         runtime.spawn(
@@ -3386,17 +3721,37 @@ mod tests {
             Some(make_resources("the build is green")),
         );
 
-        let event = tokio::time::timeout(Duration::from_secs(10), session_output.recv())
-            .await
-            .expect("the session's turn output should be published")
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event(
+            "the session's turn output to be published",
+            &mut session_output,
+        )
+        .await;
         assert_eq!(event.session_address, address);
         assert_eq!(event.conversation_id, "chan-1");
         assert_eq!(event.content, "the build is green");
         assert!(
             event.is_final,
             "a run's completed turn output must be marked final"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fork_posting_into_the_owner_s_chat_names_itself() {
+        let (runtime, mut session_output) = conversation_output_runtime().await;
+        let mut request = sample_request("spawned-multitask-0001");
+        request.spawner = None;
+        request.conversation_target = Some(ConversationTarget {
+            endpoint: "discord".to_string(),
+            conversation_id: "owner-dm".to_string(),
+        });
+
+        runtime.spawn(request, Some(make_resources("paint is $40 a gallon")));
+
+        let event = wait::next_event("the fork's reply to be posted", &mut session_output).await;
+        assert_eq!(event.conversation_id, "owner-dm");
+        assert_eq!(
+            event.content, "spawned-multitask-0001:\npaint is $40 a gallon",
+            "a fork's reply shares main's chat, so it says whose it is"
         );
     }
 
@@ -3410,7 +3765,10 @@ mod tests {
                 .unwrap();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let dir_path = dir.path().to_path_buf();
+        // The store owns the guard, so the directory lives as long as any
+        // session task still writing through it.
+        let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
             bus_handle.publisher(),
@@ -3420,7 +3778,7 @@ mod tests {
         let runtime = SessionRuntime::new(
             registry,
             store,
-            3,
+            Arc::new(tokio::sync::Semaphore::new(3)),
             IdleTimeouts {
                 scheduled: Duration::from_millis(50),
                 spawned: Duration::from_millis(50),
@@ -3431,20 +3789,26 @@ mod tests {
                 publisher: bus_handle.publisher(),
                 tz: chrono_tz::UTC,
                 messenger,
-                checkpoints: test_checkpoints(dir.path()),
+                checkpoints: test_checkpoints(&dir_path),
+                tracing_service: test_tracing_service(),
+                tracing_client_context: test_tracing_client_context(),
             },
         );
 
+        let mut results: crate::bus::Subscriber<AgentResultEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
         let address = SessionAddress::from("spawned-researcher-no-output");
         runtime.spawn(
             sample_request(address.as_ref()),
             Some(make_resources("found the answer")),
         );
 
+        // The result is published after the run's last turn, so once it has
+        // arrived any session output would already be queued.
+        wait::next_event("the spawned session's result", &mut results).await;
+        wait::bus_barrier(&bus_handle).await;
         assert!(
-            tokio::time::timeout(Duration::from_millis(200), session_output.recv())
-                .await
-                .is_err(),
+            session_output.drain().is_empty(),
             "a spawned session with no conversation target must never publish session output"
         );
     }
@@ -3456,8 +3820,9 @@ mod tests {
     fn make_sequenced_resources_with_eager_observer(
         responses: Vec<&str>,
     ) -> (SubAgentResources, crate::workspace::layout::WorkspaceLayout) {
-        let dir = tempfile::tempdir().unwrap().keep();
-        let layout = crate::workspace::layout::WorkspaceLayout::new(&dir);
+        let dir = tempfile::tempdir().unwrap();
+        let layout =
+            crate::workspace::layout::WorkspaceLayout::new(dir.path()).with_tempdir_guard(dir);
         let search_index = Arc::new(
             crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
         );
@@ -3511,7 +3876,8 @@ mod tests {
         // instead of requiring a real sleep to survive a slow or throttled
         // CI runner. The 300ms window itself is unchanged; only the wait
         // for it is now driven by virtual, not wall-clock, time.
-        let (runtime, mut sub) = test_runtime_with_idle_window(Duration::from_millis(300)).await;
+        let (runtime, mut sub, _bus_handle) =
+            test_runtime_with_idle_window(Duration::from_millis(300)).await;
         let address = SessionAddress::from("spawned-researcher-0009");
         let (resources, layout) = make_sequenced_resources_with_eager_observer(vec![
             "first turn done",
@@ -3519,11 +3885,13 @@ mod tests {
         ]);
         runtime.spawn(sample_request(address.as_ref()), Some(resources));
 
-        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
-            info.state == SessionState::Idle
-        })
-        .await
-        .expect("session should go idle after its first turn");
+        wait_for(
+            &runtime,
+            &address,
+            "the session to go idle after its first turn",
+            |info| info.state == SessionState::Idle,
+        )
+        .await;
 
         assert_eq!(
             runtime.registry.deliver(
@@ -3538,15 +3906,9 @@ mod tests {
             crate::background::registry::DeliverOutcome::Delivered
         );
 
-        // This recv() is a bounded backstop against a genuine hang, not the
-        // primary pacing mechanism — the run's completion is driven by the
-        // (instant) SequencedProvider and the bus's own delivery, both
-        // independent of wall-clock timing.
-        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
-            .await
-            .expect("the run should eventually complete")
-            .unwrap()
-            .unwrap();
+        // The run's completion is driven by the (instant) SequencedProvider and
+        // the bus's own delivery, not by wall-clock timing.
+        let event = wait::next_event("the run to complete", &mut sub).await;
         assert_eq!(event.summary, "second turn done");
 
         // Each turn crossed the (tiny) force threshold on its own and staged
@@ -3589,6 +3951,7 @@ mod tests {
                         id: "tc-1".to_string(),
                         name: "no_such_tool".to_string(),
                         arguments: serde_json::json!({"q": 1}),
+                        server: None,
                     }],
                 ))
             } else {
@@ -3607,11 +3970,7 @@ mod tests {
     ) -> Vec<crate::bus::SessionEvent> {
         let mut events = Vec::new();
         loop {
-            let event = tokio::time::timeout(Duration::from_secs(5), sub.recv())
-                .await
-                .expect("the run should complete before the test timeout")
-                .unwrap()
-                .unwrap();
+            let event = wait::next_event("the run to complete", sub).await;
             let done = matches!(event.kind, SessionEventKind::Completed { .. });
             events.push(event);
             if done {
@@ -3729,7 +4088,8 @@ mod tests {
 
     #[tokio::test]
     async fn stopping_an_idle_session_reports_cancelled() {
-        let (runtime, mut results) = test_runtime_with_idle_window(Duration::from_hours(1)).await;
+        let (runtime, mut results, _bus_handle) =
+            test_runtime_with_idle_window(Duration::from_hours(1)).await;
         let address = SessionAddress::from("spawned-researcher-idle-stop");
         let (layout, observer, merge_writer) = test_memory_extras();
         let mut request = sample_request(address.as_ref());
@@ -3758,20 +4118,16 @@ mod tests {
             }),
         );
 
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while runtime.registry.get(&address).map(|s| s.state) != Some(SessionState::Idle) {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("the session should go idle after its first turn");
+        wait_for(
+            &runtime,
+            &address,
+            "the session to go idle after its first turn",
+            |info| info.state == SessionState::Idle,
+        )
+        .await;
         assert!(runtime.registry.stop(&address));
 
-        let result = tokio::time::timeout(Duration::from_secs(10), results.recv())
-            .await
-            .expect("the stopped session should publish its result")
-            .unwrap()
-            .unwrap();
+        let result = wait::next_event("the stopped session's result", &mut results).await;
         assert!(
             matches!(result.status, AgentResultStatus::Cancelled),
             "an explicit stop while idle is a cancellation, got {:?}",
@@ -3817,7 +4173,10 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let dir_path = dir.path().to_path_buf();
+        // The store owns the guard, so the directory lives as long as any
+        // session task still writing through it.
+        let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
             bus_handle.publisher(),
@@ -3827,7 +4186,7 @@ mod tests {
         let runtime = SessionRuntime::new(
             registry,
             store,
-            1,
+            Arc::new(tokio::sync::Semaphore::new(1)),
             IdleTimeouts {
                 scheduled: Duration::from_secs(5),
                 spawned: Duration::from_secs(5),
@@ -3838,23 +4197,28 @@ mod tests {
                 publisher: bus_handle.publisher(),
                 tz: chrono_tz::UTC,
                 messenger,
-                checkpoints: test_checkpoints(dir.path()),
+                checkpoints: test_checkpoints(&dir_path),
+                tracing_service: test_tracing_service(),
+                tracing_client_context: test_tracing_client_context(),
             },
         );
 
         let first = SessionAddress::from("spawned-slow-first-0001");
+        // The first turn holds the only permit at its model call until the test
+        // releases it, so the second session's queued state can't race a finish.
+        let gate = Gate::closed("the first turn's model call");
         runtime.spawn(
             sample_request(first.as_ref()),
-            Some(make_slow_resources(
-                "first done",
-                Duration::from_millis(400),
-            )),
+            Some(make_gated_resources("first done", &gate)),
         );
-        wait_for(&runtime, &first, Duration::from_secs(1), |info| {
-            info.state == SessionState::Running
-        })
-        .await
-        .expect("first session should reach running and hold the only permit");
+        wait_for(
+            &runtime,
+            &first,
+            "the first session to reach running and hold the only permit",
+            |info| info.state == SessionState::Running,
+        )
+        .await;
+        gate.until_held(1).await;
 
         let second = SessionAddress::from("spawned-second-waiting-0002");
         runtime.spawn(
@@ -3862,21 +4226,23 @@ mod tests {
             Some(make_resources("second done")),
         );
 
-        wait_for(&runtime, &second, Duration::from_millis(300), |info| {
-            info.state == SessionState::Queued
-        })
-        .await
-        .expect(
-            "second session should show as queued while the first session holds the \
-             only concurrency permit",
-        );
+        wait_for(
+            &runtime,
+            &second,
+            "the second session to show as queued while the first holds the only concurrency permit",
+            |info| info.state == SessionState::Queued,
+        )
+        .await;
 
         // Once the first session finishes and releases its permit, the
         // second should proceed to running rather than staying queued.
-        wait_for(&runtime, &second, Duration::from_secs(2), |info| {
-            info.state == SessionState::Running || info.state == SessionState::Idle
-        })
-        .await
-        .expect("second session should proceed once the permit is released");
+        gate.release(1);
+        wait_for(
+            &runtime,
+            &second,
+            "the second session to proceed once the permit is released",
+            |info| info.state == SessionState::Running || info.state == SessionState::Idle,
+        )
+        .await;
     }
 }

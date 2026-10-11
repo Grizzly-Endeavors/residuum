@@ -4,7 +4,7 @@
 //! structured data, these edits work on the raw text and touch only the one
 //! value being changed — every other byte (comments, blank lines,
 //! formatting, other pulses) survives untouched. This is what lets the
-//! Scheduled view's enabled toggle flip a single pulse without silently
+//! Schedule place's enabled toggle flip a single pulse without silently
 //! discarding a comment the owner or agent left in the file.
 
 /// One pulse entry's location within the raw text, found by

@@ -1,0 +1,59 @@
+import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen } from "../../test/component";
+import Welcome from "./Welcome.svelte";
+import type { SetupWizardState } from "../../lib/types";
+
+function wizard(overrides: Partial<SetupWizardState> = {}): SetupWizardState {
+  return {
+    userName: "",
+    agentName: "assistant",
+    timezone: "UTC",
+    ...overrides,
+  } as SetupWizardState;
+}
+
+describe("Welcome step", () => {
+  it("asks for your name and the first agent's name", () => {
+    render(Welcome, { wizardState: wizard(), onNext: () => {} });
+    expect(screen.getByLabelText("Your name")).toBeTruthy();
+    expect(screen.getByLabelText("Agent name")).toHaveValue("assistant");
+  });
+
+  it("lets you continue without giving your name", async () => {
+    const onNext = vi.fn();
+    render(Welcome, { wizardState: wizard(), onNext });
+    await fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(onNext).toHaveBeenCalled();
+  });
+
+  it.each([
+    ["", "Give your agent a name."],
+    ["Scout!", "Use letters, numbers, spaces, hyphens, and apostrophes."],
+    ["-scout", "The name can't start or end with a hyphen or an apostrophe."],
+    ["scout-", "The name can't start or end with a hyphen or an apostrophe."],
+    ["a".repeat(33), "Use 32 characters or fewer."],
+    ["team", '"team" is reserved. Pick a different name.'],
+  ])("blocks the agent name %j and says why", (agentName, message) => {
+    render(Welcome, { wizardState: wizard({ agentName }), onNext: () => {} });
+    const field = screen.getByLabelText("Agent name");
+    expect(field).toBeInvalid();
+    expect(field).toHaveAccessibleDescription(expect.stringContaining(message));
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+  });
+
+  it("offers time zones in a dropdown and won't continue without one", () => {
+    render(Welcome, { wizardState: wizard({ timezone: "" }), onNext: () => {} });
+    const field = screen.getByLabelText("Time zone");
+    expect(field.tagName).toBe("SELECT");
+    expect(field).toHaveValue("");
+    expect(screen.getByRole("option", { name: "America/New_York" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "UTC" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+  });
+
+  it("accepts a well-formed agent name", () => {
+    render(Welcome, { wizardState: wizard({ agentName: "night-owl-2" }), onNext: () => {} });
+    expect(screen.getByLabelText("Agent name")).toBeValid();
+    expect(screen.getByRole("button", { name: "Next" })).toBeEnabled();
+  });
+});

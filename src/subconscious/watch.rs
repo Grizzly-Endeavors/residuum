@@ -154,6 +154,7 @@ mod tests {
     use super::*;
     use crate::memory::test_helpers::MockMemoryProvider;
     use crate::subconscious::SubconsciousConfig;
+    use crate::testing::wait;
     use crate::workspace::layout::WorkspaceLayout;
 
     const ACT_RESPONSE: &str = r#"{
@@ -162,6 +163,17 @@ mod tests {
         ]
     }"#;
     const EMPTY_RESPONSE: &str = r#"{"findings": []}"#;
+
+    /// Wait until the watch's detached evaluation has finished, including
+    /// recording what it delivered. `in_flight` is set synchronously by
+    /// `maybe_spawn` and cleared last, so this is exact rather than a guess
+    /// at how long the evaluation takes.
+    async fn wait_until_idle(watch: &SubconsciousWatch) {
+        wait::until_true("the mid-turn evaluation to finish", || {
+            !watch.in_flight.load(Ordering::Acquire)
+        })
+        .await;
+    }
 
     fn make_watch(
         response: &str,
@@ -197,9 +209,8 @@ mod tests {
         let (watch, mut rx) = make_watch(ACT_RESPONSE, enabled_config());
         watch.maybe_spawn(0, transcript());
 
-        let interrupt = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        let interrupt = wait::guarded("a subconscious interrupt", rx.recv())
             .await
-            .unwrap()
             .unwrap();
         match interrupt {
             Interrupt::Subconscious(content) => {
@@ -219,7 +230,7 @@ mod tests {
         let (watch, mut rx) = make_watch(EMPTY_RESPONSE, enabled_config());
         watch.maybe_spawn(0, transcript());
 
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        wait_until_idle(&watch).await;
         assert!(rx.try_recv().is_err(), "no finding, no interrupt");
     }
 
@@ -236,16 +247,14 @@ mod tests {
         // Iterations 0 and 1 don't match the every-3 cadence (fires at 2, 5, ...).
         watch.maybe_spawn(0, transcript());
         watch.maybe_spawn(1, transcript());
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        wait_until_idle(&watch).await;
         assert!(
             rx.try_recv().is_err(),
             "off-cadence iterations must not fire"
         );
 
         watch.maybe_spawn(2, transcript());
-        let interrupt = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
-            .await
-            .unwrap();
+        let interrupt = wait::guarded("a subconscious interrupt", rx.recv()).await;
         assert!(interrupt.is_some(), "on-cadence iteration should fire");
     }
 
@@ -259,7 +268,7 @@ mod tests {
             },
         );
         watch.maybe_spawn(0, transcript());
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        wait_until_idle(&watch).await;
         assert!(rx.try_recv().is_err(), "mid_turn off must not evaluate");
     }
 
@@ -270,9 +279,8 @@ mod tests {
         let (watch, mut rx) = make_watch(ACT_RESPONSE, enabled_config());
 
         watch.maybe_spawn(0, transcript());
-        let first = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        let first = wait::guarded("the first subconscious interrupt", rx.recv())
             .await
-            .unwrap()
             .unwrap();
         let Interrupt::Subconscious(first_content) = first else {
             unreachable!("expected a subconscious interrupt")
@@ -283,11 +291,10 @@ mod tests {
         );
 
         // Wait for in_flight to clear, then evaluate again.
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        wait_until_idle(&watch).await;
         watch.maybe_spawn(1, transcript());
-        let second = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        let second = wait::guarded("the second subconscious interrupt", rx.recv())
             .await
-            .unwrap()
             .unwrap();
         let Interrupt::Subconscious(second_content) = second else {
             unreachable!("expected a subconscious interrupt")
@@ -311,10 +318,8 @@ mod tests {
         let (watch, mut rx) = make_watch(ACT_RESPONSE, enabled_config());
         watch.maybe_spawn(0, transcript());
         // Drain the interrupt so we know the eval task ran to completion.
-        tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
-            .await
-            .unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        wait::guarded("a subconscious interrupt", rx.recv()).await;
+        wait_until_idle(&watch).await;
 
         let scratch = watch.scratch();
         let s = scratch.lock().unwrap();
@@ -339,7 +344,7 @@ mod tests {
         }"#;
         let (watch, mut rx) = make_watch(NOTE_RESPONSE, enabled_config());
         watch.maybe_spawn(0, transcript());
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        wait_until_idle(&watch).await;
 
         assert!(
             rx.try_recv().is_err(),
@@ -362,6 +367,6 @@ mod tests {
         watch.maybe_spawn(0, transcript());
         // Give the spawned task time to run; spawn_monitored would log a panic,
         // and the test harness would surface an abort if send panicked.
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        wait_until_idle(&watch).await;
     }
 }

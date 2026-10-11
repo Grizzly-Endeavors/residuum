@@ -18,11 +18,13 @@ pub use broker::{BusHandle, spawn_broker};
 pub use endpoint::EndpointCapabilities;
 pub use events::{
     A2aTaskSignalEvent, A2aTaskSignalState, AgentMessageEvent, AgentResultEvent, AgentResultStatus,
-    ConversationTarget, ErrorEvent, EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT,
-    InlineOutputEvent, IntermediateEvent, MessageEvent, NoticeEvent, NotificationEvent,
-    PulseOverlap, ResponseEvent, ResultDisposition, SessionEvent, SessionEventKind,
-    SessionResponseEvent, SpawnRequestEvent, ToolActivityEvent, ToolCallEvent, ToolResultEvent,
-    TurnLifecycleEvent, TurnUsageEvent, WorkbenchEvent, WorkspaceEvent, ends_with_sentinel,
+    ConversationTarget, ConversationTypingEvent, ErrorEvent, EventTrigger, HEARTBEAT_OK,
+    HEARTBEAT_URGENT, InlineOutputEvent, IntermediateEvent, MainConversationEvent, MessageEvent,
+    NoticeEvent, NotificationEvent, OutboundA2aTaskEvent, PostTurnActivityEvent,
+    PostTurnActivityKind, PulseOverlap, ResponseEvent, ResultDisposition, SessionEvent,
+    SessionEventKind, SessionResponseEvent, SpawnRequestEvent, ToolCallEvent, ToolResultEvent,
+    TurnLifecycleEvent, TurnOrigin, TurnUsageEvent, UserInboxAddedEvent, WorkbenchEvent,
+    WorkspaceEvent, ends_with_sentinel,
 };
 pub use handle::{Publisher, Subscriber};
 pub use registry::{EndpointEntry, EndpointRegistry};

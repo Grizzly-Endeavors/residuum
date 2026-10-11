@@ -256,7 +256,8 @@ pub async fn finalize_attachment(
         read: false,
         attachments: vec![PathBuf::from("inbox").join(&saved_name)],
     };
-    let filename = crate::inbox::generate_filename(&companion.title, companion.timestamp);
+    let filename =
+        crate::inbox::unique_filename(inbox_dir, &companion.title, companion.timestamp).await;
     if let Err(e) = crate::inbox::save_item(inbox_dir, &filename, &companion).await {
         tracing::warn!(
             filename = %info.filename,

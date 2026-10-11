@@ -9,7 +9,7 @@ name against an extended `PATH` that you can grow at runtime — no rebuild.
 Effective search order (first match wins):
 
 1. Directories listed in `[tools].path` (config.toml), in order.
-2. The default persistent dir `~/.residuum/bin` (created at first run).
+2. The default persistent dir `~/.residuum/hub/bin` (created at first run).
 3. The inherited system `PATH`.
 
 Drop a binary into any of these and it becomes runnable — via `exec` directly,
@@ -17,10 +17,10 @@ or as an MCP stdio server's `command`.
 
 ## Installing a tool
 
-The default dir `~/.residuum/bin` is writable and **persists** across restarts
+The default dir `~/.residuum/hub/bin` is writable and **persists** across restarts
 and (in containers) image upgrades, because it lives under the state volume. To
 add a CLI, place an executable there (e.g. `exec` a download into
-`~/.residuum/bin/mytool` and `chmod +x` it). It's immediately resolvable.
+`~/.residuum/hub/bin/mytool` and `chmod +x` it). It's immediately resolvable.
 
 Works for **single-file static binaries** (`gh`, `kubectl`, `flux`, `bao`, `uv`,
 most Go/Rust CLIs). Interpreter/runtime tools (`git`, `node`, `python`) aren't
@@ -30,7 +30,7 @@ single files and still need their runtime in the base image.
 
 ```toml
 [tools]
-# Extra dirs prepended ahead of ~/.residuum/bin. Often a read-only, shared,
+# Extra dirs prepended ahead of ~/.residuum/hub/bin. Often a read-only, shared,
 # admin-managed toolbox volume.
 path = ["/opt/residuum-tools"]
 ```

@@ -48,7 +48,7 @@ Hand something to your agent and walk away. It'll be done when you get back. You
 
 ## Build a Team
 
-Start with one agent. Shape it through conversation — tell it what you care about, how you work, what to keep track of. Over time, build a team of agents, each one shaped for a different part of your life. They learn as you go. Residuum coordinates them all.
+Start with one agent. Shape it through conversation — tell it what you care about, how you work, what to keep track of. Over time, build a team of agents, each one shaped for a different part of your life. They learn as you go. Residuum coordinates them all. See [Work with more than one agent](docs/guides/multiple-agents.md).
 
 ## Residuum Cloud
 
@@ -70,7 +70,7 @@ Free while in alpha. Core features stay free forever — Cloud expands what your
 curl -fsSL https://agent-residuum.com/install | sh
 ```
 
-The install script detects Linux and macOS automatically. Windows binaries are available on the [releases page](https://github.com/Grizzly-Endeavors/residuum/releases/latest).
+The install script detects Linux and macOS automatically and never uses `sudo`: it installs to `/usr/local/bin` when that's writable, otherwise to `~/.local/bin` (adding it to your PATH), so Residuum can update itself. Set `RESIDUUM_INSTALL_DIR` to choose a different directory. Windows binaries are available on the [releases page](https://github.com/Grizzly-Endeavors/residuum/releases/latest).
 
 ### First Run
 
@@ -79,6 +79,8 @@ residuum serve
 ```
 
 A setup screen walks you through connecting your AI provider and creating your first agent. Once it's running, just talk to it.
+
+The web app is at `http://localhost:7700`. Home shows every agent and what needs you, each agent has its own chat, and Inbox collects what your agents leave for you. Through [Residuum Cloud](#residuum-cloud) it also installs on your phone as an app and can notify you when an agent has something for you.
 
 ## Works With
 

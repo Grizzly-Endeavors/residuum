@@ -1,0 +1,40 @@
+name: Rust PR Checks
+
+# The Rust checks (format, clippy, the whole test suite, the Pebble tests,
+# generated types, and the dependency audit) on every pull request that
+# changes Rust code or how it is built, so a failing or flaky test shows up on
+# the pull request that caused it rather than at release. The pre-commit hook
+# runs only the touched modules' tests.
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "assets/**"
+      - "build.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "clippy.toml"
+      - "rustfmt.toml"
+      - "deny.toml"
+      - "web/src/lib/generated/**"
+      - "scripts/check-generated-types.sh"
+      - ".github/workflows/quality-checks.yml"
+      - ".github/workflows/rust-pr.yml"
+      - ".github/workflows/release.yml"
+
+concurrency:
+  group: rust-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Quality Checks
+    # The runners are self-hosted, so a fork's code never runs on them.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/quality-checks.yml
+    with:
+      web: false
+      rust: true
+      visual: false

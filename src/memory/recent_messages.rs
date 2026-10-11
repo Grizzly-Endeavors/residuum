@@ -1,10 +1,13 @@
 //! Persistence for recent (unobserved) messages across restarts.
 //!
 //! Messages accumulate in `recent_messages.json` until the observer
-//! threshold is reached and an episode is created, at which point
-//! the file is cleared.
+//! threshold is reached and an episode is created, at which point the
+//! messages that episode covered are removed from the file. Messages
+//! appended while the observer was running stay for the next cycle.
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError, Weak};
 
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
@@ -30,6 +33,13 @@ pub struct RecentMessage {
     /// Whether this message came from a user-visible or background turn.
     #[serde(default)]
     pub visibility: Visibility,
+    /// The correlation id of the turn that produced this message (the same
+    /// id sent as `reply_to` on `turn_started`/`turn_ended`), so the web
+    /// client can associate history entries with a live turn. `None` for
+    /// messages synthesized from an episode or session transcript, where no
+    /// turn id was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
 }
 
 /// Load recent messages from disk.
@@ -97,10 +107,34 @@ async fn save_recent_messages(path: &Path, messages: &[RecentMessage]) -> anyhow
     crate::util::fs::atomic_write(path, &json).await
 }
 
+/// The lock serializing every read-modify-write of the recent-messages file
+/// at `path`. The main loop appends after each turn while the background
+/// observer (see `crate::gateway::post_turn`) removes the messages it just
+/// observed; two rewrites interleaving would silently drop whichever landed
+/// first.
+///
+/// One lock per file, so an agent waiting on its own rewrite never holds up
+/// another agent's: every agent has its own recent-messages file.
+fn rewrite_lock(path: &Path) -> Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: LazyLock<Mutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    let mut locks = LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(lock) = locks.get(path).and_then(Weak::upgrade) {
+        return lock;
+    }
+    // Locks nobody holds any more are dropped as new ones are made.
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    locks.insert(path.to_path_buf(), Arc::downgrade(&lock));
+    lock
+}
+
 /// Append messages to the recent messages file, wrapping each with metadata.
 ///
 /// Loads existing messages, extends with new wrapped messages, and saves atomically.
 /// The `tz` parameter determines the timezone used for the message timestamp.
+/// `turn_id` is the correlation id of the turn that produced these messages
+/// (see [`RecentMessage::turn_id`]), or `None` if they weren't produced by a turn.
 ///
 /// # Errors
 /// Returns an error if loading or saving fails.
@@ -109,26 +143,36 @@ pub async fn append_recent_messages(
     new_messages: &[Message],
     visibility: Visibility,
     tz: chrono_tz::Tz,
+    turn_id: Option<&str>,
 ) -> anyhow::Result<()> {
     if new_messages.is_empty() {
         return Ok(());
     }
+    let lock = rewrite_lock(path);
+    let _guard = lock.lock().await;
     let mut existing = load_recent_messages(path).await?;
     let now = crate::time::now_local(tz);
     existing.extend(new_messages.iter().map(|msg| RecentMessage {
         message: msg.clone(),
         timestamp: now,
         visibility: visibility.clone(),
+        turn_id: turn_id.map(ToString::to_string),
     }));
     save_recent_messages(path, &existing).await
 }
 
-/// Clear the recent messages file (write an empty array).
+/// Remove the first `observed` messages — the ones an observation cycle
+/// loaded and just turned into an episode — keeping anything appended after
+/// that cycle loaded the file.
 ///
 /// # Errors
-/// Returns an error if the file cannot be written.
-pub async fn clear_recent_messages(path: &Path) -> anyhow::Result<()> {
-    save_recent_messages(path, &[]).await
+/// Returns an error if the file cannot be read or written.
+pub async fn remove_observed_recent_messages(path: &Path, observed: usize) -> anyhow::Result<()> {
+    let lock = rewrite_lock(path);
+    let _guard = lock.lock().await;
+    let mut existing = load_recent_messages(path).await?;
+    existing.drain(..observed.min(existing.len()));
+    save_recent_messages(path, &existing).await
 }
 
 #[cfg(test)]
@@ -137,6 +181,32 @@ mod tests {
 
     fn sample_message(content: &str) -> Message {
         Message::user(content)
+    }
+
+    #[tokio::test]
+    async fn rewrites_of_different_files_do_not_wait_on_each_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let scout = dir.path().join("scout.json");
+        let atlas = dir.path().join("atlas.json");
+
+        let held = rewrite_lock(&scout);
+        let _scout_rewrite = held.lock().await;
+
+        // Another agent's file rewrites while scout's is locked.
+        crate::testing::wait::guarded(
+            "atlas's rewrite to finish while scout's lock is held",
+            append_recent_messages(
+                &atlas,
+                &[sample_message("hello")],
+                Visibility::User,
+                chrono_tz::UTC,
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(Arc::ptr_eq(&held, &rewrite_lock(&scout)));
+        assert!(!Arc::ptr_eq(&held, &rewrite_lock(&atlas)));
     }
 
     #[tokio::test]
@@ -156,9 +226,15 @@ mod tests {
                 address: "spawned-a".to_string(),
                 category: "spawned".to_string(),
             }));
-        append_recent_messages(&path, &[relayed], Visibility::Background, chrono_tz::UTC)
-            .await
-            .unwrap();
+        append_recent_messages(
+            &path,
+            &[relayed],
+            Visibility::Background,
+            chrono_tz::UTC,
+            Some("turn-1"),
+        )
+        .await
+        .unwrap();
         let loaded = load_recent_messages(&path).await.unwrap();
         let sender = loaded
             .first()
@@ -180,12 +256,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn turn_id_round_trips_and_is_optional_on_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recent_messages.json");
+
+        append_recent_messages(
+            &path,
+            &[sample_message("hi")],
+            Visibility::User,
+            chrono_tz::UTC,
+            Some("turn-42"),
+        )
+        .await
+        .unwrap();
+        let loaded = load_recent_messages(&path).await.unwrap();
+        assert_eq!(
+            loaded.first().and_then(|m| m.turn_id.clone()),
+            Some("turn-42".to_string()),
+            "turn_id should round-trip through save/load"
+        );
+
+        // History written before the field existed still loads, as None.
+        let legacy = r#"[{"role":"user","content":"hi","timestamp":"2026-09-20T12:00","visibility":"user"}]"#;
+        tokio::fs::write(&path, legacy).await.unwrap();
+        let legacy_loaded = load_recent_messages(&path).await.unwrap();
+        assert_eq!(
+            legacy_loaded.first().and_then(|m| m.turn_id.clone()),
+            None,
+            "a legacy record with no turn_id should deserialize as None"
+        );
+    }
+
+    #[tokio::test]
     async fn round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("recent_messages.json");
 
         let msgs = vec![sample_message("hello"), sample_message("world")];
-        append_recent_messages(&path, &msgs, Visibility::User, chrono_tz::UTC)
+        append_recent_messages(&path, &msgs, Visibility::User, chrono_tz::UTC, None)
             .await
             .unwrap();
 
@@ -213,6 +321,7 @@ mod tests {
             &[sample_message("first")],
             Visibility::User,
             chrono_tz::UTC,
+            None,
         )
         .await
         .unwrap();
@@ -231,6 +340,7 @@ mod tests {
             &[sample_message("first")],
             Visibility::User,
             chrono_tz::UTC,
+            None,
         )
         .await
         .unwrap();
@@ -239,6 +349,7 @@ mod tests {
             &[sample_message("second")],
             Visibility::Background,
             chrono_tz::UTC,
+            None,
         )
         .await
         .unwrap();
@@ -253,7 +364,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clear_empties_file() {
+    async fn remove_observed_empties_file_when_nothing_arrived_since() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("recent_messages.json");
 
@@ -262,13 +373,98 @@ mod tests {
             &[sample_message("first")],
             Visibility::User,
             chrono_tz::UTC,
+            None,
         )
         .await
         .unwrap();
-        clear_recent_messages(&path).await.unwrap();
+        remove_observed_recent_messages(&path, 1).await.unwrap();
 
         let loaded = load_recent_messages(&path).await.unwrap();
-        assert!(loaded.is_empty(), "cleared file should return empty vec");
+        assert!(loaded.is_empty(), "every message was observed");
+    }
+
+    #[tokio::test]
+    async fn remove_observed_keeps_messages_appended_during_the_cycle() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recent_messages.json");
+        append_recent_messages(
+            &path,
+            &[sample_message("observed-1"), sample_message("observed-2")],
+            Visibility::User,
+            chrono_tz::UTC,
+            None,
+        )
+        .await
+        .unwrap();
+        let observed = load_recent_messages(&path).await.unwrap().len();
+
+        // A turn ends while the observer's LLM call is in flight.
+        append_recent_messages(
+            &path,
+            &[sample_message("arrived-later")],
+            Visibility::User,
+            chrono_tz::UTC,
+            None,
+        )
+        .await
+        .unwrap();
+        remove_observed_recent_messages(&path, observed)
+            .await
+            .unwrap();
+
+        let loaded = load_recent_messages(&path).await.unwrap();
+        assert_eq!(loaded.len(), 1, "only the unobserved message remains");
+        assert_eq!(loaded.first().unwrap().message.content, "arrived-later");
+    }
+
+    #[tokio::test]
+    async fn concurrent_appends_and_removal_never_lose_a_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recent_messages.json");
+        append_recent_messages(
+            &path,
+            &[sample_message("observed")],
+            Visibility::User,
+            chrono_tz::UTC,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let appends = (0..20).map(|i| {
+            let path = path.clone();
+            crate::util::spawn_in_span(async move {
+                append_recent_messages(
+                    &path,
+                    &[sample_message(&format!("later-{i}"))],
+                    Visibility::User,
+                    chrono_tz::UTC,
+                    None,
+                )
+                .await
+                .unwrap();
+            })
+        });
+        let removal = {
+            let path = path.clone();
+            crate::util::spawn_in_span(async move {
+                remove_observed_recent_messages(&path, 1).await.unwrap();
+            })
+        };
+        let handles: Vec<_> = appends.collect();
+        removal.await.unwrap();
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        let loaded = load_recent_messages(&path).await.unwrap();
+        let contents: Vec<&str> = loaded.iter().map(|m| m.message.content.as_str()).collect();
+        assert_eq!(
+            loaded.len(),
+            20,
+            "all 20 later messages survive: {contents:?}"
+        );
+        assert!(!contents.contains(&"observed"));
     }
 
     #[tokio::test]
@@ -276,7 +472,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("recent_messages.json");
 
-        append_recent_messages(&path, &[], Visibility::User, chrono_tz::UTC)
+        append_recent_messages(&path, &[], Visibility::User, chrono_tz::UTC, None)
             .await
             .unwrap();
         assert!(
@@ -305,6 +501,7 @@ mod tests {
             &[sample_message("hello")],
             Visibility::User,
             chrono_tz::UTC,
+            None,
         )
         .await
         .unwrap();
@@ -332,6 +529,7 @@ mod tests {
             &[sample_message("system event")],
             Visibility::Background,
             chrono_tz::UTC,
+            None,
         )
         .await
         .unwrap();
@@ -355,6 +553,7 @@ mod tests {
             &[sample_message("real user msg")],
             Visibility::User,
             chrono_tz::UTC,
+            None,
         )
         .await
         .unwrap();
@@ -365,6 +564,7 @@ mod tests {
             &[sample_message("heartbeat prompt")],
             Visibility::Background,
             chrono_tz::UTC,
+            None,
         )
         .await
         .unwrap();
@@ -391,6 +591,7 @@ mod tests {
             &[sample_message("background event")],
             Visibility::Background,
             chrono_tz::UTC,
+            None,
         )
         .await
         .unwrap();

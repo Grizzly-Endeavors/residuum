@@ -9,10 +9,10 @@ Three pulses ship enabled by default in every workspace's `HEARTBEAT.yml`:
 | Pulse | Schedule | Agent | What it does |
 |-------|----------|-------|---------------|
 | `reflection` | `7d` | `introspection` | Reviews recent episodes/observations for patterns (repeated manual tasks, recurring topics, unfinished requests, friction) and delivers findings via `user_inbox_add`. |
-| `memory_tending` | `24h`, active `02:00-06:00` | `wiki` | Ingests episodes since the last `ingest` entry in `wiki/log.md` into wiki pages and `USER.md` — adds durable facts, corrects or removes stale entries, and maintains the `USER.md` core-facts list (≤15 entries, replace-don't-append, ≥2 episodes to promote a page from `draft` to `stable`). |
-| `wiki_lint` | `7d`, active `02:00-06:00` | `wiki` | Audits the wiki for index drift, missing frontmatter, stale pages, old drafts, duplicates, contradictions, and missing links; fixes each problem in place; its summary is filed like any pulse result. |
+| `memory_tending` | `24h`, active `02:00-06:00` | `wiki` | Ingests episodes since the last `ingest` entry in `team/wiki/log.md` into team wiki pages and `team/USER.md` — adds durable facts, corrects or removes stale entries, and maintains the `team/USER.md` core-facts list (≤15 entries, replace-don't-append, ≥2 episodes to promote a page from `draft` to `stable`). |
+| `wiki_lint` | `7d`, active `02:00-06:00` | `wiki` | Audits the team wiki for index drift, missing frontmatter, stale pages, old drafts, duplicates, contradictions, and missing links; fixes each problem in place; its summary is filed like any pulse result. |
 
-`reflection` routes to the `introspection` skill (see `skills/introspection/SKILL.md`) with `model_tier: large`. Every session fork carries SOUL.md/AGENTS.md in its system message now, so `introspection` has the identity context it needs to judge what's worth surfacing without any special option — it can only *propose* SOUL.md/AGENTS.md changes via its inbox delivery, never edit them directly. `memory_tending` and `wiki_lint` route to the `wiki` skill (see `skills/wiki/SKILL.md`) with `model_tier: large`, and may edit wiki pages and `USER.md` directly.
+`reflection` routes to the `introspection` skill (see `team/skills/introspection/SKILL.md`) with `model_tier: large`. Every session fork carries SOUL.md and the team's AGENTS.md in its system message, so `introspection` has the identity context it needs to judge what's worth surfacing without any special option — it can only *propose* SOUL.md and team/AGENTS.md changes via its inbox delivery, never edit them directly. `memory_tending` and `wiki_lint` route to the `wiki` skill (see `team/skills/wiki/SKILL.md`) with `model_tier: large`, and may edit team wiki pages and `team/USER.md` directly.
 
 To disable either, set `enabled: false` on the pulse (don't delete it — the block documents what it does). To tune frequency or scope, edit the `schedule`, `active_hours`, or task prompts directly. A commented-out block of additional starter pulses (`inbox_check`, `morning_briefing`, `nightly_review`) follows the built-ins in the default file — optional add-ons, not enabled by default.
 
@@ -32,11 +32,20 @@ pulses:
   - name: monitor-deploys
     enabled: true
     schedule: 1h
-    agent: deploy-watcher    # Any string names a skill from skills/, at the pulse's model_tier
+    agent: deploy-watcher    # Any string names a skill (yours or the team's), at the pulse's model_tier
     tasks:
       - name: check_status
         prompt: "Check deployment status."
 ```
+
+## Output Chaining (`context_from`)
+
+Set `context_from: <pulse_name>` on a pulse to have that named pulse's most recent delivered output injected into this pulse's prompt at fire time, under a `## Context from '<pulse_name>'` section — useful for simple pipelines (a nightly collector feeding a weekly summarizer) without a shared file as a hand-off point.
+
+- "Delivered output" is the source pulse's last **completed** run whose summary wasn't `HEARTBEAT_OK`; a failed or cancelled run never updates it. It's recorded as each pulse's result arrives, so it reflects the source pulse's last successful, non-silent completion, however long ago.
+- If the named pulse doesn't exist, has never fired, or has never produced a non-`HEARTBEAT_OK` result, nothing is injected — the prompt says so explicitly instead of silently omitting the section.
+- Single-hop only: no chain resolution — only the named pulse's own stored output is used, even if that pulse itself sets `context_from`.
+- Persisted alongside `last_run` in `pulse_state.json`, survives restarts, and is pruned when the source pulse is removed from HEARTBEAT.yml.
 
 ## Schedule Parsing
 
@@ -64,13 +73,13 @@ The `agent` field controls how the pulse executes:
 | Value | Execution | Model Tier |
 |-------|-----------|------------|
 | `~` (null) | Session with no skill | Small |
-| `"<skill-name>"` | Session with that skill from `skills/` | The pulse's `model_tier` (default: small) |
+| `"<skill-name>"` | Session with that skill (agent or team) | The pulse's `model_tier` (default: small) |
 
-`agent: "main"` is removed: every session fork already carries the main agent's identity and a memory snapshot, so there is no separate "run on main" mode. A pulse still using `agent: "main"`, or setting `include_identity` (also removed), fails to load with an error naming the pulse. Rejection is also raised as an owner-facing notice (a web UI toast and the same message on any chat interface) naming every currently rejected pulse, the field to remove, and a link to `migrating-to-agent-sessions.md` — fired once when a pulse first becomes rejected, and again if the rejected set changes, not on every tick.
+`agent: "main"` is removed: every session fork already carries the main agent's identity and a memory snapshot, so there is no separate "run on main" mode. A pulse still using `agent: "main"`, or setting `include_identity` (also removed), fails to load with an error naming the pulse. Rejection is also raised as an owner-facing notice (a web UI toast) naming every currently rejected pulse, the field to remove, and a link to `migrating-to-agent-sessions.md` — fired once when a pulse first becomes rejected, and again if the rejected set changes, not on every tick.
 
 ## Diagnostics
 
-Editing `HEARTBEAT.yml` via `write_file`/`edit_file`, the workspace editor, or `POST /api/workspace/validate` reports invalid YAML, a non-list `pulses` key, a pulse entry that fails to deserialize on its own, a removed option, or a duplicate pulse name as a diagnostic alongside the save — one per problem, so one bad pulse doesn't hide problems in the others — and the write always goes through rather than being rejected.
+Editing `HEARTBEAT.yml` via `write_file`/`edit_file`, the Files editor, or `POST /api/agents/<agent>/workspace/validate` reports invalid YAML, a non-list `pulses` key, a pulse entry that fails to deserialize on its own, a removed option, or a duplicate pulse name as a diagnostic alongside the save — one per problem, so one bad pulse doesn't hide problems in the others — and the write always goes through rather than being rejected.
 
 ## Behavior
 
@@ -79,15 +88,15 @@ Editing `HEARTBEAT.yml` via `write_file`/`edit_file`, the workspace editor, or `
 - A pulse fires **immediately on first run** after startup (no wait for the first interval).
 - Last-run timestamps are persisted to `pulse_state.json`, so pulses resume their schedule across restarts.
 - Disabled pulses (`enabled: false`) are skipped entirely.
-- A pulse that comes due while its own previous run is still going starts anyway — never skipped, blocked, or cancelled — but is flagged as overlapping: visible on the pulse in the web UI's Scheduled view and on the run itself, and logged at `info!` with the pulse name, the previous run's id, and how long it had been going. No separate notice for this; the UI flag is the signal.
+- A pulse that comes due while its own previous run is still going starts anyway — never skipped, blocked, or cancelled — but is flagged as overlapping: visible on the pulse in the web UI's Schedule place and on the run itself, and logged at `info!` with the pulse name, the previous run's id, and how long it had been going. No separate notice for this; the UI flag is the signal.
 - Each task in `tasks` is an object with `name` (string) and `prompt` (string). Task prompts are joined into the session's prompt.
 - Pulse sessions include a `"HEARTBEAT_OK"` instruction: the agent should respond with just that phrase if there is nothing to report. These results are silently discarded before reaching the notification router.
 - Every pulse run is framed as **autonomous** in its prompt: no user is present, so it must not wait on a question, and it must not create/modify pulses itself. A pulse that concludes a new pulse is warranted should say so via the user inbox, not edit `HEARTBEAT.yml`.
 - A failed pulse run's inbox item names the failure reason directly (never just a blank body), and also publishes its own owner-facing notice separate from the inbox item.
 
-## Scheduled View
+## Schedule Place
 
-The web UI's Scheduled view (hamburger menu, `/scheduled`) lists every pulse — schedule, active hours, agent/skill, enabled flag, next fire estimate, last outcome (with error if failed), current run (with any overlap flag), and per-pulse loading problems — and every pending scheduled action with a cancel button. Toggling a pulse's enabled switch edits just that value in HEARTBEAT.yml, leaving the rest of the file untouched. Backed by `GET/PUT /api/scheduled/pulses...` and `GET/DELETE /api/scheduled/actions...`.
+The web UI's Schedule place (under each agent in the rail, `/agent/<agent>/schedule`) lists every pulse by its name in words ("Inbox check") — how often it runs, active hours, skill, an on/off switch, when it runs next, last outcome (with error if failed), current run (with any overlap), and per-pulse loading problems — and every pending scheduled action with Cancel. It refetches when HEARTBEAT.yml or scheduled_actions.json changes and when a scheduled run starts or ends. The schedule endpoints answer only while the agent runs, so a stopped agent's Schedule offers Start instead. A pulse's next fire time is the first moment at or after the later of now and the end of its `schedule` since its last run that falls inside its `active_hours`; it is `null` for a disabled pulse and for every pulse when `[pulse] enabled` is `false` in the agent's `config.toml`. Toggling a pulse's enabled switch edits just that value in HEARTBEAT.yml, leaving the rest of the file untouched. Backed by `GET/PUT /api/agents/<agent>/scheduled/pulses...` and `GET/DELETE /api/agents/<agent>/scheduled/actions...`.
 
 ## Gotchas
 

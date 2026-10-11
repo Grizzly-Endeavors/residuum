@@ -14,9 +14,13 @@
 //!   output (scheduled results, `send_message`) goes to the owner's DM.
 
 mod activity;
+pub mod atk;
+pub mod atk_runner;
 mod auth;
 mod connector;
 mod handler;
+pub mod setup_job;
+pub mod setup_types;
 mod store;
 mod subscriber;
 
@@ -28,7 +32,7 @@ use crate::background::registry::SessionRegistry;
 use crate::bus::{EndpointName, Publisher};
 use crate::config::TeamsConfig;
 use crate::gateway::event_loop::AdapterSenders;
-use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
+use crate::gateway::types::{ServerCommand, StopRequest};
 use crate::interfaces::context_buffer::ContextBuffer;
 use crate::interfaces::conversations::{ConversationSource, KnownConversation};
 use crate::interfaces::reply_targets::ReplyTargets;
@@ -57,11 +61,13 @@ pub(super) struct TeamsRuntime {
     reply_targets: ReplyTargets<ConversationRef>,
     inbound_tx: tokio::sync::mpsc::Sender<activity::Activity>,
     publisher: Publisher,
-    reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
+    reload_tx: crate::gateway::types::ReloadSender,
     command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
     stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
     session_registry: Arc<SessionRegistry>,
     inbox_dir: PathBuf,
+    /// Main's saved conversation, which `/multitask` forks.
+    main_conversation: PathBuf,
     tz: chrono_tz::Tz,
 }
 
@@ -192,6 +198,7 @@ impl TeamsInterface {
             stop_tx: self.senders.stop,
             session_registry: self.senders.session_registry,
             inbox_dir: self.layout.agent_inbox_dir(),
+            main_conversation: self.layout.recent_messages_json(),
             tz: self.tz,
             cfg: self.cfg,
         });
@@ -215,12 +222,13 @@ impl TeamsInterface {
             .with_state(Arc::clone(&rt));
 
         let worker_rt = Arc::clone(&rt);
-        let worker = tokio::spawn(async move {
+        let worker = crate::util::spawn_in_span(async move {
             while let Some(activity) = inbound_rx.recv().await {
                 handler::process_activity(&worker_rt, activity).await;
             }
         });
-        let outbound = tokio::spawn(subscriber::run_teams_subscriber(Arc::clone(&rt), subs));
+        let outbound =
+            crate::util::spawn_in_span(subscriber::run_teams_subscriber(Arc::clone(&rt), subs));
         let _registration = self
             .senders
             .conversations

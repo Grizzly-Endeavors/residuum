@@ -17,7 +17,7 @@ use serenity::prelude::*;
 
 use crate::background::registry::SessionRegistry;
 use crate::bus::Publisher;
-use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
+use crate::gateway::types::{ServerCommand, StopRequest};
 use crate::inference::{ImageData, MessageSender};
 use crate::interfaces::attachment::{
     AttachmentInfo, download_attachment, finalize_attachment, format_failed_attachment_line,
@@ -41,7 +41,9 @@ pub(super) struct DiscordHandler {
     pub(super) state: Arc<DiscordState>,
     pub(super) publisher: Publisher,
     pub(super) inbox_dir: PathBuf,
-    pub(super) reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
+    /// Main's saved conversation, which `/multitask` forks.
+    pub(super) main_conversation: PathBuf,
+    pub(super) reload_tx: crate::gateway::types::ReloadSender,
     pub(super) command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
     pub(super) stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
     pub(super) session_registry: Arc<SessionRegistry>,
@@ -199,6 +201,8 @@ impl EventHandler for DiscordHandler {
             session_registry: &self.session_registry,
             inbox_dir: &self.inbox_dir,
             tz: self.tz,
+            publisher: &self.publisher,
+            main_conversation: &self.main_conversation,
         };
         let response_text = crate::interfaces::run_chat_command(
             cmd.data.name.as_str(),
@@ -383,7 +387,7 @@ async fn register_commands(ctx: &Context) -> Result<(), Box<serenity::Error>> {
                     "text",
                     "Text argument",
                 )
-                .required(true),
+                .required(info.arg_required),
             );
         }
 
@@ -430,7 +434,10 @@ mod tests {
             state,
             publisher: crate::bus::spawn_broker().publisher(),
             inbox_dir: std::env::temp_dir(),
-            reload_tx: tokio::sync::watch::channel(ReloadSignal::Root).0,
+            main_conversation: std::env::temp_dir().join("recent_messages.json"),
+            reload_tx: tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>(
+            )
+            .0,
             command_tx: tokio::sync::mpsc::channel(1).0,
             stop_tx: tokio::sync::mpsc::channel(1).0,
             session_registry: Arc::new(SessionRegistry::new()),

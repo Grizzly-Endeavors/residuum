@@ -35,11 +35,13 @@ use crate::bus::{
     SpawnRequestEvent, topics,
 };
 use crate::config::BackgroundModelTier;
+use crate::hub::team::TeamLink;
 use crate::inference::{ImageData, Message};
-use crate::interfaces::types::InboundMessage;
 
 use super::events::publish_session_event;
-use super::registry::{DeliverOutcome, MAIN_ADDRESS, ResumePoint, SessionRegistry};
+use super::registry::{
+    DeliverOutcome, MAIN_ADDRESS, ResumePoint, SessionRegistry, TEAMMATE_SENDER_CATEGORY,
+};
 use super::store::SessionStore;
 
 /// What happened when a message was sent to an address.
@@ -104,6 +106,10 @@ pub struct AgentMessenger {
     publisher: Publisher,
     store: Arc<SessionStore>,
     hop_limits: HopLimits,
+    /// This agent's handle on the hub's team router: how it reaches
+    /// teammates and reads the roster. A team of one until
+    /// [`Self::with_team`] links it to the hub.
+    team: TeamLink,
     /// Hop count of an agent message delivered to main, keyed by the
     /// `MessageEvent.id` it was published under. Main has no interrupt
     /// channel of its own the way a session does — delivery reuses the
@@ -115,6 +121,12 @@ pub struct AgentMessenger {
     /// consumed as a turn's kickoff or mid-turn interrupt) is harmless
     /// clutter, not a leak that grows unbounded in practice.
     pending_main_hops: Mutex<HashMap<String, u32>>,
+    /// Hop count each message carried when main's running turn took it in
+    /// mid-turn, keyed by `MessageEvent.id`. The turn's shared counter holds
+    /// the sum of every input, so a message that turns out to have arrived
+    /// after the turn's last checkpoint reads its own hop from here instead.
+    /// Cleared after every turn (see [`Self::clear_mid_turn_hops`]).
+    mid_turn_hops: Mutex<HashMap<String, u32>>,
 }
 
 impl AgentMessenger {
@@ -133,8 +145,34 @@ impl AgentMessenger {
             publisher,
             store,
             hop_limits,
+            team: TeamLink::alone("agent"),
             pending_main_hops: Mutex::new(HashMap::new()),
+            mid_turn_hops: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Link this messenger to the hub's team router, so `agent:` addresses
+    /// reach teammates and the roster is the hub's.
+    #[must_use]
+    pub(crate) fn with_team(mut self, team: TeamLink) -> Self {
+        self.team = team;
+        self
+    }
+
+    /// This agent's handle on the team router.
+    #[must_use]
+    pub fn team(&self) -> &TeamLink {
+        &self.team
+    }
+
+    /// The bus publisher this messenger sends agent-to-agent deliveries
+    /// through — reused by callers (e.g. [`crate::a2a::RemoteTaskTracker`])
+    /// that need to publish a user-facing notice alongside an agent-facing
+    /// one, rather than threading a second `Publisher` through their own
+    /// constructor.
+    #[must_use]
+    pub fn publisher(&self) -> &Publisher {
+        &self.publisher
     }
 
     /// Recover the hop count of an agent message delivered to main, given
@@ -150,6 +188,62 @@ impl AgentMessenger {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(message_id)
             .unwrap_or(0)
+    }
+
+    /// Record `hop_count` for a message main is about to receive again under
+    /// `message_id`, so the next [`Self::take_main_hop`] for it returns the
+    /// hop count it originally carried. A zero hop count records nothing:
+    /// `take_main_hop` already answers `0` for an id it has no entry for.
+    pub(crate) fn restore_main_hop(&self, message_id: &str, hop_count: u32) {
+        if hop_count == 0 {
+            return;
+        }
+        self.pending_main_hops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(message_id.to_string(), hop_count);
+    }
+
+    /// Remember the hop count `message_id` carried when main's running turn
+    /// took it in mid-turn. A zero hop count records nothing.
+    pub(crate) fn note_mid_turn_hop(&self, message_id: &str, hop_count: u32) {
+        if hop_count == 0 {
+            return;
+        }
+        self.mid_turn_hops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(message_id.to_string(), hop_count);
+    }
+
+    /// The hop count `message_id` carried when it was taken in mid-turn, or
+    /// `0` if it carried none.
+    #[must_use]
+    pub(crate) fn mid_turn_hop(&self, message_id: &str) -> u32 {
+        self.mid_turn_hops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(message_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Forget every hop count noted by [`Self::note_mid_turn_hop`]; called
+    /// once a turn's leftovers have been sorted out.
+    pub(crate) fn clear_mid_turn_hops(&self) {
+        self.mid_turn_hops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
+    /// Discard the hop count recorded for `message_id`, for a message that
+    /// will not be looked up as a turn's kickoff.
+    pub(crate) fn forget_main_hop(&self, message_id: &str) {
+        self.pending_main_hops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(message_id);
     }
 
     /// Send `content` from `from` (identified by address and category) to
@@ -217,7 +311,7 @@ impl AgentMessenger {
                 let publisher = self.publisher.clone();
                 let store = Arc::clone(&self.store);
                 let deferred_address = address.clone();
-                tokio::spawn(async move {
+                crate::util::spawn_in_span(async move {
                     deferred_resume(registry, publisher, store, deferred_address, message).await;
                 });
                 return Ok(DeliveryOutcome::Queued(address));
@@ -258,18 +352,35 @@ impl AgentMessenger {
             limit = self.hop_limits.hard,
             "refusing to deliver agent message: hop limit reached, likely a message loop"
         );
-        let note = format!(
+        let note = self.hop_refusal_note(from, to, hop_count);
+        let sinks = self.note_sinks();
+        record_note_if_live_session(sinks, from, &note).await;
+        record_note_if_live_session(sinks, &SessionAddress::from(to), &note).await;
+    }
+
+    fn hop_refusal_note(&self, from: &SessionAddress, to: &str, hop_count: u32) -> String {
+        format!(
             "[Message Loop Limit] a message from {from} to {to} reached the hop limit \
              ({hop_count} >= {}); it was not delivered.",
             self.hop_limits.hard
-        );
-        let sinks = NoteSinks {
+        )
+    }
+
+    fn note_sinks(&self) -> NoteSinks<'_> {
+        NoteSinks {
             registry: &self.registry,
             store: &self.store,
             publisher: &self.publisher,
-        };
-        record_note_if_live_session(sinks, from, &note).await;
-        record_note_if_live_session(sinks, &SessionAddress::from(to), &note).await;
+        }
+    }
+
+    /// Record, in the transcript of the live session `from`, that its message
+    /// to the teammate address `to` was refused at the hop limit. The
+    /// teammate's own messenger has already logged the refusal and noted it
+    /// on its side; this is the sender's half.
+    pub(crate) async fn note_refused_send(&self, from: &SessionAddress, to: &str, hop_count: u32) {
+        let note = self.hop_refusal_note(from, to, hop_count);
+        record_note_if_live_session(self.note_sinks(), from, &note).await;
     }
 
     /// Deliver to the main agent by publishing a `MessageEvent` on the
@@ -291,6 +402,7 @@ impl AgentMessenger {
         hop_count: u32,
     ) -> Result<(), SendError> {
         let sender = from.clone();
+        let sender_is_teammate = from_category == TEAMMATE_SENDER_CATEGORY;
         let body = content.clone();
         let msg = AgentMessageEvent {
             from,
@@ -318,7 +430,11 @@ impl AgentMessenger {
                 "failed to deliver message to main".to_string(),
             ));
         }
-        self.publish_message_to_main(&sender, body).await;
+        // A teammate's message has no run in this agent's registry to show it
+        // on; main's own history already carries it.
+        if !sender_is_teammate {
+            self.publish_message_to_main(&sender, body).await;
+        }
         Ok(())
     }
 
@@ -432,7 +548,7 @@ impl AgentMessenger {
     pub(crate) async fn deliver_conversation(
         &self,
         address: &SessionAddress,
-        inbound: InboundMessage,
+        inbound: MessageEvent,
         spawn: ConversationSpawn,
     ) -> Result<ConversationDeliveryOutcome, SendError> {
         match self
@@ -454,7 +570,7 @@ impl AgentMessenger {
                 let registry = Arc::clone(&self.registry);
                 let publisher = self.publisher.clone();
                 let deferred_address = address.clone();
-                tokio::spawn(async move {
+                crate::util::spawn_in_span(async move {
                     deferred_conversation_resume(
                         registry,
                         publisher,
@@ -487,7 +603,7 @@ pub(crate) enum PendingInput {
     /// Another agent addressed this session (`message_agent`).
     Agent(AgentMessageEvent),
     /// A new message arrived in this session's own conversation.
-    External(InboundMessage),
+    External(MessageEvent),
 }
 
 impl PendingInput {
@@ -566,7 +682,7 @@ pub(crate) enum ConversationDeliveryOutcome {
 async fn publish_conversation_spawn(
     publisher: &Publisher,
     address: SessionAddress,
-    inbound: InboundMessage,
+    inbound: MessageEvent,
     spawn: ConversationSpawn,
 ) -> Result<(), SendError> {
     let Some(conversation) = inbound.origin.conversation.as_ref() else {
@@ -603,6 +719,7 @@ async fn publish_conversation_spawn(
         images: original_inbound.images.clone(),
         inbound: Some(original_inbound),
         overlap: None,
+        carried_history: Vec::new(),
     };
     publisher
         .publish(topics::Background, event)
@@ -620,7 +737,7 @@ async fn publish_conversation_resume(
     publisher: &Publisher,
     address: &SessionAddress,
     point: &ResumePoint,
-    inbound: &InboundMessage,
+    inbound: &MessageEvent,
 ) -> Result<(), SendError> {
     let context = match &inbound.context {
         Some(ctx) => format!("{}\n\n{ctx}", pointer_note(point)),
@@ -642,6 +759,7 @@ async fn publish_conversation_resume(
         images: inbound.images.clone(),
         inbound: Some(inbound.clone()),
         overlap: None,
+        carried_history: Vec::new(),
     };
     publisher.publish(topics::Background, event).await.map_err(|e| {
         tracing::error!(error = %e, address = %address, "failed to publish conversation resume");
@@ -683,7 +801,7 @@ pub(crate) async fn retry_race_guard_user_message(
     registry: Arc<SessionRegistry>,
     publisher: Publisher,
     address: SessionAddress,
-    inbound: InboundMessage,
+    inbound: MessageEvent,
     spawn_event: SpawnRequestEvent,
 ) {
     let mut attempts: u32 = 0;
@@ -738,7 +856,7 @@ async fn deferred_conversation_resume(
     registry: Arc<SessionRegistry>,
     publisher: Publisher,
     address: SessionAddress,
-    inbound: InboundMessage,
+    inbound: MessageEvent,
     spawn: ConversationSpawn,
 ) {
     loop {
@@ -773,7 +891,7 @@ async fn resume_or_start_conversation_after_clear(
     registry: &SessionRegistry,
     publisher: &Publisher,
     address: &SessionAddress,
-    inbound: &InboundMessage,
+    inbound: &MessageEvent,
     spawn: &ConversationSpawn,
 ) -> bool {
     let mut attempts: u32 = 0;
@@ -1024,6 +1142,7 @@ async fn publish_resume(
         inbound: None,
         images,
         overlap: None,
+        carried_history: Vec::new(),
     };
 
     publisher
@@ -1056,6 +1175,7 @@ fn pointer_note(point: &ResumePoint) -> String {
 mod tests {
     use super::*;
     use crate::bus::{EventTrigger, SkillName, Subscriber};
+    use crate::testing::wait;
     use tokio_util::sync::CancellationToken;
 
     const NO_LIMIT: HopLimits = HopLimits { soft: 8, hard: 32 };
@@ -1303,15 +1423,14 @@ mod tests {
             "error message should be actionable: {err}"
         );
 
+        wait::bus_barrier(&bus_handle).await;
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), spawn_sub.recv())
-                .await
-                .is_err(),
+            spawn_sub.drain().is_empty(),
             "a busy channel must never trigger a duplicate resume spawn"
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn send_to_a_completing_session_returns_immediately_and_resumes_once_it_clears() {
         // The whole point of the non-blocking redesign: `send` must not
         // await the completing run's own teardown (which can include a slow
@@ -1337,8 +1456,8 @@ mod tests {
         let address = info.address.clone();
         let run_id = info.run_id.clone();
 
-        let outcome = tokio::time::timeout(
-            std::time::Duration::from_millis(200),
+        let outcome = wait::guarded(
+            "send to return for a completing target, not block on its teardown",
             messenger.send(
                 address.as_ref(),
                 SessionAddress::from(MAIN_ADDRESS),
@@ -1348,26 +1467,25 @@ mod tests {
             ),
         )
         .await
-        .expect("send must return promptly for a completing target, not block on its teardown")
         .unwrap();
         assert!(matches!(outcome, DeliveryOutcome::Queued(addr) if addr == address));
 
         // Nothing should be published yet: the deferred task is still
         // waiting for the entry to clear.
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), spawn_sub.recv())
+            crate::testing::clock::within(std::time::Duration::from_millis(50), spawn_sub.recv())
                 .await
-                .is_err(),
+                .is_none(),
             "the resume must wait for the completing run to clear before publishing"
         );
 
         registry.remove(&address, &run_id);
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), spawn_sub.recv())
-            .await
-            .expect("the deferred resume should publish once the entry clears")
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event(
+            "the deferred resume to publish once the entry clears",
+            &mut spawn_sub,
+        )
+        .await;
         assert_eq!(event.address, address);
         assert!(event.prompt.contains("any updates?"));
         assert_eq!(event.model_tier, crate::config::BackgroundModelTier::Large);
@@ -1422,10 +1540,9 @@ mod tests {
             }
         }
 
+        wait::bus_barrier(&bus_handle).await;
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(100), spawn_sub.recv())
-                .await
-                .is_err(),
+            spawn_sub.drain().is_empty(),
             "no resume should ever be published once the address is already live"
         );
     }
@@ -1457,11 +1574,8 @@ mod tests {
             resume_or_deliver_after_clear(&registry, &publisher, &store, &address, &msg).await;
         assert!(done, "resuming is a final outcome");
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), spawn_sub.recv())
-            .await
-            .expect("a genuinely free address must be resumed")
-            .unwrap()
-            .unwrap();
+        let event =
+            wait::next_event("a genuinely free address to be resumed", &mut spawn_sub).await;
         assert_eq!(event.address, address);
         assert!(event.prompt.contains("still there?"));
     }
@@ -1602,8 +1716,8 @@ mod tests {
         );
     }
 
-    fn sample_inbound(content: &str, buffered: Option<&str>) -> InboundMessage {
-        InboundMessage {
+    fn sample_inbound(content: &str, buffered: Option<&str>) -> MessageEvent {
+        MessageEvent {
             id: "conv-1".to_string(),
             content: content.to_string(),
             origin: crate::interfaces::types::MessageOrigin {
@@ -1621,7 +1735,7 @@ mod tests {
                 }),
                 agent_sender: None,
             },
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Utc::now().naive_utc(),
             images: vec![],
             context: buffered.map(str::to_string),
         }
@@ -1766,7 +1880,7 @@ mod tests {
         assert_eq!(target.conversation_id, "chan-1");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn deliver_conversation_to_a_completing_session_queues_and_resumes_once_clear() {
         let (messenger, registry, bus_handle) = messenger();
         let mut sub: Subscriber<crate::bus::SpawnRequestEvent> =
@@ -1788,8 +1902,8 @@ mod tests {
         let address = info.address.clone();
         let run_id = info.run_id.clone();
 
-        let outcome = tokio::time::timeout(
-            std::time::Duration::from_millis(200),
+        let outcome = wait::guarded(
+            "deliver_conversation to return for a completing target",
             messenger.deliver_conversation(
                 &address,
                 sample_inbound("any updates?", None),
@@ -1797,24 +1911,23 @@ mod tests {
             ),
         )
         .await
-        .expect("deliver_conversation must return promptly for a completing target")
         .unwrap();
         assert!(matches!(outcome, ConversationDeliveryOutcome::Queued(addr) if addr == address));
 
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), sub.recv())
+            crate::testing::clock::within(std::time::Duration::from_millis(50), sub.recv())
                 .await
-                .is_err(),
+                .is_none(),
             "the resume must wait for the completing run to clear before publishing"
         );
 
         registry.remove(&address, &run_id);
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
-            .await
-            .expect("the deferred resume should publish once the entry clears")
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event(
+            "the deferred resume to publish once the entry clears",
+            &mut sub,
+        )
+        .await;
         assert_eq!(event.address, address);
         assert!(event.prompt.contains("any updates?"));
     }
@@ -1943,10 +2056,9 @@ mod tests {
             "error should name the config setting that controls the limit, got: {err}"
         );
 
+        wait::bus_barrier(&bus_handle).await;
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), sub.recv())
-                .await
-                .is_err(),
+            sub.drain().is_empty(),
             "a refused message must never actually reach the target"
         );
     }

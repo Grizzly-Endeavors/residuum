@@ -2,12 +2,22 @@
 
 import type {
   ImageAttachment as _ImageAttachment,
+  MessageSender,
   SessionSummary as _SessionSummary,
+  RepoStats as _RepoStats,
 } from "./generated/protocol";
+import type { AutoModeVerdict } from "./generated/AutoModeVerdict";
 export type {
   ClientMessage,
   ServerMessage,
+  TurnInProgress,
+  SnapshotFrame,
+  PostTurnActivityKind,
+  MessageSender,
+  TurnOrigin,
+  Visibility,
   ImageAttachment,
+  OutboundA2aTaskSummary,
   SessionCategory,
   SessionCommandErrorCode,
   SessionDeliveryOutcome,
@@ -22,16 +32,46 @@ export type {
   WorkspaceChange,
   WorkspaceChangeKind,
   WorkspaceResyncReason,
+  CheckpointSummary,
+  CheckpointPage,
+  CheckpointDetail,
+  ChangedPath,
+  ChangeKind,
+  RepoKind,
+  RepoStats,
+  RestoreOutcome,
+  UndoOutcome,
+  CheckpointTrigger,
   PulseOverlap,
   PulseInfo,
   ActionInfo,
   ScheduledCurrentRun,
   ScheduledRunOutcome,
+  ToolStatus,
+  AtkStatus,
+  SuggestedEndpointSource,
+  TeamsSetupPrereqs,
+  TeamsSetupForm,
+  TeamsSetupStart,
+  TeamsSetupPhase,
+  TeamsSetupState,
+  LogStream,
+  LogLine,
+  SignInPrompt,
+  SetupError,
+  CreatedResources,
+  SetupResult,
+  TeamsSetupJob,
+  TeamsSetupRedirect,
+  CleanupRequest,
+  CleanupFailure,
+  CleanupResult,
 } from "./generated/protocol";
 
 // Local aliases for use within this file
 type ImageAttachment = _ImageAttachment;
 type SessionSummary = _SessionSummary;
+type RepoStats = _RepoStats;
 
 // ── Chat history ─────────────────────────────────────────────────────
 
@@ -50,14 +90,8 @@ export interface ToolCallRecord {
    * `normalizeToolArgs()` instead of assuming a shape.
    */
   arguments: unknown;
-}
-
-/** Person behind a user message that arrived on a chat interface. */
-export interface MessageSender {
-  name: string;
-  id: string;
-  interface: string;
-  location?: string;
+  /** The MCP server (its name in `mcp.json`) that owns this tool; absent for a built-in. */
+  server?: string | null;
 }
 
 export interface RecentMessage {
@@ -65,18 +99,25 @@ export interface RecentMessage {
   content: string;
   tool_calls?: ToolCallRecord[];
   tool_call_id?: string;
+  /**
+   * The model's readable reasoning behind an assistant message, one entry per
+   * block that has text; absent when it produced none.
+   */
+  thinking?: string[];
   timestamp: string;
   visibility: "user" | "background";
   sender?: MessageSender;
   /** The agent that sent this message, for one agent's message to another. */
   agent_sender?: AgentSender;
+  /** The correlation id of the turn that produced this message, if any. */
+  turn_id?: string;
 }
 
 /** The agent behind a message one agent sent another. */
 export interface AgentSender {
-  /** Sender's address (`main` or a session address). */
+  /** Sender's address (`main` or a session address, or `agent:<name>[/<session>]` for a teammate). */
   address: string;
-  /** Sender's category label (`main`, `scheduled`, `external`, `spawned`, `artifact`). */
+  /** Sender's category label (`main`, `scheduled`, `external`, `spawned`, `artifact`, `teammate`). */
   category: string;
 }
 
@@ -114,6 +155,13 @@ export interface StatusResponse {
   version: string;
   /** Feature ids this build supports, the same list the workbench SDK exposes as `residuum.features`. */
   features: string[];
+  /** Each checkpoint repository's on-disk size and count, or `null` if just-now unreadable. */
+  checkpoints: {
+    workspace: RepoStats | null;
+    team: RepoStats | null;
+    agent_config: RepoStats | null;
+    hub: RepoStats | null;
+  };
 }
 
 // ── Setup wizard types ──────────────────────────────────────────────
@@ -184,6 +232,7 @@ export interface IntegrationsConfig {
 
 export interface SetupWizardState {
   userName: string;
+  agentName: string;
   timezone: string;
   selectedProviders: ProviderKey[];
   providerConfigs: Record<ProviderKey, ProviderConfig>;
@@ -239,20 +288,12 @@ export interface ValidateResponse {
   valid: boolean;
   error?: string;
   diagnostics?: Diagnostic[];
+  /** On a successful Settings PATCH: the checkpoint taken just before the
+   * write. Absent when that checkpoint failed (the write still happened). */
+  checkpoint_id?: string;
 }
 
 // ── Settings types ───────────────────────────────────────────────────
-
-export type SettingsSection =
-  | "runtime"
-  | "providers"
-  | "memory"
-  | "integrations"
-  | "mcp"
-  | "agent-keys"
-  | "a2a";
-
-export type SettingsMode = "simple" | "advanced" | "raw";
 
 export interface RollbackNoticeResponse {
   attempted_version: string;
@@ -286,6 +327,12 @@ export interface CloudStatusResponse {
   enabled: boolean;
   /** True when this response was served to a browser viewing the gateway through the tunnel. */
   viewed_via_tunnel: boolean;
+  /** Public origin of this user's web UI through the relay, while connected. */
+  origin?: string | null;
+  /** This hub's instance slug on the relay, while connected. */
+  instance?: string | null;
+  /** The instance's own public origin, such as `https://laptop.bear.agent-residuum.com`, while connected. */
+  instance_origin?: string;
 }
 
 export interface SettingsProviderEntry {
@@ -325,6 +372,12 @@ export interface SettingsModelAssignments {
   bgMedium: string;
   bgLarge: string;
   overrides: Record<string, RoleOverrides>;
+  /**
+   * The rest of each role's failover list, after the model above. A role has
+   * an entry only when its list is longer than one. The form shows and edits
+   * the first model; the rest ride along so a save never shortens the list.
+   */
+  fallbacks: Record<string, string[]>;
 }
 
 /** One agent key as the API describes it. Values are never sent. */
@@ -361,8 +414,18 @@ export interface A2aStatusResponse {
   enabled: boolean;
   port: number;
   visibility: "public" | "private";
-  /** This agent's own tunnel/reverse proxy origin, or null when none is set. */
+  /**
+   * The address other agents reach this one at from outside this machine: under the user's own
+   * tunnel/reverse proxy when one is set, otherwise through the Residuum relay while it is
+   * connected, otherwise null.
+   */
   public_url: string | null;
+  /** This agent's address on the local A2A listener. */
+  local_url: string;
+  /** Whether other Residuum installs can reach this agent through the relay right now. */
+  relay_access: boolean;
+  /** Plain-language statement of how far the agent can be reached. */
+  relay_access_note: string;
   /** Whether something is currently answering on the A2A port. */
   listener_running: boolean;
   /** Plain-language problem with the workspace agent card, or null if it's fine. */
@@ -452,12 +515,56 @@ export interface ToolCallState {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
-  status: "running" | "done" | "error";
+  /**
+   * `error` when the live result said the call failed (history doesn't keep
+   * that); `stopped` when its turn was stopped or cut off before it finished.
+   */
+  status: "running" | "done" | "error" | "stopped";
   result?: string;
+  /** The MCP server (its name in `mcp.json`) that owns this tool; absent for a built-in. */
+  server?: string | null;
+  /** Auto Mode's verdict, from the live result; history doesn't keep it. */
+  autoMode?: AutoModeVerdict;
+  /** `Date.now()` when the page saw the call start; history doesn't keep it. */
+  startedAt?: number;
+  /** `Date.now()` when the page saw the call end, or the turn settle it. */
+  endedAt?: number;
 }
 
 interface FeedItemBase {
   id: number;
+  /**
+   * The correlation id of the turn the item belongs to, which groups a turn's
+   * output (`feed/turns.ts`): from history where messages carry one, or from
+   * the live turn it arrived in. Episodes carry none.
+   */
+  turnId?: string;
+  /**
+   * A user or agent message that reached the agent while its turn ran, so it
+   * belongs inside that turn's block. Every other user or agent message
+   * starts a turn, even when its `turnId` repeats an earlier turn's.
+   */
+  midTurn?: boolean;
+  /**
+   * When a message was sent, as a local date and time ("2026-10-09T10:05:00"):
+   * from history, or from the moment its frame reached the page. Absent where
+   * it isn't known, as for an archived episode (every message carries its
+   * date) and a session's transcript (every message carries the run's start).
+   */
+  timestamp?: string;
+}
+
+/**
+ * The turn a user message started, once it's finished — set from a live
+ * `turn_ended`/`session_turn_ended` frame, never from history (checkpoints
+ * don't persist a turn's id past the live session that ran it, so "Undo
+ * this turn" is only offered for a turn observed live). `changed` is
+ * `null` until checked against the workspace's checkpoint history for this
+ * turn id, then `true`/`false`.
+ */
+export interface TurnRef {
+  turnId: string;
+  changed: boolean | null;
 }
 
 export interface UserFeedItem extends FeedItemBase {
@@ -465,17 +572,49 @@ export interface UserFeedItem extends FeedItemBase {
   content: string;
   images?: ImageAttachment[];
   sender?: MessageSender;
+  turn?: TurnRef;
+  /** The message's id, for one that arrived live: a turn snapshot names the messages it holds by it. */
+  messageId?: string;
 }
 
 export interface AssistantFeedItem extends FeedItemBase {
   kind: "assistant";
   content: string;
+  /** The model call that wrote it, counting from zero within its turn, for text the agent sent on the live socket. */
+  call?: number;
+  /** The text is still arriving: `content` is what has so far. */
+  streaming?: boolean;
+  /** The turn ended before the text was complete, because the user stopped it or the agent did. */
+  cut?: "stopped" | "interrupted";
+  /** The chat interface the reply was delivered to, when that wasn't this page. */
+  deliveredTo?: string;
+}
+
+/**
+ * The agent's reasoning for one model call, which shows as a step of an
+ * activity line. Live it streams in; history keeps only the readable text.
+ */
+export interface ThinkingFeedItem extends FeedItemBase {
+  kind: "thinking";
+  content: string;
+  /** The model call that thought it, counting from zero within its turn, for reasoning from the live socket. */
+  call?: number;
+  /** The reasoning is still arriving. */
+  streaming?: boolean;
+  /** `Date.now()` when the page saw it start, and when it ended; history doesn't keep them. */
+  startedAt?: number;
+  endedAt?: number;
 }
 
 export interface DividerFeedItem extends FeedItemBase {
   kind: "divider";
+  /** The divider's text as it read when made; a divider with a `date` is named from it again as days pass. */
   label: string;
   variant?: "episode" | "day";
+  /** The day the divider stands for ("YYYY-MM-DD", or a timestamp on it), named relative to today. */
+  date?: string;
+  /** The episode that follows the divider, for an episode divider. */
+  episode?: string;
 }
 
 export interface CompressedMarkerFeedItem extends FeedItemBase {
@@ -485,6 +624,8 @@ export interface CompressedMarkerFeedItem extends FeedItemBase {
 export interface ToolGroupFeedItem extends FeedItemBase {
   kind: "tool-group";
   calls: ToolCallState[];
+  /** The model call that made these tool calls, for calls from the live socket. */
+  call?: number;
 }
 
 export interface FileAttachmentFeedItem extends FeedItemBase {
@@ -525,7 +666,7 @@ export interface AgentMessageFeedItem extends FeedItemBase {
 }
 
 /**
- * A one-line status note inside a session view: delivery outcomes, command
+ * A one-line status note in a session transcript: delivery outcomes, command
  * failures, session errors, and the run finishing.
  */
 export interface StatusFeedItem extends FeedItemBase {
@@ -536,7 +677,27 @@ export interface StatusFeedItem extends FeedItemBase {
   details?: string;
 }
 
+/**
+ * The end of a turn that couldn't finish, kept in the feed after its toast is
+ * gone: what went wrong in plain words, the technical detail behind a
+ * toggle, and a way to send the user's message again.
+ */
+export interface TurnFailureFeedItem extends FeedItemBase {
+  kind: "turn-failure";
+  /** The agent's plain-language account of what went wrong. */
+  message: string;
+  /** The full technical cause chain, when there is one. */
+  details?: string;
+  /**
+   * What the user sent to start the turn, for Try again. Absent when the page
+   * doesn't hold that message or it wasn't the user's own.
+   */
+  retry?: { content: string; images?: ImageAttachment[] };
+}
+
 export type FeedItem =
+  | ThinkingFeedItem
+  | TurnFailureFeedItem
   | AgentMessageFeedItem
   | StatusFeedItem
   | UserFeedItem

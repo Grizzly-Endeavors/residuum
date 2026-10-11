@@ -141,6 +141,7 @@ mod tests {
             message: Message::user(text),
             timestamp: chrono::Utc::now().naive_utc(),
             visibility: Visibility::User,
+            turn_id: None,
         }
     }
 
@@ -149,6 +150,7 @@ mod tests {
             message: Message::assistant(text.to_string(), None),
             timestamp: chrono::Utc::now().naive_utc(),
             visibility: Visibility::User,
+            turn_id: None,
         }
     }
 
@@ -160,10 +162,12 @@ mod tests {
                     id: "call_1".to_string(),
                     name: "read_file".to_string(),
                     arguments: serde_json::json!({"path": "src/main.rs"}),
+                    server: None,
                 }]),
             ),
             timestamp: chrono::Utc::now().naive_utc(),
             visibility: Visibility::User,
+            turn_id: None,
         }
     }
 
@@ -172,6 +176,7 @@ mod tests {
             message: Message::tool("file contents here", "call_1"),
             timestamp: chrono::Utc::now().naive_utc(),
             visibility: Visibility::User,
+            turn_id: None,
         }
     }
 
@@ -180,6 +185,7 @@ mod tests {
             message: Message::system("you are a helpful assistant"),
             timestamp: chrono::Utc::now().naive_utc(),
             visibility: Visibility::User,
+            turn_id: None,
         }
     }
 
@@ -238,6 +244,7 @@ mod tests {
                 message: Message::assistant("   ".to_string(), None),
                 timestamp: chrono::Utc::now().naive_utc(),
                 visibility: Visibility::User,
+                turn_id: None,
             },
         ];
         let chunks = extract_chunks(&msgs, "ep-001", "2026-02-19", 2);
@@ -374,5 +381,35 @@ mod tests {
         );
         assert_eq!(chunks[0].chunk_id, "ep-001-c0");
         assert_eq!(chunks[1].chunk_id, "ep-001-c1");
+    }
+
+    #[test]
+    fn a_chunk_holds_what_was_said_and_not_what_the_model_thought() {
+        let reply = RecentMessage {
+            message: crate::inference::Message::assistant("The answer is 42.".to_string(), None)
+                .with_thinking(vec![crate::inference::ThinkingBlock {
+                    text: "private reasoning about the answer".to_string(),
+                    signature: Some("sig-opaque-token".to_string()),
+                    redacted: Some("encrypted-blob".to_string()),
+                    part: None,
+                    origin: None,
+                }]),
+            timestamp: chrono::NaiveDateTime::default(),
+            visibility: Visibility::User,
+            turn_id: None,
+        };
+        let messages = vec![recent_user("what is it?"), reply];
+
+        let chunks = extract_chunks(&messages, "ep-001", "2026-02-19", 2);
+
+        assert_eq!(chunks.len(), 1);
+        let content = &chunks.first().unwrap().content;
+        assert!(content.contains("The answer is 42."));
+        for leaked in ["private reasoning", "sig-opaque-token", "encrypted-blob"] {
+            assert!(
+                !content.contains(leaked),
+                "{leaked} must not be indexed: {content}"
+            );
+        }
     }
 }

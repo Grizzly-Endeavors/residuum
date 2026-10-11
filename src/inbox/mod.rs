@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::interfaces::attachment::FileAttachment;
 
@@ -36,6 +37,64 @@ pub struct InboxItem {
     /// `archive_item` for why the directory portion can go stale.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<PathBuf>,
+}
+
+/// An attachment of a user inbox item as a client sees it: what it needs to
+/// show and fetch the file. The on-disk path never leaves the server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[ts(export)]
+pub struct InboxAttachment {
+    /// The file's name.
+    pub filename: String,
+    /// The file's MIME type, from its extension.
+    pub mime_type: String,
+    /// The file's size in bytes.
+    #[ts(type = "number")]
+    pub size: u64,
+    /// Where to fetch the file: under the owning agent's routes, so a client
+    /// uses it as given.
+    pub url: String,
+}
+
+/// Resolve an item's attachments into servable metadata by statting each file
+/// under `attachments_root/<id>/`. Each URL is under the owning agent's routes
+/// (`/api/agents/{agent}/inbox/{id}/attachments/{index}`), which also serve a
+/// stopped agent's.
+///
+/// An attachment whose file can't be found on disk is dropped from the listing
+/// (rather than shown as a broken link) and logged — this can happen if a
+/// workspace was hand-edited, but should not happen in normal operation.
+pub async fn resolve_attachments(
+    agent: &str,
+    id: &str,
+    item: &InboxItem,
+    attachments_root: &Path,
+) -> Vec<InboxAttachment> {
+    let mut resolved = Vec::with_capacity(item.attachments.len());
+    for (index, stored) in item.attachments.iter().enumerate() {
+        let Some(file_name) = stored.file_name().and_then(|f| f.to_str()) else {
+            tracing::warn!(id = %id, stored = %stored.display(), "inbox attachment entry has no filename, omitting");
+            continue;
+        };
+        let path = attachments_root.join(id).join(file_name);
+        match tokio::fs::metadata(&path).await {
+            Ok(meta) => resolved.push(InboxAttachment {
+                filename: file_name.to_string(),
+                mime_type: crate::interfaces::attachment::detect_mime_type(&path),
+                size: meta.len(),
+                url: format!("/api/agents/{agent}/inbox/{id}/attachments/{index}"),
+            }),
+            Err(e) => {
+                tracing::warn!(
+                    id = %id,
+                    filename = %file_name,
+                    error = %e,
+                    "inbox attachment file missing on disk, omitting from listing"
+                );
+            }
+        }
+    }
+    resolved
 }
 
 /// Generate a filename for an inbox item: `{YYYYMMDD}_{sanitized_title}.json`.
@@ -67,9 +126,69 @@ pub fn generate_filename(title: &str, now: NaiveDateTime) -> String {
     }
 }
 
+/// Generate a filename for an inbox item, the same as [`generate_filename`],
+/// but appending `_2`, `_3`, ... before `.json` when that stem already exists
+/// in `inbox_dir` or in the archive that pairs with it.
+///
+/// `generate_filename` stays pure and deterministic — the same title on the
+/// same day always produces the same stem. This is the one place that checks
+/// disk, so two items with the same title on the same day get distinct ids
+/// instead of the second one silently overwriting the first through
+/// `save_item`'s atomic rename. The archive counts too: an archived item keeps
+/// its id, so a new item that reused it would overwrite the archived one when
+/// it was archived in turn, and restoring the old one would overwrite the new.
+#[must_use]
+pub async fn unique_filename(inbox_dir: &Path, title: &str, now: NaiveDateTime) -> String {
+    let archive_dir = archive_sibling(inbox_dir);
+    let base = generate_filename(title, now);
+    if !id_in_use(inbox_dir, archive_dir.as_deref(), &base).await {
+        return base;
+    }
+
+    let stem = base.trim_end_matches(".json");
+    let mut suffix: u32 = 2;
+    loop {
+        let candidate = format!("{stem}_{suffix}.json");
+        if !id_in_use(inbox_dir, archive_dir.as_deref(), &candidate).await {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
+/// The archive directory that pairs with a workspace inbox directory:
+/// `<root>/inbox/<kind>` archives to `<root>/archive/inbox/<kind>`, the layout
+/// `WorkspaceLayout` defines. `None` for a directory that isn't laid out that
+/// way, which then has no archive to check.
+fn archive_sibling(inbox_dir: &Path) -> Option<PathBuf> {
+    let kind = inbox_dir.file_name()?;
+    let inbox = inbox_dir.parent()?;
+    if inbox.file_name()? != "inbox" {
+        return None;
+    }
+    Some(inbox.parent()?.join("archive").join("inbox").join(kind))
+}
+
+/// Whether `filename` is taken in the inbox or, when there is one, its archive.
+async fn id_in_use(inbox_dir: &Path, archive_dir: Option<&Path>, filename: &str) -> bool {
+    if file_exists(inbox_dir, filename).await {
+        return true;
+    }
+    match archive_dir {
+        Some(dir) => file_exists(dir, filename).await,
+        None => false,
+    }
+}
+
+async fn file_exists(dir: &Path, filename: &str) -> bool {
+    tokio::fs::try_exists(dir.join(filename))
+        .await
+        .unwrap_or(false)
+}
+
 /// Default an inbox item's title from its body: the first line, in full.
 /// Shared by every caller that lets a title be omitted — the WS `/inbox`
-/// command, chat-interface inbox commands, and the `POST /api/agent-inbox`
+/// command, chat-interface inbox commands, and the `POST /api/agents/{name}/agent-inbox`
 /// endpoint — so the rule stays in one place. The generated filename bounds
 /// its own length (see [`generate_filename`]); the title itself is never
 /// truncated.
@@ -93,7 +212,7 @@ pub async fn quick_add(
     tz: chrono_tz::Tz,
 ) -> anyhow::Result<String> {
     let now = crate::time::now_local(tz);
-    let filename = generate_filename(title, now);
+    let filename = unique_filename(inbox_dir, title, now).await;
     let item = InboxItem {
         title: title.to_string(),
         body: body.to_string(),
@@ -132,7 +251,7 @@ pub async fn quick_add_with_attachments(
     attachment_paths: &[PathBuf],
 ) -> anyhow::Result<(String, Vec<String>)> {
     let now = crate::time::now_local(tz);
-    let filename = generate_filename(title, now);
+    let filename = unique_filename(inbox_dir, title, now).await;
     let item_id = filename.trim_end_matches(".json");
 
     let (attachments, failures) =
@@ -381,6 +500,20 @@ pub async fn list_items(inbox_dir: &Path) -> anyhow::Result<Vec<(String, InboxIt
     Ok(entries)
 }
 
+/// The items in `inbox_dir` like [`list_items`], or none when the directory
+/// doesn't exist. An agent that has never started (a restored one with
+/// autostart off, say) has no inbox directories yet, and reading its inbox
+/// answers with nothing rather than an error.
+///
+/// # Errors
+/// Returns an error if the directory exists but cannot be read.
+pub async fn list_items_or_empty(inbox_dir: &Path) -> anyhow::Result<Vec<(String, InboxItem)>> {
+    if matches!(tokio::fs::try_exists(inbox_dir).await, Ok(false)) {
+        return Ok(Vec::new());
+    }
+    list_items(inbox_dir).await
+}
+
 /// Count unread inbox items.
 #[tracing::instrument(skip_all, fields(path = %inbox_dir.display()))]
 pub async fn count_unread(inbox_dir: &Path) -> usize {
@@ -443,6 +576,8 @@ pub async fn archive_item(
     let item_id = json_name.trim_end_matches(".json").to_string();
     let src = inbox_dir.join(&json_name);
 
+    ensure_absent(&archive_dir.join(&json_name), "the archive", &item_id).await?;
+
     tokio::fs::create_dir_all(archive_dir)
         .await
         .with_context(|| format!("failed to create archive dir {}", archive_dir.display()))?;
@@ -478,6 +613,87 @@ pub async fn archive_item(
         .with_context(|| format!("inbox item '{json_name}' not found or could not be archived"))?;
     tracing::debug!(src = %src.display(), dst = %dst.display(), "inbox item archived");
 
+    Ok(())
+}
+
+/// Move an archived inbox item back to the active inbox directory — the
+/// reverse of [`archive_item`]. Archiving is otherwise a one-way soft
+/// delete, so this is the only way to undo it.
+///
+/// Mirrors `archive_item`'s move order and error handling: the attachments
+/// directory (if any) moves first, then the JSON file, so a failure partway
+/// through leaves the item safely retryable either way.
+///
+/// # Errors
+/// Returns an error if the file is not found in the archive, or if either
+/// move fails.
+#[tracing::instrument(skip_all, fields(item = %filename))]
+pub async fn restore_item(
+    archive_dir: &Path,
+    inbox_dir: &Path,
+    filename: &str,
+) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+
+    let json_name = ensure_json_ext(filename);
+    let item_id = json_name.trim_end_matches(".json").to_string();
+    let src = archive_dir.join(&json_name);
+
+    ensure_absent(&inbox_dir.join(&json_name), "the inbox", &item_id).await?;
+
+    tokio::fs::create_dir_all(inbox_dir)
+        .await
+        .with_context(|| format!("failed to create inbox dir {}", inbox_dir.display()))?;
+
+    let src_attachments = archive_dir.join("attachments").join(&item_id);
+    if tokio::fs::try_exists(&src_attachments)
+        .await
+        .unwrap_or(false)
+    {
+        let dst_attachments_root = inbox_dir.join("attachments");
+        tokio::fs::create_dir_all(&dst_attachments_root)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to create inbox attachments dir {}",
+                    dst_attachments_root.display()
+                )
+            })?;
+        let dst_attachments = dst_attachments_root.join(&item_id);
+        tokio::fs::rename(&src_attachments, &dst_attachments)
+            .await
+            .with_context(|| format!("failed to restore attachments for inbox item '{item_id}'"))?;
+        tracing::debug!(
+            src = %src_attachments.display(),
+            dst = %dst_attachments.display(),
+            "inbox item attachments restored"
+        );
+    }
+
+    let dst = inbox_dir.join(&json_name);
+    tokio::fs::rename(&src, &dst).await.with_context(|| {
+        format!("inbox item '{json_name}' not found in archive or could not be restored")
+    })?;
+    tracing::debug!(src = %src.display(), dst = %dst.display(), "inbox item restored");
+
+    Ok(())
+}
+
+/// Fail when `target` exists, so a move never replaces a different item that
+/// has the same id. Items saved with [`unique_filename`] never share an id
+/// across the inbox and its archive; this stops one that does (from before ids
+/// were unique, or placed by hand) from silently destroying the other.
+async fn ensure_absent(target: &Path, place: &str, item_id: &str) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+
+    let taken = tokio::fs::try_exists(target)
+        .await
+        .with_context(|| format!("failed to check for {}", target.display()))?;
+    if taken {
+        anyhow::bail!(
+            "{place} already holds a different item with id '{item_id}', so it was left where it is"
+        );
+    }
     Ok(())
 }
 
@@ -603,6 +819,292 @@ mod tests {
             "title part should be at most 60 chars: {} (len={})",
             title_part,
             title_part.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn unique_filename_no_collision_matches_generate_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = test_now();
+        assert_eq!(
+            unique_filename(dir.path(), "hello world", now).await,
+            generate_filename("hello world", now),
+            "existing ids must keep resolving the same way when there is no collision"
+        );
+    }
+
+    #[tokio::test]
+    async fn unique_filename_appends_suffix_on_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = test_now();
+        let base = generate_filename("daily report", now);
+        save_item(dir.path(), &base, &make_item("daily report", 8, false))
+            .await
+            .unwrap();
+
+        let second = unique_filename(dir.path(), "daily report", now).await;
+        assert_ne!(second, base, "colliding stem must get a distinct filename");
+        assert_eq!(second, base.replace(".json", "_2.json"));
+    }
+
+    #[tokio::test]
+    async fn unique_filename_skips_multiple_existing_suffixes() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = test_now();
+        let base = generate_filename("daily report", now);
+        let suffix_2 = base.replace(".json", "_2.json");
+        save_item(dir.path(), &base, &make_item("daily report", 8, false))
+            .await
+            .unwrap();
+        save_item(dir.path(), &suffix_2, &make_item("daily report", 9, false))
+            .await
+            .unwrap();
+
+        let third = unique_filename(dir.path(), "daily report", now).await;
+        assert_eq!(third, base.replace(".json", "_3.json"));
+    }
+
+    #[test]
+    fn archive_sibling_follows_the_workspace_layout() {
+        let layout = crate::workspace::layout::WorkspaceLayout::new("/tmp/ws");
+        assert_eq!(
+            archive_sibling(&layout.user_inbox_dir()),
+            Some(layout.user_inbox_archive_dir()),
+            "the user inbox archives where the layout says"
+        );
+        assert_eq!(
+            archive_sibling(&layout.agent_inbox_dir()),
+            Some(layout.agent_inbox_archive_dir()),
+            "the agent inbox archives where the layout says"
+        );
+        assert_eq!(
+            archive_sibling(Path::new("/tmp/ws/notes")),
+            None,
+            "a directory outside the layout has no archive to check"
+        );
+    }
+
+    #[tokio::test]
+    async fn unique_filename_avoids_ids_held_by_the_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        tokio::fs::create_dir_all(layout.user_inbox_archive_dir())
+            .await
+            .unwrap();
+        let now = test_now();
+        let base = generate_filename("daily report", now);
+        save_item(
+            &layout.user_inbox_archive_dir(),
+            &base,
+            &make_item("daily report", 8, true),
+        )
+        .await
+        .unwrap();
+
+        let next = unique_filename(&layout.user_inbox_dir(), "daily report", now).await;
+        assert_eq!(
+            next,
+            base.replace(".json", "_2.json"),
+            "an archived item keeps its id, so a new item can't reuse it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_item_after_archiving_the_same_title_leaves_both_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        let inbox = layout.user_inbox_dir();
+        let archive = layout.user_inbox_archive_dir();
+        tokio::fs::create_dir_all(&inbox).await.unwrap();
+
+        let first = quick_add(&inbox, "daily report", "first", "cli", chrono_tz::UTC)
+            .await
+            .unwrap();
+        archive_item(&inbox, &archive, &first).await.unwrap();
+        let second = quick_add(&inbox, "daily report", "second", "cli", chrono_tz::UTC)
+            .await
+            .unwrap();
+        assert_ne!(first, second, "the archived id is taken");
+
+        archive_item(&inbox, &archive, &second).await.unwrap();
+        let archived = list_items(&archive).await.unwrap();
+        assert_eq!(archived.len(), 2, "archiving the second kept the first");
+        restore_item(&archive, &inbox, &first).await.unwrap();
+        assert_eq!(
+            load_item(&archive.join(&second)).await.unwrap().body,
+            "second",
+            "restoring the first left the second archived"
+        );
+        assert_eq!(load_item(&inbox.join(&first)).await.unwrap().body, "first");
+    }
+
+    #[tokio::test]
+    async fn archive_item_refuses_to_replace_an_archived_item_with_the_same_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = dir.path().join("inbox");
+        let archive = dir.path().join("archive/inbox");
+        tokio::fs::create_dir_all(&inbox).await.unwrap();
+        tokio::fs::create_dir_all(&archive).await.unwrap();
+        save_item(&inbox, "same.json", &make_item("active one", 9, false))
+            .await
+            .unwrap();
+        save_item(&archive, "same.json", &make_item("archived one", 8, true))
+            .await
+            .unwrap();
+
+        let err = archive_item(&inbox, &archive, "same").await.unwrap_err();
+        assert!(
+            err.to_string().contains("already holds a different item"),
+            "the error names the conflict: {err}"
+        );
+        assert_eq!(
+            load_item(&archive.join("same.json")).await.unwrap().title,
+            "archived one",
+            "the archived item is untouched"
+        );
+        assert_eq!(
+            load_item(&inbox.join("same.json")).await.unwrap().title,
+            "active one",
+            "the active item stays where it was"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_item_refuses_to_replace_an_active_item_with_the_same_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = dir.path().join("inbox");
+        let archive = dir.path().join("archive/inbox");
+        tokio::fs::create_dir_all(&inbox).await.unwrap();
+        tokio::fs::create_dir_all(&archive).await.unwrap();
+        save_item(&inbox, "same.json", &make_item("active one", 9, false))
+            .await
+            .unwrap();
+        save_item(&archive, "same.json", &make_item("archived one", 8, true))
+            .await
+            .unwrap();
+
+        assert!(restore_item(&archive, &inbox, "same").await.is_err());
+        assert_eq!(
+            load_item(&inbox.join("same.json")).await.unwrap().title,
+            "active one",
+            "the active item is untouched"
+        );
+        assert_eq!(
+            load_item(&archive.join("same.json")).await.unwrap().title,
+            "archived one",
+            "the archived item stays archived"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_items_or_empty_answers_none_for_a_missing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let items = list_items_or_empty(&dir.path().join("never-created"))
+            .await
+            .unwrap();
+        assert!(
+            items.is_empty(),
+            "a directory that doesn't exist has no items"
+        );
+    }
+
+    #[tokio::test]
+    async fn quick_add_same_title_same_day_does_not_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let first = quick_add(
+            dir.path(),
+            "daily report",
+            "first body",
+            "cli",
+            chrono_tz::UTC,
+        )
+        .await
+        .unwrap();
+        let second = quick_add(
+            dir.path(),
+            "daily report",
+            "second body",
+            "cli",
+            chrono_tz::UTC,
+        )
+        .await
+        .unwrap();
+
+        assert_ne!(first, second, "second save must get a distinct filename");
+
+        let first_item = load_item(&dir.path().join(&first)).await.unwrap();
+        let second_item = load_item(&dir.path().join(&second)).await.unwrap();
+        assert_eq!(
+            first_item.body, "first body",
+            "the first item must survive the second save"
+        );
+        assert_eq!(second_item.body, "second body");
+    }
+
+    #[tokio::test]
+    async fn quick_add_with_attachments_same_title_same_day_uses_distinct_attachment_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox_dir = dir.path().join("inbox");
+        let attachments_dir = dir.path().join("attachments");
+        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
+
+        let source_a = dir.path().join("a.txt");
+        let source_b = dir.path().join("b.txt");
+        tokio::fs::write(&source_a, b"first").await.unwrap();
+        tokio::fs::write(&source_b, b"second").await.unwrap();
+
+        let (first, first_failures) = quick_add_with_attachments(
+            &inbox_dir,
+            &attachments_dir,
+            "daily report",
+            "first body",
+            "agent",
+            chrono_tz::UTC,
+            &[source_a],
+        )
+        .await
+        .unwrap();
+        let (second, second_failures) = quick_add_with_attachments(
+            &inbox_dir,
+            &attachments_dir,
+            "daily report",
+            "second body",
+            "agent",
+            chrono_tz::UTC,
+            &[source_b],
+        )
+        .await
+        .unwrap();
+
+        assert!(first_failures.is_empty());
+        assert!(second_failures.is_empty());
+        assert_ne!(first, second, "second save must get a distinct filename");
+
+        let first_id = first.trim_end_matches(".json");
+        let second_id = second.trim_end_matches(".json");
+        assert_ne!(
+            first_id, second_id,
+            "attachment directories must follow distinct item ids"
+        );
+
+        let first_item = load_item(&inbox_dir.join(&first)).await.unwrap();
+        let second_item = load_item(&inbox_dir.join(&second)).await.unwrap();
+        assert_eq!(first_item.body, "first body");
+        assert_eq!(second_item.body, "second body");
+
+        assert_eq!(
+            tokio::fs::read(attachments_dir.join(first_id).join("a.txt"))
+                .await
+                .unwrap(),
+            b"first",
+            "first item's attachment must not be mixed with the second"
+        );
+        assert_eq!(
+            tokio::fs::read(attachments_dir.join(second_id).join("b.txt"))
+                .await
+                .unwrap(),
+            b"second"
         );
     }
 
@@ -821,6 +1323,85 @@ mod tests {
         let archive = dir.path().join("archive/inbox");
         let result = archive_item(dir.path(), &archive, "nonexistent").await;
         assert!(result.is_err(), "should error on missing file");
+    }
+
+    #[tokio::test]
+    async fn restore_item_moves_file_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = dir.path().join("inbox");
+        let archive = dir.path().join("archive/inbox");
+        tokio::fs::create_dir_all(&inbox).await.unwrap();
+
+        save_item(
+            &inbox,
+            "roundtrip.json",
+            &make_item("restore me", 12, false),
+        )
+        .await
+        .unwrap();
+
+        archive_item(&inbox, &archive, "roundtrip").await.unwrap();
+        assert!(!inbox.join("roundtrip.json").exists());
+        assert!(archive.join("roundtrip.json").exists());
+
+        restore_item(&archive, &inbox, "roundtrip").await.unwrap();
+
+        assert!(
+            inbox.join("roundtrip.json").exists(),
+            "should be back in the active inbox"
+        );
+        assert!(
+            !archive.join("roundtrip.json").exists(),
+            "should be gone from the archive"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_item_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = dir.path().join("inbox");
+        let result = restore_item(dir.path(), &inbox, "nonexistent").await;
+        assert!(result.is_err(), "should error when not in the archive");
+    }
+
+    #[tokio::test]
+    async fn restore_item_moves_attachments_dir_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = dir.path().join("inbox");
+        let archive = dir.path().join("archive/inbox");
+        let attachments = inbox.join("attachments").join("with_attachment");
+        tokio::fs::create_dir_all(&attachments).await.unwrap();
+        tokio::fs::write(attachments.join("file.txt"), b"hi")
+            .await
+            .unwrap();
+
+        save_item(
+            &inbox,
+            "with_attachment.json",
+            &make_item("has attachment", 12, false),
+        )
+        .await
+        .unwrap();
+
+        archive_item(&inbox, &archive, "with_attachment")
+            .await
+            .unwrap();
+        restore_item(&archive, &inbox, "with_attachment")
+            .await
+            .unwrap();
+
+        assert!(
+            inbox
+                .join("attachments")
+                .join("with_attachment")
+                .join("file.txt")
+                .exists(),
+            "attachment file should be back under the active inbox"
+        );
+        assert!(
+            !archive.join("attachments").join("with_attachment").exists(),
+            "archive attachments dir should be empty of this item"
+        );
     }
 
     #[tokio::test]

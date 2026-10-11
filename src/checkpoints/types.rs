@@ -9,11 +9,21 @@ use ts_rs::TS;
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum RepoKind {
-    /// `~/.residuum/checkpoints/workspace.git`, work tree = the workspace root.
+    /// `hub/checkpoints/workspace.git`, work tree = the agent's workspace
+    /// root (the agent directory minus `config/config.toml` and
+    /// `config/providers.toml`, which the `AgentConfig` repo tracks instead).
     Workspace,
-    /// `~/.residuum/checkpoints/config.git`: root `config.toml`, `providers.toml`,
-    /// the encrypted secret/agent-key/A2A-key stores. Local-only forever.
-    Config,
+    /// `hub/checkpoints/team.git`, work tree = the shared `team/` directory
+    /// (team rules, user profile, wiki, workbench, skills) minus the team
+    /// wiki's search index and atomic-write temp files.
+    Team,
+    /// `hub/checkpoints/agent-config.git`: exactly the agent's own
+    /// `config/config.toml` and `config/providers.toml`. Local-only forever
+    /// (may hold plaintext provider keys).
+    AgentConfig,
+    /// `hub/checkpoints/hub-config.git`: hub `config.toml`, the encrypted
+    /// secret/agent-key/A2A-key stores. Local-only forever.
+    Hub,
 }
 
 impl RepoKind {
@@ -22,7 +32,9 @@ impl RepoKind {
     pub(super) fn dir_name(self) -> &'static str {
         match self {
             Self::Workspace => "workspace.git",
-            Self::Config => "config.git",
+            Self::Team => "team.git",
+            Self::AgentConfig => "agent-config.git",
+            Self::Hub => "hub-config.git",
         }
     }
 }
@@ -39,7 +51,7 @@ pub enum CheckpointTrigger {
     /// End of an agent turn: captures what the turn itself changed.
     TurnEnd,
     /// Before a destructive workspace API action (delete, overwrite,
-    /// move/rename with overwrite, workbench artifact delete).
+    /// move/rename with overwrite).
     PreAction,
     /// Before a write to a root config file or an encrypted key store.
     PreConfigWrite,
@@ -172,7 +184,7 @@ pub struct CheckpointDetail {
 }
 
 /// On-disk size and history depth of a checkpoint repository, shown in
-/// `/api/status` and the CLI so growth is visible before the UI lands.
+/// `/api/agents/{name}/status`, the CLI and Settings → History so growth is visible.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct RepoStats {
@@ -233,6 +245,11 @@ pub enum CheckpointError {
     /// A cursor passed to a listing call couldn't be parsed.
     #[error("invalid page cursor")]
     InvalidCursor,
+    /// A config-repository operation was requested for the workspace
+    /// repository, which snapshots a directory tree rather than a fixed
+    /// list of config files.
+    #[error("the workspace repository is not a config repository")]
+    NotAConfigRepo,
     /// The underlying git object database or refs could not be read or
     /// written.
     #[error("checkpoint repository error: {0}")]

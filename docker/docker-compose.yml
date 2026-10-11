@@ -4,10 +4,19 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     ports:
+      # The web UI and API. The A2A listener (7702) is left unpublished; add
+      # "7702:7702" only if callers outside the container should reach it directly.
       - "7700:7700"
     volumes:
+      # Everything Residuum keeps: hub/ (hub config, secrets, key stores, logs,
+      # checkpoints), team/ (shared wiki, workbench, skills), and one directory
+      # per agent. Open the web UI on first run to create the first agent.
       - residuum-data:/home/residuum/.residuum
     environment:
+      # Hub-level overrides are RESIDUUM_GATEWAY_BIND, RESIDUUM_GATEWAY_PORT,
+      # RESIDUUM_CLOUD_TOKEN and RESIDUUM_TIMEZONE. Per-agent settings belong in
+      # the agent's config files, not in the environment. The provider key
+      # variables below are read by any agent whose provider has no key set.
       - OPENAI_API_KEY=${OPENAI_API_KEY}
     restart: unless-stopped
 

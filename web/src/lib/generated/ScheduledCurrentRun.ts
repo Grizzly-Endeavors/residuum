@@ -3,7 +3,7 @@ import type { PulseOverlap } from "./PulseOverlap";
 
 /**
  * A pulse's or action's currently live run, if it has one, in the
- * Scheduled view.
+ * Schedule place.
  */
 export type ScheduledCurrentRun = { address: string, run_id: string, 
 /**

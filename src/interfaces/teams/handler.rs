@@ -295,6 +295,8 @@ async fn run_command(
         session_registry: &rt.session_registry,
         inbox_dir: &rt.inbox_dir,
         tz: rt.tz,
+        publisher: &rt.publisher,
+        main_conversation: &rt.main_conversation,
     };
     let conversation = ConversationContext {
         id: conversation_id.to_string(),
@@ -546,9 +548,8 @@ mod tests {
 
     // ── Endpoint + worker, end to end (no network) ───────────────────────
 
-    use std::time::Duration;
-
     use crate::bus::{MessageEvent, Subscriber, topics};
+    use crate::testing::wait;
 
     use super::super::auth::TokenValidator;
     use super::super::auth::test_support::valid_token;
@@ -598,11 +599,14 @@ mod tests {
             reply_targets: crate::interfaces::reply_targets::ReplyTargets::default(),
             inbound_tx,
             publisher: bus.publisher(),
-            reload_tx: tokio::sync::watch::channel(crate::gateway::types::ReloadSignal::Root).0,
+            reload_tx: tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>(
+            )
+            .0,
             command_tx: tokio::sync::mpsc::channel(1).0,
             stop_tx: tokio::sync::mpsc::channel(1).0,
             session_registry: Arc::new(crate::background::registry::SessionRegistry::new()),
             inbox_dir: dir.path().to_path_buf(),
+            main_conversation: dir.path().join("recent_messages.json"),
             tz: chrono_tz::UTC,
         });
         Harness {
@@ -695,11 +699,11 @@ mod tests {
         process_activity(&h.rt, queued).await;
     }
 
-    async fn next_user_message(h: &mut Harness) -> Option<MessageEvent> {
-        tokio::time::timeout(Duration::from_millis(200), h.user_messages.recv())
+    async fn next_user_message(h: &mut Harness, what: &str) -> MessageEvent {
+        wait::guarded(what, h.user_messages.recv())
             .await
-            .ok()
-            .map(|r| r.unwrap().unwrap())
+            .unwrap()
+            .unwrap()
     }
 
     #[tokio::test]
@@ -745,7 +749,7 @@ mod tests {
         let mut h = harness(false).await;
         deliver(&mut h, &dm_from_owner("what's on today?")).await;
 
-        let event = next_user_message(&mut h).await.expect("dm published");
+        let event = next_user_message(&mut h, "dm published").await;
         assert_eq!(event.content, "what's on today?");
         assert_eq!(event.context, None);
         let sender = event.origin.sender.unwrap();
@@ -767,25 +771,24 @@ mod tests {
     async fn group_mention_carries_the_chatter_since_the_last_mention() {
         let mut h = harness(false).await;
         deliver(&mut h, &dm_from_owner("hello")).await;
-        next_user_message(&mut h).await.expect("dm published");
+        next_user_message(&mut h, "dm published").await;
 
         deliver(
             &mut h,
             &group("2", ("Sam", "aad-sam"), "build is red again"),
         )
         .await;
-        assert!(
-            next_user_message(&mut h).await.is_none(),
-            "unmentioned chatter is buffered, not sent"
-        );
-
         deliver(
             &mut h,
             &group("3", ("Bear", "aad-bear"), "<at>Residuum</at> can you look?"),
         )
         .await;
-        let event = next_user_message(&mut h).await.expect("mention published");
-        assert_eq!(event.content, "can you look?");
+        // Events arrive in publish order, so a published chatter would come before the mention.
+        let event = next_user_message(&mut h, "mention published").await;
+        assert_eq!(
+            event.content, "can you look?",
+            "unmentioned chatter is buffered, not sent"
+        );
         let context = event.context.expect("background context attached");
         assert!(context.contains("group chat \"Launch\""), "{context}");
         assert!(context.contains("Sam: build is red again"), "{context}");
@@ -807,7 +810,7 @@ mod tests {
             &group("4", ("Bear", "aad-bear"), "<at>Residuum</at> thanks"),
         )
         .await;
-        let again = next_user_message(&mut h).await.expect("second mention");
+        let again = next_user_message(&mut h, "second mention").await;
         assert_eq!(
             again.context, None,
             "already-delivered chatter is not repeated"
@@ -818,7 +821,7 @@ mod tests {
     async fn coworkers_reach_the_agent_when_respond_to_others_is_on() {
         let mut h = harness(true).await;
         deliver(&mut h, &dm_from_owner("hello")).await;
-        next_user_message(&mut h).await.expect("dm published");
+        next_user_message(&mut h, "dm published").await;
 
         deliver(
             &mut h,
@@ -829,9 +832,7 @@ mod tests {
             ),
         )
         .await;
-        let event = next_user_message(&mut h)
-            .await
-            .expect("coworker mention published");
+        let event = next_user_message(&mut h, "coworker mention published").await;
         assert_eq!(event.origin.sender.unwrap().name, "Sam");
     }
 }

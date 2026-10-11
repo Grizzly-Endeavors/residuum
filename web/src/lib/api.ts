@@ -20,6 +20,7 @@ import type {
   A2aKeysListResponse,
   CreateA2aKeyResponse,
   A2aRemoteAgent,
+  OutboundA2aTaskSummary,
   WorkspaceEntry,
   WorkspaceWriteResponse,
   WorkspaceValidateResponse,
@@ -27,6 +28,7 @@ import type {
   CloudStatusResponse,
   UpdateStatusResponse,
   SessionCategory,
+  SessionDeliveryOutcome,
   SessionListResponse,
   SessionTranscriptResponse,
   SessionUsageTotals,
@@ -34,8 +36,46 @@ import type {
   ArtifactSummary,
   PulseInfo,
   ActionInfo,
+  CheckpointPage,
+  CheckpointDetail,
+  RepoStats,
+  RestoreOutcome,
+  UndoOutcome,
+  RepoKind,
+  CleanupRequest,
+  CleanupResult,
+  TeamsSetupJob,
+  TeamsSetupPrereqs,
+  TeamsSetupStart,
 } from "./types";
+import type {
+  A2aVisibility,
+  AgentListResponse,
+  AgentSummary,
+  CreateAgentRequest,
+  DeleteOutcome,
+  DeletedAgent,
+  DeletedAgentListResponse,
+  RestoreAgentRequest,
+  AgentPatch,
+  HubInboxItem,
+  HubInboxPage,
+  HubStatusResponse,
+  InboxStatus,
+  OverviewResponse,
+  PushDevice,
+  PushPreferencesPatch,
+  PushTestResult,
+  TeamEventPage,
+  WebPushSubscription,
+  WorkspaceScope,
+} from "./hub-types";
+import type { PushDeviceList } from "./generated/PushDeviceList";
+import type { PushDeviceResponse } from "./generated/PushDeviceResponse";
+import type { PushKeyResponse } from "./generated/PushKeyResponse";
 import { cachedFetch, invalidate } from "./cache";
+import { agentBase, agentPath, hubPath, requireAgent, teamPath } from "./paths";
+import { isDeviceRequiredBody, redirectToPairing } from "./pairing";
 
 // ── Cache keys ──────────────────────────────────────────────────────
 //
@@ -43,13 +83,21 @@ import { cachedFetch, invalidate } from "./cache";
 // out-of-band signals (gateway reload, WS reconnect) tell us the
 // server's view may have changed.
 
-export const CACHE_KEY_STATUS = "GET /api/status";
-export const CACHE_KEY_TIMEZONE = "GET /api/system/timezone";
-export const CACHE_KEY_MCP_CATALOG = "GET /api/mcp-catalog";
-export const CACHE_KEY_CONFIG_RAW = "GET /api/config/raw";
-export const CACHE_KEY_PROVIDERS_RAW = "GET /api/providers/raw";
-export const CACHE_KEY_MCP_RAW = "GET /api/mcp/raw";
-export const CACHE_KEY_A2A_AGENTS_RAW = "GET /api/a2a/agents/raw";
+export const CACHE_KEY_TIMEZONE = `GET ${hubPath("/system/timezone")}`;
+export const CACHE_KEY_MCP_CATALOG = `GET ${hubPath("/mcp-catalog")}`;
+export const CACHE_KEY_HUB_CONFIG_RAW = `GET ${hubPath("/config/raw")}`;
+
+// Agent-scoped entries are keyed by agent, so a fetch for one agent can't
+// fill or clear another agent's entry.
+function agentCacheKey(agent: string, sub: string): string {
+  return `GET ${agentBase(agent)}${sub}`;
+}
+
+export const cacheKeyStatus = (agent: string): string => agentCacheKey(agent, "/status");
+export const cacheKeyConfigRaw = (agent: string): string => agentCacheKey(agent, "/config/raw");
+export const cacheKeyProvidersRaw = (agent: string): string =>
+  agentCacheKey(agent, "/providers/raw");
+export const cacheKeyMcpRaw = (agent: string): string => agentCacheKey(agent, "/mcp/raw");
 
 // ── Error class + fetch helpers ─────────────────────────────────────
 
@@ -127,7 +175,7 @@ async function putValidated(
   path: string,
   contentType: string,
   body: string,
-  cacheKey: string,
+  cacheKey: string | null,
 ): Promise<ValidateResponse> {
   try {
     return await apiFetch<ValidateResponse>(path, {
@@ -140,7 +188,7 @@ async function putValidated(
     if (validation) return validation;
     throw err;
   } finally {
-    invalidate(cacheKey);
+    if (cacheKey !== null) invalidate(cacheKey);
   }
 }
 
@@ -176,6 +224,9 @@ async function patchValidated(
 async function checkOk(resp: Response): Promise<Response> {
   if (!resp.ok) {
     const body = await resp.text();
+    // Through Residuum Cloud, a browser the gateway hasn't paired is sent to
+    // the pairing page; the call still fails for whoever made it.
+    if (resp.status === 401 && isDeviceRequiredBody(body)) redirectToPairing();
     throw new ApiError(resp.status, resp.statusText, body);
   }
   return resp;
@@ -195,8 +246,10 @@ async function apiFetchText(input: RequestInfo | URL, init?: RequestInit): Promi
 
 // ── Core API wrappers ───────────────────────────────────────────────
 
-export async function fetchStatus(): Promise<StatusResponse> {
-  return cachedFetch(CACHE_KEY_STATUS, () => apiFetch<StatusResponse>("/api/status"));
+export async function fetchStatus(agent: string): Promise<StatusResponse> {
+  return cachedFetch(cacheKeyStatus(agent), () =>
+    apiFetch<StatusResponse>(agentPath(agent, "/status")),
+  );
 }
 
 /**
@@ -205,8 +258,8 @@ export async function fetchStatus(): Promise<StatusResponse> {
  * silently would hide real corruption (e.g. a malformed `recent_messages.json`)
  * and make the chat feed look empty when it isn't.
  */
-export async function fetchChatHistory(): Promise<RecentHistorySegment> {
-  const segment = await apiFetch<ChatHistorySegment>("/api/chat/history");
+export async function fetchChatHistory(agent: string): Promise<RecentHistorySegment> {
+  const segment = await apiFetch<ChatHistorySegment>(agentPath(agent, "/chat/history"));
   if (segment.kind === "recent") return segment;
   throw new Error(
     `unexpected chat history kind "${segment.kind}" — server must return Recent for the base call`,
@@ -221,24 +274,26 @@ export async function fetchChatHistory(): Promise<RecentHistorySegment> {
  * failure (the footer simply starts blank) rather than surfacing an error
  * for this quiet, non-critical feature.
  */
-export async function fetchUsageTotals(): Promise<SessionUsageTotals> {
-  return apiFetch<SessionUsageTotals>("/api/usage");
+export async function fetchUsageTotals(agent: string): Promise<SessionUsageTotals> {
+  return apiFetch<SessionUsageTotals>(agentPath(agent, "/usage"));
 }
 
 /**
- * Fetch an episode segment by cursor. Episodes are immutable, so the result
- * is cached for the life of the browser session (and across reloads).
+ * Fetch an episode segment by cursor. Not cached: an episode id names a
+ * different conversation on another instance behind the same address, or
+ * after an agent is created again under the same name.
  *
  * Throws `ApiError` on failure — callers must decide how to surface the
  * error. A 404 (episode not found) is surfaced the same as any other
  * failure; the caller can inspect `ApiError.status` if it needs to branch.
  */
-export async function fetchChatSegment(episodeId: string): Promise<EpisodeHistorySegment> {
-  // Built inline rather than as a CACHE_KEY_* constant because it's per-episode.
-  // The key string must match the url string exactly — if you change one, change
-  // the other, or cache lookups will miss.
-  const url = `/api/chat/history?episode=${encodeURIComponent(episodeId)}`;
-  const segment = await cachedFetch(`GET ${url}`, () => apiFetch<ChatHistorySegment>(url));
+export async function fetchChatSegment(
+  agent: string,
+  episodeId: string,
+): Promise<EpisodeHistorySegment> {
+  const segment = await apiFetch<ChatHistorySegment>(
+    agentPath(agent, `/chat/history?episode=${encodeURIComponent(episodeId)}`),
+  );
   if (segment.kind === "episode") return segment;
   throw new Error(
     `unexpected chat history kind "${segment.kind}" — server must return Episode for ?episode=`,
@@ -263,7 +318,7 @@ export async function submitBugReport(body: {
   what_doing: string;
   severity: BugSeverity;
 }): Promise<FeedbackReceipt> {
-  return apiFetch<FeedbackReceipt>("/api/tracing/bug-report", {
+  return apiFetch<FeedbackReceipt>(hubPath("/tracing/bug-report"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -275,7 +330,7 @@ export async function submitFeedback(body: {
   message: string;
   category?: string;
 }): Promise<FeedbackReceipt> {
-  return apiFetch<FeedbackReceipt>("/api/tracing/feedback", {
+  return apiFetch<FeedbackReceipt>(hubPath("/tracing/feedback"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -288,7 +343,7 @@ export async function submitFeedback(body: {
 export async function fetchTimezone(): Promise<string> {
   try {
     const data = await cachedFetch(CACHE_KEY_TIMEZONE, () =>
-      apiFetch<TimezoneResponse>("/api/system/timezone"),
+      apiFetch<TimezoneResponse>(hubPath("/system/timezone")),
     );
     return data.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "";
   } catch {
@@ -297,6 +352,7 @@ export async function fetchTimezone(): Promise<string> {
 }
 
 export async function fetchProviderModels(
+  agent: string | null,
   provider: string,
   apiKey?: string,
   url?: string,
@@ -305,40 +361,94 @@ export async function fetchProviderModels(
   if (apiKey) body.api_key = apiKey;
   if (url) body.url = url;
 
-  return apiFetch<ModelsResponse>("/api/providers/models", {
+  // Onboarding lists a provider's models before any agent exists.
+  const path =
+    agent === null ? hubPath("/providers/models") : agentPath(agent, "/providers/models");
+  return apiFetch<ModelsResponse>(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
 }
 
-/** Graceful fallback: catalog is optional — returns empty on failure. */
+/** The decision model form's values, saved or not: what the model list and the connection test use. */
+export interface SystemOneForm {
+  provider: string;
+  url?: string;
+  model?: string;
+  /** A literal key or a `secret:<name>` reference. */
+  api_key?: string;
+  keep_alive?: string;
+}
+
+/** `POST /api/hub/system-one/models`. */
+export interface SystemOneModelsResponse {
+  models: { id: string; description: string | null }[];
+  /** Why the list couldn't be read, in plain words. */
+  error?: string;
+}
+
+/** `POST /api/hub/system-one/test`. */
+export interface SystemOneTestResponse {
+  ok: boolean;
+  message: string;
+  answered_by?: string;
+}
+
+/** The model names a decision model provider accepts. Throws `ApiError` only when the hub can't be reached. */
+export async function fetchSystemOneModels(form: SystemOneForm): Promise<SystemOneModelsResponse> {
+  return apiFetch<SystemOneModelsResponse>(hubPath("/system-one/models"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(form),
+  });
+}
+
+/** Ask the decision model the form describes one small question. Throws `ApiError` only when the hub can't be reached. */
+export async function testSystemOne(form: SystemOneForm): Promise<SystemOneTestResponse> {
+  return apiFetch<SystemOneTestResponse>(hubPath("/system-one/test"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(form),
+  });
+}
+
+/** The MCP catalog. Throws `ApiError`; a failed read isn't cached, so the caller can offer Try again. */
 export async function fetchMcpCatalog(): Promise<McpCatalogEntry[]> {
-  try {
-    return await cachedFetch(CACHE_KEY_MCP_CATALOG, () =>
-      apiFetch<McpCatalogEntry[]>("/api/mcp-catalog"),
-    );
-  } catch {
-    return [];
-  }
+  return cachedFetch(CACHE_KEY_MCP_CATALOG, () =>
+    apiFetch<McpCatalogEntry[]>(hubPath("/mcp-catalog")),
+  );
 }
 
 export async function storeSecret(name: string, value: string): Promise<SecretResponse> {
-  return apiFetch<SecretResponse>("/api/secrets", {
+  return apiFetch<SecretResponse>(hubPath("/secrets"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, value }),
   });
 }
 
-export async function completeSetup(
-  config: string,
-  providers: string,
-  mcpJson?: string,
-): Promise<ValidateResponse> {
-  const payload: Record<string, string> = { config, providers };
-  if (mcpJson) payload.mcp_json = mcpJson;
-  return apiFetch<ValidateResponse>("/api/config/complete-setup", {
+/** Everything onboarding writes: the hub config, and the first agent's name and files. */
+export interface CompleteSetupPayload {
+  hubConfig: string;
+  agentName: string;
+  /** The user's name, written to the team's USER.md. Empty when they skipped it. */
+  userName: string;
+  config: string;
+  providers: string;
+  mcpJson?: string;
+}
+
+export async function completeSetup(setup: CompleteSetupPayload): Promise<ValidateResponse> {
+  const payload: Record<string, string> = {
+    hub_config: setup.hubConfig,
+    agent_name: setup.agentName,
+    config: setup.config,
+    providers: setup.providers,
+  };
+  if (setup.userName) payload.user_name = setup.userName;
+  if (setup.mcpJson) payload.mcp_json = setup.mcpJson;
+  return apiFetch<ValidateResponse>(hubPath("/config/complete-setup"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -347,73 +457,139 @@ export async function completeSetup(
 
 // ── Settings API wrappers ────────────────────────────────────────────
 
-export async function fetchConfigRaw(): Promise<string> {
-  return cachedFetch(CACHE_KEY_CONFIG_RAW, () => apiFetchText("/api/config/raw"));
+export async function fetchConfigRaw(agent: string): Promise<string> {
+  return cachedFetch(cacheKeyConfigRaw(agent), () => apiFetchText(agentPath(agent, "/config/raw")));
 }
 
-export async function putConfigRaw(toml: string): Promise<ValidateResponse> {
-  return putValidated("/api/config/raw", "text/plain", toml, CACHE_KEY_CONFIG_RAW);
+export async function putConfigRaw(agent: string, toml: string): Promise<ValidateResponse> {
+  return putValidated(
+    agentPath(agent, "/config/raw"),
+    "text/plain",
+    toml,
+    cacheKeyConfigRaw(agent),
+  );
 }
 
 /** Merge a diff (from `diffConfigFields`) into `config.toml` on the server. */
-export async function patchConfig(diff: Record<string, unknown>): Promise<ValidateResponse> {
-  return patchValidated("/api/config/patch", diff, CACHE_KEY_CONFIG_RAW);
+export async function patchConfig(
+  agent: string,
+  diff: Record<string, unknown>,
+): Promise<ValidateResponse> {
+  return patchValidated(agentPath(agent, "/config/patch"), diff, cacheKeyConfigRaw(agent));
 }
 
-export async function validateConfig(toml: string): Promise<ValidateResponse> {
-  return apiFetch<ValidateResponse>("/api/config/validate", {
+export async function validateConfig(agent: string, toml: string): Promise<ValidateResponse> {
+  return apiFetch<ValidateResponse>(agentPath(agent, "/config/validate"), {
     method: "POST",
     headers: { "Content-Type": "text/plain" },
     body: toml,
   });
 }
 
-export async function fetchProvidersRaw(): Promise<string> {
-  return cachedFetch(CACHE_KEY_PROVIDERS_RAW, () => apiFetchText("/api/providers/raw"));
+/** The hub's `config.toml` (timezone, gateway, cloud, A2A listener, tracing, session limits). */
+export async function fetchHubConfigRaw(): Promise<string> {
+  return cachedFetch(CACHE_KEY_HUB_CONFIG_RAW, () => apiFetchText(hubPath("/config/raw")));
 }
 
-export async function putProvidersRaw(toml: string): Promise<ValidateResponse> {
-  return putValidated("/api/providers/raw", "text/plain", toml, CACHE_KEY_PROVIDERS_RAW);
+export async function putHubConfigRaw(toml: string): Promise<ValidateResponse> {
+  return putValidated(hubPath("/config/raw"), "text/plain", toml, CACHE_KEY_HUB_CONFIG_RAW);
+}
+
+/** Merge a diff (the hub half of `splitConfigPatch`) into the hub's `config.toml`. */
+export async function patchHubConfig(diff: Record<string, unknown>): Promise<ValidateResponse> {
+  return patchValidated(hubPath("/config/patch"), diff, CACHE_KEY_HUB_CONFIG_RAW);
+}
+
+export async function validateHubConfig(toml: string): Promise<ValidateResponse> {
+  return apiFetch<ValidateResponse>(hubPath("/config/validate"), {
+    method: "POST",
+    headers: { "Content-Type": "text/plain" },
+    body: toml,
+  });
+}
+
+export async function fetchProvidersRaw(agent: string): Promise<string> {
+  return cachedFetch(cacheKeyProvidersRaw(agent), () =>
+    apiFetchText(agentPath(agent, "/providers/raw")),
+  );
+}
+
+export async function putProvidersRaw(agent: string, toml: string): Promise<ValidateResponse> {
+  return putValidated(
+    agentPath(agent, "/providers/raw"),
+    "text/plain",
+    toml,
+    cacheKeyProvidersRaw(agent),
+  );
 }
 
 /** Merge a diff (from `diffProviders`/`modelRoleJson`) into `providers.toml` on the server. */
-export async function patchProviders(diff: Record<string, unknown>): Promise<ValidateResponse> {
-  return patchValidated("/api/providers/patch", diff, CACHE_KEY_PROVIDERS_RAW);
+export async function patchProviders(
+  agent: string,
+  diff: Record<string, unknown>,
+): Promise<ValidateResponse> {
+  return patchValidated(agentPath(agent, "/providers/patch"), diff, cacheKeyProvidersRaw(agent));
 }
 
-export async function validateProviders(toml: string): Promise<ValidateResponse> {
-  return apiFetch<ValidateResponse>("/api/providers/validate", {
+export async function validateProviders(agent: string, toml: string): Promise<ValidateResponse> {
+  return apiFetch<ValidateResponse>(agentPath(agent, "/providers/validate"), {
     method: "POST",
     headers: { "Content-Type": "text/plain" },
     body: toml,
   });
 }
 
-export async function fetchMcpRaw(): Promise<string> {
-  return cachedFetch(CACHE_KEY_MCP_RAW, () => apiFetchText("/api/mcp/raw"));
+export async function fetchMcpRaw(agent: string): Promise<string> {
+  return cachedFetch(cacheKeyMcpRaw(agent), () => apiFetchText(agentPath(agent, "/mcp/raw")));
 }
 
-export async function putMcpRaw(json: string): Promise<ValidateResponse> {
-  return putValidated("/api/mcp/raw", "application/json", json, CACHE_KEY_MCP_RAW);
+export async function putMcpRaw(agent: string, json: string): Promise<ValidateResponse> {
+  return putValidated(
+    agentPath(agent, "/mcp/raw"),
+    "application/json",
+    json,
+    cacheKeyMcpRaw(agent),
+  );
+}
+
+/** Problems in `json` as the agent's `mcp.json`, without writing it. Throws when the check can't be made. */
+export async function validateMcp(agent: string, json: string): Promise<Diagnostic[]> {
+  const result = await apiFetch<WorkspaceValidateResponse>(
+    agentPath(agent, "/workspace/validate"),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: "config/mcp.json", content: json }),
+    },
+  );
+  return result.diagnostics;
 }
 
 /** Merge a diff (from `diffMcpServers`) into `mcp.json` on the server. */
-export async function patchMcp(diff: Record<string, unknown>): Promise<ValidateResponse> {
-  return patchValidated("/api/mcp/patch", diff, CACHE_KEY_MCP_RAW);
+export async function patchMcp(
+  agent: string,
+  diff: Record<string, unknown>,
+): Promise<ValidateResponse> {
+  return patchValidated(agentPath(agent, "/mcp/patch"), diff, cacheKeyMcpRaw(agent));
+}
+
+/** The names of the stored secrets (never their values). Throws `ApiError` on failure. */
+export async function fetchSecretNames(): Promise<string[]> {
+  const data = await apiFetch<SecretsListResponse>(hubPath("/secrets"));
+  return data.names;
 }
 
 /** Graceful fallback: returns empty on failure (secrets list is non-critical). */
 export async function listSecrets(): Promise<string[]> {
   try {
-    const data = await apiFetch<SecretsListResponse>("/api/secrets");
-    return data.names;
+    return await fetchSecretNames();
   } catch {
     return [];
   }
 }
 
 export async function deleteSecret(name: string): Promise<void> {
-  await apiFetchText(`/api/secrets/${encodeURIComponent(name)}`, {
+  await apiFetchText(hubPath(`/secrets/${encodeURIComponent(name)}`), {
     method: "DELETE",
   });
 }
@@ -422,7 +598,7 @@ export async function deleteSecret(name: string): Promise<void> {
 
 /** Throws `ApiError` on failure; the caller surfaces it. */
 export async function fetchAgentKeys(): Promise<AgentKeyInfo[]> {
-  const data = await apiFetch<AgentKeysListResponse>("/api/agent-keys");
+  const data = await apiFetch<AgentKeysListResponse>(hubPath("/agent-keys"));
   return data.keys;
 }
 
@@ -431,24 +607,22 @@ export async function storeAgentKey(
   value: string,
   description: string,
 ): Promise<SetAgentKeyResponse> {
-  return apiFetch<SetAgentKeyResponse>("/api/agent-keys", {
+  return apiFetch<SetAgentKeyResponse>(hubPath("/agent-keys"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, value, description }),
   });
 }
 
-export async function deleteAgentKey(name: string): Promise<void> {
-  await apiFetchText(`/api/agent-keys/${encodeURIComponent(name)}`, {
-    method: "DELETE",
-  });
+export async function deleteAgentKey(name: string): Promise<string | null> {
+  return readCheckpointId(hubPath(`/agent-keys/${encodeURIComponent(name)}`), { method: "DELETE" });
 }
 
 // ── A2A API wrappers ──────────────────────────────────────────────────
 
 /** Live A2A status. Throws `ApiError` on failure; the caller surfaces it. */
-export async function fetchA2aStatus(): Promise<A2aStatusResponse> {
-  return apiFetch<A2aStatusResponse>("/api/a2a/status");
+export async function fetchA2aStatus(agent: string): Promise<A2aStatusResponse> {
+  return apiFetch<A2aStatusResponse>(agentPath(agent, "/a2a/status"));
 }
 
 /**
@@ -456,13 +630,13 @@ export async function fetchA2aStatus(): Promise<A2aStatusResponse> {
  * (`status` on the error) when the workspace agent card file is invalid,
  * whose body is the plain-language reason.
  */
-export async function fetchA2aCard(): Promise<A2aAgentCard> {
-  return apiFetch<A2aAgentCard>("/api/a2a/card");
+export async function fetchA2aCard(agent: string): Promise<A2aAgentCard> {
+  return apiFetch<A2aAgentCard>(agentPath(agent, "/a2a/card"));
 }
 
 /** Throws `ApiError` on failure; the caller surfaces it. */
 export async function fetchA2aKeys(): Promise<A2aKeyInfo[]> {
-  const data = await apiFetch<A2aKeysListResponse>("/api/a2a/keys");
+  const data = await apiFetch<A2aKeysListResponse>(hubPath("/a2a/keys"));
   return data.keys;
 }
 
@@ -470,29 +644,64 @@ export async function createA2aKey(
   name: string,
   description: string,
 ): Promise<CreateA2aKeyResponse> {
-  return apiFetch<CreateA2aKeyResponse>("/api/a2a/keys", {
+  return apiFetch<CreateA2aKeyResponse>(hubPath("/a2a/keys"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, description: description || undefined }),
   });
 }
 
-export async function revokeA2aKey(name: string): Promise<void> {
-  await apiFetchText(`/api/a2a/keys/${encodeURIComponent(name)}`, {
-    method: "DELETE",
-  });
+export async function revokeA2aKey(name: string): Promise<string | null> {
+  return readCheckpointId(hubPath(`/a2a/keys/${encodeURIComponent(name)}`), { method: "DELETE" });
 }
 
 /**
  * Remote agents from `config/a2a.json` plus any discovered siblings.
  * Throws `ApiError` on failure; the caller surfaces it.
  */
-export async function fetchA2aAgents(): Promise<A2aRemoteAgent[]> {
-  return apiFetch<A2aRemoteAgent[]>("/api/a2a/agents");
+export async function fetchA2aAgents(agent: string): Promise<A2aRemoteAgent[]> {
+  return apiFetch<A2aRemoteAgent[]>(agentPath(agent, "/a2a/agents"));
 }
 
-export async function fetchA2aAgentsRaw(): Promise<string> {
-  return cachedFetch(CACHE_KEY_A2A_AGENTS_RAW, () => apiFetchText("/api/a2a/agents/raw"));
+/** Open tasks the agent sent to remote agents, newest first. Throws `ApiError`. */
+export async function fetchOutboundA2aTasks(agent: string): Promise<OutboundA2aTaskSummary[]> {
+  return apiFetch<OutboundA2aTaskSummary[]>(agentPath(agent, "/a2a/outbound"));
+}
+
+/**
+ * Ask a task's remote agent to cancel it. Throws `ApiError`: `404` when the
+ * task already ended, `502` when its agent can't be reached (then
+ * `stopWatchingOutboundA2aTask` is the way out).
+ */
+export async function stopOutboundA2aTask(
+  agent: string,
+  taskId: string,
+): Promise<OutboundA2aTaskSummary> {
+  return apiFetch<OutboundA2aTaskSummary>(
+    agentPath(agent, `/a2a/outbound/${encodeURIComponent(taskId)}/stop`),
+    {
+      method: "POST",
+    },
+  );
+}
+
+/** Stop watching a task without reaching its agent. Throws `ApiError` (`404` when it already ended). */
+export async function stopWatchingOutboundA2aTask(
+  agent: string,
+  taskId: string,
+): Promise<OutboundA2aTaskSummary> {
+  return apiFetch<OutboundA2aTaskSummary>(
+    agentPath(agent, `/a2a/outbound/${encodeURIComponent(taskId)}/stop-watching`),
+    { method: "POST" },
+  );
+}
+
+/**
+ * `config/a2a.json` as it is now. Never cached: the agent edits it too, and
+ * an editor opened on an old copy would save over the agent's change.
+ */
+export async function fetchA2aAgentsRaw(agent: string): Promise<string> {
+  return apiFetchText(agentPath(agent, "/a2a/agents/raw"));
 }
 
 /**
@@ -501,8 +710,8 @@ export async function fetchA2aAgentsRaw(): Promise<string> {
  * running, so the response reports a diagnostic instead of the write being
  * rejected. Same shape as `putConfigRaw`/`putProvidersRaw`/`putMcpRaw`.
  */
-export async function putA2aAgentsRaw(content: string): Promise<ValidateResponse> {
-  return putValidated("/api/a2a/agents/raw", "application/json", content, CACHE_KEY_A2A_AGENTS_RAW);
+export async function putA2aAgentsRaw(agent: string, content: string): Promise<ValidateResponse> {
+  return putValidated(agentPath(agent, "/a2a/agents/raw"), "application/json", content, null);
 }
 
 // ── Agent sessions API wrappers ─────────────────────────────────────
@@ -514,14 +723,17 @@ export async function putA2aAgentsRaw(content: string): Promise<ValidateResponse
  *
  * Throws `ApiError` on failure; the caller surfaces it.
  */
-export async function fetchSessions(query: {
-  category?: SessionCategory;
-  before?: string;
-  limit?: number;
-  address?: string;
-  /** Only sessions that workbench artifact started, not sessions those spawned in turn. */
-  artifact?: string;
-}): Promise<SessionListResponse> {
+export async function fetchSessions(
+  agent: string,
+  query: {
+    category?: SessionCategory;
+    before?: string;
+    limit?: number;
+    address?: string;
+    /** Only sessions that workbench artifact started, not sessions those spawned in turn. */
+    artifact?: string;
+  },
+): Promise<SessionListResponse> {
   const params = new URLSearchParams();
   if (query.category) params.set("category", query.category);
   if (query.before) params.set("before", query.before);
@@ -529,7 +741,7 @@ export async function fetchSessions(query: {
   if (query.address) params.set("address", query.address);
   if (query.artifact) params.set("artifact", query.artifact);
   const qs = params.toString();
-  return apiFetch<SessionListResponse>(`/api/sessions${qs ? `?${qs}` : ""}`);
+  return apiFetch<SessionListResponse>(agentPath(agent, `/sessions${qs ? `?${qs}` : ""}`));
 }
 
 /**
@@ -538,36 +750,111 @@ export async function fetchSessions(query: {
  *
  * Throws `ApiError` on failure (404 for an unknown run).
  */
-export async function fetchSessionTranscript(runId: string): Promise<SessionTranscriptResponse> {
+export async function fetchSessionTranscript(
+  agent: string,
+  runId: string,
+): Promise<SessionTranscriptResponse> {
   return apiFetch<SessionTranscriptResponse>(
-    `/api/sessions/runs/${encodeURIComponent(runId)}/transcript`,
+    agentPath(agent, `/sessions/runs/${encodeURIComponent(runId)}/transcript`),
   );
+}
+
+/** Which of the agent's models a session runs on. */
+export type SessionModelSize = "small" | "medium" | "large";
+
+/** What the owner starts a session with. */
+export interface StartSessionRequest {
+  /** The task, the session's first message. */
+  prompt: string;
+  /** The agent's medium model when left out. */
+  model?: SessionModelSize;
+  /** Start from the main conversation (`/multitask`) instead of clean. */
+  fork?: boolean;
+}
+
+/**
+ * Start a session of the owner's own on `agent`: a clean one, or with `fork`
+ * a fork of the main conversation. Resolves to its address as soon as the
+ * agent takes the request; the run announces itself with `session_started`.
+ *
+ * Throws `ApiError` with `{ error }`: `400` for a blank prompt or a bad
+ * model, `500` when a fork couldn't read the main conversation, `503` while
+ * Residuum shuts down.
+ */
+export async function startSession(agent: string, request: StartSessionRequest): Promise<string> {
+  const reply = await apiFetch<{ address: string }>(agentPath(agent, "/sessions"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  return reply.address;
+}
+
+/**
+ * Send the session at `address` a message as the owner: delivered to a live
+ * run, or starting a new run of a finished one. Resolves to where it landed.
+ *
+ * Throws `ApiError` with `{ error, code }`: `404` for an unknown address,
+ * `409` when the session is busy, `502` when delivery failed.
+ */
+export async function messageSession(
+  agent: string,
+  address: string,
+  content: string,
+): Promise<SessionDeliveryOutcome> {
+  const reply = await apiFetch<{ outcome: SessionDeliveryOutcome }>(
+    agentPath(agent, `/sessions/${encodeURIComponent(address)}/messages`),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    },
+  );
+  return reply.outcome;
+}
+
+/**
+ * Stop the live session at `address`. The run's `completing` and
+ * `session_completed` frames follow. Throws `ApiError` (`404` when nothing
+ * there can still be stopped).
+ */
+export async function stopSession(agent: string, address: string): Promise<void> {
+  await apiFetch<unknown>(agentPath(agent, `/sessions/${encodeURIComponent(address)}/stop`), {
+    method: "POST",
+  });
 }
 
 // ── Scheduled view API wrappers ──────────────────────────────────────
 
 /** Every pulse in HEARTBEAT.yml. Not cached: run state changes live. */
-export async function fetchScheduledPulses(): Promise<PulseInfo[]> {
-  return apiFetch<PulseInfo[]>("/api/scheduled/pulses");
+export async function fetchScheduledPulses(agent: string): Promise<PulseInfo[]> {
+  return apiFetch<PulseInfo[]>(agentPath(agent, "/scheduled/pulses"));
 }
 
 /** Flip a pulse's `enabled` field in HEARTBEAT.yml. Throws `ApiError` (404 if the pulse is gone). */
-export async function setPulseEnabled(name: string, enabled: boolean): Promise<void> {
-  await apiFetch<unknown>(`/api/scheduled/pulses/${encodeURIComponent(name)}/enabled`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ enabled }),
-  });
+export async function setPulseEnabled(
+  agent: string,
+  name: string,
+  enabled: boolean,
+): Promise<void> {
+  await apiFetch<unknown>(
+    agentPath(agent, `/scheduled/pulses/${encodeURIComponent(name)}/enabled`),
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    },
+  );
 }
 
 /** Every pending scheduled action. Not cached: it changes as actions fire. */
-export async function fetchScheduledActions(): Promise<ActionInfo[]> {
-  return apiFetch<ActionInfo[]>("/api/scheduled/actions");
+export async function fetchScheduledActions(agent: string): Promise<ActionInfo[]> {
+  return apiFetch<ActionInfo[]>(agentPath(agent, "/scheduled/actions"));
 }
 
 /** Cancel a pending scheduled action. Throws `ApiError` (404 if already gone). */
-export async function cancelScheduledAction(id: string): Promise<void> {
-  await apiFetch<unknown>(`/api/scheduled/actions/${encodeURIComponent(id)}`, {
+export async function cancelScheduledAction(agent: string, id: string): Promise<void> {
+  await apiFetch<unknown>(agentPath(agent, `/scheduled/actions/${encodeURIComponent(id)}`), {
     method: "DELETE",
   });
 }
@@ -576,26 +863,63 @@ export async function cancelScheduledAction(id: string): Promise<void> {
 
 /** Every workbench artifact, most recently modified first. Not cached: artifacts change live. */
 export async function fetchWorkbenchArtifacts(): Promise<ArtifactSummary[]> {
-  return apiFetch<ArtifactSummary[]>("/api/workbench/artifacts");
+  return apiFetch<ArtifactSummary[]>(teamPath("/workbench/artifacts"));
 }
 
 /** Where artifacts are served, locally and through the relay. Not cached: the relay connection changes. */
 export async function fetchWorkbenchInfo(): Promise<WorkbenchInfo> {
-  return apiFetch<WorkbenchInfo>("/api/workbench/info");
+  return apiFetch<WorkbenchInfo>(teamPath("/workbench/info"));
+}
+
+/** What deleting an artifact removed, and the team checkpoint that can bring it back. */
+export interface ArtifactDeletion {
+  /** Team-relative paths of everything removed (`workbench/chart.html`, `workbench/graph`). */
+  paths: string[];
+  /** The pre-delete team checkpoint, or `null` when none was recorded. */
+  checkpointId: string | null;
 }
 
 /** Delete an artifact and its data files. Throws `ApiError` (404 if already gone). */
-export async function deleteWorkbenchArtifact(name: string): Promise<void> {
-  await apiFetch<unknown>(`/api/workbench/artifacts/${encodeURIComponent(name)}`, {
-    method: "DELETE",
-  });
+export async function deleteWorkbenchArtifact(name: string): Promise<ArtifactDeletion> {
+  const body = await apiFetch<{ removed?: unknown; checkpoint_id?: unknown }>(
+    teamPath(`/workbench/artifacts/${encodeURIComponent(name)}`),
+    { method: "DELETE" },
+  );
+  const removed = Array.isArray(body.removed)
+    ? body.removed.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  return {
+    // A folder artifact is reported as `name/`; the checkpoint stores it as `name`.
+    paths: removed.map((entry) => `workbench/${entry.replace(/\/$/, "")}`),
+    checkpointId:
+      typeof body.checkpoint_id === "string" && body.checkpoint_id.length > 0
+        ? body.checkpoint_id
+        : null,
+  };
 }
 
 // ── Workspace API wrappers ──────────────────────────────────────────
 
-export async function fetchWorkspaceFiles(path?: string): Promise<WorkspaceEntry[]> {
+/**
+ * A workspace API path. Scope `agent` addresses `agent`'s tree (where the
+ * shared tree shows up under `team/`); `team` addresses the shared tree
+ * directly, with paths relative to `team/`. Only the agent scope needs an
+ * agent: `null` is for the team scope, and throws `NoAgentSelectedError` for
+ * the agent one.
+ */
+function workspacePath(agent: string | null, sub: string, scope: WorkspaceScope): string {
+  return scope === "team"
+    ? teamPath(`/workspace${sub}`)
+    : agentPath(requireAgent(agent), `/workspace${sub}`);
+}
+
+export async function fetchWorkspaceFiles(
+  agent: string | null,
+  path?: string,
+  scope: WorkspaceScope = "agent",
+): Promise<WorkspaceEntry[]> {
   const params = path ? `?path=${encodeURIComponent(path)}` : "";
-  return apiFetch<WorkspaceEntry[]>(`/api/workspace/files${params}`);
+  return apiFetch<WorkspaceEntry[]>(workspacePath(agent, `/files${params}`, scope));
 }
 
 /** A workspace file's content plus the version to send back as `If-Match`. */
@@ -604,8 +928,14 @@ export interface WorkspaceFileRead {
   version: string;
 }
 
-export async function fetchWorkspaceFile(path: string): Promise<WorkspaceFileRead> {
-  const resp = await checkOk(await fetch(`/api/workspace/file?path=${encodeURIComponent(path)}`));
+export async function fetchWorkspaceFile(
+  agent: string | null,
+  path: string,
+  scope: WorkspaceScope = "agent",
+): Promise<WorkspaceFileRead> {
+  const resp = await checkOk(
+    await fetch(workspacePath(agent, `/file?path=${encodeURIComponent(path)}`, scope)),
+  );
   return { content: await resp.text(), version: resp.headers.get("etag") ?? "" };
 }
 
@@ -618,11 +948,13 @@ export async function fetchWorkspaceFile(path: string): Promise<WorkspaceFileRea
  * (HEARTBEAT.yml, say) — the write still succeeds either way.
  */
 export async function putWorkspaceFile(
+  agent: string | null,
   path: string,
   content: string,
   version: string | null,
+  scope: WorkspaceScope = "agent",
 ): Promise<WorkspaceWriteResponse> {
-  return apiFetch<WorkspaceWriteResponse>("/api/workspace/file", {
+  return apiFetch<WorkspaceWriteResponse>(workspacePath(agent, "/file", scope), {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
@@ -636,39 +968,565 @@ export async function putWorkspaceFile(
  * anything. Empty means either the content is clean or `path` isn't one of
  * the strictly-parsed files the server checks. Graceful fallback: a network
  * or server error returns no diagnostics rather than interrupting typing. */
-export async function validateWorkspaceFile(path: string, content: string): Promise<Diagnostic[]> {
+export async function validateWorkspaceFile(
+  agent: string | null,
+  path: string,
+  content: string,
+  scope: WorkspaceScope = "agent",
+): Promise<Diagnostic[]> {
   try {
-    const result = await apiFetch<WorkspaceValidateResponse>("/api/workspace/validate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path, content }),
-    });
+    const result = await apiFetch<WorkspaceValidateResponse>(
+      workspacePath(agent, "/validate", scope),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path, content }),
+      },
+    );
     return result.diagnostics;
   } catch {
     return [];
   }
 }
 
+/** A pre-action checkpoint and the repository that holds it. */
+export interface WorkspaceCheckpoint {
+  id: string;
+  repo: RepoKind;
+}
+
+interface CheckpointFields {
+  checkpoint_id?: unknown;
+  checkpoint_repo?: unknown;
+}
+
+/**
+ * The checkpoints a workspace-API response names: `checkpoint_id` +
+ * `checkpoint_repo` for one, or a `checkpoints` list when the action spanned
+ * the agent and team directories. Empty when none was recorded. A response
+ * without `checkpoint_repo` came from an agent-only path, so the workspace
+ * repository holds it.
+ */
+export function parseWorkspaceCheckpoints(
+  body: CheckpointFields & { checkpoints?: unknown },
+): WorkspaceCheckpoint[] {
+  const repoOf = (value: unknown): RepoKind => (value === "team" ? "team" : "workspace");
+  const one = (entry: CheckpointFields): WorkspaceCheckpoint[] =>
+    typeof entry.checkpoint_id === "string" && entry.checkpoint_id.length > 0
+      ? [{ id: entry.checkpoint_id, repo: repoOf(entry.checkpoint_repo) }]
+      : [];
+  if (Array.isArray(body.checkpoints)) {
+    return (body.checkpoints as CheckpointFields[]).flatMap(one);
+  }
+  return one(body);
+}
+
+/** Delete a workspace file or `team/...` file. Throws `ApiError` (404 if already gone).
+ * Returns the pre-delete checkpoint(s), empty when none was recorded. */
+export async function deleteWorkspaceFile(
+  agent: string | null,
+  path: string,
+  scope: WorkspaceScope = "agent",
+): Promise<WorkspaceCheckpoint[]> {
+  const body = await apiFetch<Parameters<typeof parseWorkspaceCheckpoints>[0]>(
+    workspacePath(agent, `/file?path=${encodeURIComponent(path)}`, scope),
+    { method: "DELETE" },
+  );
+  return parseWorkspaceCheckpoints(body);
+}
+
+/** Move or rename a workspace file. Throws `ApiError` (409 if `to` exists and `overwrite` isn't set). */
+export async function moveWorkspaceFile(
+  agent: string | null,
+  from: string,
+  to: string,
+  overwrite = false,
+  scope: WorkspaceScope = "agent",
+): Promise<void> {
+  await apiFetch<unknown>(workspacePath(agent, "/move", scope), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ from, to, overwrite }),
+  });
+}
+
+// ── Checkpoints API wrappers ─────────────────────────────────────────
+
+/**
+ * Hub and team repositories live under the hub; workspace and agent-config
+ * under the agent. Only those two need an agent: `null` is for the hub-level
+ * repositories, and throws `NoAgentSelectedError` for an agent-level one.
+ */
+function checkpointPath(agent: string | null, repo: RepoKind, sub: string): string {
+  const path = `/checkpoints${sub}`;
+  return repo === "hub" || repo === "team" ? hubPath(path) : agentPath(requireAgent(agent), path);
+}
+
+/**
+ * One page of checkpoints, newest first. `path` restricts to checkpoints
+ * that changed it; `turnId` restricts to a single turn's checkpoints (its
+ * turn-start/turn-end pair); `before`/`limit` page. Never cached — the
+ * list changes on every turn and action.
+ */
+export async function fetchCheckpoints(
+  agent: string | null,
+  query: {
+    repo: RepoKind;
+    path?: string;
+    turnId?: string;
+    before?: string;
+    limit?: number;
+  },
+): Promise<CheckpointPage> {
+  const params = new URLSearchParams({ repo: query.repo });
+  if (query.path) params.set("path", query.path);
+  if (query.turnId) params.set("turn_id", query.turnId);
+  if (query.before) params.set("before", query.before);
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  return apiFetch<CheckpointPage>(checkpointPath(agent, query.repo, `?${params}`));
+}
+
+/** On-disk size, checkpoint count, and oldest checkpoint for a repository. */
+export async function fetchCheckpointStats(
+  agent: string | null,
+  repo: RepoKind,
+): Promise<RepoStats> {
+  return apiFetch<RepoStats>(checkpointPath(agent, repo, `/stats?repo=${repo}`));
+}
+
+/** A checkpoint's metadata plus the paths it changed. */
+export async function fetchCheckpointDetail(
+  agent: string | null,
+  id: string,
+  repo: RepoKind,
+): Promise<CheckpointDetail> {
+  return apiFetch<CheckpointDetail>(
+    checkpointPath(agent, repo, `/${encodeURIComponent(id)}?repo=${repo}`),
+  );
+}
+
+/** Unified diff for one file at a checkpoint, `null` if it didn't change there. */
+export async function fetchCheckpointDiff(
+  agent: string | null,
+  id: string,
+  repo: RepoKind,
+  path: string,
+): Promise<string | null> {
+  const data = await apiFetch<{ diff: string | null }>(
+    checkpointPath(
+      agent,
+      repo,
+      `/${encodeURIComponent(id)}/diff?repo=${repo}&path=${encodeURIComponent(path)}`,
+    ),
+  );
+  return data.diff;
+}
+
+/** A file's raw text content at a checkpoint. Throws `ApiError` (404 if it's a directory or absent there). */
+export async function fetchCheckpointFile(
+  agent: string | null,
+  id: string,
+  repo: RepoKind,
+  path: string,
+): Promise<string> {
+  return apiFetchText(
+    checkpointPath(
+      agent,
+      repo,
+      `/${encodeURIComponent(id)}/file?repo=${repo}&path=${encodeURIComponent(path)}`,
+    ),
+  );
+}
+
+/** Restore `path` to its content at checkpoint `id`. Checkpoints the result, so it can itself be undone. */
+export async function restoreCheckpoint(
+  agent: string | null,
+  id: string,
+  repo: RepoKind,
+  path: string,
+): Promise<RestoreOutcome> {
+  return apiFetch<RestoreOutcome>(
+    checkpointPath(agent, repo, `/${encodeURIComponent(id)}/restore`),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo, path }),
+    },
+  );
+}
+
+/** Undo everything checkpoint `id` changed, skipping any path changed again since. */
+export async function undoCheckpoint(
+  agent: string | null,
+  id: string,
+  repo: RepoKind,
+): Promise<UndoOutcome> {
+  return apiFetch<UndoOutcome>(checkpointPath(agent, repo, `/${encodeURIComponent(id)}/undo`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repo }),
+  });
+}
+
+/** `checkpoint_id` from a delete/revoke response, or `null` when the server
+ * recorded none (the checkpoint failed, or the field is missing). */
+async function readCheckpointId(path: string, init?: RequestInit): Promise<string | null> {
+  const body = await apiFetch<{ checkpoint_id?: unknown }>(path, init);
+  return typeof body.checkpoint_id === "string" && body.checkpoint_id.length > 0
+    ? body.checkpoint_id
+    : null;
+}
+
 // ── Cloud API wrappers ──────────────────────────────────────────────
 
 export async function fetchCloudStatus(): Promise<CloudStatusResponse> {
-  return apiFetch<CloudStatusResponse>("/api/cloud/status");
+  return apiFetch<CloudStatusResponse>(hubPath("/cloud/status"));
 }
 
 export async function disconnectCloud(): Promise<void> {
-  await apiFetchText("/api/cloud/disconnect", { method: "POST" });
+  await apiFetchText(hubPath("/cloud/disconnect"), { method: "POST" });
 }
 
 // ── Update API wrappers ──────────────────────────────────────────────
 
 export async function fetchUpdateStatus(): Promise<UpdateStatusResponse> {
-  return apiFetch<UpdateStatusResponse>("/api/update/status");
+  return apiFetch<UpdateStatusResponse>(hubPath("/update/status"));
 }
 
 export async function triggerUpdateCheck(): Promise<UpdateStatusResponse> {
-  return apiFetch<UpdateStatusResponse>("/api/update/check", { method: "POST" });
+  return apiFetch<UpdateStatusResponse>(hubPath("/update/check"), { method: "POST" });
 }
 
 export async function applyUpdate(): Promise<UpdateStatusResponse> {
-  return apiFetch<UpdateStatusResponse>("/api/update/apply", { method: "POST" });
+  return apiFetch<UpdateStatusResponse>(hubPath("/update/apply"), { method: "POST" });
+}
+
+// ── Web Push API wrappers ────────────────────────────────────────────
+//
+// Every one throws `ApiError` on failure; the caller surfaces it.
+
+/** The hub's VAPID public key, base64url: what a browser subscribes with. */
+export async function fetchPushKey(): Promise<string> {
+  const data = await apiFetch<PushKeyResponse>(hubPath("/push/key"));
+  return data.public_key;
+}
+
+/** Every device that receives notifications, oldest first. */
+export async function fetchPushDevices(): Promise<PushDevice[]> {
+  const data = await apiFetch<PushDeviceList>(hubPath("/push/devices"));
+  return data.devices;
+}
+
+/** Register a browser's subscription, or update the device already registered for it. */
+export async function registerPushDevice(
+  subscription: WebPushSubscription,
+  label: string,
+): Promise<PushDevice> {
+  const data = await apiFetch<PushDeviceResponse>(hubPath("/push/devices"), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ subscription, label }),
+  });
+  return data.device;
+}
+
+/** Rename a device or change some of its preferences. */
+export async function updatePushDevice(
+  id: string,
+  change: { label?: string; preferences?: PushPreferencesPatch },
+): Promise<PushDevice> {
+  const data = await apiFetch<PushDeviceResponse>(
+    hubPath(`/push/devices/${encodeURIComponent(id)}`),
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(change),
+    },
+  );
+  return data.device;
+}
+
+/** Stop sending to a device. */
+export async function removePushDevice(id: string): Promise<void> {
+  await apiFetchText(hubPath(`/push/devices/${encodeURIComponent(id)}`), { method: "DELETE" });
+}
+
+/** Send the test notification to a device and say whether its push service took it. */
+export async function sendPushTest(id: string): Promise<PushTestResult> {
+  return apiFetch<PushTestResult>(hubPath(`/push/devices/${encodeURIComponent(id)}/test`), {
+    method: "POST",
+  });
+}
+
+// ── Hub lifecycle API wrappers ───────────────────────────────────────
+
+/** Every agent with its state, sorted by name, with the activity and stopping set beside the list. */
+export async function fetchAgents(): Promise<AgentListResponse> {
+  return apiFetch<AgentListResponse>(hubPath("/agents"));
+}
+
+/** Hub status: version, uptime, tunnel, and agent counts by state. */
+export async function fetchHubStatus(): Promise<HubStatusResponse> {
+  return apiFetch<HubStatusResponse>(hubPath("/status"));
+}
+
+/** Create an agent. Throws `ApiError` (400 invalid name, 409 name exists). */
+export async function createAgent(request: CreateAgentRequest): Promise<AgentSummary> {
+  return apiFetch<AgentSummary>(hubPath("/agents"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    // The generated type spells absent options as `null`; the wire leaves them out.
+    body: JSON.stringify(request, (_key, value: unknown) => value ?? undefined),
+  });
+}
+
+/** Delete an agent. `checkpoint_id` names the checkpoint it can be restored from. */
+export async function deleteAgent(name: string): Promise<DeleteOutcome> {
+  return apiFetch<DeleteOutcome>(hubPath(`/agents/${encodeURIComponent(name)}`), {
+    method: "DELETE",
+  });
+}
+
+/** Deleted agents that can be restored, newest deletion first. */
+export async function fetchDeletedAgents(): Promise<DeletedAgent[]> {
+  const data = await apiFetch<DeletedAgentListResponse>(hubPath("/agents/deleted"));
+  return data.agents;
+}
+
+/**
+ * Restore a deleted agent. Without `checkpointId` the hub uses the last
+ * checkpoint taken before the deletion. Throws `ApiError` (404 nothing to
+ * restore under that name, 409 the name exists, 400 an unknown checkpoint).
+ */
+export async function restoreAgent(name: string, checkpointId?: string): Promise<AgentSummary> {
+  const request: RestoreAgentRequest = { name, checkpoint_id: checkpointId ?? null };
+  return apiFetch<AgentSummary>(hubPath("/agents/restore"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    // The generated type spells an absent checkpoint as `null`; the wire leaves it out.
+    body: JSON.stringify(request, (_key, value: unknown) => value ?? undefined),
+  });
+}
+
+async function agentLifecycle(
+  name: string,
+  action: "start" | "stop" | "restart",
+): Promise<AgentSummary> {
+  return apiFetch<AgentSummary>(hubPath(`/agents/${encodeURIComponent(name)}/${action}`), {
+    method: "POST",
+  });
+}
+
+export async function startAgent(name: string): Promise<AgentSummary> {
+  return agentLifecycle(name, "start");
+}
+
+export async function stopAgent(name: string): Promise<AgentSummary> {
+  return agentLifecycle(name, "stop");
+}
+
+export async function restartAgent(name: string): Promise<AgentSummary> {
+  return agentLifecycle(name, "restart");
+}
+
+/** Make an agent's A2A card public or private. */
+export async function setAgentVisibility(
+  name: string,
+  a2a_visibility: A2aVisibility,
+): Promise<AgentSummary> {
+  return patchAgent(name, { a2a_visibility });
+}
+
+/** Turn an agent's autostart on or off. */
+export async function setAgentAutostart(name: string, autostart: boolean): Promise<AgentSummary> {
+  return patchAgent(name, { autostart });
+}
+
+/** `PATCH /api/hub/agents/{name}`: sends only the fields set, since the hub needs at least one. */
+async function patchAgent(name: string, patch: Partial<AgentPatch>): Promise<AgentSummary> {
+  return apiFetch<AgentSummary>(hubPath(`/agents/${encodeURIComponent(name)}`), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+}
+
+// ── Team overview, team events and the cross-agent inbox ────────────
+
+/** `?a=1&b=2` from the parameters that are set, or `""` when none are. */
+function queryString(params: Record<string, string | number | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) search.set(key, String(value));
+  }
+  const text = search.toString();
+  return text === "" ? "" : `?${text}`;
+}
+
+/** Every agent's overview, sorted by name, with the boot id of the hub process that answered. Throws `ApiError`. */
+export async function fetchOverview(): Promise<OverviewResponse> {
+  return apiFetch<OverviewResponse>(hubPath("/overview"));
+}
+
+/**
+ * One page of the team event log, newest first: entries older than `before`
+ * and newer than `after`, at most `limit` (50 by default, 200 at most).
+ * Throws `ApiError`.
+ */
+export async function fetchTeamEvents(
+  query: { before?: number; after?: number; limit?: number } = {},
+): Promise<TeamEventPage> {
+  return apiFetch<TeamEventPage>(hubPath(`/events${queryString(query)}`));
+}
+
+/**
+ * One page of every agent's user inbox, newest first: the active items by
+ * default, one agent's with `agent`, the page after a `next_cursor` with
+ * `before`. Throws `ApiError`.
+ */
+export async function fetchHubInbox(
+  query: { status?: InboxStatus; agent?: string; before?: string; limit?: number } = {},
+): Promise<HubInboxPage> {
+  return apiFetch<HubInboxPage>(hubPath(`/inbox${queryString(query)}`));
+}
+
+/** The hub's route for one item of `agent`'s user inbox, followed by `action`. */
+function hubInboxItemPath(agent: string, id: string, action: string): string {
+  return hubPath(`/inbox/${encodeURIComponent(agent)}/${encodeURIComponent(id)}/${action}`);
+}
+
+/**
+ * Mark an item read, whether it is in the inbox or the archive, and get it
+ * back. Throws `ApiError`.
+ */
+export async function markHubInboxItemRead(agent: string, id: string): Promise<HubInboxItem> {
+  const { item } = await apiFetch<{ item: HubInboxItem }>(hubInboxItemPath(agent, id, "read"), {
+    method: "PUT",
+  });
+  return item;
+}
+
+/** Move an item from the inbox to the archive. Throws `ApiError`. */
+export async function archiveHubInboxItem(agent: string, id: string): Promise<HubInboxItem> {
+  const { item } = await apiFetch<{ item: HubInboxItem }>(hubInboxItemPath(agent, id, "archive"), {
+    method: "POST",
+  });
+  return item;
+}
+
+/** Move an archived item back to the inbox. Throws `ApiError`. */
+export async function restoreHubInboxItem(agent: string, id: string): Promise<HubInboxItem> {
+  const { item } = await apiFetch<{ item: HubInboxItem }>(hubInboxItemPath(agent, id, "restore"), {
+    method: "POST",
+  });
+  return item;
+}
+
+// ── Teams setup API ─────────────────────────────────────────────────
+
+/** Fetch prerequisite check results for Teams setup. */
+export async function fetchTeamsSetupPrereqs(agent: string): Promise<TeamsSetupPrereqs> {
+  return apiFetch<TeamsSetupPrereqs>(agentPath(agent, "/teams-setup/prereqs"));
+}
+
+/**
+ * Fetch current Teams setup job state. Returns `null` on 404 when no job exists.
+ * When `logSince` is given, only log lines with `seq > logSince` are returned.
+ */
+export async function fetchTeamsSetupJob(
+  agent: string,
+  logSince?: number,
+): Promise<TeamsSetupJob | null> {
+  const query = logSince !== undefined ? `?log_since=${encodeURIComponent(logSince)}` : "";
+  try {
+    return await apiFetch<TeamsSetupJob>(agentPath(agent, `/teams-setup/job${query}`));
+  } catch (err: unknown) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+/**
+ * Start or resume a Teams setup job.
+ * On 409 (already running), returns the currently running job.
+ * On 400 (validation failure), throws ApiError with the actionable message.
+ */
+export async function startTeamsSetupJob(
+  agent: string,
+  start: TeamsSetupStart,
+): Promise<TeamsSetupJob> {
+  try {
+    return await apiFetch<TeamsSetupJob>(agentPath(agent, "/teams-setup/job"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(start),
+    });
+  } catch (err: unknown) {
+    if (err instanceof ApiError && err.status === 409) {
+      try {
+        return JSON.parse(err.body) as TeamsSetupJob;
+      } catch {
+        throw err;
+      }
+    }
+    throw err;
+  }
+}
+
+/** Submit a redirect URL from browser authentication. */
+export async function submitTeamsSetupRedirect(agent: string, url: string): Promise<TeamsSetupJob> {
+  return apiFetch<TeamsSetupJob>(agentPath(agent, "/teams-setup/job/redirect"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+}
+
+/** Cancel a running Teams setup job and kill its process tree. */
+export async function cancelTeamsSetupJob(agent: string): Promise<TeamsSetupJob> {
+  return apiFetch<TeamsSetupJob>(agentPath(agent, "/teams-setup/job/cancel"), {
+    method: "POST",
+  });
+}
+
+/** Retry a failed or cancelled Teams setup job from the failed phase. */
+export async function retryTeamsSetupJob(agent: string): Promise<TeamsSetupJob> {
+  return apiFetch<TeamsSetupJob>(agentPath(agent, "/teams-setup/job/retry"), {
+    method: "POST",
+  });
+}
+
+/** Install the generated Teams app package into Teams via ATK. */
+export async function installTeamsApp(agent: string): Promise<TeamsSetupJob> {
+  return apiFetch<TeamsSetupJob>(agentPath(agent, "/teams-setup/job/install-app"), {
+    method: "POST",
+  });
+}
+
+/** Direct URL for downloading the app package zip. */
+export function teamsAppPackageUrl(agent: string): string {
+  return agentPath(agent, "/teams-setup/job/package");
+}
+
+/** Fetch the app package zip as a Blob. */
+export async function fetchTeamsAppPackage(agent: string): Promise<Blob> {
+  const resp = await checkOk(await fetch(agentPath(agent, "/teams-setup/job/package")));
+  return resp.blob();
+}
+
+/** Forget a finished Teams setup job. Throws 409 if still running. */
+export async function deleteTeamsSetupJob(agent: string): Promise<void> {
+  await apiFetchText(agentPath(agent, "/teams-setup/job"), { method: "DELETE" });
+}
+
+/** Clean up local project files, CLI install, or M365 session. */
+export async function cleanupTeamsSetup(
+  agent: string,
+  req: CleanupRequest,
+): Promise<CleanupResult> {
+  return apiFetch<CleanupResult>(agentPath(agent, "/teams-setup/cleanup"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
 }

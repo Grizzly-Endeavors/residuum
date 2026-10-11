@@ -93,6 +93,19 @@ pub enum HubError {
     RequestFailed(String, String),
 }
 
+impl HubError {
+    /// The name of the remote agent the error is about.
+    #[must_use]
+    pub fn agent_name(&self) -> &str {
+        match self {
+            Self::Unknown(name)
+            | Self::Offline(name, _)
+            | Self::ClientBuild(name, _)
+            | Self::RequestFailed(name, _) => name,
+        }
+    }
+}
+
 /// The negotiated A2A client type [`A2AClientFactory::create_from_card`]
 /// returns.
 pub type NegotiatedClient = a2a_client::A2AClient<Box<dyn a2a_client::Transport>>;
@@ -277,16 +290,18 @@ impl A2aClientHub {
     }
 
     async fn refresh_card(&self, name: &str) {
-        let Some((url, headers)) = ({
+        let Some((url, headers, source)) = ({
             let agents = self.agents.read().await;
             agents
                 .get(name)
-                .map(|rec| (rec.url.clone(), rec.headers.clone()))
+                .map(|rec| (rec.url.clone(), rec.headers.clone(), rec.source))
         }) else {
             return;
         };
 
-        let result = fetch_card(&url, &headers).await;
+        // A sibling's card is only ever read at the address its key was issued
+        // for; a configured agent's address may legitimately redirect.
+        let result = fetch_card(&url, &headers, source != AgentSource::Sibling).await;
         let mut agents = self.agents.write().await;
         let Some(rec) = agents.get_mut(name) else {
             return;
@@ -307,14 +322,17 @@ impl A2aClientHub {
 
     /// Spawn the background loop that retries card fetches for agents not
     /// currently `Ok`, honoring each agent's own backoff. Fire-and-forget:
-    /// runs for the process lifetime, like
-    /// `crate::gateway::file_server::FileRegistry::spawn_cleanup_task`.
+    /// the loop holds the hub weakly, so it ends on its own once the agent
+    /// that owns the hub lets go of it.
     pub fn spawn_background_refresh(self: &Arc<Self>) {
-        let hub = Arc::clone(self);
+        let hub = Arc::downgrade(self);
         crate::util::spawn_monitored("a2a-hub-refresh", async move {
             let mut interval = tokio::time::interval(REFRESH_TICK);
             loop {
                 interval.tick().await;
+                let Some(hub) = hub.upgrade() else {
+                    return;
+                };
                 let due: Vec<String> = {
                     let agents = hub.agents.read().await;
                     let now = Instant::now();
@@ -406,13 +424,17 @@ fn fresh_record(entry: A2aAgentEntry, source: AgentSource) -> AgentRecord {
 async fn fetch_card(
     url: &str,
     headers: &HashMap<String, String>,
+    follow_redirects: bool,
 ) -> Result<a2a::AgentCard, String> {
-    let client = headers_client(headers)?;
+    let client = headers_client(headers, follow_redirects)?;
     let resolver = a2a_client::agent_card::AgentCardResolver::new(Some(client));
     resolver.resolve(url).await.map_err(|e| e.to_string())
 }
 
-fn headers_client(headers: &HashMap<String, String>) -> Result<reqwest::Client, String> {
+fn headers_client(
+    headers: &HashMap<String, String>,
+    follow_redirects: bool,
+) -> Result<reqwest::Client, String> {
     let mut map = reqwest::header::HeaderMap::new();
     for (key, value) in headers {
         let name = reqwest::header::HeaderName::try_from(key.as_str())
@@ -421,8 +443,14 @@ fn headers_client(headers: &HashMap<String, String>) -> Result<reqwest::Client, 
             .map_err(|e| format!("invalid header value for '{key}': {e}"))?;
         map.insert(name, val);
     }
+    let redirects = if follow_redirects {
+        reqwest::redirect::Policy::default()
+    } else {
+        reqwest::redirect::Policy::none()
+    };
     reqwest::Client::builder()
         .default_headers(map)
+        .redirect(redirects)
         .build()
         .map_err(|e| format!("failed to build http client: {e}"))
 }
@@ -466,13 +494,13 @@ mod tests {
                 "capabilities":{{"streaming":true}},"defaultInputModes":["text/plain"],
                 "defaultOutputModes":["text/plain"],"skills":[]}}"#
         );
-        tokio::spawn(async move {
+        crate::util::spawn_in_span(async move {
             loop {
                 let Ok((mut socket, _)) = listener.accept().await else {
                     return;
                 };
                 let body = body.clone();
-                tokio::spawn(async move {
+                crate::util::spawn_in_span(async move {
                     use tokio::io::{AsyncReadExt, AsyncWriteExt};
                     let mut buf = [0_u8; 4096];
                     let _read_result = socket.read(&mut buf).await;

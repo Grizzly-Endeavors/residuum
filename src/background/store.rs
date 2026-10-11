@@ -70,10 +70,10 @@ pub struct RunRecord {
     /// [`SessionStore::append_transcript`]).
     #[serde(default)]
     pub transcript: Vec<Message>,
-    /// This run's cumulative token usage, for the `SessionView` footer.
+    /// This run's cumulative token usage, for the session panel's Details.
     /// Copied from the registry entry's own running total (see
     /// [`super::registry::SessionRegistry::accumulate_usage`]) each time
-    /// this record is written, so a completed run's footer keeps its
+    /// this record is written, so a completed run keeps its
     /// final totals.
     #[serde(default)]
     pub usage: crate::agent::usage::SessionUsageTotals,
@@ -314,13 +314,31 @@ fn is_day_dir(name: &str) -> bool {
 /// Durable on-disk record of every session run.
 pub struct SessionStore {
     sessions_dir: PathBuf,
+    /// Keeps a test fixture's backing temp directory alive (and cleaned up
+    /// on drop) for as long as this store is in use, instead of leaking it
+    /// with [`tempfile::TempDir::keep`].
+    #[cfg(test)]
+    tempdir_guard: Option<tempfile::TempDir>,
 }
 
 impl SessionStore {
     /// Create a store rooted at the given sessions directory.
     #[must_use]
     pub fn new(sessions_dir: PathBuf) -> Self {
-        Self { sessions_dir }
+        Self {
+            sessions_dir,
+            #[cfg(test)]
+            tempdir_guard: None,
+        }
+    }
+
+    /// Attach a temp directory guard so it's dropped (and cleaned up)
+    /// together with this store instead of being leaked.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_tempdir_guard(mut self, dir: tempfile::TempDir) -> Self {
+        self.tempdir_guard = Some(dir);
+        self
     }
 
     /// Path a run's metadata record lives at, given its start time.
@@ -399,7 +417,15 @@ impl SessionStore {
             .await
         {
             Ok(mut file) => {
-                if let Err(e) = file.write_all(buf.as_bytes()).await {
+                // `tokio::fs::File` completes `write_all` once the bytes are
+                // queued for a blocking thread, and dropping the handle does
+                // not wait for that write; `flush` does. Without it a reader
+                // that follows the append can see an empty transcript.
+                let written = match file.write_all(buf.as_bytes()).await {
+                    Ok(()) => file.flush().await,
+                    Err(e) => Err(e),
+                };
+                if let Err(e) = written {
                     tracing::warn!(run_id, path = %path.display(), error = %e, "failed to append to session transcript");
                 }
             }
@@ -915,6 +941,26 @@ mod tests {
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
             overlap: None,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn appended_transcript_is_readable_as_soon_as_append_returns() {
+        // `tokio::fs::File` hands writes to a blocking thread and can report
+        // `write_all` complete before the bytes reach the file, so an append
+        // that skips `flush` is not yet visible to a reader that follows it.
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let info = sample_info();
+        for round in 0..300 {
+            let run_id = format!("run-durable-{round}");
+            store
+                .append_transcript(&run_id, info.started_at, &[Message::user("hello")])
+                .await;
+            let read = store
+                .read_incremental_transcript(&run_id, info.started_at)
+                .await;
+            assert_eq!(read.len(), 1, "append {round} was not readable on return");
         }
     }
 
@@ -1466,9 +1512,8 @@ mod tests {
             "the observation must not be duplicated by recovery"
         );
 
-        let latest = crate::memory::episode_store::latest_episode_id(&layout.episodes_dir())
-            .await
-            .unwrap();
+        let latest =
+            crate::memory::episode_store::latest_episode_id(&layout.episodes_dir()).unwrap();
         assert_eq!(
             latest, episode_id,
             "recovery must not mint a second episode for the same run"

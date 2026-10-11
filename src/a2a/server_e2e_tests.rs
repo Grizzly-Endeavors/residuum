@@ -6,6 +6,9 @@
 //! Declared as `#[cfg(test)] mod server_e2e_tests;` from `mod.rs`, so this
 //! whole file (harness and tests alike) only exists in test builds.
 
+use crate::testing::gate::{Gate, GateEntry};
+use crate::testing::wait;
+use crate::util::test_ports::{ReservedPort, reserve_port};
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -20,12 +23,12 @@ use async_trait::async_trait;
 use futures_util::StreamExt as _;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::a2a::auth::NoTunnel;
 use crate::a2a::card::{CardRuntime, CardState, SharedCardState};
 use crate::a2a::executor::SessionExecutor;
 use crate::a2a::handler::{ResiduumA2aHandler, resume_in_progress_tasks};
 use crate::a2a::keys_runtime::{A2aKeys, SharedA2aKeys};
-use crate::a2a::listener::A2aListener;
+use crate::a2a::listener::{A2aListener, agent_handler_router};
+use crate::a2a::static_directory::StaticAgentDirectory;
 use crate::a2a::task_store::{CALLER_METADATA_KEY, FileTaskStore, SharedTaskStore};
 use crate::actions::store::ActionStore;
 use crate::agent::HopCounter;
@@ -50,6 +53,9 @@ use crate::tools::{SubagentToolDeps, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 use crate::workspace::layout::WorkspaceLayout;
 
+/// The name of the one agent the harness serves.
+const AGENT_NAME: &str = "solo";
+
 /// Shared queue of scripted model responses, consumed in order by
 /// [`ScriptedProvider`] across every session run a harness spawns.
 type SharedResponseQueue = Arc<AsyncMutex<VecDeque<InferenceResponse>>>;
@@ -66,10 +72,11 @@ type SharedSeenMessages = Arc<AsyncMutex<Vec<Vec<Message>>>>;
 struct ScriptedProvider {
     queue: SharedResponseQueue,
     seen: SharedSeenMessages,
-    /// Artificial delay before returning, so a test can reliably observe a
-    /// task in `WORKING` (e.g. to cancel it, or to register a fake spawned
-    /// child) before the scripted turn resolves.
-    delay: Duration,
+    /// Every call waits here before it takes a response, so a test can hold a
+    /// task in `WORKING` (to cancel it, or to register a fake spawned child)
+    /// for as long as it needs. The harness's gate is open unless a test
+    /// closes it.
+    gate: GateEntry,
 }
 
 #[async_trait]
@@ -81,9 +88,7 @@ impl InferenceProvider for ScriptedProvider {
         _options: &CompletionOptions,
     ) -> Result<InferenceResponse, InferenceError> {
         self.seen.lock().await.push(messages.to_vec());
-        if !self.delay.is_zero() {
-            tokio::time::sleep(self.delay).await;
-        }
+        self.gate.pass().await;
         self.queue
             .lock()
             .await
@@ -108,7 +113,8 @@ fn test_config(dir: &std::path::Path) -> Config {
     use crate::inference::retry::RetryConfig;
 
     Config {
-        name: None,
+        agent_name: "test-agent".to_string(),
+        autostart: true,
         main: vec![],
         observer: vec![],
         reflector: vec![],
@@ -135,6 +141,7 @@ fn test_config(dir: &std::path::Path) -> Config {
         retry: RetryConfig::default(),
         background: BackgroundConfig::default(),
         agent: AgentAbilitiesConfig::default(),
+        auto_mode: crate::config::AutoModeConfig::default(),
         idle: IdleConfig::default(),
         temperature: None,
         thinking: None,
@@ -152,7 +159,8 @@ fn test_config(dir: &std::path::Path) -> Config {
 /// A live A2A server stack: a real `SessionRuntime` driven by a scripted
 /// provider, the real session executor/task store/handler, and the real
 /// `A2aListener` bound to a loopback port — everything Stream E built,
-/// wired together the same way `build_a2a_listener` wires it in production.
+/// wired together the same way `build_a2a_listener` wires it in production,
+/// with the one agent served at `/agents/solo`.
 struct Harness {
     base_url: String,
     keys: SharedA2aKeys,
@@ -164,10 +172,30 @@ struct Harness {
     card_state: SharedCardState,
     queue: SharedResponseQueue,
     seen: SharedSeenMessages,
+    /// Holds every scripted model call. Open unless a test closes it.
+    model_gate: Gate,
     workspace_dir: PathBuf,
     shutdown_tx: tokio::sync::watch::Sender<bool>,
     // Kept alive for the harness's lifetime.
     _tempdir: tempfile::TempDir,
+}
+
+impl Drop for Harness {
+    /// Removes the workspace before the temp-dir guard runs. Session and
+    /// checkpoint tasks may still be writing into the workspace when a test
+    /// ends, and a write that lands mid-removal makes `TempDir`'s single
+    /// best-effort `remove_dir_all` give up and leave the directory in
+    /// `/tmp`. Retrying until the tree is gone lets those writers finish.
+    fn drop(&mut self) {
+        self.shutdown_tx.send(true).ok();
+        for _ in 0..50 {
+            match std::fs::remove_dir_all(&self.workspace_dir) {
+                Ok(()) => return,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+                Err(_) => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
+    }
 }
 
 /// Options for building a [`Harness`], so each test only sets what it needs.
@@ -175,8 +203,6 @@ struct HarnessOptions {
     card_skills: Vec<crate::a2a::card::AgentCardSkillFile>,
     workspace_skill: Option<(&'static str, &'static str)>,
     idle_timeout: Duration,
-    /// Artificial delay every scripted model turn takes before resolving.
-    response_delay: Duration,
 }
 
 impl Default for HarnessOptions {
@@ -185,18 +211,8 @@ impl Default for HarnessOptions {
             card_skills: vec![],
             workspace_skill: None,
             idle_timeout: Duration::from_millis(50),
-            response_delay: Duration::ZERO,
         }
     }
-}
-
-async fn free_port() -> u16 {
-    tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
 }
 
 /// Set up the tempdir-backed workspace a harness runs against: required
@@ -220,7 +236,7 @@ async fn setup_workspace(
         .await
         .unwrap();
 
-    let mut skill_dirs = vec![layout.skills_dir()];
+    let skill_dirs = vec![crate::skills::SkillDir::agent(layout.skills_dir())];
     if let Some((name, description)) = opts.workspace_skill {
         let skill_dir = layout.skills_dir().join(name);
         tokio::fs::create_dir_all(&skill_dir).await.unwrap();
@@ -232,8 +248,7 @@ async fn setup_workspace(
         .unwrap();
     }
     let skill_index = SkillIndex::scan(&skill_dirs).await.unwrap();
-    skill_dirs.clear();
-    let skill_state = SkillState::new_shared(skill_index, vec![layout.skills_dir()]);
+    let skill_state = SkillState::new_shared(skill_index, skill_dirs);
 
     let card_file = crate::a2a::card::AgentCardFile {
         name: "Test Agent".to_string(),
@@ -300,8 +315,8 @@ struct RuntimeDeps {
 fn start_scripted_sessions(
     runtime: Arc<SessionRuntime>,
     deps: RuntimeDeps,
-    response_delay: Duration,
-) -> (SharedResponseQueue, SharedSeenMessages) {
+) -> (SharedResponseQueue, SharedSeenMessages, Gate) {
+    let model_gate = Gate::open("scripted model");
     let queue: SharedResponseQueue = Arc::new(AsyncMutex::new(VecDeque::new()));
     let seen: SharedSeenMessages = Arc::new(AsyncMutex::new(Vec::new()));
     let (hybrid_searcher, tracing_service, tracing_client_context) =
@@ -331,21 +346,22 @@ fn start_scripted_sessions(
         a2a_hub: deps.a2a_hub,
         a2a_tracker: deps.a2a_tracker,
         checkpoints: deps.checkpoints,
-        response_delay,
+        gate: model_gate.entry(),
     };
     spawn_mini_background_listener(deps.bus_handle, mini_deps);
-    (queue, seen)
+    (queue, seen, model_gate)
 }
 
 /// Build the real executor/handler and start the real `A2aListener` on
 /// `port`, returning its caller-key store and shutdown sender.
-async fn start_a2a_listener(
+fn start_a2a_listener(
     workspace_dir: &std::path::Path,
     card_state: &SharedCardState,
     task_store: &SharedTaskStore,
     executor: SessionExecutor,
-    port: u16,
-) -> (SharedA2aKeys, tokio::sync::watch::Sender<bool>) {
+    held: ReservedPort,
+) -> (SharedA2aKeys, tokio::sync::watch::Sender<bool>, u16) {
+    let port = held.port();
     let inner = DefaultRequestHandler::new(
         executor,
         crate::a2a::task_store::DelegatingTaskStore(Arc::clone(task_store)),
@@ -359,38 +375,70 @@ async fn start_a2a_listener(
     let handler = Arc::new(ResiduumA2aHandler::new(inner, Arc::clone(task_store)));
     let keys = A2aKeys::new_shared(workspace_dir);
 
+    let directory = StaticAgentDirectory::new().with_agent(
+        AGENT_NAME,
+        crate::hub::A2aVisibility::Public,
+        agent_handler_router(handler, Arc::clone(card_state)),
+    );
+
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let listener = A2aListener::new(
-        A2aConfig {
-            enabled: true,
-            port,
-            public_url: None,
-            visibility: A2aVisibility::Public,
-        },
         "127.0.0.1".to_string(),
-        handler,
-        Arc::clone(card_state),
+        port,
+        Arc::new(directory),
         Arc::clone(&keys),
-        Arc::new(NoTunnel),
         shutdown_rx,
-    );
-    tokio::spawn(listener.start());
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    (keys, shutdown_tx)
+    )
+    // The listener serves on the reserved socket itself, so no other process
+    // can take the port, and connections queue on it until it accepts them.
+    .with_bound_listener(held.into_tokio_listener());
+    crate::util::spawn_in_span(listener.start());
+    (keys, shutdown_tx, port)
+}
+
+/// Build the `SessionRuntime` a harness drives its scripted sessions
+/// through — split out of `spawn_harness` purely to keep that function's
+/// line count down.
+fn build_harness_runtime(
+    session_registry: &Arc<SessionRegistry>,
+    session_store: &Arc<SessionStore>,
+    messenger: &Arc<AgentMessenger>,
+    checkpoints: &Arc<crate::checkpoints::CheckpointEngine>,
+    background_config: &crate::config::BackgroundConfig,
+    bus_handle: &BusHandle,
+    workspace_dir: &std::path::Path,
+) -> Arc<SessionRuntime> {
+    let (_, tracing_service, tracing_client_context) = build_support_deps(workspace_dir);
+    Arc::new(SessionRuntime::new(
+        Arc::clone(session_registry),
+        Arc::clone(session_store),
+        Arc::new(tokio::sync::Semaphore::new(8)),
+        background_config,
+        crate::background::runtime::SessionRuntimeHandles {
+            publisher: bus_handle.publisher(),
+            tz: chrono_tz::UTC,
+            messenger: Arc::clone(messenger),
+            checkpoints: Arc::clone(checkpoints),
+            tracing_service,
+            tracing_client_context,
+        },
+    ))
 }
 
 async fn spawn_harness(opts: HarnessOptions) -> Harness {
     let (tempdir, workspace_dir, layout, skill_state) = setup_workspace(&opts).await;
 
-    let port = free_port().await;
+    let held = reserve_port();
     let card_runtime = CardRuntime::from_config(
         &A2aConfig {
             enabled: true,
-            port,
+            port: held.port(),
             public_url: None,
             visibility: A2aVisibility::Public,
         },
         "127.0.0.1",
+        AGENT_NAME,
+        None,
     );
     let card_state = CardState::load(&layout.agent_card_json(), &card_runtime).unwrap();
 
@@ -409,25 +457,25 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
     };
     let checkpoints = Arc::new(
         crate::checkpoints::CheckpointEngine::new(
+            "test-agent",
             layout.root().to_path_buf(),
+            &crate::config::paths::TeamPaths::new(workspace_dir.clone().join("team")),
+            workspace_dir.join("config"),
             workspace_dir.clone(),
             &workspace_dir.join("checkpoints"),
             None,
         )
         .unwrap(),
     );
-    let runtime = Arc::new(SessionRuntime::new(
-        Arc::clone(&session_registry),
-        Arc::clone(&session_store),
-        8,
+    let runtime = build_harness_runtime(
+        &session_registry,
+        &session_store,
+        &messenger,
+        &checkpoints,
         &background_config,
-        crate::background::runtime::SessionRuntimeHandles {
-            publisher: bus_handle.publisher(),
-            tz: chrono_tz::UTC,
-            messenger: Arc::clone(&messenger),
-            checkpoints: Arc::clone(&checkpoints),
-        },
-    ));
+        &bus_handle,
+        &workspace_dir,
+    );
 
     let a2a_hub = crate::a2a::A2aClientHub::new_shared();
     let a2a_tracker = crate::a2a::RemoteTaskTracker::load(
@@ -438,7 +486,7 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
     )
     .await;
 
-    let (queue, seen) = start_scripted_sessions(
+    let (queue, seen, model_gate) = start_scripted_sessions(
         Arc::clone(&runtime),
         RuntimeDeps {
             session_registry: Arc::clone(&session_registry),
@@ -451,7 +499,6 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
             a2a_tracker,
             checkpoints: Arc::clone(&checkpoints),
         },
-        opts.response_delay,
     );
 
     let task_store = FileTaskStore::load(&layout.a2a_tasks_dir()).await.unwrap();
@@ -464,11 +511,11 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
         layout.agent_inbox_dir(),
         chrono_tz::UTC,
     );
-    let (keys, shutdown_tx) =
-        start_a2a_listener(&workspace_dir, &card_state, &task_store, executor, port).await;
+    let (keys, shutdown_tx, port) =
+        start_a2a_listener(&workspace_dir, &card_state, &task_store, executor, held);
 
     Harness {
-        base_url: format!("http://127.0.0.1:{port}"),
+        base_url: format!("http://127.0.0.1:{port}/agents/{AGENT_NAME}"),
         keys,
         task_store,
         session_registry,
@@ -478,6 +525,7 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
         card_state,
         queue,
         seen,
+        model_gate,
         workspace_dir,
         shutdown_tx,
         _tempdir: tempdir,
@@ -512,11 +560,11 @@ struct MiniListenerDeps {
     a2a_hub: Arc<crate::a2a::A2aClientHub>,
     a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
     checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
-    response_delay: Duration,
+    gate: GateEntry,
 }
 
 fn spawn_mini_background_listener(bus_handle: BusHandle, deps: MiniListenerDeps) {
-    tokio::spawn(async move {
+    crate::util::spawn_in_span(async move {
         let mut sub: crate::bus::Subscriber<SpawnRequestEvent> =
             bus_handle.subscribe(topics::Background).await.unwrap();
         loop {
@@ -539,6 +587,7 @@ fn spawn_mini_background_listener(bus_handle: BusHandle, deps: MiniListenerDeps)
                     sender: event.sender,
                     inbound: event.inbound,
                     images: event.images,
+                    carried_history: event.carried_history,
                 },
                 conversation_target: event.conversation,
                 overlap: event.overlap,
@@ -555,7 +604,7 @@ fn spawn_mini_background_listener(bus_handle: BusHandle, deps: MiniListenerDeps)
 fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> SubAgentResources {
     let (layout, observer, merge_writer) = test_memory_extras();
     let hop_counter = HopCounter::new(event.hop_count);
-    let tools = ToolRegistry::build_subagent_registry(SubagentToolDeps {
+    let tools = ToolRegistry::build_subagent_registry(&SubagentToolDeps {
         tracker: crate::tools::FileTracker::new_shared(),
         path_policy: Arc::clone(&deps.path_policy),
         tools_path: Arc::clone(&deps.tools_path),
@@ -565,6 +614,7 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
         hybrid_searcher: Arc::clone(&deps.hybrid_searcher),
         workspace_dir: deps.workspace_dir.clone(),
         config_dir: std::path::PathBuf::from("/tmp/residuum-test-config"),
+        hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub"),
         episodes_dir: deps.layout.episodes_dir(),
         sessions_dir: deps.layout.sessions_dir(),
         agent_inbox_dir: deps.layout.agent_inbox_dir(),
@@ -592,6 +642,10 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
         a2a_hub: Arc::clone(&deps.a2a_hub),
         a2a_tracker: Arc::clone(&deps.a2a_tracker),
         checkpoints: Arc::clone(&deps.checkpoints),
+        lifecycle: crate::tools::LifecycleAccess::new(
+            crate::hub::DirectoryHandle::unbound(),
+            "test",
+        ),
     });
 
     SubAgentResources {
@@ -600,7 +654,7 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
         provider: Box::new(ScriptedProvider {
             queue: Arc::clone(&deps.queue),
             seen: Arc::clone(&deps.seen),
-            delay: deps.response_delay,
+            gate: deps.gate.clone(),
         }),
         tools,
         mcp_registry: McpRegistry::new_shared(),
@@ -618,22 +672,16 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
     }
 }
 
-/// The longest this suite ever waits on one operation. Every await below is
-/// bounded by this (directly or via [`drain_until_terminal`]) — a hang here
-/// is a test failure, not a slow pass.
-const TEST_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// Resolve the harness's card and build an authenticated client for `token`.
 async fn client_for(
     harness: &Harness,
     token: &str,
 ) -> a2a_client::A2AClient<Box<dyn a2a_client::Transport>> {
-    let card = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let card = wait::guarded(
+        "the agent card",
         AgentCardResolver::new(None).resolve(&harness.base_url),
     )
     .await
-    .expect("timed out resolving the agent card")
     .unwrap();
     A2AClientFactory::builder()
         .with_interceptor(Arc::new(AuthInterceptor::bearer(token)))
@@ -665,6 +713,7 @@ fn task_update_call(id: &str, state: &str, message: &str) -> ToolCall {
         id: id.to_string(),
         name: "a2a_task_update".to_string(),
         arguments: serde_json::json!({ "state": state, "message": message }),
+        server: None,
     }
 }
 
@@ -678,6 +727,7 @@ fn task_update_call_with_artifacts(
         id: id.to_string(),
         name: "a2a_task_update".to_string(),
         arguments: serde_json::json!({ "state": state, "message": message, "artifacts": artifacts }),
+        server: None,
     }
 }
 
@@ -687,9 +737,7 @@ async fn drain_until_terminal(
 ) -> Vec<a2a::StreamResponse> {
     let mut events = Vec::new();
     loop {
-        let next = tokio::time::timeout(TEST_TIMEOUT, stream.next())
-            .await
-            .expect("timed out waiting for the next streamed event");
+        let next = wait::guarded("the next streamed event", stream.next()).await;
         match next {
             Some(item) => events.push(item.unwrap()),
             None => return events,
@@ -727,18 +775,14 @@ async fn wait_for_task_state(
     task_id: &str,
     state: TaskState,
 ) -> a2a::Task {
-    tokio::time::timeout(TEST_TIMEOUT, async {
-        loop {
-            if let Some(task) = task_store.get(task_id).await.unwrap()
-                && task.status.state == state
-            {
-                return task;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    wait::until(format!("task {task_id} to reach {state:?}"), || async {
+        task_store
+            .get(task_id)
+            .await
+            .unwrap()
+            .filter(|task| task.status.state == state)
     })
     .await
-    .unwrap_or_else(|_| panic!("timed out waiting for task {task_id} to reach {state:?}"))
 }
 
 #[tokio::test]
@@ -763,12 +807,11 @@ async fn send_streams_working_then_completes_with_an_artifact() {
     }
 
     let client = client_for(&harness, &token).await;
-    let stream = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let stream = wait::guarded(
+        "the reply to send_streaming_message",
         client.send_streaming_message(&send_request("please write a report", None, None)),
     )
     .await
-    .unwrap()
     .unwrap();
     let events = drain_until_terminal(stream).await;
 
@@ -793,8 +836,8 @@ async fn send_streams_working_then_completes_with_an_artifact() {
     );
 
     let task_id = task_id_of(&events);
-    let task = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let task = wait::guarded(
+        "the reply to get_task",
         client.get_task(&GetTaskRequest {
             id: task_id,
             history_length: None,
@@ -802,7 +845,6 @@ async fn send_streams_working_then_completes_with_an_artifact() {
         }),
     )
     .await
-    .unwrap()
     .unwrap();
     assert_eq!(task.status.state, TaskState::Completed);
     assert_eq!(task.artifacts.map(|a| a.len()), Some(1));
@@ -845,12 +887,11 @@ async fn input_required_then_followup_resumes_across_an_idle_session_and_complet
     }
 
     let client = client_for(&harness, &token).await;
-    let stream = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let stream = wait::guarded(
+        "the reply to send_streaming_message",
         client.send_streaming_message(&send_request("write something", None, None)),
     )
     .await
-    .unwrap()
     .unwrap();
     let events = drain_until_terminal(stream).await;
     let task_id = task_id_of(&events);
@@ -861,12 +902,16 @@ async fn input_required_then_followup_resumes_across_an_idle_session_and_complet
 
     // Let the session's own run idle out and complete, recording a resume
     // point — the same mechanism a follow-up after a long silence relies on.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let address = SessionExecutor::address_for("key:bob", &context_id_of(&events));
+    wait::until_true("the session to idle out and record a resume point", || {
+        harness.session_registry.resume_point(&address).is_some()
+            && harness.session_registry.get(&address).is_none()
+    })
+    .await;
 
     let followup = send_request("markdown please", Some(&task_id), None);
-    let response = tokio::time::timeout(TEST_TIMEOUT, client.send_message(&followup))
+    let response = wait::guarded("the reply to send_message", client.send_message(&followup))
         .await
-        .unwrap()
         .unwrap();
     let task = match response {
         a2a::SendMessageResponse::Task(t) => t,
@@ -889,11 +934,8 @@ async fn input_required_then_followup_resumes_across_an_idle_session_and_complet
 
 #[tokio::test]
 async fn cancel_marks_the_task_canceled() {
-    let harness = spawn_harness(HarnessOptions {
-        response_delay: Duration::from_millis(500),
-        ..Default::default()
-    })
-    .await;
+    let harness = spawn_harness(HarnessOptions::default()).await;
+    harness.model_gate.close();
     let token = harness.keys.create("cara", None).await.unwrap();
     {
         let mut queue = harness.queue.lock().await;
@@ -904,22 +946,20 @@ async fn cancel_marks_the_task_canceled() {
     }
 
     let client = client_for(&harness, &token).await;
-    let mut stream = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let mut stream = wait::guarded(
+        "the reply to send_streaming_message",
         client.send_streaming_message(&send_request("take your time", None, None)),
     )
     .await
-    .unwrap()
     .unwrap();
-    let first = tokio::time::timeout(TEST_TIMEOUT, stream.next())
+    let first = wait::guarded("the next streamed event", stream.next())
         .await
-        .unwrap()
         .unwrap()
         .unwrap();
     let task_id = task_id_of(std::slice::from_ref(&first));
 
-    let canceled = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let canceled = wait::guarded(
+        "the reply to cancel_task",
         client.cancel_task(&CancelTaskRequest {
             id: task_id.clone(),
             metadata: None,
@@ -927,12 +967,11 @@ async fn cancel_marks_the_task_canceled() {
         }),
     )
     .await
-    .unwrap()
     .unwrap();
     assert_eq!(canceled.status.state, TaskState::Canceled);
 
-    let task = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let task = wait::guarded(
+        "the reply to get_task",
         client.get_task(&GetTaskRequest {
             id: task_id,
             history_length: None,
@@ -940,7 +979,6 @@ async fn cancel_marks_the_task_canceled() {
         }),
     )
     .await
-    .unwrap()
     .unwrap();
     assert_eq!(task.status.state, TaskState::Canceled);
 
@@ -958,12 +996,11 @@ async fn ownership_isolation_prevents_cross_caller_access() {
     }
 
     let client_a = client_for(&harness, &token_a).await;
-    let response = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let response = wait::guarded(
+        "the reply to send_message",
         client_a.send_message(&send_request("hi", None, None)),
     )
     .await
-    .unwrap()
     .unwrap();
     let task_id = match response {
         a2a::SendMessageResponse::Task(t) => t.id,
@@ -1036,19 +1073,17 @@ async fn one_open_task_per_context_is_rejected() {
     }
 
     let client = client_for(&harness, &token).await;
-    let stream = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let stream = wait::guarded(
+        "the reply to send_streaming_message",
         client.send_streaming_message(&send_request("start", None, Some("ctx-fixed"))),
     )
     .await
-    .unwrap()
     .unwrap();
     drain_until_terminal(stream).await;
 
     let second = send_request("a second, unrelated task", None, Some("ctx-fixed"));
-    let err = tokio::time::timeout(TEST_TIMEOUT, client.send_message(&second))
+    let err = wait::guarded("the reply to send_message", client.send_message(&second))
         .await
-        .unwrap()
         .unwrap_err();
     assert_eq!(err.code, a2a::error_code::INVALID_REQUEST);
 
@@ -1116,12 +1151,11 @@ async fn restart_continuation_resumes_a_task_left_in_progress() {
         Arc::clone(&harness.task_store),
     ));
 
-    tokio::time::timeout(
-        TEST_TIMEOUT,
+    wait::guarded(
+        "the reply to resume_in_progress_tasks",
         resume_in_progress_tasks(rebuilt_handler, Arc::clone(&harness.task_store)),
     )
-    .await
-    .expect("resume_in_progress_tasks must not hang");
+    .await;
 
     let completed = wait_for_task_state(&harness.task_store, &task.id, TaskState::Completed).await;
     let text = completed
@@ -1146,12 +1180,11 @@ async fn run_completes_with_last_final_text_when_no_signal_is_sent() {
     }
 
     let client = client_for(&harness, &token).await;
-    let response = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let response = wait::guarded(
+        "the reply to send_message",
         client.send_message(&send_request("question", None, None)),
     )
     .await
-    .unwrap()
     .unwrap();
     let task = match response {
         a2a::SendMessageResponse::Task(t) => t,
@@ -1170,44 +1203,9 @@ async fn run_completes_with_last_final_text_when_no_signal_is_sent() {
     harness.shutdown_tx.send(true).ok();
 }
 
-#[tokio::test]
-async fn run_stays_working_while_a_live_spawned_child_exists() {
-    let harness = spawn_harness(HarnessOptions {
-        response_delay: Duration::from_millis(200),
-        ..Default::default()
-    })
-    .await;
-    let token = harness.keys.create("ivy", None).await.unwrap();
-    {
-        let mut queue = harness.queue.lock().await;
-        // First run: completes with no explicit signal, but a live spawned
-        // child is registered before it does.
-        queue.push_back(InferenceResponse::new("done for now".to_string(), vec![]));
-        // Second run (resumed once the child's relay wakes the parent):
-        // completes for real.
-        queue.push_back(InferenceResponse::new("actually done".to_string(), vec![]));
-    }
-
-    let client = client_for(&harness, &token).await;
-    let stream = tokio::time::timeout(
-        TEST_TIMEOUT,
-        client.send_streaming_message(&send_request("go do the thing", None, None)),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    let mut stream = stream;
-    let first = tokio::time::timeout(TEST_TIMEOUT, stream.next())
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    let task_id = task_id_of(std::slice::from_ref(&first));
-    let context_id = context_id_of(std::slice::from_ref(&first));
-    let address = SessionExecutor::address_for("key:ivy", &context_id);
-
-    // Register a fake live child while the parent's turn is still resolving
-    // (the 200ms response delay gives us the window).
+/// Register a running spawned child of `spawner` that never finishes on its
+/// own, returning its address.
+fn register_fake_live_child(harness: &Harness, spawner: &SessionAddress) -> SessionAddress {
     let child_address = SessionAddress::from("spawned-fake-child-0001");
     let child_info = crate::background::registry::SessionInfo {
         address: child_address.clone(),
@@ -1216,7 +1214,7 @@ async fn run_stays_working_while_a_live_spawned_child_exists() {
         trigger: crate::bus::EventTrigger::Agent,
         source_label: "agent:fake-child".to_string(),
         state: crate::background::registry::SessionState::Running,
-        spawner: Some(address.clone()),
+        spawner: Some(spawner.clone()),
         depth: 2,
         purpose: "pretending to work".to_string(),
         agent_skill: None,
@@ -1230,6 +1228,99 @@ async fn run_stays_working_while_a_live_spawned_child_exists() {
         .session_registry
         .register(child_info, tokio_util::sync::CancellationToken::new())
         .unwrap();
+    child_address
+}
+
+/// Wait for the parent run at `address` to complete, then push a marker
+/// through the session-event stream the executor reads. The marker surfaces on
+/// the A2A stream only after the executor has handled that completion, so
+/// what the test changes afterwards cannot race the executor's decision.
+async fn wait_for_first_run_completion_handled(
+    session_events: &mut crate::bus::Subscriber<crate::bus::SessionEvent>,
+    bus_handle: &BusHandle,
+    address: &SessionAddress,
+) {
+    let mut first_turn = None;
+    wait::guarded("the reply to recv", async {
+        loop {
+            let event = session_events.recv().await.unwrap().unwrap();
+            if event.address != *address {
+                continue;
+            }
+            if let crate::bus::SessionEventKind::TurnStarted { turn_id } = event.kind {
+                first_turn.get_or_insert(turn_id);
+            } else if matches!(event.kind, crate::bus::SessionEventKind::Completed { .. }) {
+                return;
+            }
+        }
+    })
+    .await;
+    let first_turn = first_turn.expect("the first run started a turn");
+    bus_handle
+        .publisher()
+        .publish(
+            topics::Sessions,
+            crate::bus::SessionEvent {
+                address: address.clone(),
+                run_id: "run-marker".to_string(),
+                kind: crate::bus::SessionEventKind::Response {
+                    turn_id: first_turn,
+                    content: "completion handled".to_string(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn run_stays_working_while_a_live_spawned_child_exists() {
+    let harness = spawn_harness(HarnessOptions::default()).await;
+    harness.model_gate.close();
+    let token = harness.keys.create("ivy", None).await.unwrap();
+    {
+        let mut queue = harness.queue.lock().await;
+        // First run: completes with no explicit signal, but a live spawned
+        // child is registered before it does.
+        queue.push_back(InferenceResponse::new("done for now".to_string(), vec![]));
+        // Second run (resumed once the child's relay wakes the parent):
+        // completes for real.
+        queue.push_back(InferenceResponse::new("actually done".to_string(), vec![]));
+    }
+
+    // Opened before the request so the parent run's own events are all seen.
+    let mut session_events: crate::bus::Subscriber<crate::bus::SessionEvent> = harness
+        .bus_handle
+        .subscribe(topics::Sessions)
+        .await
+        .unwrap();
+
+    let client = client_for(&harness, &token).await;
+    let stream = wait::guarded(
+        "the reply to send_streaming_message",
+        client.send_streaming_message(&send_request("go do the thing", None, None)),
+    )
+    .await
+    .unwrap();
+    let mut stream = stream;
+    let first = wait::guarded("the next streamed event", stream.next())
+        .await
+        .unwrap()
+        .unwrap();
+    let task_id = task_id_of(std::slice::from_ref(&first));
+    let context_id = context_id_of(std::slice::from_ref(&first));
+    let address = SessionExecutor::address_for("key:ivy", &context_id);
+
+    // Register a fake live child while the parent's turn is held at the model
+    // gate, so the child is in place before that turn can resolve.
+    harness.model_gate.until_held(1).await;
+    let child_address = register_fake_live_child(&harness, &address);
+    harness.model_gate.open_all();
+
+    // The executor only keeps the task working if the child is still
+    // registered when it handles the parent's first-run completion, so the
+    // child must stay registered until that has happened.
+    wait_for_first_run_completion_handled(&mut session_events, &harness.bus_handle, &address).await;
 
     // The session's own turn still reports its final text as a `WORKING`
     // status update (per docs/systems-usage/a2a.md) even though the run
@@ -1239,11 +1330,22 @@ async fn run_stays_working_while_a_live_spawned_child_exists() {
     // whatever arrives for a bounded window and confirm none of it is
     // terminal.
     let mut events = vec![first];
-    // Stops when the stream ends or nothing arrives within the window —
-    // either way, expected: stop collecting.
-    while let Ok(Some(item)) = tokio::time::timeout(Duration::from_millis(500), stream.next()).await
-    {
-        events.push(item.unwrap());
+    // Reads until the marker arrives, which means the executor has already
+    // handled the first run's completion.
+    loop {
+        let item = wait::guarded("the next streamed event", stream.next())
+            .await
+            .expect("the stream stays open")
+            .unwrap();
+        let is_marker = matches!(
+            &item,
+            a2a::StreamResponse::StatusUpdate(u)
+                if u.status.message.as_ref().and_then(|m| m.text()) == Some("completion handled")
+        );
+        events.push(item);
+        if is_marker {
+            break;
+        }
     }
     let saw_terminal = events.iter().any(|e| {
         matches!(
@@ -1315,22 +1417,15 @@ async fn skill_metadata_maps_to_a_matching_workspace_skill() {
     request.message.metadata = Some(metadata);
 
     let client = client_for(&harness, &token).await;
-    tokio::time::timeout(TEST_TIMEOUT, client.send_message(&request))
+    wait::guarded("the reply to send_message", client.send_message(&request))
         .await
-        .unwrap()
         .unwrap();
 
     let address = SessionExecutor::address_for("key:jax", "ctx-skill");
-    let point = tokio::time::timeout(TEST_TIMEOUT, async {
-        loop {
-            if let Some(point) = harness.session_registry.resume_point(&address) {
-                return point;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    let point = wait::until("the session to record a resume point", || {
+        std::future::ready(harness.session_registry.resume_point(&address))
     })
-    .await
-    .expect("timed out waiting for the session to record a resume point");
+    .await;
     assert_eq!(
         point.agent_skill.as_ref().map(AsRef::as_ref),
         Some("reporter"),
@@ -1357,9 +1452,8 @@ async fn raw_image_part_reaches_the_model_as_an_inline_image() {
     );
 
     let client = client_for(&harness, &token).await;
-    tokio::time::timeout(TEST_TIMEOUT, client.send_message(&request))
+    wait::guarded("the reply to send_message", client.send_message(&request))
         .await
-        .unwrap()
         .unwrap();
 
     let seen = harness.seen.lock().await;
@@ -1374,11 +1468,8 @@ async fn raw_image_part_reaches_the_model_as_an_inline_image() {
 
 #[tokio::test]
 async fn closing_text_of_the_signaling_turn_never_reaches_the_next_execution() {
-    let harness = spawn_harness(HarnessOptions {
-        response_delay: Duration::from_millis(400),
-        ..Default::default()
-    })
-    .await;
+    let harness = spawn_harness(HarnessOptions::default()).await;
+    harness.model_gate.close();
     let token = harness.keys.create("dana", None).await.unwrap();
     {
         let mut queue = harness.queue.lock().await;
@@ -1404,24 +1495,29 @@ async fn closing_text_of_the_signaling_turn_never_reaches_the_next_execution() {
     }
 
     let client = client_for(&harness, &token).await;
-    let first = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let first = wait::guarded(
+        "the streaming reply to the first request",
         client.send_streaming_message(&send_request("write a haiku", None, None)),
     )
     .await
-    .unwrap()
     .unwrap();
+    // The signaling turn's tool call goes through; its closing call is then
+    // held, so the turn is still producing its text when the follow-up arrives.
+    harness.model_gate.until_held(1).await;
+    harness.model_gate.release(1);
     let first_events = drain_until_terminal(first).await;
     let task_id = task_id_of(&first_events);
+    harness.model_gate.until_held(1).await;
 
     // Follow up at once, while the first turn's closing text is still pending.
-    let second = tokio::time::timeout(
-        TEST_TIMEOUT,
+    let second = wait::guarded(
+        "the streaming reply to the follow-up",
         client.send_streaming_message(&send_request("autumn", Some(&task_id), None)),
     )
     .await
-    .unwrap()
     .unwrap();
+    harness.model_gate.release(1);
+    harness.model_gate.open_all();
     let second_events = drain_until_terminal(second).await;
 
     let leaked = second_events.iter().any(|e| {

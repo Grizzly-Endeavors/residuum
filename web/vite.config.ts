@@ -1,7 +1,12 @@
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { svelteTesting } from "@testing-library/svelte/vite";
-import { mockServerPlugin } from "./mock-server";
+import { serviceWorkerPlugin } from "./build/service-worker";
+import { mockServerPlugin } from "./mock/plugin";
+import { HANG_GUARD_MS } from "./src/test/guard";
 
 const isMock = process.env.VITE_MOCK === "1";
 // Vitest sets this before loading the config. HMR stays on for `vite dev`.
@@ -14,19 +19,54 @@ const isTest = Boolean(process.env.VITEST);
 // or ^24.15.0.
 const componentTests = ["src/components/**/*.test.ts", "src/**/*.component.test.ts"];
 
-export default defineConfig({
+/** The bundled fonts' OFL licenses, which must accompany every copy of the font files. */
+function fontLicenses(): Plugin {
+  const require = createRequire(import.meta.url);
+  return {
+    name: "font-licenses",
+    apply: "build",
+    generateBundle() {
+      for (const font of ["onest", "jetbrains-mono", "cinzel"]) {
+        this.emitFile({
+          type: "asset",
+          fileName: `licenses/${font}-OFL.txt`,
+          source: readFileSync(require.resolve(`@fontsource/${font}/LICENSE`), "utf8"),
+        });
+      }
+    },
+  };
+}
+
+export default defineConfig(({ command }) => ({
+  // Each e2e dev server gets its own dependency cache: dev servers sharing one
+  // run the optimizer at once and race on renaming its output directory, which
+  // failed a release run with ENOTEMPTY and a 504 for a pre-bundled dependency.
+  ...(process.env.VITE_CACHE_DIR && { cacheDir: process.env.VITE_CACHE_DIR }),
+  define: {
+    // The primitives gallery (`/dev/gallery`) is served by the dev server and
+    // built into mock builds. Production builds compile it out.
+    __UI_GALLERY__: JSON.stringify(command === "serve" || isMock),
+    // Only a build registers the service worker, so the dev server, the mock's
+    // dev mode and the tests never run one. A preview serves a build.
+    __SERVICE_WORKER__: JSON.stringify(command === "build"),
+  },
   plugins: [
     svelte(isTest ? { compilerOptions: { hmr: false } } : {}),
+    fontLicenses(),
+    serviceWorkerPlugin(),
     ...(isMock ? [mockServerPlugin()] : []),
   ],
   build: {
     outDir: "dist",
+    // Font subsets stay separate files: inlined into the CSS, every subset would
+    // download on load instead of when its unicode-range is first rendered.
+    assetsInlineLimit: (file) => (file.endsWith(".woff2") ? false : undefined),
   },
   server: {
     ...(!isMock && {
       proxy: {
-        "/api": "http://localhost:7700",
-        "/ws": {
+        // Carries the agent and hub WebSockets too (`/api/agents/{name}/ws`, `/api/hub/ws`).
+        "/api": {
           target: "http://localhost:7700",
           ws: true,
         },
@@ -34,13 +74,26 @@ export default defineConfig({
     }),
   },
   test: {
+    // A hang guard, not a speed budget: tests wait on events, and a loaded
+    // machine can take far longer than the 5s default to render and settle.
+    // src/test/guard.ts holds it and the matching bound for waits in a test.
+    testTimeout: HANG_GUARD_MS,
+    hookTimeout: HANG_GUARD_MS,
+    // Reported in CI's job summary, with no threshold. `npm run test:coverage` runs it locally.
+    coverage: {
+      provider: "v8",
+      reportsDirectory: "coverage",
+      include: ["src/**/*.{ts,svelte}"],
+      exclude: ["src/**/*.test.ts", "src/test/**", "src/lib/generated/**"],
+      reporter: ["text-summary", ["text-summary", { file: "summary.txt" }], "html"],
+    },
     projects: [
       {
         extends: true,
         test: {
           name: "unit",
           environment: "node",
-          include: ["src/**/*.test.ts"],
+          include: ["src/**/*.test.ts", "build/**/*.test.ts", "mock/**/*.test.ts"],
           exclude: componentTests,
         },
       },
@@ -56,4 +109,4 @@ export default defineConfig({
       },
     ],
   },
-});
+}));

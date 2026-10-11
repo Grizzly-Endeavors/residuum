@@ -27,7 +27,7 @@ pub(super) struct ResolvedModels {
 }
 
 /// Resolve all model specs (main, observer, reflector, pulse, embedding) from the
-/// `[models]` config section and environment overrides.
+/// `[models]` config section.
 ///
 /// # Errors
 /// Returns `FatalError::Config` if any model string is invalid or an unsupported
@@ -39,10 +39,8 @@ pub(super) fn resolve_all_model_specs(
 ) -> Result<ResolvedModels, FatalError> {
     let mut role_overrides = HashMap::new();
 
-    // Resolve main: RESIDUUM_MODEL env > models.main > default
-    let mut main = if let Ok(env_model) = std::env::var("RESIDUUM_MODEL") {
-        vec![resolve_model_string(&env_model, providers_map, secrets)?]
-    } else if let Some(main_spec) = models.and_then(|m| m.main.clone()) {
+    // Resolve main: models.main > default
+    let main = if let Some(main_spec) = models.and_then(|m| m.main.clone()) {
         extract_role_overrides("main", &main_spec, &mut role_overrides)?;
         resolve_assignment_chain(main_spec, providers_map, secrets)?
     } else {
@@ -52,13 +50,6 @@ pub(super) fn resolve_all_model_specs(
             secrets,
         )?]
     };
-
-    // RESIDUUM_PROVIDER_URL overrides first provider in main chain only
-    if let Ok(url) = std::env::var("RESIDUUM_PROVIDER_URL")
-        && let Some(first) = main.first_mut()
-    {
-        first.provider_url = url;
-    }
 
     // Resolve each role: models.<role> > models.default > main
     let default_assignment = models.and_then(|m| m.default.clone());
@@ -132,8 +123,7 @@ pub(super) fn resolve_all_model_specs(
 /// - If `provider_part` matches a key in `providers_map`, that entry's `type`,
 ///   `url`, and `api_key` are used.
 /// - Otherwise `provider_part` is treated as an implicit `ProviderKind` name
-///   (e.g. `"anthropic"`). API key falls back to provider-specific env var,
-///   then `RESIDUUM_API_KEY`.
+///   (e.g. `"anthropic"`). API key falls back to the provider-specific env var.
 ///
 /// # Errors
 /// Returns `FatalError::Config` if the model string format is invalid,
@@ -172,8 +162,7 @@ fn resolve_model_string(
             .api_key
             .as_deref()
             .and_then(|raw| super::resolve_secret_value(raw, secrets))
-            .or_else(|| provider_api_key_env(kind))
-            .or_else(|| std::env::var("RESIDUUM_API_KEY").ok());
+            .or_else(|| provider_api_key_env(kind));
 
         return Ok(ProviderSpec {
             name: provider_part.to_owned(),
@@ -199,7 +188,7 @@ fn resolve_model_string(
 
     let provider_url = kind.default_url().to_string();
 
-    let api_key = provider_api_key_env(kind).or_else(|| std::env::var("RESIDUUM_API_KEY").ok());
+    let api_key = provider_api_key_env(kind);
 
     Ok(ProviderSpec {
         name: provider_part.to_owned(),
@@ -430,7 +419,7 @@ mod tests {
 
     #[test]
     fn default_model_fallback() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let cfg_file = parse_config("");
         let prov_file = parse_providers(
             r#"
 [models]
@@ -438,7 +427,14 @@ main = "anthropic/claude-sonnet-4-6"
 default = "anthropic/claude-haiku-4-5"
 "#,
         );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        )
+        .unwrap();
         // observer was not set, so it falls back to default
         assert_eq!(cfg.observer[0].model.model, "claude-haiku-4-5");
         assert_eq!(cfg.reflector[0].model.model, "claude-haiku-4-5");
@@ -450,7 +446,7 @@ default = "anthropic/claude-haiku-4-5"
 
     #[test]
     fn role_specific_overrides_default() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let cfg_file = parse_config("");
         let prov_file = parse_providers(
             r#"
 [models]
@@ -459,7 +455,14 @@ default = "anthropic/claude-haiku-4-5"
 observer = "gemini/gemini-3.0-flash"
 "#,
         );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        )
+        .unwrap();
         assert_eq!(
             cfg.observer[0].model.model, "gemini-3.0-flash",
             "explicit observer should override default"
@@ -472,14 +475,21 @@ observer = "gemini/gemini-3.0-flash"
 
     #[test]
     fn all_roles_resolved_to_main_by_default() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let cfg_file = parse_config("");
         let prov_file = parse_providers(
             r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
 "#,
         );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        )
+        .unwrap();
         assert_eq!(cfg.main[0].model.model, "claude-sonnet-4-6");
         assert_eq!(cfg.observer[0].model.model, "claude-sonnet-4-6");
         assert_eq!(cfg.reflector[0].model.model, "claude-sonnet-4-6");
@@ -489,7 +499,7 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn subconscious_role_overrides_default() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let cfg_file = parse_config("");
         let prov_file = parse_providers(
             r#"
 [models]
@@ -498,7 +508,14 @@ default = "anthropic/claude-haiku-4-5"
 subconscious = "gemini/gemini-3.0-flash"
 "#,
         );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        )
+        .unwrap();
         assert_eq!(
             cfg.subconscious[0].model.model, "gemini-3.0-flash",
             "explicit subconscious should override default"
@@ -513,14 +530,21 @@ subconscious = "gemini/gemini-3.0-flash"
 
     #[test]
     fn model_chain_single_string() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let cfg_file = parse_config("");
         let prov_file = parse_providers(
             r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
 "#,
         );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        )
+        .unwrap();
         assert_eq!(
             cfg.main.len(),
             1,
@@ -531,14 +555,21 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn model_chain_array() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let cfg_file = parse_config("");
         let prov_file = parse_providers(
             r#"
 [models]
 main = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]
 "#,
         );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        )
+        .unwrap();
         assert_eq!(cfg.main.len(), 2, "array should produce 2-element chain");
         assert_eq!(cfg.main[0].model.kind, ProviderKind::Anthropic);
         assert_eq!(cfg.main[0].model.model, "claude-sonnet-4-6");
@@ -548,14 +579,21 @@ main = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]
 
     #[test]
     fn role_chain_inherits_main_chain() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let cfg_file = parse_config("");
         let prov_file = parse_providers(
             r#"
 [models]
 main = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]
 "#,
         );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        )
+        .unwrap();
         assert_eq!(
             cfg.observer.len(),
             2,
@@ -567,7 +605,7 @@ main = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]
 
     #[test]
     fn role_chain_overrides_main_chain() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let cfg_file = parse_config("");
         let prov_file = parse_providers(
             r#"
 [models]
@@ -575,7 +613,14 @@ main = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]
 observer = "gemini/gemini-3.0-flash"
 "#,
         );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        )
+        .unwrap();
         assert_eq!(
             cfg.observer.len(),
             1,
@@ -600,7 +645,7 @@ typo_field = "oops"
 
     #[test]
     fn provider_entry_type_field() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let cfg_file = parse_config("");
         let prov_file = parse_providers(
             r#"
 [providers.cerebras]
@@ -612,7 +657,14 @@ url = "https://api.cerebras.ai/v1"
 main = "cerebras/llama-4"
 "#,
         );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        )
+        .unwrap();
         assert_eq!(cfg.main[0].model.kind, ProviderKind::OpenAi);
         assert_eq!(cfg.main[0].provider_url, "https://api.cerebras.ai/v1");
     }
@@ -621,7 +673,7 @@ main = "cerebras/llama-4"
 
     #[test]
     fn embedding_role_resolved() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let cfg_file = parse_config("");
         let prov_file = parse_providers(
             r#"
 [models]
@@ -629,7 +681,14 @@ main = "anthropic/claude-sonnet-4-6"
 embedding = "openai/text-embedding-3-small"
 "#,
         );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        )
+        .unwrap();
         let emb = cfg.embedding.as_ref();
         assert!(emb.is_some(), "embedding should be resolved");
         let emb = emb.unwrap();
@@ -639,7 +698,7 @@ embedding = "openai/text-embedding-3-small"
 
     #[test]
     fn embedding_anthropic_rejected() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let cfg_file = parse_config("");
         let prov_file = parse_providers(
             r#"
 [models]
@@ -647,7 +706,13 @@ main = "anthropic/claude-sonnet-4-6"
 embedding = "anthropic/some-model"
 "#,
         );
-        let result = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir());
+        let result = from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        );
         assert!(result.is_err(), "anthropic embedding should be rejected");
         let err = result.unwrap_err().to_string();
         assert!(
@@ -658,14 +723,21 @@ embedding = "anthropic/some-model"
 
     #[test]
     fn embedding_absent_is_none() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let cfg_file = parse_config("");
         let prov_file = parse_providers(
             r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
 "#,
         );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        )
+        .unwrap();
         assert!(
             cfg.embedding.is_none(),
             "missing embedding should yield None"
@@ -674,7 +746,7 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn embedding_no_fallback_to_default() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let cfg_file = parse_config("");
         let prov_file = parse_providers(
             r#"
 [models]
@@ -682,7 +754,14 @@ main = "anthropic/claude-sonnet-4-6"
 default = "openai/gpt-4o"
 "#,
         );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        )
+        .unwrap();
         assert!(
             cfg.embedding.is_none(),
             "embedding should not fall back to default"
@@ -781,8 +860,15 @@ main = "anthropic/claude-sonnet-4-6"
 observer = "gemini/gemini-3.0-flash"
 "#,
         );
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg_file = parse_config("");
+        let cfg = from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        )
+        .unwrap();
 
         assert_eq!(cfg.main[0].model.model, "claude-sonnet-4-6");
         assert_eq!(cfg.observer[0].model.model, "gemini-3.0-flash");
@@ -802,8 +888,15 @@ observer = { model = "gemini/gemini-3.0-flash", temperature = 0.2, thinking = "o
 reflector = { model = "anthropic/claude-sonnet-4-6", thinking = "low" }
 "#,
         );
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg_file = parse_config("");
+        let cfg = from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        )
+        .unwrap();
 
         assert_eq!(cfg.observer[0].model.model, "gemini-3.0-flash");
         assert_eq!(cfg.reflector[0].model.model, "claude-sonnet-4-6");
@@ -834,8 +927,15 @@ main = "anthropic/claude-sonnet-4-6"
 pulse = { model = "anthropic/claude-haiku" }
 "#,
         );
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg_file = parse_config("");
+        let cfg = from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        )
+        .unwrap();
 
         assert_eq!(cfg.pulse[0].model.model, "claude-haiku");
         assert!(
@@ -852,8 +952,15 @@ pulse = { model = "anthropic/claude-haiku" }
 main = { model = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"], temperature = 1.0 }
 "#,
         );
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg_file = parse_config("");
+        let cfg = from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        )
+        .unwrap();
 
         assert_eq!(
             cfg.main.len(),
@@ -876,8 +983,14 @@ main = "anthropic/claude-sonnet-4-6"
 observer = { model = "gemini/gemini-3.0-flash", temperature = 3.0 }
 "#,
         );
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let result = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir());
+        let cfg_file = parse_config("");
+        let result = from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        );
         assert!(result.is_err(), "temperature > 2.0 should error");
         let err = result.unwrap_err().to_string();
         assert!(
@@ -895,8 +1008,14 @@ main = "anthropic/claude-sonnet-4-6"
 observer = { model = "gemini/gemini-3.0-flash", temperature = -0.1 }
 "#,
         );
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let result = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir());
+        let cfg_file = parse_config("");
+        let result = from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        );
         assert!(result.is_err(), "temperature < 0.0 should error");
         let err = result.unwrap_err().to_string();
         assert!(
@@ -914,8 +1033,14 @@ main = "anthropic/claude-sonnet-4-6"
 observer = { model = "gemini/gemini-3.0-flash", thinking = "turbo" }
 "#,
         );
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let result = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir());
+        let cfg_file = parse_config("");
+        let result = from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        );
         assert!(result.is_err(), "invalid thinking value should error");
         let err = result.unwrap_err().to_string();
         assert!(
@@ -937,8 +1062,15 @@ medium = "anthropic/claude-haiku"
 large = { model = "anthropic/claude-sonnet-4-6", thinking = "medium" }
 "#,
         );
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg_file = parse_config("");
+        let cfg = from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        )
+        .unwrap();
 
         assert!(cfg.background.models.small.is_some());
         assert!(cfg.background.models.medium.is_some());
@@ -971,12 +1103,18 @@ observer = { model = "gemini/gemini-3.0-flash", temperature = 0.2 }
 "#,
         );
         let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
+            "
 temperature = 0.8
-"#,
+",
         );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        )
+        .unwrap();
 
         let main_opts = cfg.completion_options_for_role("main");
         assert_eq!(
@@ -1003,12 +1141,18 @@ main = "anthropic/claude-sonnet-4-6"
         );
         let cfg_file = parse_config(
             r#"
-timezone = "UTC"
 temperature = 0.5
 thinking = "medium"
 "#,
         );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            &test_hub_config(),
+        )
+        .unwrap();
 
         let opts = cfg.completion_options_for_role("reflector");
         assert_eq!(opts.temperature, Some(0.5), "should fall back to global");

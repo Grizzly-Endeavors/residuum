@@ -11,7 +11,7 @@ pub const MAX_CHANGES_PER_FRAME: usize = 500;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum InvalidWatchPrefix {
     #[error(
-        "can't watch {0:?}: watch paths are relative to the workspace, like \"wiki\" or \"\" for everything"
+        "can't watch {0:?}: watch paths are relative to the workspace, like \"team/wiki\" or \"\" for everything"
     )]
     Absolute(String),
     #[error("can't watch {0:?}: watch paths must stay inside the workspace (no \"..\")")]
@@ -156,6 +156,28 @@ mod tests {
         assert!(!watch.matches("wikipedia/a.md"));
         assert!(!watch.matches("wiki.md"));
         assert!(!watch.matches("notes/wiki/a.md"));
+    }
+
+    #[test]
+    fn team_prefixes_receive_team_changes_and_plain_prefixes_agent_changes() {
+        let team = set(&["team/workbench"]);
+        assert!(team.matches("team/workbench/tool.html"));
+        assert!(!team.matches("workbench/tool.html"));
+        assert!(!team.matches("team/wiki/a.md"));
+
+        let agent = set(&["workbench"]);
+        assert!(agent.matches("workbench/tool.html"));
+        assert!(!agent.matches("team/workbench/tool.html"));
+
+        let everything = set(&[""]);
+        assert!(everything.matches("team/wiki/a.md"));
+        assert!(everything.matches("memory/a.md"));
+
+        let changes = [change("team/wiki/a.md"), change("wiki/a.md")];
+        assert_eq!(
+            set(&["team"]).filter(&changes),
+            WatchedChanges::Changes(vec![change("team/wiki/a.md")])
+        );
     }
 
     #[test]

@@ -24,4 +24,5 @@ pub use config::{
 pub use hub::{A2aClientHub, AgentSnapshot, AgentSource, AgentStatus, HubError, NegotiatedClient};
 pub use tracker::{RemoteTaskTracker, TrackedTask};
 
+pub use siblings::SiblingFanout;
 pub(crate) use siblings::spawn_sibling_discovery;

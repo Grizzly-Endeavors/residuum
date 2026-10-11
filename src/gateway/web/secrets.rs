@@ -7,34 +7,34 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::secrets::{SecretStore, is_reference};
 
-use super::ConfigApiState;
+use super::HubApiState;
 
-/// Request body for `POST /api/secrets`.
+/// Request body for `POST /api/hub/secrets`.
 #[derive(Deserialize)]
 pub(super) struct SetSecretRequest {
     pub name: String,
     pub value: String,
 }
 
-/// Response from `POST /api/secrets`.
+/// Response from `POST /api/hub/secrets`.
 #[derive(Serialize)]
 pub(super) struct SetSecretResponse {
     pub reference: String,
 }
 
-/// Response from `GET /api/secrets`.
+/// Response from `GET /api/hub/secrets`.
 #[derive(Serialize)]
 pub(super) struct ListSecretsResponse {
     pub names: Vec<String>,
 }
 
-/// Response from `DELETE /api/secrets/:name`.
+/// Response from `DELETE /api/hub/secrets/:name`.
 #[derive(Serialize)]
 pub(super) struct DeleteSecretResponse {
     pub deleted: bool,
 }
 
-/// `POST /api/secrets` — store a named secret in the encrypted store.
+/// `POST /api/hub/secrets` — store a named secret in the encrypted store.
 ///
 /// Rejects a value that is itself a reference (`secret:<name>` or
 /// `${ENV_VAR}`) rather than a literal to store — storing a reference
@@ -46,7 +46,7 @@ pub(super) struct DeleteSecretResponse {
 /// Acquires `secret_lock` to serialize concurrent writes and prevent
 /// lost-update races (e.g. setup wizard storing multiple secrets via `Promise.all`).
 pub(super) async fn api_secrets_set(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
     Json(req): Json<SetSecretRequest>,
 ) -> Result<Json<SetSecretResponse>, (StatusCode, String)> {
     if is_reference(&req.value) {
@@ -67,18 +67,18 @@ pub(super) async fn api_secrets_set(
         .checkpoint_config_before_write(format!("set secret '{}'", req.name))
         .await;
 
-    let config_dir = state.config_dir.clone();
+    let hub_dir = state.hub_dir.clone();
     let name = req.name;
     let value = req.value;
 
-    tokio::task::spawn_blocking(move || {
-        let mut store = SecretStore::load(&config_dir).map_err(|e| {
+    crate::util::spawn_blocking_in_span(move || {
+        let mut store = SecretStore::load(&hub_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("failed to load secret store: {e}"),
             )
         })?;
-        store.set(&name, &value, &config_dir).map_err(|e| {
+        store.set(&name, &value, &hub_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("failed to store secret: {e}"),
@@ -97,14 +97,14 @@ pub(super) async fn api_secrets_set(
     })?
 }
 
-/// `GET /api/secrets` — list stored secret names (not values).
+/// `GET /api/hub/secrets` — list stored secret names (not values).
 pub(super) async fn api_secrets_list(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
 ) -> Result<Json<ListSecretsResponse>, (StatusCode, String)> {
-    let config_dir = state.config_dir.clone();
+    let hub_dir = state.hub_dir.clone();
 
-    tokio::task::spawn_blocking(move || {
-        let store = SecretStore::load(&config_dir).map_err(|e| {
+    crate::util::spawn_blocking_in_span(move || {
+        let store = SecretStore::load(&hub_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("failed to load secret store: {e}"),
@@ -122,24 +122,24 @@ pub(super) async fn api_secrets_list(
     })?
 }
 
-/// `DELETE /api/secrets/{name}` — remove a named secret.
+/// `DELETE /api/hub/secrets/{name}` — remove a named secret.
 pub(super) async fn api_secrets_delete(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
     Path(name): Path<String>,
 ) -> Result<Json<DeleteSecretResponse>, (StatusCode, String)> {
     state
         .checkpoint_config_before_write(format!("delete secret '{name}'"))
         .await;
-    let config_dir = state.config_dir.clone();
+    let hub_dir = state.hub_dir.clone();
 
-    tokio::task::spawn_blocking(move || {
-        let mut store = SecretStore::load(&config_dir).map_err(|e| {
+    crate::util::spawn_blocking_in_span(move || {
+        let mut store = SecretStore::load(&hub_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("failed to load secret store: {e}"),
             )
         })?;
-        store.delete(&name, &config_dir).map_err(|e| {
+        store.delete(&name, &hub_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("failed to delete secret: {e}"),
@@ -162,18 +162,10 @@ mod tests {
     use axum::extract::State;
 
     use super::{SetSecretRequest, api_secrets_set};
-    use crate::gateway::web::ConfigApiState;
+    use crate::gateway::web::HubApiState;
 
-    fn test_state(dir: &std::path::Path) -> ConfigApiState {
-        ConfigApiState {
-            config_dir: dir.to_path_buf(),
-            workspace_dir: dir.join("workspace"),
-            memory_dir: None,
-            reload_tx: None,
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
-            checkpoints: crate::checkpoints::test_engine(),
-        }
+    fn test_state(dir: &std::path::Path) -> HubApiState {
+        HubApiState::for_test(dir)
     }
 
     #[tokio::test]

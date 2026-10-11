@@ -33,6 +33,8 @@ idle_channel = "telegram"  # optional; interface to route output to when idle
 
 Resolved into `IdleConfig { timeout: Duration, idle_channel: Option<String> }` (`src/config/types.rs`) by `resolve_idle_config` (`src/config/resolve/mod.rs`). `idle_channel`, if set, is validated at config load time against the interfaces actually configured: `"telegram"`, `"discord"`, and `"teams"` require the corresponding `[telegram]`/`[discord]`/`[teams]` section to be present, `"websocket"` (or `"ws"`) is always valid and resolves to the web UI's `ws` endpoint, and any other name is rejected outright. An invalid value falls back to no idle channel (idle switching stays disabled) with a notice naming the problem, rather than failing config load over one bad setting — this is a config-time validation independent of the endpoint-registry check in `switch_idle_interface` above, which handles an idle channel that resolved fine here but no longer exists by the time the transition runs.
 
+The web UI edits both keys in the agent's Runtime settings (Advanced), under When you're away: Quiet for (`timeout_minutes`, in minutes, 0 turns idle off) and Send its updates to (`idle_channel`, with "Keep where it is" for none).
+
 ### Hot reload
 
 A config reload that changes `[idle]` is detected via `ConfigDiff::idle_changed` (`src/gateway/reload.rs`) and translated into an `IdleAction`:

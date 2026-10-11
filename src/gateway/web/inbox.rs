@@ -8,20 +8,10 @@ use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 
 use crate::gateway::types::GatewayState;
-use crate::inbox::InboxItem;
+use crate::inbox::{InboxAttachment, InboxItem};
 use crate::workspace::layout::WorkspaceLayout;
 
-use super::ConfigApiState;
-
-/// Attachment metadata exposed to the web client. The on-disk path never leaves
-/// the server — only what's needed to display and fetch the file.
-#[derive(Serialize)]
-pub(super) struct ApiAttachment {
-    pub filename: String,
-    pub mime_type: String,
-    pub size: u64,
-    pub url: String,
-}
+use super::AgentFilesState;
 
 /// A wrapper around `InboxItem` that includes the ID (filename stem) and resolves
 /// attachments to servable metadata instead of the raw workspace paths `InboxItem`
@@ -35,55 +25,18 @@ pub(super) struct ApiInboxItem {
     #[serde(with = "crate::time::minute_format")]
     pub timestamp: chrono::NaiveDateTime,
     pub read: bool,
-    pub attachments: Vec<ApiAttachment>,
-}
-
-/// Resolve an item's attachments into servable metadata by statting each file
-/// under `attachments_root/<id>/`.
-///
-/// An attachment whose file can't be found on disk is dropped from the listing
-/// (rather than shown as a broken link) and logged — this can happen if a
-/// workspace was hand-edited, but should not happen in normal operation.
-async fn resolve_attachments(
-    id: &str,
-    item: &InboxItem,
-    attachments_root: &std::path::Path,
-) -> Vec<ApiAttachment> {
-    let mut resolved = Vec::with_capacity(item.attachments.len());
-    for (index, stored) in item.attachments.iter().enumerate() {
-        let Some(file_name) = stored.file_name().and_then(|f| f.to_str()) else {
-            tracing::warn!(id = %id, stored = %stored.display(), "inbox attachment entry has no filename, omitting");
-            continue;
-        };
-        let path = attachments_root.join(id).join(file_name);
-        match tokio::fs::metadata(&path).await {
-            Ok(meta) => resolved.push(ApiAttachment {
-                filename: file_name.to_string(),
-                mime_type: crate::interfaces::attachment::detect_mime_type(&path),
-                size: meta.len(),
-                url: format!("/api/inbox/{id}/attachments/{index}"),
-            }),
-            Err(e) => {
-                tracing::warn!(
-                    id = %id,
-                    filename = %file_name,
-                    error = %e,
-                    "inbox attachment file missing on disk, omitting from listing"
-                );
-            }
-        }
-    }
-    resolved
+    pub attachments: Vec<InboxAttachment>,
 }
 
 /// Build the API-facing representation of an inbox item, resolving its
 /// attachments against `attachments_root`.
 async fn to_api_item(
+    agent: &str,
     id: String,
     item: InboxItem,
     attachments_root: &std::path::Path,
 ) -> ApiInboxItem {
-    let attachments = resolve_attachments(&id, &item, attachments_root).await;
+    let attachments = crate::inbox::resolve_attachments(agent, &id, &item, attachments_root).await;
     ApiInboxItem {
         id,
         title: item.title,
@@ -95,15 +48,15 @@ async fn to_api_item(
     }
 }
 
-/// `GET /api/inbox` — List all user inbox items.
+/// `GET /api/agents/{name}/inbox` — List all user inbox items.
 pub(super) async fn api_inbox_list(
-    State(state): State<ConfigApiState>,
+    State(state): State<AgentFilesState>,
 ) -> Result<Json<Vec<ApiInboxItem>>, (StatusCode, String)> {
     let layout = WorkspaceLayout::new(&state.workspace_dir);
     let user_inbox_dir = layout.user_inbox_dir();
     let attachments_root = layout.user_inbox_attachments_dir();
 
-    let items = crate::inbox::list_items(&user_inbox_dir)
+    let items = crate::inbox::list_items_or_empty(&user_inbox_dir)
         .await
         .map_err(|e| {
             (
@@ -114,16 +67,41 @@ pub(super) async fn api_inbox_list(
 
     let mut api_items = Vec::with_capacity(items.len());
     for (id, item) in items {
-        api_items.push(to_api_item(id, item, &attachments_root).await);
+        api_items.push(to_api_item(&state.agent_name, id, item, &attachments_root).await);
     }
 
     Ok(Json(api_items))
 }
 
-/// `PUT /api/inbox/:id/read` — Mark an inbox item as read.
+/// `GET /api/agents/{name}/inbox/archive` — List all archived user inbox items.
+pub(super) async fn api_inbox_archive_list(
+    State(state): State<AgentFilesState>,
+) -> Result<Json<Vec<ApiInboxItem>>, (StatusCode, String)> {
+    let layout = WorkspaceLayout::new(&state.workspace_dir);
+    let archive_dir = layout.user_inbox_archive_dir();
+    let attachments_root = layout.user_inbox_archive_attachments_dir();
+
+    let items = crate::inbox::list_items_or_empty(&archive_dir)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to list archived inbox items: {e}"),
+            )
+        })?;
+
+    let mut api_items = Vec::with_capacity(items.len());
+    for (id, item) in items {
+        api_items.push(to_api_item(&state.agent_name, id, item, &attachments_root).await);
+    }
+
+    Ok(Json(api_items))
+}
+
+/// `PUT /api/agents/{name}/inbox/:id/read` — Mark an inbox item as read.
 pub(super) async fn api_inbox_read(
     Path(id): Path<String>,
-    State(state): State<ConfigApiState>,
+    State(state): State<AgentFilesState>,
 ) -> Result<Json<ApiInboxItem>, (StatusCode, String)> {
     let layout = WorkspaceLayout::new(&state.workspace_dir);
     let user_inbox_dir = layout.user_inbox_dir();
@@ -138,13 +116,15 @@ pub(super) async fn api_inbox_read(
             )
         })?;
 
-    Ok(Json(to_api_item(id, item, &attachments_root).await))
+    Ok(Json(
+        to_api_item(&state.agent_name, id, item, &attachments_root).await,
+    ))
 }
 
-/// `POST /api/inbox/:id/archive` — Archive an inbox item.
+/// `POST /api/agents/{name}/inbox/:id/archive` — Archive an inbox item.
 pub(super) async fn api_inbox_archive(
     Path(id): Path<String>,
-    State(state): State<ConfigApiState>,
+    State(state): State<AgentFilesState>,
 ) -> Result<Json<()>, (StatusCode, String)> {
     let layout = WorkspaceLayout::new(&state.workspace_dir);
     let user_inbox_dir = layout.user_inbox_dir();
@@ -156,6 +136,28 @@ pub(super) async fn api_inbox_archive(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("failed to archive inbox item: {e}"),
+            )
+        })?;
+
+    Ok(Json(()))
+}
+
+/// `POST /api/agents/{name}/inbox/:id/restore` — Restore an archived inbox item back to
+/// the active inbox — the one way to undo `api_inbox_archive`.
+pub(super) async fn api_inbox_restore(
+    Path(id): Path<String>,
+    State(state): State<AgentFilesState>,
+) -> Result<Json<()>, (StatusCode, String)> {
+    let layout = WorkspaceLayout::new(&state.workspace_dir);
+    let user_inbox_dir = layout.user_inbox_dir();
+    let archive_dir = layout.user_inbox_archive_dir();
+
+    crate::inbox::restore_item(&archive_dir, &user_inbox_dir, &id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to restore inbox item: {e}"),
             )
         })?;
 
@@ -191,7 +193,7 @@ async fn confine(
         .then_some(candidate_canon)
 }
 
-/// `GET /api/inbox/:id/attachments/:index` — Serve one of a user inbox item's
+/// `GET /api/agents/{name}/inbox/:id/attachments/:index` — Serve one of a user inbox item's
 /// attachments by its position in the item's attachment list.
 ///
 /// Checks the active inbox first, then the archive, so a link handed out before
@@ -199,7 +201,7 @@ async fn confine(
 /// attachment path as a literal filesystem path — see `confine`.
 pub(super) async fn api_inbox_attachment(
     Path((id, index)): Path<(String, usize)>,
-    State(state): State<ConfigApiState>,
+    State(state): State<AgentFilesState>,
 ) -> Response {
     let layout = WorkspaceLayout::new(&state.workspace_dir);
 
@@ -249,7 +251,7 @@ pub(super) async fn api_inbox_attachment(
     response
 }
 
-/// Build the agent-inbox API router (`POST /api/agent-inbox`).
+/// Build the agent-inbox API router (`POST /api/agents/{name}/agent-inbox`).
 ///
 /// A workbench artifact's only way to hand the agent something to triage
 /// later — there is no equivalent write endpoint for the user inbox, which
@@ -260,7 +262,7 @@ pub(crate) fn agent_inbox_api_router(state: GatewayState) -> axum::Router {
         .with_state(state)
 }
 
-/// Request body for `POST /api/agent-inbox`.
+/// Request body for `POST /api/agents/{name}/agent-inbox`.
 #[derive(Debug, Deserialize)]
 pub(super) struct AgentInboxAddRequest {
     /// Defaults to the body's first line, in full, when absent or blank.
@@ -269,7 +271,7 @@ pub(super) struct AgentInboxAddRequest {
     pub body: String,
 }
 
-/// Response body for `POST /api/agent-inbox`.
+/// Response body for `POST /api/agents/{name}/agent-inbox`.
 #[derive(Debug, Serialize)]
 pub(super) struct AgentInboxAddResponse {
     /// The new item's ID (its filename stem), as used by `inbox_read` and
@@ -277,10 +279,10 @@ pub(super) struct AgentInboxAddResponse {
     pub id: String,
 }
 
-/// `POST /api/agent-inbox` — add an item to the agent's inbox, the same
+/// `POST /api/agents/{name}/agent-inbox` — add an item to the agent's inbox, the same
 /// place the WS `/inbox` command and the notification router's `inbox`
 /// target write to. The source is `artifact:<name>` when the request carries
-/// the artifact identity header (set by the workbench bridge), `"web"`
+/// the artifact identity header (set by the workbench SDK), `"web"`
 /// otherwise.
 ///
 /// # Errors
@@ -336,25 +338,17 @@ pub(super) async fn api_agent_inbox_add(
 mod tests {
     use super::*;
 
-    fn make_state(workspace_dir: std::path::PathBuf) -> ConfigApiState {
-        ConfigApiState {
-            config_dir: workspace_dir.clone(),
-            workspace_dir,
-            memory_dir: None,
-            reload_tx: None,
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
-            checkpoints: crate::checkpoints::test_engine(),
-        }
+    fn make_state(workspace_dir: std::path::PathBuf) -> AgentFilesState {
+        AgentFilesState::for_test(workspace_dir, None)
     }
 
     /// A minimal but real `GatewayState`, for exercising the agent-inbox
     /// handler directly rather than through the full HTTP stack.
     fn make_gateway_state(workspace_dir: &std::path::Path) -> GatewayState {
-        let (core, _receivers) =
-            crate::gateway::types::GatewayCore::new(workspace_dir.to_path_buf());
-        let (_tunnel_tx, tunnel_status_rx) =
-            tokio::sync::watch::channel(crate::tunnel::TunnelStatus::Disconnected);
+        let (core, _receivers) = crate::gateway::types::GatewayCore::new(
+            workspace_dir.to_path_buf(),
+            workspace_dir.to_path_buf(),
+        );
         let session_registry =
             std::sync::Arc::new(crate::background::registry::SessionRegistry::new());
         let session_store = std::sync::Arc::new(crate::background::store::SessionStore::new(
@@ -372,15 +366,15 @@ mod tests {
         std::fs::create_dir_all(&agent_inbox_dir).unwrap();
 
         GatewayState {
+            turn_journal: crate::gateway::turn_journal::TurnJournal::default(),
             reload_tx: core.reload_tx,
             command_tx: core.command_tx,
             stop_tx: core.stop_tx,
             agent_inbox_dir,
             tz: chrono_tz::UTC,
-            tunnel_status_rx,
             publisher: core.publisher,
             bus_handle: core.bus_handle,
-            file_registry: crate::gateway::file_server::FileRegistry::new(),
+            file_registry: crate::gateway::file_server::FileRegistry::new("scout"),
             webhooks: crate::interfaces::webhook::WebhookTable::default(),
             session_registry,
             session_store,
@@ -393,12 +387,18 @@ mod tests {
                 crate::workspace::watch::WatchHealth::Native,
             )
             .1,
+            team_feed: std::sync::Arc::new(crate::hub::services::TeamChangeFeed::idle()),
             action_store: std::sync::Arc::new(tokio::sync::Mutex::new(
                 crate::actions::store::ActionStore::new_empty(
                     workspace_dir.join("scheduled_actions.json"),
                 ),
             )),
             layout: crate::workspace::layout::WorkspaceLayout::new(workspace_dir),
+            activity: crate::hub::activity::ActivityTracker::new(
+                "test-agent",
+                tokio::sync::broadcast::channel(4).0,
+                crate::hub::agent_watch::AgentChangeFeed::new(),
+            ),
         }
     }
 
@@ -541,6 +541,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn listed_attachment_urls_are_under_the_owning_agents_routes() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let attachments_dir = layout.user_inbox_attachments_dir().join("item1");
+        tokio::fs::create_dir_all(&attachments_dir).await.unwrap();
+        tokio::fs::write(attachments_dir.join("note.txt"), b"hello")
+            .await
+            .unwrap();
+        write_active_item(
+            &layout,
+            "item1",
+            vec![std::path::PathBuf::from(
+                "inbox/user/attachments/item1/note.txt",
+            )],
+        )
+        .await;
+
+        let state = make_state(dir.path().to_path_buf());
+        let Json(items) = api_inbox_list(State(state)).await.unwrap();
+
+        let item = items.first().expect("the seeded item is listed");
+        let attachment = item.attachments.first().expect("its attachment is listed");
+        assert_eq!(
+            attachment.url,
+            "/api/agents/test-agent/inbox/item1/attachments/0"
+        );
+    }
+
+    #[tokio::test]
     async fn api_inbox_attachment_out_of_range_index_404s() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path());
@@ -653,5 +682,89 @@ mod tests {
         let response = api_inbox_attachment(Path(("item1".to_string(), 0)), State(state)).await;
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn api_inbox_archive_then_restore_roundtrips() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        write_active_item(&layout, "item1", vec![]).await;
+        let state = make_state(dir.path().to_path_buf());
+
+        let Json(()) = api_inbox_archive(Path("item1".to_string()), State(state.clone()))
+            .await
+            .unwrap();
+
+        let active = api_inbox_list(State(state.clone())).await.unwrap();
+        assert!(
+            active.0.is_empty(),
+            "item should be gone from the active list"
+        );
+        let archived = api_inbox_archive_list(State(state.clone())).await.unwrap();
+        assert_eq!(
+            archived.0.len(),
+            1,
+            "item should show up in the archive list"
+        );
+        assert_eq!(archived.0[0].id, "item1");
+
+        let Json(()) = api_inbox_restore(Path("item1".to_string()), State(state.clone()))
+            .await
+            .unwrap();
+
+        let active_after_restore = api_inbox_list(State(state.clone())).await.unwrap();
+        assert_eq!(active_after_restore.0.len(), 1, "item should be back");
+        assert_eq!(active_after_restore.0[0].id, "item1");
+        let archived_after_restore = api_inbox_archive_list(State(state)).await.unwrap();
+        assert!(
+            archived_after_restore.0.is_empty(),
+            "archive should be empty after restore"
+        );
+    }
+
+    #[tokio::test]
+    async fn inbox_listings_are_empty_before_the_directories_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_state(dir.path().to_path_buf());
+
+        let Json(active) = api_inbox_list(State(state.clone())).await.unwrap();
+        let Json(archived) = api_inbox_archive_list(State(state)).await.unwrap();
+
+        assert!(active.is_empty(), "no inbox directory means no items");
+        assert!(archived.is_empty(), "no archive directory means no items");
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_inbox_directory_is_still_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        tokio::fs::create_dir_all(layout.user_inbox_dir().parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(layout.user_inbox_dir(), b"not a directory")
+            .await
+            .unwrap();
+        let state = make_state(dir.path().to_path_buf());
+
+        let Err((status, message)) = api_inbox_list(State(state)).await else {
+            panic!("a directory that can't be read is not an empty inbox");
+        };
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            message.contains("failed to list user inbox items"),
+            "{message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_inbox_restore_missing_item_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_state(dir.path().to_path_buf());
+
+        let err = api_inbox_restore(Path("does-not-exist".to_string()), State(state))
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

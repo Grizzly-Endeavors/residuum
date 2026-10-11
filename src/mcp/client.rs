@@ -7,6 +7,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::future::Future;
+use std::path::Path;
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -49,6 +50,11 @@ impl McpClient {
     /// `tools_path`, when set, is the effective `PATH` (configured tool
     /// directories prepended) applied to a spawned stdio server before its own
     /// `env` — so a server that explicitly sets `PATH` still overrides it.
+    /// `workspace_root`, when set, is the directory a spawned stdio server's
+    /// process starts in (`Command::current_dir`) — the agent's workspace
+    /// root, not the process's current directory, which is shared across
+    /// every agent hosted in the same process. Ignored for the `Http`
+    /// transport, which spawns nothing.
     ///
     /// # Errors
     /// Returns an error if the connection cannot be established or the MCP
@@ -57,9 +63,10 @@ impl McpClient {
     pub async fn connect(
         entry: &McpServerEntry,
         tools_path: Option<&OsStr>,
+        workspace_root: Option<&Path>,
     ) -> Result<Self, anyhow::Error> {
         match entry.transport {
-            McpTransport::Stdio => Self::connect_stdio(entry, tools_path).await,
+            McpTransport::Stdio => Self::connect_stdio(entry, tools_path, workspace_root).await,
             McpTransport::Http => Self::connect_http(entry).await,
         }
     }
@@ -67,10 +74,14 @@ impl McpClient {
     async fn connect_stdio(
         entry: &McpServerEntry,
         tools_path: Option<&OsStr>,
+        workspace_root: Option<&Path>,
     ) -> Result<Self, anyhow::Error> {
         tracing::debug!(command = %entry.command, "connecting to mcp server (stdio)");
         let mut cmd = tokio::process::Command::new(&entry.command);
         cmd.args(&entry.args);
+        if let Some(root) = workspace_root {
+            cmd.current_dir(root);
+        }
         // Prepend the configured tool dirs to PATH first, then apply the entry's
         // own env so an explicit `PATH` in the entry wins.
         if let Some(path) = tools_path {
@@ -352,13 +363,13 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn with_a_configured_timeout_a_slow_call_is_cut_off() {
         // A short "60s-equivalent" timeout standing in for a real server
         // that never answers: with a call configured to time out, a future
         // slower than that timeout is cut off and reports how long it ran.
         let slow = async {
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            crate::testing::clock::elapse(Duration::from_millis(200)).await;
             "unreachable"
         };
         let result = run_with_optional_timeout(Some(Duration::from_millis(20)), slow).await;
@@ -369,14 +380,14 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn with_no_timeout_configured_a_slow_call_still_completes() {
         // No `timeout_secs` set (the default): the same slow future that
         // would have been cut off above now runs to completion, proving
         // there is no hidden fixed cutoff standing in for the removed
         // default 60s timeout.
         let slow = async {
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            crate::testing::clock::elapse(Duration::from_millis(50)).await;
             "done"
         };
         let result = run_with_optional_timeout(None, slow).await;
@@ -390,18 +401,19 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn connect_stdio_resolves_binary_from_tools_path() {
-        use std::os::unix::fs::PermissionsExt;
-
         // An executable that exists only in a tools dir (not on the base PATH).
         // It is not a real MCP server: spawning it succeeds, the handshake then
         // fails — which lets us distinguish "PATH resolved" from "spawn failed".
+        // It is a link to the shell, not a script written here: executing a
+        // file this process just wrote fails with "Text file busy" when a test
+        // on another thread forks while the file is still open for writing,
+        // because the forked child holds a copy of the descriptor until it
+        // execs.
         let dir = std::env::temp_dir().join(format!("residuum-mcp-tools-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let script = dir.join("residuum_fake_mcp");
-        std::fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
-        let mut perms = std::fs::metadata(&script).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&script, perms).unwrap();
+        let link = dir.join("residuum_fake_mcp");
+        std::fs::remove_file(&link).ok();
+        std::os::unix::fs::symlink("/bin/sh", &link).unwrap();
 
         let mut parts = vec![dir.clone()];
         if let Some(inherited) = std::env::var_os("PATH") {
@@ -412,7 +424,7 @@ mod tests {
         let entry = McpServerEntry {
             name: "fake-mcp".to_string(),
             command: "residuum_fake_mcp".to_string(),
-            args: vec![],
+            args: vec!["-c".to_string(), "exit 0".to_string()],
             env: HashMap::new(),
             transport: McpTransport::Stdio,
             headers: HashMap::new(),
@@ -420,7 +432,7 @@ mod tests {
         };
 
         // Without the tools PATH the binary is not resolvable → spawn fails.
-        let missing_err = McpClient::connect(&entry, None)
+        let missing_err = McpClient::connect(&entry, None, None)
             .await
             .unwrap_err()
             .to_string();
@@ -431,16 +443,71 @@ mod tests {
 
         // With the tools PATH the binary spawns; the handshake then fails,
         // proving the command resolved against the injected PATH.
-        let connected = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            McpClient::connect(&entry, Some(path.as_os_str())),
+        let connected = crate::testing::wait::guarded(
+            "the spawned fake server to fail its handshake",
+            McpClient::connect(&entry, Some(path.as_os_str()), None),
         )
-        .await
-        .unwrap();
+        .await;
         let err = connected.unwrap_err().to_string();
         assert!(
             err.contains("handshake failed"),
             "spawn should succeed via the tools PATH (handshake then fails): {err}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn connect_stdio_spawns_in_the_workspace_root_not_the_process_cwd() {
+        // Not a real MCP server: a shell that writes its own cwd to a file and
+        // exits, so the handshake fails — but by then it has written the file
+        // this test checks. It is the shell itself, not a script written here:
+        // executing a file this process just wrote fails with "Text file busy"
+        // when a test on another thread forks while the file is still open for
+        // writing, because the forked child holds a copy of the descriptor
+        // until it execs.
+        let dir = std::env::temp_dir().join(format!("residuum-mcp-cwd-{}", std::process::id()));
+        let workspace = dir.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let pwd_file = dir.join("pwd.txt");
+
+        let entry = McpServerEntry {
+            name: "fake-mcp-cwd".to_string(),
+            command: "/bin/sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "pwd > \"$1\"".to_string(),
+                "sh".to_string(),
+                pwd_file.to_str().unwrap().to_string(),
+            ],
+            env: HashMap::new(),
+            transport: McpTransport::Stdio,
+            headers: HashMap::new(),
+            timeout_secs: None,
+        };
+
+        // The test already waits on a real condition (the child closing its
+        // stdout once it exits); the bound is just a safety net against a
+        // hang, so give it generous headroom for a contended scheduler
+        // rather than racing real process spawn/exit timing.
+        let result = crate::testing::wait::guarded(
+            "the spawned fake server to fail its handshake",
+            McpClient::connect(&entry, None, Some(&workspace)),
+        )
+        .await;
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("handshake failed"),
+            "the fake process isn't a real mcp server, so it should spawn and the handshake should fail: {err}"
+        );
+
+        let printed = std::fs::canonicalize(std::fs::read_to_string(&pwd_file).unwrap().trim())
+            .unwrap_or_else(|e| panic!("child should have written its cwd to {pwd_file:?}: {e}"));
+        let expected = std::fs::canonicalize(&workspace).unwrap();
+        assert_eq!(
+            printed, expected,
+            "the spawned server should start in the configured workspace root"
         );
 
         std::fs::remove_dir_all(&dir).ok();
@@ -458,7 +525,7 @@ mod tests {
             timeout_secs: None,
         };
 
-        let result = McpClient::connect(&entry, None).await;
+        let result = McpClient::connect(&entry, None, None).await;
         assert!(result.is_err(), "http connect to invalid URL should fail");
         let err = result.unwrap_err().to_string();
         assert!(
@@ -479,7 +546,7 @@ mod tests {
             timeout_secs: None,
         };
 
-        let result = McpClient::connect(&entry, None).await;
+        let result = McpClient::connect(&entry, None, None).await;
         assert!(
             result.is_err(),
             "stdio connect to nonexistent binary should fail"

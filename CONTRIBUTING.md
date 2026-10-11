@@ -5,7 +5,7 @@ Thanks for your interest in contributing. This document covers the workflow and 
 ## Getting Started
 
 1. Fork the repository and clone your fork
-2. Install [Rust](https://rustup.rs/) (the version pinned in `rust-toolchain.toml`; rustup installs it — see [Rust Toolchain](#rust-toolchain)) and [Node.js](https://nodejs.org/) (for the web frontend)
+2. Install [Rust](https://rustup.rs/) (the version pinned in `rust-toolchain.toml`; rustup installs it — see [Rust Toolchain](#rust-toolchain)) and [Node.js](https://nodejs.org/) (for the web frontend; the supported versions are the `engines` field in `web/package.json`, see [web/CONTRIBUTING.md](web/CONTRIBUTING.md#prerequisites))
 3. Build the web frontend first — the Rust binary embeds the built assets, so `cargo build` will fail without them:
    ```bash
    cd web
@@ -18,7 +18,12 @@ Thanks for your interest in contributing. This document covers the workflow and 
    cargo build
    cargo test --quiet
    ```
-5. Git hooks are installed automatically — they enforce formatting, linting, and tests on every commit
+5. Install the git hooks — they enforce formatting, linting, and tests on every commit:
+   ```bash
+   .githooks/install.sh
+   ```
+
+If you have [`just`](https://github.com/casey/just) installed, `just setup` installs the web dependencies (step 3) and the git hooks (step 5) in one go, and `just` on its own lists everything else: `just check` runs everything CI runs except the web end-to-end suite, `just test memory::` runs one module's tests, and `just web-mock` starts the web UI against a mock API with no backend. Every recipe wraps a command documented here, so `just` is optional.
 
 ## Branch & PR Workflow
 
@@ -27,7 +32,7 @@ All changes go through pull requests.
 1. Create a feature branch from `main` with a descriptive name
 2. Make your changes and commit frequently
 3. Push your branch and open a PR against `main`
-4. The quality gate is the pre-commit hook, not CI: formatting, clippy, tests, dependency audit, and the web checks all run locally on every commit. A maintainer re-runs them locally before merging a contributor's PR.
+4. The pre-commit hook is the first quality gate: formatting, clippy, tests, dependency audit, and the web checks all run locally on every commit. CI then runs the full Rust checks on PRs that change Rust code and the full web checks on PRs that change `web/` (see [Quality Gates](#quality-gates)). CI runs on self-hosted runners, so PRs from forks don't run it; a maintainer re-runs the checks locally before merging a contributor's PR.
 5. Cross-platform checks (clippy for aarch64 Linux, Windows, and macOS, plus tests on Windows) are opt-in; see below
 
 ### Rust Toolchain
@@ -67,9 +72,11 @@ Pre-commit hooks run automatically:
 - `cargo clippy` — pedantic linting with strict denials
 - `cargo test` — tests for the modules touched by the commit
 - `cargo deny check` — dependency audit
-- When `web/src/` files are staged: Prettier, ESLint, `svelte-check`, and the web unit tests (Vitest)
+- When any file under `web/` is staged: Prettier, ESLint and the style lint (Stylelint), `svelte-check` (warnings fail it), and the web unit and component tests (Vitest)
 
 Do not bypass hooks. If a hook fails, fix the issue before committing.
+
+CI repeats these checks and adds four. Its Rust half runs on every pull request that changes Rust code or what the build embeds (`src/`, `tests/`, `assets/`, the Cargo and lint configuration, the generated web types), its web half on every pull request that changes `web/`, and both on release tags. The Rust half runs the whole test suite, not only the touched modules', then runs it again as two concurrent copies under CPU load (`just stress`, see Testing), and the Pebble tests (`just pebble`), which issue certificates from the Let's Encrypt test CA in Docker. It runs the whole web end-to-end, accessibility and visual suite against the mock, in the Playwright container's browser, so the runners need no Chromium of their own (`just web-e2e` runs it locally; `just web-e2e-fast` leaves out the visual comparisons and runs in your own Chromium; see [web/CONTRIBUTING.md](web/CONTRIBUTING.md#testing)). It regenerates the web's TypeScript protocol types from the Rust types and fails when `web/src/lib/generated/` differs from what is committed, so after changing an exported Rust type run `just types` and commit the result (`just types-check` runs the same check as CI). It also reports web test coverage in the job summary, with no threshold.
 
 ### Style
 
@@ -82,6 +89,18 @@ Do not bypass hooks. If a hook fails, fix the issue before committing.
 ### Testing
 
 Tests are required for new functionality. Unit tests go in `#[cfg(test)] mod tests` at the bottom of the file. Integration tests go in `tests/`.
+
+A test waits on the event it checks, never on elapsed time: a duration that holds on an idle machine fails when several builds share it. A flaky test is fixed by making it wait on an event the code exposes, adding that signal to the code when there is none, never by widening a timeout, adding a sleep, or rerunning past it. `just stress <filter>` runs the tests as two concurrent copies with CPU burners alongside (`STRESS_COPIES`, `STRESS_ROUNDS` and `STRESS_BURN` tune it), and a test you add or fix must pass it. CI runs the whole suite this way too, in the Stress step of the Rust tests (pull requests and releases). A red Stress step blocks the merge like any other failure: it is a test that waits on time, so fix the wait; a rerun that happens to pass hides it.
+
+#### Waiting in tests
+
+Test code waits through `crate::testing`, never with `tokio::time::sleep`, `tokio::time::timeout`, `std::thread::sleep` or wiremock's `set_delay`. A source-scan test (`testing::source_scan`) fails on any of those outside `src/testing/`; the pre-commit hook runs it on every Rust commit. The waits that predate the rule are counted per file in `src/testing/wall_clock_backlog.rs`, and the counts only go down: converting a file's waits means lowering its entry, and the hook refuses a commit that adds one.
+
+- **Something will arrive on a channel or watch.** `testing::wait::next`, `next_matching` (skips to the first match), `next_where` (everything received up to the match) or `watch_until`; a bus `Subscriber` is waited on with `next_event`. For state with no channel to wait on, `wait::until` polls a check. Each runs under `wait::HANG_GUARD`, the suite's only deadline, which exists to stop a hung test and names what it was waiting for; never shorten it or add another.
+- **A state must last while the test looks at it** (an agent mid-turn, a session queued behind another). Hold the call that would end it at a closed `testing::gate::Gate`: `gate.until_held(1)` proves the call is waiting, the test looks, then `gate.release(1)`. The model has gated versions: `testing::model::GatedModel` (an HTTP model, either in front of a wiremock server or with a fixed reply; the hub test fixture puts one in front of every agent's mock), `GatedProvider` in process, and the scripted stream server's `Step::Hold`.
+- **Background work must have happened.** Wait on the signal the code gives for it. When there is none, add one to the code: a test that needs to know something finished is usually a sign users and diagnostics need to know too.
+- **Something must not happen.** Only after a positive sync point that proves it would have happened by now: a bus barrier (`wait::bus_barrier`, which publishes a marker and waits for it; the broker hands a message to every subscriber at once, so once a subscriber has a later message, every subscriber has the earlier one), a sentinel file written after the cause (file notifications arrive in order), a stop (an agent's watcher drains before `stop` returns), or a pending count back at zero. Then check with `wait::drain` or the current state.
+- **The code under test is timer-driven and has no real I/O** (no sockets, child processes or file watchers). Run it on a paused clock (`#[tokio::test(start_paused = true)]`) and move time with `testing::clock::elapse`; `clock::within` checks that something does not complete within a window. Both refuse to run on a real clock.
 
 `clippy.toml` exempts `unwrap_used`, `expect_used`, `panic`, and `dbg_macro` inside `#[cfg(test)]` modules and `#[test]` functions, so unit tests use unwrap, expect, panic, and `dbg!` with no suppression. Do not add `#[expect(clippy::unwrap_used)]` (or `expect_used`, `panic`, `dbg_macro`) on that code: the lint is already exempt, the expectation never fires, and `-D warnings` fails the build.
 

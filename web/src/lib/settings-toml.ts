@@ -37,9 +37,7 @@ export interface WebhookFormEntry {
 }
 
 export interface ConfigFields {
-  name: string;
   timezone: string;
-  workspace_dir: string;
   timeout_secs: string;
   max_tokens: string;
   // gateway
@@ -118,7 +116,23 @@ export interface ConfigFields {
   cloud_enabled: boolean;
   cloud_token: string;
   cloud_relay_url: string;
-  cloud_local_port: string;
+  // push
+  push_contact: string;
+  // decision model (hub)
+  system_one_provider: string;
+  system_one_model: string;
+  system_one_url: string;
+  system_one_api_key: string;
+  system_one_keep_alive: string;
+  // auto mode (agent)
+  auto_mode_enabled: boolean;
+  auto_mode_deny: string[];
+  auto_mode_allow: string[];
+  auto_mode_threshold: string;
+  // tracing
+  tracing_log_level: string;
+  tracing_auto_error_reporting: boolean;
+  tracing_sanitize_content: boolean;
   // skills
   skills_dirs: string[];
   // tools
@@ -138,9 +152,7 @@ export interface ConfigFields {
 
 export function defaultConfigFields(): ConfigFields {
   return {
-    name: "",
     timezone: "",
-    workspace_dir: "",
     timeout_secs: "",
     max_tokens: "",
     gateway_bind: "",
@@ -206,7 +218,19 @@ export function defaultConfigFields(): ConfigFields {
     cloud_enabled: true,
     cloud_token: "",
     cloud_relay_url: "",
-    cloud_local_port: "",
+    push_contact: "",
+    system_one_provider: "",
+    system_one_model: "",
+    system_one_url: "",
+    system_one_api_key: "",
+    system_one_keep_alive: "",
+    auto_mode_enabled: false,
+    auto_mode_deny: [],
+    auto_mode_allow: [],
+    auto_mode_threshold: "",
+    tracing_log_level: "",
+    tracing_auto_error_reporting: false,
+    tracing_sanitize_content: true,
     skills_dirs: [],
     tools_path: [],
     ws_backend: "",
@@ -237,20 +261,53 @@ function bool(v: unknown, fallback: boolean): boolean {
   return typeof v === "boolean" ? v : fallback;
 }
 
-export function parseConfigToml(raw: string): ConfigFields {
-  const fields = defaultConfigFields();
-  if (!raw.trim()) return fields;
+function stringList(v: unknown): string[] {
+  return Array.isArray(v) ? v.map((item) => str(item)) : [];
+}
 
-  let doc: Record<string, unknown>;
+function isTable(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function parseTomlTable(raw: string): Record<string, unknown> {
+  if (!raw.trim()) return {};
   try {
-    doc = parseToml(raw) as Record<string, unknown>;
+    return parseToml(raw) as Record<string, unknown>;
   } catch {
-    return fields;
+    return {};
   }
+}
 
-  fields.name = str(doc.name);
+/**
+ * Merge the hub's config document into the agent's, section by section. The
+ * hub and the agent each own some keys of `[a2a]` and `[background]`; every
+ * other key belongs to exactly one of the two files.
+ */
+function mergeConfigDocs(
+  hub: Record<string, unknown>,
+  agent: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...hub, ...agent };
+  for (const [key, hubValue] of Object.entries(hub)) {
+    const agentValue = agent[key];
+    if (isTable(hubValue) && isTable(agentValue)) {
+      merged[key] = { ...hubValue, ...agentValue };
+    }
+  }
+  return merged;
+}
+
+/**
+ * Parse the agent's `config.toml` and the hub's `config.toml` into the one
+ * flat form the Settings page edits. Saving splits the changes back out by
+ * owner — see [`splitConfigPatch`].
+ */
+export function parseConfigToml(raw: string, hubRaw = ""): ConfigFields {
+  const fields = defaultConfigFields();
+  const doc = mergeConfigDocs(parseTomlTable(hubRaw), parseTomlTable(raw));
+  if (Object.keys(doc).length === 0) return fields;
+
   fields.timezone = str(doc.timezone);
-  fields.workspace_dir = str(doc.workspace_dir);
   fields.timeout_secs = str(doc.timeout_secs);
   fields.max_tokens = str(doc.max_tokens);
   fields.temperature = str(doc.temperature);
@@ -388,7 +445,33 @@ export function parseConfigToml(raw: string): ConfigFields {
     fields.cloud_enabled = bool(cloud.enabled, true);
     fields.cloud_token = str(cloud.token);
     fields.cloud_relay_url = str(cloud.relay_url);
-    fields.cloud_local_port = str(cloud.local_port);
+  }
+
+  const push = doc.push as Record<string, unknown> | undefined;
+  if (push) fields.push_contact = str(push.contact);
+
+  const systemOne = doc.system_one as Record<string, unknown> | undefined;
+  if (systemOne) {
+    fields.system_one_provider = str(systemOne.provider);
+    fields.system_one_model = str(systemOne.model);
+    fields.system_one_url = str(systemOne.url);
+    fields.system_one_api_key = str(systemOne.api_key);
+    fields.system_one_keep_alive = str(systemOne.keep_alive);
+  }
+
+  const autoMode = doc.auto_mode as Record<string, unknown> | undefined;
+  if (autoMode) {
+    fields.auto_mode_enabled = bool(autoMode.enabled, false);
+    fields.auto_mode_deny = stringList(autoMode.deny);
+    fields.auto_mode_allow = stringList(autoMode.allow);
+    fields.auto_mode_threshold = str(autoMode.threshold);
+  }
+
+  const tracing = doc.tracing as Record<string, unknown> | undefined;
+  if (tracing) {
+    fields.tracing_log_level = str(tracing.log_level);
+    fields.tracing_auto_error_reporting = bool(tracing.auto_error_reporting, false);
+    fields.tracing_sanitize_content = bool(tracing.sanitize_content, true);
   }
 
   const skills = doc.skills as Record<string, unknown> | undefined;
@@ -465,6 +548,7 @@ export function defaultModels(): SettingsModelAssignments {
       bgMedium: defaultOverrides(),
       bgLarge: defaultOverrides(),
     },
+    fallbacks: {},
   };
 }
 
@@ -505,6 +589,7 @@ export function parseProvidersToml(raw: string): ProvidersFormState {
       const val = models[tomlKey];
       result.models[formKey as ModelRoleKey] = modelStr(val);
       extractOverrides(val, formKey, result.models.overrides);
+      keepFallbacks(val, formKey, result.models.fallbacks);
     }
     result.models.embedding = str(models.embedding);
   }
@@ -521,6 +606,7 @@ export function parseProvidersToml(raw: string): ProvidersFormState {
         const val = bgModels[tomlKey];
         result.models[formKey as ModelRoleKey] = modelStr(val);
         extractOverrides(val, formKey, result.models.overrides);
+        keepFallbacks(val, formKey, result.models.fallbacks);
       }
     }
   }
@@ -541,6 +627,12 @@ function modelStr(v: unknown): string {
     return JSON.stringify(v);
   }
   return String(v as string | number | boolean);
+}
+
+/** Keep the failover models after the first one, which the form doesn't show, from a list or an inline table's `model` list. */
+function keepFallbacks(v: unknown, key: string, fallbacks: Record<string, string[]>): void {
+  const list = isTable(v) ? v.model : v;
+  if (Array.isArray(list) && list.length > 1) fallbacks[key] = list.slice(1).map(String);
 }
 
 /** Extract temperature/thinking overrides from an inline table model assignment. */
@@ -607,11 +699,16 @@ function commaList(raw: string): string[] {
 }
 
 /** Parse a numeric form field the way a bare TOML literal would: a float if it has a decimal point, else an int. */
+function formText(raw: unknown): string {
+  if (typeof raw === "string") return raw;
+  return typeof raw === "number" ? String(raw) : "";
+}
+
 function numberLiteral(raw: string): number {
   return raw.includes(".") ? parseFloat(raw) : parseInt(raw, 10);
 }
 
-function jsonEqual(a: unknown, b: unknown): boolean {
+export function jsonEqual(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
@@ -631,7 +728,7 @@ function setPath(root: Record<string, unknown>, path: readonly string[], value: 
   if (last !== undefined) node[last] = value;
 }
 
-type FieldSpec =
+export type FieldSpec =
   | { key: keyof ConfigFields; path: readonly string[]; kind: "string" }
   | { key: keyof ConfigFields; path: readonly string[]; kind: "stringDefault"; default: string }
   | { key: keyof ConfigFields; path: readonly string[]; kind: "number" }
@@ -651,12 +748,14 @@ function canonField(spec: FieldSpec, raw: unknown): unknown {
       const s = (raw as string | undefined) ?? "";
       return !s || s === spec.default ? null : s;
     }
+    // A number input bound with `bind:value` hands back a number once the user
+    // types in it, so read the field as text either way.
     case "number": {
-      const s = (raw as string | undefined) ?? "";
+      const s = formText(raw);
       return s.trim() ? numberLiteral(s) : null;
     }
     case "numberDefault": {
-      const s = (raw as string | undefined) ?? "";
+      const s = formText(raw);
       return !s || s === spec.default ? null : numberLiteral(s);
     }
     case "bool": {
@@ -674,10 +773,9 @@ function canonField(spec: FieldSpec, raw: unknown): unknown {
   }
 }
 
-const CONFIG_FIELD_MAP: readonly FieldSpec[] = [
-  { key: "name", path: ["name"], kind: "string" },
+/** Every scalar and list field of `ConfigFields`, with the key it saves to. The one map diffing and error placement share. */
+export const CONFIG_FIELD_MAP: readonly FieldSpec[] = [
   { key: "timezone", path: ["timezone"], kind: "string" },
-  { key: "workspace_dir", path: ["workspace_dir"], kind: "string" },
   { key: "timeout_secs", path: ["timeout_secs"], kind: "number" },
   { key: "max_tokens", path: ["max_tokens"], kind: "number" },
   { key: "temperature", path: ["temperature"], kind: "number" },
@@ -861,7 +959,33 @@ const CONFIG_FIELD_MAP: readonly FieldSpec[] = [
   { key: "cloud_enabled", path: ["cloud", "enabled"], kind: "bool", default: true },
   { key: "cloud_token", path: ["cloud", "token"], kind: "string" },
   { key: "cloud_relay_url", path: ["cloud", "relay_url"], kind: "string" },
-  { key: "cloud_local_port", path: ["cloud", "local_port"], kind: "number" },
+
+  { key: "push_contact", path: ["push", "contact"], kind: "string" },
+
+  { key: "system_one_provider", path: ["system_one", "provider"], kind: "string" },
+  { key: "system_one_model", path: ["system_one", "model"], kind: "string" },
+  { key: "system_one_url", path: ["system_one", "url"], kind: "string" },
+  { key: "system_one_api_key", path: ["system_one", "api_key"], kind: "string" },
+  { key: "system_one_keep_alive", path: ["system_one", "keep_alive"], kind: "string" },
+
+  { key: "auto_mode_enabled", path: ["auto_mode", "enabled"], kind: "bool", default: false },
+  { key: "auto_mode_deny", path: ["auto_mode", "deny"], kind: "stringArray" },
+  { key: "auto_mode_allow", path: ["auto_mode", "allow"], kind: "stringArray" },
+  { key: "auto_mode_threshold", path: ["auto_mode", "threshold"], kind: "number" },
+
+  { key: "tracing_log_level", path: ["tracing", "log_level"], kind: "string" },
+  {
+    key: "tracing_auto_error_reporting",
+    path: ["tracing", "auto_error_reporting"],
+    kind: "bool",
+    default: false,
+  },
+  {
+    key: "tracing_sanitize_content",
+    path: ["tracing", "sanitize_content"],
+    kind: "bool",
+    default: true,
+  },
 
   { key: "skills_dirs", path: ["skills", "dirs"], kind: "stringArray" },
   { key: "tools_path", path: ["tools", "path"], kind: "stringArray" },
@@ -1007,26 +1131,96 @@ export function diffConfigFields(
   return patch;
 }
 
+// ── Hub / agent ownership of config fields ──────────────────────────
+
+/** Top-level sections that live in the hub's `config.toml`. */
+const HUB_SECTIONS: ReadonlySet<string> = new Set([
+  "timezone",
+  "gateway",
+  "cloud",
+  "push",
+  "system_one",
+  "tracing",
+]);
+
+/** Keys of shared sections (`[a2a]`, `[background]`) that live in the hub's `config.toml`. */
+const HUB_SECTION_KEYS: Readonly<Record<string, ReadonlySet<string>>> = {
+  a2a: new Set(["enabled", "port", "public_url"]),
+  background: new Set(["max_concurrent", "hop_soft_limit", "hop_hard_limit"]),
+};
+
+/** Which `config.toml` a key path saves to: the hub's or the agent's. */
+export function configFieldOwner(path: readonly string[]): "hub" | "agent" {
+  const [section, key] = path;
+  if (section === undefined) return "agent";
+  if (HUB_SECTIONS.has(section)) return "hub";
+  const hubKeys = HUB_SECTION_KEYS[section];
+  return hubKeys !== undefined && key !== undefined && hubKeys.has(key) ? "hub" : "agent";
+}
+
+/**
+ * Split a config patch (from `diffConfigFields`) into the part for the
+ * hub's `config.toml` and the part for the agent's.
+ */
+export function splitConfigPatch(patch: Record<string, unknown>): {
+  hub: Record<string, unknown>;
+  agent: Record<string, unknown>;
+} {
+  const hub: Record<string, unknown> = {};
+  const agent: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(patch)) {
+    const hubKeys = HUB_SECTION_KEYS[key];
+    if (HUB_SECTIONS.has(key)) {
+      hub[key] = value;
+    } else if (hubKeys && isTable(value)) {
+      const hubPart: Record<string, unknown> = {};
+      const agentPart: Record<string, unknown> = {};
+      for (const [subKey, subValue] of Object.entries(value)) {
+        (hubKeys.has(subKey) ? hubPart : agentPart)[subKey] = subValue;
+      }
+      if (Object.keys(hubPart).length > 0) hub[key] = hubPart;
+      if (Object.keys(agentPart).length > 0) agent[key] = agentPart;
+    } else {
+      agent[key] = value;
+    }
+  }
+  return { hub, agent };
+}
+
 // ── Model role assignments (providers.toml `[models]` / `[background.models]`) ──
 
 /**
  * Build the JSON patch value for a model-role assignment: a plain string
  * when there's no override, or `{"$inline": {...}}` when `temperature` or
  * `thinking` overrides the role's default. `null` clears the role.
+ *
+ * `fallbacks` are the failover models after `modelValue`; the role is written
+ * as the whole list so a change to the first model keeps them. `$inline` holds
+ * scalars only, so a list with overrides is written as the table's own keys:
+ * the server turns what was there into that table and removes an override
+ * left `null`.
  */
-export function modelRoleJson(modelValue: string, overrides?: RoleOverrides): unknown {
+export function modelRoleJson(
+  modelValue: string,
+  overrides?: RoleOverrides,
+  fallbacks: readonly string[] = [],
+): unknown {
   if (!modelValue) return null;
+  const chain = fallbacks.length > 0 ? [modelValue, ...fallbacks] : modelValue;
   const hasTemp = Boolean(overrides?.temperature);
   const hasThinking = Boolean(overrides?.thinking);
-  if (!hasTemp && !hasThinking) return modelValue;
+  if (!hasTemp && !hasThinking) return chain;
 
-  const inline: Record<string, unknown> = { model: modelValue };
-  if (hasTemp) inline.temperature = numberLiteral(overrides?.temperature ?? "");
-  if (hasThinking) inline.thinking = overrides?.thinking;
+  const temperature = hasTemp ? numberLiteral(overrides?.temperature ?? "") : null;
+  const thinking = hasThinking ? (overrides?.thinking ?? null) : null;
+  if (typeof chain !== "string") return { model: chain, temperature, thinking };
+  const inline: Record<string, unknown> = { model: chain };
+  if (temperature !== null) inline.temperature = temperature;
+  if (thinking !== null) inline.thinking = thinking;
   return { $inline: inline };
 }
 
-const MODEL_ROLE_MAP: readonly { formKey: ModelRoleKey; path: readonly string[] }[] = [
+export const MODEL_ROLE_MAP: readonly { formKey: ModelRoleKey; path: readonly string[] }[] = [
   { formKey: "main", path: ["models", "main"] },
   { formKey: "default", path: ["models", "default"] },
   { formKey: "observer", path: ["models", "observer"] },
@@ -1044,8 +1238,16 @@ function diffModels(
   current: SettingsModelAssignments,
 ): void {
   for (const { formKey, path } of MODEL_ROLE_MAP) {
-    const before = modelRoleJson(baseline[formKey], baseline.overrides[formKey]);
-    const after = modelRoleJson(current[formKey], current.overrides[formKey]);
+    const before = modelRoleJson(
+      baseline[formKey],
+      baseline.overrides[formKey],
+      baseline.fallbacks[formKey],
+    );
+    const after = modelRoleJson(
+      current[formKey],
+      current.overrides[formKey],
+      current.fallbacks[formKey],
+    );
     if (!jsonEqual(before, after)) setPath(patch, path, after);
   }
 
@@ -1127,6 +1329,26 @@ function mcpServerToJson(srv: McpServerEntry): Record<string, unknown> {
   return out;
 }
 
+/**
+ * Diff a server's `env` or `headers` key by key. A patch merges an object into
+ * the table that is there, so a variable the form no longer has has to be
+ * named as `null`; sending the rest alone would leave it in the file.
+ */
+function diffStringMap(
+  base: Record<string, string>,
+  current: Record<string, string>,
+): Record<string, unknown> | null {
+  if (Object.keys(current).length === 0) return null;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(current)) {
+    if (base[key] !== value) out[key] = value;
+  }
+  for (const key of Object.keys(base)) {
+    if (!(key in current)) out[key] = null;
+  }
+  return out;
+}
+
 function diffMcpServerFields(
   base: McpServerEntry,
   current: McpServerEntry,
@@ -1145,9 +1367,7 @@ function diffMcpServerFields(
     out.args = current.args.length > 0 ? current.args : null;
   }
 
-  if (!jsonEqual(base.env, current.env)) {
-    out.env = Object.keys(current.env).length > 0 ? current.env : null;
-  }
+  if (!jsonEqual(base.env, current.env)) out.env = diffStringMap(base.env, current.env);
 
   const urlBefore = base.url || null;
   const urlAfter = current.url || null;
@@ -1155,9 +1375,8 @@ function diffMcpServerFields(
 
   const baseHeaders = base.headers ?? {};
   const currentHeaders = current.headers ?? {};
-  if (!jsonEqual(baseHeaders, currentHeaders)) {
-    out.headers = Object.keys(currentHeaders).length > 0 ? currentHeaders : null;
-  }
+  if (!jsonEqual(baseHeaders, currentHeaders))
+    out.headers = diffStringMap(baseHeaders, currentHeaders);
 
   return out;
 }

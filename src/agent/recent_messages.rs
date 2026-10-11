@@ -148,6 +148,7 @@ mod tests {
             images: Vec::new(),
             sender: None,
             agent_sender: None,
+            thinking: Vec::new(),
         });
     }
 
@@ -198,6 +199,7 @@ mod tests {
             images: Vec::new(),
             sender: None,
             agent_sender: None,
+            thinking: Vec::new(),
         });
     }
 
@@ -210,6 +212,7 @@ mod tests {
             images: Vec::new(),
             sender: None,
             agent_sender: None,
+            thinking: Vec::new(),
         });
     }
 
@@ -221,11 +224,13 @@ mod tests {
                 id: "call_1".to_string(),
                 name: "exec".to_string(),
                 arguments: serde_json::json!({"command": "echo test"}),
+                server: None,
             }]),
             tool_call_id: None,
             images: Vec::new(),
             sender: None,
             agent_sender: None,
+            thinking: Vec::new(),
         });
     }
 

@@ -3,26 +3,35 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use axum::extract::State;
-use axum::extract::ws::{Message as WsMessage, WebSocket};
+use axum::extract::ws::{CloseFrame, Message as WsMessage, WebSocket};
+use axum::extract::{Extension, State};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
+use tracing::Instrument;
 
 use crate::bus::EndpointName;
 use crate::gateway::protocol::{ClientMessage, ServerMessage};
 use crate::gateway::types::GatewayState;
 use crate::inference::ImageData;
-use crate::interfaces::types::MessageOrigin;
+use crate::interfaces::types::{MessageOrigin, WEB_UI_ENDPOINT};
 use crate::interfaces::websocket::subscriber::WsSubscribers;
+use crate::workbench::forward::ArtifactsOrigin;
 use crate::workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchHealth, WatchSet};
 
 /// Axum handler that upgrades an HTTP request to a WebSocket connection.
 pub(super) async fn ws_handler(
     ws: axum::extract::WebSocketUpgrade,
     State(state): State<GatewayState>,
+    through_artifacts_origin: Option<Extension<ArtifactsOrigin>>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(|socket| handle_connection(socket, state))
+    // The upgraded connection runs in a task axum spawns with no span of its
+    // own; carrying the request's keeps the agent's `agent` log field on it.
+    let span = tracing::Span::current();
+    // A workbench page's socket isn't the user looking at the chat, so it
+    // doesn't count as a client (see `handle_connection`).
+    let counts_as_client = through_artifacts_origin.is_none();
+    ws.on_upgrade(move |socket| handle_connection(socket, state, counts_as_client).instrument(span))
 }
 
 /// Handle a single WebSocket connection.
@@ -37,7 +46,14 @@ pub(super) async fn ws_handler(
 /// Verbose filtering is server-side: tool call and result events (the main
 /// agent's and every session's) are dropped in the forwarding task when
 /// verbose mode is off.
-async fn handle_connection(socket: WebSocket, state: GatewayState) {
+///
+/// `counts_as_client` is false for a connection opened through the artifacts
+/// origin: it neither resets the agent's unread count nor counts as someone
+/// being connected.
+async fn handle_connection(socket: WebSocket, state: GatewayState, counts_as_client: bool) {
+    // While a client connection is open the agent's unread count stays at
+    // zero: a client is there to show new messages.
+    let _client = counts_as_client.then(|| state.activity.client_connected());
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // The workspace prefixes this connection watches: replaced by the read
@@ -47,9 +63,11 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
     // Subscribe to typed bus topics for this connection
     let mut subs = match WsSubscribers::new(
         &state.bus_handle,
-        EndpointName::from("ws"),
+        &state.team_feed.bus,
+        EndpointName::from(WEB_UI_ENDPOINT),
         state.file_registry.clone(),
         watch_set_rx,
+        &state.turn_journal,
     )
     .await
     {
@@ -60,15 +78,20 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
         }
     };
 
+    let resync = subs.resync_requests();
     // Local channel for per-connection messages (pong, errors, inbox responses)
     let (local_tx, mut local_rx) = mpsc::unbounded_channel::<ServerMessage>();
+
+    // The read loop sees a client's Close frame, but the forwarding task
+    // owns the send half that must answer it; this hands the frame across.
+    let (close_tx, mut close_rx) = oneshot::channel::<Option<CloseFrame>>();
 
     // Per-connection verbose flag shared between read loop and forwarding task
     let verbose = Arc::new(AtomicBool::new(false));
     let verbose_fwd = Arc::clone(&verbose);
 
     // Forwarding task: bus subscribers + local channel → WebSocket client
-    let fwd_handle = tokio::spawn(async move {
+    let fwd_handle = crate::util::spawn_in_span(async move {
         loop {
             let msg = tokio::select! {
                 bus_msg = subs.recv() => {
@@ -83,32 +106,39 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
                         None => break,
                     }
                 }
+                frame = &mut close_rx => {
+                    // Answer the client's Close and shut the transport down:
+                    // without both, the client sees code 1006 (abnormal
+                    // closure) instead of its own.
+                    if let Ok(frame) = frame {
+                        ws_tx.send(WsMessage::Close(frame)).await.ok();
+                    }
+                    ws_tx.close().await.ok();
+                    break;
+                }
             };
 
-            if let Some(msg) = msg {
-                if !verbose_fwd.load(Ordering::Relaxed) && is_verbose_only(&msg) {
-                    continue;
-                }
-
-                let json = match serde_json::to_string(&msg) {
-                    Ok(j) => j,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "failed to serialize server message");
-                        continue;
-                    }
-                };
-                if ws_tx.send(WsMessage::text(json)).await.is_err() {
-                    break; // client disconnected
-                }
+            let Some(msg) = msg.and_then(|m| shown_frame(m, verbose_fwd.load(Ordering::Relaxed)))
+            else {
+                continue;
+            };
+            if !send_frame(&mut ws_tx, &msg).await {
+                break; // client disconnected
             }
         }
+        // Nothing more will be forwarded: close, so the client knows to reconnect.
+        ws_tx.close().await.ok();
     });
 
     // Read loop: WebSocket client → bus / local channel
     while let Some(frame) = ws_rx.next().await {
         let raw = match frame {
             Ok(WsMessage::Text(txt)) => txt,
-            Ok(WsMessage::Close(_)) => break,
+            Ok(WsMessage::Close(frame)) => {
+                answer_client_close(close_tx, fwd_handle, frame).await;
+                tracing::debug!("client disconnected");
+                return;
+            }
             Ok(_) => continue, // ignore binary, ping, pong
             Err(e) => {
                 tracing::debug!(error = %e, "websocket read error");
@@ -130,7 +160,13 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
             }
         };
 
-        if !handle_client_message(client_msg, &state, &local_tx, &verbose, &watch_set_tx).await {
+        let channels = ConnectionChannels {
+            local: &local_tx,
+            verbose: &verbose,
+            watch_set: &watch_set_tx,
+            resync: &resync,
+        };
+        if !handle_client_message(client_msg, &state, &channels).await {
             break;
         }
     }
@@ -138,6 +174,33 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
     // Clean up: abort forwarding task when client disconnects
     fwd_handle.abort();
     tracing::debug!("client disconnected");
+}
+
+/// Hand the client's Close frame to the forwarding task, which owns the send
+/// half, and wait for it to answer before the connection tears down. Without
+/// an answer the client sees code 1006 (abnormal closure) instead of its own.
+async fn answer_client_close(
+    close_tx: oneshot::Sender<Option<CloseFrame>>,
+    fwd_handle: tokio::task::JoinHandle<()>,
+    frame: Option<CloseFrame>,
+) {
+    if close_tx.send(frame).is_ok() {
+        fwd_handle.await.ok();
+    } else {
+        fwd_handle.abort();
+    }
+}
+
+/// The per-connection state a client message can act on.
+struct ConnectionChannels<'a> {
+    /// Replies to this connection only.
+    local: &'a mpsc::UnboundedSender<ServerMessage>,
+    /// Whether tool events reach this connection.
+    verbose: &'a AtomicBool,
+    /// The workspace prefixes this connection watches.
+    watch_set: &'a tokio::sync::watch::Sender<WatchSet>,
+    /// Asks the forwarding task for a `turn_snapshot` frame.
+    resync: &'a mpsc::UnboundedSender<()>,
 }
 
 /// Dispatch a single client message. Returns `false` to break the read loop.
@@ -148,16 +211,33 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
 async fn handle_client_message(
     msg: ClientMessage,
     state: &GatewayState,
-    local_tx: &mpsc::UnboundedSender<ServerMessage>,
-    verbose: &AtomicBool,
-    watch_set: &tokio::sync::watch::Sender<WatchSet>,
+    channels: &ConnectionChannels<'_>,
 ) -> bool {
+    let ConnectionChannels {
+        local: local_tx,
+        verbose,
+        watch_set,
+        resync,
+    } = *channels;
     match msg {
         ClientMessage::SendMessage {
             id,
             content,
             images,
         } => {
+            // The id names the turn this message starts or joins in every
+            // frame about it, and an empty one reads as a message posted
+            // outside any turn. A client that sent none gets one made here.
+            let id = if id.is_empty() {
+                let generated = format!("ws-{}", uuid::Uuid::new_v4());
+                tracing::warn!(
+                    message_id = %generated,
+                    "client sent a message with an empty id; gave it one"
+                );
+                generated
+            } else {
+                id
+            };
             if !images.is_empty()
                 && let Err(reason) = validate_images(&images)
             {
@@ -172,7 +252,7 @@ async fn handle_client_message(
             }
 
             let origin = MessageOrigin {
-                endpoint: "ws".to_string(),
+                endpoint: WEB_UI_ENDPOINT.to_string(),
                 sender: None,
                 conversation: None,
                 agent_sender: None,
@@ -198,22 +278,20 @@ async fn handle_client_message(
             verbose.store(enabled, Ordering::Relaxed);
         }
         ClientMessage::WatchWorkspace { prefixes } => {
-            replace_watch_set(
-                prefixes,
-                *state.workspace_watch_health.borrow(),
-                watch_set,
-                local_tx,
-            );
+            replace_watch_set(prefixes, watch_health(state), watch_set, local_tx);
         }
         ClientMessage::Ping => {
             local_tx.send(ServerMessage::Pong).ok();
+        }
+        ClientMessage::ResyncTurn => {
+            resync.send(()).ok();
         }
         ClientMessage::Reload => {
             tracing::info!("reload requested by client");
             local_tx.send(ServerMessage::Reloading).ok();
             state
                 .reload_tx
-                .send(crate::gateway::types::ReloadSignal::Root)
+                .send(crate::gateway::types::ReloadSignal::Agent)
                 .ok();
         }
         ClientMessage::ServerCommand { name, args } => {
@@ -233,7 +311,7 @@ async fn handle_client_message(
             // broadcast (e.g. Notice/InlineOutput); only a rejection needs
             // routing back here, scoped to this connection only.
             let err_tx = local_tx.clone();
-            tokio::spawn(async move {
+            crate::util::spawn_in_span(async move {
                 if let Ok(Err(reason)) = reply_rx.await {
                     err_tx
                         .send(ServerMessage::Error {
@@ -283,20 +361,21 @@ async fn handle_client_message(
             let dir = state.agent_inbox_dir.clone();
             let tz = state.tz;
             let tx = local_tx.clone();
-            tokio::spawn(async move {
+            crate::util::spawn_in_span(async move {
                 let title = crate::inbox::derive_title(&body);
                 match crate::inbox::quick_add(&dir, &title, &body, "cli", tz).await {
                     Ok(_filename) => {
                         tx.send(ServerMessage::Notice {
-                            message: "[inbox] item added".to_string(),
+                            message: "Added a note to the inbox.".to_string(),
                         })
                         .ok();
                     }
                     Err(e) => {
+                        tracing::warn!(error = %e, "inbox add failed");
                         tx.send(ServerMessage::Error {
                             reply_to: None,
-                            message: format!("inbox add failed: {e}"),
-                            details: None,
+                            message: "Couldn't add a note to the inbox. Try again.".to_string(),
+                            details: Some(format!("{e:#}")),
                         })
                         .ok();
                     }
@@ -305,6 +384,16 @@ async fn handle_client_message(
         }
     }
     true
+}
+
+/// Whether live updates are off for either feed a connection can watch: the
+/// agent's own directory or the hub's team directory.
+fn watch_health(state: &GatewayState) -> WatchHealth {
+    if *state.team_feed.health.borrow() == WatchHealth::Off {
+        WatchHealth::Off
+    } else {
+        *state.workspace_watch_health.borrow()
+    }
 }
 
 /// Apply a `watch_workspace` request: replace the connection's watch set, or
@@ -344,6 +433,37 @@ fn replace_watch_set(
 
 /// Whether `msg` is only sent to clients that turned verbose mode on: tool
 /// call and result events, the main agent's and sessions' alike.
+/// Write one frame to the client. Returns `false` once the client is gone; a
+/// frame that can't be serialized is logged and skipped.
+async fn send_frame(
+    ws_tx: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>,
+    msg: &ServerMessage,
+) -> bool {
+    let json = match serde_json::to_string(msg) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to serialize server message");
+            return true;
+        }
+    };
+    ws_tx.send(WsMessage::text(json)).await.is_ok()
+}
+
+/// `msg` as a connection gets it: a connection that isn't verbose gets no
+/// tool frames, neither on their own nor inside a `turn_snapshot`.
+fn shown_frame(mut msg: ServerMessage, verbose: bool) -> Option<ServerMessage> {
+    if verbose {
+        return Some(msg);
+    }
+    if is_verbose_only(&msg) {
+        return None;
+    }
+    if let ServerMessage::TurnSnapshot { turn: Some(turn) } = &mut msg {
+        turn.frames.retain(|entry| !is_verbose_only(&entry.frame));
+    }
+    Some(msg)
+}
+
 fn is_verbose_only(msg: &ServerMessage) -> bool {
     matches!(
         msg,
@@ -354,7 +474,7 @@ fn is_verbose_only(msg: &ServerMessage) -> bool {
     )
 }
 
-/// Carry out a sessions-sidebar command and reply to this connection only.
+/// Carry out a session command from the web UI and reply to this connection only.
 async fn handle_session_command(
     command: SessionCommand,
     state: &GatewayState,
@@ -404,7 +524,7 @@ async fn handle_session_command(
     }
 }
 
-/// The sessions-sidebar commands, split out of [`ClientMessage`] so
+/// The session commands the web UI sends, split out of [`ClientMessage`] so
 /// [`handle_session_command`] can own their handling.
 enum SessionCommand {
     SendMessage {
@@ -458,6 +578,7 @@ fn validate_images(images: &[ImageData]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::wait;
 
     #[test]
     fn set_verbose_updates_flag() {
@@ -642,6 +763,7 @@ mod tests {
             id: "tc".into(),
             name: "exec".into(),
             arguments: serde_json::json!({}),
+            server: None,
         };
         let tool_result = ServerMessage::SessionToolResult {
             address: "spawned-a-0001".into(),
@@ -650,11 +772,15 @@ mod tests {
             name: "exec".into(),
             output: "ok".into(),
             is_error: false,
+            auto_mode: None,
         };
         let main_call = ServerMessage::ToolCall {
+            reply_to: "turn-1".into(),
+            call: 0,
             id: "tc".into(),
             name: "exec".into(),
             arguments: serde_json::json!({}),
+            server: None,
         };
         assert!(is_verbose_only(&tool_call));
         assert!(is_verbose_only(&tool_result));
@@ -674,5 +800,176 @@ mod tests {
         };
         assert!(!is_verbose_only(&response));
         assert!(!is_verbose_only(&error));
+    }
+
+    /// A minimal but real `GatewayState`, for exercising
+    /// `handle_client_message` directly rather than through the full
+    /// WebSocket stack. Mirrors the helper in `gateway/web/inbox.rs`'s own
+    /// test module.
+    fn make_test_gateway_state(workspace_dir: &std::path::Path) -> GatewayState {
+        let (core, _receivers) = crate::gateway::types::GatewayCore::new(
+            workspace_dir.to_path_buf(),
+            workspace_dir.to_path_buf(),
+        );
+        let session_registry =
+            std::sync::Arc::new(crate::background::registry::SessionRegistry::new());
+        let session_store = std::sync::Arc::new(crate::background::store::SessionStore::new(
+            workspace_dir.join("sessions"),
+        ));
+        let agent_messenger =
+            std::sync::Arc::new(crate::background::messaging::AgentMessenger::new(
+                std::sync::Arc::clone(&session_registry),
+                core.publisher.clone(),
+                std::sync::Arc::clone(&session_store),
+                crate::agent::hop::HopLimits { soft: 8, hard: 32 },
+            ));
+
+        GatewayState {
+            turn_journal: crate::gateway::turn_journal::TurnJournal::default(),
+            reload_tx: core.reload_tx,
+            command_tx: core.command_tx,
+            stop_tx: core.stop_tx,
+            agent_inbox_dir: workspace_dir.join("inbox/agent"),
+            tz: chrono_tz::UTC,
+            publisher: core.publisher,
+            bus_handle: core.bus_handle,
+            file_registry: crate::gateway::file_server::FileRegistry::new("scout"),
+            webhooks: crate::interfaces::webhook::WebhookTable::default(),
+            session_registry,
+            session_store,
+            agent_messenger,
+            skill_state: crate::skills::SkillState::new_shared(
+                crate::skills::SkillIndex::default(),
+                vec![],
+            ),
+            workspace_watch_health: tokio::sync::watch::channel(
+                crate::workspace::watch::WatchHealth::Native,
+            )
+            .1,
+            team_feed: std::sync::Arc::new(crate::hub::services::TeamChangeFeed::idle()),
+            action_store: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::actions::store::ActionStore::new_empty(
+                    workspace_dir.join("scheduled_actions.json"),
+                ),
+            )),
+            layout: crate::workspace::layout::WorkspaceLayout::new(workspace_dir),
+            activity: crate::hub::activity::ActivityTracker::new(
+                "test-agent",
+                tokio::sync::broadcast::channel(4).0,
+                crate::hub::agent_watch::AgentChangeFeed::new(),
+            ),
+        }
+    }
+
+    async fn next_server_message(
+        local_rx: &mut mpsc::UnboundedReceiver<ServerMessage>,
+    ) -> ServerMessage {
+        wait::next("a message to be sent", local_rx).await
+    }
+
+    #[tokio::test]
+    async fn a_message_sent_without_an_id_is_given_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_test_gateway_state(dir.path());
+        let mut inbound: crate::bus::Subscriber<crate::bus::MessageEvent> = state
+            .bus_handle
+            .subscribe(crate::bus::topics::UserMessage)
+            .await
+            .unwrap();
+        let (local_tx, _local_rx) = mpsc::unbounded_channel();
+        let verbose = AtomicBool::new(false);
+        let (watch_tx, _watch_rx) = tokio::sync::watch::channel(WatchSet::default());
+
+        let keep_going = handle_client_message(
+            ClientMessage::SendMessage {
+                id: String::new(),
+                content: "hello".to_string(),
+                images: Vec::new(),
+            },
+            &state,
+            &ConnectionChannels {
+                local: &local_tx,
+                verbose: &verbose,
+                watch_set: &watch_tx,
+                resync: &mpsc::unbounded_channel().0,
+            },
+        )
+        .await;
+        assert!(keep_going);
+
+        let event = inbound.recv().await.unwrap().unwrap();
+        assert!(
+            !event.id.is_empty(),
+            "an empty id would make the turn's reply look like a post outside any turn"
+        );
+        assert_eq!(event.content, "hello");
+    }
+
+    #[tokio::test]
+    async fn inbox_add_success_notice_reads_as_plain_language() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_test_gateway_state(dir.path());
+        std::fs::create_dir_all(&state.agent_inbox_dir).unwrap();
+        let (local_tx, mut local_rx) = mpsc::unbounded_channel();
+        let verbose = AtomicBool::new(false);
+        let (watch_tx, _watch_rx) = tokio::sync::watch::channel(WatchSet::default());
+
+        let keep_going = handle_client_message(
+            ClientMessage::InboxAdd {
+                body: "remember this".to_string(),
+            },
+            &state,
+            &ConnectionChannels {
+                local: &local_tx,
+                verbose: &verbose,
+                watch_set: &watch_tx,
+                resync: &mpsc::unbounded_channel().0,
+            },
+        )
+        .await;
+        assert!(keep_going);
+
+        let msg = next_server_message(&mut local_rx).await;
+        assert!(
+            matches!(&msg, ServerMessage::Notice { message } if message == "Added a note to the inbox."),
+            "expected a plain-language Notice, got {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn inbox_add_failure_keeps_the_cause_out_of_the_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_test_gateway_state(dir.path());
+        // `agent_inbox_dir` is never created, so the save underneath
+        // `quick_add` fails and the client should see a plain-language
+        // notice with the cause moved to `details`.
+        let (local_tx, mut local_rx) = mpsc::unbounded_channel();
+        let verbose = AtomicBool::new(false);
+        let (watch_tx, _watch_rx) = tokio::sync::watch::channel(WatchSet::default());
+
+        let keep_going = handle_client_message(
+            ClientMessage::InboxAdd {
+                body: "remember this".to_string(),
+            },
+            &state,
+            &ConnectionChannels {
+                local: &local_tx,
+                verbose: &verbose,
+                watch_set: &watch_tx,
+                resync: &mpsc::unbounded_channel().0,
+            },
+        )
+        .await;
+        assert!(keep_going);
+
+        let msg = next_server_message(&mut local_rx).await;
+        assert!(
+            matches!(
+                &msg,
+                ServerMessage::Error { reply_to: None, message, details: Some(_) }
+                    if message == "Couldn't add a note to the inbox. Try again."
+            ),
+            "expected a plain-language Error with the cause in details, got {msg:?}"
+        );
     }
 }

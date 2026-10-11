@@ -286,12 +286,13 @@ mod tests {
 
     use super::*;
     use crate::bus::events::{
-        MessageEvent, NoticeEvent, ResponseEvent, TurnLifecycleEvent, TurnUsageEvent,
+        MessageEvent, NoticeEvent, ResponseEvent, TurnLifecycleEvent, WorkbenchEvent,
     };
     use crate::bus::handle::ErasedEvent;
     use crate::bus::topics;
     use crate::bus::types::{EndpointName, NotifyName, SYSTEM_CHANNEL};
     use crate::interfaces::types::MessageOrigin;
+    use crate::testing::clock;
 
     fn test_timestamp() -> chrono::NaiveDateTime {
         NaiveDate::from_ymd_opt(2026, 3, 13)
@@ -316,15 +317,10 @@ mod tests {
         }
     }
 
-    /// A `TurnUsageEvent` on `Endpoint`, a [`DeliveryMode::Lossy`] route,
+    /// A `WorkbenchEvent` on `Workbench`, a [`DeliveryMode::Lossy`] route,
     /// for tests exercising drop/backpressure behavior.
-    fn test_turn_usage(output_tokens: u32) -> TurnUsageEvent {
-        TurnUsageEvent {
-            correlation_id: "c1".into(),
-            output_tokens,
-            has_usage: true,
-            session_totals: None,
-        }
+    fn test_artifact_update(name: &str) -> WorkbenchEvent {
+        WorkbenchEvent::Updated { name: name.into() }
     }
 
     #[tokio::test]
@@ -393,7 +389,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn subscriber_recv_returns_none_after_drop() {
         let handle = spawn_broker();
         let ep = EndpointName::from("ws");
@@ -404,8 +400,8 @@ mod tests {
 
         // The broker is still alive because sub holds a cmd_tx clone.
         // Verify recv doesn't immediately return None (it would block).
-        let result = tokio::time::timeout(tokio::time::Duration::from_millis(50), sub.recv()).await;
-        assert!(result.is_err(), "recv should timeout while broker is alive");
+        let result = clock::within(tokio::time::Duration::from_millis(50), sub.recv()).await;
+        assert!(result.is_none(), "recv should wait while broker is alive");
     }
 
     #[tokio::test]
@@ -464,7 +460,7 @@ mod tests {
     }
 
     /// Verify that different event types on the same topic are routed independently.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn multi_event_routing_on_same_topic() {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
@@ -497,11 +493,10 @@ mod tests {
         assert_eq!(resp.content, "hello");
 
         // sub_lifecycle should NOT have received anything
-        let timeout_result: Result<Result<Option<TurnLifecycleEvent>, _>, _> =
-            tokio::time::timeout(tokio::time::Duration::from_millis(50), sub_lifecycle.recv())
-                .await;
+        let timeout_result: Option<Result<Option<TurnLifecycleEvent>, _>> =
+            clock::within(tokio::time::Duration::from_millis(50), sub_lifecycle.recv()).await;
         assert!(
-            timeout_result.is_err(),
+            timeout_result.is_none(),
             "lifecycle subscriber should not receive ResponseEvent"
         );
     }
@@ -530,27 +525,22 @@ mod tests {
         assert_eq!(notice.message, "config reloaded");
     }
 
-    /// `TurnUsageEvent` on `Endpoint` is a lossy (latest-wins) route: a
-    /// subscriber that falls behind past its capacity drops the overflow
-    /// instead of blocking the broker, and catches up once drained.
-    #[tokio::test]
+    /// `WorkbenchEvent` on `Workbench` is a lossy route: a subscriber that
+    /// falls behind past its capacity drops the overflow instead of blocking
+    /// the broker, and catches up once drained.
+    #[tokio::test(start_paused = true)]
     async fn backpressure_drops_and_recovers() {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
-        let ep = EndpointName::from("ws");
-        let mut sub: Subscriber<TurnUsageEvent> = handle
-            .subscribe(topics::Endpoint(ep.clone()))
-            .await
-            .unwrap();
+        let mut sub: Subscriber<WorkbenchEvent> =
+            handle.subscribe(topics::Workbench).await.unwrap();
         // sync_sub confirms the broker has processed each publish before we proceed.
-        let mut sync_sub: Subscriber<TurnUsageEvent> = handle
-            .subscribe(topics::Endpoint(ep.clone()))
-            .await
-            .unwrap();
+        let mut sync_sub: Subscriber<WorkbenchEvent> =
+            handle.subscribe(topics::Workbench).await.unwrap();
 
         // Fill sub's channel to capacity.
         for _ in 0..LOSSY_SUBSCRIBER_CAPACITY {
-            pub_.publish(topics::Endpoint(ep.clone()), test_turn_usage(0))
+            pub_.publish(topics::Workbench, test_artifact_update("fill"))
                 .await
                 .unwrap();
         }
@@ -559,7 +549,7 @@ mod tests {
         }
 
         // Sub's channel is full — overflow message should be dropped for sub.
-        pub_.publish(topics::Endpoint(ep.clone()), test_turn_usage(u32::MAX))
+        pub_.publish(topics::Workbench, test_artifact_update("overflow"))
             .await
             .unwrap();
         sync_sub.recv().await.unwrap().unwrap();
@@ -570,18 +560,18 @@ mod tests {
         }
 
         // Overflow must not appear in sub's channel.
-        let result = tokio::time::timeout(tokio::time::Duration::from_millis(50), sub.recv()).await;
+        let result = clock::within(tokio::time::Duration::from_millis(50), sub.recv()).await;
         assert!(
-            result.is_err(),
+            result.is_none(),
             "full subscriber should not receive overflow event"
         );
 
         // After recovery, subsequent publishes are received.
-        pub_.publish(topics::Endpoint(ep), test_turn_usage(999))
+        pub_.publish(topics::Workbench, test_artifact_update("after"))
             .await
             .unwrap();
         let msg = sub.recv().await.unwrap().unwrap();
-        assert_eq!(msg.output_tokens, 999);
+        assert_eq!(msg, test_artifact_update("after"));
     }
 
     /// `MessageEvent` on `UserMessage` is a lossless route: a subscriber
@@ -611,7 +601,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn backpressure_drops_event_and_recovers() {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
@@ -633,6 +623,12 @@ mod tests {
         let mut small_sub =
             Subscriber::<MessageEvent>::new_lossy(id, topic_id, event_rx, handle.cmd_tx.clone());
 
+        // The broker handles commands one at a time in order, so once this
+        // subscriber has seen the marker published after `bp2`, the broker has
+        // finished offering `bp2` to the capacity-1 subscriber.
+        let mut barrier: Subscriber<MessageEvent> =
+            handle.subscribe(topics::UserMessage).await.unwrap();
+
         // Fill the capacity-1 channel with one event, then publish a second that must be dropped.
         pub_.publish(topics::UserMessage, test_message("bp1", "fill"))
             .await
@@ -640,16 +636,23 @@ mod tests {
         pub_.publish(topics::UserMessage, test_message("bp2", "dropped"))
             .await
             .unwrap();
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        pub_.publish(topics::UserMessage, test_message("marker", "barrier"))
+            .await
+            .unwrap();
+        loop {
+            let seen = barrier.recv().await.unwrap().unwrap();
+            if seen.id == "marker" {
+                break;
+            }
+        }
 
         // bp1 got through; bp2 was dropped (channel was full).
         let first = small_sub.recv().await.unwrap().unwrap();
         assert_eq!(first.id, "bp1");
 
-        let dropped =
-            tokio::time::timeout(tokio::time::Duration::from_millis(50), small_sub.recv()).await;
+        let dropped = clock::within(tokio::time::Duration::from_millis(50), small_sub.recv()).await;
         assert!(
-            dropped.is_err(),
+            dropped.is_none(),
             "second event should have been dropped due to backpressure"
         );
 
@@ -657,7 +660,6 @@ mod tests {
         pub_.publish(topics::UserMessage, test_message("bp3", "recovered"))
             .await
             .unwrap();
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         let recovered = small_sub.recv().await.unwrap().unwrap();
         assert_eq!(recovered.id, "bp3");

@@ -17,8 +17,10 @@ use crate::workspace::layout::WorkspaceLayout;
 /// Which reload pathway a recognized config path funnels into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigReloadKind {
-    /// `config.toml` / `providers.toml` — `ReloadSignal::Root`.
-    Root,
+    /// The agent's `config.toml` / `providers.toml` — `ReloadSignal::Agent`.
+    Agent,
+    /// The hub's `config.toml` — `ReloadSignal::Hub`.
+    Hub,
     /// `mcp.json` / `channels.toml` / `a2a.json` — `ReloadSignal::Workspace`.
     Workspace,
     /// `HEARTBEAT.yml` — hot-reloaded on the pulse scheduler's next tick,
@@ -26,7 +28,7 @@ pub enum ConfigReloadKind {
     Heartbeat,
 }
 
-/// The six config paths a write/edit tool call recognizes as
+/// The seven config paths a write/edit tool call recognizes as
 /// reload-triggering, canonicalized once so a written path can be compared
 /// by equality rather than re-resolving symlinks/`..`/relative forms on
 /// every write.
@@ -37,22 +39,24 @@ pub struct RecognizedConfigPaths {
 }
 
 impl RecognizedConfigPaths {
-    /// Build the recognized set from the config directory (`config.toml`,
-    /// `providers.toml`) and workspace layout (`mcp.json`, `channels.toml`,
-    /// `a2a.json`, `HEARTBEAT.yml`).
+    /// Build the recognized set from the agent's config directory
+    /// (`config.toml`, `providers.toml`), the hub directory (`config.toml`),
+    /// and workspace layout (`mcp.json`, `channels.toml`, `a2a.json`,
+    /// `HEARTBEAT.yml`).
     #[must_use]
-    pub fn new(config_dir: &Path, layout: &WorkspaceLayout) -> Self {
+    pub fn new(config_dir: &Path, hub_dir: &Path, layout: &WorkspaceLayout) -> Self {
         let canon = |p: PathBuf| std::fs::canonicalize(&p).unwrap_or(p);
         Self {
             paths: vec![
                 (
                     canon(config_dir.join("config.toml")),
-                    ConfigReloadKind::Root,
+                    ConfigReloadKind::Agent,
                 ),
                 (
                     canon(config_dir.join("providers.toml")),
-                    ConfigReloadKind::Root,
+                    ConfigReloadKind::Agent,
                 ),
+                (canon(hub_dir.join("config.toml")), ConfigReloadKind::Hub),
                 (canon(layout.mcp_json()), ConfigReloadKind::Workspace),
                 (canon(layout.channels_toml()), ConfigReloadKind::Workspace),
                 (canon(layout.a2a_agents_json()), ConfigReloadKind::Workspace),
@@ -62,7 +66,7 @@ impl RecognizedConfigPaths {
     }
 
     /// Which reload pathway `written_path` funnels into, if it's one of the
-    /// six recognized config paths. `written_path` should already exist (the
+    /// seven recognized config paths. `written_path` should already exist (the
     /// write already succeeded), so it can be canonicalized for a robust
     /// comparison against symlinks/`..`/relative forms.
     #[must_use]
@@ -172,14 +176,29 @@ mod tests {
         std::fs::write(config_dir.join("config.toml"), "").unwrap();
         std::fs::write(config_dir.join("providers.toml"), "").unwrap();
 
-        let recognized = RecognizedConfigPaths::new(&config_dir, &layout);
+        let recognized = RecognizedConfigPaths::new(&config_dir, &config_dir.join("hub"), &layout);
         assert_eq!(
             recognized.kind_for(&config_dir.join("config.toml")),
-            Some(ConfigReloadKind::Root)
+            Some(ConfigReloadKind::Agent)
         );
         assert_eq!(
             recognized.kind_for(&config_dir.join("providers.toml")),
-            Some(ConfigReloadKind::Root)
+            Some(ConfigReloadKind::Agent)
+        );
+    }
+
+    #[test]
+    fn recognizes_the_hub_config_as_hub() {
+        let dir = tempfile::tempdir().unwrap();
+        let (layout, config_dir) = layout_and_config_dir(dir.path());
+        let hub_dir = dir.path().join("hub");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        std::fs::write(hub_dir.join("config.toml"), "").unwrap();
+
+        let recognized = RecognizedConfigPaths::new(&config_dir, &hub_dir, &layout);
+        assert_eq!(
+            recognized.kind_for(&hub_dir.join("config.toml")),
+            Some(ConfigReloadKind::Hub)
         );
     }
 
@@ -191,7 +210,7 @@ mod tests {
         std::fs::write(layout.channels_toml(), "").unwrap();
         std::fs::write(layout.a2a_agents_json(), "").unwrap();
 
-        let recognized = RecognizedConfigPaths::new(&config_dir, &layout);
+        let recognized = RecognizedConfigPaths::new(&config_dir, &config_dir.join("hub"), &layout);
         assert_eq!(
             recognized.kind_for(&layout.mcp_json()),
             Some(ConfigReloadKind::Workspace)
@@ -212,7 +231,7 @@ mod tests {
         let (layout, config_dir) = layout_and_config_dir(dir.path());
         std::fs::write(layout.heartbeat_yml(), "").unwrap();
 
-        let recognized = RecognizedConfigPaths::new(&config_dir, &layout);
+        let recognized = RecognizedConfigPaths::new(&config_dir, &config_dir.join("hub"), &layout);
         assert_eq!(
             recognized.kind_for(&layout.heartbeat_yml()),
             Some(ConfigReloadKind::Heartbeat)
@@ -226,21 +245,21 @@ mod tests {
         let other = layout.root().join("notes.md");
         std::fs::write(&other, "").unwrap();
 
-        let recognized = RecognizedConfigPaths::new(&config_dir, &layout);
+        let recognized = RecognizedConfigPaths::new(&config_dir, &config_dir.join("hub"), &layout);
         assert_eq!(recognized.kind_for(&other), None);
     }
 
     #[test]
     fn a_write_marks_and_a_matching_reload_consumes_it_once() {
         let tracker = SharedConfigReloadTracker::new_shared();
-        tracker.mark(ConfigReloadKind::Root);
+        tracker.mark(ConfigReloadKind::Agent);
 
         assert!(
-            tracker.take_if_matches(ConfigReloadKind::Root),
+            tracker.take_if_matches(ConfigReloadKind::Agent),
             "the first matching reload should see the agent's own write"
         );
         assert!(
-            !tracker.take_if_matches(ConfigReloadKind::Root),
+            !tracker.take_if_matches(ConfigReloadKind::Agent),
             "the mark is consumed — a second reload isn't attributed to the same write"
         );
     }
@@ -248,14 +267,14 @@ mod tests {
     #[test]
     fn an_unrelated_reload_kind_does_not_consume_or_match() {
         let tracker = SharedConfigReloadTracker::new_shared();
-        tracker.mark(ConfigReloadKind::Root);
+        tracker.mark(ConfigReloadKind::Agent);
 
         assert!(
             !tracker.take_if_matches(ConfigReloadKind::Workspace),
             "a workspace reload must not claim a root-config write"
         );
         assert!(
-            tracker.take_if_matches(ConfigReloadKind::Root),
+            tracker.take_if_matches(ConfigReloadKind::Agent),
             "the root mark must still be there for the reload that actually matches"
         );
     }
@@ -268,13 +287,13 @@ mod tests {
             // than sleeping the test for 30s.
             let mut pending = tracker.lock();
             pending.push(PendingWrite {
-                kind: ConfigReloadKind::Root,
+                kind: ConfigReloadKind::Agent,
                 marked_at: Instant::now().checked_sub(Duration::from_secs(31)).unwrap(),
             });
         }
 
         assert!(
-            !tracker.take_if_matches(ConfigReloadKind::Root),
+            !tracker.take_if_matches(ConfigReloadKind::Agent),
             "a mark older than the timeout must not be attributed to a later reload"
         );
     }
@@ -288,19 +307,19 @@ mod tests {
         std::fs::write(&other, "").unwrap();
 
         let watch = ConfigWriteWatch {
-            recognized: RecognizedConfigPaths::new(&config_dir, &layout),
+            recognized: RecognizedConfigPaths::new(&config_dir, &config_dir.join("hub"), &layout),
             tracker: SharedConfigReloadTracker::new_shared(),
         };
 
         watch.note_write(&other);
         assert!(
-            !watch.tracker.take_if_matches(ConfigReloadKind::Root),
+            !watch.tracker.take_if_matches(ConfigReloadKind::Agent),
             "an unrecognized path must never mark anything"
         );
 
         watch.note_write(&config_dir.join("config.toml"));
         assert!(
-            watch.tracker.take_if_matches(ConfigReloadKind::Root),
+            watch.tracker.take_if_matches(ConfigReloadKind::Agent),
             "a recognized path must mark its reload kind"
         );
     }

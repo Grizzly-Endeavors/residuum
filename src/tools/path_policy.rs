@@ -1,12 +1,14 @@
 //! Write-scoping policy for file tools.
 //!
-//! Blocks writes to unconditionally protected paths: both credential stores,
-//! and the `.example.toml` reference templates, which Residuum regenerates
-//! from its compiled-in defaults on every startup (`config::bootstrap`), so
-//! any edit to them is silently lost at the next restart. `config.toml` and
-//! `providers.toml` themselves are writable — the agent edits them on the
-//! user's behalf and a reload picks up the change, same as any other file
-//! edit. All other workspace writes are unrestricted.
+//! Blocks writes to the credential stores in `hub/` (secrets, agent keys,
+//! A2A caller keys, the Web Push signing key and device list) and to the
+//! `.example.toml` reference templates, which
+//! Residuum regenerates from its compiled-in defaults on every startup
+//! (`config::bootstrap`), so any edit to them is silently lost at the next
+//! restart. The hub's and the agent's `config.toml`, and `providers.toml`,
+//! are writable — the agent edits them on the user's behalf and a reload
+//! picks up the change, same as any other file edit. All other writes are
+//! unrestricted.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -16,17 +18,22 @@ use tokio::sync::RwLock;
 
 use crate::config::Config;
 use crate::workspace::layout::WorkspaceLayout;
+use crate::workspace::team_files::TeamFiles;
 
-/// Paths the file tools may never write: both credential stores, the
-/// `.example.toml` reference templates, and `mcp.json`/`channels.toml`
-/// unless the matching agent ability (`agent.modify_mcp`/`agent.modify_channels`)
-/// is on.
+/// Paths the file tools may never write: the credential stores in `hub_dir`,
+/// the `.example.toml` reference templates, and `mcp.json`/`channels.toml`
+/// unless the matching agent ability (`agent.modify_mcp`/
+/// `agent.modify_channels`) is on.
 ///
 /// The one definition of the blocked set, used at startup and on every
 /// config reload.
 #[must_use]
-pub fn blocked_write_paths(cfg: &Config, layout: &WorkspaceLayout) -> HashSet<PathBuf> {
-    let mut blocked = always_blocked_paths(&cfg.config_dir);
+pub fn blocked_write_paths(
+    cfg: &Config,
+    layout: &WorkspaceLayout,
+    hub_dir: &Path,
+) -> HashSet<PathBuf> {
+    let mut blocked = always_blocked_paths(&cfg.config_dir, hub_dir);
     if !cfg.agent.modify_mcp {
         blocked.insert(layout.mcp_json());
     }
@@ -36,29 +43,36 @@ pub fn blocked_write_paths(cfg: &Config, layout: &WorkspaceLayout) -> HashSet<Pa
     blocked
 }
 
-/// Regenerated-template and credential-store files in `config_dir` that are
-/// blocked regardless of agent abilities.
+/// The hub's credential stores, and the regenerated-template files in the
+/// agent's `config/` directory, that are blocked regardless of agent
+/// abilities.
 ///
 /// `config.toml` and `providers.toml` are deliberately absent — the agent is
 /// allowed to edit them (see the module doc). The `.example.toml` templates
 /// stay blocked because they are always overwritten from the binary's
-/// compiled-in defaults at the next startup (`config::bootstrap::bootstrap_at`),
-/// so an edit to them would look like it worked and then vanish.
-fn always_blocked_paths(config_dir: &Path) -> HashSet<PathBuf> {
-    [
-        "config.example.toml",
-        "providers.example.toml",
-        crate::config::secrets::ENCRYPTED_FILE,
-        crate::config::secrets::KEY_FILE,
-        crate::agent_keys::ENCRYPTED_FILE,
-        crate::agent_keys::KEY_FILE,
-        crate::agent_keys::LOCK_FILE,
-        crate::a2a::KEYS_FILE,
-        crate::a2a::LOCK_FILE,
-    ]
-    .into_iter()
-    .map(|name| config_dir.join(name))
-    .collect()
+/// compiled-in defaults at the next startup
+/// (`config::bootstrap::bootstrap_agent_at`), so an edit to them would look
+/// like it worked and then vanish.
+fn always_blocked_paths(config_dir: &Path, hub_dir: &Path) -> HashSet<PathBuf> {
+    let hub = crate::config::HubPaths::new(hub_dir);
+    let credential_stores = [
+        hub.secrets_enc(),
+        hub.secrets_key(),
+        hub.agent_keys_enc(),
+        hub.agent_keys_key(),
+        hub.agent_keys_lock(),
+        hub.a2a_keys_toml(),
+        hub.a2a_keys_lock(),
+        hub.push_vapid_key(),
+        hub.push_devices_json(),
+        hub.remote_access_json(),
+        // A directory: everything under it is blocked (see `check_write`).
+        hub.remote_access_dir(),
+    ];
+    let templates = ["config.example.toml", "providers.example.toml"]
+        .into_iter()
+        .map(|name| config_dir.join(name));
+    credential_stores.into_iter().chain(templates).collect()
 }
 
 /// Names (not full paths) of the `.example.toml` reference templates, used to
@@ -73,6 +87,10 @@ pub type SharedPathPolicy = Arc<RwLock<PathPolicy>>;
 pub struct PathPolicy {
     /// Paths that are unconditionally blocked from writes (e.g. config files).
     blocked_paths: HashSet<PathBuf>,
+    /// The `team/` namespace and write coordination, when the agent belongs
+    /// to a team. The file tools resolve `team/...` paths and check team
+    /// writes through it.
+    team: Option<TeamFiles>,
 }
 
 impl PathPolicy {
@@ -81,6 +99,7 @@ impl PathPolicy {
     pub fn new() -> Self {
         Self {
             blocked_paths: HashSet::new(),
+            team: None,
         }
     }
 
@@ -93,7 +112,21 @@ impl PathPolicy {
             .collect();
         Self {
             blocked_paths: canonicalized,
+            team: None,
         }
+    }
+
+    /// Attach the agent's view of the team namespace.
+    #[must_use]
+    pub fn with_team(mut self, team: TeamFiles) -> Self {
+        self.team = Some(team);
+        self
+    }
+
+    /// The agent's view of the team namespace, if it belongs to a team.
+    #[must_use]
+    pub fn team(&self) -> Option<&TeamFiles> {
+        self.team.as_ref()
     }
 
     /// Create a new shared path policy.
@@ -106,6 +139,18 @@ impl PathPolicy {
     #[must_use]
     pub fn new_shared_with_blocked(blocked_paths: HashSet<PathBuf>) -> SharedPathPolicy {
         Arc::new(RwLock::new(Self::with_blocked_paths(blocked_paths)))
+    }
+
+    /// Create a new shared path policy with blocked paths and the agent's
+    /// view of the team namespace.
+    #[must_use]
+    pub fn new_shared_with_team(
+        blocked_paths: HashSet<PathBuf>,
+        team: TeamFiles,
+    ) -> SharedPathPolicy {
+        Arc::new(RwLock::new(
+            Self::with_blocked_paths(blocked_paths).with_team(team),
+        ))
     }
 
     /// Replace the set of unconditionally blocked paths.
@@ -127,7 +172,11 @@ impl PathPolicy {
     pub fn check_write(&self, path: &Path) -> Result<(), String> {
         let canonical = canonicalize_for_check(path);
 
-        if self.blocked_paths.contains(&canonical) {
+        // A blocked directory blocks everything under it.
+        if canonical
+            .ancestors()
+            .any(|ancestor| self.blocked_paths.contains(ancestor))
+        {
             tracing::warn!(path = %path.display(), "write rejected: blocked path");
             let is_regenerated_template = path
                 .file_name()
@@ -338,20 +387,10 @@ mod tests {
     }
 
     #[test]
-    fn blocked_write_paths_cover_both_credential_stores() {
+    fn blocked_write_paths_cover_the_example_templates() {
         let config_dir = Path::new("/cfg");
-        let blocked = always_blocked_paths(config_dir);
-        for name in [
-            "config.example.toml",
-            "providers.example.toml",
-            "secrets.toml.enc",
-            "secrets.key",
-            "agent-keys.toml.enc",
-            "agent-keys.key",
-            "agent-keys.lock",
-            "a2a-keys.toml",
-            "a2a-keys.lock",
-        ] {
+        let blocked = always_blocked_paths(config_dir, Path::new("/hub"));
+        for name in ["config.example.toml", "providers.example.toml"] {
             assert!(
                 blocked.contains(&config_dir.join(name)),
                 "{name} should be write-blocked"
@@ -360,9 +399,71 @@ mod tests {
     }
 
     #[test]
+    fn writes_to_the_push_signing_key_and_device_list_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub_dir = dir.path().join("hub");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        let policy = PathPolicy::with_blocked_paths(always_blocked_paths(
+            &dir.path().join("config"),
+            &hub_dir,
+        ));
+
+        for name in ["push-vapid.key", "push-devices.json", "remote-access.json"] {
+            // Refused whether or not the file exists yet.
+            let err = policy.check_write(&hub_dir.join(name)).unwrap_err();
+            assert!(err.contains(name), "{err}");
+            std::fs::write(hub_dir.join(name), "x").unwrap();
+            assert!(policy.check_write(&hub_dir.join(name)).is_err(), "{name}");
+        }
+    }
+
+    #[test]
+    fn writes_under_the_remote_access_directory_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub_dir = dir.path().join("hub");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        let policy = PathPolicy::with_blocked_paths(always_blocked_paths(
+            &dir.path().join("config"),
+            &hub_dir,
+        ));
+        let file = hub_dir.join("remote-access").join("state.json");
+        assert!(policy.check_write(&file).is_err());
+        assert!(
+            policy
+                .check_write(&hub_dir.join("remote-access-notes.md"))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn blocked_write_paths_cover_every_hub_credential_store() {
+        let hub_dir = Path::new("/hub");
+        let blocked = always_blocked_paths(Path::new("/cfg"), hub_dir);
+        for name in [
+            "secrets.toml.enc",
+            "secrets.key",
+            "agent-keys.toml.enc",
+            "agent-keys.key",
+            "agent-keys.lock",
+            "a2a-keys.toml",
+            "a2a-keys.lock",
+            "push-vapid.key",
+            "push-devices.json",
+            "remote-access.json",
+            "remote-access",
+        ] {
+            assert!(
+                blocked.contains(&hub_dir.join(name)),
+                "{name} should be write-blocked"
+            );
+        }
+    }
+
+    #[test]
     fn config_and_providers_toml_are_not_in_the_always_blocked_set() {
         let config_dir = Path::new("/cfg");
-        let blocked = always_blocked_paths(config_dir);
+        let hub_dir = Path::new("/hub");
+        let blocked = always_blocked_paths(config_dir, hub_dir);
         assert!(
             !blocked.contains(&config_dir.join("config.toml")),
             "config.toml must be editable by the agent"
@@ -370,6 +471,10 @@ mod tests {
         assert!(
             !blocked.contains(&config_dir.join("providers.toml")),
             "providers.toml must be editable by the agent"
+        );
+        assert!(
+            !blocked.contains(&hub_dir.join("config.toml")),
+            "the hub's config.toml must be editable by the agent"
         );
     }
 }

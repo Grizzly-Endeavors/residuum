@@ -86,7 +86,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateStatusIcon() {
-        statusItem.button?.alphaValue = store.defaultAgentConnected ? 1.0 : 0.35
+        statusItem.button?.alphaValue = store.connectionState == .connected ? 1.0 : 0.35
     }
 }
 

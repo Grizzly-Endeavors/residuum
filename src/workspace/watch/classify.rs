@@ -20,23 +20,46 @@ pub(super) struct Classified {
     pub root_gone: bool,
 }
 
-/// The workspace root, in each spelling the OS may report paths under: as
+/// The watched root, in each spelling the OS may report paths under: as
 /// configured, and canonical (macOS reports `/private/var/...` for
 /// `/var/...`).
+///
+/// A root can sit under a namespace prefix (the team directory is watched as
+/// `team/`): [`Self::relative`] stays relative to the root, and
+/// [`Self::namespaced`] gives the path as subscribers address it.
 #[derive(Debug, Clone)]
 pub(super) struct WorkspaceRoots {
     spellings: Vec<PathBuf>,
+    prefix: Option<String>,
 }
 
 impl WorkspaceRoots {
-    pub fn new(root: &Path) -> Self {
+    pub fn new(root: &Path, prefix: Option<&str>) -> Self {
         let mut spellings = vec![root.to_path_buf()];
         if let Ok(canonical) = std::fs::canonicalize(root)
             && canonical != root
         {
             spellings.push(canonical);
         }
-        Self { spellings }
+        Self {
+            spellings,
+            prefix: prefix.map(str::to_string),
+        }
+    }
+
+    /// `relative` (as returned by [`Self::relative`]) under the namespace
+    /// prefix, the way subscribers address it.
+    pub fn namespaced(&self, relative: &str) -> String {
+        match &self.prefix {
+            Some(prefix) if relative.is_empty() => prefix.clone(),
+            Some(prefix) => format!("{prefix}/{relative}"),
+            None => relative.to_string(),
+        }
+    }
+
+    /// Whether the access policy hides `relative` from subscribers.
+    pub fn is_hidden(&self, relative: &str) -> bool {
+        is_blocked_path(&self.namespaced(relative))
     }
 
     /// `path` relative to the workspace, `/`-separated. `Some("")` for the
@@ -95,7 +118,7 @@ pub(super) fn classify(event: &notify::Event, roots: &WorkspaceRoots) -> Classif
             }
             continue;
         }
-        if is_blocked_path(&relative) {
+        if roots.is_hidden(&relative) {
             continue;
         }
         classified.changes.push(RawChange { path: relative, op });
@@ -115,7 +138,7 @@ mod tests {
 
     fn roots() -> (tempfile::TempDir, WorkspaceRoots) {
         let dir = tempfile::tempdir().unwrap();
-        let roots = WorkspaceRoots::new(dir.path());
+        let roots = WorkspaceRoots::new(dir.path(), None);
         (dir, roots)
     }
 

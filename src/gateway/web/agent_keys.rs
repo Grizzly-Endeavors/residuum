@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent_keys::{AgentKeyError, AgentKeyInfo, AgentKeys, KeyCreator, env_var_for};
 
-use super::ConfigApiState;
+use super::HubApiState;
 
-/// Request body for `POST /api/agent-keys`.
+/// Request body for `POST /api/hub/agent-keys`.
 #[derive(Deserialize)]
 pub(super) struct SetAgentKeyRequest {
     pub name: String,
@@ -22,7 +22,7 @@ pub(super) struct SetAgentKeyRequest {
     pub description: Option<String>,
 }
 
-/// Response from `POST /api/agent-keys`.
+/// Response from `POST /api/hub/agent-keys`.
 #[derive(Serialize)]
 pub(super) struct SetAgentKeyResponse {
     pub name: String,
@@ -33,23 +33,26 @@ pub(super) struct SetAgentKeyResponse {
     pub warning: Option<String>,
 }
 
-/// Response from `GET /api/agent-keys`.
+/// Response from `GET /api/hub/agent-keys`.
 #[derive(Serialize)]
 pub(super) struct ListAgentKeysResponse {
     pub keys: Vec<AgentKeyInfo>,
 }
 
-/// Response from `DELETE /api/agent-keys/{name}`.
+/// Response from `DELETE /api/hub/agent-keys/{name}`.
 #[derive(Serialize)]
 pub(super) struct DeleteAgentKeyResponse {
     pub deleted: bool,
+    /// Checkpoint holding the key store as it was before this delete.
+    /// `None` when that checkpoint could not be recorded; the delete still
+    /// succeeded, and the UI should not offer Undo.
+    pub checkpoint_id: Option<String>,
 }
 
 fn error_response(e: &AgentKeyError) -> (StatusCode, String) {
     let status = match e {
         AgentKeyError::Invalid(_) => StatusCode::BAD_REQUEST,
         AgentKeyError::NotFound(_) => StatusCode::NOT_FOUND,
-        AgentKeyError::OwnedByUser(_) => StatusCode::CONFLICT,
         AgentKeyError::Storage(_) => {
             tracing::error!(error = %e, "agent key store request failed");
             StatusCode::INTERNAL_SERVER_ERROR
@@ -58,11 +61,11 @@ fn error_response(e: &AgentKeyError) -> (StatusCode, String) {
     (status, e.to_string())
 }
 
-/// `GET /api/agent-keys` — list keys (metadata only, never values).
+/// `GET /api/hub/agent-keys` — list keys (metadata only, never values).
 pub(super) async fn api_agent_keys_list(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
 ) -> Result<Json<ListAgentKeysResponse>, (StatusCode, String)> {
-    let snapshot = AgentKeys::new(state.config_dir)
+    let snapshot = AgentKeys::new(state.hub_dir)
         .snapshot()
         .await
         .map_err(|e| error_response(&e))?;
@@ -71,15 +74,15 @@ pub(super) async fn api_agent_keys_list(
     }))
 }
 
-/// `POST /api/agent-keys` — store a key as user-created.
+/// `POST /api/hub/agent-keys` — store a key as user-created.
 pub(super) async fn api_agent_keys_set(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
     Json(req): Json<SetAgentKeyRequest>,
 ) -> Result<Json<SetAgentKeyResponse>, (StatusCode, String)> {
     state
         .checkpoint_config_before_write(format!("set agent key '{}'", req.name))
         .await;
-    let warning = AgentKeys::new(state.config_dir)
+    let warning = AgentKeys::new(state.hub_dir)
         .set(
             &req.name,
             &req.value,
@@ -95,35 +98,30 @@ pub(super) async fn api_agent_keys_set(
     }))
 }
 
-/// `DELETE /api/agent-keys/{name}` — remove a key.
+/// `DELETE /api/hub/agent-keys/{name}` — remove a key.
 pub(super) async fn api_agent_keys_delete(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
     Path(name): Path<String>,
 ) -> Result<Json<DeleteAgentKeyResponse>, (StatusCode, String)> {
-    state
-        .checkpoint_config_before_write(format!("delete agent key '{name}'"))
+    let checkpoint_id = state
+        .checkpoint_config_id_before_write(format!("delete agent key '{name}'"))
         .await;
-    AgentKeys::new(state.config_dir)
-        .delete(&name, KeyCreator::User)
+    AgentKeys::new(state.hub_dir)
+        .delete(&name)
         .await
         .map_err(|e| error_response(&e))?;
-    Ok(Json(DeleteAgentKeyResponse { deleted: true }))
+    Ok(Json(DeleteAgentKeyResponse {
+        deleted: true,
+        checkpoint_id,
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn test_state(dir: &std::path::Path) -> ConfigApiState {
-        ConfigApiState {
-            config_dir: dir.to_path_buf(),
-            workspace_dir: dir.join("workspace"),
-            memory_dir: None,
-            reload_tx: None,
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
-            checkpoints: crate::checkpoints::test_engine(),
-        }
+    fn test_state(dir: &std::path::Path) -> HubApiState {
+        HubApiState::for_test(dir)
     }
 
     #[tokio::test]
@@ -218,5 +216,108 @@ mod tests {
             panic!("unknown key delete should fail");
         };
         assert_eq!(delete_status, StatusCode::NOT_FOUND, "unknown key is a 404");
+    }
+
+    #[tokio::test]
+    async fn delete_returns_the_checkpoint_taken_before_the_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = super::super::test_support::watching_hub_state(dir.path());
+        let _created = api_agent_keys_set(
+            State(state.clone()),
+            Json(SetAgentKeyRequest {
+                name: "github_token".to_string(),
+                value: "ghp_web_value_123".to_string(),
+                description: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let deleted = api_agent_keys_delete(State(state.clone()), Path("github_token".to_string()))
+            .await
+            .unwrap();
+        let id = deleted
+            .checkpoint_id
+            .clone()
+            .expect("delete should name the checkpoint taken before it");
+        let stored = state
+            .checkpoints
+            .file_content_at(
+                crate::checkpoints::RepoKind::Hub,
+                id.clone(),
+                "agent-keys.toml.enc".to_string(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            stored.is_some(),
+            "the returned checkpoint must still contain the key file"
+        );
+
+        std::fs::write(state.hub_dir.join("config.toml"), "later = true").unwrap();
+        let later = state
+            .checkpoint_config_id_before_write("later config write")
+            .await
+            .expect("a later checkpoint should be recorded");
+        assert_ne!(
+            later, id,
+            "the id returned for Undo stays the pre-delete checkpoint after a newer one is taken"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delete_omits_checkpoint_id_when_checkpointing_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let state = super::super::test_support::watching_hub_state(dir.path());
+        let _created = api_agent_keys_set(
+            State(state.clone()),
+            Json(SetAgentKeyRequest {
+                name: "github_token".to_string(),
+                value: "ghp_web_value_123".to_string(),
+                description: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let objects = dir
+            .path()
+            .join("hub")
+            .join("checkpoints")
+            .join("hub-config.git")
+            .join("objects");
+        std::fs::set_permissions(&objects, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let _reset = ResetObjects(&objects);
+
+        let deleted = api_agent_keys_delete(State(state.clone()), Path("github_token".to_string()))
+            .await
+            .unwrap();
+        assert!(
+            deleted.deleted,
+            "the delete still succeeds when the checkpoint fails"
+        );
+        assert!(
+            deleted.checkpoint_id.is_none(),
+            "a failed checkpoint must not hand Undo an id"
+        );
+        let after = api_agent_keys_list(State(state)).await.unwrap();
+        assert!(
+            after.keys.is_empty(),
+            "the key is gone even though checkpointing failed"
+        );
+    }
+
+    #[cfg(unix)]
+    struct ResetObjects<'a>(&'a std::path::Path);
+
+    #[cfg(unix)]
+    impl Drop for ResetObjects<'_> {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _reset = std::fs::set_permissions(self.0, std::fs::Permissions::from_mode(0o700));
+        }
     }
 }

@@ -1,20 +1,25 @@
 //! Shared utilities: fatal errors, filesystem helpers, monitored spawning, tracing setup,
 //! structured log formatting, frontmatter parsing, and XML escaping.
 
+pub mod backoff_tracker;
 mod error;
 pub mod frontmatter;
 pub(crate) mod fs;
 pub mod log_format;
+pub mod process;
 pub mod secret_compare;
 mod spawn;
 pub mod telemetry;
+#[cfg(test)]
+pub(crate) mod test_ports;
 pub mod tracing_init;
 mod xml;
 
+pub use backoff_tracker::{BackoffTracker, NoticeAction, RetryGate};
 pub use error::FatalError;
 pub use frontmatter::{parse_frontmatter_md, validate_kebab_name};
 pub use secret_compare::secrets_match;
-pub use spawn::{panic_message, spawn_monitored};
+pub use spawn::{panic_message, spawn_blocking_in_span, spawn_in_span, spawn_monitored};
 pub use xml::xml_escape;
 
 /// Guide linked from owner notices about `HEARTBEAT.yml` pulses or scheduled

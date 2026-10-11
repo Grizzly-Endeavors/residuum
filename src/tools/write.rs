@@ -9,6 +9,7 @@ use super::path_policy::SharedPathPolicy;
 use super::{Tool, ToolError, ToolResult};
 use crate::diagnostics::DiagnosticsPaths;
 use crate::inference::ToolDefinition;
+use crate::workspace::team_files::{TeamFiles, TeamPathGuard};
 
 /// Tool that writes content to files, enforcing read-before-overwrite.
 pub struct WriteTool {
@@ -20,7 +21,101 @@ pub struct WriteTool {
     config_watch: Option<ConfigWriteWatch>,
 }
 
+/// Resolve a tool's `path` argument (absolute or workspace-relative) against
+/// the agent's workspace root, instead of the process's current directory,
+/// which is shared across every agent hosted in the same process.
+/// `Path::join` already replaces the base when `path` is absolute, so this
+/// is correct either way. `diagnostics_paths.workspace_dir` is reused here
+/// rather than adding a separate workspace-root field, since every file
+/// tool already carries it.
+///
+/// A relative path starting with `team/` addresses the shared team directory
+/// when the agent belongs to a team (`team` is `Some`).
+pub(super) fn resolve(
+    diagnostics_paths: &DiagnosticsPaths,
+    team: Option<&TeamFiles>,
+    path: &str,
+) -> std::path::PathBuf {
+    match team {
+        Some(team) => team.resolve(path),
+        None => diagnostics_paths.workspace_dir.join(path),
+    }
+}
+
+/// Refuse a write target that the namespace reserves: a `team` entry inside
+/// the agent's own directory.
+pub(super) fn check_reserved_target(
+    team: Option<&TeamFiles>,
+    file_path: &std::path::Path,
+) -> Result<(), String> {
+    match team {
+        Some(team) => team
+            .check_no_agent_team_entry(file_path)
+            .map_err(|e| e.to_string()),
+        None => Ok(()),
+    }
+}
+
+/// Take the team write lock for `file_path` and verify it is unchanged since
+/// this tool set last read it, when the path is a team file. `Ok(None)` for
+/// an agent-private path, which is written as it always was.
+///
+/// # Errors
+/// Returns the tool-facing message when a teammate, the user, or an outside
+/// change modified the file since it was read.
+pub(super) async fn lock_team_target(
+    team: Option<&TeamFiles>,
+    tracker: &super::file_tracker::SharedFileTracker,
+    file_path: &std::path::Path,
+) -> Result<Option<(TeamFiles, TeamPathGuard)>, String> {
+    let Some(team) = team.filter(|team| team.is_team_path(file_path)) else {
+        return Ok(None);
+    };
+    let expected = tracker
+        .lock()
+        .await
+        .team_stamp(&file_path.to_string_lossy());
+    let guard = team.lock_unchanged(file_path, expected.as_ref()).await?;
+    Ok(Some((team.clone(), guard)))
+}
+
+/// Write `content` to a team file under its lock and remember the resulting
+/// stamp so this tool set's next write to it isn't mistaken for a conflict.
+///
+/// # Errors
+/// Returns the underlying write error.
+pub(super) async fn commit_team_write(
+    tracker: &super::file_tracker::SharedFileTracker,
+    team: &TeamFiles,
+    guard: &TeamPathGuard,
+    file_path: &std::path::Path,
+    content: &[u8],
+) -> anyhow::Result<()> {
+    let stamp = guard.commit(team.writer(), content).await?;
+    tracker
+        .lock()
+        .await
+        .record_team_read(&file_path.to_string_lossy(), Some(stamp));
+    Ok(())
+}
+
 impl WriteTool {
+    /// The success result for a write of `content` to `file_path`, after
+    /// noting the write for config-reload tracking and appending diagnostics.
+    fn write_succeeded(
+        &self,
+        path: &str,
+        file_path: &std::path::Path,
+        content: &str,
+    ) -> ToolResult {
+        if let Some(watch) = &self.config_watch {
+            watch.note_write(file_path);
+        }
+        let mut output = format!("wrote {} bytes to {path}", content.len());
+        append_diagnostics(&mut output, file_path, content, &self.diagnostics_paths);
+        ToolResult::success(output)
+    }
+
     /// Create a new `WriteTool` with shared file tracker, path policy, and
     /// the directories needed to recognize a strictly-parsed file for
     /// post-write diagnostics.
@@ -59,14 +154,16 @@ impl Tool for WriteTool {
             description:
                 "Write content to a file. Creates parent directories if they don't exist. \
                  Overwrites the file if it already exists. Existing files must be read \
-                 with read_file before overwriting."
+                 with read_file before overwriting. Files under team/ are shared with \
+                 teammates: if one changed after you read it, nothing is written and the \
+                 error names who changed it, so read it again and redo your change."
                     .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Absolute or relative path to the file to write"
+                        "description": "Absolute or relative path to the file to write. A path starting with \"team/\" is in the shared team folder"
                     },
                     "content": {
                         "type": "string",
@@ -93,18 +190,48 @@ impl Tool for WriteTool {
                 ToolError::InvalidArguments("missing required 'content' argument".to_string())
             })?;
 
-        let file_path = std::path::Path::new(path);
+        // `path` (the model's argument) resolves against the workspace root,
+        // not the process's current directory — see `resolve`'s doc comment.
+        // A `team/` prefix resolves into the shared team directory.
+        let team = self.policy.read().await.team().cloned();
+        let file_path = resolve(&self.diagnostics_paths, team.as_ref(), path);
+
+        if let Err(reason) = check_reserved_target(team.as_ref(), &file_path) {
+            return Ok(ToolResult::error(reason));
+        }
 
         // Enforce write-scoping policy
-        if let Err(reason) = self.policy.read().await.check_write(file_path) {
+        if let Err(reason) = self.policy.read().await.check_write(&file_path) {
             return Ok(ToolResult::error(reason));
         }
 
         // Enforce read-before-overwrite for existing files
-        if file_path.exists() && !self.tracker.lock().await.has_been_read(path) {
+        let resolved_str = file_path.to_string_lossy();
+        if file_path.exists() && !self.tracker.lock().await.has_been_read(&resolved_str) {
             return Ok(ToolResult::error(format!(
                 "file {path} already exists but has not been read; use read_file before overwriting"
             )));
+        }
+
+        // A team file is written under its per-path lock, only if nobody
+        // changed it since this tool set read it.
+        let team_lock = match lock_team_target(team.as_ref(), &self.tracker, &file_path).await {
+            Ok(lock) => lock,
+            Err(message) => return Ok(ToolResult::error(message)),
+        };
+        if let Some((team_view, guard)) = &team_lock {
+            return match commit_team_write(
+                &self.tracker,
+                team_view,
+                guard,
+                &file_path,
+                file_content.as_bytes(),
+            )
+            .await
+            {
+                Ok(()) => Ok(self.write_succeeded(path, &file_path, file_content)),
+                Err(e) => Ok(ToolResult::error(format!("failed to write {path}: {e:#}"))),
+            };
         }
 
         // Create parent directories if needed
@@ -118,21 +245,11 @@ impl Tool for WriteTool {
             )));
         }
 
-        match tokio::fs::write(path, file_content).await {
+        match tokio::fs::write(&file_path, file_content).await {
             Ok(()) => {
                 // Record in tracker — the agent knows the content since it just wrote it
-                self.tracker.lock().await.record_read(path);
-                if let Some(watch) = &self.config_watch {
-                    watch.note_write(file_path);
-                }
-                let mut output = format!("wrote {} bytes to {path}", file_content.len());
-                append_diagnostics(
-                    &mut output,
-                    file_path,
-                    file_content,
-                    &self.diagnostics_paths,
-                );
-                Ok(ToolResult::success(output))
+                self.tracker.lock().await.record_read(&resolved_str);
+                Ok(self.write_succeeded(path, &file_path, file_content))
             }
             Err(e) => Ok(ToolResult::error(format!("failed to write {path}: {e}"))),
         }
@@ -186,6 +303,7 @@ mod tests {
         DiagnosticsPaths {
             config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
             workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace-unused"),
+            hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub-unused"),
         }
     }
 
@@ -362,6 +480,7 @@ mod tests {
         let diagnostics_paths = DiagnosticsPaths {
             config_dir: dir.path().join("config-unused"),
             workspace_dir: dir.path().to_path_buf(),
+            hub_dir: dir.path().join("hub-unused"),
         };
         let tool = WriteTool::new(FileTracker::new_shared(), policy, diagnostics_paths);
 
@@ -394,6 +513,7 @@ mod tests {
         let diagnostics_paths = DiagnosticsPaths {
             config_dir: dir.path().join("config-unused"),
             workspace_dir: dir.path().to_path_buf(),
+            hub_dir: dir.path().join("hub-unused"),
         };
         let tool = WriteTool::new(FileTracker::new_shared(), policy, diagnostics_paths);
         let content = "pulses:\n  - name: morning\n    schedule: \"30m\"\n    tasks: []\n";
@@ -411,6 +531,45 @@ mod tests {
             result.output,
             format!("wrote {} bytes to {}", content.len(), file_path.display()),
             "clean file should leave the result unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn relative_path_resolves_against_workspace_root_not_process_cwd() {
+        // The process's current directory here is the crate root (however
+        // `cargo test` was invoked), not the workspace dir below — so this
+        // only passes if the relative path is joined against it.
+        let workspace = tempfile::tempdir().unwrap();
+        let diagnostics_paths = DiagnosticsPaths {
+            config_dir: workspace.path().join("config-unused"),
+            workspace_dir: workspace.path().to_path_buf(),
+            hub_dir: workspace.path().join("hub-unused"),
+        };
+        let tool = WriteTool::new(
+            FileTracker::new_shared(),
+            permissive_policy(),
+            diagnostics_paths,
+        );
+
+        let result = tool
+            .execute(serde_json::json!({
+                "path": "relative.txt",
+                "content": "from workspace"
+            }))
+            .await
+            .unwrap();
+
+        assert!(
+            !result.is_error,
+            "a relative path should resolve against the workspace root: {}",
+            result.output
+        );
+        let contents = tokio::fs::read_to_string(workspace.path().join("relative.txt"))
+            .await
+            .unwrap();
+        assert_eq!(
+            contents, "from workspace",
+            "the file should land inside the workspace root, not the process cwd"
         );
     }
 }

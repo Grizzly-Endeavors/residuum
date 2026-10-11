@@ -1,10 +1,10 @@
 # A2A (Agent2Agent)
 
-A2A is how other agents — including the user's own other Residuum instances — can reach you over a standard protocol (JSON-RPC/REST, spec v1.0.1). Residuum runs a dedicated listener for it, separate from the web UI's gateway port. Each caller's task runs as its own conversation session, addressed by `{caller}/{context_id}` — the same session lifecycle any other conversation interface uses.
+A2A is how other agents — including the user's own other Residuum instances — can reach you over a standard protocol (JSON-RPC/REST, spec v1.0.1). Residuum runs one dedicated listener for the whole hub, separate from the web UI's gateway port; you are served at `/agents/<your name>/` on it, with your own card and your own visibility. With Residuum Cloud connected you also have your own address, `https://{slug}.{user}.agent-residuum.com/a2a/<your name>`; otherwise you are reachable locally and through the user's own tunnel. Your teammates in the same hub don't use A2A; message them directly. Each caller's task runs as its own conversation session, addressed by `{caller}/{context_id}` — the same session lifecycle any other conversation interface uses.
 
 ## What you control
 
-`config/agent-card.json` is what you advertise to other agents that discover you over A2A: your name, description, and a list of skills (`id`, `name`, `description`, `tags`, optional `examples`). Edit it like any other workspace file — `write_if_missing` seeded it with a generic placeholder and no skills on first run, so an empty `skills` list is normal until you or the user fill it in. A skill `id` here that also names one of your workspace skills starts an inbound A2A session with that skill activated as its role, when the caller asks for it by name; treat the file as the callers'-eye view of what you can do.
+`config/agent-card.json` is what you advertise to other agents that discover you over A2A: your name, description, and a list of skills (`id`, `name`, `description`, `tags`, optional `examples`). Edit it like any other workspace file — `write_if_missing` seeded it with a generic placeholder and no skills on first run, so an empty `skills` list is normal until you or the user fill it in. A skill `id` here that also names one of your skills starts an inbound A2A session with that skill activated as its role, when the caller asks for it by name; treat the file as the callers'-eye view of what you can do.
 
 Keep `name` and `description` non-empty and every skill `id` unique — an invalid file makes the listener fall back to serving the last good card (or a minimal generic one, at startup) rather than your edit, so a broken edit doesn't quietly do nothing.
 
@@ -14,8 +14,8 @@ If Residuum restarts while an A2A task is unfinished, the task's session receive
 
 ## What you don't control
 
-- **Caller keys** (the credentials other agents present) are managed by the user with `residuum a2a keys create|list|revoke` or Settings → A2A. You have no tool for minting, listing, or revoking them.
-- **Visibility** (`public` vs `private` in `[a2a]`) and the listener's port are config, set by the user.
+- **Caller keys** (the credentials other agents present) are managed by the user with `residuum a2a keys create|list|revoke` or the install-wide Agent-to-agent section of Settings. You have no tool for minting, listing, or revoking them.
+- **Visibility** (`public` vs `private` in your `config/config.toml`'s `[a2a]`) is config, set by the user. The listener's port and public URL live in the hub's config (`~/.residuum/hub/config.toml`). Your card advertises `{public_url}/agents/<your name>` when a public URL is set, otherwise your relay address while the tunnel is connected, otherwise the local address. The relay lists you only while you are running.
 - **Who a task belongs to.** Every task is scoped to the caller that created it — you never see or act on another caller's task, even if you can see its address.
 
 ## Reaching other agents
@@ -26,11 +26,17 @@ You can also delegate to other agents over A2A with your ordinary tools — `lis
 - `message_agent` to `a2a:<name>` sends a follow-up on your open task with that agent if one is waiting on you (`INPUT_REQUIRED`/`AUTH_REQUIRED`), otherwise starts a new one. It returns immediately — the reply is not synchronous. An optional `skill` parameter names one of the remote agent's advertised skills.
 - The reply arrives later as an ordinary agent message from `a2a:<name>`, naming the task and its new state, once the task needs your attention (it asks a question, needs auth, or finishes). Don't wait for it inline; go on with other work and react when it lands.
 - `stop_agent` on `a2a:<name>` cancels your open task with that agent.
+- If the agent stays unreachable for 10 minutes, you get a note saying so (retries continue in the background), and another once it's reachable again. The user is told too.
+- The user sees your open tasks in your Activity in the web UI and can stop one there. A task the user stopped arrives as `canceled` with the line "Stopped by the user from the web UI."; don't resend it unless they ask. If its agent couldn't be reached, the user may instead stop watching it, and you're told it may still be running on the remote side.
 
-Editing `config/a2a.json` via `write_file`/`edit_file`, the workspace editor, `POST /api/workspace/validate`, or the Settings page's raw editor reports invalid JSON, an invalid agent name, or an empty url as a diagnostic alongside the save — the write always goes through rather than being rejected.
+Editing `config/a2a.json` via `write_file`/`edit_file`, the Files editor, `POST /api/agents/<agent>/workspace/validate`, or Settings → (agent) → Advanced → Raw config reports invalid JSON, an invalid agent name, or an empty url as a diagnostic alongside the save — the write always goes through rather than being rejected.
+
+## Teammates versus siblings
+
+Agents in your own hub are teammates, addressed `agent:<name>` and reached directly through the hub, not over A2A. Your other Residuum installs are siblings, addressed `a2a:<slug>`. The two prefixes never overlap, and a teammate is never listed as a sibling.
 
 ## Your other instances (siblings)
 
-If the user runs more than one Residuum instance, they find and trust each other automatically through the relay — no `config/a2a.json` entry or caller key needed. `list_agents` marks one with `(your instance)`; a message from it reads as coming from that instance by name (e.g. `laptop`), described as your own other instance rather than an external caller. Talk to it the same way as any other remote agent, with `a2a:<name>`.
+If the user runs more than one Residuum install, they find and trust each other once they have joined one another — no `config/a2a.json` entry or caller key needed. Every agent on another install is listed by `<instance>/<agent>` (for example `laptop/scout`); `list_agents` marks it with `(your instance)`, and a message from it reads as coming from that instance by name, described as your own other instance rather than an external caller. Talk to it the same way as any other remote agent, with `a2a:<instance>/<agent>`. Your teammates in the same hub are never listed this way.
 
 See the authoritative reference: `docs/systems-usage/a2a.md`.

@@ -2,7 +2,7 @@
 import type { WorkbenchRelayOrigins } from "./WorkbenchRelayOrigins";
 
 /**
- * `GET /api/workbench/info`: where workbench artifacts are served.
+ * `GET /api/team/workbench/info`: where workbench artifacts are served.
  */
 export type WorkbenchInfo = { 
 /**

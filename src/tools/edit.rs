@@ -13,7 +13,9 @@ use super::config_reload_tracker::ConfigWriteWatch;
 use super::file_tracker::SharedFileTracker;
 use super::path_policy::SharedPathPolicy;
 use super::read::format_numbered_line;
-use super::write::append_diagnostics;
+use super::write::{
+    append_diagnostics, check_reserved_target, commit_team_write, lock_team_target, resolve,
+};
 use super::{Tool, ToolError, ToolResult};
 use crate::diagnostics::DiagnosticsPaths;
 use crate::inference::ToolDefinition;
@@ -452,15 +454,17 @@ impl Tool for EditTool {
                           the ones before it, and the file is only written if every edit \
                           succeeds. Copy old_string from read_file output without the \
                           line-number prefix. To delete text, use an empty new_string. The file \
-                          must have been read with read_file first. Use this over write_file \
-                          when changing part of an existing file."
+                          must have been read with read_file first. Files under team/ are shared \
+                          with teammates: if one changed after you read it, nothing is written and \
+                          the error names who changed it, so read it again and redo your change. \
+                          Use this over write_file when changing part of an existing file."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to the file to edit"
+                        "description": "Path to the file to edit. A path starting with \"team/\" is in the shared team folder"
                     },
                     "edits": {
                         "type": "array",
@@ -493,28 +497,42 @@ impl Tool for EditTool {
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
         let (path, edits) = parse_edit_args(&arguments)?;
 
-        if let Err(reason) = self
-            .policy
-            .read()
-            .await
-            .check_write(std::path::Path::new(path))
-        {
+        // `path` (the model's argument) resolves against the workspace
+        // root, not the process's current directory — see `resolve`'s doc
+        // comment in `write.rs`. A `team/` prefix resolves into the shared
+        // team directory.
+        let team = self.policy.read().await.team().cloned();
+        let file_path = resolve(&self.diagnostics_paths, team.as_ref(), path);
+
+        if let Err(reason) = check_reserved_target(team.as_ref(), &file_path) {
             return Ok(ToolResult::error(reason));
         }
 
-        if !tokio::fs::try_exists(path).await.unwrap_or(false) {
+        if let Err(reason) = self.policy.read().await.check_write(&file_path) {
+            return Ok(ToolResult::error(reason));
+        }
+
+        if !tokio::fs::try_exists(&file_path).await.unwrap_or(false) {
             return Ok(ToolResult::error(format!(
                 "file {path} does not exist; use write_file to create it"
             )));
         }
 
-        if !self.tracker.lock().await.has_been_read(path) {
+        let resolved_str = file_path.to_string_lossy();
+        if !self.tracker.lock().await.has_been_read(&resolved_str) {
             return Ok(ToolResult::error(format!(
                 "file {path} has not been read; use read_file before editing"
             )));
         }
 
-        let original = match tokio::fs::read_to_string(path).await {
+        // A team file is edited under its per-path lock, only if nobody
+        // changed it since this tool set read it.
+        let team_lock = match lock_team_target(team.as_ref(), &self.tracker, &file_path).await {
+            Ok(lock) => lock,
+            Err(message) => return Ok(ToolResult::error(message)),
+        };
+
+        let original = match tokio::fs::read_to_string(&file_path).await {
             Ok(text) => text,
             Err(e) => return Ok(ToolResult::error(format!("failed to read {path}: {e}"))),
         };
@@ -536,17 +554,32 @@ impl Tool for EditTool {
             );
         }
 
-        if let Err(e) = tokio::fs::write(path, &outcome.text).await {
-            return Ok(ToolResult::error(format!("failed to write {path}: {e}")));
+        let written = match &team_lock {
+            Some((team_view, guard)) => {
+                commit_team_write(
+                    &self.tracker,
+                    team_view,
+                    guard,
+                    &file_path,
+                    outcome.text.as_bytes(),
+                )
+                .await
+            }
+            None => tokio::fs::write(&file_path, &outcome.text)
+                .await
+                .map_err(anyhow::Error::from),
+        };
+        if let Err(e) = written {
+            return Ok(ToolResult::error(format!("failed to write {path}: {e:#}")));
         }
         if let Some(watch) = &self.config_watch {
-            watch.note_write(std::path::Path::new(path));
+            watch.note_write(&file_path);
         }
 
         let mut output = format_success(path, &outcome);
         append_diagnostics(
             &mut output,
-            std::path::Path::new(path),
+            &file_path,
             &outcome.text,
             &self.diagnostics_paths,
         );
@@ -566,6 +599,7 @@ mod tests {
         DiagnosticsPaths {
             config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
             workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace-unused"),
+            hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub-unused"),
         }
     }
 
@@ -992,6 +1026,7 @@ mod tests {
         let diagnostics_paths = DiagnosticsPaths {
             config_dir: dir.path().join("config-unused"),
             workspace_dir: dir.path().to_path_buf(),
+            hub_dir: dir.path().join("hub-unused"),
         };
         let tool = EditTool::new(tracker, PathPolicy::new_shared(), diagnostics_paths);
 
@@ -1011,5 +1046,43 @@ mod tests {
         );
         let contents = tokio::fs::read_to_string(&file_path).await.unwrap();
         assert_eq!(contents, ": not valid yaml [[\n");
+    }
+
+    #[tokio::test]
+    async fn relative_path_resolves_against_workspace_root_not_process_cwd() {
+        // The process's current directory here is the crate root (however
+        // `cargo test` was invoked), not the workspace dir below — so this
+        // only passes if the relative path is joined against it.
+        let workspace = tempfile::tempdir().unwrap();
+        tokio::fs::write(workspace.path().join("relative.txt"), "before\n")
+            .await
+            .unwrap();
+
+        let tracker = FileTracker::new_shared();
+        tracker
+            .lock()
+            .await
+            .record_read(&workspace.path().join("relative.txt").to_string_lossy());
+        let diagnostics_paths = DiagnosticsPaths {
+            config_dir: workspace.path().join("config-unused"),
+            workspace_dir: workspace.path().to_path_buf(),
+            hub_dir: workspace.path().join("hub-unused"),
+        };
+        let tool = EditTool::new(tracker, PathPolicy::new_shared(), diagnostics_paths);
+
+        let result = run(&tool, "relative.txt", vec![edit("before", "after")]).await;
+
+        assert!(
+            !result.is_error,
+            "a relative path should resolve against the workspace root: {}",
+            result.output
+        );
+        let contents = tokio::fs::read_to_string(workspace.path().join("relative.txt"))
+            .await
+            .unwrap();
+        assert_eq!(
+            contents, "after\n",
+            "the edit should apply to the file inside the workspace root, not the process cwd"
+        );
     }
 }

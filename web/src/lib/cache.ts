@@ -1,53 +1,39 @@
-// ── Persistent fetch cache ──────────────────────────────────────────
+// ── In-memory fetch cache ───────────────────────────────────────────
 //
 // Generic cache + in-flight dedup for GET wrappers in api.ts.
-// Backed by localStorage (so entries survive page reloads), with an
-// in-memory fallback when storage is full or disabled.
-//
 // Keys are canonical request strings like "GET /api/config/raw" so each
 // wrapper that opts in maps cleanly to a single entry.
+//
+// Entries live for the page's lifetime only, never in browser storage. One
+// web address can reach several instances (the relay sends a user's address
+// to whichever instance is active), and an agent can be deleted and created
+// again under the same name, so nothing a request answered can be trusted
+// on a later page load: a persisted entry would answer one instance's
+// request with another's data. Switching instances reloads the page, which
+// starts the cache empty.
 
-const VERSION = "v1";
-const NAMESPACE = `residuum:cache:${VERSION}:`;
-
-const memoryFallback = new Map<string, unknown>();
+const memory = new Map<string, unknown>();
 const inflight = new Map<string, Promise<unknown>>();
 
-function storageKey(key: string): string {
-  return NAMESPACE + key;
-}
+// Entries under this prefix in localStorage hold another page load's
+// answers, possibly another instance's config text. Nothing reads them, so
+// they are removed when the app starts.
+const STALE_STORAGE_PREFIX = "residuum:cache:";
 
-function readPersisted(key: string): unknown {
+function clearStaleStorage(): void {
   try {
-    const raw = localStorage.getItem(storageKey(key));
-    if (raw !== null) return JSON.parse(raw);
+    const stale: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key?.startsWith(STALE_STORAGE_PREFIX)) stale.push(key);
+    }
+    for (const key of stale) localStorage.removeItem(key);
   } catch {
-    // localStorage unavailable or value unparseable — fall through to memory
-  }
-  return memoryFallback.get(key);
-}
-
-function writePersisted(key: string, value: unknown): void {
-  try {
-    localStorage.setItem(storageKey(key), JSON.stringify(value));
-    // Drop any in-memory copy so the two stores can't diverge (e.g. if an
-    // earlier write had quota-failed and now we've recovered).
-    memoryFallback.delete(key);
-  } catch {
-    // QuotaExceeded or storage disabled (private mode) — keep it in memory so
-    // at least the current session benefits from the cache.
-    memoryFallback.set(key, value);
+    // Storage unavailable (private mode, a test environment): nothing to clear.
   }
 }
 
-function deletePersisted(key: string): void {
-  try {
-    localStorage.removeItem(storageKey(key));
-  } catch {
-    // ignore
-  }
-  memoryFallback.delete(key);
-}
+clearStaleStorage();
 
 /**
  * Returns a cached value for `key` if present, otherwise calls `fn`, stores
@@ -55,15 +41,14 @@ function deletePersisted(key: string): void {
  * single in-flight Promise. Failed fetches are not cached.
  */
 export async function cachedFetch<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const cached = readPersisted(key);
-  if (cached !== undefined) return cached as T;
+  if (memory.has(key)) return memory.get(key) as T;
 
   const existing = inflight.get(key) as Promise<T> | undefined;
   if (existing) return existing;
 
   const p = fn()
     .then((value) => {
-      writePersisted(key, value);
+      memory.set(key, value);
       inflight.delete(key);
       return value;
     })
@@ -78,6 +63,6 @@ export async function cachedFetch<T>(key: string, fn: () => Promise<T>): Promise
 
 /** Drop a single cache entry (and any in-flight Promise for it). */
 export function invalidate(key: string): void {
-  deletePersisted(key);
+  memory.delete(key);
   inflight.delete(key);
 }

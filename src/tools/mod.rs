@@ -3,6 +3,7 @@
 pub(crate) mod a2a_task_update;
 pub mod actions;
 mod agent_keys;
+pub mod agent_lifecycle;
 pub mod background;
 pub mod config_reload_tracker;
 mod edit;
@@ -23,10 +24,13 @@ pub mod send_message;
 pub mod skills;
 pub(crate) mod submit_feedback;
 pub(crate) mod switch_endpoint;
+#[cfg(test)]
+pub(crate) mod team_namespace_tests;
 pub(crate) mod web_fetch;
 pub mod workspace_checkpoints;
 mod write;
 
+pub use agent_lifecycle::LifecycleAccess;
 pub use config_reload_tracker::{ConfigWriteWatch, SharedConfigReloadTracker};
 pub use file_tracker::{FileTracker, SharedFileTracker};
 pub use path_policy::{PathPolicy, SharedPathPolicy};
@@ -193,6 +197,28 @@ pub(super) fn require_str<'a>(args: &'a Value, field: &'static str) -> Result<&'
         .ok_or_else(|| ToolError::InvalidArguments(format!("{field} is required")))
 }
 
+/// Publish a plain-language notice to the system notification channel, if a
+/// publisher is configured. Never fails the caller: a publish error is
+/// logged and otherwise ignored. Shared by tools that take user-visible
+/// action on the user's behalf (e.g. overwriting or deleting a key the user
+/// created) and need to surface it outside the transcript.
+pub(super) async fn publish_notice(publisher: Option<&crate::bus::Publisher>, message: String) {
+    let Some(publisher) = publisher else {
+        return;
+    };
+    if let Err(e) = publisher
+        .publish(
+            crate::bus::topics::Notification(crate::bus::NotifyName::from(
+                crate::bus::SYSTEM_CHANNEL,
+            )),
+            crate::bus::NoticeEvent { message },
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "failed to publish tool notice to bus");
+    }
+}
+
 /// Trait for tool implementations that the agent can invoke.
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -237,6 +263,7 @@ pub trait Tool: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::clock;
 
     #[test]
     fn tool_result_success() {
@@ -287,12 +314,12 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn default_execute_cancellable_drops_execute_on_cancellation() {
         let cancel = CancellationToken::new();
         cancel.cancel();
 
-        let result = tokio::time::timeout(
+        let result = clock::within(
             std::time::Duration::from_secs(2),
             ForeverTool.execute_cancellable(serde_json::json!({}), &cancel),
         )

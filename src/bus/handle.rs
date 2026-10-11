@@ -97,6 +97,21 @@ impl EventReceiver {
             Self::Lossy(rx) => rx.recv().await,
         }
     }
+
+    /// Take one already-queued event without waiting for more, or `None` if
+    /// the channel is empty right now.
+    fn try_recv(&mut self) -> Option<ErasedEvent> {
+        match self {
+            Self::Lossless(rx, backlog) => {
+                let event = rx.try_recv().ok();
+                if event.is_some() {
+                    backlog.fetch_sub(1, Ordering::Relaxed);
+                }
+                event
+            }
+            Self::Lossy(rx) => rx.try_recv().ok(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +267,27 @@ impl<E: Clone + Send + Sync + 'static> Subscriber<E> {
             })
         }
     }
+
+    /// Non-blocking drain of every event already queued for this subscriber.
+    ///
+    /// Used at shutdown, before this subscriber is dropped, so events
+    /// published while a sender was told delivery succeeded are not silently
+    /// discarded along with the channel. A type mismatch is logged and the
+    /// event skipped, mirroring [`Subscriber::recv`]'s handling.
+    pub fn drain(&mut self) -> Vec<E> {
+        let mut events = Vec::new();
+        while let Some(erased) = self.event_rx.try_recv() {
+            match erased.downcast::<E>() {
+                Ok(arc_e) => events.push(Arc::unwrap_or_clone(arc_e)),
+                Err(_mismatched) => error!(
+                    expected = std::any::type_name::<E>(),
+                    topic = %self.topic,
+                    "type mismatch draining bus subscriber: programmer error"
+                ),
+            }
+        }
+        events
+    }
 }
 
 impl<E: 'static> Drop for Subscriber<E> {
@@ -271,7 +307,24 @@ impl<E: 'static> Drop for Subscriber<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::{EndpointName, IntermediateEvent, topics};
+    use crate::bus::{EndpointName, IntermediateEvent, MessageEvent, spawn_broker, topics};
+    use crate::interfaces::types::MessageOrigin;
+
+    fn test_message(id: &str, content: &str) -> MessageEvent {
+        MessageEvent {
+            id: id.to_string(),
+            content: content.to_string(),
+            origin: MessageOrigin {
+                endpoint: "test".to_string(),
+                sender: None,
+                conversation: None,
+                agent_sender: None,
+            },
+            timestamp: chrono::Utc::now().naive_utc(),
+            images: vec![],
+            context: None,
+        }
+    }
 
     fn _assert_publisher_traits()
     where
@@ -303,6 +356,60 @@ mod tests {
         assert!(
             matches!(result, Err(BusError::BrokerShutdown)),
             "noop publisher should return BrokerShutdown"
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_is_empty_with_nothing_queued() {
+        let handle = spawn_broker();
+        let mut sub: Subscriber<MessageEvent> =
+            handle.subscribe(topics::UserMessage).await.unwrap();
+
+        assert!(sub.drain().is_empty());
+    }
+
+    #[tokio::test]
+    async fn drain_returns_queued_events_in_order_then_empties() {
+        let handle = spawn_broker();
+        let pub_ = handle.publisher();
+        let mut sub: Subscriber<MessageEvent> =
+            handle.subscribe(topics::UserMessage).await.unwrap();
+
+        for i in 0..3 {
+            pub_.publish(
+                topics::UserMessage,
+                test_message(&i.to_string(), &format!("msg-{i}")),
+            )
+            .await
+            .unwrap();
+        }
+        // The broker handles commands one at a time in order, so once this
+        // second subscriber has seen the marker published just after the
+        // three events above, the broker has already finished offering all
+        // three to `sub` as well.
+        let mut barrier: Subscriber<MessageEvent> =
+            handle.subscribe(topics::UserMessage).await.unwrap();
+        pub_.publish(topics::UserMessage, test_message("marker", "marker"))
+            .await
+            .unwrap();
+        loop {
+            let seen = barrier.recv().await.unwrap().unwrap();
+            if seen.id == "marker" {
+                break;
+            }
+        }
+
+        let drained = sub.drain();
+        let ids: Vec<_> = drained.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["0", "1", "2", "marker"],
+            "events must come out in publish order"
+        );
+
+        assert!(
+            sub.drain().is_empty(),
+            "a second drain after everything was taken must return nothing"
         );
     }
 }

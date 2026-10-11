@@ -1,0 +1,32 @@
+name: macOS Chat App
+
+# The Swift app under mac/ is otherwise only built by the release workflow,
+# so a compile error would first surface when cutting a release.
+on:
+  pull_request:
+    paths:
+      - "mac/**"
+      - ".github/workflows/mac-app.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: mac-app-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test macOS Chat App
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build and test
+        run: |
+          cd mac
+          xcodebuild test \
+            -scheme ResiduumChat \
+            -destination 'platform=macOS' \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO

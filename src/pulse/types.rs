@@ -28,6 +28,14 @@ pub struct PulseDef {
     /// Model tier for the session. Defaults to `small`.
     #[serde(default)]
     pub model_tier: Option<String>,
+    /// Name of another pulse whose most recent delivered output (a
+    /// completed run that isn't `HEARTBEAT_OK`; a failed run doesn't count)
+    /// should be injected into this pulse's prompt at fire time. Single-hop
+    /// only — the named pulse's own stored output is used as-is, even if
+    /// that pulse itself sets `context_from`. `None`/never-fired upstream
+    /// injects nothing but notes it in the prompt.
+    #[serde(default)]
+    pub context_from: Option<String>,
     /// Removed field, kept here only so its presence in HEARTBEAT.yml can be
     /// detected and rejected at load rather than silently ignored. Forks
     /// always carry the full agent identity now, so this option no longer
@@ -899,10 +907,8 @@ pulses:
 
     #[test]
     fn bundled_heartbeat_asset_parses_with_builtin_pulses() {
-        let cfg: HeartbeatConfig = serde_yaml_ng::from_str(include_str!(
-            "../../assets/workspace-bootstrap/HEARTBEAT.yml"
-        ))
-        .unwrap();
+        let cfg: HeartbeatConfig =
+            serde_yaml_ng::from_str(crate::workspace::team::first_agent_heartbeat()).unwrap();
         let names: Vec<&str> = cfg.pulses.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["reflection", "memory_tending", "wiki_lint"]);
         let agents: Vec<Option<&str>> = cfg.pulses.iter().map(|p| p.agent.as_deref()).collect();
@@ -963,6 +969,7 @@ pulses:
             active_hours: None,
             agent: None,
             model_tier: None,
+            context_from: None,
             include_identity: None,
             tasks: vec![],
         }];
@@ -1115,6 +1122,7 @@ pulses:
             active_hours: None,
             agent: None,
             model_tier: None,
+            context_from: None,
             include_identity: None,
             tasks: vec![],
         }];

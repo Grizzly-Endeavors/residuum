@@ -162,15 +162,13 @@ impl AgentKeys {
             .await
     }
 
-    /// Delete a key and persist.
+    /// Delete a key and persist, whoever created it.
     ///
     /// # Errors
-    /// Returns `AgentKeyError::NotFound`, `AgentKeyError::OwnedByUser`, or
-    /// `AgentKeyError::Storage`.
-    pub async fn delete(&self, name: &str, requester: KeyCreator) -> Result<(), AgentKeyError> {
+    /// Returns `AgentKeyError::NotFound` or `AgentKeyError::Storage`.
+    pub async fn delete(&self, name: &str) -> Result<(), AgentKeyError> {
         let name = name.to_string();
-        self.mutate(move |store| store.delete(&name, requester))
-            .await
+        self.mutate(move |store| store.delete(&name)).await
     }
 
     /// Applies `change` to a freshly-loaded store and persists it, returning
@@ -183,7 +181,7 @@ impl AgentKeys {
     {
         let _guard = self.write_lock.lock().await;
         let config_dir = self.config_dir.clone();
-        let (store, result) = tokio::task::spawn_blocking(move || {
+        let (store, result) = crate::util::spawn_blocking_in_span(move || {
             let _file_lock = lock_store_file(&config_dir)?;
             let mut store = AgentKeyStore::load(&config_dir)?;
             let result = change(&mut store)?;
@@ -204,7 +202,7 @@ impl AgentKeys {
 
     async fn load_blocking(&self) -> Result<AgentKeyStore, AgentKeyError> {
         let config_dir = self.config_dir.clone();
-        tokio::task::spawn_blocking(move || AgentKeyStore::load(&config_dir))
+        crate::util::spawn_blocking_in_span(move || AgentKeyStore::load(&config_dir))
             .await
             .map_err(|e| AgentKeyError::Storage(format!("agent key load task failed: {e}")))?
     }
@@ -333,21 +331,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_delete_of_user_key_is_refused() {
+    async fn delete_removes_a_key_the_user_created() {
         let dir = tempfile::tempdir().unwrap();
         let keys = AgentKeys::new(dir.path());
         keys.set("mine", "value-abcdefgh", None, KeyCreator::User)
             .await
             .unwrap();
-        let err = keys.delete("mine", KeyCreator::Agent).await.unwrap_err();
-        assert_eq!(
-            err,
-            AgentKeyError::OwnedByUser("mine".to_string()),
-            "agent must not delete user keys"
-        );
+        keys.delete("mine").await.unwrap();
         assert!(
-            keys.snapshot().await.unwrap().store.value("mine").is_some(),
-            "key should survive the refused delete"
+            keys.snapshot().await.unwrap().store.value("mine").is_none(),
+            "the agent may delete a key the user created"
         );
     }
 }

@@ -8,9 +8,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::bus::types::{SessionAddress, SkillName};
 use crate::config::BackgroundModelTier;
-use crate::inference::{ImageData, MessageSender};
+use crate::inference::{ImageData, Message, MessageSender};
 use crate::interfaces::attachment::FileAttachment;
-use crate::interfaces::types::{InboundMessage, MessageOrigin};
+use crate::interfaces::types::MessageOrigin;
+use crate::memory::types::Visibility;
 
 // ---------------------------------------------------------------------------
 // EventTrigger
@@ -195,6 +196,25 @@ impl MessageEvent {
         event.origin.agent_sender = msg.agent_sender().map(Box::new);
         event
     }
+
+    /// The messages this adds to conversation history: its background
+    /// context (if any) as a system message, then the user message itself.
+    #[must_use]
+    pub fn into_history_messages(self) -> Vec<Message> {
+        let user = if self.images.is_empty() {
+            Message::user(self.content)
+        } else {
+            Message::user_with_images(self.content, self.images)
+        };
+        self.context
+            .map(Message::system)
+            .into_iter()
+            .chain(std::iter::once(
+                user.with_sender(self.origin.sender)
+                    .with_agent_sender(self.origin.agent_sender.map(|a| *a)),
+            ))
+            .collect()
+    }
 }
 
 /// Agent response destined for an endpoint.
@@ -242,6 +262,19 @@ pub struct SessionResponseEvent {
     pub is_final: bool,
 }
 
+/// A conversation session's turn started or finished running, for a typing
+/// indicator on the interface hosting that conversation — the same
+/// signal [`TurnLifecycleEvent`] gives the main agent's own turns, but keyed
+/// by conversation id rather than a message correlation id, since a
+/// session's turn isn't a reply to any one message.
+#[derive(Debug, Clone)]
+pub struct ConversationTypingEvent {
+    /// Which conversation, on whichever interface subscribes to it.
+    pub conversation_id: String,
+    /// Whether the session's turn just started (`true`) or ended (`false`).
+    pub active: bool,
+}
+
 /// Push notification for notify channels.
 #[derive(Debug, Clone)]
 pub struct NotificationEvent {
@@ -268,6 +301,9 @@ pub struct ToolCallEvent {
     pub name: String,
     /// Tool arguments.
     pub arguments: serde_json::Value,
+    /// The MCP server (its name in `mcp.json`) that owns this tool, or
+    /// `None` for a built-in.
+    pub server: Option<String>,
 }
 
 /// Result of a tool execution.
@@ -283,6 +319,8 @@ pub struct ToolResultEvent {
     pub output: String,
     /// Whether the tool reported an error.
     pub is_error: bool,
+    /// Auto Mode's verdict on the call, when Auto Mode checked it.
+    pub auto_mode: Option<crate::agent::auto_mode::AutoModeVerdict>,
 }
 
 /// Intermediate model text emitted during a turn.
@@ -360,18 +398,19 @@ impl AgentResultEvent {
 #[derive(Debug, Clone)]
 pub struct AgentMessageEvent {
     /// Address of the sender: `"main"` or a session address for an agent,
-    /// [`crate::background::registry::OWNER_ADDRESS`] for the owner, or
-    /// `artifact:<name>` for a workbench artifact.
+    /// [`crate::background::registry::OWNER_ADDRESS`] for the owner,
+    /// `artifact:<name>` for a workbench artifact, or `agent:<name>` /
+    /// `agent:<name>/<session>` for a teammate.
     pub from: SessionAddress,
     /// The sender's category label (`"main"`, `"scheduled"`, `"external"`,
-    /// `"spawned"`, `"artifact"`, or `"owner"`).
+    /// `"spawned"`, `"artifact"`, `"owner"`, or `"teammate"`).
     pub from_category: String,
     /// The message body.
     pub content: String,
     /// Hop count carried by this message: one more than the highest hop
     /// count among the inputs that drove the sending turn. External-origin
-    /// input (a user message, a pulse/action firing, a webhook, a web
-    /// sidebar message) is hop `0`.
+    /// input (a user message, a pulse/action firing, a webhook, a message from
+    /// the web UI's session panel) is hop `0`.
     pub hop_count: u32,
 }
 
@@ -379,7 +418,7 @@ impl AgentMessageEvent {
     /// Format this message for injection into the recipient's conversation,
     /// naming the sender's address and category so the recipient can reply.
     ///
-    /// A message the owner typed into the web sessions sidebar (sender
+    /// A message the owner typed into a session panel in the web UI (sender
     /// [`crate::background::registry::OWNER_ADDRESS`]) is labelled as coming
     /// from the owner instead: the owner is not an agent and has no address
     /// to message back, but sees this session's responses directly. A message
@@ -407,10 +446,31 @@ impl AgentMessageEvent {
                 self.content
             );
         }
+        if let Some(teammate) = self.teammate_sender() {
+            return format!(
+                "[Message from teammate {teammate}, not the user. Your response in this turn is \
+                 not shown to them; to reply, call message_agent with to=\"{teammate}\".]\n{}",
+                self.content
+            );
+        }
         format!(
             "[Agent Message from {} ({})]\n{}",
             self.from, self.from_category, self.content
         )
+    }
+
+    /// The teammate address (`agent:<name>` or `agent:<name>/<session>`) that
+    /// sent this message, or `None` when this agent's own main or a session,
+    /// the owner, an artifact or a remote agent sent it.
+    #[must_use]
+    pub fn teammate_sender(&self) -> Option<&str> {
+        if self.from_category != crate::background::registry::TEAMMATE_SENDER_CATEGORY {
+            return None;
+        }
+        let address = self.from.as_ref();
+        address
+            .starts_with(crate::background::registry::TEAMMATE_SENDER_PREFIX)
+            .then_some(address)
     }
 
     /// The name of the workbench artifact that sent this message, or `None`
@@ -426,8 +486,8 @@ impl AgentMessageEvent {
     }
 
     /// The structured sender for this message's history entry: the sending
-    /// agent, or `None` for a message the owner typed into the web sessions
-    /// sidebar or a workbench artifact sent (neither is an agent).
+    /// agent, or `None` for a message the owner typed into a web UI session
+    /// panel or a workbench artifact sent (neither is an agent).
     #[must_use]
     pub fn agent_sender(&self) -> Option<crate::inference::AgentSender> {
         let from_an_agent = self.from.as_ref() != crate::background::registry::OWNER_ADDRESS
@@ -495,8 +555,9 @@ pub struct SpawnRequestEvent {
     /// Model tier to run the session at.
     pub model_tier: BackgroundModelTier,
     /// The agent that requested this spawn: `Some(address)` for a `spawned`
-    /// session (main or another session), `None` for `scheduled` and
-    /// `external` sessions, which have no spawner.
+    /// session an agent started (main or another session), `None` for one the
+    /// owner started and for `scheduled`, `external`, and `artifact`
+    /// sessions, which have no spawner to relay results to.
     pub spawner: Option<SessionAddress>,
     /// Depth from the main agent this session will run at (main = 0). A
     /// `scheduled`/`external` session is always depth 1; a spawned session is
@@ -525,7 +586,7 @@ pub struct SpawnRequestEvent {
     /// attribution ordinary conversation delivery gets — instead of being
     /// misattributed as a plain agent message from `main`. `None` for every
     /// other trigger.
-    pub inbound: Option<InboundMessage>,
+    pub inbound: Option<MessageEvent>,
     /// Images attached to this run's kickoff message, carried into its first
     /// turn alongside `prompt`/`context`. Populated for a `Conversation`-
     /// triggered spawn or resume from the triggering inbound message's
@@ -537,13 +598,18 @@ pub struct SpawnRequestEvent {
     /// still live in the registry. `None` for every other trigger, and for a
     /// pulse fire that found no live previous run. See [`PulseOverlap`].
     pub overlap: Option<PulseOverlap>,
+    /// Main's saved conversation, for a fork of it (the owner's
+    /// `/multitask`): the new run sends these to the model ahead of its task
+    /// on every turn, but keeps them out of its own transcript and memory.
+    /// Empty for every other request, including a resume of such a fork.
+    pub carried_history: Vec<crate::inference::Message>,
 }
 
 /// Marks a pulse run that started while its previous run was still going
 /// (still `forking`/`queued`/`running`/`idle`/`completing` in the registry).
 /// The new run is never skipped, blocked, or cancelled for this — it starts
-/// normally — but this flag makes the overlap visible in the Scheduled view
-/// and the run's own session view.
+/// normally — but this flag makes the overlap visible in the Schedule place
+/// and on the run itself in the session panel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export)]
 pub struct PulseOverlap {
@@ -588,6 +654,47 @@ pub struct NoticeEvent {
     pub message: String,
 }
 
+/// Which background post-turn cycle (see `crate::gateway::post_turn`) an
+/// activity signal is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostTurnActivityKind {
+    /// The automatic observer/reflector cycle.
+    Memory,
+    /// The end-of-turn subconscious evaluation.
+    Subconscious,
+}
+
+/// A background post-turn cycle started or finished running, for the quiet
+/// status line under the last reply in the web UI ("Noting what matters from
+/// this conversation" / "Reviewing the last reply") — see
+/// `crate::gateway::post_turn`'s module docs for why this work no longer
+/// blocks the event loop, and so needs a signal of its own instead of
+/// being implied by the turn indicator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PostTurnActivityEvent {
+    pub kind: PostTurnActivityKind,
+    pub active: bool,
+}
+
+/// An outbound A2A task (one this instance sent to a remote agent with
+/// `message_agent a2a:<name>`) was recorded, changed state, or was stopped
+/// — for the web UI's list of tasks sent to other agents (Activity's Running now).
+#[derive(Debug, Clone)]
+pub struct OutboundA2aTaskEvent {
+    pub task: crate::a2a::TrackedTask,
+}
+
+/// An item was added to the user inbox by the `user_inbox_add` tool.
+///
+/// Published after the item is saved, so the hub can tell the user about it
+/// without waiting for a file change. Carried on
+/// [`super::topics::UserInbox`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserInboxAddedEvent {
+    /// The item's id: its filename without the `.json` extension.
+    pub item_id: String,
+}
+
 /// Multi-line command output meant for inline rendering in a chat surface.
 ///
 /// Distinct from [`NoticeEvent`]: notices are transient toasts in the web UI,
@@ -605,7 +712,7 @@ pub struct ErrorEvent {
     pub correlation_id: String,
     /// Plain-language error description, safe to show as-is.
     pub message: String,
-    /// Full technical cause chain, for a web UI details toggle or a
+    /// Full technical cause chain, for a web UI Details disclosure or a
     /// developer's own logs. Chat interfaces (Discord, Telegram, Teams)
     /// never show this — they destructure only `message`.
     pub details: Option<String>,
@@ -664,7 +771,7 @@ pub enum SessionEventKind {
         /// The intermediate content.
         content: String,
     },
-    /// Token usage progress for a turn still running — see
+    /// Token usage and tool-call progress for a turn still running — see
     /// [`TurnUsageEvent`], which the main agent's own turns publish
     /// instead of this variant.
     TurnUsage {
@@ -672,6 +779,8 @@ pub enum SessionEventKind {
         output_tokens: u32,
         /// Whether any model call so far this turn reported usage.
         has_usage: bool,
+        /// Tool calls executed so far this turn.
+        tool_calls: u32,
         /// Updated cumulative session totals, when the caller tracks them.
         session_totals: Option<crate::agent::usage::SessionUsageTotals>,
     },
@@ -706,15 +815,6 @@ pub enum SessionEventKind {
 // Typed topic event enums
 // ---------------------------------------------------------------------------
 
-/// Tool activity during a turn (call or result).
-#[derive(Debug, Clone)]
-pub enum ToolActivityEvent {
-    /// A tool was invoked by the agent.
-    Call(ToolCallEvent),
-    /// A tool execution completed.
-    Result(ToolResultEvent),
-}
-
 /// Turn lifecycle transitions.
 #[derive(Debug, Clone)]
 pub enum TurnLifecycleEvent {
@@ -730,11 +830,13 @@ pub enum TurnLifecycleEvent {
     },
 }
 
-/// Token usage progress for a turn still running: this turn's own output
-/// tokens so far (for the running-turn indicator) and, when the caller
-/// tracks cumulative session totals, the updated totals (for the chat
-/// footer). Published after every model call; never delivered to the
-/// agent itself. See `docs/systems-usage/turn-control.md`.
+/// Token usage and tool-call progress for a turn still running: this
+/// turn's own output tokens and executed tool calls so far (for the
+/// activity line) and, when the caller tracks cumulative session
+/// totals, the updated totals (for the conversation size). Published to the
+/// main conversation (as [`MainConversationEvent::TurnUsage`]) after every
+/// model call and after every tool-call batch; never delivered to the agent
+/// itself. See `docs/systems-usage/turn-control.md`.
 #[derive(Debug, Clone)]
 pub struct TurnUsageEvent {
     /// Links back to the originating message.
@@ -743,8 +845,174 @@ pub struct TurnUsageEvent {
     pub output_tokens: u32,
     /// Whether any model call so far this turn reported usage.
     pub has_usage: bool,
+    /// Tool calls executed so far this turn.
+    pub tool_calls: u32,
     /// Updated cumulative session totals, when the caller tracks them.
     pub session_totals: Option<crate::agent::usage::SessionUsageTotals>,
+}
+
+/// Where a main-conversation turn came from.
+///
+/// Sent to web clients as the origin of a `turn_started` frame, so a client
+/// can tell a turn the owner started from the web from one that started on a
+/// chat interface or in the background.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct TurnOrigin {
+    /// Endpoint the message that started the turn arrived on (`"ws"`,
+    /// `"telegram"`, `"discord"`, `"teams"`, ...), or `"background"` for a turn
+    /// no person started.
+    pub endpoint: String,
+    /// The person who sent it, for interfaces that identify one.
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender: Option<MessageSender>,
+    /// The visibility the turn's messages are recorded with in history.
+    pub visibility: Visibility,
+}
+
+impl TurnOrigin {
+    /// The origin of a turn started by `message_origin`, recorded with
+    /// `visibility`.
+    #[must_use]
+    pub fn new(message_origin: &MessageOrigin, visibility: Visibility) -> Self {
+        Self {
+            endpoint: message_origin.endpoint.clone(),
+            sender: message_origin.sender.clone(),
+            visibility,
+        }
+    }
+}
+
+/// One thing that happened in the main agent's conversation, in the order it
+/// happened.
+///
+/// Carried on [`super::topics::MainConversation`] for every main-agent turn,
+/// whatever endpoint started it, so a client following the conversation (the
+/// web UI) gets one lossless, ordered stream instead of reassembling it from
+/// per-endpoint topics that only carry turns delivered to that endpoint.
+/// Every turn event names its turn by `turn_id`, the id of the message that
+/// started it. A model call within a turn is numbered by `call`, counting
+/// from zero.
+#[derive(Debug, Clone)]
+pub enum MainConversationEvent {
+    /// A turn began.
+    TurnStarted {
+        /// The turn.
+        turn_id: String,
+        /// Where it came from.
+        origin: TurnOrigin,
+    },
+    /// A turn finished, whatever its outcome.
+    TurnEnded {
+        /// The turn.
+        turn_id: String,
+    },
+    /// A person's message entered the conversation: as the message that
+    /// started a turn, or injected into a turn already running. Never sent
+    /// for one agent's message to another.
+    UserMessage {
+        /// The message's id: the id its sender gave it, so a client that sent
+        /// it can recognize the echo.
+        id: String,
+        /// The turn the message started or joined.
+        turn_id: String,
+        /// The message text.
+        content: String,
+        /// Images attached to it.
+        images: Vec<ImageData>,
+        /// The person who sent it, for interfaces that identify one.
+        sender: Option<MessageSender>,
+        /// Endpoint it arrived on.
+        endpoint: String,
+    },
+    /// The agent invoked a tool.
+    ToolCall {
+        /// Index of the model call that requested it.
+        call: u32,
+        /// The invocation; its `correlation_id` is the turn.
+        event: ToolCallEvent,
+    },
+    /// A tool the agent invoked returned.
+    ToolResult(ToolResultEvent),
+    /// More of a model call's text, as the provider produced it.
+    TextDelta {
+        /// The turn.
+        turn_id: String,
+        /// The model call.
+        call: u32,
+        /// The new text.
+        text: String,
+    },
+    /// More of a model call's readable reasoning, as the provider produced it.
+    ThinkingDelta {
+        /// The turn.
+        turn_id: String,
+        /// The model call.
+        call: u32,
+        /// The new reasoning text.
+        text: String,
+    },
+    /// What was streamed for a model call is void: the call is being sent
+    /// again, and what follows starts over from the beginning.
+    StreamRestart {
+        /// The turn.
+        turn_id: String,
+        /// The model call.
+        call: u32,
+    },
+    /// A model call's complete readable reasoning, sent once the call has
+    /// returned and before the call's text and tool calls. Only when the
+    /// model produced some.
+    Thinking {
+        /// The turn.
+        turn_id: String,
+        /// The model call.
+        call: u32,
+        /// The reasoning text.
+        content: String,
+    },
+    /// Text the agent wrote alongside tool calls.
+    Intermediate {
+        /// The turn.
+        turn_id: String,
+        /// The model call that produced the text.
+        call: u32,
+        /// The text.
+        content: String,
+    },
+    /// The agent's reply that ends its turn.
+    Response {
+        /// The turn.
+        turn_id: String,
+        /// The model call that produced the text, or `None` for text the turn
+        /// itself wrote (the notice that a limit ended the turn).
+        call: Option<u32>,
+        /// Endpoint the reply was delivered to; empty when it went nowhere
+        /// (a background turn with no endpoint to follow).
+        endpoint: String,
+        /// The reply text.
+        content: String,
+    },
+    /// Progress of the running turn.
+    TurnUsage(TurnUsageEvent),
+}
+
+impl MainConversationEvent {
+    /// The event announcing `message` entering the conversation in turn
+    /// `turn_id`, or `None` when no person sent it (a background origin, or
+    /// one agent's message to another).
+    #[must_use]
+    pub fn user_message(message: &MessageEvent, turn_id: &str) -> Option<Self> {
+        message.origin.is_from_person().then(|| Self::UserMessage {
+            id: message.id.clone(),
+            turn_id: turn_id.to_owned(),
+            content: message.content.clone(),
+            images: message.images.clone(),
+            sender: message.origin.sender.clone(),
+            endpoint: message.origin.endpoint.clone(),
+        })
+    }
 }
 
 /// A workbench artifact appeared, changed, or was deleted: its page, or any
@@ -989,6 +1257,53 @@ mod tests {
     }
 
     #[test]
+    fn teammate_message_is_labelled_as_a_teammate_with_its_reply_address() {
+        let msg = AgentMessageEvent {
+            from: SessionAddress::from("agent:writer/spawned-draft-3f9a"),
+            from_category: crate::background::registry::TEAMMATE_SENDER_CATEGORY.to_string(),
+            content: "chapter two is ready".to_string(),
+            hop_count: 2,
+        };
+        assert_eq!(
+            msg.teammate_sender(),
+            Some("agent:writer/spawned-draft-3f9a")
+        );
+        let text = msg.format_for_agent();
+        assert!(
+            text.starts_with(
+                "[Message from teammate agent:writer/spawned-draft-3f9a, not the user."
+            ),
+            "got {text}"
+        );
+        assert!(
+            text.contains("call message_agent with to=\"agent:writer/spawned-draft-3f9a\""),
+            "got {text}"
+        );
+        assert!(!text.contains("Agent Message from"), "got {text}");
+        assert!(text.ends_with("\nchapter two is ready"));
+        assert_eq!(
+            msg.to_history_message().agent_sender,
+            Some(crate::inference::AgentSender {
+                address: "agent:writer/spawned-draft-3f9a".to_string(),
+                category: "teammate".to_string(),
+            }),
+            "the history entry carries the structured sender"
+        );
+    }
+
+    #[test]
+    fn teammate_prefix_without_the_teammate_category_is_not_a_teammate_sender() {
+        let msg = AgentMessageEvent {
+            from: SessionAddress::from("agent:writer"),
+            from_category: "spawned".to_string(),
+            content: "hi".to_string(),
+            hop_count: 0,
+        };
+        assert_eq!(msg.teammate_sender(), None);
+        assert!(msg.format_for_agent().starts_with("[Agent Message from"));
+    }
+
+    #[test]
     fn artifact_prefix_without_the_artifact_category_is_not_an_artifact_sender() {
         let msg = AgentMessageEvent {
             from: SessionAddress::from("artifact:wiki"),
@@ -1020,5 +1335,73 @@ mod tests {
             event.format_for_agent(),
             "[Session Result]\nSession: scheduled-check-0001 (t1)\nTask: pulse:check\nSource: pulse\nStatus: completed\nOutput:\nsome output\nTranscript: /tmp/transcript.txt"
         );
+    }
+
+    fn inbound(context: Option<&str>) -> MessageEvent {
+        MessageEvent {
+            id: "m1".to_string(),
+            content: "can you check the build?".to_string(),
+            origin: crate::interfaces::types::MessageOrigin {
+                endpoint: "teams".to_string(),
+                sender: Some(crate::inference::MessageSender {
+                    name: "Jane".to_string(),
+                    id: "aad-jane".to_string(),
+                    interface: "teams".to_string(),
+                    location: Some("#builds".to_string()),
+                }),
+                conversation: Some(crate::interfaces::types::ConversationContext {
+                    id: "19:abc@thread.tacv2".to_string(),
+                    kind: crate::interfaces::types::ConversationKind::Channel,
+                    is_owner: true,
+                }),
+                agent_sender: None,
+            },
+            timestamp: chrono::Utc::now().naive_utc(),
+            images: vec![],
+            context: context.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn context_precedes_the_attributed_user_message() {
+        use crate::inference::Role;
+
+        let messages = inbound(Some("[14:05] Sam: build is red")).into_history_messages();
+        let [context, user] = messages.as_slice() else {
+            panic!("expected context then user message, got {messages:?}");
+        };
+        assert_eq!(context.role, Role::System);
+        assert_eq!(context.content, "[14:05] Sam: build is red");
+        assert_eq!(user.role, Role::User);
+        assert_eq!(user.content, "can you check the build?");
+        assert_eq!(user.sender.as_ref().map(|s| s.name.as_str()), Some("Jane"));
+    }
+
+    #[test]
+    fn agent_sender_on_the_origin_reaches_the_history_message() {
+        let mut message = inbound(None);
+        message.origin.agent_sender = Some(Box::new(crate::inference::AgentSender {
+            address: "spawned-a".to_string(),
+            category: "spawned".to_string(),
+        }));
+        let messages = message.into_history_messages();
+        let [user] = messages.as_slice() else {
+            panic!("expected a single user message, got {messages:?}");
+        };
+        assert_eq!(
+            user.agent_sender.as_ref().map(|a| a.address.as_str()),
+            Some("spawned-a")
+        );
+    }
+
+    #[test]
+    fn without_context_only_the_user_message() {
+        use crate::inference::Role;
+
+        let messages = inbound(None).into_history_messages();
+        let [user] = messages.as_slice() else {
+            panic!("expected a single user message, got {messages:?}");
+        };
+        assert_eq!(user.role, Role::User);
     }
 }

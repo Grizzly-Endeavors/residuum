@@ -99,6 +99,7 @@ fn wrap(messages: &[Message], tz: Tz) -> Vec<RecentMessage> {
             message: m.clone(),
             timestamp: now,
             visibility: Visibility::Background,
+            turn_id: None,
         })
         .collect()
 }

@@ -1,3 +1,3 @@
 # Config Module
 
-Any addition or removal of configuration options in this module **must** be reflected in the settings page in `web/` (`web/src/`). The web UI settings page is the primary way users interact with configuration — keeping them in sync is mandatory.
+Any addition or removal of configuration options in this module **must** be reflected in the Settings modal in `web/`: the section components in `web/src/shell/settings/`, and the field-to-key-path map in `web/src/lib/settings-fields.ts`. The Settings modal is the primary way users interact with configuration — keeping them in sync is mandatory.

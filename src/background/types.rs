@@ -6,10 +6,10 @@ use tokio::sync::{Mutex, Notify};
 
 use crate::actions::store::ActionStore;
 use crate::agent::HopCounter;
+use crate::bus::MessageEvent;
 use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
 use crate::config::BackgroundModelTier;
 use crate::inference::{ImageData, MessageSender};
-use crate::interfaces::types::InboundMessage;
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::Observer;
 use crate::memory::search::HybridSearcher;
@@ -45,12 +45,15 @@ pub struct SubAgentConfig {
     /// still be delivered into the winning run as `Interrupt::UserMessage`
     /// with correct sender attribution, instead of a plain agent message
     /// misattributed to `main`. `None` for every other trigger.
-    pub inbound: Option<InboundMessage>,
+    pub inbound: Option<MessageEvent>,
     /// Images attached to this run's kickoff message, carried into its
     /// first turn's opening message. Populated for a conversation-triggered
     /// spawn or resume; empty for every other trigger, which have no images
     /// of their own.
     pub images: Vec<ImageData>,
+    /// Main's saved conversation, for a fork of it. See
+    /// [`crate::bus::SpawnRequestEvent::carried_history`].
+    pub carried_history: Vec<crate::inference::Message>,
 }
 
 /// Extract a truncated (120-char) preview from a prompt string, for display
@@ -65,10 +68,13 @@ pub(crate) fn truncate_prompt_preview(prompt: &str) -> String {
 pub struct SubAgentBuildConfig {
     /// Workspace layout (used to set the path policy root).
     pub workspace_layout: WorkspaceLayout,
-    /// The app config directory (`~/.residuum/`), for the session's
-    /// `write_file`/`edit_file` tools to recognize and diagnose
+    /// The agent's own `config/` directory (`<agent>/config`), for the
+    /// session's `write_file`/`edit_file` tools to recognize and diagnose
     /// `config.toml`/`providers.toml` the same way main's do.
     pub config_dir: std::path::PathBuf,
+    /// The hub's directory (`~/.residuum/hub`), needed to resolve the hub
+    /// config those diagnostics run against.
+    pub hub_dir: std::path::PathBuf,
     /// Identity files for the system prompt.
     pub identity: IdentityFiles,
     /// LLM completion options for the session turn.
@@ -162,6 +168,8 @@ pub struct SubAgentBuildConfig {
     /// Workspace and config checkpoint repositories, shared with main —
     /// backs `workspace_history`/`workspace_restore`.
     pub checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    /// How the session's `agent_create`/`agent_delete` reach the hub.
+    pub lifecycle: crate::tools::LifecycleAccess,
 }
 
 #[cfg(test)]

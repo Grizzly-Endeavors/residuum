@@ -8,6 +8,7 @@
 - [Systems Usage](./docs/systems-usage/) — authoritative reference for how systems work today
 - [Guides](./docs/guides/) — task-oriented walkthroughs
 - [Design](./docs/design/) — designs for work that is not built yet
+- [Hub](./docs/systems-usage/hub.md) — one process hosts every agent; `~/.residuum/` holds `hub/`, the shared `team/`, and one directory per agent
 
 Superseded documents live in [`docs/archive/`](./docs/archive/); they record history and do not describe current behavior.
 
@@ -18,10 +19,14 @@ Superseded documents live in [`docs/archive/`](./docs/archive/); they record his
 ### Pre-Commit Hooks
 
 Pre-commit hooks enforce quality gates:
-- **pre-commit**: auto-formats with `cargo fmt --all` (re-staging only the paths already staged), runs `cargo clippy --all-targets --all-features -- -D warnings`, runs the tests for the modules touched by the commit, and runs `cargo deny check`. When `web/src/` files are staged it also runs the web formatter, ESLint, `svelte-check`, and the web unit tests (Vitest). Finally it blocks two things outright in the staged diff: a `dbg!()` call, and an `#[allow(...)]` attribute (use `#[expect(lint, reason = "...")]` instead so stale suppressions warn).
+- **pre-commit**: auto-formats with `cargo fmt --all` (re-staging only the paths already staged), runs `cargo clippy --all-targets --all-features -- -D warnings`, runs the tests for the modules touched by the commit, and runs `cargo deny check`. When the commit touches Rust it also runs `scripts/check-generated-types.sh`, which regenerates the web app's TypeScript protocol types from the Rust types and fails on any difference from the staged files. When any file under `web/` is staged (the app, its mock server, its configuration) it also runs the web formatter, ESLint and the style lint, `svelte-check`, and the web unit and component tests (Vitest). Finally it blocks two things outright in the staged diff: a `dbg!()` call, and an `#[allow(...)]` attribute (use `#[expect(lint, reason = "...")]` instead so stale suppressions warn).
 - **commit-msg**: advisory checks on the subject line — fails only on a subject under 10 characters, and warns on over-72-character subjects, a trailing period, or a missing conventional prefix.
 
 Bypass is **FORBIDDEN**.
+
+### Local Tasks
+
+The `justfile` wraps the commands above; `just` lists the recipes. `just check` runs everything CI runs except the web end-to-end suite (web checks, then fmt, clippy, tests, and `cargo deny`), `just test <filter>` runs `cargo test --quiet <filter>`, `just web-mock` runs the web UI against the mock API, and `just web-e2e` runs the web end-to-end, accessibility and visual suite (the visual comparisons render in the Playwright container, so it needs Docker; `just web-e2e-fast` leaves them out). Every cargo recipe builds `web/dist` first when it is missing, because `build.rs` refuses to compile without it.
 
 ### Cross-Platform Targets
 
@@ -58,6 +63,7 @@ Testing is a first-class operation — NEVER skip test implementation.
 - Always run `cargo test --quiet` — never plain `cargo test`. The `--quiet` flag suppresses per-test noise and only shows failures and the summary.
 - Unit tests: `#[cfg(test)] mod tests` at file bottom
 - Integration tests: `tests/` directory
+- A test waits on the event it checks, never on elapsed time. A flaky test is fixed by making it wait on an event the code exposes (adding the signal to the code when there is none), never by widening a timeout, adding a sleep, or rerunning past it. `just stress <filter>` runs tests as two concurrent copies under CPU load, which is how they run when several agents share a machine; a test you add or fix must pass it. CI runs the whole suite that way in the Stress step of the Rust tests, and a red Stress step blocks the merge: fix the wait, never rerun past it. Tests wait through `crate::testing` (waits under one hang guard, gates, a paused-clock helper); `CONTRIBUTING.md`, "Waiting in tests", says which fits where, and a source-scan test enforces it.
 
 ## Code Style
 
@@ -149,14 +155,14 @@ The failure this section exists to prevent is a guard built around a failure nob
 - Use structured fields: `info!(chunks = count, "starting chunked review")` not string interpolation
 
 ### Debugging & Tracing
-- Log level is configured in `config.toml` under `[tracing]`: `log_level = "info" | "debug" | "trace"` (default: `debug`)
-- `residuum logs` — view saved log files; `residuum logs --watch` to tail live; `residuum logs --level warn` to filter at read time
+- Log level is configured in `hub/config.toml` under `[tracing]`: `log_level = "info" | "debug" | "trace"` (default: `debug`)
+- `residuum logs` — view saved log files; `residuum logs --watch` to tail live; `residuum logs --level warn` to filter at read time; `residuum logs --agent <name>` to show one agent's lines
 - `residuum tracing status` — show current tracing config and streaming state
 - `residuum tracing otel add <url>` — add an OTEL endpoint for trace export
 - `residuum tracing dump` — one-shot export of buffered traces to configured OTEL endpoints
 - `residuum tracing stream start|stop` — live trace streaming to OTEL endpoints
 - `residuum tracing sanitize on|off` — toggle content redaction in trace exports (default: on)
-- `residuum tracing error-reporting on|off` — toggle auto error reporting (default: off). The switch is stored for the running daemon and shows up in `residuum tracing status`. No report is sent: `TracingService::on_error` logs and returns, and nothing calls it ([#101](https://github.com/Grizzly-Endeavors/residuum/issues/101)). `residuum bug-report` is the path that sends one.
+- `residuum tracing error-reporting on|off` — toggle auto error reporting (default: off). The switch is stored for the running daemon and shows up in `residuum tracing status`. When on, `TracingService::on_error` submits a synthetic `broken`-severity bug report (with the current span buffer) through the same path as a manual report, rate limited to roughly one submission per minute per error context and five per hour overall; suppressed submissions log at debug. It's called from every unexpected turn failure — the main agent's turns and background/session/pulse turns alike, once retries are exhausted — and from the event loop's tunnel-respawn and adapter-exit supervisory paths; expected outcomes (a user-cancelled turn, a validation error, a retry that later succeeds) never call it. `residuum bug-report` is the other path that sends one, for a manual report.
 - `residuum bug-report -m "description"` — send a sanitized trace dump to the developer via the feedback-ingest service
 - `RUST_LOG` env var overrides the configured log level when set
 
@@ -185,4 +191,4 @@ Use prefixed branch names:
 
 ### Releases
 
-Releases use **CalVer** (`YYYY.0M.0D`), not SemVer. Tags like `v2026.03.02`, with `-N` suffix for same-day follow-ups (`v2026.03.02-2`). Cargo.toml version is independent and not tied to release tags. The release workflow runs full CI checks before building artifacts.
+Releases use **CalVer** (`YYYY.0M.0D`), not SemVer. Tags like `v2026.03.02`, with `-N` suffix for same-day follow-ups (`v2026.03.02-2`). Cargo.toml version is independent and not tied to release tags. The release workflow runs the full CI checks alongside the artifact builds and publishes nothing unless both pass. Pull requests run the Rust checks when they change Rust code and the web checks when they change `web/`.

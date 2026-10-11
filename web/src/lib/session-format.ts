@@ -1,6 +1,8 @@
-// ── Plain-language labels for agent sessions ─────────────────────────
+// ── Plain-language words for agent sessions and outbound tasks ───────
 
+import type { IconName } from "./icons";
 import type {
+  OutboundA2aTaskSummary,
   SessionCategory,
   SessionDeliveryOutcome,
   SessionRunStatus,
@@ -8,7 +10,7 @@ import type {
   SessionSummary,
 } from "./types";
 
-/** Every session category, in the order the sidebar groups them. */
+/** Every session category, in the order Activity's kind filter lists them. */
 export const SESSION_CATEGORIES: readonly SessionCategory[] = [
   "external",
   "scheduled",
@@ -16,20 +18,38 @@ export const SESSION_CATEGORIES: readonly SessionCategory[] = [
   "artifact",
 ];
 
-/** Sessions split into their categories' sidebar groups, each keeping the list's order. */
-export function groupByCategory(
-  sessions: readonly SessionSummary[],
-): Record<SessionCategory, SessionSummary[]> {
-  const groups = Object.fromEntries(
-    SESSION_CATEGORIES.map((category) => [category, [] as SessionSummary[]]),
-  ) as Record<SessionCategory, SessionSummary[]>;
-  for (const session of sessions) groups[session.category].push(session);
-  return groups;
+/** Each kind of run, as the Finished filter and a run's details name it. */
+export const KIND_NAMES: Readonly<Record<SessionCategory, string>> = {
+  external: "From another app",
+  scheduled: "Scheduled",
+  spawned: "Started by an agent or you",
+  artifact: "From a workbench page",
+};
+
+const KIND_ICONS: Readonly<Record<SessionCategory, IconName>> = {
+  external: "hash",
+  scheduled: "clock",
+  spawned: "layers",
+  artifact: "page",
+};
+
+export function runIcon(category: SessionCategory): IconName {
+  return KIND_ICONS[category];
 }
 
-/** States in which a run is still live (listed from the registry). */
-export function isLiveState(state: SessionState): boolean {
-  return state !== "completed";
+/**
+ * Whether the owner started a run by hand (a new session, or `/multitask`):
+ * every spawned run an agent starts names its spawner.
+ */
+export function startedByOwner(run: Pick<SessionSummary, "category" | "spawner">): boolean {
+  return run.category === "spawned" && run.spawner === null;
+}
+
+/** How a run started, in plain words. A spawner of `main` is the agent's own conversation. */
+export function runKind(agent: string, run: Pick<SessionSummary, "category" | "spawner">): string {
+  if (run.category !== "spawned") return KIND_NAMES[run.category];
+  if (run.spawner === null) return "Started by you";
+  return run.spawner === "main" ? `Started by ${agent}` : `Started by ${run.spawner}`;
 }
 
 /** States in which a stop request can still take effect. */
@@ -37,62 +57,48 @@ export function isStoppableState(state: SessionState): boolean {
   return state === "forking" || state === "queued" || state === "running" || state === "idle";
 }
 
-export function stateLabel(state: SessionState): string {
-  switch (state) {
+/** How a run or task is doing, for its status mark: a tone and a few words. */
+export interface RunStatus {
+  tone: "working" | "quiet" | "done" | "failed";
+  text: string;
+}
+
+/**
+ * What a status reads from a run: a full summary, or a live run as the
+ * overview lists it, which has no outcome because it hasn't ended.
+ */
+export type RunStatusSource = Pick<SessionSummary, "state" | "started_at"> &
+  Partial<Pick<SessionSummary, "completed_at" | "outcome" | "interrupted">>;
+
+export function runStatus(run: RunStatusSource, now: number): RunStatus {
+  switch (run.state) {
     case "forking":
-      return "starting";
+      return { tone: "working", text: "Starting" };
     case "queued":
-      return "queued";
+      return { tone: "working", text: "Queued" };
     case "running":
-      return "working";
+      return { tone: "working", text: `Working, ${runDuration(run, now)}` };
     case "idle":
-      return "idle";
+      return { tone: "quiet", text: `Idle, ${runDuration(run, now)}` };
     case "completing":
-      return "finishing";
+      return { tone: "quiet", text: "Finishing" };
     case "completed":
-      return "finished";
+      break;
   }
+  if (run.outcome === "failed") return { tone: "failed", text: "Failed" };
+  if (run.outcome === "cancelled") return { tone: "quiet", text: "Stopped" };
+  if (run.interrupted) return { tone: "quiet", text: "Interrupted" };
+  return { tone: "done", text: "Finished" };
 }
 
-export function categoryDescription(category: SessionCategory): string {
-  switch (category) {
-    case "scheduled":
-      return "Started on a schedule (a pulse or scheduled action)";
-    case "external":
-      return "Started by someone else or another system (a chat conversation or webhook)";
-    case "spawned":
-      return "Started by an agent";
-    case "artifact":
-      return "Started by a workbench artifact";
-  }
-}
-
-/** A category's name as a sidebar group heading. */
-export function categoryHeading(category: SessionCategory): string {
-  switch (category) {
-    case "scheduled":
-      return "Scheduled";
-    case "external":
-      return "External";
-    case "spawned":
-      return "Spawned";
-    case "artifact":
-      return "Artifacts";
-  }
-}
-
-/** What a sidebar group says when none of its sessions are running. */
-export function categoryIdleText(category: SessionCategory): string {
-  switch (category) {
-    case "scheduled":
-      return "Nothing running. Pulses and scheduled actions show up here while they run.";
-    case "external":
-      return "Nothing running. Conversations with other people and webhook calls show up here while they run.";
-    case "spawned":
-      return "Nothing running. Work your agent hands off shows up here while it runs.";
-    case "artifact":
-      return "Nothing running. Work a workbench artifact starts shows up here while it runs.";
-  }
+/** How a finished run ended, as its row says it. */
+export function finishedOutcome(run: SessionSummary): string {
+  const took =
+    run.completed_at === null ? "" : ` after ${runDuration(run, Date.parse(run.started_at))}`;
+  if (run.outcome === "failed") return run.error ? `Failed: ${run.error}` : "Failed";
+  if (run.outcome === "cancelled") return `Stopped${took}`;
+  if (run.interrupted) return "Cut short when Residuum stopped";
+  return `Finished${took}`;
 }
 
 /** Prefix of an artifact session's source label (`artifact:<name>`). */
@@ -108,23 +114,6 @@ export function sessionArtifact(session: SessionSummary): string | null {
   return session.source_label.slice(ARTIFACT_SOURCE_PREFIX.length) || null;
 }
 
-/** What started a session, for a row or header: the artifact's name, or the source label. */
-export function sessionSourceText(session: SessionSummary): string {
-  return sessionArtifact(session) ?? session.source_label;
-}
-
-/**
- * The sessions an artifact started, in the order they appear in `sessions`,
- * for its activity panel. Kept current by whatever keeps `sessions` current
- * (session frames), so the panel needs no fetch of its own.
- */
-export function sessionsStartedByArtifact(
-  sessions: readonly SessionSummary[],
-  artifact: string,
-): SessionSummary[] {
-  return sessions.filter((s) => sessionArtifact(s) === artifact);
-}
-
 /** How a run ended, for a status line. */
 export function runOutcomeText(status: SessionRunStatus, error: string | null): string {
   switch (status) {
@@ -137,7 +126,7 @@ export function runOutcomeText(status: SessionRunStatus, error: string | null): 
   }
 }
 
-/** Where a message sent from the sidebar landed, in plain language. */
+/** Where a message sent to a session landed, in plain language. */
 export function deliveryOutcomeText(outcome: SessionDeliveryOutcome): string {
   switch (outcome) {
     case "live":
@@ -162,7 +151,10 @@ export function formatDuration(ms: number): string {
 }
 
 /** How long a run has been going (live) or took (finished). */
-export function runDuration(session: SessionSummary, now: number): string {
+export function runDuration(
+  session: Pick<RunStatusSource, "started_at" | "completed_at">,
+  now: number,
+): string {
   const start = Date.parse(session.started_at);
   if (Number.isNaN(start)) return "";
   const end = session.completed_at ? Date.parse(session.completed_at) : now;
@@ -182,7 +174,31 @@ export function formatLocalDateTime(iso: string): string {
   return Number.isNaN(date.getTime()) ? iso : STARTED_FORMATTER.format(date);
 }
 
-/** When a run started, as a short local date and time. */
-export function formatStarted(session: SessionSummary): string {
-  return formatLocalDateTime(session.started_at);
+/** Where a task sent to another agent stands, for its status mark. */
+export function outboundStatus(task: OutboundA2aTaskSummary, now: number): RunStatus {
+  if (task.unreachable_since) {
+    const since = Date.parse(task.unreachable_since);
+    const gone = Number.isNaN(since) ? "" : ` for ${formatDuration(now - since)}`;
+    return { tone: "failed", text: `Can't reach ${task.agent}${gone}` };
+  }
+  switch (task.state) {
+    case "submitted":
+      return { tone: "working", text: "Sent" };
+    case "working":
+      return { tone: "working", text: "Working" };
+    case "input_required":
+      return { tone: "quiet", text: "Waiting on your agent's reply" };
+    case "auth_required":
+      return { tone: "quiet", text: "Waiting on sign-in" };
+    default: {
+      const words = task.state.replace(/_/g, " ");
+      return { tone: "quiet", text: words.charAt(0).toUpperCase() + words.slice(1) };
+    }
+  }
+}
+
+/** How long ago a task was sent to another agent. */
+export function outboundDuration(task: OutboundA2aTaskSummary, now: number): string {
+  const start = Date.parse(task.started_at);
+  return Number.isNaN(start) ? "" : formatDuration(now - start);
 }

@@ -9,12 +9,14 @@
 //! here by the tunnel client. Being a real origin, artifacts can be folders with
 //! relative scripts, modules, and workers, and can use browser storage.
 //!
-//! The listener is read-only: `GET`/`HEAD` of artifact files, nothing else. Artifacts
-//! reach Residuum's API only through the web UI's bridge.
+//! Artifact files are read-only: `GET`/`HEAD` of pages and the files they load.
+//! Everything under `/api` is forwarded in-process to the hub router (see
+//! [`super::forward`]), so a page on this origin reaches Residuum's API and
+//! sockets directly.
 //!
 //! URL layout: `/{artifact}/` is the artifact's page, `/{artifact}/{path}` a file in a
-//! folder artifact, and `/{artifact}` redirects to `/{artifact}/` so relative URLs resolve
-//! inside the artifact.
+//! folder artifact, `/{artifact}` redirects to `/{artifact}/` so relative URLs resolve
+//! inside the artifact, and `/api/...` is the API.
 
 use std::path::PathBuf;
 
@@ -26,35 +28,28 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
 use tokio_util::io::ReaderStream;
 
+use super::forward::{self, HubApi};
 use super::{
     ArtifactBody, ArtifactFileError, discover_artifacts, is_valid_artifact_name, read_artifact_file,
 };
+use crate::pairing::HANDOFF_PAGE_PATH;
 
 /// How many ports after the gateway's are tried before giving up.
 const PORT_SEARCH_ATTEMPTS: u16 = 10;
 
 /// Whether the artifacts listener is running.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum WorkbenchServing {
+pub enum WorkbenchServing {
     /// Serving on this port, beside the gateway.
     Running { port: u16 },
     /// Not serving; the reason is shown to the user.
     Unavailable { reason: String },
 }
 
-impl WorkbenchServing {
-    /// The listener's port, when it is running.
-    #[must_use]
-    pub(crate) fn port(&self) -> Option<u16> {
-        match self {
-            Self::Running { port } => Some(*port),
-            Self::Unavailable { .. } => None,
-        }
-    }
-}
-
 /// Start the artifacts listener for `dir` beside the gateway on `bind`. Returns
-/// whether it is serving and, when it is, the switch that stops it.
+/// whether it is serving, the switch that stops it and its router (so another
+/// transport can serve the same pages in-process) when it is. `api` is
+/// where `/api` requests go once the hub router is bound to it.
 ///
 /// Failing to bind is not fatal: Residuum runs without the workbench and the
 /// web UI shows why (the reason is also logged at `error`). The listener runs
@@ -64,7 +59,13 @@ pub(crate) async fn start(
     gateway_port: u16,
     reserved: &[u16],
     dir: PathBuf,
-) -> (WorkbenchServing, Option<tokio::sync::watch::Sender<bool>>) {
+    api: HubApi,
+    pairing: crate::pairing::DevicePairing,
+) -> (
+    WorkbenchServing,
+    Option<tokio::sync::watch::Sender<bool>>,
+    Option<Router>,
+) {
     let (listener, port) = match bind_listener(bind, gateway_port, reserved).await {
         Ok(bound) => bound,
         Err(reason) => {
@@ -76,15 +77,17 @@ pub(crate) async fn start(
                     ),
                 },
                 None,
+                None,
             );
         }
     };
     tracing::info!(addr = %format!("{bind}:{port}"), "workbench artifacts listening");
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
-    let app = router(dir);
+    let app = router(dir, api, pairing);
+    let served = app.clone();
     crate::util::spawn_monitored("workbench-listener", async move {
-        if let Err(e) = axum::serve(listener, app)
+        if let Err(e) = axum::serve(listener, served)
             .with_graceful_shutdown(async move {
                 shutdown_rx.wait_for(|stop| *stop).await.ok();
             })
@@ -93,7 +96,11 @@ pub(crate) async fn start(
             tracing::error!(error = %e, "workbench artifacts listener failed");
         }
     });
-    (WorkbenchServing::Running { port }, Some(shutdown_tx))
+    (
+        WorkbenchServing::Running { port },
+        Some(shutdown_tx),
+        Some(app),
+    )
 }
 
 /// Bind the artifacts listener on the first free port after `gateway_port`,
@@ -131,24 +138,95 @@ pub(crate) async fn bind_listener(
     ))
 }
 
-/// Router for the artifacts listener, serving artifacts from `dir`.
-pub(crate) fn router(dir: PathBuf) -> Router {
-    Router::new()
+/// Router for the artifacts listener, serving artifacts from `dir` and
+/// forwarding `/api` to the hub router bound to `api`.
+pub(crate) fn router(dir: PathBuf, api: HubApi, pairing: crate::pairing::DevicePairing) -> Router {
+    let artifacts = Router::new()
         .route("/", get(home))
+        .route(HANDOFF_PAGE_PATH, get(handoff_page))
         .route("/{name}", get(artifact_root))
         .route("/{name}/", get(artifact_index))
         .route("/{name}/{*rest}", get(artifact_file))
-        .fallback(|| async { not_found("Nothing here.") })
+        .with_state(dir)
+        .fallback(|| async { not_found("Nothing here.") });
+    forward::forwarding(artifacts, api)
         .layer(axum::middleware::from_fn(
             crate::gateway::cross_site::reject_cross_site_requests,
         ))
-        .with_state(dir)
+        .layer(axum::middleware::from_fn_with_state(
+            crate::pairing::GateState {
+                pairing,
+                surface: crate::pairing::Surface::Workbench,
+            },
+            crate::pairing::device_gate,
+        ))
 }
+
+/// The page a paired browser lands on to bring its credential to this host.
+///
+/// The UI host mints a single-use token and sends the browser here with the
+/// token and the page to open next in the URL fragment, which the browser
+/// never sends anywhere. The script posts the token to this host, which
+/// answers with this host's own device cookie, then opens the page. It is
+/// served before the gate asks for a credential, since getting one is its
+/// whole purpose.
+async fn handoff_page() -> Response {
+    let mut resp = (StatusCode::OK, HANDOFF_PAGE_HTML).into_response();
+    let headers = resp.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    resp
+}
+
+const HANDOFF_PAGE_HTML: &str = r#"<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Opening workbench</title>
+<body style="font:14px sans-serif;color:#a8a29e;background:#12100e;padding:2rem">
+<p id="message">Opening the workbench...</p>
+<script>
+(function () {
+  var message = document.getElementById("message");
+  function fail(text) { message.textContent = text; }
+  var params = new URLSearchParams(location.hash.slice(1));
+  var token = params.get("token");
+  var next = params.get("next") || "/";
+  history.replaceState(null, "", location.pathname);
+  if (!token) {
+    fail("This link is missing its token. Open the workbench again from Residuum.");
+    return;
+  }
+  if (!/^\/[A-Za-z0-9._~\/-]*$/.test(next) || next.indexOf("//") === 0) next = "/";
+  fetch("/api/hub/pairing/handoff", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token: token })
+  }).then(function (response) {
+    if (response.ok) { location.replace(next); return; }
+    return response.json().then(function (body) {
+      fail(body && body.error ? body.error : "The workbench couldn't be opened. Open it again from Residuum.");
+    }, function () {
+      fail("The workbench couldn't be opened. Open it again from Residuum.");
+    });
+  }, function () {
+    fail("Couldn't reach Residuum. Check your connection, then open the workbench again.");
+  });
+})();
+</script>
+"#;
 
 async fn home() -> Response {
     page(
         StatusCode::OK,
-        "Workbench artifacts open from the Workbench page in Residuum.",
+        "Workbench artifacts open from the Workbench in Residuum.",
     )
 }
 
@@ -246,6 +324,11 @@ mod tests {
 
     use super::*;
 
+    /// Pairing state in a throwaway directory, so nothing remote is paired.
+    fn test_pairing(dir: &std::path::Path) -> crate::pairing::DevicePairing {
+        crate::pairing::DevicePairing::open(dir)
+    }
+
     fn write(path: &std::path::Path, content: &str) {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
@@ -254,10 +337,41 @@ mod tests {
     }
 
     async fn get_path(dir: &std::path::Path, path: &str) -> Response {
-        router(dir.to_path_buf())
+        router(dir.to_path_buf(), HubApi::new(), test_pairing(dir))
             .oneshot(Request::get(path).body(Body::empty()).unwrap())
             .await
             .unwrap()
+    }
+
+    /// A hub stand-in: `/api/probe` says whether the request arrived marked,
+    /// and any other path gets the page the real router's embedded web app
+    /// would serve.
+    fn stand_in_hub() -> Router {
+        Router::new()
+            .route(
+                "/api/probe",
+                axum::routing::any(|req: Request<Body>| async move {
+                    if req.extensions().get::<forward::ArtifactsOrigin>().is_some() {
+                        "marked"
+                    } else {
+                        "unmarked"
+                    }
+                }),
+            )
+            .fallback(|| async { "spa" })
+    }
+
+    /// The listener's router with the stand-in hub bound.
+    fn listener(dir: &std::path::Path) -> Router {
+        let api = HubApi::new();
+        api.bind(stand_in_hub());
+        router(dir.to_path_buf(), api, test_pairing(dir))
+    }
+
+    async fn send(app: Router, request: Request<Body>) -> (StatusCode, String) {
+        let resp = app.oneshot(request).await.unwrap();
+        let status = resp.status();
+        (status, body_text(resp).await)
     }
 
     async fn body_text(resp: Response) -> String {
@@ -316,11 +430,127 @@ mod tests {
             assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{path}");
         }
 
-        let post = router(dir.path().to_path_buf())
-            .oneshot(Request::post("/graph/").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
+        let post = router(
+            dir.path().to_path_buf(),
+            HubApi::new(),
+            test_pairing(dir.path()),
+        )
+        .oneshot(Request::post("/graph/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
         assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
+    async fn api_requests_of_every_method_reach_the_hub_router_marked() {
+        let dir = tempfile::tempdir().unwrap();
+        for method in [
+            axum::http::Method::GET,
+            axum::http::Method::HEAD,
+            axum::http::Method::POST,
+            axum::http::Method::PUT,
+            axum::http::Method::PATCH,
+            axum::http::Method::DELETE,
+        ] {
+            let request = Request::builder()
+                .method(method.clone())
+                .uri("/api/probe")
+                .body(Body::empty())
+                .unwrap();
+            let (status, body) = send(listener(dir.path()), request).await;
+            assert_eq!(status, StatusCode::OK, "{method}");
+            if method != axum::http::Method::HEAD {
+                assert_eq!(body, "marked", "{method}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_cross_site_guard_covers_the_api_and_lets_the_origin_call_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        // The UI's own origin is the same site as the artifacts origin, so it
+        // counts as another site here, like any other.
+        for (site, allowed) in [
+            ("cross-site", false),
+            ("same-site", false),
+            ("same-origin", true),
+            ("none", true),
+        ] {
+            let write = Request::post("/api/probe")
+                .header("sec-fetch-site", site)
+                .body(Body::empty())
+                .unwrap();
+            let (write_status, _) = send(listener(dir.path()), write).await;
+            assert_eq!(write_status == StatusCode::OK, allowed, "POST from {site}");
+
+            let upgrade = Request::get("/api/probe")
+                .header("sec-fetch-site", site)
+                .header("upgrade", "websocket")
+                .body(Body::empty())
+                .unwrap();
+            let (upgrade_status, _) = send(listener(dir.path()), upgrade).await;
+            assert_eq!(
+                upgrade_status == StatusCode::OK,
+                allowed,
+                "upgrade from {site}"
+            );
+        }
+        let sandboxed = Request::post("/api/probe")
+            .header("origin", "null")
+            .body(Body::empty())
+            .unwrap();
+        let (sandboxed_status, _) = send(listener(dir.path()), sandboxed).await;
+        assert_eq!(sandboxed_status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn nothing_but_the_api_reaches_the_hub_router() {
+        let dir = tempfile::tempdir().unwrap();
+        for path in [
+            "/",
+            "/index.html",
+            "/some/client/route",
+            "/webhook/scout/deploy",
+            "/cloud/callback",
+            "/assets/app.js",
+            "/apix/probe",
+        ] {
+            let (_, body) = send(
+                listener(dir.path()),
+                Request::get(path).body(Body::empty()).unwrap(),
+            )
+            .await;
+            assert!(
+                !matches!(body.as_str(), "spa" | "marked" | "unmarked"),
+                "{path} reached the hub router"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_artifact_called_api_is_never_served_and_similar_names_are() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("api/index.html"), "<head></head>artifact");
+        write(&dir.path().join("api-tools.html"), "<head></head>tools");
+        write(&dir.path().join("my-api/index.html"), "<head></head>mine");
+
+        for path in ["/api", "/api/", "/api/index.html"] {
+            let (_, body) = send(
+                listener(dir.path()),
+                Request::get(path).body(Body::empty()).unwrap(),
+            )
+            .await;
+            assert_eq!(body, "spa", "{path} is the hub's, not the artifact's");
+        }
+        for (path, content) in [("/api-tools/", "tools"), ("/my-api/", "mine")] {
+            let (status, body) = send(
+                listener(dir.path()),
+                Request::get(path).body(Body::empty()).unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{path}");
+            assert!(body.contains(content), "{path}");
+        }
     }
 
     #[tokio::test]

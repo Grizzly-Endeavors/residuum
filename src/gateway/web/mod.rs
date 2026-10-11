@@ -7,16 +7,15 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::http::Uri;
-use axum::response::Response;
 use axum::routing::{delete, get, patch, post, put};
 use tokio::sync::watch;
 
-use super::ReloadSignal;
-
 pub(crate) mod a2a;
+mod agent_files;
 mod agent_keys;
 pub(crate) mod artifact_identity;
+mod assets;
+pub(super) mod chat;
 pub mod checkpoints;
 pub mod cloud;
 pub mod config;
@@ -27,11 +26,15 @@ pub mod providers;
 pub(crate) mod scheduled;
 pub mod secrets;
 pub(crate) mod sessions;
+mod system_one;
+pub mod teams_setup;
 pub mod tracing_api;
 pub mod update;
 pub(crate) mod workbench;
 pub mod workspace;
 pub(crate) mod workspace_bulk;
+#[cfg(test)]
+mod workspace_team_tests;
 
 mod embedded {
     //! Module boundary isolates `rust-embed` derive from clippy `same_name_method`.
@@ -47,38 +50,326 @@ mod embedded {
     #[folder = "web/dist/"]
     pub(super) struct WebAssets;
 }
+pub(crate) use assets::static_assets;
+pub(crate) use config::AgentStatusState;
 use embedded::WebAssets;
+
+pub use agent_files::{AgentFilesState, CheckpointAccess, agent_files_api_router};
 
 /// Shared state for the config API.
 #[derive(Clone)]
-pub(crate) struct ConfigApiState {
-    /// Path to the residuum config directory (`~/.residuum/`).
+pub struct ConfigApiState {
+    /// Path to the hub directory (`~/.residuum/hub`): secrets, key stores,
+    /// hub `config.toml`.
+    pub hub_dir: PathBuf,
+    /// Path to the agent's own `config/` directory (`config.toml`,
+    /// `providers.toml`, `mcp.json`, `channels.toml`, ...).
     pub config_dir: PathBuf,
+    /// This agent's name.
+    pub agent_name: String,
     /// Path to the workspace root directory (for resolving `mcp.json`, `channels.toml`, etc.).
     pub workspace_dir: PathBuf,
     /// Path to the workspace memory directory (None in setup mode).
     pub memory_dir: Option<PathBuf>,
-    /// Signal the running gateway to reload (None in setup mode).
-    pub reload_tx: Option<watch::Sender<ReloadSignal>>,
-    /// Signal the setup server that config is saved (None in running mode).
+    /// Signal the running agent to reload (None when there is no live agent
+    /// to signal, as on a stopped agent's repair routes).
+    pub reload_tx: Option<crate::gateway::types::ReloadSender>,
+    /// Workspace and config checkpoint repositories.
+    pub checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    /// The `team/` namespace and write coordination for the workspace file
+    /// API, with writes attributed to the user. `None` where `team/` is an
+    /// ordinary name.
+    pub team: Option<crate::workspace::team_files::TeamFiles>,
+    /// Which namespace the workspace file routes address.
+    pub scope: WorkspaceScope,
+}
+
+/// The namespace a workspace file API addresses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceScope {
+    /// An agent's directory, with the team directory reachable as `team/...`.
+    Agent,
+    /// The team directory alone: every path is relative to `team/`.
+    Team,
+}
+
+/// Shared state for the hub-level API: everything that exists once per
+/// process rather than once per agent.
+#[derive(Clone)]
+pub(crate) struct HubApiState {
+    /// Path to the hub directory (`~/.residuum/hub`): secrets, key stores,
+    /// hub `config.toml`.
+    pub hub_dir: PathBuf,
+    /// Signals the hub to reload after a hub-owned file changes.
+    pub reload_tx: crate::gateway::types::ReloadSender,
+    /// Signalled once onboarding has written the first agent (None once the
+    /// hub has agents and setup can no longer run).
     pub setup_done: Option<Arc<watch::Sender<bool>>>,
     /// Serializes secret store writes to prevent lost-update races.
     pub secret_lock: Arc<tokio::sync::Mutex<()>>,
-    /// Workspace and config checkpoint repositories.
+    /// Checkpoint repositories; the hub API addresses the hub and team ones.
     pub checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    /// Coordinates writes under the team directory, which onboarding
+    /// bootstraps.
+    pub team: crate::workspace::team_files::TeamWriteCoordinator,
 }
 
-impl ConfigApiState {
-    /// Checkpoint the config repository (root `config.toml`/`providers.toml`
-    /// and the encrypted key stores) before a write to one of them. Never
-    /// fails or blocks the write — see `crate::checkpoints`.
+/// The hub directory, for routes that only need to resolve `secret:` values
+/// and so serve under both the hub and an agent.
+#[derive(Clone)]
+pub(crate) struct HubDir(pub PathBuf);
+
+impl axum::extract::FromRef<HubApiState> for HubDir {
+    fn from_ref(state: &HubApiState) -> Self {
+        Self(state.hub_dir.clone())
+    }
+}
+
+impl axum::extract::FromRef<ConfigApiState> for HubDir {
+    fn from_ref(state: &ConfigApiState) -> Self {
+        Self(state.hub_dir.clone())
+    }
+}
+
+impl HubApiState {
+    /// A state over `hub_dir` with throwaway checkpoint repositories and no
+    /// one listening for reloads or setup completion.
+    #[cfg(test)]
+    pub(crate) fn for_test(hub_dir: &std::path::Path) -> Self {
+        let (reload_tx, _reload_rx) = tokio::sync::mpsc::unbounded_channel();
+        Self {
+            hub_dir: hub_dir.to_path_buf(),
+            reload_tx,
+            setup_done: None,
+            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
+            team: crate::workspace::team_files::TeamWriteCoordinator::new(
+                &crate::config::paths::TeamPaths::new(hub_dir.join("team-for-test")),
+            ),
+        }
+    }
+
+    /// Bootstrap `layout`'s workspace and the team directory under the hub's
+    /// team write coordinator.
+    pub(super) async fn bootstrap_workspace(
+        &self,
+        layout: &crate::workspace::layout::WorkspaceLayout,
+        user_name: Option<&str>,
+        timezone: &str,
+        label: Option<&str>,
+    ) -> Result<(), crate::util::FatalError> {
+        crate::workspace::bootstrap::ensure_workspace_labeled(
+            layout,
+            &self.team,
+            user_name,
+            Some(timezone),
+            label,
+        )
+        .await
+    }
+
+    /// Checkpoint the hub config repository (hub `config.toml` and the
+    /// encrypted key stores) before a write to one of them. Never fails or
+    /// blocks the write — see `crate::checkpoints`.
     pub(super) async fn checkpoint_config_before_write(&self, summary: impl Into<String>) {
+        let _checkpoint_id = self.checkpoint_config_id_before_write(summary).await;
+    }
+
+    /// [`Self::checkpoint_config_before_write`], returning the id of the
+    /// checkpoint that holds the pre-write tree. `None` when that checkpoint
+    /// could not be recorded; the write still proceeds.
+    #[must_use]
+    pub(super) async fn checkpoint_config_id_before_write(
+        &self,
+        summary: impl Into<String>,
+    ) -> Option<String> {
         self.checkpoints
-            .checkpoint_config_before_write(crate::checkpoints::CheckpointContext::system(
+            .checkpoint_config_id_before_write(crate::checkpoints::CheckpointContext::system(
                 crate::checkpoints::CheckpointTrigger::PreConfigWrite,
                 summary,
             ))
-            .await;
+            .await
+    }
+}
+
+impl ConfigApiState {
+    /// The team directory when it appears inside this state's namespace as
+    /// the `team/` folder. `None` in the team scope, where the namespace is
+    /// the team directory itself, and where `team/` is an ordinary name.
+    fn team_mount(&self) -> Option<PathBuf> {
+        match self.scope {
+            WorkspaceScope::Agent => self.team.as_ref().map(|t| t.team_root().to_path_buf()),
+            WorkspaceScope::Team => None,
+        }
+    }
+
+    /// The paths the strictly-parsed-file diagnostics resolve against. The
+    /// team scope has no agent config to recognize, so both point at the hub
+    /// directory, where no team file lives.
+    fn diagnostics_paths(&self) -> crate::diagnostics::DiagnosticsPaths {
+        match self.scope {
+            WorkspaceScope::Agent => crate::diagnostics::DiagnosticsPaths {
+                config_dir: self.config_dir.clone(),
+                workspace_dir: self.workspace_dir.clone(),
+                hub_dir: self.hub_dir.clone(),
+            },
+            WorkspaceScope::Team => crate::diagnostics::DiagnosticsPaths {
+                config_dir: self.hub_dir.clone(),
+                workspace_dir: self.hub_dir.clone(),
+                hub_dir: self.hub_dir.clone(),
+            },
+        }
+    }
+
+    /// Place a client-supplied path in the logical tree. In the agent scope
+    /// `team/...` is the team directory and anything else is relative to the
+    /// workspace; in the team scope every path is relative to the team
+    /// directory.
+    fn locate(&self, relative: &str) -> workspace::Located {
+        if self.scope == WorkspaceScope::Team
+            && let Some(team) = &self.team
+        {
+            return workspace::Located {
+                base: team.team_root().to_path_buf(),
+                rel: relative.to_string(),
+                label: relative.to_string(),
+                team: Some(team.clone()),
+            };
+        }
+        if let Some(team) = &self.team
+            && let Some(rest) = crate::workspace::team_files::team_relative_path(relative)
+        {
+            let rel = rest
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            return workspace::Located {
+                base: team.team_root().to_path_buf(),
+                rel,
+                label: relative.to_string(),
+                team: Some(team.clone()),
+            };
+        }
+        workspace::Located {
+            base: self.workspace_dir.clone(),
+            rel: relative.to_string(),
+            label: relative.to_string(),
+            team: None,
+        }
+    }
+
+    /// The current hub config, reloaded fresh from `hub_dir` (these are
+    /// validation/diagnostic paths, not hot paths, so a fresh load is
+    /// simpler than threading the running gateway's cached `HubConfig`
+    /// through the config API).
+    ///
+    /// # Errors
+    /// Returns `FatalError::Config` if the hub config can't currently be
+    /// loaded (e.g. an invalid `hub/config.toml`) — diagnosing the agent's
+    /// own config needs the hub's resolved values (timezone, gateway, ...)
+    /// to run the same resolution loading does.
+    fn hub_config(&self) -> Result<crate::config::HubConfig, crate::util::FatalError> {
+        crate::config::HubConfig::load_at(&self.hub_dir)
+    }
+
+    /// Checkpoint the agent's own config repository (`config.toml` and
+    /// `providers.toml` in the agent's `config/` directory) before a write
+    /// to either. Never fails or blocks the write.
+    pub(super) async fn checkpoint_agent_config_before_write(&self, summary: impl Into<String>) {
+        let _checkpoint_id = self.checkpoint_agent_config_id_before_write(summary).await;
+    }
+
+    /// [`Self::checkpoint_agent_config_before_write`], returning the id of
+    /// the checkpoint that holds the pre-write tree. `None` when that
+    /// checkpoint could not be recorded; the write still proceeds.
+    #[must_use]
+    pub(super) async fn checkpoint_agent_config_id_before_write(
+        &self,
+        summary: impl Into<String>,
+    ) -> Option<String> {
+        self.checkpoints
+            .checkpoint_config_kind_id_before_write(
+                crate::checkpoints::RepoKind::AgentConfig,
+                crate::checkpoints::CheckpointContext::system(
+                    crate::checkpoints::CheckpointTrigger::PreConfigWrite,
+                    summary,
+                ),
+            )
+            .await
+    }
+
+    /// Diagnostics for `contents` as this agent's `config.toml`. A hub
+    /// config that currently fails to load surfaces as a single error
+    /// diagnostic rather than panicking — semantic validation needs the
+    /// hub's resolved values (timezone, gateway, ...) the same way loading
+    /// does.
+    pub(super) fn diagnose_agent_config(
+        &self,
+        contents: &str,
+    ) -> Vec<crate::diagnostics::Diagnostic> {
+        match self.hub_config() {
+            Ok(hub) => crate::config::Config::diagnose_agent_toml(
+                contents,
+                &self.workspace_dir,
+                &self.agent_name,
+                &hub,
+            ),
+            Err(e) => vec![crate::diagnostics::Diagnostic::error(format!(
+                "hub config couldn't be loaded, so this can't be fully validated: {e}"
+            ))],
+        }
+    }
+
+    /// [`Self::diagnose_agent_config`] for `providers.toml`.
+    pub(super) fn diagnose_agent_providers(
+        &self,
+        contents: &str,
+    ) -> Vec<crate::diagnostics::Diagnostic> {
+        match self.hub_config() {
+            Ok(hub) => crate::config::Config::diagnose_agent_providers_toml(
+                contents,
+                &self.workspace_dir,
+                &self.agent_name,
+                &hub,
+            ),
+            Err(e) => vec![crate::diagnostics::Diagnostic::error(format!(
+                "hub config couldn't be loaded, so this can't be fully validated: {e}"
+            ))],
+        }
+    }
+
+    /// Validate `contents` as this agent's `config.toml`, without saving it.
+    ///
+    /// # Errors
+    /// Returns a human-readable error string if validation fails, including
+    /// when the hub config can't currently be loaded.
+    pub(super) fn validate_agent_config(&self, contents: &str) -> Result<(), String> {
+        let hub = self.hub_config().map_err(|e| {
+            format!("hub config couldn't be loaded, so this can't be validated: {e}")
+        })?;
+        crate::config::Config::validate_agent_toml(
+            contents,
+            &self.workspace_dir,
+            &self.agent_name,
+            &hub,
+        )
+    }
+
+    /// [`Self::validate_agent_config`] for `providers.toml`.
+    ///
+    /// # Errors
+    /// Same as [`Self::validate_agent_config`].
+    pub(super) fn validate_agent_providers(&self, contents: &str) -> Result<(), String> {
+        let hub = self.hub_config().map_err(|e| {
+            format!("hub config couldn't be loaded, so this can't be validated: {e}")
+        })?;
+        crate::config::Config::validate_agent_providers_toml(
+            contents,
+            &self.workspace_dir,
+            &self.agent_name,
+            &hub,
+        )
     }
 
     /// Checkpoint the workspace repository before a destructive workspace
@@ -87,54 +378,62 @@ impl ConfigApiState {
     /// `config/a2a.json`). Never fails or blocks the action — see
     /// `crate::checkpoints`.
     pub(super) async fn checkpoint_workspace_before_write(&self, summary: impl Into<String>) {
+        let _checkpoint_id = self.checkpoint_workspace_id_before_write(summary).await;
+    }
+
+    /// [`Self::checkpoint_workspace_before_write`], returning the id of the
+    /// checkpoint that holds the pre-action tree. `None` when that checkpoint
+    /// could not be recorded; the action still proceeds.
+    #[must_use]
+    pub(super) async fn checkpoint_workspace_id_before_write(
+        &self,
+        summary: impl Into<String>,
+    ) -> Option<String> {
         self.checkpoints
-            .checkpoint_workspace_before_action(crate::checkpoints::CheckpointContext::system(
+            .checkpoint_workspace_id_before_action(crate::checkpoints::CheckpointContext::system(
                 crate::checkpoints::CheckpointTrigger::PreAction,
                 summary,
             ))
-            .await;
+            .await
+    }
+
+    /// [`Self::checkpoint_workspace_id_before_write`] for the shared team
+    /// repository: the checkpoint for a destructive action on a `team/...`
+    /// path, which the workspace repository does not contain. `None` when it
+    /// could not be recorded; the action still proceeds.
+    #[must_use]
+    pub(super) async fn checkpoint_team_id_before_write(
+        &self,
+        summary: impl Into<String>,
+    ) -> Option<String> {
+        self.checkpoints
+            .checkpoint_team_id_before_action(crate::checkpoints::CheckpointContext::system(
+                crate::checkpoints::CheckpointTrigger::PreAction,
+                summary,
+            ))
+            .await
     }
 }
 
-/// Build the config API router.
-pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
-    // Scoped to just this route via `route_layer` (which wraps every route
-    // already registered on *this* router value): axum's default 2 MiB body
-    // limit stays in place for every other endpoint, while text writes get
-    // the 8 MiB the workspace file API promises.
-    let workspace_file_router = axum::Router::new()
-        .route(
-            "/api/workspace/file",
-            get(workspace::api_workspace_file_read)
-                .put(workspace::api_workspace_file_write)
-                .delete(workspace::api_workspace_delete),
-        )
-        .route(
-            "/api/workspace/raw",
-            get(workspace::api_workspace_raw_read).put(workspace::api_workspace_raw_write),
-        )
-        .route_layer(axum::extract::DefaultBodyLimit::max(
-            workspace::TEXT_FILE_LIMIT_BYTES,
-        ));
-
+/// The routes that repair an agent, which work whether or not it is running:
+/// its config, providers, MCP, and workspace-file routes, and its workspace
+/// and agent-config checkpoints.
+///
+/// With `reload_tx` set in the state, writes signal the live agent to
+/// reload; without it they only touch disk.
+pub fn agent_repair_api_router(state: ConfigApiState) -> axum::Router {
+    let checkpoints = checkpoints::checkpoints_api_router(
+        checkpoints::CheckpointApiState {
+            checkpoints: Arc::clone(&state.checkpoints),
+            repos: checkpoints::AGENT_REPOS,
+        },
+        "/api/checkpoints",
+    );
     axum::Router::new()
-        .route("/api/status", get(config::api_status))
         .route("/api/config/raw", get(config::api_config_raw_get))
         .route("/api/config/raw", put(config::api_config_raw_put))
         .route("/api/config/patch", patch(config::api_config_patch))
         .route("/api/config/validate", post(config::api_config_validate))
-        .route(
-            "/api/config/complete-setup",
-            post(config::api_complete_setup),
-        )
-        .route("/api/system/timezone", get(config::api_system_timezone))
-        .route("/api/mcp-catalog", get(config::api_mcp_catalog))
-        .route("/api/chat/history", get(config::api_chat_history))
-        .route("/api/usage", get(config::api_usage))
-        .route(
-            "/api/providers/models",
-            post(providers::api_provider_models),
-        )
         .route("/api/providers/raw", get(providers::api_providers_raw_get))
         .route("/api/providers/raw", put(providers::api_providers_raw_put))
         .route(
@@ -145,94 +444,121 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
             "/api/providers/validate",
             post(providers::api_providers_validate),
         )
+        .route(
+            "/api/providers/models",
+            post(providers::api_provider_models),
+        )
         .route("/api/mcp/raw", get(config::api_mcp_raw_get))
         .route("/api/mcp/raw", put(config::api_mcp_raw_put))
         .route("/api/mcp/patch", patch(config::api_mcp_patch))
-        .route("/api/agent-keys", get(agent_keys::api_agent_keys_list))
-        .route("/api/agent-keys", post(agent_keys::api_agent_keys_set))
+        .merge(workspace_api_router("/api"))
+        .merge(teams_setup::teams_setup_api_router())
+        .with_state(state)
+        .merge(checkpoints)
+}
+
+/// The workspace file routes under `prefix`, addressing whichever namespace
+/// the state's [`WorkspaceScope`] selects. Used under an agent and, scoped to
+/// the team directory, under `/api/team`.
+fn workspace_api_router(prefix: &str) -> axum::Router<ConfigApiState> {
+    // Scoped to just this route via `route_layer` (which wraps every route
+    // already registered on *this* router value): axum's default 2 MiB body
+    // limit stays in place for every other endpoint, while text writes get
+    // the 8 MiB the workspace file API promises.
+    let workspace_file_router = axum::Router::new()
         .route(
-            "/api/agent-keys/{name}",
-            delete(agent_keys::api_agent_keys_delete),
+            "/workspace/file",
+            get(workspace::api_workspace_file_read)
+                .put(workspace::api_workspace_file_write)
+                .delete(workspace::api_workspace_delete),
         )
-        .route("/api/a2a/keys", get(a2a::api_a2a_keys_list))
-        .route("/api/a2a/keys", post(a2a::api_a2a_keys_create))
-        .route("/api/a2a/keys/{name}", delete(a2a::api_a2a_keys_revoke))
-        .route("/api/a2a/agents/raw", get(a2a::api_a2a_agents_raw_get))
-        .route("/api/a2a/agents/raw", put(a2a::api_a2a_agents_raw_put))
-        .route("/api/secrets", post(secrets::api_secrets_set))
-        .route("/api/secrets", get(secrets::api_secrets_list))
-        .route("/api/secrets/{name}", delete(secrets::api_secrets_delete))
-        .route("/api/workspace/files", get(workspace::api_workspace_files))
-        .route("/api/workspace/dir", post(workspace::api_workspace_mkdir))
-        .route("/api/workspace/move", post(workspace::api_workspace_move))
         .route(
-            "/api/workspace/validate",
+            "/workspace/raw",
+            get(workspace::api_workspace_raw_read).put(workspace::api_workspace_raw_write),
+        )
+        .route_layer(axum::extract::DefaultBodyLimit::max(
+            workspace::TEXT_FILE_LIMIT_BYTES,
+        ));
+
+    let routes = axum::Router::new()
+        .route("/workspace/files", get(workspace::api_workspace_files))
+        .route("/workspace/dir", post(workspace::api_workspace_mkdir))
+        .route("/workspace/move", post(workspace::api_workspace_move))
+        .route(
+            "/workspace/validate",
             post(workspace::api_workspace_validate),
         )
         .merge(workspace_file_router)
-        .route(
-            "/api/workspace/tree",
-            get(workspace_bulk::api_workspace_tree),
-        )
-        .route(
-            "/api/workspace/read",
-            post(workspace_bulk::api_workspace_read),
-        )
-        .route("/api/inbox", get(inbox::api_inbox_list))
-        .route("/api/inbox/{id}/read", put(inbox::api_inbox_read))
-        .route("/api/inbox/{id}/archive", post(inbox::api_inbox_archive))
-        .route(
-            "/api/inbox/{id}/attachments/{index}",
-            get(inbox::api_inbox_attachment),
-        )
+        .route("/workspace/tree", get(workspace_bulk::api_workspace_tree))
+        .route("/workspace/read", post(workspace_bulk::api_workspace_read));
+    axum::Router::new().nest(prefix, routes)
+}
+
+/// The team's workspace file API: the workspace routes with every path
+/// relative to `team/`, served under `/api/team`.
+pub(crate) fn team_workspace_api_router(state: ConfigApiState) -> axum::Router {
+    workspace_api_router("/api/team").with_state(state)
+}
+
+/// The running agent's `status` route: the one per-agent data route that
+/// describes the live process, so it needs a running agent.
+pub(crate) fn agent_status_api_router(state: AgentStatusState) -> axum::Router {
+    axum::Router::new()
+        .route("/api/status", get(config::api_status))
         .with_state(state)
 }
 
-/// Fallback handler for serving embedded static files.
-///
-/// Serves the file at the requested URI path, falling back to `index.html`
-/// for the web UI's client-side routes (paths without file extensions).
-/// Unknown API and WebSocket paths get a 404 rather than the app shell, so a
-/// client calling a missing endpoint sees the failure instead of HTML.
-pub(super) async fn static_handler(uri: Uri) -> Response {
-    let path = uri.path().trim_start_matches('/');
-
-    // Try the exact path first
-    if let Some(resp) = serve_embedded(path) {
-        return resp;
-    }
-
-    if is_client_route(path)
-        && let Some(resp) = serve_embedded("index.html")
-    {
-        return resp;
-    }
-
-    Response::builder()
-        .status(axum::http::StatusCode::NOT_FOUND)
-        .body(axum::body::Body::from("not found"))
-        .unwrap_or_default()
-}
-
-/// Whether `path` (without its leading slash) is a web UI route that the
-/// client-side router handles, rather than a missing asset or server endpoint.
-fn is_client_route(path: &str) -> bool {
-    let first_segment = path.split('/').next().unwrap_or_default();
-    !path.contains('.') && first_segment != "api" && first_segment != "ws"
-}
-
-/// Serve an embedded file by path, returning `None` if it doesn't exist.
-fn serve_embedded(path: &str) -> Option<Response> {
-    use axum::body::Body;
-    use axum::http::header;
-
-    let asset = WebAssets::get(path)?;
-    let mime = mime_guess::from_path(path).first_or_octet_stream();
-    let mut resp = Response::new(Body::from(asset.data.to_vec()));
-    if let Ok(val) = axum::http::HeaderValue::from_str(mime.as_ref()) {
-        resp.headers_mut().insert(header::CONTENT_TYPE, val);
-    }
-    Some(resp)
+/// The hub-level config, secret, and key routes, plus onboarding. These exist
+/// once per process and need no running agent.
+pub(crate) fn hub_api_router(state: HubApiState) -> axum::Router {
+    axum::Router::new()
+        .route("/api/hub/config/raw", get(config::api_hub_config_raw_get))
+        .route("/api/hub/config/raw", put(config::api_hub_config_raw_put))
+        .route("/api/hub/config/patch", patch(config::api_hub_config_patch))
+        .route(
+            "/api/hub/config/validate",
+            post(config::api_hub_config_validate),
+        )
+        .route(
+            "/api/hub/config/complete-setup",
+            post(config::api_complete_setup),
+        )
+        .route(
+            "/api/hub/providers/models",
+            post(providers::api_provider_models),
+        )
+        .route(
+            "/api/hub/system-one/models",
+            post(system_one::api_system_one_models),
+        )
+        .route(
+            "/api/hub/system-one/test",
+            post(system_one::api_system_one_test),
+        )
+        .route("/api/hub/system/timezone", get(config::api_system_timezone))
+        .route("/api/hub/mcp-catalog", get(config::api_mcp_catalog))
+        .route(
+            "/api/hub/agent-keys",
+            get(agent_keys::api_agent_keys_list).post(agent_keys::api_agent_keys_set),
+        )
+        .route(
+            "/api/hub/agent-keys/{name}",
+            delete(agent_keys::api_agent_keys_delete),
+        )
+        .route(
+            "/api/hub/a2a/keys",
+            get(a2a::api_a2a_keys_list).post(a2a::api_a2a_keys_create),
+        )
+        .route("/api/hub/a2a/keys/{name}", delete(a2a::api_a2a_keys_revoke))
+        .route(
+            "/api/hub/secrets",
+            post(secrets::api_secrets_set).get(secrets::api_secrets_list),
+        )
+        .route(
+            "/api/hub/secrets/{name}",
+            delete(secrets::api_secrets_delete),
+        )
+        .with_state(state)
 }
 
 #[cfg(test)]
@@ -242,127 +568,31 @@ fn serve_embedded(path: &str) -> Option<Response> {
 )]
 mod tests {
     use super::*;
-    use axum::http::{StatusCode, header};
-
-    #[test]
-    fn web_assets_contains_index_html() {
-        assert!(
-            WebAssets::get("index.html").is_some(),
-            "index.html should be embedded"
-        );
-    }
-
-    #[test]
-    fn serve_embedded_returns_html_content_type() {
-        let resp = serve_embedded("index.html").unwrap();
-        let ct = resp
-            .headers()
-            .get(axum::http::header::CONTENT_TYPE)
-            .unwrap();
-        assert!(
-            ct.to_str().unwrap().contains("html"),
-            "content type should be html"
-        );
-    }
-
-    #[test]
-    fn serve_embedded_returns_json_content_type() {
-        let resp = serve_embedded("mcp-catalog.json").unwrap();
-        let ct = resp
-            .headers()
-            .get(axum::http::header::CONTENT_TYPE)
-            .unwrap();
-        assert!(
-            ct.to_str().unwrap().contains("json"),
-            "content type should be json"
-        );
-    }
-
-    #[test]
-    fn serve_embedded_returns_manifest_content_type() {
-        let resp = serve_embedded("manifest.webmanifest").unwrap();
-        let ct = resp
-            .headers()
-            .get(axum::http::header::CONTENT_TYPE)
-            .unwrap();
-        assert_eq!(
-            ct.to_str().unwrap(),
-            "application/manifest+json",
-            "web app manifest should be served with the manifest content type"
-        );
-    }
-
-    #[tokio::test]
-    async fn static_handler_serves_app_shell_for_client_routes() {
-        for path in [
-            "/",
-            "/sessions/run-1790000000000-0a1b2c3d",
-            "/settings/memory",
-        ] {
-            let resp = static_handler(Uri::from_static(path)).await;
-            assert_eq!(resp.status(), StatusCode::OK, "{path} should be served");
-            let ct = resp.headers().get(header::CONTENT_TYPE).unwrap();
-            assert!(
-                ct.to_str().unwrap().contains("html"),
-                "{path} should get index.html"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn static_handler_404s_for_missing_endpoints_and_assets() {
-        for path in [
-            "/api/nope",
-            "/api",
-            "/ws/extra",
-            "/assets/missing-abc123.js",
-        ] {
-            let resp = static_handler(Uri::from_static(path)).await;
-            assert_eq!(
-                resp.status(),
-                StatusCode::NOT_FOUND,
-                "{path} should not get the app shell"
-            );
-        }
-    }
-
-    #[test]
-    fn serve_embedded_returns_none_for_missing() {
-        assert!(
-            serve_embedded("does-not-exist.txt").is_none(),
-            "missing file should return None"
-        );
-    }
 
     #[tokio::test]
     async fn chat_history_returns_empty_when_no_memory_dir() {
         use axum::Json;
         use axum::extract::{Query, State};
 
-        let state = ConfigApiState {
-            config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
-            workspace_dir: PathBuf::from("/tmp/residuum-test-nonexistent/workspace"),
-            memory_dir: None,
-            reload_tx: None,
-            setup_done: None,
-            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
-            checkpoints: crate::checkpoints::test_engine(),
-        };
-        let Json(segment) = config::api_chat_history(
+        let state = AgentFilesState::for_test(
+            PathBuf::from("/tmp/residuum-test-nonexistent/workspace"),
+            None,
+        );
+        let Json(segment) = chat::api_chat_history(
             State(state),
-            Query(config::ChatHistoryQuery { episode: None }),
+            Query(chat::ChatHistoryQuery { episode: None }),
         )
         .await
         .unwrap();
         match segment {
-            config::ChatHistorySegment::Recent {
+            chat::ChatHistorySegment::Recent {
                 messages,
                 next_cursor,
             } => {
                 assert!(messages.is_empty(), "setup mode should have no messages");
                 assert!(next_cursor.is_none(), "setup mode should have no cursor");
             }
-            config::ChatHistorySegment::Episode { .. } => {
+            chat::ChatHistorySegment::Episode { .. } => {
                 panic!("expected Recent segment in setup mode");
             }
         }
@@ -373,16 +603,11 @@ mod tests {
         use axum::Json;
         use axum::extract::State;
 
-        let state = ConfigApiState {
-            config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
-            workspace_dir: PathBuf::from("/tmp/residuum-test-nonexistent/workspace"),
-            memory_dir: None,
-            reload_tx: None,
-            setup_done: None,
-            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
-            checkpoints: crate::checkpoints::test_engine(),
-        };
-        let Json(totals) = config::api_usage(State(state)).await;
+        let state = AgentFilesState::for_test(
+            PathBuf::from("/tmp/residuum-test-nonexistent/workspace"),
+            None,
+        );
+        let Json(totals) = chat::api_usage(State(state)).await;
         assert_eq!(totals, crate::agent::usage::SessionUsageTotals::default());
     }
 
@@ -407,16 +632,8 @@ mod tests {
         )
         .await;
 
-        let state = ConfigApiState {
-            config_dir: dir.path().to_path_buf(),
-            workspace_dir: dir.path().to_path_buf(),
-            memory_dir: Some(memory_dir),
-            reload_tx: None,
-            setup_done: None,
-            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
-            checkpoints: crate::checkpoints::test_engine(),
-        };
-        let Json(loaded) = config::api_usage(State(state)).await;
+        let state = AgentFilesState::for_test(dir.path().to_path_buf(), Some(memory_dir));
+        let Json(loaded) = chat::api_usage(State(state)).await;
         assert_eq!(loaded, totals);
     }
 
@@ -425,30 +642,25 @@ mod tests {
         use axum::Json;
         use axum::extract::{Query, State};
 
-        let state = ConfigApiState {
-            config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
-            workspace_dir: PathBuf::from("/tmp/residuum-test-nonexistent/workspace"),
-            memory_dir: Some(PathBuf::from("/tmp/residuum-test-nonexistent-memory")),
-            reload_tx: None,
-            setup_done: None,
-            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
-            checkpoints: crate::checkpoints::test_engine(),
-        };
-        let Json(segment) = config::api_chat_history(
+        let state = AgentFilesState::for_test(
+            PathBuf::from("/tmp/residuum-test-nonexistent/workspace"),
+            Some(PathBuf::from("/tmp/residuum-test-nonexistent-memory")),
+        );
+        let Json(segment) = chat::api_chat_history(
             State(state),
-            Query(config::ChatHistoryQuery { episode: None }),
+            Query(chat::ChatHistoryQuery { episode: None }),
         )
         .await
         .unwrap();
         match segment {
-            config::ChatHistorySegment::Recent {
+            chat::ChatHistorySegment::Recent {
                 messages,
                 next_cursor,
             } => {
                 assert!(messages.is_empty(), "missing file should have no messages");
                 assert!(next_cursor.is_none(), "no episodes yet");
             }
-            config::ChatHistorySegment::Episode { .. } => {
+            chat::ChatHistorySegment::Episode { .. } => {
                 panic!("expected Recent segment when recent_messages.json is missing");
             }
         }
@@ -493,27 +705,19 @@ mod tests {
             assert!(episode_jsonl_path(&episodes_dir, &episode).exists());
         }
 
-        let state = ConfigApiState {
-            config_dir: tmp.path().to_path_buf(),
-            workspace_dir: tmp.path().to_path_buf(),
-            memory_dir: Some(memory_dir),
-            reload_tx: None,
-            setup_done: None,
-            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
-            checkpoints: crate::checkpoints::test_engine(),
-        };
-        let Json(segment) = config::api_chat_history(
+        let state = AgentFilesState::for_test(tmp.path().to_path_buf(), Some(memory_dir));
+        let Json(segment) = chat::api_chat_history(
             State(state),
-            Query(config::ChatHistoryQuery { episode: None }),
+            Query(chat::ChatHistoryQuery { episode: None }),
         )
         .await
         .unwrap();
 
         match segment {
-            config::ChatHistorySegment::Recent { next_cursor, .. } => {
+            chat::ChatHistorySegment::Recent { next_cursor, .. } => {
                 assert_eq!(next_cursor.as_deref(), Some("ep-002"));
             }
-            config::ChatHistorySegment::Episode { .. } => panic!("expected Recent"),
+            chat::ChatHistorySegment::Episode { .. } => panic!("expected Recent"),
         }
     }
 
@@ -560,19 +764,11 @@ mod tests {
             .unwrap();
         }
 
-        let state = ConfigApiState {
-            config_dir: tmp.path().to_path_buf(),
-            workspace_dir: tmp.path().to_path_buf(),
-            memory_dir: Some(memory_dir),
-            reload_tx: None,
-            setup_done: None,
-            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
-            checkpoints: crate::checkpoints::test_engine(),
-        };
+        let state = AgentFilesState::for_test(tmp.path().to_path_buf(), Some(memory_dir));
 
-        let Json(segment) = config::api_chat_history(
+        let Json(segment) = chat::api_chat_history(
             State(state),
-            Query(config::ChatHistoryQuery {
+            Query(chat::ChatHistoryQuery {
                 episode: Some("ep-002".to_string()),
             }),
         )
@@ -580,7 +776,7 @@ mod tests {
         .unwrap();
 
         match segment {
-            config::ChatHistorySegment::Episode {
+            chat::ChatHistorySegment::Episode {
                 episode_id,
                 messages,
                 next_cursor,
@@ -595,8 +791,76 @@ mod tests {
                     "cursor should walk backward"
                 );
             }
-            config::ChatHistorySegment::Recent { .. } => panic!("expected Episode"),
+            chat::ChatHistorySegment::Recent { .. } => panic!("expected Episode"),
         }
+    }
+
+    #[tokio::test]
+    async fn chat_history_pages_only_through_the_main_conversation() {
+        use crate::memory::episode_store::write_episode_transcript_tagged;
+        use crate::memory::types::{Episode, SourceTag};
+        use axum::Json;
+        use axum::extract::{Query, State};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        let episodes_dir = memory_dir.join("episodes");
+        let wiki_lint = SourceTag::session("scheduled-wiki-lint-2b42", "run-1", "scheduled");
+        for (id, tag) in [
+            ("ep-001", SourceTag::main()),
+            ("ep-002", wiki_lint.clone()),
+            ("ep-003", SourceTag::main()),
+            ("ep-004", wiki_lint),
+        ] {
+            let episode = Episode {
+                id: id.to_string(),
+                date: chrono::NaiveDate::from_ymd_opt(2026, 10, 6).unwrap(),
+                observations: vec![],
+            };
+            write_episode_transcript_tagged(
+                &episodes_dir,
+                &episode,
+                &[crate::inference::Message::user(id)],
+                &tag,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        let state = AgentFilesState::for_test(tmp.path().to_path_buf(), Some(memory_dir));
+        let history = |episode: Option<&str>| {
+            chat::api_chat_history(
+                State(state.clone()),
+                Query(chat::ChatHistoryQuery {
+                    episode: episode.map(str::to_string),
+                }),
+            )
+        };
+
+        let Json(recent) = history(None).await.unwrap();
+        let chat::ChatHistorySegment::Recent { next_cursor, .. } = recent else {
+            panic!("expected Recent");
+        };
+        assert_eq!(
+            next_cursor.as_deref(),
+            Some("ep-003"),
+            "the newest episode is a pulse run, not main history"
+        );
+
+        let Json(newest) = history(Some("ep-003")).await.unwrap();
+        let chat::ChatHistorySegment::Episode {
+            next_cursor: older, ..
+        } = newest
+        else {
+            panic!("expected Episode");
+        };
+        assert_eq!(older.as_deref(), Some("ep-001"));
+
+        assert_eq!(
+            history(Some("ep-002")).await.unwrap_err(),
+            axum::http::StatusCode::NOT_FOUND,
+            "a session run's episode is never served as main chat history"
+        );
     }
 
     #[tokio::test]
@@ -608,19 +872,11 @@ mod tests {
         let memory_dir = tmp.path().join("memory");
         tokio::fs::create_dir_all(&memory_dir).await.unwrap();
 
-        let state = ConfigApiState {
-            config_dir: tmp.path().to_path_buf(),
-            workspace_dir: tmp.path().to_path_buf(),
-            memory_dir: Some(memory_dir),
-            reload_tx: None,
-            setup_done: None,
-            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
-            checkpoints: crate::checkpoints::test_engine(),
-        };
+        let state = AgentFilesState::for_test(tmp.path().to_path_buf(), Some(memory_dir));
 
-        let err = config::api_chat_history(
+        let err = chat::api_chat_history(
             State(state),
-            Query(config::ChatHistoryQuery {
+            Query(chat::ChatHistoryQuery {
                 episode: Some("ep-999".to_string()),
             }),
         )
@@ -650,19 +906,11 @@ mod tests {
             .await
             .unwrap();
 
-        let state = ConfigApiState {
-            config_dir: tmp.path().to_path_buf(),
-            workspace_dir: tmp.path().to_path_buf(),
-            memory_dir: Some(memory_dir),
-            reload_tx: None,
-            setup_done: None,
-            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
-            checkpoints: crate::checkpoints::test_engine(),
-        };
+        let state = AgentFilesState::for_test(tmp.path().to_path_buf(), Some(memory_dir));
 
-        let err = config::api_chat_history(
+        let err = chat::api_chat_history(
             State(state),
-            Query(config::ChatHistoryQuery { episode: None }),
+            Query(chat::ChatHistoryQuery { episode: None }),
         )
         .await
         .unwrap_err();
@@ -679,15 +927,9 @@ mod tests {
         use axum::extract::{Path, State};
 
         let dir = tempfile::tempdir().unwrap();
-        let state = ConfigApiState {
-            config_dir: dir.path().to_path_buf(),
-            workspace_dir: dir.path().join("workspace"),
-            memory_dir: None,
-            reload_tx: None,
-            setup_done: None,
-            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
-            checkpoints: crate::checkpoints::test_engine(),
-        };
+        let hub_dir = dir.path().join("hub");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        let state = HubApiState::for_test(&hub_dir);
 
         // Set a secret
         let set_result = secrets::api_secrets_set(
@@ -717,5 +959,64 @@ mod tests {
         // Verify it's gone
         let after_delete = secrets::api_secrets_list(State(state)).await.unwrap();
         assert!(after_delete.0.names.is_empty());
+    }
+}
+
+/// API states whose checkpoint engine watches the same config and workspace
+/// directories the handlers write to. `test_engine` deliberately does not, so
+/// a test that asserts on the returned checkpoint id needs these.
+#[cfg(test)]
+pub(super) mod test_support {
+    use super::{ConfigApiState, HubApiState, WorkspaceScope};
+
+    fn watching_engine(
+        root: &std::path::Path,
+    ) -> (
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::sync::Arc<crate::checkpoints::CheckpointEngine>,
+    ) {
+        let config_dir = root.join("config");
+        let workspace_dir = root.join("workspace");
+        let hub_dir = root.join("hub");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::create_dir_all(&workspace_dir).unwrap();
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        let checkpoints = std::sync::Arc::new(
+            crate::checkpoints::CheckpointEngine::new(
+                "test-agent",
+                workspace_dir.clone(),
+                &crate::config::paths::TeamPaths::new(hub_dir.clone().join("team")),
+                config_dir.clone(),
+                hub_dir.clone(),
+                &hub_dir.join("checkpoints"),
+                None,
+            )
+            .unwrap(),
+        );
+        (hub_dir, config_dir, workspace_dir, checkpoints)
+    }
+
+    pub(super) fn watching_state(root: &std::path::Path) -> ConfigApiState {
+        let (hub_dir, config_dir, workspace_dir, checkpoints) = watching_engine(root);
+        ConfigApiState {
+            team: None,
+            hub_dir,
+            config_dir,
+            agent_name: "test-agent".to_string(),
+            workspace_dir,
+            memory_dir: None,
+            reload_tx: None,
+            checkpoints,
+            scope: WorkspaceScope::Agent,
+        }
+    }
+
+    pub(super) fn watching_hub_state(root: &std::path::Path) -> HubApiState {
+        let (hub_dir, _config_dir, _workspace_dir, checkpoints) = watching_engine(root);
+        let mut state = HubApiState::for_test(&hub_dir);
+        state.checkpoints = checkpoints;
+        state
     }
 }

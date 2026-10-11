@@ -29,7 +29,7 @@ Every message the agent sees records who sent it and where, e.g. `[From: bear vi
 
 Only the owner's own direct messages reach the main agent. Every other admitted conversation — a server channel or thread, and a non-owner's DM when `respond_to_others` is on — is handled by an [agent session](background-tasks.md) of its own instead: a temporary fork of the main agent, addressed deterministically by that channel, that keeps its own memory and idle timeout rather than sharing the owner's private conversation. This holds even when the owner is the one talking in a server channel — a channel is still a shared space, so it gets a session, not main. The session sees the same sender attribution and buffered chatter described below, and replies into that channel — see [Where replies go](#where-replies-go).
 
-`/stop` follows the same routing: typed in the owner's own DM it stops main's current turn; typed in a server channel or thread it stops that channel's session instead, never main — see [Turn Control](turn-control.md).
+`/stop` follows the same routing: typed in the owner's own DM it stops main's current turn; typed in a server channel or thread it stops that channel's session instead, never main — see [Turn Control](turn-control.md). `/stop <name>` names any live session explicitly instead of relying on that routing — useful for stopping a session from somewhere other than its own conversation, e.g. the owner's own DM. `/sessions` lists every live session (address, purpose, state, elapsed time). `/multitask <task>`, in the owner's own DM only, forks the main conversation into a session that works on the task and posts its replies back into that DM — see [Owner Sessions](background-tasks.md#owner-sessions).
 
 ## Direct messages and server channels
 
@@ -51,11 +51,12 @@ The buffer for that channel is emptied when it is delivered, so each message rea
 
 - A DM reply goes to the owner from the main agent's own conversation.
 - A server channel or thread's reply comes from that channel's own session and always goes back to that same channel. It never falls back to the owner's DM: if Discord refuses the post (the bot lacks permission there, or was removed), the output is dropped, the error is logged naming the session and channel, and main gets a notice so the owner can be told if it matters.
-- `send_message` with a `conversation` from `list_conversations` posts into that DM or channel, from whichever agent (main or a session) calls it. If Discord refuses the post, main's own send gets an error DM to the owner the same way it always has; a session's send is subject to the same never-falls-back rule as its own replies above.
+- `send_message` with a `conversation` from `list_conversations` posts into that DM or channel, from whichever agent (main or a session) calls it. If Discord refuses main's own send (or the conversation is unknown), the owner sees a notice in the web UI and main gets a `[Delivery Failed]` message; a session's send is subject to the same never-falls-back rule as its own replies above.
 - Other proactive output from main — `send_message` without a conversation, results routed through `idle_channel = "discord"`, background turns — goes to the owner's DM. Until an owner exists it is dropped with a warning in the log.
-- System notices and errors go only to the owner's DM, never into a server channel.
+- When a main-agent turn started from Discord fails, the plain-language error goes back where its reply would have. System notices and other errors are never sent to Discord; they appear in the web UI.
+- The web UI follows the main agent's turns from Discord as they happen: the owner's message, the agent's text and tool calls in order, the reply and the end of the turn, each marked as having come from Discord. A web message sent while such a turn runs joins it, the same as a Discord message would. See [The Main Conversation Stream](turn-control.md#the-main-conversation-stream).
 
-Long replies are split into 2000-character messages. A typing indicator shows in the target channel while a turn runs. Files the agent sends are uploaded as Discord attachments.
+Long replies are split into 2000-character messages. A typing indicator shows in the target channel while a turn runs — for the main agent's own turn, and equally for a group chat or non-owner DM's own conversation session turn (see [Conversation Routing](background-tasks.md#conversation-routing)), each driven by its own lifecycle signal so one doesn't depend on the other. Files the agent sends are uploaded as Discord attachments.
 
 ## Conversations the agent can list
 
@@ -68,7 +69,7 @@ Long replies are split into 2000-character messages. A typing indicator shows in
 
 ```toml
 [discord]
-token = "${RESIDUUM_DISCORD_TOKEN}"   # or secret:discord; RESIDUUM_DISCORD_TOKEN also works on its own
+token = "secret:discord"   # or a "${ENV_VAR}" reference, or a literal
 respond_to_others = false
 context_messages = 20
 ```

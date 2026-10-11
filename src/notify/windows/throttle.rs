@@ -17,5 +17,5 @@ pub fn spawn(
     bridge: WindowsBridge,
     throttle_window_secs: u64,
 ) -> JoinHandle<()> {
-    tokio::spawn(batch_aggregator::run(rx, bridge, throttle_window_secs))
+    crate::util::spawn_in_span(batch_aggregator::run(rx, bridge, throttle_window_secs))
 }

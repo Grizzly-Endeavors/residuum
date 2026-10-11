@@ -1,0 +1,49 @@
+# yaml-language-server: $schema=https://aka.ms/m365-agents-toolkits/v1.13/yaml.schema.json
+version: v1.13
+
+provision:
+  # The service principal lets the bot get Bot Connector tokens from the
+  # tenant's own token endpoint, which is where Residuum asks for them.
+  - uses: aadApp/create
+    with:
+      name: ${{BOT_DISPLAY_NAME}}
+      generateClientSecret: true
+      generateServicePrincipal: true
+      signInAudience: AzureADMultipleOrgs
+    writeToEnvironmentFile:
+      clientId: BOT_ID
+      clientSecret: SECRET_BOT_PASSWORD
+      objectId: BOT_OBJECT_ID
+
+  - uses: botFramework/create
+    with:
+      botId: ${{BOT_ID}}
+      name: ${{BOT_DISPLAY_NAME}}
+      messagingEndpoint: ${{BOT_ENDPOINT}}
+      channels:
+        - name: msteams
+
+  - uses: teamsApp/create
+    with:
+      name: ${{TEAMS_APP_NAME}}
+    writeToEnvironmentFile:
+      teamsAppId: TEAMS_APP_ID
+      teamsAppTenantId: TEAMS_APP_TENANT_ID
+
+  - uses: teamsApp/validateManifest
+    with:
+      manifestPath: ./appPackage/manifest.json
+
+  - uses: teamsApp/zipAppPackage
+    with:
+      manifestPath: ./appPackage/manifest.json
+      outputZipPath: ./appPackage/build/appPackage.${{TEAMSFX_ENV}}.zip
+      outputFolder: ./appPackage/build
+
+  - uses: teamsApp/validateAppPackage
+    with:
+      appPackagePath: ./appPackage/build/appPackage.${{TEAMSFX_ENV}}.zip
+
+  - uses: teamsApp/update
+    with:
+      appPackagePath: ./appPackage/build/appPackage.${{TEAMSFX_ENV}}.zip

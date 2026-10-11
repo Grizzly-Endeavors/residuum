@@ -1,16 +1,17 @@
-//! Agent sessions HTTP API: the sessions sidebar's listing and transcripts,
+//! Agent sessions HTTP API: Activity's listing and the session panel's transcripts,
 //! and the start, stop, and message endpoints workbench artifacts use.
 //!
-//! - `GET /api/sessions` — live sessions plus a page of completed runs.
-//! - `GET /api/sessions/runs/{run_id}/transcript` — one run's transcript in
+//! - `GET /api/agents/{name}/sessions` — live sessions plus a page of completed runs.
+//! - `GET /api/agents/{name}/sessions/runs/{run_id}/transcript` — one run's transcript in
 //!   the chat-history message shape.
-//! - `POST /api/sessions` — start an `artifact` session for the artifact
-//!   named by the request's identity header.
-//! - `POST /api/sessions/{address}/stop` — stop a live session.
-//! - `POST /api/sessions/{address}/messages` — send a session a message.
+//! - `POST /api/agents/{name}/sessions` — start a session: the owner's own (a clean
+//!   one, or a fork of the main conversation), or an `artifact` session for the
+//!   artifact named by the request's identity header.
+//! - `POST /api/agents/{name}/sessions/{address}/stop` — stop a live session.
+//! - `POST /api/agents/{name}/sessions/{address}/messages` — send a session a message.
 //!
 //! Live updates arrive over the WebSocket as `session_*` frames; these
-//! endpoints give the sidebar its starting state and a finished run's
+//! endpoints give Activity its starting state and a finished run's
 //! history. Stop and message share their rules with the WebSocket's
 //! `session_stop` and `session_send_message` commands
 //! (`crate::gateway::sessions`).
@@ -24,7 +25,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
+use super::chat::HistoryMessage;
 use crate::background::messaging::AgentMessenger;
+use crate::background::owner_session::{OwnerSessionStart, load_main_conversation};
 use crate::background::registry::{
     MAIN_DEPTH, SessionCategory, SessionRegistry, artifact_sender_address, generate_address,
 };
@@ -38,7 +41,7 @@ use crate::gateway::sessions::{
     SessionCommandError, SessionMessageAuthor, send_session_message, stop_session,
     summary_from_live, summary_from_record,
 };
-use crate::gateway::web::artifact_identity::{ARTIFACT_HEADER, artifact_identity};
+use crate::gateway::web::artifact_identity::artifact_identity;
 use crate::inference::Message;
 use crate::memory::recent_messages::RecentMessage;
 use crate::memory::types::Visibility;
@@ -57,12 +60,15 @@ pub(crate) struct SessionsApiState {
     pub store: Arc<SessionStore>,
     /// Timezone transcript timestamps are rendered in, matching chat history.
     pub tz: chrono_tz::Tz,
-    /// Delivers messages to sessions, as the sidebar's own messages go.
+    /// Delivers messages to sessions, as the owner's messages from a session panel go.
     pub messenger: Arc<AgentMessenger>,
     /// Publishes spawn requests for sessions an artifact starts.
     pub publisher: Publisher,
     /// The skill index, to refuse a start naming a skill that doesn't exist.
     pub skill_state: SharedSkillState,
+    /// Main's saved conversation (`recent_messages.json`), which a fork
+    /// starts from.
+    pub main_conversation: std::path::PathBuf,
 }
 
 /// Build the sessions API router.
@@ -88,7 +94,7 @@ pub(crate) fn sessions_api_router(state: SessionsApiState) -> axum::Router {
 /// An API failure: a status code and a plain-language explanation.
 type ApiError = (StatusCode, String);
 
-/// Query parameters for `GET /api/sessions`.
+/// Query parameters for `GET /api/agents/{name}/sessions`.
 #[derive(Debug, Deserialize)]
 pub(crate) struct SessionListQuery {
     /// Only sessions in this category (`scheduled`, `external`, `spawned`).
@@ -108,7 +114,7 @@ pub(crate) struct SessionListQuery {
     limit: Option<usize>,
 }
 
-/// `GET /api/sessions` — every live session plus one page of completed runs,
+/// `GET /api/agents/{name}/sessions` — every live session plus one page of completed runs,
 /// both newest first and both filtered by `category`, `address`, and
 /// `artifact` when given. `artifact` keeps only the sessions that artifact
 /// started (trigger `Artifact(<name>)`), not sessions those spawned in turn.
@@ -215,18 +221,18 @@ pub(crate) async fn api_sessions_list(
     }))
 }
 
-/// `GET /api/sessions/runs/{run_id}/transcript` response.
+/// `GET /api/agents/{name}/sessions/runs/{run_id}/transcript` response.
 #[derive(Debug, Serialize)]
 pub(crate) struct SessionTranscriptResponse {
     /// The run, with its current state when it is still live.
     session: SessionSummary,
-    /// Its transcript so far, in the same shape `GET /api/chat/history`
+    /// Its transcript so far, in the same shape `GET /api/agents/{name}/chat/history`
     /// returns. Runs don't record per-message times, so every message
     /// carries the run's start time.
-    messages: Vec<RecentMessage>,
+    messages: Vec<HistoryMessage>,
 }
 
-/// `GET /api/sessions/runs/{run_id}/transcript` — one run's transcript.
+/// `GET /api/agents/{name}/sessions/runs/{run_id}/transcript` — one run's transcript.
 ///
 /// A live run's transcript is read from its incremental transcript (current
 /// to the last message produced); a completed run's from its final record.
@@ -271,10 +277,13 @@ pub(crate) async fn api_session_transcript(
     let timestamp = session.started_at.with_timezone(&state.tz).naive_local();
     let messages = transcript
         .into_iter()
-        .map(|message: Message| RecentMessage {
-            message,
-            timestamp,
-            visibility: Visibility::User,
+        .map(|message: Message| {
+            HistoryMessage::from(RecentMessage {
+                message,
+                timestamp,
+                visibility: Visibility::User,
+                turn_id: None,
+            })
         })
         .collect();
     Ok(Json(SessionTranscriptResponse { session, messages }))
@@ -325,7 +334,7 @@ fn command_error_response(e: SessionCommandError) -> Response {
         .into_response()
 }
 
-/// `POST /api/sessions` request body.
+/// `POST /api/agents/{name}/sessions` request body.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SessionStartRequest {
@@ -340,9 +349,12 @@ pub(crate) struct SessionStartRequest {
     /// Model tier: `small`, `medium` (default), or `large`.
     #[serde(default)]
     model: Option<String>,
+    /// Start from the main conversation (`/multitask`). The owner's only.
+    #[serde(default)]
+    fork: bool,
 }
 
-/// `POST /api/sessions` response.
+/// `POST /api/agents/{name}/sessions` response.
 #[derive(Debug, Serialize)]
 pub(crate) struct SessionStartResponse {
     /// The new session's address. Its run id arrives in the
@@ -350,19 +362,22 @@ pub(crate) struct SessionStartResponse {
     address: String,
 }
 
-/// `POST /api/sessions` — start an `artifact` session for the artifact named
-/// by the request's identity header.
+/// `POST /api/agents/{name}/sessions` — start a session, at depth 1 with no
+/// spawner, so nothing it says is relayed to the main agent or routed to the
+/// inbox.
 ///
-/// The session is a fork of the main agent like a spawned one, at depth 1
-/// with no spawner. Its output stays with the artifact: it is never relayed
-/// to the main agent or routed to the inbox. Answers `202` with the address
-/// as soon as the spawn request is published; the run itself starts
-/// asynchronously and announces itself with `session_started`.
+/// With the artifact identity header, it is an `artifact` session whose
+/// output stays with that artifact. Without it, it is the owner's own
+/// `spawned` session, read in its session panel: a clean one, or with `fork`
+/// a fork of the main conversation (see `crate::background::owner_session`).
+/// Answers `202` with the address as soon as the spawn request is published;
+/// the run itself starts asynchronously and announces itself with
+/// `session_started`.
 ///
 /// # Errors
-/// `400` without a valid artifact identity header (only artifacts start
-/// sessions this way), for a malformed body, a blank prompt, an unknown
-/// model tier, or an unknown skill; `503` if the spawn request can't be
+/// `400` for a malformed identity header or body, a blank prompt, an unknown
+/// model tier, an unknown skill, or `fork` from an artifact; `500` if main's
+/// conversation can't be read for a fork; `503` if the spawn request can't be
 /// published.
 pub(crate) async fn api_session_start(
     State(state): State<SessionsApiState>,
@@ -370,16 +385,7 @@ pub(crate) async fn api_session_start(
     body: Result<Json<SessionStartRequest>, JsonRejection>,
 ) -> Response {
     let artifact = match artifact_identity(&headers) {
-        Ok(Some(name)) => name,
-        Ok(None) => {
-            return json_error(
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "starting a session needs the {ARTIFACT_HEADER} header: sessions are \
-                     started by workbench artifacts, through residuum.sessions.start"
-                ),
-            );
-        }
+        Ok(artifact) => artifact,
         Err(message) => return json_error(StatusCode::BAD_REQUEST, message),
     };
     let Json(body) = match body {
@@ -410,6 +416,15 @@ pub(crate) async fn api_session_start(
         return json_error(StatusCode::BAD_REQUEST, message);
     }
 
+    let Some(artifact) = artifact else {
+        return start_owner_session(&state, body, model_tier).await;
+    };
+    if body.fork {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "fork is the owner's /multitask: a workbench artifact's session starts clean",
+        );
+    }
     let trigger = EventTrigger::Artifact(artifact.clone());
     let address = generate_address(&trigger, &artifact);
     let context = artifact_session_context(&artifact, body.context.as_deref());
@@ -429,6 +444,7 @@ pub(crate) async fn api_session_start(
         inbound: None,
         images: Vec::new(),
         overlap: None,
+        carried_history: Vec::new(),
     };
     if let Err(e) = state.publisher.publish(topics::Background, event).await {
         tracing::warn!(artifact = %artifact, address = %address, error = %e, "failed to publish an artifact's session start");
@@ -443,6 +459,73 @@ pub(crate) async fn api_session_start(
         skill = body.skill.as_deref().unwrap_or("none"),
         model_tier = %model_tier,
         "artifact started a session"
+    );
+    (
+        StatusCode::ACCEPTED,
+        Json(SessionStartResponse {
+            address: address.to_string(),
+        }),
+    )
+        .into_response()
+}
+
+/// Start the owner's own session for [`api_session_start`]: a clean one, or a
+/// fork of the main conversation.
+async fn start_owner_session(
+    state: &SessionsApiState,
+    body: SessionStartRequest,
+    model_tier: BackgroundModelTier,
+) -> Response {
+    let fork_of = if body.fork {
+        match load_main_conversation(&state.main_conversation).await {
+            Ok(messages) => Some(messages),
+            Err(e) => {
+                tracing::error!(
+                    error = format!("{e:#}"),
+                    "couldn't read main's conversation to fork it"
+                );
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Couldn't read the main conversation to fork it. Check the logs for details.",
+                );
+            }
+        }
+    } else {
+        None
+    };
+    let carried = fork_of.as_ref().map(Vec::len);
+    let mut event = OwnerSessionStart {
+        prompt: body.prompt,
+        model_tier,
+        fork_of,
+        conversation: None,
+    }
+    .into_spawn_event();
+    event.skill = body.skill.as_deref().map(SkillName::from);
+    if let Some(extra) = body
+        .context
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+    {
+        event.context = Some(match event.context.take() {
+            Some(framing) => format!("{framing}\n\n{extra}"),
+            None => extra.to_string(),
+        });
+    }
+    let address = event.address.clone();
+    if let Err(e) = state.publisher.publish(topics::Background, event).await {
+        tracing::warn!(address = %address, error = %e, "failed to publish the owner's session start");
+        return json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Couldn't start the session because Residuum is shutting down or restarting. Try again shortly.",
+        );
+    }
+    tracing::info!(
+        address = %address,
+        model_tier = %model_tier,
+        carried_messages = ?carried,
+        "owner started a session"
     );
     (
         StatusCode::ACCEPTED,
@@ -495,14 +578,14 @@ fn artifact_session_context(artifact: &str, extra: Option<&str>) -> String {
     }
 }
 
-/// `POST /api/sessions/{address}/stop` response.
+/// `POST /api/agents/{name}/sessions/{address}/stop` response.
 #[derive(Debug, Serialize)]
 pub(crate) struct SessionStopResponse {
     /// The session being stopped.
     address: String,
 }
 
-/// `POST /api/sessions/{address}/stop` — stop a live session, as the
+/// `POST /api/agents/{name}/sessions/{address}/stop` — stop a live session, as the
 /// WebSocket's `session_stop` command does. Serves any session, not only
 /// artifact sessions.
 ///
@@ -519,7 +602,7 @@ pub(crate) async fn api_session_stop(
     }
 }
 
-/// `POST /api/sessions/{address}/messages` request body.
+/// `POST /api/agents/{name}/sessions/{address}/messages` request body.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SessionMessageRequest {
@@ -527,14 +610,14 @@ pub(crate) struct SessionMessageRequest {
     content: String,
 }
 
-/// `POST /api/sessions/{address}/messages` response.
+/// `POST /api/agents/{name}/sessions/{address}/messages` response.
 #[derive(Debug, Serialize)]
 pub(crate) struct SessionMessageResponse {
     /// Where the message landed.
     outcome: SessionDeliveryOutcome,
 }
 
-/// `POST /api/sessions/{address}/messages` — send a session a message, with
+/// `POST /api/agents/{name}/sessions/{address}/messages` — send a session a message, with
 /// the WebSocket's `session_send_message` delivery rules. With an artifact
 /// identity header the session sees the message as that artifact's;
 /// without one, as the owner's. Serves any session, not only artifact
@@ -578,6 +661,7 @@ pub(crate) async fn api_session_message(
 
 #[cfg(test)]
 mod tests {
+    use crate::testing::wait;
     use chrono::{Duration, TimeZone, Utc};
     use tokio_util::sync::CancellationToken;
 
@@ -636,6 +720,7 @@ mod tests {
             messenger,
             publisher: bus.publisher(),
             skill_state: crate::skills::SkillState::new_shared(index, vec![]),
+            main_conversation: dir.path().join("recent_messages.json"),
         };
         (state, Fixture { _dir: dir, bus })
     }
@@ -860,6 +945,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn transcript_shows_readable_thinking_and_hides_what_only_the_provider_needs() {
+        let (state, _dir) = state();
+        let run = info("spawned-r-0001", "run-r", EventTrigger::Agent, 0);
+        state.store.begin_run(&run).await;
+        state
+            .store
+            .complete_run(
+                &run,
+                "completed",
+                &crate::bus::AgentResultStatus::Completed,
+                vec![
+                    Message::user("go"),
+                    Message::assistant("done", None).with_thinking(vec![
+                        crate::inference::ThinkingBlock {
+                            text: "plan first".to_string(),
+                            signature: Some("sig-secret".to_string()),
+                            redacted: None,
+                            part: None,
+                            origin: None,
+                        },
+                    ]),
+                ],
+                None,
+            )
+            .await
+            .unwrap();
+
+        let Json(body) = api_session_transcript(State(state.clone()), Path("run-r".to_string()))
+            .await
+            .unwrap();
+
+        let wire = serde_json::to_value(&body.messages).unwrap();
+        assert_eq!(
+            wire.get(1).and_then(|m| m.get("thinking")),
+            Some(&serde_json::json!(["plan first"]))
+        );
+        assert!(!wire.to_string().contains("sig-secret"), "{wire}");
+    }
+
+    #[tokio::test]
     async fn live_transcript_reads_the_incremental_transcript_and_live_state() {
         let (state, _dir) = state();
         let mut run = info("spawned-l-0001", "run-l", EventTrigger::Agent, 0);
@@ -923,7 +1048,10 @@ mod tests {
 
     fn artifact_headers(name: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
-        headers.insert(ARTIFACT_HEADER, HeaderValue::from_str(name).unwrap());
+        headers.insert(
+            crate::gateway::web::artifact_identity::ARTIFACT_HEADER,
+            HeaderValue::from_str(name).unwrap(),
+        );
         headers
     }
 
@@ -986,11 +1114,7 @@ mod tests {
     async fn next_spawn(
         spawns: &mut crate::bus::Subscriber<SpawnRequestEvent>,
     ) -> SpawnRequestEvent {
-        tokio::time::timeout(std::time::Duration::from_secs(1), spawns.recv())
-            .await
-            .expect("a spawn request should be published")
-            .unwrap()
-            .unwrap()
+        wait::next_event("a spawn request", spawns).await
     }
 
     async fn subscribe_spawns(fx: &Fixture) -> crate::bus::Subscriber<SpawnRequestEvent> {
@@ -998,27 +1122,127 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn start_without_the_identity_header_is_refused() {
+    async fn start_with_a_malformed_identity_header_is_refused() {
         let (state, fx) = state();
         let mut spawns = subscribe_spawns(&fx).await;
-        let prompt = serde_json::json!({ "prompt": "summarize the wiki" });
 
-        let missing = start(&state, HeaderMap::new(), prompt.clone()).await;
-        assert_eq!(missing.status, StatusCode::BAD_REQUEST);
+        let malformed = start(
+            &state,
+            artifact_headers("Not A Name"),
+            serde_json::json!({ "prompt": "summarize the wiki" }),
+        )
+        .await;
+
+        assert_eq!(malformed.status, StatusCode::BAD_REQUEST);
+        wait::bus_barrier(&fx.bus).await;
         assert!(
-            missing.text("error").contains(ARTIFACT_HEADER),
+            spawns.drain().is_empty(),
+            "a refused start must not spawn anything"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_without_the_identity_header_starts_the_owner_s_own_session() {
+        let (state, fx) = state();
+        let mut spawns = subscribe_spawns(&fx).await;
+
+        let started = start(
+            &state,
+            HeaderMap::new(),
+            serde_json::json!({ "prompt": "plan the garden", "model": "large" }),
+        )
+        .await;
+        assert_eq!(started.status, StatusCode::ACCEPTED);
+        let address = started.text("address");
+        assert!(address.starts_with("spawned-session-"), "got {address}");
+
+        let spawn = next_spawn(&mut spawns).await;
+        assert_eq!(spawn.address.as_ref(), address);
+        assert_eq!(
+            SessionCategory::from_trigger(&spawn.source),
+            SessionCategory::Spawned
+        );
+        assert_eq!(spawn.spawner, None, "nothing it says is relayed to main");
+        assert_eq!(spawn.model_tier, BackgroundModelTier::Large);
+        assert_eq!(spawn.prompt, "plan the garden");
+        assert!(
+            spawn.carried_history.is_empty(),
+            "a clean session carries nothing"
+        );
+        let context = spawn.context.unwrap();
+        assert!(context.contains("started by the owner"), "got {context}");
+    }
+
+    #[tokio::test]
+    async fn a_fork_start_carries_main_s_saved_conversation() {
+        let (state, fx) = state();
+        let mut spawns = subscribe_spawns(&fx).await;
+        crate::memory::recent_messages::append_recent_messages(
+            &state.main_conversation,
+            &[
+                Message::user("should we repaint the shed?"),
+                Message::assistant("yes, in green", None),
+            ],
+            Visibility::User,
+            chrono_tz::UTC,
+            Some("turn-1"),
+        )
+        .await
+        .unwrap();
+
+        let started = start(
+            &state,
+            HeaderMap::new(),
+            serde_json::json!({ "prompt": "price out the paint", "fork": true }),
+        )
+        .await;
+        assert_eq!(started.status, StatusCode::ACCEPTED);
+        assert!(
+            started.text("address").starts_with("spawned-multitask-"),
             "got {}",
-            missing.body
+            started.body
         );
 
-        let malformed = start(&state, artifact_headers("Not A Name"), prompt).await;
-        assert_eq!(malformed.status, StatusCode::BAD_REQUEST);
-
+        let spawn = next_spawn(&mut spawns).await;
+        let carried: Vec<&str> = spawn
+            .carried_history
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect();
+        assert_eq!(carried, ["should we repaint the shed?", "yes, in green"]);
+        assert_eq!(spawn.spawner, None);
+        assert_eq!(spawn.model_tier, BackgroundModelTier::Medium);
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(100), spawns.recv())
-                .await
-                .is_err(),
+            spawn
+                .context
+                .unwrap()
+                .contains("fork of the main conversation"),
+            "the fork is told what it is"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_artifact_cannot_fork_the_main_conversation() {
+        let (state, fx) = state();
+        let mut spawns = subscribe_spawns(&fx).await;
+
+        let refused = start(
+            &state,
+            artifact_headers("wiki-graph"),
+            serde_json::json!({ "prompt": "read along", "fork": true }),
+        )
+        .await;
+
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+        wait::bus_barrier(&fx.bus).await;
+        assert!(
+            spawns.drain().is_empty(),
             "a refused start must not spawn anything"
+        );
+        assert!(
+            refused.text("error").contains("/multitask"),
+            "got {}",
+            refused.body
         );
     }
 
@@ -1069,9 +1293,10 @@ mod tests {
             "---\nname: researcher\ndescription: Researches things carefully.\n---\nDo research.\n",
         )
         .unwrap();
-        let index = crate::skills::SkillIndex::scan(&[skills_root.path().to_path_buf()])
-            .await
-            .unwrap();
+        let index =
+            crate::skills::SkillIndex::scan(&[crate::skills::SkillDir::agent(skills_root.path())])
+                .await
+                .unwrap();
         let (state, fx) = state_with_skills(index);
         let mut spawns = subscribe_spawns(&fx).await;
         let headers = || artifact_headers("wiki");

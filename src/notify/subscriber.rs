@@ -129,7 +129,7 @@ mod tests {
         let should_fail = Arc::new(AtomicBool::new(false));
         let (channel, delivered, processed) = MockChannel::new(Arc::clone(&should_fail));
 
-        let loop_task = tokio::spawn(run_notify_subscriber(sub, Box::new(channel)));
+        let loop_task = crate::util::spawn_in_span(run_notify_subscriber(sub, Box::new(channel)));
 
         pub_.publish(topic, make_notification_event())
             .await
@@ -159,7 +159,7 @@ mod tests {
         let should_fail = Arc::new(AtomicBool::new(true));
         let (channel, delivered, processed) = MockChannel::new(Arc::clone(&should_fail));
 
-        let loop_task = tokio::spawn(run_notify_subscriber(sub, Box::new(channel)));
+        let loop_task = crate::util::spawn_in_span(run_notify_subscriber(sub, Box::new(channel)));
 
         // First notification — delivery will fail
         pub_.publish(

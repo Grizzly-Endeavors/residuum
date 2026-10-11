@@ -157,12 +157,12 @@ fn is_file_locked(path: &Path) -> Result<bool, FatalError> {
 ///
 /// Used for errors that occur before tracing is initialized
 /// or when the tracing subsystem itself fails. Messages are
-/// appended to `~/.residuum/crash.log` (falls back to
+/// appended to `crash.log` in the hub directory (falls back to
 /// `/tmp/residuum-crash.log` if the home directory is unavailable).
 pub fn write_crash_note(msg: &str) {
-    let path = dirs::home_dir().map_or_else(
-        || std::env::temp_dir().join("residuum-crash.log"),
-        |h| h.join(".residuum").join("crash.log"),
+    let path = crate::config::default_hub_dir().map_or_else(
+        |_| std::env::temp_dir().join("residuum-crash.log"),
+        |hub_dir| crate::config::HubPaths::new(hub_dir).crash_log(),
     );
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
@@ -178,15 +178,13 @@ pub fn write_crash_note(msg: &str) {
         .ok();
 }
 
-/// Return the path to the PID file: `~/.residuum/residuum.pid`.
+/// Return the path to the PID file in the hub directory.
 ///
 /// # Errors
 ///
 /// Returns `FatalError::Config` if the home directory cannot be determined.
 pub fn pid_file_path() -> Result<PathBuf, FatalError> {
-    dirs::home_dir()
-        .map(|h| h.join(".residuum").join("residuum.pid"))
-        .ok_or_else(|| FatalError::Config("could not determine home directory".to_string()))
+    crate::config::default_hub_dir().map(|hub_dir| crate::config::HubPaths::new(hub_dir).pid_file())
 }
 
 /// Read a PID from the given file path.
@@ -344,8 +342,8 @@ pub const READINESS_TIMEOUT: Duration = Duration::from_secs(60);
 /// accepting connections. Its absence means the process is still starting,
 /// never started, or has exited.
 #[must_use]
-pub fn ready_file_path(config_dir: &Path) -> PathBuf {
-    config_dir.join("residuum.ready")
+pub fn ready_file_path(hub_dir: &Path) -> PathBuf {
+    crate::config::HubPaths::new(hub_dir).ready_file()
 }
 
 /// Write the readiness marker for the current process.
@@ -353,8 +351,8 @@ pub fn ready_file_path(config_dir: &Path) -> PathBuf {
 /// Best-effort: a failure here just means a waiter treats startup as
 /// never becoming ready, which times out visibly rather than reporting
 /// success silently — it never affects the running gateway.
-pub fn write_ready_file(config_dir: &Path) {
-    let path = ready_file_path(config_dir);
+pub fn write_ready_file(hub_dir: &Path) {
+    let path = ready_file_path(hub_dir);
     if let Err(e) = std::fs::write(&path, std::process::id().to_string()) {
         tracing::warn!(path = %path.display(), error = %e, "failed to write gateway readiness marker");
     }
@@ -366,8 +364,8 @@ pub fn write_ready_file(config_dir: &Path) {
 /// Best-effort, matching [`write_ready_file`]: a failure just means a stale
 /// marker might linger, which a fresh attempt clears again before it
 /// matters.
-pub fn remove_ready_file(config_dir: &Path) {
-    let path = ready_file_path(config_dir);
+pub fn remove_ready_file(hub_dir: &Path) {
+    let path = ready_file_path(hub_dir);
     if let Err(e) = std::fs::remove_file(&path)
         && e.kind() != std::io::ErrorKind::NotFound
     {
@@ -379,24 +377,24 @@ pub fn remove_ready_file(config_dir: &Path) {
 /// behind, read by the CLI process that spawned it (or the update-rollback
 /// watchdog) to report why.
 #[must_use]
-pub fn startup_error_path(config_dir: &Path) -> PathBuf {
-    config_dir.join("residuum.startup-error")
+pub fn startup_error_path(hub_dir: &Path) -> PathBuf {
+    crate::config::HubPaths::new(hub_dir).startup_error_file()
 }
 
 /// Record why a startup attempt failed, for whoever is waiting on it.
 ///
 /// Best-effort, matching [`write_ready_file`]: on failure the waiter just
 /// falls back to its own generic message.
-pub fn write_startup_error(config_dir: &Path, message: &str) {
-    let path = startup_error_path(config_dir);
+pub fn write_startup_error(hub_dir: &Path, message: &str) {
+    let path = startup_error_path(hub_dir);
     if let Err(e) = std::fs::write(&path, message) {
         tracing::warn!(path = %path.display(), error = %e, "failed to write startup error marker");
     }
 }
 
 /// Clear a startup error left by an earlier attempt, e.g. before a fresh one.
-pub fn clear_startup_error(config_dir: &Path) {
-    let path = startup_error_path(config_dir);
+pub fn clear_startup_error(hub_dir: &Path) {
+    let path = startup_error_path(hub_dir);
     if let Err(e) = std::fs::remove_file(&path)
         && e.kind() != std::io::ErrorKind::NotFound
     {
@@ -407,8 +405,8 @@ pub fn clear_startup_error(config_dir: &Path) {
 /// Read the plain-language message a failed startup attempt left behind,
 /// if any.
 #[must_use]
-pub fn read_startup_error(config_dir: &Path) -> Option<String> {
-    std::fs::read_to_string(startup_error_path(config_dir)).ok()
+pub fn read_startup_error(hub_dir: &Path) -> Option<String> {
+    std::fs::read_to_string(startup_error_path(hub_dir)).ok()
 }
 
 /// How a wait for gateway readiness ended.
@@ -451,8 +449,10 @@ pub fn wait_for_ready(
 /// Where a daemon- or watchdog-spawned gateway process's stderr is appended,
 /// so a panic or a pre-tracing startup error is never silently dropped.
 #[must_use]
-pub fn stderr_log_path(config_dir: &Path) -> PathBuf {
-    config_dir.join("logs").join("serve.stderr.log")
+pub fn stderr_log_path(hub_dir: &Path) -> PathBuf {
+    crate::config::HubPaths::new(hub_dir)
+        .logs_dir()
+        .join("serve.stderr.log")
 }
 
 /// Spawn `exe` with `args` as a detached background process: stdin closed,
@@ -471,14 +471,14 @@ pub fn stderr_log_path(config_dir: &Path) -> PathBuf {
 pub fn spawn_gateway_process(
     exe: &Path,
     args: &[String],
-    config_dir: &Path,
+    hub_dir: &Path,
 ) -> std::io::Result<std::process::Child> {
-    let log_dir = config_dir.join("logs");
+    let log_dir = crate::config::HubPaths::new(hub_dir).logs_dir();
     std::fs::create_dir_all(&log_dir)?;
     let stderr_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(stderr_log_path(config_dir))?;
+        .open(stderr_log_path(hub_dir))?;
 
     std::process::Command::new(exe)
         .args(args)

@@ -23,7 +23,7 @@ Every message the agent sees records who sent it and where, e.g. `[From: Bear Fl
 
 Only the owner's own private chat reaches the main agent. Every other admitted conversation — a group or supergroup, and a non-owner's private chat when `respond_to_others` is on — is handled by an [agent session](background-tasks.md) of its own instead: a temporary fork of the main agent, addressed deterministically by that chat, that keeps its own memory and idle timeout rather than sharing the owner's private conversation. This holds even when the owner is the one talking in a group — a group is still a shared space, so it gets a session, not main. The session sees the same sender attribution and buffered chatter described below, and replies into that chat — see [Where replies go](#where-replies-go).
 
-`/stop` follows the same routing: typed in the owner's own private chat it stops main's current turn; typed in a group or supergroup it stops that chat's session instead, never main — see [Turn Control](turn-control.md).
+`/stop` follows the same routing: typed in the owner's own private chat it stops main's current turn; typed in a group or supergroup it stops that chat's session instead, never main — see [Turn Control](turn-control.md). `/stop <name>` names any live session explicitly instead of relying on that routing — useful for stopping a session from somewhere other than its own chat, e.g. the owner's own DM. `/sessions` lists every live session (address, purpose, state, elapsed time). `/multitask <task>`, in the owner's own DM only, forks the main conversation into a session that works on the task and posts its replies back into that DM — see [Owner Sessions](background-tasks.md#owner-sessions).
 
 ## Private chats and groups
 
@@ -51,11 +51,12 @@ The buffer for that group is emptied when it is delivered, so each message reach
 
 - A private-chat reply goes to the owner from the main agent's own conversation.
 - A group's reply comes from that group's own session and always goes back to that same group. It never falls back to the owner's chat: if Telegram refuses the post (the bot was removed, or can't write there), the output is dropped, the error is logged naming the session and chat, and main gets a notice so the owner can be told if it matters.
-- `send_message` with a `conversation` from `list_conversations` posts into that private chat or group, from whichever agent (main or a session) calls it. If Telegram refuses the post, main's own send gets an error message to the owner the same way it always has; a session's send is subject to the same never-falls-back rule as its own replies above.
+- `send_message` with a `conversation` from `list_conversations` posts into that private chat or group, from whichever agent (main or a session) calls it. If Telegram refuses main's own send (or the conversation is unknown), the owner sees a notice in the web UI and main gets a `[Delivery Failed]` message; a session's send is subject to the same never-falls-back rule as its own replies above.
 - Other proactive output from main — `send_message` without a conversation, results routed through `idle_channel = "telegram"`, background turns — goes to the owner's chat. Until an owner exists it is dropped with a warning in the log.
-- System notices and errors go only to the owner's chat, never into a group.
+- When a main-agent turn started from Telegram fails, the plain-language error goes back where its reply would have. System notices and other errors are never sent to Telegram; they appear in the web UI.
+- The web UI follows the main agent's turns from Telegram as they happen: the owner's message, the agent's text and tool calls in order, the reply and the end of the turn, each marked as having come from Telegram. A web message sent while such a turn runs joins it, the same as a Telegram message would. See [The Main Conversation Stream](turn-control.md#the-main-conversation-stream).
 
-Long replies are split into 4096-character messages. A typing indicator shows while a turn runs. Files the agent sends go out as photos, audio, or documents by type; captions longer than Telegram's 1024-character limit are followed by the full text.
+Long replies are split into 4096-character messages. A typing indicator shows while a turn runs — for the main agent's own turn, and equally for a group chat or non-owner DM's own conversation session turn (see [Conversation Routing](background-tasks.md#conversation-routing)), each driven by its own lifecycle signal so one doesn't depend on the other. Files the agent sends go out as photos, audio, or documents by type; captions longer than Telegram's 1024-character limit are followed by the full text.
 
 ## Conversations the agent can list
 
@@ -65,7 +66,7 @@ Telegram gives bots no way to list their chats, so `list_conversations` shows wh
 
 ```toml
 [telegram]
-token = "${RESIDUUM_TELEGRAM_TOKEN}"   # or secret:telegram; RESIDUUM_TELEGRAM_TOKEN also works on its own
+token = "secret:telegram"   # or a "${ENV_VAR}" reference, or a literal
 respond_to_others = false
 context_messages = 20
 ```

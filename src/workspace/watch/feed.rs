@@ -18,9 +18,8 @@ use tokio::time::Instant;
 
 use super::batcher::{ChangeBatcher, PathState, ReadyBatch, resolve_changes};
 use super::classify::{WorkspaceRoots, classify};
-use super::{WatchHealth, WorkspaceResyncReason};
+use super::{WatchHealth, WorkspaceChange, WorkspaceResyncReason};
 use crate::bus::{Publisher, WorkspaceEvent, topics};
-use crate::workspace::access::is_blocked_path;
 
 /// Raw notifications buffered between the OS watcher's thread and the
 /// batching loop. Past this, notifications are dropped and the next batch
@@ -36,19 +35,25 @@ const WARN_INTERVAL: Duration = Duration::from_secs(60);
 
 type RawEvent = notify::Result<notify::Event>;
 
-/// Start the workspace change feed. Runs until aborted.
+/// Start a change feed over `root`. Runs until aborted.
+///
+/// With a `prefix`, `root` is a directory that appears in the workspace
+/// namespace under that prefix (the team directory as `team`): published
+/// paths carry it, and the access policy is applied to the prefixed path.
 pub(crate) fn spawn_change_feed(
     root: PathBuf,
+    prefix: Option<&str>,
     publisher: Publisher,
     health: watch::Sender<WatchHealth>,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
+    let prefix = prefix.map(str::to_string);
+    crate::util::spawn_in_span(async move {
         let (raw_tx, raw_rx) = mpsc::channel(RAW_EVENT_CAPACITY);
         let overflowed = Arc::new(AtomicBool::new(false));
         let sink = RawSink {
             tx: raw_tx,
             overflowed: Arc::clone(&overflowed),
-            roots: WorkspaceRoots::new(&root),
+            roots: WorkspaceRoots::new(&root, prefix.as_deref()),
         };
 
         let Some(mut backend) = start_backend(&root, Mode::Native, &sink).await else {
@@ -57,7 +62,13 @@ pub(crate) fn spawn_change_feed(
         };
         health.send_replace(backend.health());
 
-        let mut feed = FeedLoop::new(&root, raw_rx, overflowed, publisher.clone());
+        let mut feed = FeedLoop::new(
+            &root,
+            prefix.as_deref(),
+            raw_rx,
+            overflowed,
+            publisher.clone(),
+        );
         loop {
             let restart_mode = match feed.run(backend.mode()).await {
                 LoopExit::PublishFailed => return,
@@ -124,7 +135,7 @@ impl Backend {
 async fn start_backend(root: &Path, mode: Mode, sink: &RawSink) -> Option<Backend> {
     if mode == Mode::Native {
         let (root_owned, sink) = (root.to_path_buf(), sink.clone());
-        match tokio::task::spawn_blocking(move || start_native(&root_owned, sink)).await {
+        match crate::util::spawn_blocking_in_span(move || start_native(&root_owned, sink)).await {
             Ok(Ok(watcher)) => {
                 return Some(Backend {
                     mode: Mode::Native,
@@ -144,7 +155,7 @@ async fn start_backend(root: &Path, mode: Mode, sink: &RawSink) -> Option<Backen
         }
     }
     let (root_owned, sink) = (root.to_path_buf(), sink.clone());
-    match tokio::task::spawn_blocking(move || start_polling(&root_owned, sink)).await {
+    match crate::util::spawn_blocking_in_span(move || start_polling(&root_owned, sink)).await {
         Ok(Ok(watcher)) => Some(Backend {
             mode: Mode::Polling,
             _watcher: Box::new(watcher),
@@ -197,7 +208,7 @@ impl RawSink {
             && event.paths.iter().all(|path| {
                 self.roots
                     .relative(path)
-                    .is_some_and(|relative| is_blocked_path(&relative))
+                    .is_some_and(|relative| self.roots.is_hidden(&relative))
             })
     }
 }
@@ -241,12 +252,13 @@ struct FeedLoop {
 impl FeedLoop {
     fn new(
         root: &Path,
+        prefix: Option<&str>,
         raw_rx: mpsc::Receiver<RawEvent>,
         overflowed: Arc<AtomicBool>,
         publisher: Publisher,
     ) -> Self {
         Self {
-            roots: WorkspaceRoots::new(root),
+            roots: WorkspaceRoots::new(root, prefix),
             root: root.to_path_buf(),
             raw_rx,
             overflowed,
@@ -341,13 +353,13 @@ impl FeedLoop {
             }
             ReadyBatch::Paths(paths) => {
                 let root = self.root.clone();
-                match tokio::task::spawn_blocking(move || {
+                match crate::util::spawn_blocking_in_span(move || {
                     resolve_changes(paths, |path| path_state(&root, path))
                 })
                 .await
                 {
                     Ok(changes) if changes.is_empty() => return true,
-                    Ok(changes) => WorkspaceEvent::Changed(changes.into()),
+                    Ok(changes) => WorkspaceEvent::Changed(self.namespaced(changes).into()),
                     Err(e) => {
                         tracing::warn!(error = %e, "failed to resolve a batch of workspace changes; watchers were told to resync");
                         WorkspaceEvent::Resync(WorkspaceResyncReason::Overflow)
@@ -356,6 +368,14 @@ impl FeedLoop {
             }
         };
         self.publish(event).await
+    }
+
+    /// `changes` with their paths under the feed's namespace prefix.
+    fn namespaced(&self, mut changes: Vec<WorkspaceChange>) -> Vec<WorkspaceChange> {
+        for change in &mut changes {
+            change.path = self.roots.namespaced(&change.path);
+        }
+        changes
     }
 
     /// Publish one event. `false` when the bus is gone.
@@ -412,10 +432,6 @@ mod tests {
     use crate::bus::Subscriber;
     use crate::workspace::watch::{WorkspaceChange, WorkspaceChangeKind};
 
-    /// Generous: CI machines can be slow, and none of these waits bound a
-    /// correct result from above.
-    const WAIT: Duration = Duration::from_secs(10);
-
     fn change(path: &str, kind: WorkspaceChangeKind) -> WorkspaceChange {
         WorkspaceChange {
             path: path.to_string(),
@@ -424,9 +440,8 @@ mod tests {
     }
 
     async fn next_event(sub: &mut Subscriber<WorkspaceEvent>) -> WorkspaceEvent {
-        tokio::time::timeout(WAIT, sub.recv())
+        crate::testing::wait::guarded("a workspace event", sub.recv())
             .await
-            .expect("timed out waiting for a workspace event")
             .unwrap()
             .unwrap()
     }
@@ -441,13 +456,23 @@ mod tests {
     }
 
     async fn harness() -> Harness {
+        harness_with_prefix(None).await
+    }
+
+    async fn harness_with_prefix(prefix: Option<&str>) -> Harness {
         let dir = tempfile::tempdir().unwrap();
         let bus = crate::bus::spawn_broker();
         let sub = bus.subscribe(topics::Workspace).await.unwrap();
         let (raw_tx, raw_rx) = mpsc::channel(RAW_EVENT_CAPACITY);
         let overflowed = Arc::new(AtomicBool::new(false));
-        let mut feed = FeedLoop::new(dir.path(), raw_rx, Arc::clone(&overflowed), bus.publisher());
-        let task = tokio::spawn(async move { feed.run(Mode::Native).await });
+        let mut feed = FeedLoop::new(
+            dir.path(),
+            prefix,
+            raw_rx,
+            Arc::clone(&overflowed),
+            bus.publisher(),
+        );
+        let task = crate::util::spawn_in_span(async move { feed.run(Mode::Native).await });
         Harness {
             dir,
             raw_tx,
@@ -486,9 +511,20 @@ mod tests {
             .collect();
         assert_eq!(&*changes, expected.as_slice());
 
-        // Well past the quiet period, nothing else was published.
-        let more = tokio::time::timeout(Duration::from_secs(1), h.sub.recv()).await;
-        assert!(more.is_err(), "the burst produced a second batch: {more:?}");
+        // Nothing else was published after the burst: the next batch is the one
+        // a later write produces, so any stray batch from the burst would have
+        // arrived before it.
+        std::fs::write(h.dir.path().join("after.md"), "x").unwrap();
+        h.notify(EventKind::Create(CreateKind::File), &["after.md"])
+            .await;
+        let WorkspaceEvent::Changed(after) = next_event(&mut h.sub).await else {
+            panic!("expected a change batch");
+        };
+        assert_eq!(
+            &*after,
+            [change("after.md", WorkspaceChangeKind::Created)].as_slice(),
+            "the burst produced a batch of its own after the first"
+        );
         h.task.abort();
     }
 
@@ -536,6 +572,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_prefixed_feed_publishes_namespaced_paths_and_hides_blocked_ones() {
+        let mut h = harness_with_prefix(Some("team")).await;
+        std::fs::create_dir_all(h.dir.path().join("workbench")).unwrap();
+        std::fs::write(h.dir.path().join("workbench").join("tool.html"), "x").unwrap();
+        std::fs::write(h.dir.path().join("a.md"), "x").unwrap();
+        h.notify(
+            EventKind::Create(CreateKind::File),
+            &[
+                "vectors.db",
+                "vectors.db-wal",
+                ".index/seg",
+                ".a.md.0badf00d.residuum-tmp",
+                "workbench/tool.html",
+                "a.md",
+            ],
+        )
+        .await;
+        assert_eq!(
+            next_event(&mut h.sub).await,
+            WorkspaceEvent::Changed(
+                vec![
+                    change("team/a.md", WorkspaceChangeKind::Created),
+                    change("team/workbench/tool.html", WorkspaceChangeKind::Created),
+                ]
+                .into()
+            )
+        );
+        h.task.abort();
+    }
+
+    #[tokio::test]
     async fn dropped_notifications_become_a_resync() {
         let mut h = harness().await;
         h.overflowed.store(true, Ordering::Relaxed);
@@ -562,7 +629,9 @@ mod tests {
             .send(Err(notify::Error::new(notify::ErrorKind::MaxFilesWatch)))
             .await
             .unwrap();
-        let exit = tokio::time::timeout(WAIT, h.task).await.unwrap().unwrap();
+        let exit = crate::testing::wait::guarded("the feed to exit for a polling restart", h.task)
+            .await
+            .unwrap();
         assert_eq!(exit, LoopExit::Restart(Mode::Polling));
     }
 
@@ -573,7 +642,7 @@ mod tests {
         let sink = RawSink {
             tx,
             overflowed: Arc::new(AtomicBool::new(false)),
-            roots: WorkspaceRoots::new(&root),
+            roots: WorkspaceRoots::new(&root, None),
         };
         let event = |paths: &[&str]| {
             paths.iter().fold(
@@ -618,12 +687,14 @@ mod tests {
         let bus = crate::bus::spawn_broker();
         let mut sub = bus.subscribe(topics::Workspace).await.unwrap();
         let (health_tx, mut health_rx) = watch::channel(WatchHealth::Starting);
-        let task = spawn_change_feed(root.clone(), bus.publisher(), health_tx);
-        tokio::time::timeout(WAIT, health_rx.wait_for(|h| *h != WatchHealth::Starting))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_ne!(*health_rx.borrow(), WatchHealth::Off);
+        let task = spawn_change_feed(root.clone(), None, bus.publisher(), health_tx);
+        crate::testing::wait::watch_until(
+            "the change feed's watcher to start",
+            &mut health_rx,
+            |h| *h != WatchHealth::Starting,
+        )
+        .await;
+        crate::workspace::watch::assert_native_watch(*health_rx.borrow(), "the change feed");
 
         std::fs::create_dir(root.join(".index")).unwrap();
         std::fs::write(root.join(".index").join("seg"), "x").unwrap();
@@ -649,6 +720,43 @@ mod tests {
         task.abort();
     }
 
+    /// A feed over a directory mounted under a prefix reports OS changes with
+    /// the prefix, and a watcher on that prefix receives them.
+    #[tokio::test]
+    async fn os_notifications_in_a_prefixed_root_carry_the_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::create_dir(root.join("workbench")).unwrap();
+        let bus = crate::bus::spawn_broker();
+        let mut sub = bus.subscribe(topics::Workspace).await.unwrap();
+        let (health_tx, mut health_rx) = watch::channel(WatchHealth::Starting);
+        let task = spawn_change_feed(root.clone(), Some("team"), bus.publisher(), health_tx);
+        crate::testing::wait::watch_until(
+            "the change feed's watcher to start",
+            &mut health_rx,
+            |h| *h != WatchHealth::Starting,
+        )
+        .await;
+        crate::workspace::watch::assert_native_watch(*health_rx.borrow(), "the change feed");
+
+        crate::util::fs::atomic_write(&root.join("workbench").join("tool.html"), "hi")
+            .await
+            .unwrap();
+        let seen = collect_until(&mut sub, |c| c.path == "team/workbench/tool.html").await;
+        assert!(
+            seen.iter().all(|c| c.path.starts_with("team/")),
+            "every path from the team feed carries the prefix: {seen:?}"
+        );
+
+        let team_watch =
+            crate::workspace::watch::WatchSet::parse(vec!["team/workbench".into()]).unwrap();
+        let agent_watch =
+            crate::workspace::watch::WatchSet::parse(vec!["workbench".into()]).unwrap();
+        assert!(seen.iter().any(|c| team_watch.matches(&c.path)));
+        assert!(seen.iter().all(|c| !agent_watch.matches(&c.path)));
+        task.abort();
+    }
+
     /// The polling fallback feeds the same loop and reports the same changes.
     #[tokio::test]
     async fn the_polling_fallback_reports_changes() {
@@ -660,14 +768,14 @@ mod tests {
         let sink = RawSink {
             tx: raw_tx,
             overflowed: Arc::clone(&overflowed),
-            roots: WorkspaceRoots::new(dir.path()),
+            roots: WorkspaceRoots::new(dir.path(), None),
         };
         let backend = start_backend(dir.path(), Mode::Polling, &sink)
             .await
             .unwrap();
         assert_eq!(backend.health(), WatchHealth::Polling);
-        let mut feed = FeedLoop::new(dir.path(), raw_rx, overflowed, bus.publisher());
-        let task = tokio::spawn(async move { feed.run(Mode::Polling).await });
+        let mut feed = FeedLoop::new(dir.path(), None, raw_rx, overflowed, bus.publisher());
+        let task = crate::util::spawn_in_span(async move { feed.run(Mode::Polling).await });
 
         std::fs::write(dir.path().join("polled.md"), "x").unwrap();
         let seen = collect_until(&mut sub, |c| c.path == "polled.md").await;

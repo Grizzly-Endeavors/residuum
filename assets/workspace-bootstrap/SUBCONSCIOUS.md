@@ -12,10 +12,10 @@ doubt, return nothing.
 ## Watch for
 
 - A stated user preference, fact, or standing instruction that the agent
-  acknowledged (or should have noticed) but did not persist to USER.md or the
-  wiki
+  acknowledged (or should have noticed) but did not persist to team/USER.md or the
+  team wiki
 - The agent directly contradicting a rule in its instruction files
-  (SOUL.md, AGENTS.md, USER.md)
+  (SOUL.md, team/AGENTS.md, team/USER.md)
 - The agent ignoring an explicit user request from earlier in the same
   conversation segment
 - The agent claiming it did something the transcript shows it did not do

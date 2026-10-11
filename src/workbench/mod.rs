@@ -1,14 +1,15 @@
 //! Workbench: interactive artifacts the agent builds for the user.
 //!
-//! An artifact is either a single page, `<workspace>/workbench/<name>.html`, or a
-//! folder, `<workspace>/workbench/<name>/` with an `index.html` and any other
+//! An artifact is either a single page, `team/workbench/<name>.html`, or a
+//! folder, `team/workbench/<name>/` with an `index.html` and any other
 //! files it loads. `<name>` is kebab-case. The artifacts listener
 //! ([`server`]) serves them on their own origin at `/<name>/`; the web UI
-//! lists them at `/workbench` and shows one at `/workbench/<name>`. Files
-//! beside an artifact that share its `<name>.` prefix (for example
-//! `<name>.state.json`) are that artifact's saved data: not part of the artifact, not
-//! watched for reloads, and deleted with it.
+//! lists them at `/team/workbench` and opens each in a tab of its own on
+//! that origin. Files beside an artifact that share its `<name>.` prefix
+//! (for example `<name>.state.json`) are that artifact's saved data: not part
+//! of the artifact, not watched for reloads, and deleted with it.
 
+pub(crate) mod forward;
 pub(crate) mod server;
 pub(crate) mod watcher;
 
@@ -27,15 +28,21 @@ const TITLE_SCAN_BYTES: usize = 64 * 1024;
 
 const MAX_ARTIFACT_NAME_LEN: usize = 64;
 
+/// The artifacts listener serves the API at `/api`, so no artifact can have
+/// that name.
+const RESERVED_ARTIFACT_NAME: &str = "api";
+
 /// The SDK injected into every served HTML file.
 const SDK_JS: &str = include_str!("../../assets/workbench/sdk.js");
 
 /// Whether `name` is a valid artifact name: lowercase ASCII letters and digits in
-/// hyphen-separated words, at most 64 characters. Names carry no path
-/// separators or dots, so a valid name always resolves inside the workbench.
+/// hyphen-separated words, at most 64 characters, and not `api`, which the
+/// artifacts listener reserves for the API. Names carry no path separators or
+/// dots, so a valid name always resolves inside the workbench.
 #[must_use]
 pub(crate) fn is_valid_artifact_name(name: &str) -> bool {
     !name.is_empty()
+        && name != RESERVED_ARTIFACT_NAME
         && name.len() <= MAX_ARTIFACT_NAME_LEN
         && name.split('-').all(|word| {
             !word.is_empty()
@@ -313,9 +320,7 @@ pub(crate) enum ArtifactFileError {
 /// HTML needs the SDK injected, so it's read fully and rewritten in memory.
 /// Everything else is streamed straight from disk, so serving a large local
 /// artifact file (an exported dataset, a video) doesn't buffer it whole —
-/// there is no size cap on serving it locally. A relay tunnel session
-/// forwarding this response applies its own size limit
-/// (`tunnel::forward_http::MAX_RESPONSE_SIZE`) on that path, not this one.
+/// there is no size cap on serving it.
 pub(crate) enum ArtifactBody {
     Bytes(Vec<u8>),
     File(tokio::fs::File),
@@ -441,6 +446,45 @@ pub(crate) enum ArtifactDeleteError {
     },
 }
 
+/// Every path deleting artifact `name` may remove: its page and folder
+/// (listed whether or not they exist), the files inside the folder, and the
+/// `<name>.*` data files. Used to lock them all before a delete.
+pub(crate) async fn artifact_paths(dir: &Path, name: &str) -> Vec<PathBuf> {
+    let folder = dir.join(name);
+    let mut paths = vec![folder.clone(), dir.join(format!("{name}.html"))];
+
+    let mut pending = vec![folder];
+    while let Some(current) = pending.pop() {
+        let Ok(mut entries) = tokio::fs::read_dir(&current).await else {
+            continue;
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let is_dir = entry.file_type().await.is_ok_and(|kind| kind.is_dir());
+            paths.push(entry.path());
+            if is_dir {
+                pending.push(entry.path());
+            }
+        }
+    }
+
+    let prefix = format!("{name}.");
+    if let Ok(mut entries) = tokio::fs::read_dir(dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let is_data_file = entry
+                .file_name()
+                .to_str()
+                .is_some_and(|f| f.starts_with(&prefix))
+                && entry.file_type().await.is_ok_and(|kind| !kind.is_dir());
+            if is_data_file {
+                paths.push(entry.path());
+            }
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
 /// Delete an artifact (its page, or its whole folder) and its data files (regular
 /// files named `<name>.*`). Returns the entries removed.
 ///
@@ -503,11 +547,20 @@ mod tests {
 
     #[test]
     fn artifact_names() {
-        for good in ["a", "pricing-explorer", "sdlc-pipeline-v2", "x9"] {
+        for good in [
+            "a",
+            "pricing-explorer",
+            "sdlc-pipeline-v2",
+            "x9",
+            "api-explorer",
+            "my-api",
+            "apis",
+        ] {
             assert!(is_valid_artifact_name(good), "{good} should be valid");
         }
         for bad in [
             "",
+            "api",
             "Pricing",
             "-lead",
             "trail-",
@@ -643,6 +696,26 @@ mod tests {
         assert_eq!(names, ["graph", "older"]);
         let titles: Vec<_> = artifacts.iter().map(|t| t.title.as_str()).collect();
         assert_eq!(titles, ["Wiki Graph", "Older"]);
+    }
+
+    #[tokio::test]
+    async fn an_artifact_named_api_is_neither_listed_nor_served() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("api/index.html"), "<title>Folder</title>");
+        write(&dir.path().join("api.html"), "<title>Page</title>");
+        write(&dir.path().join("api-tools.html"), "<title>Tools</title>");
+
+        let names: Vec<_> = list_artifacts(dir.path())
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|artifact| artifact.name)
+            .collect();
+        assert_eq!(names, ["api-tools"]);
+        assert!(matches!(
+            read_artifact_file(dir.path(), "api", "").await,
+            Err(ArtifactFileError::NoSuchArtifact(_))
+        ));
     }
 
     #[tokio::test]

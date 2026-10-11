@@ -8,14 +8,13 @@ use axum::http::{StatusCode, header};
 use axum::response::{Json, Response};
 use serde::{Deserialize, Serialize};
 
-use crate::config::Config;
 use crate::config::secrets::SecretStore;
 use crate::inference::providers::anthropic::is_oauth_key;
 
-use super::ConfigApiState;
-use super::config::ValidateResponse;
+use super::config::{PatchSavedResponse, ValidateResponse};
+use super::{ConfigApiState, HubDir};
 
-/// Request body for `POST /api/providers/models`.
+/// Request body for `POST /api/hub/providers/models` (and the same route under an agent).
 #[derive(Deserialize)]
 pub(super) struct ModelsRequest {
     provider: String,
@@ -40,12 +39,14 @@ pub(super) struct ModelsResponse {
     error: Option<String>,
 }
 
-/// `POST /api/providers/models` — fetch available models from a provider API.
+/// `POST /api/hub/providers/models` (and `/api/agents/{name}/providers/models`)
+/// — fetch available models from a provider API.
 ///
-/// Used by the setup wizard and settings page to populate model dropdowns.
-/// Takes provider type, optional API key, and optional base URL.
+/// Used by onboarding and the Settings modal to populate model dropdowns.
+/// Takes provider type, optional API key, and optional base URL. Needs no
+/// agent: `secret:` keys resolve against the hub's secret store.
 pub(super) async fn api_provider_models(
-    State(state): State<ConfigApiState>,
+    State(HubDir(hub_dir)): State<HubDir>,
     Json(req): Json<ModelsRequest>,
 ) -> Json<ModelsResponse> {
     // Resolve secret: prefixed API keys via the encrypted store
@@ -54,10 +55,9 @@ pub(super) async fn api_provider_models(
         .as_deref()
         .and_then(|raw| raw.strip_prefix("secret:"))
     {
-        let dir = state.config_dir.clone();
         let name_owned = name.to_owned();
-        tokio::task::spawn_blocking(move || -> Option<String> {
-            SecretStore::load(&dir)
+        crate::util::spawn_blocking_in_span(move || -> Option<String> {
+            SecretStore::load(&hub_dir)
                 .ok()
                 .and_then(|s| s.get(&name_owned).map(String::from))
         })
@@ -382,7 +382,7 @@ async fn fetch_ollama_models(
         .collect())
 }
 
-/// `GET /api/providers/raw` — return raw `providers.toml` contents as text.
+/// `GET /api/agents/{name}/providers/raw` — return raw `providers.toml` contents as text.
 pub(super) async fn api_providers_raw_get(
     State(state): State<ConfigApiState>,
 ) -> Result<Response, (StatusCode, String)> {
@@ -406,7 +406,7 @@ pub(super) async fn api_providers_raw_get(
         })
 }
 
-/// `PUT /api/providers/raw` — write `providers.toml` unconditionally, save,
+/// `PUT /api/agents/{name}/providers/raw` — write `providers.toml` unconditionally, save,
 /// trigger reload, and report diagnostics.
 ///
 /// The save always succeeds, even when `body` fails validation — see
@@ -415,11 +415,11 @@ pub(super) async fn api_providers_raw_put(
     State(state): State<ConfigApiState>,
     body: String,
 ) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
-    let diagnostics = Config::diagnose_providers_toml(&body, &state.config_dir);
+    let diagnostics = state.diagnose_agent_providers(&body);
 
     let providers_path = state.config_dir.join("providers.toml");
     state
-        .checkpoint_config_before_write("raw write providers.toml")
+        .checkpoint_agent_config_before_write("raw write providers.toml")
         .await;
     tokio::fs::write(&providers_path, &body)
         .await
@@ -434,9 +434,9 @@ pub(super) async fn api_providers_raw_put(
             )
         })?;
 
-    // Trigger root reload — provider changes affect model resolution
+    // Trigger agent reload — provider changes affect model resolution
     if let Some(reload_tx) = &state.reload_tx {
-        reload_tx.send(super::super::ReloadSignal::Root).ok();
+        reload_tx.send(super::super::ReloadSignal::Agent).ok();
     }
 
     Ok(Json(ValidateResponse::from_diagnostics(
@@ -445,7 +445,7 @@ pub(super) async fn api_providers_raw_put(
     )))
 }
 
-/// `PATCH /api/providers/patch` — merge a JSON diff into the existing
+/// `PATCH /api/agents/{name}/providers/patch` — merge a JSON diff into the existing
 /// `providers.toml`, validate, save, trigger reload if running.
 ///
 /// The diff's shape mirrors `providers.toml`'s section/key layout, carrying
@@ -457,7 +457,7 @@ pub(super) async fn api_providers_raw_put(
 pub(super) async fn api_providers_patch(
     State(state): State<ConfigApiState>,
     Json(diff): Json<serde_json::Value>,
-) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
+) -> Result<Json<PatchSavedResponse>, (StatusCode, Json<ValidateResponse>)> {
     let bad_request = |msg: String| {
         (
             StatusCode::BAD_REQUEST,
@@ -498,13 +498,13 @@ pub(super) async fn api_providers_patch(
             bad_request(msg)
         })?;
 
-    Config::validate_providers_toml(&patched, &state.config_dir).map_err(|e| {
+    state.validate_agent_providers(&patched).map_err(|e| {
         tracing::warn!(error = %e, path = %providers_path.display(), "patched providers.toml failed validation");
         bad_request(e)
     })?;
 
-    state
-        .checkpoint_config_before_write("patch providers.toml")
+    let checkpoint_id = state
+        .checkpoint_agent_config_id_before_write("patch providers.toml")
         .await;
     crate::util::fs::atomic_write(&providers_path, &patched)
         .await
@@ -520,24 +520,20 @@ pub(super) async fn api_providers_patch(
             )
         })?;
 
-    // Trigger root reload — provider changes affect model resolution
+    // Trigger agent reload — provider changes affect model resolution
     if let Some(reload_tx) = &state.reload_tx {
-        reload_tx.send(super::super::ReloadSignal::Root).ok();
+        reload_tx.send(super::super::ReloadSignal::Agent).ok();
     }
 
-    Ok(Json(ValidateResponse {
-        valid: true,
-        error: None,
-        diagnostics: Vec::new(),
-    }))
+    Ok(Json(PatchSavedResponse::saved(checkpoint_id)))
 }
 
-/// `POST /api/providers/validate` — validate providers TOML body without saving.
+/// `POST /api/agents/{name}/providers/validate` — validate providers TOML body without saving.
 pub(super) async fn api_providers_validate(
     State(state): State<ConfigApiState>,
     body: String,
 ) -> Json<ValidateResponse> {
-    let diagnostics = Config::diagnose_providers_toml(&body, &state.config_dir);
+    let diagnostics = state.diagnose_agent_providers(&body);
     Json(ValidateResponse::from_diagnostics(
         diagnostics,
         "providers.toml",
@@ -549,15 +545,21 @@ mod tests {
     use super::*;
 
     /// A state backed by a real temp directory, for tests that read/write
-    /// `config.toml`/`providers.toml` on disk.
+    /// `config.toml`/`providers.toml` on disk. Seeds a valid hub `config.toml`
+    /// so diagnosis/validation can resolve the hub side.
     fn tempdir_state(dir: &std::path::Path) -> ConfigApiState {
+        let hub_dir = dir.join("hub");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        std::fs::write(hub_dir.join("config.toml"), "timezone = \"UTC\"\n").unwrap();
         ConfigApiState {
+            team: None,
+            hub_dir,
             config_dir: dir.to_path_buf(),
+            agent_name: "test-agent".to_string(),
             workspace_dir: dir.join("workspace"),
             memory_dir: None,
             reload_tx: None,
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            scope: crate::gateway::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         }
     }
@@ -565,7 +567,6 @@ mod tests {
     #[tokio::test]
     async fn providers_raw_put_saves_invalid_toml_with_diagnostics() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.toml"), "timezone = \"UTC\"\n").unwrap();
         let state = tempdir_state(dir.path());
 
         let Json(response) =
@@ -590,7 +591,6 @@ mod tests {
     #[tokio::test]
     async fn providers_raw_put_saves_valid_toml_with_no_diagnostics() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.toml"), "timezone = \"UTC\"\n").unwrap();
         let state = tempdir_state(dir.path());
 
         let Json(response) = api_providers_raw_put(
@@ -665,6 +665,42 @@ mod tests {
                 "text-embedding-3-small".to_string(),
             ],
             "every listed model is offered, fine-tunes included"
+        );
+    }
+
+    #[tokio::test]
+    async fn providers_patch_returns_the_checkpoint_taken_before_the_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = super::super::test_support::watching_state(dir.path());
+        std::fs::create_dir_all(&state.hub_dir).unwrap();
+        std::fs::write(state.hub_dir.join("config.toml"), "timezone = \"UTC\"\n").unwrap();
+        let before = "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n";
+        std::fs::write(state.config_dir.join("providers.toml"), before).unwrap();
+
+        let Json(saved) = api_providers_patch(
+            State(state.clone()),
+            Json(serde_json::json!({"models": {"main": "anthropic/claude-opus-4-6"}})),
+        )
+        .await
+        .unwrap();
+
+        assert!(saved.validation.valid, "{:?}", saved.validation.error);
+        let id = saved
+            .checkpoint_id
+            .expect("a patch should name the checkpoint taken before it");
+        let stored = state
+            .checkpoints
+            .file_content_at(
+                crate::checkpoints::RepoKind::AgentConfig,
+                id,
+                "providers.toml".to_string(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            stored.as_deref(),
+            Some(before.as_bytes()),
+            "the returned checkpoint must hold providers.toml as it was before the patch"
         );
     }
 }

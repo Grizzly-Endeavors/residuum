@@ -44,9 +44,9 @@ Actions are checked on a 30-second tick. When `run_at` has passed:
 
 `scheduled_actions.json` is written atomically (temp file + rename). The `ActionStore` handles concurrent access safely. A file that exists but isn't valid JSON is never overwritten: it's moved aside to `scheduled_actions.json.corrupt-<unix-timestamp>`, preserving its bytes, and the store starts empty at the normal path — the owner is notified naming the moved-aside file.
 
-## Scheduled View
+## Schedule Place
 
-The web UI's Scheduled view (hamburger menu, `/scheduled`) lists every pending action — what it does, when it's due, its agent/skill, and whether it's currently running — with a cancel button for each, backed by `GET /api/scheduled/actions` and `DELETE /api/scheduled/actions/{id}`.
+The web UI's Schedule place (under each agent in the rail, `/agent/<agent>/schedule`) lists every pending action — its name in words, when it's due, its skill, and whether it's running now — with Cancel for each, backed by `GET /api/agents/<agent>/scheduled/actions` and `DELETE /api/agents/<agent>/scheduled/actions/{id}`.
 
 ## Gotchas
 
@@ -54,5 +54,5 @@ The web UI's Scheduled view (hamburger menu, `/scheduled`) lists every pending a
 - The 30-second tick means fire-time precision is at best ~30 seconds.
 - IDs are generated as `action-{8 hex chars}`.
 - If the agent is offline when an action comes due, it fires on the next startup when the tick evaluates it.
-- A stored action left over from before `agent: "main"` was removed is dropped at startup load, logged as an error naming it, and raised once as an owner-facing notice (a web UI toast and the same message on any chat interface) naming every dropped action and linking to `migrating-to-agent-sessions.md`. Unlike heartbeat pulses, this only ever happens once at startup — actions aren't re-validated on a running tick.
+- A stored action left over from before `agent: "main"` was removed is dropped at startup load, logged as an error naming it, and raised once as an owner-facing notice (a web UI toast) naming every dropped action and linking to `migrating-to-agent-sessions.md`. Unlike heartbeat pulses, this only ever happens once at startup — actions aren't re-validated on a running tick.
 - Fork/spawn failures (e.g. naming a skill that doesn't exist) are deduped per action name: warned and noticed once, not on every retry of an unchanged failure.

@@ -1,9 +1,33 @@
 //! Normalized message types for all interfaces.
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::inference::{AgentSender, ImageData, Message, MessageSender};
+use crate::bus::EndpointName;
+use crate::inference::{AgentSender, MessageSender};
+
+/// The endpoint name of a message no interface delivered: a result relayed
+/// to the main agent, another agent's message, a delivery-failure notice.
+pub const BACKGROUND_ENDPOINT: &str = "background";
+
+/// The web UI's endpoint name: always the owner's own channel, with no
+/// conversation concept to post elsewhere within.
+///
+/// The web UI follows the main agent's turns through the main conversation
+/// topic. What is published to its endpoint topic is only what the agent
+/// posts to the web with `send_message`, files included.
+pub const WEB_UI_ENDPOINT: &str = "ws";
+
+/// The endpoint whose topic carries a turn's events for the chat interface
+/// behind it: `delivered_to` itself, unless it is the web UI, which takes a
+/// turn's lifecycle, intermediate text, reply and failure from the main
+/// conversation topic instead. `None` when the turn is delivered nowhere.
+///
+/// Every other endpoint name is treated as a chat interface, so a new one
+/// receives its turns' events without further wiring.
+#[must_use]
+pub fn chat_interface_endpoint(delivered_to: Option<&EndpointName>) -> Option<&EndpointName> {
+    delivered_to.filter(|endpoint| endpoint.as_ref() != WEB_UI_ENDPOINT)
+}
 
 /// Kind of chat conversation, which decides whether the bot needs an @mention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -49,7 +73,7 @@ pub struct MessageOrigin {
     pub conversation: Option<ConversationContext>,
     /// The agent that sent it, for a message one agent sent main. `None`
     /// for everything else. Boxed because it is rarely set and
-    /// `InboundMessage` is carried inline in several enums.
+    /// `MessageEvent` is carried inline in several enums.
     pub agent_sender: Option<Box<AgentSender>>,
 }
 
@@ -70,88 +94,18 @@ impl MessageOrigin {
             Some(ctx) => ctx.kind == ConversationKind::Personal && ctx.is_owner,
         }
     }
-}
 
-/// A normalized inbound message from any interface.
-#[derive(Debug, Clone)]
-pub struct InboundMessage {
-    /// Correlation ID for reply routing.
-    pub id: String,
-    /// The user message content.
-    pub content: String,
-    /// Where this message came from.
-    pub origin: MessageOrigin,
-    /// When the message was received.
-    pub timestamp: DateTime<Utc>,
-    /// Inline images attached to the message.
-    pub images: Vec<ImageData>,
-    /// Earlier conversation supplied as background ahead of this message.
-    pub context: Option<String>,
-}
-
-impl InboundMessage {
-    /// The messages this adds to conversation history: its background
-    /// context (if any) as a system message, then the user message itself.
+    /// Whether a person sent this, as opposed to the system or an agent:
+    /// false for a background origin and for one agent's message to another.
     #[must_use]
-    pub fn into_history_messages(self) -> Vec<Message> {
-        let user = if self.images.is_empty() {
-            Message::user(self.content)
-        } else {
-            Message::user_with_images(self.content, self.images)
-        };
-        self.context
-            .map(Message::system)
-            .into_iter()
-            .chain(std::iter::once(
-                user.with_sender(self.origin.sender)
-                    .with_agent_sender(self.origin.agent_sender.map(|a| *a)),
-            ))
-            .collect()
+    pub fn is_from_person(&self) -> bool {
+        self.endpoint != BACKGROUND_ENDPOINT && self.agent_sender.is_none()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inference::Role;
-
-    fn inbound(context: Option<&str>) -> InboundMessage {
-        InboundMessage {
-            id: "m1".to_string(),
-            content: "can you check the build?".to_string(),
-            origin: MessageOrigin {
-                endpoint: "teams".to_string(),
-                sender: Some(MessageSender {
-                    name: "Jane".to_string(),
-                    id: "aad-jane".to_string(),
-                    interface: "teams".to_string(),
-                    location: Some("#builds".to_string()),
-                }),
-                conversation: Some(ConversationContext {
-                    id: "19:abc@thread.tacv2".to_string(),
-                    kind: ConversationKind::Channel,
-                    is_owner: true,
-                }),
-                agent_sender: None,
-            },
-            timestamp: Utc::now(),
-            images: vec![],
-            context: context.map(str::to_string),
-        }
-    }
-
-    #[test]
-    fn context_precedes_the_attributed_user_message() {
-        let messages = inbound(Some("[14:05] Sam: build is red")).into_history_messages();
-        let [context, user] = messages.as_slice() else {
-            panic!("expected context then user message, got {messages:?}");
-        };
-        assert_eq!(context.role, Role::System);
-        assert_eq!(context.content, "[14:05] Sam: build is red");
-        assert_eq!(user.role, Role::User);
-        assert_eq!(user.content, "can you check the build?");
-        assert_eq!(user.sender.as_ref().map(|s| s.name.as_str()), Some("Jane"));
-    }
 
     fn origin_with(kind: ConversationKind, is_owner: bool) -> MessageOrigin {
         MessageOrigin {
@@ -195,7 +149,7 @@ mod tests {
     fn no_conversation_belongs_to_main() {
         // The web UI and background/internal origins.
         let origin = MessageOrigin {
-            endpoint: "ws".to_string(),
+            endpoint: WEB_UI_ENDPOINT.to_string(),
             sender: None,
             conversation: None,
             agent_sender: None,
@@ -204,28 +158,21 @@ mod tests {
     }
 
     #[test]
-    fn agent_sender_on_the_origin_reaches_the_history_message() {
-        let mut message = inbound(None);
-        message.origin.agent_sender = Some(Box::new(AgentSender {
-            address: "spawned-a".to_string(),
-            category: "spawned".to_string(),
-        }));
-        let messages = message.into_history_messages();
-        let [user] = messages.as_slice() else {
-            panic!("expected a single user message, got {messages:?}");
-        };
+    fn a_turn_reaches_the_endpoint_topic_of_a_chat_interface_but_not_the_web_ui() {
+        let name = |endpoint: &str| EndpointName::from(endpoint);
+        for chat in ["telegram", "discord", "teams", "slack-someday"] {
+            let endpoint = name(chat);
+            assert_eq!(
+                chat_interface_endpoint(Some(&endpoint)),
+                Some(&endpoint),
+                "{chat} reads its turns' events from its endpoint topic"
+            );
+        }
         assert_eq!(
-            user.agent_sender.as_ref().map(|a| a.address.as_str()),
-            Some("spawned-a")
+            chat_interface_endpoint(Some(&name(WEB_UI_ENDPOINT))),
+            None,
+            "the web UI follows the main conversation topic"
         );
-    }
-
-    #[test]
-    fn without_context_only_the_user_message() {
-        let messages = inbound(None).into_history_messages();
-        let [user] = messages.as_slice() else {
-            panic!("expected a single user message, got {messages:?}");
-        };
-        assert_eq!(user.role, Role::User);
+        assert_eq!(chat_interface_endpoint(None), None, "nowhere to deliver");
     }
 }

@@ -9,6 +9,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::inference::retry::RetryConfig;
+use crate::skills::SkillDir;
 
 use super::constants::{
     DEFAULT_AGENT_MODIFY_CHANNELS, DEFAULT_AGENT_MODIFY_MCP, DEFAULT_EPISODE_SKIP_TOKEN_FLOOR,
@@ -119,8 +120,43 @@ pub struct CloudConfig {
     pub relay_url: String,
     /// Authentication token.
     pub token: String,
-    /// Local port to forward requests to.
-    pub local_port: u16,
+    /// Settings for end-to-end encrypted remote access.
+    pub remote: RemoteAccessSettings,
+}
+
+/// Production Let's Encrypt directory.
+pub const ACME_PRODUCTION_DIRECTORY: &str = "https://acme-v02.api.letsencrypt.org/directory";
+
+/// Let's Encrypt staging directory.
+pub const ACME_STAGING_DIRECTORY: &str = "https://acme-staging-v02.api.letsencrypt.org/directory";
+
+/// Validated settings for end-to-end encrypted remote access (`[cloud]`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteAccessSettings {
+    /// Domain the relay serves hosts under; every host name is derived from
+    /// it and the stored user and slug.
+    pub base_domain: String,
+    /// ACME directory certificates are ordered from.
+    pub acme_directory: String,
+    /// Extra PEM root the ACME directory's TLS certificate may chain to, for
+    /// a private test CA.
+    pub acme_root_ca: Option<std::path::PathBuf>,
+    /// Base URL of the pin service.
+    pub pin_service_url: String,
+    /// Public DNS resolver used to see which CAA records the world sees.
+    pub caa_resolver: std::net::SocketAddr,
+}
+
+impl Default for RemoteAccessSettings {
+    fn default() -> Self {
+        Self {
+            base_domain: "agent-residuum.com".to_string(),
+            acme_directory: ACME_PRODUCTION_DIRECTORY.to_string(),
+            acme_root_ca: None,
+            pin_service_url: "https://pins.agent-residuum.com".to_string(),
+            caa_resolver: std::net::SocketAddr::from(([1, 1, 1, 1], 53)),
+        }
+    }
 }
 
 /// Validated Discord bot configuration.
@@ -207,7 +243,7 @@ pub enum A2aVisibility {
     #[default]
     Public,
     /// Every route, including the Agent Card, answers a plain 404 to a
-    /// caller without a valid key or sibling attestation — indistinguishable
+    /// caller without a valid key — indistinguishable
     /// from an agent that doesn't exist.
     Private,
 }
@@ -339,8 +375,9 @@ pub struct WebhookEntry {
 /// Validated skills subsystem configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SkillsConfig {
-    /// Directories to scan for skills (resolved, expanded paths).
-    pub dirs: Vec<PathBuf>,
+    /// Directories to scan for skills, in priority order (agent, team,
+    /// then configured), each tagged with its layer.
+    pub dirs: Vec<SkillDir>,
 }
 
 /// Validated runtime tool PATH configuration.
@@ -438,6 +475,42 @@ impl Default for RepeatCallGuardConfig {
             steer_after: DEFAULT_REPEAT_CALL_STEER_AFTER,
             stop_after: DEFAULT_REPEAT_CALL_STOP_AFTER,
         }
+    }
+}
+
+/// Validated `[auto_mode]`: plain-language rules a decision model checks
+/// every tool call against before it runs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AutoModeConfig {
+    pub enabled: bool,
+    /// What the agent isn't allowed to do. A call matching one is blocked.
+    pub deny: Vec<String>,
+    /// Exceptions: a call matching one of these runs even if it matches a
+    /// deny rule.
+    pub allow: Vec<String>,
+    /// Probability (exclusive 0 to inclusive 1) at which a rule matches.
+    pub threshold: f64,
+}
+
+/// The probability at which an Auto Mode rule counts as matching.
+pub const DEFAULT_AUTO_MODE_THRESHOLD: f64 = 0.5;
+
+impl Default for AutoModeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            deny: Vec::new(),
+            allow: Vec::new(),
+            threshold: DEFAULT_AUTO_MODE_THRESHOLD,
+        }
+    }
+}
+
+impl AutoModeConfig {
+    /// Whether any call would be checked: enabled with at least one deny rule.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.enabled && !self.deny.is_empty()
     }
 }
 
@@ -792,14 +865,25 @@ pub struct StandaloneBackendConfig {
     pub base_url: Option<String>,
 }
 
-/// Validated runtime configuration.
+/// Validated runtime configuration for one agent.
 ///
 /// All provider roles are fully resolved at load time. Consumers read fields
 /// directly — no fallback chains needed.
+///
+/// A handful of fields (`gateway`, `cloud`, `tracing`, `timezone`,
+/// `a2a.enabled`/`a2a.port`/`a2a.public_url`, and
+/// `background.max_concurrent`/`background.hop_soft_limit`/
+/// `background.hop_hard_limit`) belong to the hub: they live in
+/// `hub/config.toml` (see [`crate::config::HubConfig`]) and are copied in
+/// here at resolve time so the rest of the codebase reads one flat `Config`.
+/// Every other field is resolved from this agent's own files.
 #[derive(Clone, PartialEq)]
 pub struct Config {
-    /// User's display name (what the agent calls them).
-    pub name: Option<String>,
+    /// This agent's name — its directory name and identity everywhere
+    /// (addresses, A2A path segment).
+    pub agent_name: String,
+    /// Whether this agent starts automatically when the hub starts.
+    pub autostart: bool,
     /// Fully resolved main agent provider chain (failover).
     pub main: Vec<ProviderSpec>,
     /// Fully resolved observer provider chain (failover).
@@ -812,7 +896,7 @@ pub struct Config {
     pub subconscious: Vec<ProviderSpec>,
     /// Fully resolved embedding provider (None if not configured).
     pub embedding: Option<ProviderSpec>,
-    /// Path to the workspace root directory.
+    /// Path to this agent's workspace root directory (`~/.residuum/<name>`).
     pub workspace_dir: PathBuf,
     /// Request timeout in seconds.
     pub timeout_secs: u64,
@@ -826,11 +910,11 @@ pub struct Config {
     pub subconscious_settings: SubconsciousSettings,
     /// Activity-triggered learning loop settings (turn-count fallback).
     pub learning: LearningConfig,
-    /// WebSocket gateway configuration.
+    /// WebSocket gateway configuration. Hub-owned; copied from `HubConfig`.
     pub gateway: GatewayConfig,
-    /// IANA timezone for the agent (e.g. `America/New_York`).
+    /// IANA timezone, shared by every agent. Hub-owned; copied from `HubConfig`.
     pub timezone: chrono_tz::Tz,
-    /// Cloud tunnel configuration (None if `[cloud]` section absent or disabled).
+    /// Cloud tunnel configuration. Hub-owned; copied from `HubConfig`.
     pub cloud: Option<CloudConfig>,
     /// Discord bot configuration (None if `[discord]` section absent or no token).
     pub discord: Option<DiscordConfig>,
@@ -838,7 +922,8 @@ pub struct Config {
     pub telegram: Option<TelegramConfig>,
     /// Microsoft Teams bot configuration (None if `[teams]` section absent).
     pub teams: Option<TeamsConfig>,
-    /// `Agent2Agent` (A2A) protocol configuration.
+    /// `Agent2Agent` (A2A) protocol configuration. `enabled`/`port`/`public_url`
+    /// are hub-owned (copied from `HubConfig`); `visibility` is this agent's own.
     pub a2a: A2aConfig,
     /// Named webhook endpoint configurations.
     pub webhooks: HashMap<String, WebhookEntry>,
@@ -848,10 +933,14 @@ pub struct Config {
     pub tools: ToolsConfig,
     /// Retry configuration for model provider calls.
     pub retry: RetryConfig,
-    /// Background task configuration.
+    /// Background task configuration. `max_concurrent`/`hop_soft_limit`/
+    /// `hop_hard_limit` are hub-owned (copied from `HubConfig`); everything
+    /// else is this agent's own.
     pub background: BackgroundConfig,
     /// Agent ability gates.
     pub agent: AgentAbilitiesConfig,
+    /// Auto Mode rules for tool calls.
+    pub auto_mode: AutoModeConfig,
     /// Idle system configuration.
     pub idle: IdleConfig,
     /// Sampling temperature for model completions.
@@ -860,11 +949,11 @@ pub struct Config {
     pub thinking: Option<crate::inference::ThinkingConfig>,
     /// Web search configuration.
     pub web_search: WebSearchConfig,
-    /// Tracing and observability configuration.
+    /// Tracing and observability configuration. Hub-owned; copied from `HubConfig`.
     pub tracing: TracingConfig,
     /// Per-role overrides for temperature and thinking.
     pub role_overrides: HashMap<String, RoleOverrides>,
-    /// Directory this config was loaded from.
+    /// Directory this config was loaded from (`<agent>/config`).
     pub config_dir: PathBuf,
     /// User-facing notices describing what was skipped or degraded while
     /// loading this config — an unknown key, a dropped fallback provider,
@@ -877,7 +966,8 @@ pub struct Config {
 impl fmt::Debug for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Config")
-            .field("name", &self.name)
+            .field("agent_name", &self.agent_name)
+            .field("autostart", &self.autostart)
             .field("main", &self.main)
             .field("observer", &self.observer)
             .field("reflector", &self.reflector)
@@ -907,6 +997,7 @@ impl fmt::Debug for Config {
             .field("retry", &self.retry)
             .field("background", &self.background)
             .field("agent", &self.agent)
+            .field("auto_mode", &self.auto_mode)
             .field("idle", &self.idle)
             .field("temperature", &self.temperature)
             .field("thinking", &self.thinking)

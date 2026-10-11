@@ -17,7 +17,7 @@ use teloxide::types::{
 use crate::background::registry::SessionRegistry;
 use crate::bus::{EndpointName, Publisher};
 use crate::gateway::event_loop::AdapterSenders;
-use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
+use crate::gateway::types::{ServerCommand, StopRequest};
 use crate::inference::{ImageData, MessageSender};
 use crate::interfaces::chat_state::{ChatRef, Owner, Standing};
 use crate::interfaces::commands::all_commands;
@@ -35,7 +35,9 @@ struct TelegramContext<'a> {
     bot_id: UserId,
     publisher: &'a Publisher,
     inbox_dir: &'a Path,
-    reload_tx: &'a tokio::sync::watch::Sender<ReloadSignal>,
+    /// Main's saved conversation, which `/multitask` forks.
+    main_conversation: &'a Path,
+    reload_tx: &'a crate::gateway::types::ReloadSender,
     command_tx: &'a tokio::sync::mpsc::Sender<ServerCommand>,
     stop_tx: &'a tokio::sync::mpsc::Sender<StopRequest>,
     session_registry: &'a SessionRegistry,
@@ -81,8 +83,9 @@ pub(super) async fn run_telegram_polling(
         .pool_idle_timeout(Duration::from_secs(90))
         .build()?;
     let bot = Bot::with_client(token, http_client);
-    let inbox_dir =
-        crate::workspace::layout::WorkspaceLayout::new(&workspace_dir).agent_inbox_dir();
+    let layout = crate::workspace::layout::WorkspaceLayout::new(&workspace_dir);
+    let inbox_dir = layout.agent_inbox_dir();
+    let main_conversation = layout.recent_messages_json();
 
     // Verify the bot token is valid. A network blip or a momentary API
     // error here used to leave the adapter dead until a config reload;
@@ -113,11 +116,9 @@ pub(super) async fn run_telegram_polling(
     let subs = crate::interfaces::BaseSubscribers::new(&bus_handle, EndpointName::from(ENDPOINT))
         .await
         .context("failed to subscribe to telegram bus topics")?;
-    let _outbound = OutboundTask(tokio::spawn(super::subscriber::run_telegram_subscriber(
-        subs,
-        bot.clone(),
-        Arc::clone(&state),
-    )));
+    let _outbound = OutboundTask(crate::util::spawn_in_span(
+        super::subscriber::run_telegram_subscriber(subs, bot.clone(), Arc::clone(&state)),
+    ));
 
     let mut offset: i32 = 0;
     let mut consecutive_errors: u32 = 0;
@@ -164,6 +165,7 @@ pub(super) async fn run_telegram_polling(
             bot_id: me.id,
             publisher: &publisher,
             inbox_dir: &inbox_dir,
+            main_conversation: &main_conversation,
             reload_tx: &reload_tx,
             command_tx: &command_tx,
             stop_tx: &stop_tx,
@@ -549,6 +551,8 @@ async fn handle_command(
         session_registry: ctx.session_registry,
         inbox_dir: ctx.inbox_dir,
         tz: ctx.tz,
+        publisher: ctx.publisher,
+        main_conversation: ctx.main_conversation,
     };
     let response_text = crate::interfaces::run_chat_command(
         cmd_name,
@@ -724,6 +728,12 @@ async fn handle_attachment(
         bot.download_file(&file.path, &mut dst)
             .await
             .map_err(|e| format!("failed to download '{filename}': {e}"))?;
+        // `tokio::fs::File` queues writes on a blocking thread and dropping it
+        // does not wait for them; flush so the attachment is complete on disk
+        // before anything reads it back.
+        tokio::io::AsyncWriteExt::flush(&mut dst)
+            .await
+            .map_err(|e| format!("failed to save '{filename}': {e}"))?;
 
         Ok(SavedAttachment { local_path })
     }
@@ -755,13 +765,13 @@ async fn handle_attachment(
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::time::Duration as StdDuration;
 
     use super::*;
     use crate::bus::{MessageEvent, Subscriber, topics};
     use crate::interfaces::chat_state::ChatStateStore;
     use crate::interfaces::context_buffer::ContextBuffer;
     use crate::interfaces::reply_targets::ReplyTargets;
+    use crate::testing::wait;
 
     const BOT_USERNAME: &str = "resibot";
     const BOT_ID: UserId = UserId(9_999);
@@ -803,7 +813,8 @@ mod tests {
         user_messages: Subscriber<MessageEvent>,
         publisher: Publisher,
         inbox_dir: PathBuf,
-        reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
+        main_conversation: PathBuf,
+        reload_tx: crate::gateway::types::ReloadSender,
         command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
         stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
         session_registry: Arc<SessionRegistry>,
@@ -830,7 +841,10 @@ mod tests {
             user_messages,
             publisher: bus.publisher(),
             inbox_dir: dir.path().to_path_buf(),
-            reload_tx: tokio::sync::watch::channel(ReloadSignal::Root).0,
+            main_conversation: dir.path().join("recent_messages.json"),
+            reload_tx: tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>(
+            )
+            .0,
             command_tx: tokio::sync::mpsc::channel(1).0,
             stop_tx: tokio::sync::mpsc::channel(1).0,
             session_registry: Arc::new(SessionRegistry::new()),
@@ -845,6 +859,7 @@ mod tests {
             bot_id: BOT_ID,
             publisher: &h.publisher,
             inbox_dir: &h.inbox_dir,
+            main_conversation: &h.main_conversation,
             reload_tx: &h.reload_tx,
             command_tx: &h.command_tx,
             stop_tx: &h.stop_tx,
@@ -858,11 +873,11 @@ mod tests {
         dispatch_message(&h.bot, msg, &from, &context(h)).await;
     }
 
-    async fn next_user_message(h: &mut Harness) -> Option<MessageEvent> {
-        tokio::time::timeout(StdDuration::from_millis(200), h.user_messages.recv())
+    async fn next_user_message(h: &mut Harness, what: &str) -> MessageEvent {
+        wait::guarded(what, h.user_messages.recv())
             .await
-            .ok()
-            .map(|r| r.unwrap().unwrap())
+            .unwrap()
+            .unwrap()
     }
 
     #[tokio::test]
@@ -870,7 +885,7 @@ mod tests {
         let mut h = harness(false, 10).await;
         deliver(&h, &telegram_message(dm_json(1, 111, "Bear", "hello"))).await;
 
-        let event = next_user_message(&mut h).await.expect("dm published");
+        let event = next_user_message(&mut h, "dm published").await;
         assert_eq!(event.content, "hello");
         assert_eq!(event.context, None, "no buffered context for a DM");
         let conversation = event
@@ -887,7 +902,7 @@ mod tests {
         let mut h = harness(true, 10).await;
         // Claim the owner via a DM first, so the group sender is a non-owner.
         deliver(&h, &telegram_message(dm_json(1, 111, "Bear", "hi"))).await;
-        next_user_message(&mut h).await.expect("dm published");
+        next_user_message(&mut h, "dm published").await;
 
         deliver(
             &h,
@@ -901,11 +916,6 @@ mod tests {
             )),
         )
         .await;
-        assert!(
-            next_user_message(&mut h).await.is_none(),
-            "unmentioned chatter is buffered, not sent"
-        );
-
         deliver(
             &h,
             &telegram_message(group_json(
@@ -918,8 +928,12 @@ mod tests {
             )),
         )
         .await;
-        let event = next_user_message(&mut h).await.expect("mention published");
-        assert_eq!(event.content, "can you look?");
+        // Events arrive in publish order, so a published chatter would come before the mention.
+        let event = next_user_message(&mut h, "mention published").await;
+        assert_eq!(
+            event.content, "can you look?",
+            "unmentioned chatter is buffered, not sent"
+        );
         let context = event.context.expect("background context attached");
         assert!(context.contains("Sam: build is red"), "{context}");
         let conversation = event
@@ -942,7 +956,7 @@ mod tests {
             )),
         )
         .await;
-        let again = next_user_message(&mut h).await.expect("second mention");
+        let again = next_user_message(&mut h, "second mention").await;
         assert_eq!(
             again.context, None,
             "already-delivered chatter is not repeated"
@@ -953,7 +967,7 @@ mod tests {
     async fn context_buffer_is_bounded_by_context_messages() {
         let mut h = harness(true, 1).await;
         deliver(&h, &telegram_message(dm_json(1, 111, "Bear", "hi"))).await;
-        next_user_message(&mut h).await.expect("dm published");
+        next_user_message(&mut h, "dm published").await;
 
         deliver(
             &h,
@@ -978,7 +992,7 @@ mod tests {
             )),
         )
         .await;
-        let event = next_user_message(&mut h).await.expect("mention published");
+        let event = next_user_message(&mut h, "mention published").await;
         let context = event.context.expect("one buffered message fits");
         assert!(!context.contains("first"), "{context}");
         assert!(context.contains("second"), "{context}");

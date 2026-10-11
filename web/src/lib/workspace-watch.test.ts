@@ -1,11 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  changeMatchesPrefix,
-  changesUnder,
-  normalizeWatchPrefix,
-  WorkspaceWatchSync,
-} from "./workspace-watch";
-import type { ClientMessage } from "./types";
+import { changeMatchesPrefix, changesUnder, normalizeWatchPrefix } from "./workspace-watch";
 
 describe("normalizeWatchPrefix", () => {
   it.each([
@@ -50,39 +44,5 @@ describe("changeMatchesPrefix", () => {
       "wiki/a.md",
       "inbox/user/x.md",
     ]);
-  });
-});
-
-describe("WorkspaceWatchSync", () => {
-  function sync(): { watch: WorkspaceWatchSync; sent: ClientMessage[] } {
-    const sent: ClientMessage[] = [];
-    return { watch: new WorkspaceWatchSync((msg) => sent.push(msg)), sent };
-  }
-
-  it("sends the open artifact's watch set when it changes", () => {
-    const { watch, sent } = sync();
-    watch.set(["wiki", "inbox/user"]);
-    watch.set(["inbox/user", "wiki"]);
-    watch.set([]);
-    expect(sent).toEqual([
-      { type: "watch_workspace", prefixes: ["inbox/user", "wiki"] },
-      { type: "watch_workspace", prefixes: [] },
-    ]);
-  });
-
-  it("re-sends the watch set after every reconnect", () => {
-    const { watch, sent } = sync();
-    watch.connected();
-    expect(sent).toEqual([]);
-
-    watch.set(["wiki"]);
-    watch.connected();
-    watch.connected();
-    expect(sent).toEqual([
-      { type: "watch_workspace", prefixes: ["wiki"] },
-      { type: "watch_workspace", prefixes: ["wiki"] },
-      { type: "watch_workspace", prefixes: ["wiki"] },
-    ]);
-    expect(watch.current).toEqual(["wiki"]);
   });
 });

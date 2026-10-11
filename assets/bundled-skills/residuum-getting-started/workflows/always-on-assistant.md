@@ -2,7 +2,7 @@
 
 This is the power-user path. Walk the user through a full setup that turns you into an always-on personal assistant. Each step builds on the previous one. Take it at the user's pace — this can span multiple conversations.
 
-**Remember**: Write core facts to `USER.md` and everything else to wiki pages (activate the `wiki` skill) as you learn things throughout this workflow — don't save it all for the end.
+**Remember**: Write core facts to `team/USER.md` and everything else to team wiki pages (`team/wiki/`) (activate the `wiki` skill) as you learn things throughout this workflow — don't save it all for the end.
 
 **Build on Quick Setup**: The built-in `reflection`, `memory_tending`, and `wiki_lint` pulses are already running, the user may have starter pulses configured on top depending on the proactivity level they chose, and you know their communication preferences. Don't re-cover ground — acknowledge what's running and expand from there.
 

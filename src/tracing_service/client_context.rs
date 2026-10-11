@@ -40,6 +40,38 @@ pub fn gather_for_bug_report(config: &Config) -> ClientContext {
         model_name,
         active_subagents: Vec::new(),
         config_flags: config_flags(config),
+        agent: Some(config.agent_name.clone()),
+    }
+}
+
+/// The client context for a failure of the agent `agent`, from its resolved
+/// `config` when one loaded. Without one (the failure was in loading it) the
+/// model and flags are left out.
+#[must_use]
+pub fn gather_for_agent(agent: &str, config: Option<&Config>) -> ClientContext {
+    config.map_or_else(
+        || ClientContext {
+            agent: Some(agent.to_string()),
+            ..gather_for_hub()
+        },
+        gather_for_bug_report,
+    )
+}
+
+/// The client context for a failure that belongs to the hub rather than to
+/// any agent: version and platform only.
+#[must_use]
+pub fn gather_for_hub() -> ClientContext {
+    ClientContext {
+        version: env!("RESIDUUM_VERSION").to_string(),
+        commit: option_env!("RESIDUUM_GIT_COMMIT").map(str::to_string),
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        model_provider: None,
+        model_name: None,
+        active_subagents: Vec::new(),
+        config_flags: BTreeMap::new(),
+        agent: None,
     }
 }
 
@@ -137,35 +169,44 @@ mod tests {
         "private-workspace-dir",
     ];
 
-    fn load_config(config_toml: &str) -> Config {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.toml"), config_toml).unwrap();
+    /// Load an agent named after a "private" workspace directory, so the
+    /// leak checks below also cover the agent directory path.
+    fn load_config(hub_toml: &str, agent_toml: &str) -> Config {
+        let root = tempfile::tempdir().unwrap();
+        let hub_dir = root.path().join("hub");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        std::fs::write(hub_dir.join("config.toml"), hub_toml).unwrap();
+        let agent_dir = root.path().join("private-workspace-dir");
+        let agent_config_dir = agent_dir.join("config");
+        std::fs::create_dir_all(&agent_config_dir).unwrap();
+        std::fs::write(agent_config_dir.join("config.toml"), agent_toml).unwrap();
         std::fs::write(
-            dir.path().join("providers.toml"),
+            agent_config_dir.join("providers.toml"),
             "[providers.private-provider]\ntype = \"anthropic\"\napi_key = \"sk-provider-secret\"\n\n[models]\nmain = \"private-provider/claude-sonnet-4-6\"\n",
         )
         .unwrap();
-        Config::load_at(dir.path()).unwrap()
+        let hub = crate::config::HubConfig::load_at(&hub_dir).unwrap();
+        Config::load_agent_at(&agent_dir, &hub).unwrap()
     }
 
     fn full_config() -> Config {
         load_config(
             r#"
 timezone = "UTC"
-workspace_dir = "/home/someone/private-workspace-dir"
-
-[discord]
-token = "discord-token-secret"
 
 [cloud]
 token = "cloud-token-secret"
 
-[webhooks.private-hook-name]
-secret = "webhook-secret-value"
-
 [tracing]
 log_level = "trace"
 auto_error_reporting = true
+"#,
+            r#"
+[discord]
+token = "discord-token-secret"
+
+[webhooks.private-hook-name]
+secret = "webhook-secret-value"
 "#,
         )
     }

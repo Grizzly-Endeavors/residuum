@@ -1,6 +1,7 @@
 // ── Config Generators ───────────────────────────────────────────────
 //
-// Generates config.toml, providers.toml, and mcp.json from wizard state.
+// Generates hub/config.toml, the agent's config.toml and providers.toml, and
+// mcp.json from wizard state.
 
 import type { SetupWizardState } from "./types";
 import { DEFAULT_MODELS } from "./models";
@@ -9,12 +10,14 @@ function escapeTomlString(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-/** Generate config.toml content (timezone, integrations). */
+/** Generate hub/config.toml content (the timezone every agent shares). */
+export function generateHubConfigToml(state: SetupWizardState): string {
+  return `timezone = "${escapeTomlString(state.timezone)}"\n`;
+}
+
+/** Generate the agent's config.toml content (integrations). */
 export function generateConfigToml(state: SetupWizardState): string {
   const lines: string[] = [];
-
-  if (state.userName) lines.push(`name = "${escapeTomlString(state.userName)}"`);
-  lines.push(`timezone = "${escapeTomlString(state.timezone)}"`);
 
   // Discord (top-level section)
   if (state.integrations.discordToken) {
@@ -56,35 +59,22 @@ export function generateConfigToml(state: SetupWizardState): string {
 export function generateProvidersToml(state: SetupWizardState): string {
   const lines: string[] = [];
 
-  // Collect provider entries
-  const providerEntries: Record<string, { type: string; api_key: string; url: string | null }> = {};
-
+  // Every selected provider gets a `[providers.<name>]` section, even when no
+  // key was typed: the backend falls back to that provider's env var (e.g.
+  // ANTHROPIC_API_KEY) whenever `api_key` is *absent* from the section, which
+  // is why the wizard's key field says the key can come from the environment
+  // instead. Writing `api_key = ""` would defeat that fallback — an empty
+  // string is a value, not an absence — so the line is only emitted when
+  // there's an actual key or secret reference to write.
   for (const prov of state.selectedProviders) {
     const cfg = state.providerConfigs[prov];
-    if (prov === "ollama") {
-      providerEntries[prov] = { type: prov, api_key: "", url: null };
-    } else if (cfg.apiKey) {
-      providerEntries[prov] = {
-        type: prov,
-        api_key: cfg.apiKey,
-        url: cfg.url || null,
-      };
+    lines.push(`[providers.${prov}]`);
+    lines.push(`type = "${escapeTomlString(prov)}"`);
+    if (prov !== "ollama") {
+      const keyRef = state.secretRefs[prov] || cfg.apiKey;
+      if (keyRef) lines.push(`api_key = "${escapeTomlString(keyRef)}"`);
+      if (cfg.url) lines.push(`url = "${escapeTomlString(cfg.url)}"`);
     }
-  }
-
-  // Write provider entries
-  for (const [name, cfg] of Object.entries(providerEntries)) {
-    if (name === "ollama") {
-      lines.push(`[providers.${name}]`);
-      lines.push(`type = "${escapeTomlString(cfg.type)}"`);
-      lines.push("");
-      continue;
-    }
-    lines.push(`[providers.${name}]`);
-    lines.push(`type = "${escapeTomlString(cfg.type)}"`);
-    const keyRef = state.secretRefs[name] ?? cfg.api_key;
-    lines.push(`api_key = "${escapeTomlString(keyRef)}"`);
-    if (cfg.url) lines.push(`url = "${escapeTomlString(cfg.url)}"`);
     lines.push("");
   }
 

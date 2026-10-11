@@ -1,44 +1,31 @@
 //! Config resolution logic: maps raw TOML structs + env vars into validated Config.
 
+mod a2a;
+mod agent;
+mod background;
+mod channels;
+mod gateway;
+pub(crate) mod hub;
+mod memory;
 mod models;
+mod subconscious;
+mod system_one;
+mod tracing_config;
+mod web_search;
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+pub(crate) use hub::from_file_and_env as resolve_hub_config;
 
-use crate::inference::retry::RetryConfig;
+use std::path::Path;
+
 use crate::inference::{ThinkingConfig, ThinkingLevel};
 use crate::util::FatalError;
 
 use super::Config;
-use super::bootstrap::default_workspace_dir;
-use super::constants::{
-    DEFAULT_A2A_PORT, DEFAULT_CLOUD_RELAY_URL, DEFAULT_DISCORD_CONTEXT_MESSAGES,
-    DEFAULT_FEEDBACK_ENDPOINT, DEFAULT_IDLE_TIMEOUT_MINUTES, DEFAULT_MAX_TOKENS,
-    DEFAULT_TEAMS_CONTEXT_MESSAGES, DEFAULT_TEAMS_PORT, DEFAULT_TELEGRAM_CONTEXT_MESSAGES,
-    DEFAULT_TIMEOUT_SECS,
-};
-use super::deserialize::{
-    A2aConfigFile, AgentConfigFile, BackgroundConfigFile, BackgroundModelsFile, CloudConfigFile,
-    ConfigFile, DiscordConfigFile, GatewayConfigFile, LearningConfigFile, MemoryConfigFile,
-    ProviderEntryFile, ProvidersFile, SearchConfigFile, SkillsConfigFile, SubconsciousConfigFile,
-    TeamsConfigFile, TelegramConfigFile, ToolsConfigFile, TracingConfigFile, WebSearchConfigFile,
-    WebhookEntryFile,
-};
-use super::provider::ProviderKind;
+use super::HubConfig;
+use super::constants::{DEFAULT_MAX_TOKENS, DEFAULT_PULSE_ENABLED, DEFAULT_TIMEOUT_SECS};
+use super::deserialize::{AgentConfigFile, ProvidersFile};
 use super::secrets::SecretStore;
-use super::types::{
-    A2aConfig, A2aVisibility, AgentAbilitiesConfig, BackgroundConfig, CloudConfig, DiscordConfig,
-    GatewayConfig, IdleConfig, LearningConfig, LogLevel, MemoryConfig, OtelEndpoint,
-    ProviderNativeSearchConfig, SearchConfig, SkillsConfig, StandaloneBackendConfig,
-    SubconsciousSettings, TeamsConfig, TelegramConfig, ToolsConfig, TracingConfig, WebSearchConfig,
-    WebhookEntry, WebhookFormat, WebhookRouting,
-};
 
-/// Build a `Config` from an optional config file and environment variables.
-///
-/// # Errors
-/// Returns `FatalError::Config` if the model spec cannot be parsed or
-/// the workspace directory cannot be determined.
 /// Load the secret store, degrading to an empty one (with a notice) if it
 /// can't be read or decrypted.
 ///
@@ -48,6 +35,9 @@ use super::types::{
 /// (or are skipped) through the same paths as any other missing required
 /// value. Everything else in config.toml and providers.toml never touches
 /// the store, so it must not fail the whole config load here.
+///
+/// The secret store is hub-level and shared by every agent, so `config_dir`
+/// here is always the *hub's* directory, never an agent's own `config/`.
 fn load_secrets_degraded(config_dir: &Path, notices: &mut Vec<String>) -> SecretStore {
     match SecretStore::load(config_dir) {
         Ok(store) => store,
@@ -64,117 +54,69 @@ fn load_secrets_degraded(config_dir: &Path, notices: &mut Vec<String>) -> Secret
     }
 }
 
-/// Teams, A2A, webhooks, and idle — grouped only because they're the
-/// config sections whose validation can push a degrade notice, and
-/// resolving them together keeps `from_file_and_env`'s body from growing
-/// past the project's function-length lint.
-struct ChatInterfacesAndIdle {
-    teams: Option<TeamsConfig>,
-    a2a: A2aConfig,
-    webhooks: HashMap<String, WebhookEntry>,
-    idle: IdleConfig,
-}
-
-fn resolve_chat_interfaces_and_idle(
-    file: Option<&ConfigFile>,
-    secrets: &SecretStore,
-    discord: Option<&DiscordConfig>,
-    telegram: Option<&TelegramConfig>,
-    notices: &mut Vec<String>,
-) -> ChatInterfacesAndIdle {
-    let teams = resolve_teams_config(file.and_then(|f| f.teams.as_ref()), secrets, notices);
-    let a2a = resolve_a2a_config(file.and_then(|f| f.a2a.as_ref()), notices);
-    let webhooks =
-        resolve_webhooks_config(file.and_then(|f| f.webhooks.as_ref()), secrets, notices);
-    let idle = resolve_idle_config(file, telegram, discord, teams.as_ref(), notices);
-    ChatInterfacesAndIdle {
-        teams,
-        a2a,
-        webhooks,
-        idle,
-    }
-}
-
-/// A handful of independent scalar/struct settings with straightforward
-/// defaults, grouped only to keep `from_file_and_env`'s body from growing
-/// past the project's function-length lint.
-struct SimpleSettings {
-    timeout_secs: u64,
-    max_tokens: u32,
-    memory: MemoryConfig,
-    pulse_enabled: bool,
-    subconscious_settings: SubconsciousSettings,
-    learning: LearningConfig,
-}
-
-fn resolve_simple_settings(file: Option<&ConfigFile>) -> SimpleSettings {
-    SimpleSettings {
-        timeout_secs: file
-            .and_then(|f| f.timeout_secs)
-            .unwrap_or(DEFAULT_TIMEOUT_SECS),
-        max_tokens: file
-            .and_then(|f| f.max_tokens)
-            .unwrap_or(DEFAULT_MAX_TOKENS),
-        memory: resolve_memory_config(file.and_then(|f| f.memory.as_ref())),
-        pulse_enabled: file
-            .and_then(|f| f.pulse.as_ref())
-            .and_then(|p| p.enabled)
-            .unwrap_or(true),
-        subconscious_settings: resolve_subconscious_settings(
-            file.and_then(|f| f.subconscious.as_ref()),
-        ),
-        learning: resolve_learning_config(file.and_then(|f| f.learning.as_ref())),
-    }
-}
-
-#[tracing::instrument(skip_all, fields(config_dir = %config_dir.display()))]
+/// Build an agent's `Config` from its own config file, its providers file,
+/// and the hub config it belongs to.
+///
+/// `agent_dir` is the agent's workspace root (`~/.residuum/<name>`); the
+/// agent's own `config.toml`/`providers.toml` live in `agent_dir/config/`.
+/// Hub-owned values (timezone, gateway, cloud, tracing, the A2A listener's
+/// enablement/port/public URL, and the shared background session budget and
+/// hop limits) are copied in from `hub`; the agent's own file does not carry
+/// those sections.
+///
+/// # Errors
+/// Returns `FatalError::Config` if the model spec cannot be parsed, a
+/// background model tier can't be resolved, or `agent.max_tool_iterations`
+/// is set to `0`.
+#[tracing::instrument(skip_all, fields(agent = %agent_name, agent_dir = %agent_dir.display()))]
 pub(crate) fn from_file_and_env(
-    file: Option<&ConfigFile>,
+    file: Option<&AgentConfigFile>,
     providers_file: Option<&ProvidersFile>,
-    config_dir: &Path,
+    agent_dir: &Path,
+    agent_name: &str,
+    hub: &HubConfig,
 ) -> Result<Config, FatalError> {
-    warn_deprecated_env_vars();
-
     let mut notices: Vec<String> = Vec::new();
-    let secrets = load_secrets_degraded(config_dir, &mut notices);
+    let secrets = load_secrets_degraded(&hub.config_dir, &mut notices);
     let providers_map = providers_file.and_then(|f| f.providers.as_ref());
     let models_section = providers_file.and_then(|f| f.models.as_ref());
 
     let mut resolved_models =
         models::resolve_all_model_specs(models_section, providers_map, &secrets)?;
 
-    let workspace_dir = resolve_workspace_dir_setting(file)?;
-    let SimpleSettings {
-        timeout_secs,
-        max_tokens,
-        memory,
-        pulse_enabled,
-        subconscious_settings,
-        learning,
-    } = resolve_simple_settings(file);
+    let workspace_dir = agent_dir.to_path_buf();
+    let agent_config_dir = workspace_dir.join("config");
 
-    let gateway = resolve_gateway_config(file.and_then(|f| f.gateway.as_ref()));
-    let cloud = resolve_cloud_config(file.and_then(|f| f.cloud.as_ref()), &secrets, &gateway);
-    let discord = resolve_discord_config(file.and_then(|f| f.discord.as_ref()), &secrets);
-    let telegram = resolve_telegram_config(file.and_then(|f| f.telegram.as_ref()), &secrets);
-    let ChatInterfacesAndIdle {
-        teams,
-        a2a,
-        webhooks,
-        idle,
-    } = resolve_chat_interfaces_and_idle(
-        file,
+    let timeout_secs = file
+        .and_then(|f| f.timeout_secs)
+        .unwrap_or(DEFAULT_TIMEOUT_SECS);
+    let max_tokens = file
+        .and_then(|f| f.max_tokens)
+        .unwrap_or(DEFAULT_MAX_TOKENS);
+    let memory = memory::resolve_memory_config(file.and_then(|f| f.memory.as_ref()));
+    let pulse_enabled = file
+        .and_then(|f| f.pulse.as_ref())
+        .and_then(|p| p.enabled)
+        .unwrap_or(DEFAULT_PULSE_ENABLED);
+    let subconscious_settings =
+        subconscious::resolve_subconscious_settings(file.and_then(|f| f.subconscious.as_ref()));
+    let learning = subconscious::resolve_learning_config(file.and_then(|f| f.learning.as_ref()));
+
+    let (discord, telegram, teams, idle) =
+        channels::resolve_configured_chats(file, &secrets, &mut notices);
+    let a2a = a2a::resolve_agent_a2a_config(hub, file.and_then(|f| f.a2a.as_ref()), &mut notices);
+    let webhooks = channels::resolve_webhooks_config(
+        file.and_then(|f| f.webhooks.as_ref()),
         &secrets,
-        discord.as_ref(),
-        telegram.as_ref(),
         &mut notices,
     );
-    let skills = resolve_skills_config(file.and_then(|f| f.skills.as_ref()), &workspace_dir);
-    let tools = resolve_tools_config(file.and_then(|f| f.tools.as_ref()), config_dir);
+    let skills = agent::resolve_skills_config(file.and_then(|f| f.skills.as_ref()), &workspace_dir);
+    let tools = agent::resolve_tools_config(file.and_then(|f| f.tools.as_ref()), &hub.config_dir);
+    let retry = agent::resolve_retry_config(file);
 
-    let agent = resolve_agent_config(file.and_then(|f| f.agent.as_ref()))?;
+    let agent_abilities = agent::resolve_agent_config(file.and_then(|f| f.agent.as_ref()))?;
 
-    let mut background = resolve_background_config(
+    let mut background = background::resolve_background_config(
         file.and_then(|f| f.background.as_ref()),
         providers_file
             .and_then(|pf| pf.background.as_ref())
@@ -182,6 +124,7 @@ pub(crate) fn from_file_and_env(
         providers_map,
         &secrets,
         &mut resolved_models.role_overrides,
+        hub,
     )?;
 
     models::scope_all_session_affinity(
@@ -190,27 +133,23 @@ pub(crate) fn from_file_and_env(
         &workspace_dir,
     );
 
-    let retry = resolve_retry_config(file);
-
-    let timezone = resolve_timezone(file)?;
-
-    let name = file.and_then(|f| f.name.clone());
+    let autostart = file.and_then(|f| f.autostart).unwrap_or(true);
+    note_unusable_display_name(file, &mut notices);
 
     let thinking = file
         .and_then(|f| f.thinking.as_deref())
         .map(parse_thinking_config)
         .transpose()?;
 
-    let web_search = resolve_web_search_config(
+    let web_search = web_search::resolve_web_search_config(
         file.and_then(|f| f.web_search.as_ref()),
         &resolved_models.main,
         &secrets,
     );
 
-    let tracing = resolve_tracing_config(file.and_then(|f| f.tracing.as_ref()))?;
-
     Ok(Config {
-        name,
+        agent_name: agent_name.to_string(),
+        autostart,
         main: resolved_models.main,
         observer: resolved_models.observer,
         reflector: resolved_models.reflector,
@@ -224,9 +163,9 @@ pub(crate) fn from_file_and_env(
         pulse_enabled,
         subconscious_settings,
         learning,
-        gateway,
-        timezone,
-        cloud,
+        gateway: hub.gateway.clone(),
+        timezone: hub.timezone,
+        cloud: hub.cloud.clone(),
         discord,
         telegram,
         teams,
@@ -236,321 +175,17 @@ pub(crate) fn from_file_and_env(
         tools,
         retry,
         background,
-        agent,
+        agent: agent_abilities,
+        auto_mode: agent::resolve_auto_mode_config(file, &mut notices),
         idle,
         temperature: file.and_then(|f| f.temperature),
         thinking,
         web_search,
-        tracing,
+        tracing: hub.tracing.clone(),
         role_overrides: resolved_models.role_overrides,
-        config_dir: config_dir.to_path_buf(),
+        config_dir: agent_config_dir,
         load_notices: notices,
     })
-}
-
-/// Resolve the workspace root directory: env var, then config file, then the
-/// platform default. `~` in an explicit value is expanded.
-///
-/// # Errors
-/// Returns `FatalError::Config` if the default workspace directory can't be
-/// determined (no config value was given to fall back from).
-fn resolve_workspace_dir_setting(file: Option<&ConfigFile>) -> Result<PathBuf, FatalError> {
-    std::env::var("RESIDUUM_WORKSPACE")
-        .ok()
-        .or_else(|| file.and_then(|f| f.workspace_dir.clone()))
-        .map(|s| {
-            let expanded = shellexpand::tilde(&s);
-            PathBuf::from(expanded.as_ref())
-        })
-        .map_or_else(default_workspace_dir, Ok)
-}
-
-/// Resolve the timezone from env var or config file.
-///
-/// # Errors
-/// Returns `FatalError::Config` if no timezone is set or the value is not a
-/// valid IANA timezone name.
-fn resolve_timezone(file: Option<&ConfigFile>) -> Result<chrono_tz::Tz, FatalError> {
-    let tz_name = std::env::var("RESIDUUM_TIMEZONE")
-        .ok()
-        .or_else(|| file.and_then(|f| f.timezone.clone()))
-        .ok_or_else(|| {
-            FatalError::Config(
-                "timezone is required: set RESIDUUM_TIMEZONE env var or 'timezone' in config.toml \
-                 (IANA name, e.g. \"America/New_York\")"
-                    .to_string(),
-            )
-        })?;
-    tz_name.parse().map_err(|_err| {
-        FatalError::Config(format!(
-            "invalid timezone '{tz_name}': expected IANA name like 'America/New_York' or 'UTC'"
-        ))
-    })
-}
-
-/// Resolve gateway configuration from environment variables and defaults only.
-///
-/// Used by the setup server which runs before any config file exists.
-#[must_use]
-pub(crate) fn resolve_default_gateway_config() -> GatewayConfig {
-    resolve_gateway_config(None)
-}
-
-/// Resolve gateway configuration from TOML section and environment variables.
-fn resolve_gateway_config(section: Option<&GatewayConfigFile>) -> GatewayConfig {
-    let mut cfg = GatewayConfig::default();
-
-    // Env > file > default for bind
-    if let Ok(val) = std::env::var("RESIDUUM_GATEWAY_BIND") {
-        tracing::debug!(env = "RESIDUUM_GATEWAY_BIND", value = %val, "gateway bind overridden by env var");
-        cfg.bind = val;
-    } else if let Some(val) = section.and_then(|s| s.bind.clone()) {
-        cfg.bind = val;
-    }
-
-    // Env > file > default for port
-    match std::env::var("RESIDUUM_GATEWAY_PORT") {
-        Ok(val) => match val.parse::<u16>() {
-            Ok(p) => {
-                tracing::debug!(
-                    env = "RESIDUUM_GATEWAY_PORT",
-                    value = p,
-                    "gateway port overridden by env var"
-                );
-                cfg.port = p;
-            }
-            Err(e) => {
-                tracing::warn!(%val, error = %e, "RESIDUUM_GATEWAY_PORT is not a valid port");
-            }
-        },
-        Err(_) => {
-            if let Some(p) = section.and_then(|s| s.port) {
-                cfg.port = p;
-            }
-        }
-    }
-
-    cfg
-}
-
-/// Resolve a bot token from an env var, falling back to the raw TOML value with secret expansion.
-fn resolve_bot_token(
-    env_var: &str,
-    raw_token: Option<&str>,
-    secrets: &SecretStore,
-) -> Option<String> {
-    std::env::var(env_var)
-        .ok()
-        .or_else(|| raw_token.and_then(|t| resolve_secret_value(t, secrets)))
-        .filter(|t| !t.is_empty())
-}
-
-/// Resolve Discord configuration from TOML section and environment.
-///
-/// Token resolution: `RESIDUUM_DISCORD_TOKEN` env > `token` field in TOML (with
-/// `${ENV_VAR}` / `secret:name` expansion) > `None` if section is absent or no token found.
-fn resolve_discord_config(
-    section: Option<&DiscordConfigFile>,
-    secrets: &SecretStore,
-) -> Option<DiscordConfig> {
-    let token = resolve_bot_token(
-        "RESIDUUM_DISCORD_TOKEN",
-        section.and_then(|s| s.token.as_deref()),
-        secrets,
-    );
-
-    match (section, token) {
-        (_, Some(tok)) => Some(DiscordConfig {
-            token: tok,
-            respond_to_others: section.and_then(|s| s.respond_to_others).unwrap_or(false),
-            context_messages: section
-                .and_then(|s| s.context_messages)
-                .unwrap_or(DEFAULT_DISCORD_CONTEXT_MESSAGES),
-        }),
-        (Some(_), None) => {
-            tracing::warn!(
-                section = "discord",
-                "section present but no token found; set RESIDUUM_DISCORD_TOKEN or token in config"
-            );
-            None
-        }
-        (None, None) => None,
-    }
-}
-
-/// Resolve cloud tunnel configuration from TOML section and environment.
-///
-/// Token resolution: `RESIDUUM_CLOUD_TOKEN` env > `token` field in TOML (with
-/// `${ENV_VAR}` / `secret:name` expansion) > `None` if section is absent, disabled,
-/// or no token found.
-fn resolve_cloud_config(
-    section: Option<&CloudConfigFile>,
-    secrets: &SecretStore,
-    gateway: &GatewayConfig,
-) -> Option<CloudConfig> {
-    let section = section?;
-
-    // If explicitly disabled, return None.
-    if section.enabled == Some(false) {
-        return None;
-    }
-
-    let token = resolve_bot_token("RESIDUUM_CLOUD_TOKEN", section.token.as_deref(), secrets);
-
-    if let Some(tok) = token {
-        let relay_url = section
-            .relay_url
-            .clone()
-            .unwrap_or_else(|| DEFAULT_CLOUD_RELAY_URL.to_string());
-        let local_port = section.local_port.unwrap_or(gateway.port);
-        Some(CloudConfig {
-            relay_url,
-            token: tok,
-            local_port,
-        })
-    } else {
-        tracing::warn!(
-            section = "cloud",
-            "section present but no token found; set RESIDUUM_CLOUD_TOKEN or token in config"
-        );
-        None
-    }
-}
-
-/// Resolve Telegram configuration from TOML section and environment.
-///
-/// Token resolution: `RESIDUUM_TELEGRAM_TOKEN` env > `token` field in TOML (with
-/// `${ENV_VAR}` / `secret:name` expansion) > `None` if section is absent or no token found.
-fn resolve_telegram_config(
-    section: Option<&TelegramConfigFile>,
-    secrets: &SecretStore,
-) -> Option<TelegramConfig> {
-    let token = resolve_bot_token(
-        "RESIDUUM_TELEGRAM_TOKEN",
-        section.and_then(|s| s.token.as_deref()),
-        secrets,
-    );
-
-    match (section, token) {
-        (_, Some(tok)) => Some(TelegramConfig {
-            token: tok,
-            respond_to_others: section.and_then(|s| s.respond_to_others).unwrap_or(false),
-            context_messages: section
-                .and_then(|s| s.context_messages)
-                .unwrap_or(DEFAULT_TELEGRAM_CONTEXT_MESSAGES),
-        }),
-        (Some(_), None) => {
-            tracing::warn!(
-                section = "telegram",
-                "section present but no token found; set RESIDUUM_TELEGRAM_TOKEN or token in config"
-            );
-            None
-        }
-        (None, None) => None,
-    }
-}
-
-/// Resolve Microsoft Teams configuration from the TOML section and environment.
-///
-/// The client secret comes from `RESIDUUM_TEAMS_APP_PASSWORD` or the
-/// `app_password` field (with `${ENV_VAR}` / `secret:name` expansion).
-///
-/// Teams is an optional, independent feature: a half-configured `[teams]`
-/// section (missing `app_id`, `tenant_id`, or the app password) disables
-/// Teams with a notice explaining why, rather than failing the whole
-/// config — the rest of the gateway has nothing to do with Teams.
-fn resolve_teams_config(
-    section: Option<&TeamsConfigFile>,
-    secrets: &SecretStore,
-    notices: &mut Vec<String>,
-) -> Option<TeamsConfig> {
-    let section = section?;
-    let required = |value: Option<&str>| {
-        value
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(str::to_string)
-    };
-    let mut disable = |field: &str| {
-        tracing::warn!(field, "[teams] is present but incomplete; disabling teams");
-        notices.push(format!(
-            "Teams is disabled: [teams] is present but {field} is missing. Set it, or remove the [teams] section, and reload to re-enable Teams."
-        ));
-    };
-
-    let Some(app_id) = required(section.app_id.as_deref()) else {
-        disable("app_id");
-        return None;
-    };
-    let Some(tenant_id) = required(section.tenant_id.as_deref()) else {
-        disable("tenant_id");
-        return None;
-    };
-    let Some(app_password) = resolve_bot_token(
-        "RESIDUUM_TEAMS_APP_PASSWORD",
-        section.app_password.as_deref(),
-        secrets,
-    ) else {
-        disable("app_password (set RESIDUUM_TEAMS_APP_PASSWORD or app_password)");
-        return None;
-    };
-
-    Some(TeamsConfig {
-        app_id,
-        app_password,
-        tenant_id,
-        respond_to_others: section.respond_to_others.unwrap_or(false),
-        context_messages: section
-            .context_messages
-            .unwrap_or(DEFAULT_TEAMS_CONTEXT_MESSAGES),
-        port: section.port.unwrap_or(DEFAULT_TEAMS_PORT),
-    })
-}
-
-/// Resolve `Agent2Agent` (A2A) protocol configuration from the TOML section.
-///
-/// Enabled by default: every request the listener answers still goes
-/// through the auth layer, so turning it on by default costs nothing until
-/// a caller key or sibling instance actually exists to use it.
-///
-/// An invalid `visibility` value falls back to the default visibility with
-/// a notice rather than failing the whole config — a2a itself still comes
-/// up, just not with the visibility the user intended until they fix it.
-fn resolve_a2a_config(section: Option<&A2aConfigFile>, notices: &mut Vec<String>) -> A2aConfig {
-    let default = A2aConfig::default();
-    let Some(section) = section else {
-        return default;
-    };
-
-    let visibility = match section.visibility.as_deref().map(str::trim) {
-        None | Some("") => A2aVisibility::default(),
-        Some("public") => A2aVisibility::Public,
-        Some("private") => A2aVisibility::Private,
-        Some(other) => {
-            tracing::warn!(
-                value = other,
-                "[a2a] visibility is invalid, falling back to the default"
-            );
-            notices.push(format!(
-                "[a2a] visibility must be \"public\" or \"private\", got \"{other}\" — using the default visibility until you fix it."
-            ));
-            A2aVisibility::default()
-        }
-    };
-
-    let public_url = section
-        .public_url
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(str::to_string);
-
-    A2aConfig {
-        enabled: section.enabled.unwrap_or(default.enabled),
-        port: section.port.unwrap_or(DEFAULT_A2A_PORT),
-        public_url,
-        visibility,
-    }
 }
 
 /// Expand `${ENV_VAR}` references in a token string.
@@ -575,494 +210,6 @@ pub(super) fn resolve_secret_value(raw: &str, secrets: &SecretStore) -> Option<S
     expand_env_token(raw)
 }
 
-/// Resolve named webhook configurations from TOML `[webhooks.<name>]` sections.
-///
-/// Each webhook entry is independent, so a bad `routing`/`format` string or
-/// an empty `content_fields` entry drops just that one entry (with a
-/// notice) rather than failing every configured webhook.
-fn resolve_webhooks_config(
-    section: Option<&HashMap<String, WebhookEntryFile>>,
-    secrets: &SecretStore,
-    notices: &mut Vec<String>,
-) -> HashMap<String, WebhookEntry> {
-    let Some(entries) = section else {
-        return HashMap::new();
-    };
-
-    let mut result = HashMap::with_capacity(entries.len());
-
-    for (name, entry) in entries {
-        if let Some(webhook) = resolve_webhook_entry(name, entry, secrets, notices) {
-            result.insert(name.clone(), webhook);
-        }
-    }
-
-    result
-}
-
-/// Resolve one `[webhooks.<name>]` entry, or `None` (with a notice) if its
-/// `routing`, `format`, or `content_fields` is invalid.
-fn resolve_webhook_entry(
-    name: &str,
-    entry: &WebhookEntryFile,
-    secrets: &SecretStore,
-    notices: &mut Vec<String>,
-) -> Option<WebhookEntry> {
-    let mut skip = |problem: &str| {
-        tracing::warn!(webhook = name, problem, "skipping invalid webhook entry");
-        notices.push(format!(
-            "Skipped webhook \"{name}\": {problem}. Fix it in [webhooks.{name}] and reload to re-enable it."
-        ));
-    };
-
-    let secret = entry
-        .secret
-        .as_deref()
-        .and_then(|raw| resolve_secret_value(raw, secrets));
-
-    let routing: WebhookRouting = match entry.routing.as_deref() {
-        Some(s) => match s.parse() {
-            Ok(routing) => routing,
-            Err(e) => {
-                skip(&e);
-                return None;
-            }
-        },
-        None => WebhookRouting::default(),
-    };
-
-    let format: WebhookFormat = match entry.format.as_deref() {
-        Some(s) => match s.parse() {
-            Ok(format) => format,
-            Err(e) => {
-                skip(&e);
-                return None;
-            }
-        },
-        None => WebhookFormat::default(),
-    };
-
-    if let Some(ref fields) = entry.content_fields {
-        for (i, field) in fields.iter().enumerate() {
-            if field.trim().is_empty() {
-                skip(&format!("content_fields[{i}] is empty"));
-                return None;
-            }
-        }
-    }
-
-    Some(WebhookEntry {
-        secret,
-        routing,
-        format,
-        content_fields: entry.content_fields.clone(),
-    })
-}
-
-/// Resolve skills configuration from TOML section.
-///
-/// Defaults to the workspace `skills/` directory. Additional directories
-/// from the config are expanded and appended.
-fn resolve_skills_config(section: Option<&SkillsConfigFile>, workspace_dir: &Path) -> SkillsConfig {
-    let layout = crate::workspace::layout::WorkspaceLayout::new(workspace_dir);
-    let mut dirs = vec![layout.skills_dir()];
-
-    if let Some(extra) = section.and_then(|s| s.dirs.as_ref()) {
-        for raw in extra {
-            let expanded = shellexpand::tilde(raw);
-            dirs.push(PathBuf::from(expanded.as_ref()));
-        }
-    }
-
-    SkillsConfig { dirs }
-}
-
-/// Resolve runtime tool PATH configuration from TOML section.
-///
-/// Directories are ordered highest precedence first: configured `[tools].path`
-/// entries (expanded, in listed order) followed by the default persistent
-/// `<config_dir>/bin` (`~/.residuum/bin`). All are prepended to the inherited
-/// `PATH` of spawned children at spawn time.
-fn resolve_tools_config(section: Option<&ToolsConfigFile>, config_dir: &Path) -> ToolsConfig {
-    let mut dirs = Vec::new();
-
-    if let Some(extra) = section.and_then(|s| s.path.as_ref()) {
-        for raw in extra {
-            let expanded = shellexpand::tilde(raw);
-            dirs.push(PathBuf::from(expanded.as_ref()));
-        }
-    }
-
-    // Default persistent dir, lowest precedence of the tool dirs.
-    dirs.push(config_dir.join("bin"));
-
-    ToolsConfig { dirs }
-}
-
-/// Resolve memory subsystem configuration from TOML section with defaults.
-fn resolve_memory_config(section: Option<&MemoryConfigFile>) -> MemoryConfig {
-    let mut mem = MemoryConfig::default();
-    if let Some(s) = section {
-        if let Some(v) = s.observer_threshold_tokens {
-            mem.observer_threshold_tokens = v;
-        }
-        if let Some(v) = s.reflector_threshold_tokens {
-            mem.reflector_threshold_tokens = v;
-        }
-        if let Some(v) = s.observer_cooldown_secs {
-            mem.observer_cooldown_secs = v;
-        }
-        if let Some(v) = s.observer_force_threshold_tokens {
-            mem.observer_force_threshold_tokens = v;
-        }
-    }
-    mem.search = resolve_search_config(section.and_then(|m| m.search.as_ref()));
-    mem
-}
-
-/// Resolve subconscious settings from TOML section (opt-in, default disabled).
-fn resolve_subconscious_settings(section: Option<&SubconsciousConfigFile>) -> SubconsciousSettings {
-    let mut settings = SubconsciousSettings::default();
-    if let Some(s) = section {
-        if let Some(v) = s.enabled {
-            settings.enabled = v;
-        }
-        if let Some(v) = s.mid_turn {
-            settings.mid_turn = v;
-        }
-        if let Some(v) = s.every_n_iterations {
-            settings.every_n_iterations = v;
-        }
-        if let Some(v) = s.max_transcript_tokens {
-            settings.max_transcript_tokens = v;
-        }
-        if let Some(v) = s.learning {
-            settings.learning = v;
-        }
-        if let Some(v) = s.learning_cooldown_minutes {
-            settings.learning_cooldown_minutes = v;
-        }
-    }
-    settings
-}
-
-/// Resolve the activity-triggered learning fallback config (turn-count nudge).
-fn resolve_learning_config(section: Option<&LearningConfigFile>) -> LearningConfig {
-    let mut cfg = LearningConfig::default();
-    if let Some(s) = section
-        && let Some(v) = s.nudge_after_turns
-    {
-        cfg.nudge_after_turns = v;
-    }
-    cfg
-}
-
-/// Resolve tracing configuration from TOML section.
-///
-/// # Errors
-/// Returns `FatalError::Config` if the log level string is invalid.
-fn resolve_tracing_config(
-    section: Option<&TracingConfigFile>,
-) -> Result<TracingConfig, FatalError> {
-    let Some(section) = section else {
-        return Ok(TracingConfig::default());
-    };
-
-    let log_level = section
-        .log_level
-        .as_deref()
-        .map(str::parse::<LogLevel>)
-        .transpose()
-        .map_err(FatalError::Config)?
-        .unwrap_or_default();
-
-    let otel_endpoints = section
-        .otel_endpoints
-        .as_deref()
-        .unwrap_or_default()
-        .iter()
-        .map(|ep| OtelEndpoint {
-            url: ep.url.clone(),
-            name: ep.name.clone(),
-            headers: ep.headers.clone().unwrap_or_default(),
-        })
-        .collect();
-
-    Ok(TracingConfig {
-        log_level,
-        auto_error_reporting: section.auto_error_reporting.unwrap_or(false),
-        sanitize_content: section.sanitize_content.unwrap_or(true),
-        otel_endpoints,
-        feedback_endpoint: section
-            .feedback_endpoint
-            .clone()
-            .unwrap_or_else(|| DEFAULT_FEEDBACK_ENDPOINT.to_string()),
-    })
-}
-
-/// Resolve idle configuration from TOML section, validating the idle channel
-/// against configured interfaces.
-///
-/// An `idle_channel` naming an unknown or unconfigured interface falls back
-/// to no idle channel (idle switching stays disabled) with a notice, rather
-/// than failing the whole config over one bad setting.
-fn resolve_idle_config(
-    file: Option<&ConfigFile>,
-    telegram: Option<&TelegramConfig>,
-    discord: Option<&DiscordConfig>,
-    teams: Option<&TeamsConfig>,
-    notices: &mut Vec<String>,
-) -> IdleConfig {
-    let section = file.and_then(|f| f.idle.as_ref());
-    let timeout_minutes = section
-        .and_then(|s| s.timeout_minutes)
-        .unwrap_or(DEFAULT_IDLE_TIMEOUT_MINUTES);
-    // The web UI's endpoint ID is `ws`; `websocket` is the name users see and write.
-    let idle_channel =
-        section
-            .and_then(|s| s.idle_channel.as_deref())
-            .map(|channel| match channel {
-                "websocket" => "ws".to_string(),
-                other => other.to_string(),
-            });
-
-    let idle_channel = idle_channel.and_then(|channel| {
-        let problem = match channel.as_str() {
-            "telegram" if telegram.is_some() => return Some(channel),
-            "discord" if discord.is_some() => return Some(channel),
-            "teams" if teams.is_some() => return Some(channel),
-            "ws" => return Some(channel),
-            "telegram" | "discord" | "teams" => {
-                format!("idle_channel \"{channel}\" configured but [{channel}] section is missing")
-            }
-            other => format!("idle_channel \"{other}\" is not a recognized interface"),
-        };
-        tracing::warn!(channel, "invalid idle_channel, idle switching disabled");
-        notices.push(format!(
-            "{problem}. Idle switching is disabled until you fix idle_channel and reload."
-        ));
-        None
-    });
-
-    IdleConfig {
-        timeout: std::time::Duration::from_secs(timeout_minutes * 60),
-        idle_channel,
-    }
-}
-
-/// Resolve retry configuration from TOML section with defaults.
-fn resolve_retry_config(file: Option<&ConfigFile>) -> RetryConfig {
-    let r = file.and_then(|f| f.retry.as_ref());
-    let mut cfg = RetryConfig::default();
-    if let Some(v) = r.and_then(|r| r.max_retries) {
-        cfg.max_retries = v;
-    }
-    if let Some(v) = r.and_then(|r| r.initial_delay_ms) {
-        cfg.initial_delay = std::time::Duration::from_millis(v);
-    }
-    if let Some(v) = r.and_then(|r| r.max_delay_ms) {
-        cfg.max_delay = std::time::Duration::from_millis(v);
-    }
-    if let Some(v) = r.and_then(|r| r.backoff_multiplier) {
-        cfg.backoff_multiplier = v;
-    }
-    cfg
-}
-
-/// Resolve hybrid search configuration from TOML section with defaults.
-fn resolve_search_config(section: Option<&SearchConfigFile>) -> SearchConfig {
-    let mut cfg = SearchConfig::default();
-
-    if let Some(s) = section {
-        if let Some(v) = s.vector_weight {
-            cfg.vector_weight = valid_search_weight("vector_weight", v, cfg.vector_weight);
-        }
-        if let Some(v) = s.text_weight {
-            cfg.text_weight = valid_search_weight("text_weight", v, cfg.text_weight);
-        }
-        if let Some(v) = s.min_score {
-            cfg.min_score = v;
-        }
-        if let Some(v) = s.candidate_multiplier {
-            if v == 0 {
-                tracing::warn!(
-                    section = "memory.search",
-                    value = v,
-                    default = cfg.candidate_multiplier,
-                    "candidate_multiplier must be positive; using default"
-                );
-            } else {
-                cfg.candidate_multiplier = v;
-            }
-        }
-        if let Some(v) = s.temporal_decay {
-            cfg.temporal_decay = v;
-        }
-        if let Some(v) = s.temporal_decay_half_life_days {
-            if v <= 0.0 {
-                tracing::warn!(
-                    section = "memory.search",
-                    value = v,
-                    default = cfg.temporal_decay_half_life_days,
-                    "temporal_decay_half_life_days must be positive; using default"
-                );
-            } else {
-                cfg.temporal_decay_half_life_days = v;
-            }
-        }
-    }
-
-    // Normalized so the merged score stays in [0, 1], the range `min_score`
-    // is expressed in. Only the ratio between the two weights is meaningful.
-    let sum = cfg.vector_weight + cfg.text_weight;
-    if sum > 0.0 {
-        cfg.vector_weight /= sum;
-        cfg.text_weight /= sum;
-    } else {
-        let defaults = SearchConfig::default();
-        tracing::warn!(
-            section = "memory.search",
-            default_vector_weight = defaults.vector_weight,
-            default_text_weight = defaults.text_weight,
-            "vector_weight and text_weight are both zero; using defaults"
-        );
-        cfg.vector_weight = defaults.vector_weight;
-        cfg.text_weight = defaults.text_weight;
-    }
-
-    cfg
-}
-
-/// A hybrid search weight from config, or `fallback` when it is negative or
-/// not a finite number.
-fn valid_search_weight(key: &str, value: f64, fallback: f64) -> f64 {
-    if value.is_finite() && value >= 0.0 {
-        value
-    } else {
-        tracing::warn!(
-            section = "memory.search",
-            key,
-            value,
-            default = fallback,
-            "search weight must be a non-negative number; using default"
-        );
-        fallback
-    }
-}
-
-/// Resolve web search configuration from TOML section.
-///
-/// Provider-native search is enabled automatically when the main provider supports it
-/// (Anthropic, `OpenAI`, Gemini). Standalone backends are resolved from the `backend` field.
-fn resolve_web_search_config(
-    section: Option<&WebSearchConfigFile>,
-    main_chain: &[super::provider::ProviderSpec],
-    secrets: &SecretStore,
-) -> WebSearchConfig {
-    let mut cfg = WebSearchConfig::default();
-
-    // Determine the main provider kind for native search detection
-    let main_kind = main_chain.first().map(|p| p.model.kind);
-
-    let has_native = main_chain.first().is_some_and(offers_native_web_search);
-
-    if has_native {
-        let mut native = ProviderNativeSearchConfig::default();
-
-        if let Some(s) = section {
-            if main_kind == Some(ProviderKind::Anthropic)
-                && let Some(ref a) = s.anthropic
-            {
-                native.max_uses = a.max_uses;
-                native.allowed_domains.clone_from(&a.allowed_domains);
-                native.blocked_domains.clone_from(&a.blocked_domains);
-            }
-            if main_kind == Some(ProviderKind::OpenAi)
-                && let Some(ref o) = s.openai
-            {
-                native
-                    .search_context_size
-                    .clone_from(&o.search_context_size);
-            }
-            if main_kind == Some(ProviderKind::Gemini)
-                && let Some(ref g) = s.gemini
-            {
-                native.exclude_domains.clone_from(&g.exclude_domains);
-            }
-        }
-
-        cfg.provider_native = Some(native);
-    }
-
-    // Standalone backend
-    if let Some(s) = section
-        && let Some(ref backend_name) = s.backend
-    {
-        let resolved = match backend_name.as_str() {
-            "brave" => resolve_standalone_backend(
-                "brave",
-                s.brave.as_ref().and_then(|b| b.api_key.as_deref()),
-                "BRAVE_API_KEY",
-                None,
-                secrets,
-            ),
-            "tavily" => resolve_standalone_backend(
-                "tavily",
-                s.tavily.as_ref().and_then(|t| t.api_key.as_deref()),
-                "TAVILY_API_KEY",
-                None,
-                secrets,
-            ),
-            "ollama" => resolve_standalone_backend(
-                "ollama",
-                s.ollama.as_ref().and_then(|o| o.api_key.as_deref()),
-                "OLLAMA_API_KEY",
-                s.ollama.as_ref().and_then(|o| o.base_url.clone()),
-                secrets,
-            ),
-            other => {
-                tracing::warn!(
-                    section = "web_search",
-                    backend = other,
-                    "unknown backend; expected brave, tavily, or ollama"
-                );
-                None
-            }
-        };
-
-        if resolved.is_none() && !backend_name.is_empty() {
-            tracing::warn!(
-                section = "web_search",
-                backend = backend_name.as_str(),
-                "backend configured but no API key found; set api_key in config or the corresponding env var"
-            );
-        }
-
-        cfg.standalone_backend = resolved;
-    }
-
-    cfg
-}
-
-/// Resolve a standalone web search backend by looking up the API key from config,
-/// secrets, or an environment variable fallback.
-fn resolve_standalone_backend(
-    name: &str,
-    api_key: Option<&str>,
-    env_var: &str,
-    base_url: Option<String>,
-    secrets: &SecretStore,
-) -> Option<StandaloneBackendConfig> {
-    let key = api_key
-        .and_then(|k| resolve_secret_value(k, secrets))
-        .or_else(|| std::env::var(env_var).ok())?;
-    Some(StandaloneBackendConfig {
-        name: name.to_string(),
-        api_key: key,
-        base_url,
-    })
-}
-
 /// Parse a thinking config string into a `ThinkingConfig`.
 fn parse_thinking_config(value: &str) -> Result<ThinkingConfig, FatalError> {
     match value.to_lowercase().as_str() {
@@ -1077,163 +224,9 @@ fn parse_thinking_config(value: &str) -> Result<ThinkingConfig, FatalError> {
     }
 }
 
-/// Resolve agent ability gates and turn limits from the TOML section.
-///
-/// # Errors
-/// Returns `FatalError::Config` if `max_tool_iterations` is set to `0` — a
-/// turn that stops before ever calling a tool isn't a usable limit, so this
-/// is rejected rather than silently accepted.
-fn resolve_agent_config(
-    section: Option<&AgentConfigFile>,
-) -> Result<AgentAbilitiesConfig, FatalError> {
-    let mut cfg = AgentAbilitiesConfig::default();
-    if let Some(s) = section {
-        if let Some(v) = s.modify_mcp {
-            cfg.modify_mcp = v;
-        }
-        if let Some(v) = s.modify_channels {
-            cfg.modify_channels = v;
-        }
-        if let Some(limit) = s.max_tool_iterations {
-            if limit == 0 {
-                return Err(FatalError::Config(
-                    "agent.max_tool_iterations must be at least 1 (leave it unset for unlimited)"
-                        .to_string(),
-                ));
-            }
-            cfg.max_tool_iterations = Some(limit);
-        }
-        if let Some(v) = s.repeat_call_guard_enabled {
-            cfg.repeat_call_guard.enabled = v;
-        }
-        if let Some(v) = s.repeat_call_steer_after {
-            cfg.repeat_call_guard.steer_after = v;
-        }
-        if let Some(v) = s.repeat_call_stop_after {
-            cfg.repeat_call_guard.stop_after = v;
-        }
-    }
-    Ok(cfg)
-}
-
-/// Resolve background task configuration.
-///
-/// Reads `max_concurrent` from `config.toml`'s `[background]` section, and
-/// model tiers from `providers.toml`'s `[background.models]` section.
-///
-/// # Errors
-/// Returns `FatalError::Config` if a model tier string cannot be resolved.
-fn resolve_background_config(
-    section: Option<&BackgroundConfigFile>,
-    models_section: Option<&BackgroundModelsFile>,
-    providers_map: Option<&HashMap<String, ProviderEntryFile>>,
-    secrets: &SecretStore,
-    role_overrides: &mut HashMap<String, super::types::RoleOverrides>,
-) -> Result<BackgroundConfig, FatalError> {
-    let mut cfg = BackgroundConfig::default();
-
-    if let Some(section) = section {
-        if let Some(v) = section.max_concurrent {
-            cfg.max_concurrent = v;
-        }
-        if let Some(v) = section.idle_timeout_scheduled_minutes {
-            cfg.idle_timeout_scheduled = std::time::Duration::from_secs(v.saturating_mul(60));
-        }
-        if let Some(v) = section.idle_timeout_spawned_minutes {
-            cfg.idle_timeout_spawned = std::time::Duration::from_secs(v.saturating_mul(60));
-        }
-        if let Some(v) = section.idle_timeout_external_minutes {
-            cfg.idle_timeout_external = std::time::Duration::from_secs(v.saturating_mul(60));
-        }
-        if let Some(v) = section.idle_timeout_artifact_minutes {
-            cfg.idle_timeout_artifact = std::time::Duration::from_secs(v.saturating_mul(60));
-        }
-        if let Some(v) = section.episode_skip_token_floor {
-            cfg.episode_skip_token_floor = v;
-        }
-        if let Some(v) = section.subagent_depth_cap {
-            cfg.subagent_depth_cap = v;
-        }
-        if let Some(v) = section.hop_soft_limit {
-            cfg.hop_soft_limit = v;
-        }
-        if let Some(v) = section.hop_hard_limit {
-            cfg.hop_hard_limit = v;
-        }
-    }
-
-    if let Some(models_section) = models_section {
-        cfg.models.small = resolve_bg_tier(
-            models_section.small.clone(),
-            "bg_small",
-            providers_map,
-            secrets,
-            role_overrides,
-        )?;
-        cfg.models.medium = resolve_bg_tier(
-            models_section.medium.clone(),
-            "bg_medium",
-            providers_map,
-            secrets,
-            role_overrides,
-        )?;
-        cfg.models.large = resolve_bg_tier(
-            models_section.large.clone(),
-            "bg_large",
-            providers_map,
-            secrets,
-            role_overrides,
-        )?;
-    }
-
-    Ok(cfg)
-}
-
-/// Whether the main provider offers a built-in web search tool.
-///
-/// The `openai` kind also covers self-hosted compatible servers (vLLM, LM
-/// Studio), which reject `OpenAI`'s hosted search tool, so it only qualifies
-/// when pointed at the `OpenAI` API itself.
-fn offers_native_web_search(spec: &super::provider::ProviderSpec) -> bool {
-    match spec.model.kind {
-        ProviderKind::Anthropic | ProviderKind::Gemini => true,
-        ProviderKind::OpenAi => {
-            let hosted =
-                spec.provider_url.trim_end_matches('/') == super::constants::DEFAULT_OPENAI_URL;
-            if !hosted {
-                tracing::debug!(
-                    provider_url = %spec.provider_url,
-                    "native web search off: openai-compatible endpoint is not the OpenAI API"
-                );
-            }
-            hosted
-        }
-        ProviderKind::Fireworks | ProviderKind::Ollama => false,
-    }
-}
-
-/// Resolve a single background tier assignment, extracting overrides.
-fn resolve_bg_tier(
-    assignment: Option<super::deserialize::ModelAssignment>,
-    role_key: &str,
-    providers_map: Option<&HashMap<String, ProviderEntryFile>>,
-    secrets: &SecretStore,
-    role_overrides: &mut HashMap<String, super::types::RoleOverrides>,
-) -> Result<Option<Vec<super::provider::ProviderSpec>>, FatalError> {
-    let Some(spec) = assignment else {
-        return Ok(None);
-    };
-    models::extract_role_overrides(role_key, &spec, role_overrides)?;
-    Ok(Some(models::resolve_assignment_chain(
-        spec,
-        providers_map,
-        secrets,
-    )?))
-}
-
 #[cfg(test)]
 pub(super) mod test_helpers {
-    pub(super) use super::super::deserialize::{ConfigFile, ProvidersFile};
+    pub(super) use super::super::deserialize::{AgentConfigFile, ProvidersFile};
     pub(super) use super::super::secrets::SecretStore;
 
     pub(super) static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1243,36 +236,108 @@ pub(super) mod test_helpers {
         SecretStore::load(&dir).unwrap()
     }
 
-    pub(super) fn test_config_dir() -> std::path::PathBuf {
-        std::env::temp_dir().join("residuum-test-config")
+    pub(super) fn test_agent_dir() -> std::path::PathBuf {
+        std::env::temp_dir().join("residuum-test-agent")
     }
 
-    pub(super) fn parse_config(toml: &str) -> ConfigFile {
+    pub(super) fn test_hub_config() -> super::super::HubConfig {
+        super::super::HubConfig {
+            timezone: chrono_tz::UTC,
+            gateway: super::super::GatewayConfig::default(),
+            cloud: None,
+            a2a: super::super::HubA2aConfig::default(),
+            tracing: super::super::TracingConfig::default(),
+            background: super::super::HubBackgroundConfig::default(),
+            push: super::super::HubPushConfig::default(),
+            system_one: None,
+            config_dir: std::env::temp_dir().join("residuum-test-hub"),
+            load_notices: Vec::new(),
+        }
+    }
+
+    pub(super) fn parse_config(toml: &str) -> AgentConfigFile {
         toml::from_str(toml).unwrap()
     }
 
     pub(super) fn parse_providers(toml: &str) -> ProvidersFile {
         toml::from_str(toml).unwrap()
     }
+
+    /// Resolve an agent `Config` from raw TOML sources against a default
+    /// test hub config — the shape almost every resolve test needs.
+    pub(super) fn resolve_test(
+        cfg_toml: &str,
+        providers_toml: &str,
+    ) -> Result<super::super::Config, crate::util::FatalError> {
+        resolve_test_with_hub(cfg_toml, providers_toml, &test_hub_config())
+    }
+
+    /// [`resolve_test`], with an explicit hub config for tests that need to
+    /// vary hub-owned values.
+    pub(super) fn resolve_test_with_hub(
+        cfg_toml: &str,
+        providers_toml: &str,
+        hub: &super::super::HubConfig,
+    ) -> Result<super::super::Config, crate::util::FatalError> {
+        let cfg_file = parse_config(cfg_toml);
+        let prov_file = parse_providers(providers_toml);
+        super::from_file_and_env(
+            Some(&cfg_file),
+            Some(&prov_file),
+            &test_agent_dir(),
+            "test-agent",
+            hub,
+        )
+    }
 }
 
-/// Warn on deprecated environment variables that no longer have effect.
-fn warn_deprecated_env_vars() {
-    let deprecated = [
-        "RESIDUUM_OBSERVER_MODEL",
-        "RESIDUUM_REFLECTOR_MODEL",
-        "RESIDUUM_OBSERVER_API_KEY",
-        "RESIDUUM_REFLECTOR_API_KEY",
-    ];
+/// Agent-scoped environment variables the loader never reads. Each would
+/// apply the same value to every agent in the process (e.g. one Discord token
+/// for all), so an agent's values come only from its own
+/// `config.toml`/`providers.toml`. One that is set in the environment gets a
+/// notice at startup, see [`removed_agent_env_override_notices`].
+const REMOVED_AGENT_ENV_OVERRIDES: &[&str] = &[
+    "RESIDUUM_WORKSPACE",
+    "RESIDUUM_MODEL",
+    "RESIDUUM_OBSERVER_MODEL",
+    "RESIDUUM_REFLECTOR_MODEL",
+    "RESIDUUM_OBSERVER_API_KEY",
+    "RESIDUUM_REFLECTOR_API_KEY",
+    "RESIDUUM_PROVIDER_URL",
+    "RESIDUUM_API_KEY",
+    "RESIDUUM_DISCORD_TOKEN",
+    "RESIDUUM_TELEGRAM_TOKEN",
+    "RESIDUUM_TEAMS_APP_PASSWORD",
+];
 
-    for var in &deprecated {
+/// One notice (also logged at `warn`) per agent-scoped environment variable
+/// from [`REMOVED_AGENT_ENV_OVERRIDES`] that is set in the process
+/// environment. Called once at startup, not on config load, so a config
+/// reload does not repeat it.
+fn note_unusable_display_name(file: Option<&AgentConfigFile>, notices: &mut Vec<String>) {
+    if let Some(raw) = file.and_then(|f| f.display_name.as_deref())
+        && crate::config::canonicalize_display_name(raw).is_err()
+    {
+        notices.push(format!(
+            "The name \"{raw}\" in config.toml can't be shown. Fix display_name, or remove it to show the folder name."
+        ));
+    }
+}
+
+pub(crate) fn removed_agent_env_override_notices() -> Vec<String> {
+    let mut notices = Vec::new();
+    for var in REMOVED_AGENT_ENV_OVERRIDES {
         if std::env::var(var).is_ok() {
             tracing::warn!(
                 %var,
-                "env var is deprecated and has no effect; use [models] observer/reflector in config.toml instead"
+                "environment variable is set but ignored; set the value in the agent's config.toml or providers.toml instead"
             );
+            notices.push(format!(
+                "The environment variable {var} is set, but Residuum ignores it. Put the value in the agent's config.toml or providers.toml instead."
+            ));
         }
     }
+    notices
 }
 
 #[cfg(test)]
@@ -1282,10 +347,15 @@ fn warn_deprecated_env_vars() {
     reason = "std::env::set_var/remove_var require unsafe in edition 2024"
 )]
 mod tests {
+    use std::path::PathBuf;
+
     use super::super::constants::{
-        DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD,
-        DEFAULT_OBSERVER_THRESHOLD, DEFAULT_REFLECTOR_THRESHOLD,
+        DEFAULT_DISCORD_CONTEXT_MESSAGES, DEFAULT_OBSERVER_COOLDOWN_SECS,
+        DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD, DEFAULT_REFLECTOR_THRESHOLD,
+        DEFAULT_TEAMS_CONTEXT_MESSAGES, DEFAULT_TEAMS_PORT, DEFAULT_TELEGRAM_CONTEXT_MESSAGES,
     };
+    use super::super::deserialize::{SearchConfigFile, ToolsConfigFile};
+    use super::super::types::A2aVisibility;
     use super::test_helpers::*;
     use super::*;
 
@@ -1293,46 +363,44 @@ mod tests {
 
     #[test]
     fn resolve_tools_config_defaults_to_bin_dir() {
-        let config_dir = Path::new("/home/x/.residuum");
-        let tools = resolve_tools_config(None, config_dir);
+        let hub_dir = Path::new("/home/x/.residuum/hub");
+        let tools = agent::resolve_tools_config(None, hub_dir);
         assert_eq!(
             tools.dirs,
-            vec![PathBuf::from("/home/x/.residuum/bin")],
-            "with no section, only the default bin dir is present"
+            vec![PathBuf::from("/home/x/.residuum/hub/bin")],
+            "with no section, only the default hub bin dir is present"
         );
     }
 
     #[test]
     fn resolve_tools_config_prepends_configured_dirs_before_bin() {
-        let config_dir = Path::new("/home/x/.residuum");
+        let hub_dir = Path::new("/home/x/.residuum/hub");
         let section = ToolsConfigFile {
             path: Some(vec![
                 "/opt/residuum-tools".to_string(),
                 "~/extra-bin".to_string(),
             ]),
         };
-        let tools = resolve_tools_config(Some(&section), config_dir);
+        let tools = agent::resolve_tools_config(Some(&section), hub_dir);
         let expected_extra = PathBuf::from(shellexpand::tilde("~/extra-bin").as_ref());
         assert_eq!(
             tools.dirs,
             vec![
                 PathBuf::from("/opt/residuum-tools"),
                 expected_extra,
-                PathBuf::from("/home/x/.residuum/bin"),
+                PathBuf::from("/home/x/.residuum/hub/bin"),
             ],
-            "configured dirs come first (in order), then the default bin dir"
+            "configured dirs come first (in order), then the default hub bin dir"
         );
     }
 
     #[test]
     fn deny_unknown_fields_rejects_top_level_typos() {
-        let toml_str = r#"
-timezone = "UTC"
-
+        let toml_str = "
 [memori]
 observer_threshold_tokens = 30000
-"#;
-        let result = toml::from_str::<ConfigFile>(toml_str);
+";
+        let result = toml::from_str::<AgentConfigFile>(toml_str);
         assert!(
             result.is_err(),
             "unknown top-level section should be rejected"
@@ -1341,14 +409,7 @@ observer_threshold_tokens = 30000
 
     #[test]
     fn subconscious_defaults_to_disabled_when_absent() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
         assert!(
             !cfg.subconscious_settings.enabled,
             "subconscious is opt-in and must default to disabled"
@@ -1361,29 +422,18 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn artifact_idle_timeout_defaults_to_ten_minutes_and_parses_from_background() {
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let default_file = parse_config("timezone = \"UTC\"\n");
-        let defaults =
-            from_file_and_env(Some(&default_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let providers = "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n";
+        let defaults = resolve_test("", providers).unwrap();
         assert_eq!(
             defaults.background.idle_timeout_artifact,
             std::time::Duration::from_mins(10)
         );
 
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
-[background]
-idle_timeout_artifact_minutes = 25
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test(
+            "[background]\nidle_timeout_artifact_minutes = 25\n",
+            providers,
+        )
+        .unwrap();
         assert_eq!(
             cfg.background.idle_timeout_artifact,
             std::time::Duration::from_mins(25)
@@ -1395,11 +445,130 @@ idle_timeout_artifact_minutes = 25
     }
 
     #[test]
-    fn subconscious_knobs_parse() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
+    fn background_hub_limits_are_copied_in_not_settable_by_the_agent() {
+        let mut hub = test_hub_config();
+        hub.background.max_concurrent = 7;
+        hub.background.hop_soft_limit = 2;
+        hub.background.hop_hard_limit = 9;
+        let cfg = resolve_test_with_hub(
+            "",
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+            &hub,
+        )
+        .unwrap();
+        assert_eq!(cfg.background.max_concurrent, 7);
+        assert_eq!(cfg.background.hop_soft_limit, 2);
+        assert_eq!(cfg.background.hop_hard_limit, 9);
 
+        // The agent's own [background] section cannot set these: an attempt
+        // to is an unknown-field parse error.
+        assert!(toml::from_str::<AgentConfigFile>("[background]\nmax_concurrent = 99\n").is_err());
+        assert!(toml::from_str::<AgentConfigFile>("[background]\nhop_soft_limit = 1\n").is_err());
+    }
+
+    #[test]
+    fn hub_owned_fields_are_copied_from_hub_not_agent_file() {
+        let mut hub = test_hub_config();
+        hub.timezone = "America/New_York".parse().unwrap();
+        hub.gateway.port = 9001;
+        hub.tracing.log_level = super::super::types::LogLevel::Trace;
+        let cfg = resolve_test_with_hub(
+            "",
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+            &hub,
+        )
+        .unwrap();
+        assert_eq!(cfg.timezone.name(), "America/New_York");
+        assert_eq!(cfg.gateway.port, 9001);
+        assert_eq!(cfg.tracing.log_level, super::super::types::LogLevel::Trace);
+
+        // None of these are settable in the agent's own file.
+        assert!(toml::from_str::<AgentConfigFile>("[gateway]\nport = 1\n").is_err());
+        assert!(toml::from_str::<AgentConfigFile>("[cloud]\nenabled = true\n").is_err());
+        assert!(toml::from_str::<AgentConfigFile>("[tracing]\nlog_level = \"info\"\n").is_err());
+        assert!(toml::from_str::<AgentConfigFile>("timezone = \"UTC\"\n").is_err());
+    }
+
+    #[test]
+    fn removed_agent_env_overrides_produce_a_startup_notice() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        // SAFETY: test-only, serialized by ENV_MUTEX.
+        unsafe { std::env::set_var("RESIDUUM_MODEL", "openai/gpt-4o") };
+        let notices = removed_agent_env_override_notices();
+        unsafe { std::env::remove_var("RESIDUUM_MODEL") };
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(notices[0].contains("RESIDUUM_MODEL"));
+        assert!(notices[0].contains("ignores it"));
+    }
+
+    #[test]
+    fn loading_a_config_does_not_re_emit_removed_env_override_notices() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        // SAFETY: test-only, serialized by ENV_MUTEX.
+        unsafe { std::env::set_var("RESIDUUM_MODEL", "openai/gpt-4o") };
+        // Every reload goes through this same loader, so two loads stand in
+        // for a startup followed by a reload.
+        let first = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
+        let second =
+            resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
+        unsafe { std::env::remove_var("RESIDUUM_MODEL") };
+        for cfg in [first, second] {
+            assert!(
+                cfg.load_notices
+                    .iter()
+                    .all(|n| !n.contains("RESIDUUM_MODEL")),
+                "a config load must not carry the env override notice: {:?}",
+                cfg.load_notices
+            );
+        }
+    }
+
+    #[test]
+    fn removed_agent_env_overrides_have_no_effect_on_resolved_values() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        // SAFETY: test-only, serialized by ENV_MUTEX.
+        unsafe {
+            std::env::set_var("RESIDUUM_MODEL", "openai/gpt-4o");
+            std::env::set_var("RESIDUUM_PROVIDER_URL", "http://override.invalid");
+            std::env::set_var("RESIDUUM_API_KEY", "sk-env-override");
+            std::env::set_var("RESIDUUM_DISCORD_TOKEN", "env-discord-token");
+        }
+        let cfg = resolve_test(
+            "[discord]\n",
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        );
+        // SAFETY: test-only, serialized by ENV_MUTEX.
+        unsafe {
+            std::env::remove_var("RESIDUUM_MODEL");
+            std::env::remove_var("RESIDUUM_PROVIDER_URL");
+            std::env::remove_var("RESIDUUM_API_KEY");
+            std::env::remove_var("RESIDUUM_DISCORD_TOKEN");
+        }
+        let cfg = cfg.unwrap();
+        let main = cfg.main.first().unwrap();
+        assert_eq!(main.model.model, "claude-sonnet-4-6");
+        assert_ne!(main.provider_url, "http://override.invalid");
+        assert_ne!(main.api_key.as_deref(), Some("sk-env-override"));
+        assert!(
+            cfg.discord.is_none(),
+            "an env token must not enable Discord"
+        );
+    }
+
+    #[test]
+    fn no_removed_env_overrides_set_produces_no_extra_notice() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        for var in REMOVED_AGENT_ENV_OVERRIDES {
+            // SAFETY: test-only, single-threaded test environment
+            unsafe { std::env::remove_var(var) };
+        }
+        let cfg = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
+        assert!(cfg.load_notices.is_empty());
+    }
+
+    #[test]
+    fn subconscious_knobs_parse() {
+        let cfg_toml = "
 [subconscious]
 enabled = true
 mid_turn = false
@@ -1407,15 +576,12 @@ every_n_iterations = 5
 max_transcript_tokens = 8000
 learning = true
 learning_cooldown_minutes = 60
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+";
+        let cfg = resolve_test(
+            cfg_toml,
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         assert!(cfg.subconscious_settings.enabled);
         assert!(!cfg.subconscious_settings.mid_turn);
         assert_eq!(cfg.subconscious_settings.every_n_iterations, 5);
@@ -1426,14 +592,7 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn learning_defaults_when_absent() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
         assert!(
             !cfg.subconscious_settings.learning,
             "learning is opt-in, defaults to disabled"
@@ -1450,33 +609,18 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn learning_nudge_fallback_parses() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
-[learning]
-nudge_after_turns = 12
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test(
+            "[learning]\nnudge_after_turns = 12\n",
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         assert_eq!(cfg.learning.nudge_after_turns, 12);
     }
 
     #[test]
     fn subconscious_deny_unknown_fields() {
-        let toml_str = r#"
-timezone = "UTC"
-
-[subconscious]
-enalbed = true
-"#;
-        let result = toml::from_str::<ConfigFile>(toml_str);
+        let toml_str = "[subconscious]\nenalbed = true\n";
+        let result = toml::from_str::<AgentConfigFile>(toml_str);
         assert!(
             result.is_err(),
             "typo in [subconscious] section should be rejected"
@@ -1485,36 +629,23 @@ enalbed = true
 
     #[test]
     fn memory_config_just_thresholds() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
+        let cfg_toml = "
 [memory]
 observer_threshold_tokens = 20000
 reflector_threshold_tokens = 50000
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+";
+        let cfg = resolve_test(
+            cfg_toml,
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         assert_eq!(cfg.memory.observer_threshold_tokens, 20000);
         assert_eq!(cfg.memory.reflector_threshold_tokens, 50000);
     }
 
     #[test]
     fn memory_config_defaults_when_absent() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
         assert_eq!(
             cfg.memory.observer_threshold_tokens,
             DEFAULT_OBSERVER_THRESHOLD
@@ -1526,59 +657,14 @@ main = "anthropic/claude-sonnet-4-6"
     }
 
     #[test]
-    fn config_no_timezone_errors() {
-        let result = from_file_and_env(None, None, &test_config_dir());
-        assert!(result.is_err(), "missing timezone should error");
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("timezone"),
-            "error should mention timezone: {err}"
-        );
-    }
-
-    #[test]
-    fn config_with_timezone() {
-        let cfg_file = parse_config("timezone = \"America/New_York\"\n");
-        let prov_file = parse_providers("[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n");
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
-        assert_eq!(
-            cfg.timezone.name(),
-            "America/New_York",
-            "timezone should be parsed"
-        );
-    }
-
-    #[test]
-    fn config_invalid_timezone_errors() {
-        let cfg_file = parse_config("timezone = \"Not/A/Timezone\"\n");
-        let prov_file = parse_providers("[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n");
-        let result = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir());
-        assert!(result.is_err(), "invalid timezone should error");
-    }
-
-    #[test]
     fn pulse_enabled_defaults() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
         assert!(cfg.pulse_enabled, "pulse should default to enabled");
     }
 
     #[test]
     fn discord_absent_returns_none() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
         assert!(
             cfg.discord.is_none(),
             "no [discord] section should yield None"
@@ -1587,20 +673,11 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn discord_section_without_token_returns_none() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
-[discord]
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test(
+            "[discord]\n",
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         assert!(
             cfg.discord.is_none(),
             "[discord] with no token should yield None"
@@ -1609,21 +686,11 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn discord_section_with_token() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
-[discord]
-token = "my-bot-token"
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test(
+            "[discord]\ntoken = \"my-bot-token\"\n",
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         assert!(cfg.discord.is_some(), "[discord] with token should be Some");
         assert_eq!(
             cfg.discord.as_ref().map(|d| d.token.as_str()),
@@ -1639,42 +706,21 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn discord_context_messages_override() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
-[discord]
-token = "my-bot-token"
-context_messages = 7
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test(
+            "[discord]\ntoken = \"my-bot-token\"\ncontext_messages = 7\n",
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         assert_eq!(cfg.discord.as_ref().map(|d| d.context_messages), Some(7));
     }
 
     #[test]
     fn telegram_context_messages_defaults() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
-[telegram]
-token = "tg-token"
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test(
+            "[telegram]\ntoken = \"tg-token\"\n",
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         assert_eq!(
             cfg.telegram.as_ref().map(|t| t.context_messages),
             Some(DEFAULT_TELEGRAM_CONTEXT_MESSAGES)
@@ -1683,35 +729,17 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn telegram_context_messages_override() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
-[telegram]
-token = "tg-token"
-context_messages = 3
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test(
+            "[telegram]\ntoken = \"tg-token\"\ncontext_messages = 3\n",
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         assert_eq!(cfg.telegram.as_ref().map(|t| t.context_messages), Some(3));
     }
 
     #[test]
     fn webhooks_empty_when_absent() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
         assert!(
             cfg.webhooks.is_empty(),
             "webhooks should be empty when absent"
@@ -1720,23 +748,17 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn webhooks_single_entry() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
+        let cfg_toml = r#"
 [webhooks.github-issues]
 secret = "my-secret"
 routing = "agent:code_reviewer"
 content_fields = ["issue.title", "issue.body"]
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+"#;
+        let cfg = resolve_test(
+            cfg_toml,
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         assert_eq!(cfg.webhooks.len(), 1);
         let entry = &cfg.webhooks["github-issues"];
         assert_eq!(entry.secret.as_deref(), Some("my-secret"));
@@ -1753,25 +775,19 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn webhooks_multiple_entries() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
+        let cfg_toml = r#"
 [webhooks.github]
 secret = "gh-secret"
 routing = "inbox"
 
 [webhooks.deploy]
 format = "raw"
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+"#;
+        let cfg = resolve_test(
+            cfg_toml,
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         assert_eq!(cfg.webhooks.len(), 2);
 
         let gh = &cfg.webhooks["github"];
@@ -1786,21 +802,11 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn webhooks_default_routing() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
-[webhooks.simple]
-secret = "tok"
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test(
+            "[webhooks.simple]\nsecret = \"tok\"\n",
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         let entry = &cfg.webhooks["simple"];
         assert_eq!(
             entry.routing,
@@ -1816,24 +822,20 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn webhooks_invalid_routing_is_skipped_with_notice() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
+        // Counts notices, so the env-override tests must not add extras.
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let cfg_toml = r#"
 [webhooks.bad]
 routing = "nowhere"
 
 [webhooks.good]
 routing = "inbox"
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+"#;
+        let cfg = resolve_test(
+            cfg_toml,
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         assert!(
             !cfg.webhooks.contains_key("bad"),
             "invalid webhook should be dropped, not fail the whole config"
@@ -1852,21 +854,13 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn webhooks_empty_content_field_is_skipped_with_notice() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
-[webhooks.bad]
-content_fields = ["valid", ""]
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        // Counts notices, so the env-override tests must not add extras.
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let cfg = resolve_test(
+            "[webhooks.bad]\ncontent_fields = [\"valid\", \"\"]\n",
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         assert!(!cfg.webhooks.contains_key("bad"));
         assert_eq!(cfg.load_notices.len(), 1);
         let notice = cfg.load_notices.first().unwrap();
@@ -1878,14 +872,7 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn memory_config_cooldown_defaults() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
         assert_eq!(
             cfg.memory.observer_cooldown_secs, DEFAULT_OBSERVER_COOLDOWN_SECS,
             "cooldown should default"
@@ -1898,22 +885,16 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn memory_config_cooldown_custom() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
+        let cfg_toml = "
 [memory]
 observer_cooldown_secs = 60
 observer_force_threshold_tokens = 50000
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+";
+        let cfg = resolve_test(
+            cfg_toml,
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         assert_eq!(
             cfg.memory.observer_cooldown_secs, 60,
             "cooldown should be custom"
@@ -1926,21 +907,11 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn pulse_can_be_disabled() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
-[pulse]
-enabled = false
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test(
+            "[pulse]\nenabled = false\n",
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         assert!(!cfg.pulse_enabled);
     }
 
@@ -1948,14 +919,7 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn agent_abilities_default_to_true() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
         assert!(cfg.agent.modify_mcp, "modify_mcp should default to true");
         assert!(
             cfg.agent.modify_channels,
@@ -1965,22 +929,12 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn agent_abilities_custom_values() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
-[agent]
-modify_mcp = false
-modify_channels = false
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg_toml = "[agent]\nmodify_mcp = false\nmodify_channels = false\n";
+        let cfg = resolve_test(
+            cfg_toml,
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         assert!(!cfg.agent.modify_mcp, "modify_mcp should be false");
         assert!(
             !cfg.agent.modify_channels,
@@ -1990,14 +944,7 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn max_tool_iterations_defaults_to_unlimited() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
         assert_eq!(
             cfg.agent.max_tool_iterations, None,
             "an unset limit should mean unlimited"
@@ -2006,42 +953,21 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn max_tool_iterations_round_trips_a_configured_value() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
-[agent]
-max_tool_iterations = 25
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test(
+            "[agent]\nmax_tool_iterations = 25\n",
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         assert_eq!(cfg.agent.max_tool_iterations, Some(25));
     }
 
     #[test]
     fn max_tool_iterations_of_zero_is_rejected() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
-[agent]
-max_tool_iterations = 0
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let err = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir())
-            .expect_err("a zero limit should be rejected at load");
+        let err = resolve_test(
+            "[agent]\nmax_tool_iterations = 0\n",
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .expect_err("a zero limit should be rejected at load");
         assert!(
             err.to_string().contains("max_tool_iterations"),
             "error should name the offending setting: {err}"
@@ -2050,14 +976,7 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn repeat_call_guard_defaults_to_three_and_six_enabled() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
         assert!(
             cfg.agent.repeat_call_guard.enabled,
             "guard is on by default"
@@ -2068,22 +987,11 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn repeat_call_guard_thresholds_and_disabling_are_configurable() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
-[agent]
-repeat_call_steer_after = 2
-repeat_call_stop_after = 4
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test(
+            "[agent]\nrepeat_call_steer_after = 2\nrepeat_call_stop_after = 4\n",
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         assert_eq!(cfg.agent.repeat_call_guard.steer_after, 2);
         assert_eq!(cfg.agent.repeat_call_guard.stop_after, 4);
         assert!(
@@ -2091,16 +999,11 @@ main = "anthropic/claude-sonnet-4-6"
             "still enabled by default"
         );
 
-        let disabled_file = parse_config(
-            r#"
-timezone = "UTC"
-
-[agent]
-repeat_call_guard_enabled = false
-"#,
-        );
-        let disabled_cfg =
-            from_file_and_env(Some(&disabled_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let disabled_cfg = resolve_test(
+            "[agent]\nrepeat_call_guard_enabled = false\n",
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         assert!(
             !disabled_cfg.agent.repeat_call_guard.enabled,
             "should be disableable"
@@ -2111,14 +1014,7 @@ repeat_call_guard_enabled = false
 
     #[test]
     fn search_config_defaults_when_absent() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
         let search = &cfg.memory.search;
         assert!(
             (search.vector_weight - 0.7).abs() < f64::EPSILON,
@@ -2140,24 +1036,18 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn search_config_custom_values() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
+        let cfg_toml = "
 [memory.search]
 vector_weight = 0.5
 text_weight = 0.5
 min_score = 0.2
 candidate_multiplier = 8
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+";
+        let cfg = resolve_test(
+            cfg_toml,
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         let search = &cfg.memory.search;
         assert!(
             (search.vector_weight - 0.5).abs() < f64::EPSILON,
@@ -2179,7 +1069,7 @@ main = "anthropic/claude-sonnet-4-6"
 
     fn assert_search_weights(toml_src: &str, expected_vector: f64, expected_text: f64) {
         let section: SearchConfigFile = toml::from_str(toml_src).unwrap();
-        let cfg = resolve_search_config(Some(&section));
+        let cfg = memory::resolve_search_config(Some(&section));
         assert!(
             (cfg.vector_weight - expected_vector).abs() < 1e-9
                 && (cfg.text_weight - expected_text).abs() < 1e-9,
@@ -2220,13 +1110,8 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn search_config_deny_unknown_fields() {
-        let toml_str = r#"
-timezone = "UTC"
-
-[memory.search]
-typo_field = 0.5
-"#;
-        let result = toml::from_str::<ConfigFile>(toml_str);
+        let toml_str = "[memory.search]\ntypo_field = 0.5\n";
+        let result = toml::from_str::<AgentConfigFile>(toml_str);
         assert!(
             result.is_err(),
             "unknown field in [memory.search] should be rejected"
@@ -2306,7 +1191,7 @@ typo_field = 0.5
         );
     }
 
-    // ── Gateway config ──────────────────────────────────────────────────────
+    // ── Gateway config (hub-level resolution, tested directly) ────────────────
 
     #[test]
     fn gateway_config_defaults_and_env_override() {
@@ -2319,7 +1204,7 @@ typo_field = 0.5
         }
 
         // Defaults
-        let cfg = resolve_gateway_config(None);
+        let cfg = gateway::resolve_gateway_config(None);
         assert_eq!(cfg.bind, "127.0.0.1", "default bind should be loopback");
         assert_eq!(cfg.port, 7700, "default port should be 7700");
         assert_eq!(cfg.addr(), "127.0.0.1:7700");
@@ -2329,7 +1214,7 @@ typo_field = 0.5
             std::env::set_var("RESIDUUM_GATEWAY_BIND", "0.0.0.0");
             std::env::set_var("RESIDUUM_GATEWAY_PORT", "8080");
         }
-        let env_cfg = resolve_gateway_config(None);
+        let env_cfg = gateway::resolve_gateway_config(None);
         assert_eq!(env_cfg.bind, "0.0.0.0", "env should override bind");
         assert_eq!(env_cfg.port, 8080, "env should override port");
         assert_eq!(env_cfg.addr(), "0.0.0.0:8080");
@@ -2341,14 +1226,7 @@ typo_field = 0.5
 
     #[test]
     fn telegram_absent_returns_none() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
         assert!(
             cfg.telegram.is_none(),
             "no [telegram] section should yield None"
@@ -2357,20 +1235,11 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn telegram_section_without_token_returns_none() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
-[telegram]
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test(
+            "[telegram]\n",
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         assert!(
             cfg.telegram.is_none(),
             "[telegram] with no token should yield None"
@@ -2379,21 +1248,11 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn telegram_section_with_token() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
-[telegram]
-token = "123456789:ABCdefGHIjklmnop"
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test(
+            "[telegram]\ntoken = \"123456789:ABCdefGHIjklmnop\"\n",
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         assert!(
             cfg.telegram.is_some(),
             "[telegram] with token should be Some"
@@ -2406,16 +1265,14 @@ main = "anthropic/claude-sonnet-4-6"
     }
 
     fn chat_bots_config(extra: &str) -> Config {
-        let cfg_file = parse_config(&format!(
-            "timezone = \"UTC\"\n\n[discord]\ntoken = \"d-token\"\n{extra}\n[telegram]\ntoken = \"t-token\"\n{extra}"
-        ));
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
+        let cfg_toml = format!(
+            "[discord]\ntoken = \"d-token\"\n{extra}\n[telegram]\ntoken = \"t-token\"\n{extra}"
         );
-        from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap()
+        resolve_test(
+            &cfg_toml,
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap()
     }
 
     #[test]
@@ -2434,28 +1291,17 @@ main = "anthropic/claude-sonnet-4-6"
 
     // ── Teams config ───────────────────────────────────────────────────────
 
-    fn resolve_with(config_toml: &str) -> Result<Config, FatalError> {
-        let cfg_file = parse_config(config_toml);
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir())
-    }
-
     #[test]
     fn teams_section_resolves_with_defaults() {
-        let cfg = resolve_with(
-            r#"
-timezone = "UTC"
-
+        let cfg_toml = r#"
 [teams]
 app_id = "11111111-2222-3333-4444-555555555555"
 tenant_id = "tenant-guid"
 app_password = "client-secret"
-"#,
+"#;
+        let cfg = resolve_test(
+            cfg_toml,
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
         )
         .unwrap();
         let teams = cfg.teams.unwrap();
@@ -2469,10 +1315,7 @@ app_password = "client-secret"
 
     #[test]
     fn teams_section_honours_overrides() {
-        let cfg = resolve_with(
-            r#"
-timezone = "UTC"
-
+        let cfg_toml = r#"
 [teams]
 app_id = "app"
 tenant_id = "tenant"
@@ -2480,7 +1323,10 @@ app_password = "secret"
 respond_to_others = true
 context_messages = 5
 port = 8801
-"#,
+"#;
+        let cfg = resolve_test(
+            cfg_toml,
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
         )
         .unwrap();
         let teams = cfg.teams.unwrap();
@@ -2491,6 +1337,8 @@ port = 8801
 
     #[test]
     fn teams_section_missing_required_field_disables_teams_with_notice() {
+        // Counts notices, so the env-override tests must not add extras.
+        let _guard = ENV_MUTEX.lock().unwrap();
         for (missing, toml) in [
             (
                 "app_id",
@@ -2505,7 +1353,8 @@ port = 8801
                 "[teams]\napp_id = \"a\"\ntenant_id = \"t\"\n",
             ),
         ] {
-            let cfg = resolve_with(&format!("timezone = \"UTC\"\n\n{toml}")).unwrap();
+            let cfg =
+                resolve_test(toml, "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
             assert!(
                 cfg.teams.is_none(),
                 "teams should be disabled, not fail the config, when {missing} is missing"
@@ -2522,16 +1371,13 @@ port = 8801
     #[test]
     fn teams_absent_is_none_and_teams_is_a_valid_idle_channel() {
         assert!(
-            resolve_with("timezone = \"UTC\"\n")
+            resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n")
                 .unwrap()
                 .teams
                 .is_none()
         );
 
-        let cfg = resolve_with(
-            r#"
-timezone = "UTC"
-
+        let cfg_toml = r#"
 [idle]
 idle_channel = "teams"
 
@@ -2539,35 +1385,36 @@ idle_channel = "teams"
 app_id = "a"
 tenant_id = "t"
 app_password = "s"
-"#,
+"#;
+        let cfg = resolve_test(
+            cfg_toml,
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
         )
         .unwrap();
         assert_eq!(cfg.idle.idle_channel.as_deref(), Some("teams"));
     }
 
-    // ── A2A config ─────────────────────────────────────────────────────────
+    // ── A2A config: enabled/port/public_url are hub-owned, visibility is agent-owned ──
 
     #[test]
-    fn a2a_absent_resolves_to_open_defaults() {
-        let cfg = resolve_with("timezone = \"UTC\"\n").unwrap();
-        assert!(cfg.a2a.enabled, "enabled by default");
-        assert_eq!(cfg.a2a.port, DEFAULT_A2A_PORT);
+    fn a2a_absent_resolves_to_hub_defaults_and_public_visibility() {
+        let cfg = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
+        assert!(cfg.a2a.enabled, "enabled by default (from hub)");
+        assert_eq!(cfg.a2a.port, crate::config::DEFAULT_A2A_PORT);
         assert_eq!(cfg.a2a.public_url, None);
         assert_eq!(cfg.a2a.visibility, A2aVisibility::Public);
     }
 
     #[test]
-    fn a2a_section_honours_overrides() {
-        let cfg = resolve_with(
-            r#"
-timezone = "UTC"
-
-[a2a]
-enabled = false
-port = 9999
-public_url = "https://example.com/a2a/laptop"
-visibility = "private"
-"#,
+    fn a2a_enabled_port_and_public_url_come_from_hub_not_the_agent_file() {
+        let mut hub = test_hub_config();
+        hub.a2a.enabled = false;
+        hub.a2a.port = 9999;
+        hub.a2a.public_url = Some("https://example.com/a2a/laptop".to_string());
+        let cfg = resolve_test_with_hub(
+            "",
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+            &hub,
         )
         .unwrap();
         assert!(!cfg.a2a.enabled);
@@ -2576,32 +1423,29 @@ visibility = "private"
             cfg.a2a.public_url.as_deref(),
             Some("https://example.com/a2a/laptop")
         );
+
+        // The agent's own [a2a] section cannot set these.
+        assert!(toml::from_str::<AgentConfigFile>("[a2a]\nenabled = false\n").is_err());
+        assert!(toml::from_str::<AgentConfigFile>("[a2a]\nport = 1\n").is_err());
+    }
+
+    #[test]
+    fn a2a_visibility_is_agent_owned() {
+        let cfg = resolve_test(
+            "[a2a]\nvisibility = \"private\"\n",
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         assert_eq!(cfg.a2a.visibility, A2aVisibility::Private);
     }
 
     #[test]
-    fn a2a_empty_public_url_resolves_to_none() {
-        let cfg = resolve_with(
-            r#"
-timezone = "UTC"
-
-[a2a]
-public_url = "   "
-"#,
-        )
-        .unwrap();
-        assert_eq!(cfg.a2a.public_url, None);
-    }
-
-    #[test]
     fn a2a_invalid_visibility_falls_back_to_default_with_notice() {
-        let cfg = resolve_with(
-            r#"
-timezone = "UTC"
-
-[a2a]
-visibility = "hidden"
-"#,
+        // Counts notices, so the env-override tests must not add extras.
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let cfg = resolve_test(
+            "[a2a]\nvisibility = \"hidden\"\n",
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
         )
         .unwrap();
         assert_eq!(
@@ -2617,159 +1461,11 @@ visibility = "hidden"
         );
     }
 
-    // ── Cloud config ───────────────────────────────────────────────────────
-
-    #[test]
-    fn cloud_absent_returns_none() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
-        assert!(cfg.cloud.is_none(), "no [cloud] section should yield None");
-    }
-
-    #[test]
-    fn cloud_disabled_returns_none() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
-[cloud]
-enabled = false
-token = "rst_test"
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
-        assert!(
-            cfg.cloud.is_none(),
-            "[cloud] with enabled=false should yield None"
-        );
-    }
-
-    #[test]
-    fn cloud_with_token_and_defaults() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
-[gateway]
-port = 7700
-
-[cloud]
-enabled = true
-token = "rst_testtoken12345678901234567890"
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
-        let cloud = cfg.cloud.as_ref();
-        assert!(cloud.is_some(), "[cloud] with token should be Some");
-        let cloud = cloud.unwrap();
-        assert_eq!(
-            cloud.token, "rst_testtoken12345678901234567890",
-            "token should match"
-        );
-        assert_eq!(
-            cloud.relay_url, "wss://agent-residuum.com/tunnel/register",
-            "relay_url should default"
-        );
-        assert_eq!(
-            cloud.local_port, 7700,
-            "local_port should default to gateway port"
-        );
-    }
-
-    #[test]
-    fn cloud_custom_relay_url_and_port() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
-[gateway]
-port = 9000
-
-[cloud]
-enabled = true
-token = "rst_testtoken12345678901234567890"
-relay_url = "ws://localhost:8080/tunnel/register"
-local_port = 3000
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
-        let cloud = cfg.cloud.as_ref().unwrap();
-        assert_eq!(
-            cloud.relay_url, "ws://localhost:8080/tunnel/register",
-            "custom relay_url"
-        );
-        assert_eq!(cloud.local_port, 3000, "custom local_port");
-    }
-
-    #[test]
-    fn cloud_local_port_defaults_to_gateway_port() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        // Guard against env pollution from parallel tests
-        unsafe {
-            std::env::remove_var("RESIDUUM_GATEWAY_PORT");
-        }
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
-[gateway]
-port = 9000
-
-[cloud]
-enabled = true
-token = "rst_testtoken12345678901234567890"
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
-        let cloud = cfg.cloud.as_ref().unwrap();
-        assert_eq!(
-            cloud.local_port, 9000,
-            "local_port should default to gateway port"
-        );
-    }
-
     // ── Web search config ────────────────────────────────────────────────
 
     #[test]
     fn web_search_native_enabled_for_anthropic() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
         assert!(
             cfg.web_search.provider_native.is_some(),
             "anthropic should get provider-native search"
@@ -2778,14 +1474,7 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn web_search_native_enabled_for_openai() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "openai/gpt-4o"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test("", "[models]\nmain = \"openai/gpt-4o\"\n").unwrap();
         assert!(
             cfg.web_search.provider_native.is_some(),
             "openai should get provider-native search"
@@ -2794,14 +1483,7 @@ main = "openai/gpt-4o"
 
     #[test]
     fn web_search_native_enabled_for_gemini() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "gemini/gemini-2.0-flash"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test("", "[models]\nmain = \"gemini/gemini-2.0-flash\"\n").unwrap();
         assert!(
             cfg.web_search.provider_native.is_some(),
             "gemini should get provider-native search"
@@ -2810,14 +1492,7 @@ main = "gemini/gemini-2.0-flash"
 
     #[test]
     fn web_search_native_disabled_for_ollama() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "ollama/llama3"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test("", "[models]\nmain = \"ollama/llama3\"\n").unwrap();
         assert!(
             cfg.web_search.provider_native.is_none(),
             "ollama should not get provider-native search"
@@ -2826,14 +1501,11 @@ main = "ollama/llama3"
 
     #[test]
     fn web_search_native_disabled_for_fireworks() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "fireworks/accounts/fireworks/routers/glm-flash-latest"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test(
+            "",
+            "[models]\nmain = \"fireworks/accounts/fireworks/routers/glm-flash-latest\"\n",
+        )
+        .unwrap();
         assert!(
             cfg.web_search.provider_native.is_none(),
             "fireworks has no hosted search tool"
@@ -2842,18 +1514,15 @@ main = "fireworks/accounts/fireworks/routers/glm-flash-latest"
 
     #[test]
     fn web_search_native_disabled_for_self_hosted_openai_compatible() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let prov_file = parse_providers(
-            r#"
+        let providers = r#"
 [providers.local-vllm]
 type = "openai"
 url = "http://localhost:8000/v1"
 
 [models]
 main = "local-vllm/qwen3"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+"#;
+        let cfg = resolve_test("", providers).unwrap();
         assert!(
             cfg.web_search.provider_native.is_none(),
             "compatible servers reject OpenAI's hosted search tool"
@@ -2862,18 +1531,15 @@ main = "local-vllm/qwen3"
 
     #[test]
     fn web_search_native_enabled_for_openai_url_with_trailing_slash() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let prov_file = parse_providers(
-            r#"
+        let providers = r#"
 [providers.oai]
 type = "openai"
 url = "https://api.openai.com/v1/"
 
 [models]
 main = "oai/gpt-4o"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+"#;
+        let cfg = resolve_test("", providers).unwrap();
         assert!(
             cfg.web_search.provider_native.is_some(),
             "the OpenAI API itself still gets hosted search"
@@ -2884,17 +1550,10 @@ main = "oai/gpt-4o"
 
     #[test]
     fn session_affinity_is_scoped_per_role_and_stable() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "fireworks/accounts/fireworks/routers/glm-flash-latest"
-"#,
-        );
-        let first =
-            from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
-        let second =
-            from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let providers =
+            "[models]\nmain = \"fireworks/accounts/fireworks/routers/glm-flash-latest\"\n";
+        let first = resolve_test("", providers).unwrap();
+        let second = resolve_test("", providers).unwrap();
 
         let main_key = first
             .main
@@ -2932,23 +1591,17 @@ main = "fireworks/accounts/fireworks/routers/glm-flash-latest"
 
     #[test]
     fn web_search_anthropic_overrides() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
+        let cfg_toml = r#"
 [web_search.anthropic]
 max_uses = 3
 allowed_domains = ["example.com"]
 blocked_domains = ["spam.com"]
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+"#;
+        let cfg = resolve_test(
+            cfg_toml,
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         let native = cfg.web_search.provider_native.as_ref().unwrap();
         assert_eq!(native.max_uses, Some(3), "max_uses should be set");
         assert_eq!(
@@ -2965,21 +1618,11 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn web_search_openai_overrides() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
-[web_search.openai]
-search_context_size = "high"
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "openai/gpt-4o"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test(
+            "[web_search.openai]\nsearch_context_size = \"high\"\n",
+            "[models]\nmain = \"openai/gpt-4o\"\n",
+        )
+        .unwrap();
         let native = cfg.web_search.provider_native.as_ref().unwrap();
         assert_eq!(
             native.search_context_size.as_deref(),
@@ -2990,24 +1633,14 @@ main = "openai/gpt-4o"
 
     #[test]
     fn web_search_standalone_brave_with_literal_key() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
+        let cfg_toml = r#"
 [web_search]
 backend = "brave"
 
 [web_search.brave]
 api_key = "BSA-test-key"
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "ollama/llama3"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+"#;
+        let cfg = resolve_test(cfg_toml, "[models]\nmain = \"ollama/llama3\"\n").unwrap();
         let backend = cfg.web_search.standalone_backend.as_ref().unwrap();
         assert_eq!(backend.name, "brave", "backend name should be brave");
         assert_eq!(
@@ -3018,23 +1651,8 @@ main = "ollama/llama3"
 
     #[test]
     fn web_search_standalone_no_key_warns() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
-[web_search]
-backend = "brave"
-
-[web_search.brave]
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "ollama/llama3"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg_toml = "[web_search]\nbackend = \"brave\"\n\n[web_search.brave]\n";
+        let cfg = resolve_test(cfg_toml, "[models]\nmain = \"ollama/llama3\"\n").unwrap();
         assert!(
             cfg.web_search.standalone_backend.is_none(),
             "backend without api key should be None"
@@ -3043,10 +1661,7 @@ main = "ollama/llama3"
 
     #[test]
     fn web_search_both_native_and_standalone_coexist() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
-
+        let cfg_toml = r#"
 [web_search]
 backend = "brave"
 
@@ -3055,15 +1670,12 @@ api_key = "BSA-test"
 
 [web_search.anthropic]
 max_uses = 5
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+"#;
+        let cfg = resolve_test(
+            cfg_toml,
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
         assert!(
             cfg.web_search.provider_native.is_some(),
             "provider-native should be set"
@@ -3076,13 +1688,8 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn web_search_deny_unknown_fields() {
-        let toml_str = r#"
-timezone = "UTC"
-
-[web_search]
-typo = "bad"
-"#;
-        let result = toml::from_str::<ConfigFile>(toml_str);
+        let toml_str = "[web_search]\ntypo = \"bad\"\n";
+        let result = toml::from_str::<AgentConfigFile>(toml_str);
         assert!(
             result.is_err(),
             "unknown field in [web_search] should be rejected"
@@ -3091,14 +1698,7 @@ typo = "bad"
 
     #[test]
     fn web_search_defaults_when_absent() {
-        let cfg_file = parse_config("timezone = \"UTC\"\n");
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cfg = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
         assert!(
             cfg.web_search.standalone_backend.is_none(),
             "standalone should be None by default"
@@ -3113,25 +1713,24 @@ main = "anthropic/claude-sonnet-4-6"
     }
 
     #[test]
-    fn cloud_section_no_token_returns_none() {
-        let cfg_file = parse_config(
-            r#"
-timezone = "UTC"
+    fn autostart_defaults_to_true() {
+        let cfg = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
+        assert!(cfg.autostart, "autostart should default to true");
+    }
 
-[cloud]
-enabled = true
-"#,
-        );
-        let prov_file = parse_providers(
-            r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#,
-        );
-        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
-        assert!(
-            cfg.cloud.is_none(),
-            "[cloud] enabled=true but no token should yield None"
-        );
+    #[test]
+    fn autostart_can_be_disabled() {
+        let cfg = resolve_test(
+            "autostart = false\n",
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
+        assert!(!cfg.autostart);
+    }
+
+    #[test]
+    fn agent_name_is_carried_through() {
+        let cfg = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
+        assert_eq!(cfg.agent_name, "test-agent");
     }
 }

@@ -8,7 +8,7 @@ mod exclude;
 mod notice;
 mod types;
 
-pub use engine::CheckpointEngine;
+pub use engine::{CheckpointEngine, SharedCheckpointRepos, agent_repos_dir, agents_with_history};
 pub use types::{
     ChangeKind, ChangedPath, CheckpointContext, CheckpointDetail, CheckpointError, CheckpointPage,
     CheckpointSummary, CheckpointTrigger, RepoKind, RepoStats, RestoreOutcome, UndoOutcome,
@@ -28,22 +28,23 @@ pub fn is_root_relative(path: &str) -> bool {
 
 /// A throwaway checkpoint engine backed by a fresh temp directory, for
 /// tests elsewhere in the crate that need a `CheckpointEngine` to satisfy a
-/// constructor but don't exercise checkpointing behavior themselves.
+/// constructor but don't exercise checkpointing behavior themselves. The
+/// temp directory's guard lives inside the returned engine, so it's cleaned
+/// up when the last `Arc` reference to the engine drops.
 #[cfg(test)]
 #[must_use]
 pub(crate) fn test_engine() -> std::sync::Arc<CheckpointEngine> {
-    // Leaked rather than bound to a `TempDir` guard: these callers only
-    // need a valid, distinct path for the engine's lifetime, and leaking a
-    // handful of empty temp dirs per test run is preferable to plumbing a
-    // guard through every one of them.
-    let dir = tempfile::tempdir().expect("tempdir").keep();
-    std::sync::Arc::new(
-        CheckpointEngine::new(
-            dir.join("workspace"),
-            dir.join("config"),
-            &dir.join("checkpoints"),
-            None,
-        )
-        .expect("checkpoint repos should open in a fresh tempdir"),
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = CheckpointEngine::new(
+        "test-agent",
+        dir.path().join("workspace"),
+        &crate::config::paths::TeamPaths::new(dir.path().join("team")),
+        dir.path().join("agent-config"),
+        dir.path().join("hub"),
+        &dir.path().join("checkpoints"),
+        None,
     )
+    .expect("checkpoint repos should open in a fresh tempdir")
+    .with_tempdir_guard(dir);
+    std::sync::Arc::new(engine)
 }

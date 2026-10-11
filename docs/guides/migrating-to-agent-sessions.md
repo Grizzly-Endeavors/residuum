@@ -4,7 +4,7 @@ Residuum's background-task system was replaced with **agent sessions**: every pu
 
 ## `agent: "main"` no longer works in `HEARTBEAT.yml`
 
-If a pulse in your `HEARTBEAT.yml` has `agent: "main"`, it will stop firing: the pulse is skipped and an error naming it is written to the log (`residuum logs --level error`) rather than being silently reinterpreted. Every other pulse in the file keeps running as normal — only the offending one is affected. You'll also see this as an owner-facing notice — a toast in the web UI, and the same message on any chat interface you have connected — naming the rejected pulse, the field to remove, and a link back to this guide, so you don't have to go looking in the logs to notice a pulse silently stopped firing. The notice fires once when the pulse is first rejected and again only if what's rejected changes on a later edit, not on every scheduler tick.
+If a pulse in your `HEARTBEAT.yml` has `agent: "main"`, it will stop firing: the pulse is skipped and an error naming it is written to the log (`residuum logs --level error`) rather than being silently reinterpreted. Every other pulse in the file keeps running as normal — only the offending one is affected. You'll also see this as an owner-facing notice — a toast in the web UI — naming the rejected pulse, the field to remove, and a link back to this guide, so you don't have to go looking in the logs to notice a pulse silently stopped firing. The notice fires once when the pulse is first rejected and again only if what's rejected changes on a later edit, not on every scheduler tick.
 
 **Why it was removed:** every session now already carries the main agent's full identity (`SOUL.md`, `AGENTS.md`, `USER.md`) and a snapshot of memory when it forks, which is all `agent: "main"` used to add. There's no longer a distinct "run this on main" mode to ask for.
 
@@ -29,7 +29,7 @@ Now, only your own direct message (and the web UI) reaches the main agent. Every
 - A reply in a group chat or channel now comes from that conversation's own session, not from your main agent. It replies only into that same conversation and never falls back to your DM.
 - The session sees the same sender attribution and any buffered unaddressed chatter your interface already collects (see `context_messages` below) — it isn't starting blind.
 - What a session learns in a group chat still reaches your agent's overall memory once the session finishes (see "Session memory" below), just not immediately and not as part of your live conversation.
-- If you want to know what happened in a channel, you can check the web UI's session sidebar, or ask your main agent to look it up in memory once it's had a chance to merge.
+- If you want to know what happened in a channel, you can check the agent's Activity in the web UI, or ask your main agent to look it up in memory once it's had a chance to merge.
 
 No configuration is needed to get this — it's automatic. `respond_to_others` still controls whether non-owner DMs are admitted at all; it just no longer controls whether they land on your main agent.
 
@@ -43,7 +43,7 @@ Only the main agent can post to your DM or the web UI. If a session (a pulse, an
 
 ## New `[background]` configuration keys
 
-A handful of new, optional settings landed in the `[background]` section of `config.toml`. None of them need to be set — every one has a default that matches what shipped — but they're worth knowing about if you want to tune session behavior:
+A handful of new, optional settings landed in the `[background]` section of the config (`max_concurrent`, `hop_soft_limit`, and `hop_hard_limit` in `hub/config.toml`; the rest in the agent's `config.toml`). None of them need to be set — every one has a default that matches what shipped — but they're worth knowing about if you want to tune session behavior:
 
 | Key | Default | What it controls |
 |-----|---------|-------------------|
@@ -73,6 +73,6 @@ Previously, what a background task learned stayed in its own transcript and neve
 
 ## Where to go from here
 
-- [`background-tasks.md`](../systems-usage/background-tasks.md) is the full reference for sessions, addresses, messaging, and the web sessions sidebar.
+- [`background-tasks.md`](../systems-usage/background-tasks.md) is the full reference for sessions, addresses, messaging, and the web UI's Activity place.
 - [`heartbeats.md`](../systems-usage/heartbeats.md) and [`scheduled-actions.md`](../systems-usage/scheduled-actions.md) cover the updated pulse and action routing in detail.
 - [`discord.md`](../systems-usage/discord.md), [`telegram.md`](../systems-usage/telegram.md), and [`teams.md`](../systems-usage/teams.md) cover conversation routing and unaddressed-message buffering per interface.

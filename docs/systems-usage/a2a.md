@@ -1,39 +1,49 @@
 # Agent2Agent (A2A)
 
-A2A ([Agent2Agent protocol](https://a2a-protocol.org/), spec v1.0.1) is how other agents — including a user's own other Residuum instances — reach this agent. Residuum runs a dedicated listener implementing the protocol's server side: an Agent Card, JSON-RPC and REST bindings, an auth layer that gates every request behind a caller key or a sibling attestation, and a session executor that runs each task as an ordinary conversation session.
+A2A ([Agent2Agent protocol](https://a2a-protocol.org/), spec v1.0.1) is how agents outside the hub — including a user's own other Residuum installs — reach an agent. Residuum runs one dedicated listener per hub. It serves every hosted agent under its own path, `/agents/<name>/`, and each agent has the protocol's server side: an Agent Card, JSON-RPC and REST bindings, and a session executor that runs each task as an ordinary conversation session. An auth layer gates every request behind a caller key or a joined sibling's key before it reaches the agent. An agent's teammates in the same hub don't use A2A; they message it directly.
+
+A2A is reachable locally, on this instance's own address through Residuum Cloud, and through the user's own tunnel or reverse proxy. With Residuum Cloud connected, each agent has its own address at `https://{slug}.{user}.{base}/a2a/{agent}`, which Residuum serves itself and forwards to that agent's path on the listener. See [Cloud tunnel](cloud-tunnel.md) for how the hub tells the relay which agents exist.
 
 Every A2A task maps to a conversation session, addressed by `{caller}/{context_id}` under the `a2a` endpoint — the same session lifecycle (live, idle, completed, resumed) described in [background-tasks.md](background-tasks.md) applies, with the task's A2A status kept in sync with it. Only the owner ever reaches main; every A2A caller lands in its own session.
 
 ## Configuration
 
+The listener settings live in `hub/config.toml`; the agent's visibility lives in its own `config/config.toml`:
+
 ```toml
+# hub/config.toml
 [a2a]
 enabled = true
 port = 7702
 public_url = ""          # this instance's own tunnel/reverse proxy origin
+```
+
+```toml
+# <agent>/config/config.toml
+[a2a]
 visibility = "public"    # "public" or "private"
 ```
 
-- **`enabled`** (default `true`): whether the listener runs at all. Every request is still authenticated, so leaving it on costs nothing until a caller key or sibling instance exists to use it.
+- **`enabled`** (default `true`): whether the listener runs at all, for every agent. Every request is still authenticated, so leaving it on costs nothing until a caller key or sibling instance exists to use it.
 - **`port`** (default `7702`): the dedicated listener's port, bound on `[gateway] bind`. Kept separate from the gateway port for the same reason Teams is: a public tunnel pointed at it exposes only the A2A endpoints, never the unauthenticated config API.
-- **`public_url`**: the base URL other agents should use to reach this instance, when it runs its own tunnel or reverse proxy. See [Public URL](#public-url) for how it's resolved when left empty.
-- **`visibility`**: `"public"` (default) or `"private"`. See [Visibility](#visibility).
+- **`public_url`**: the base URL of the user's own tunnel or reverse proxy in front of the A2A port. Each agent's card advertises `{public_url}/agents/<name>`. It is not needed to use the relay. See [Public URL](#public-url).
+- **`visibility`**: `"public"` (default) or `"private"`, per agent. See [Visibility](#visibility).
 
-Changing any `[a2a]` value, or the gateway `bind` it shares, restarts the A2A listener on reload — the config API's reload path, `residuum a2a` commands, and manual edits to `config.toml` (picked up by the running gateway) all take effect the same way. An `[a2a]` change also restarts the relay tunnel, since its capabilities (whether `a2a`/`a2a-private` are advertised) are only sent on the tunnel's upgrade.
+Changing any `[a2a]` value, or the gateway `bind` it shares, restarts the A2A listener on reload — the config API's reload path, `residuum a2a` commands, and manual edits to `hub/config.toml` or the agent's `config.toml` (picked up by the running gateway) all take effect the same way.
 
 ## Public URL
 
-The Agent Card's interface URLs, and the value the web UI shows for "how to reach this agent," come from one precedence, evaluated live:
+Each agent has its own address, which its Agent Card advertises as its interface URLs:
 
-1. `[a2a] public_url`, when set — an explicit setting always wins.
-2. While the relay tunnel is connected and has announced both an origin and this instance's slug, `{origin}/a2a/{instance}`.
-3. Otherwise, a local fallback: `http://{bind}:{port}` — good for same-host and same-network callers, not for callers over the public internet.
+1. `{public_url}/agents/<name>` when `[a2a] public_url` is set.
+2. Otherwise `{instance origin}/a2a/<name>` (`https://{slug}.{user}.{base}/a2a/<name>`) while the tunnel is connected.
+3. Otherwise a local fallback, `http://{bind}:{port}/agents/<name>` — good for same-host and same-network callers, not for callers over the public internet.
 
-The card is rebuilt whenever the tunnel's connection status changes, so it picks up the relay's origin as soon as the tunnel connects (or falls back again if it drops), without needing a restart or a workspace-file edit.
+Every running agent follows the tunnel: its card is rebuilt when the tunnel connects, disconnects, or changes address, so it advertises the instance address exactly while Residuum Cloud can deliver requests to it. A card file that fails to load keeps the last good card, address included, until it is fixed.
 
 ## Caller keys
 
-Other agents authenticate with a bearer token minted for them:
+Other agents authenticate with a bearer token minted for them. Caller keys live in one hub-level store: a valid key reaches every agent in the hub, private ones included (see [Visibility](#visibility)).
 
 ```bash
 residuum a2a keys create laptop -d "my other instance, before siblings exist"
@@ -48,15 +58,15 @@ residuum a2a keys revoke laptop
 
 The caller gives the token as `Authorization: Bearer <token>`.
 
-**Storage.** `~/.residuum/a2a-keys.toml`, mode 0600 on Unix, holds each key's name, description, a `sha256:<hex>` hash of the token, and its creation time — never the token itself. The store is unencrypted because there is nothing in it worth encrypting at rest: the hash's only job is to reject a stolen credential's replay, which it already does. `~/.residuum/a2a-keys.lock` serializes writes from the CLI, the web UI, and the running listener so none of them lose a concurrent change. Both files are write-blocked for `write_file` and `edit_file`, like the other credential stores.
+**Storage.** `~/.residuum/hub/a2a-keys.toml`, mode 0600 on Unix, holds each key's name, description, a `sha256:<hex>` hash of the token, and its creation time — never the token itself. The store is unencrypted because there is nothing in it worth encrypting at rest: the hash's only job is to reject a stolen credential's replay, which it already does. `~/.residuum/hub/a2a-keys.lock` serializes writes from the CLI, the web UI, and the running listener so none of them lose a concurrent change. Both files are write-blocked for `write_file` and `edit_file`, like the other credential stores.
 
-**Web UI:** `GET /api/a2a/keys` (metadata only), `POST /api/a2a/keys` with `{ "name", "description" }` (returns the token once, in the response body — never again), `DELETE /api/a2a/keys/{name}`. Like the rest of the config API, this is unauthenticated and meant to stay on loopback. Settings → A2A in the web UI wraps these three (see [Web UI](#web-ui) below).
+**Web UI:** `GET /api/hub/a2a/keys` (metadata only), `POST /api/hub/a2a/keys` with `{ "name", "description" }` (returns the token once, in the response body — never again), `DELETE /api/hub/a2a/keys/{name}` returning `{ "revoked": true, "checkpoint_id" }`. `checkpoint_id` is the config checkpoint taken just before the revoke, or null when that checkpoint could not be recorded. Like the rest of the config API, this is unauthenticated and meant to stay on loopback. The install-wide Agent-to-agent section of the web UI's Settings wraps these three (see [Web UI](#web-ui) below).
 
 A key name is lowercase letters, digits, and underscores, starting with a letter, at most 64 characters.
 
 ## The Agent Card
 
-`{workspace}/config/agent-card.json` is what this agent advertises to other agents that reach it over A2A:
+`<agent>/config/agent-card.json` is what this agent advertises to other agents that reach it over A2A:
 
 ```json
 {
@@ -67,41 +77,50 @@ A key name is lowercase letters, digits, and underscores, starting with a letter
 ```
 
 - **`name`**, **`description`**: required, non-empty.
-- **`skills`**: an array of `{ "id", "name", "description", "tags": [], "examples"?: [] }`. Every `id` must be unique. An empty list is valid. A skill `id` that also names a workspace skill (`skills/<name>/SKILL.md`) is a skill a caller can ask for — see [Skill mapping](#skill-mapping).
+- **`skills`**: an array of `{ "id", "name", "description", "tags": [], "examples"?: [] }`. Every `id` must be unique. An empty list is valid. A skill `id` that also names an available skill is a skill a caller can ask for — see [Skill mapping](#skill-mapping).
 - **`default_input_modes`**, **`default_output_modes`**: optional; default to `["text/plain"]` when omitted.
 
 Everything else in the wire Agent Card — the JSON-RPC and REST interface URLs, capabilities, version, and security scheme — is filled in by the server from the file plus runtime facts (the configured base URL and visibility), never edited in the file directly.
 
-The file is bootstrapped on first run with a generic placeholder and an empty skill list (`write_if_missing`, so a user edit is never overwritten). Residuum watches it alongside `mcp.json` and `channels.toml`; a change is picked up within a few seconds without restarting the listener. If the file becomes invalid JSON or fails validation, the listener keeps serving the last good card, logs a warning, and posts a system notice — it never starts serving a broken or stale-to-empty card.
+Each agent has its own card file, so each advertises its own name and skills. The file is bootstrapped on first run with a generic placeholder and an empty skill list (`write_if_missing`, so a user edit is never overwritten). Residuum watches it alongside `mcp.json` and `channels.toml`; a change is picked up within a few seconds without restarting the listener. If the file becomes invalid JSON or fails validation, the listener keeps serving the last good card, logs a warning, and posts a system notice — it never starts serving a broken or stale-to-empty card.
 
 ## Endpoints
 
-The listener serves, on `[gateway] bind`:`[a2a] port`:
+The listener serves, on `[gateway] bind`:`[a2a] port`, each agent under `/agents/<name>`. The listener strips that prefix and hands the request to the agent's own router, which is rooted at `/`. On the instance host, `/a2a/{agent}/<rest>` arrives at the same place as `/agents/<agent>/<rest>`:
 
 | Path | What |
 |------|------|
-| `GET /.well-known/agent-card.json` | The Agent Card |
-| `GET /_a2a/auth-check` | `204` if the request's credentials are currently valid, `404` otherwise — used by directory probes and health checks, nothing else |
-| `POST /` | JSON-RPC binding (`message/send`, `tasks/get`, …) |
-| `POST /rest/...` | HTTP+JSON (REST) binding, mirroring the same operations |
+| `GET /agents/<name>/.well-known/agent-card.json` | The agent's Agent Card |
+| `GET /agents/<name>/_a2a/auth-check` | `204` if the request's credentials are currently valid, `404` otherwise — used by directory probes and health checks, nothing else |
+| `POST /agents/<name>` | JSON-RPC binding (`message/send`, `tasks/get`, …) |
+| `POST /agents/<name>/rest/...` | HTTP+JSON (REST) binding, mirroring the same operations |
 
-The Agent Card's `supportedInterfaces` names the JSON-RPC interface at the base URL itself and the REST interface at `{base}/rest`.
+Responses stream through unchanged, so a streaming JSON-RPC or REST call delivers each event as the agent produces it.
+
+Requests that don't name a hosted agent get a plain answer:
+
+- An unknown agent, and every path outside `/agents/<name>/` (including `/` and `/.well-known/agent-card.json` at the root, which has no default agent), is `404`. An instance-host request that names no agent is `404` too.
+- An agent that exists but isn't running (stopped, failed, or starting) is `503` with a body saying so, to a caller who passes the auth check. A private agent answers `404` to anyone else, running or not.
+
+The Agent Card's `supportedInterfaces` names the JSON-RPC interface at the agent's [address](#public-url) itself and the REST interface at `{address}/rest`.
 
 ## Auth layer
 
-Every request passes through an axum middleware before it reaches anything else:
+Every request is authenticated per request, before it is dispatched to an agent. The caller-key store and the joined siblings' keys are hub-level and shared; the visibility that decides what an unauthenticated caller gets is the target agent's own. The steps:
 
-1. Any client-supplied `x-residuum-a2a-caller`, `x-residuum-tunnel`, or `x-residuum-sibling` header is stripped before it is ever inspected.
-2. If `x-residuum-tunnel` matches this process's own tunnel nonce **and** `x-residuum-sibling` names a slug, the caller is `sibling:<slug>` — an attestation only this instance's own tunnel forwarder can produce, never something a client can present directly.
-3. Otherwise, an `Authorization: Bearer <token>` that matches a live caller key authenticates as `key:<name>`.
+1. Any client-supplied `x-residuum-a2a-caller` header is stripped before it is ever inspected.
+2. An `Authorization: Bearer <token>` that matches a live caller key authenticates as `key:<name>`.
+3. Otherwise, one that matches the key issued to a joined sibling authenticates as `sibling:<slug>`.
 4. A caller resolved either way gets `x-residuum-a2a-caller: <key:name|sibling:slug>` injected for the handler to read.
 
-An unauthenticated request is refused according to [visibility](#visibility). `GET /_a2a/auth-check` is the one path that never refuses outright: it reports `204` (authenticated) or `404` (not) in both visibility modes, so a directory probe or health check can ask "is this credential currently valid" without needing a real operation to fail against.
+An unauthenticated request is refused according to the target agent's [visibility](#visibility). `GET /agents/<name>/_a2a/auth-check` is the one path that never refuses outright: it reports `204` (authenticated) or `404` (not) in both visibility modes, so a directory probe or health check can ask "is this credential currently valid" without needing a real operation to fail against.
 
 ## Visibility
 
-- **`public`** (default): the Agent Card is open to everyone; every other route still requires a valid caller key or sibling attestation, and an unauthenticated request there gets `401` with `WWW-Authenticate: Bearer`.
-- **`private`**: every route, including the Agent Card, answers a plain `404` with no `WWW-Authenticate` header to a caller without a valid key or attestation — a private agent is indistinguishable from one that doesn't exist. Present a valid key and everything (card included) answers normally.
+Visibility is each agent's own `[a2a] visibility`, read from the hub's record of the agent on every request, so changing it takes effect on the next request.
+
+- **`public`** (default): the Agent Card is open to everyone; every other route still requires a valid caller key or sibling key, and an unauthenticated request there gets `401` with `WWW-Authenticate: Bearer`.
+- **`private`**: every route, including the Agent Card, answers a plain `404` with no `WWW-Authenticate` header to a caller without a valid key — a private agent is indistinguishable from one that doesn't exist. Present a valid key and everything (card included) answers normally.
 
 ## Tasks
 
@@ -120,7 +139,7 @@ Every A2A task is backed by a session. The conversation id is `{caller}/{context
 
 **Ownership:** every task records which caller created it. `tasks/get`, `tasks/cancel`, `tasks/list`, and the push-config operations all check this — a caller can only ever see or act on its own tasks. A task belonging to someone else answers exactly like a task that doesn't exist, so a caller can't tell one apart from the other.
 
-**Storage:** each task is a JSON file at `{workspace}/a2a/tasks/{task_id}.json`, written atomically, loaded into memory at startup. A task whose status is terminal (`COMPLETED`, `FAILED`, `CANCELED`, `REJECTED`) and over 30 days old is pruned on load.
+**Storage:** each task is a JSON file at `<agent>/a2a/tasks/{task_id}.json`, written atomically, loaded into memory at startup. A task whose status is terminal (`COMPLETED`, `FAILED`, `CANCELED`, `REJECTED`) and over 30 days old is pruned on load.
 
 ### The `a2a_task_update` tool
 
@@ -148,7 +167,7 @@ A part that fails to save or download doesn't drop the message — it adds the s
 
 ### Skill mapping
 
-`message.metadata.skill`, a string, starts a brand-new session with that skill activated as its role — the same mechanism `subagent_spawn`'s `skill` parameter uses (see [Session Roles](background-tasks.md#session-roles)) — when it names both a skill `id` in the Agent Card and a workspace skill (`skills/<name>/SKILL.md`) of the same name. If it's present but doesn't map to anything runnable (unknown id, or a card skill with no matching workspace skill), the session still starts, with a one-line note (`[Requested skill: <name>]`) prepended to its content instead of silently ignoring the request. Metadata on a follow-up message to an already-running or already-completed session has no effect — a skill only applies at the moment a session starts.
+`message.metadata.skill`, a string, starts a brand-new session with that skill activated as its role — the same mechanism `subagent_spawn`'s `skill` parameter uses (see [Session Roles](background-tasks.md#session-roles)) — when it names both a skill `id` in the Agent Card and a skill (agent or team) of the same name. If it's present but doesn't map to anything runnable (unknown id, or a card skill with no matching skill), the session still starts, with a one-line note (`[Requested skill: <name>]`) prepended to its content instead of silently ignoring the request. Metadata on a follow-up message to an already-running or already-completed session has no effect — a skill only applies at the moment a session starts.
 
 ### Restarts
 
@@ -179,9 +198,9 @@ Residuum can also delegate to other agents over A2A through the same native tool
 - **`url`**: the agent's base URL (where its `.well-known/agent-card.json` lives).
 - **`headers`**: optional; sent on every request to that agent, including the card fetch itself — this is how a caller key for a private remote agent gets attached. Values expand `${agent-key:<name>}` (via the same agent-key store `exec` and MCP servers use) and `${ENV}`/`${ENV:-default}`.
 
-A bad entry (an invalid name, an empty url, or a header referencing an unknown agent key) is skipped with a warning; the rest of the file still loads. The agent may edit this file directly — it isn't write-blocked. It is watched alongside `mcp.json`, `channels.toml`, and `agent-card.json`: a change is picked up within a few seconds. **Web UI:** `GET`/`PUT /api/a2a/agents/raw` reads and saves the raw file; `GET /api/a2a/agents` returns each agent's live status.
+A bad entry (an invalid name, an empty url, or a header referencing an unknown agent key) is skipped with a warning; the rest of the file still loads. The agent may edit this file directly — it isn't write-blocked. It is watched alongside `mcp.json`, `channels.toml`, and `agent-card.json`: a change is picked up within a few seconds. **Web UI:** `GET`/`PUT /api/agents/{name}/a2a/agents/raw` reads and saves the raw file, and answers for a stopped agent too (a saved file is read when the agent next starts); `GET /api/agents/{name}/a2a/agents` returns each agent's live status.
 
-Editing `config/a2a.json` through the agent's `write_file`/`edit_file` tools, the workspace editor, `POST /api/workspace/validate`, or the Settings page's `PUT /api/a2a/agents/raw` reports the same problems the loader would skip — a JSON syntax error (with `serde_json`'s line/column), an invalid agent name, or an empty url — without blocking the write; a diagnostic names which agent won't load instead.
+Editing `config/a2a.json` through the agent's `write_file`/`edit_file` tools, the Files editor, `POST /api/agents/{name}/workspace/validate`, or the remote-agents editor in Settings (`PUT /api/agents/{name}/a2a/agents/raw`) reports the same problems the loader would skip — a JSON syntax error (with `serde_json`'s line/column), an invalid agent name, or an empty url — without blocking the write; a diagnostic names which agent won't load instead.
 
 ### Card resolution and status
 
@@ -197,6 +216,8 @@ Each configured agent's `.well-known/agent-card.json` is resolved on load and re
 
 `stop_agent` on `a2a:<name>` cancels the sender's open task with that agent (`CancelTask`), if one exists.
 
+**In the web UI.** Every open outbound task shows in Running now on the sending agent's Activity place, from any sender: the remote agent, its latest status message, where the task stands (working, waiting on the sender's reply, or how long the agent has been unreachable), and how long ago it was sent. Rows update live as the tracker records changes (a `session_outbound_a2a_task` WebSocket frame); `GET /api/agents/{name}/a2a/outbound` lists the open tasks. The row's Stop task makes the same `CancelTask` call as `stop_agent` (`POST /api/agents/{name}/a2a/outbound/{task_id}/stop`), and the sender is told the task was canceled and that the user stopped it. When the agent can't be reached to cancel it, that endpoint answers `502` with code `unreachable`, the row says so, and **Stop watching** (offered on any task whose agent can't be reached) closes it instead (`POST /api/agents/{name}/a2a/outbound/{task_id}/stop-watching`): the task is closed locally, retries and their notices end, and the sender is told the task may still be running on the remote side. A late update from the agent never reopens a task the user closed this way.
+
 **Delivery.** A background tracker watches every outbound task: if the remote agent's card declares `capabilities.streaming`, it subscribes to the task's event stream (reconnecting with backoff on a drop); otherwise it polls `GetTask` on a 5s-to-60s backoff. When a task reaches `INPUT_REQUIRED`, `AUTH_REQUIRED`, or a terminal state, the outcome is delivered to the original sender via the normal agent-messaging path, from `a2a:<name>`:
 
 ```
@@ -204,35 +225,52 @@ Each configured agent's `.well-known/agent-card.json` is resolved on load and re
 Which output format do you want?
 ```
 
-A short text artifact (≤4 KB) is inlined in the same message; a longer one, or any file artifact, is saved to the agent inbox and referenced by path. If the sender no longer exists (e.g. a spawned session that has since completed with nothing waiting on it), the result goes to `main` instead, with a note that the original sender is gone. If an agent stays unreachable for 3 hours, the sender gets one notice; retries continue regardless.
+A short text artifact (≤4 KB) is inlined in the same message; a longer one, or any file artifact, is saved to the agent inbox and referenced by path. If the sender no longer exists (e.g. a spawned session that has since completed with nothing waiting on it), the result goes to `main` instead, with a note that the original sender is gone. If an agent stays unreachable for 10 minutes of continuous failed checks, the sender gets one notice as a transcript note (`Still unreachable after 10 minutes (<reason>). Still retrying in the background.`) and the user gets a matching system notice (`a2a:<name> has been unreachable for 10 minutes (task <id>): <reason>. Still retrying in the background.`). The task's change event, the one the web UI's rows update on, is published at that moment too (with the task marked as notified), as it is when a streak starts and when it ends. The hub's team overview lists a task as a problem the moment its streak passes the threshold, without waiting for that event (see [hub.md](hub.md#team-overview)). Retries continue with the same backoff either way, and once the agent answers again both get a second notice (`Reachable again.` / `a2a:<name> is reachable again (task <id>).`). Polling never gives up on its own; stopping the task, or stopping watching it from the web UI, is what ends it. The log records a warning once when a failure streak starts and an info line when it recovers, not a line per failed retry.
 
-**Persistence.** Every tracked task — its sender, agent, task and context ids, state, and last status text — is persisted at `{workspace}/a2a/outbound.json`, so open tasks resume being watched across a restart.
+**Persistence.** Every tracked task — its sender, agent, task and context ids, state, and last status text — is persisted at `<agent>/a2a/outbound.json`, so open tasks resume being watched across a restart.
+
+## Teammates and siblings
+
+Two different things can look like "another agent of mine", and they have different addresses.
+
+| | Teammate | Sibling |
+|---|---|---|
+| What | Another agent in the same hub | Another Residuum install of the same user |
+| Address | `agent:<name>` or `agent:<name>/<session-address>` | `a2a:<slug>` |
+| Path | The hub's team router, straight to the agent's messenger | A2A to the sibling's own address |
+| Listed by `list_agents` as | `[agent:<name>]` with state and role | `[a2a:<slug>] (your instance)` |
+| Reply | `message_agent` to the sender's `agent:` address | An agent message from `a2a:<slug>` once its task needs attention |
+
+The prefixes can't be confused: `agent:` and `a2a:` are matched exactly, and neither a teammate name nor an A2A name can contain `:` or `/`. A teammate name is the name people gave the agent. A sibling's path segment stays a folder name: lowercase letters, digits, and hyphens, up to 24 characters. Sibling discovery filters this hub's own instance out of every result, so a teammate is never also listed as a sibling. See [Teammates](background-tasks.md#teammates).
 
 ## Siblings
 
-One user's own other Residuum instances find and trust each other automatically through the relay, with no `config/a2a.json` entry or caller key needed.
+One user's own other Residuum instances find and trust each other, with no `config/a2a.json` entry or caller key needed. An instance trusts only the siblings it joined (see below).
 
-**Discovery.** While the relay tunnel is connected, a background task fetches `GET {origin}/a2a/agents` — the relay's per-user A2A directory — using the sibling bearer token the tunnel minted for this connection, and registers every instance except this one in the client hub as a `Sibling`-sourced remote agent: name is the instance's slug, url is `{origin}/a2a/{slug}`, and `Authorization: Bearer <token>` is sent on every request to it, including the card fetch. It refetches immediately on every (re)connect — the token is minted fresh per connection, so a reconnect needs the header updated too — and every 10 minutes while the tunnel stays connected. A directory fetch failure (network error, non-2xx, malformed JSON) logs one warning and retries with backoff (5s, doubling to a 5-minute ceiling); it never logs the token. Disconnecting the tunnel leaves already-registered siblings in place — they simply fail the next time something tries to use them, the same as any other agent whose card fetch is stale.
+**Discovery.** Discovery runs once per hub, not once per agent. While Residuum Cloud is connected, a background task reads the apex directory `https://{base}/a2a/{user}/agents`, derived from the stored identity, with the directory token the relay minted for the connection (it only makes private agents visible). It registers agents of joined siblings in the client hub of every running agent (`SiblingFanout`) as `Sibling`-sourced remote agents, at `https://{sibling}.{user}.{base}/a2a/{agent}` with the key that sibling issued when they joined, and ignores the directory's `card_url`s and every sibling that never joined. Siblings never registered are not called. The hub's own agents are teammates, reachable directly, so they are never listed as siblings: every entry of this hub's own instance is dropped. An agent that starts later receives the last result immediately; an agent that stops stops receiving results. Each registered sibling is named `<instance>/<agent>`. It refetches whenever the tunnel publishes a new directory address or set of joined siblings, and every 10 minutes while connected. A directory fetch failure (network error, non-2xx, malformed JSON) logs one warning and retries with backoff (5s, doubling to a 5-minute ceiling); it never logs a key. Disconnecting the tunnel leaves already-registered siblings in place — they simply fail the next time something tries to use them, the same as any other agent whose card fetch is stale.
 
-A sibling name is the relay's slug shape (lowercase letters, digits, and hyphens, up to 24 characters), which is looser than a `config/a2a.json` name — both work as `a2a:<name>` addresses without loosening the config file's own validation. If a `config/a2a.json` entry and a sibling ever share a name, the config entry always wins; the collision is logged once at debug.
+A sibling name is `<instance>/<agent>`, each half in the relay's slug shape (lowercase letters, digits, and hyphens, up to 24 characters, no leading or trailing hyphen); an entry with a malformed half is skipped with a warning. That is looser than a `config/a2a.json` name, and a `/` can't appear in one — both work as `a2a:<name>` addresses, for example `a2a:laptop/scout`, without loosening the config file's own validation. If a `config/a2a.json` entry and a sibling ever share a name, the config entry always wins; the collision is logged once at debug.
 
-**Trust.** A request whose bearer token matches a connected sibling's token authenticates as `sibling:<slug>` per the [auth layer](#auth-layer) above — the relay strips the caller's own `Authorization` and attests it as `x-residuum-sibling: <slug>` instead, which this instance's tunnel forwarder marks with its per-process nonce so nothing else can forge it. A sibling's session (and any resulting message) reads as coming from `laptop`, described as "your own other Residuum instance," rather than an anonymous caller — an external caller-key holder gets the bare key name instead, described as "an external agent with a caller key." The session's source label is `a2a:<slug>` for a sibling and `a2a:<keyname>` for a caller key, either way readable rather than the internal `key:`/`sibling:`-prefixed form used for the session address and task ownership.
+**Trust.** A request carrying a key issued to a joined sibling ([Secure tunnel](secure-tunnel.md#joining-a-sibling)) authenticates as `sibling:<slug>` per the [auth layer](#auth-layer) above and may call every agent of the hub, private ones included; removing the join or the sibling's pin ends it. Nothing the relay says names a caller. An agent's card address and the Teams messaging endpoint use the instance host (`https://{slug}.{user}.{base}/a2a/{agent}`, `/teams/{agent}`). A sibling's session (and any resulting message) reads as coming from the calling instance (`laptop`), described as "your own other Residuum instance," rather than an anonymous caller — an external caller-key holder gets the bare key name instead, described as "an external agent with a caller key." The session's source label is `a2a:<slug>` for a sibling and `a2a:<keyname>` for a caller key, either way readable rather than the internal `key:`/`sibling:`-prefixed form used for the session address and task ownership.
 
-`list_agents` marks a sibling with `(your instance)` next to its address; `GET /api/a2a/agents` reports it with `"source": "sibling"` (a `config/a2a.json` entry reports `"source": "config"`).
+`list_agents` marks a sibling with `(your instance)` next to its address; `GET /api/agents/{name}/a2a/agents` reports it with `"source": "sibling"` (a `config/a2a.json` entry reports `"source": "config"`).
 
 ## Web UI
 
-Settings → A2A is the web UI's view onto everything above, plus a preview of the Agent Card:
+The web UI's Settings has two Agent-to-agent sections. The install-wide one (All agents → Advanced → Agent-to-agent) holds the listener's `enabled`, `port` and `public_url`, saved with the rest of the hub's `config.toml`, and the caller keys: the same list/create/revoke as the CLI, with a create form that shows the minted token once (with Copy, until the user is done with it) and a revoke that acts at once and offers Undo from the checkpoint it returns. Creating and revoking don't wait for Save changes; the listener's settings do. Each agent's own (the agent → Advanced → Agent-to-agent) is its view onto everything else above:
 
-- **Status** — whether A2A is on, its visibility, the address other agents use to reach it, and any current problem with the listener or the workspace agent card. Backed by `GET /api/a2a/status`, which returns `{ enabled, port, visibility, public_url, listener_running, card_error }`. `listener_running` is a live probe of the A2A port's `/_a2a/auth-check` path rather than in-process state, so it reflects what an outside caller would actually see. `public_url` follows the same [Public URL](#public-url) precedence the Agent Card itself uses — `[a2a] public_url` when set, else the relay URL while the tunnel is connected, else `null` (the local listener address is not reachable from outside, so the page explains how to get a public address instead). `GET /api/a2a/card` builds its interface URLs with the same precedence, falling back to the local address, so it matches what the listener serves. The `enabled`/`visibility`/`port`/`public_url` fields themselves are edited the same way as the rest of `config.toml` — this page's toggle, select, and text fields are the `[a2a]` section's Simple/Advanced form controls, present in `config.toml`'s raw and Advanced editors too.
-- **Caller keys** — the same list/create/revoke as the CLI, with a create form that shows the minted token once, and a revoke confirmation.
-- **Remote agents** — every registered agent, `config/a2a.json` entries and discovered siblings alike, each with a reachability status, a summary of its card's skills, and its source (`config` or `sibling`); also a raw editor for `config/a2a.json` itself (siblings aren't part of that file and can't be edited there). Served by `GET /api/a2a/agents` and `GET`/`PUT /api/a2a/agents/raw` (see [Client](#client-reaching-other-agents) and [Siblings](#siblings)).
-- **Agent card** — a preview of the served card's name, description, and skills (via `GET /api/a2a/card`, which mirrors what the listener serves — same [Public URL](#public-url) resolution, so its interface URLs match — or a `503` with a plain-language reason if the workspace file is invalid), with a link to open the workspace panel to edit `config/agent-card.json` directly.
+- **Who can find it** — the agent's visibility, Private or Public. This is the only place the web UI sets it, and it applies at once through `PATCH /api/hub/agents/{name}` with `a2a_visibility` (see [Hub](hub.md)), not with the form's Save changes; a failed change goes back to the visibility the hub reports. Whether the install's listener is on shows here read-only, with a way to the install-wide section.
+- **Status** — whether the listener answers, the address other agents use to reach the agent (with Copy), how far it can be reached, and any current problem with the listener or the agent card. Backed by `GET /api/agents/{name}/a2a/status`, which returns `{ enabled, port, visibility, public_url, local_url, relay_access, relay_access_note, listener_running, card_error }`. `listener_running` is a live probe of the A2A port, so it reflects what an outside caller would actually see. `public_url` is the address other agents reach this one at from outside the machine, following the [Public URL](#public-url) precedence without the local fallback: `{[a2a] public_url}/agents/<name>` when `public_url` is set, else `{instance origin}/a2a/<name>` while the tunnel is connected, else `null`. `local_url` is the agent's address on the local listener. `relay_access` is `true` while A2A is enabled and the relay tunnel is connected, and `relay_access_note` says in plain language how far the agent can be reached: through the relay (your other installs that joined this one find it; anyone else needs a caller key), at your own address, both, or locally only with a pointer to connect Residuum Cloud.
+- **Remote agents** — every registered agent, `config/a2a.json` entries and discovered siblings alike, each with a reachability status, its card's description and skills, and whether it is one of your other installs; also a raw editor for `config/a2a.json` itself (siblings aren't part of that file and can't be edited there), which saves at once. Served by `GET /api/agents/{name}/a2a/agents` and `GET`/`PUT /api/agents/{name}/a2a/agents/raw` (see [Client](#client-reaching-other-agents) and [Siblings](#siblings)).
+- **Its card** — a preview of the served card's name, description, and skills (via `GET /api/agents/{name}/a2a/card`, which builds its interface URLs with the same [Public URL](#public-url) precedence as the listener, or answers `503` with a plain-language reason if the card file is invalid), and a button that opens `config/agent-card.json` in the agent's files to edit it.
+- **Tasks sent to other agents** live in the agent's Activity rather than in Settings — see [Sending and receiving](#sending-and-receiving).
+
+For an agent that isn't running, the status, the card preview and the remote agents' reachability say to start it, with Start. Visibility and the remote-agents editor stay available, since both are files: the list then shows the agents `config/a2a.json` names, without their reachability.
 
 ## Code
 
-`src/a2a/`: `keys.rs` and `keys_runtime.rs` (the caller-key store and its shared runtime handle), `card.rs` (the workspace agent-card file, validation, and the live `CardState`), `auth.rs` (the middleware, `Caller`, and the `TunnelNonceSource` trait that supplies the tunnel nonce sibling attestation checks against), `listener.rs` (the axum listener), `executor.rs` (`SessionExecutor`, the `a2a_server::AgentExecutor` that delivers into a conversation session and maps its activity back onto A2A task states), `task_store.rs` (`FileTaskStore`, the persistent `a2a_server::TaskStore`), `handler.rs` (`ResiduumA2aHandler`, wrapping `a2a_server::DefaultRequestHandler` with ownership checks, caller-scoped listing, and the one-task-per-context rule, plus the restart continuation sweep), `public_url.rs` (resolving the card's — and the web UI's — public URL from config and live tunnel status). `src/tools/a2a_task_update.rs` is the session tool.
+`src/a2a/`: `keys.rs` and `keys_runtime.rs` (the caller-key store and its shared runtime handle), `card.rs` (the agent-card file, validation, and the live `CardState`), `auth.rs` (`authorize`, the per-request check with the target agent's visibility; and `Caller`), `listener.rs` (the hub listener: `A2aListener` and `hub_a2a_app`, which route `/agents/<name>/...` to `AgentDirectory::agent_a2a_router`, and `agent_handler_router`, which builds one agent's card, JSON-RPC, and REST routes from a handler), `agent_router.rs` (`agent_a2a_router`: builds one agent's whole A2A server from its runtime state, called once per running agent by the agent host), `static_directory.rs` (`StaticAgentDirectory`, an `AgentDirectory` over a fixed set of routers), `executor.rs` (`SessionExecutor`, the `a2a_server::AgentExecutor` that delivers into a conversation session and maps its activity back onto A2A task states), `task_store.rs` (`FileTaskStore`, the persistent `a2a_server::TaskStore`), `handler.rs` (`ResiduumA2aHandler`, wrapping `a2a_server::DefaultRequestHandler` with ownership checks, caller-scoped listing, and the one-task-per-context rule, plus the restart continuation sweep), `public_url.rs` (resolving an agent's card address from config and the relay tunnel's status). `src/tools/a2a_task_update.rs` is the session tool.
 
-`src/a2a/client/`: `config.rs` (`config/a2a.json` loading and validation), `hub.rs` (`A2aClientHub`: the registered agents, their resolved cards, and building A2A protocol clients from the `a2a-client-lf` SDK — config entries always winning a name collision with a sibling lives here), `tracker.rs` (`RemoteTaskTracker`: persistence and the watch/poll loop), `siblings.rs` (the background task that watches `TunnelStatus` and calls `A2aClientHub::set_siblings` from the relay directory). The tools themselves live in `src/tools/message_agent.rs` and `src/tools/background.rs`.
+`src/a2a/client/`: `config.rs` (`config/a2a.json` loading and validation), `hub.rs` (`A2aClientHub`: the registered agents, their resolved cards, and building A2A protocol clients from the `a2a-client-lf` SDK — config entries always winning a name collision with a sibling lives here), `tracker.rs` (`RemoteTaskTracker`: persistence, the watch/poll loop, unreachable/recovery notices, and the user's stop and stop-watching), `siblings.rs` (`SiblingFanout`, the registry of per-agent client hubs, and the background task that watches `TunnelStatus` and fans the relay directory out to every registered hub through `A2aClientHub::set_siblings`). The tunnel's side of A2A is in `src/tunnel/`, and the list of agents it reports to the relay is kept by `src/hub/relay_agents.rs` (see [Cloud tunnel](cloud-tunnel.md)). The tools themselves live in `src/tools/message_agent.rs` and `src/tools/background.rs`.
 
-`src/commands/a2a.rs` is the CLI. `src/gateway/web/a2a.rs` is the web API: caller keys, the remote-agents endpoints, and the settings page's status and card endpoints.
+`src/commands/a2a.rs` is the CLI. `src/gateway/web/a2a.rs` is the web API: caller keys, the remote-agents endpoints, the outbound-task list and stop endpoints, and the status and card endpoints Settings shows. `web/src/places/activity/Activity.svelte` lists the tasks, and Home lists those whose agent can't be reached.

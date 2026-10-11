@@ -1,0 +1,28 @@
+name: Web PR Checks
+
+# The web checks, end-to-end and visual suites included, on every pull request
+# that changes the web app or how it is tested, so a stale baseline or a broken
+# spec shows up on the pull request that caused it rather than at release.
+on:
+  pull_request:
+    paths:
+      - "web/**"
+      - "scripts/with-playwright-container.sh"
+      - "scripts/web-initial-route-size.sh"
+      - ".github/workflows/quality-checks.yml"
+      - ".github/workflows/web-pr.yml"
+
+concurrency:
+  group: web-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Quality Checks
+    # The runners are self-hosted, so a fork's code never runs on them.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/quality-checks.yml
+    with:
+      web: true
+      rust: false
+      visual: true

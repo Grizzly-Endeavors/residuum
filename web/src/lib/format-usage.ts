@@ -1,7 +1,7 @@
 // ── Elapsed time / token count formatting ────────────────────────────
 //
-// Shared by the running-turn indicator and the chat footer. Kept
-// deliberately quiet: short, muted strings, never a raw number dump.
+// Shared by the activity line, the session panel and the conversation size.
+// Kept deliberately quiet: short, muted strings, never a raw number dump.
 
 /**
  * Format a duration in milliseconds the way a status line does:
@@ -36,6 +36,22 @@ export function formatTokenCount(count: number): string {
     return `${trimTrailingZero((count / 1_000).toFixed(1))}k`;
   }
   return String(count);
+}
+
+/**
+ * A token count as words, for figures read in plain language: about three
+ * words to every four tokens, rounded to what a reader takes in at a glance
+ * (`"740 words"`, `"14,000 words"`, `"1.2 million words"`).
+ */
+export function formatApproxWords(tokens: number): string {
+  const words = Math.max(0, tokens) * 0.75;
+  if (words >= 1_000_000) {
+    return `${trimTrailingZero((words / 1_000_000).toFixed(1))} million words`;
+  }
+  if (words < 1) return "no words";
+  const step = words < 1_000 ? 10 : 10 ** (Math.floor(Math.log10(words)) - 1);
+  const rounded = Math.max(step, Math.round(words / step) * step);
+  return `${rounded.toLocaleString("en-US")} words`;
 }
 
 function trimTrailingZero(value: string): string {

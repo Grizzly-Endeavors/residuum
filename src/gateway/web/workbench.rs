@@ -1,11 +1,11 @@
-//! Workbench API: list and delete the agent's workbench artifacts, and say
+//! Workbench API: list and delete the team's workbench artifacts, and say
 //! where they are served.
 //!
 //! Artifacts themselves are never served here. They run on the artifacts
-//! listener (`crate::workbench::server`), a separate origin, so an
-//! agent-written page can't call this API directly; it goes through the web
-//! UI's bridge (`web/src/lib/workbench-bridge.ts`), which decides what
-//! artifacts may call.
+//! listener (`crate::workbench::server`), a separate origin from the web UI,
+//! so an agent-written page never shares the UI's origin. The listener
+//! forwards `/api` to the hub router (`crate::workbench::forward`), refusing
+//! the few calls only the Residuum app makes.
 
 use std::path::PathBuf;
 
@@ -22,32 +22,43 @@ use crate::workbench::{self, ArtifactDeleteError};
 
 #[derive(Clone)]
 pub(crate) struct WorkbenchApiState {
-    /// `<workspace>/workbench`.
+    /// `team/workbench`.
     pub dir: PathBuf,
     pub serving: WorkbenchServing,
     pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
     pub checkpoints: std::sync::Arc<crate::checkpoints::CheckpointEngine>,
+    /// The user's view of the team namespace. A delete takes the team write
+    /// coordinator's locks for the artifact's files and records the user as
+    /// their remover. `None` when there is no team (nothing to coordinate).
+    pub team: Option<crate::workspace::team_files::TeamFiles>,
 }
 
-/// Response from `DELETE /api/workbench/artifacts/{name}`.
+/// Response from `DELETE /api/team/workbench/artifacts/{name}`.
 #[derive(Debug, Serialize)]
 struct DeleteArtifactResponse {
     /// Entries removed: the page or folder (`name/`) and any `<name>.*` data files.
     removed: Vec<String>,
+    /// Checkpoint holding the team directory as it was before this delete.
+    /// `None` when that checkpoint could not be recorded; the delete still
+    /// succeeded, and the UI should not offer Undo.
+    checkpoint_id: Option<String>,
 }
 
 pub(crate) fn workbench_api_router(state: WorkbenchApiState) -> axum::Router {
     axum::Router::new()
-        .route("/api/workbench/info", get(api_workbench_info))
-        .route("/api/workbench/artifacts", get(api_workbench_artifacts))
+        .route("/api/team/workbench/info", get(api_workbench_info))
         .route(
-            "/api/workbench/artifacts/{name}",
+            "/api/team/workbench/artifacts",
+            get(api_workbench_artifacts),
+        )
+        .route(
+            "/api/team/workbench/artifacts/{name}",
             delete(api_workbench_artifact_delete),
         )
         .with_state(state)
 }
 
-/// `GET /api/workbench/info` — where artifacts are served, locally and
+/// `GET /api/team/workbench/info` — where artifacts are served, locally and
 /// through the relay. The web UI picks the relay origin when it is itself
 /// being viewed through the relay, and the local port otherwise.
 async fn api_workbench_info(State(state): State<WorkbenchApiState>) -> Json<WorkbenchInfo> {
@@ -75,7 +86,7 @@ async fn api_workbench_info(State(state): State<WorkbenchApiState>) -> Json<Work
     })
 }
 
-/// `GET /api/workbench/artifacts` — every artifact, most recently modified first.
+/// `GET /api/team/workbench/artifacts` — every artifact, most recently modified first.
 async fn api_workbench_artifacts(
     State(state): State<WorkbenchApiState>,
 ) -> Result<Json<Vec<ArtifactSummary>>, (StatusCode, String)> {
@@ -92,22 +103,25 @@ async fn api_workbench_artifacts(
         })
 }
 
-/// `DELETE /api/workbench/artifacts/{name}` — remove the artifact and its data files.
+/// `DELETE /api/team/workbench/artifacts/{name}` — remove the artifact and its data files.
 async fn api_workbench_artifact_delete(
     State(state): State<WorkbenchApiState>,
     Path(name): Path<String>,
 ) -> Result<Json<DeleteArtifactResponse>, (StatusCode, String)> {
-    state
+    let checkpoint_id = state
         .checkpoints
-        .checkpoint_workspace_before_action(crate::checkpoints::CheckpointContext::system(
+        .checkpoint_team_id_before_action(crate::checkpoints::CheckpointContext::system(
             crate::checkpoints::CheckpointTrigger::PreAction,
             format!("delete workbench artifact {name}"),
         ))
         .await;
-    match workbench::delete_artifact(&state.dir, &name).await {
+    match delete_coordinated(&state, &name).await {
         Ok(removed) => {
             tracing::info!(artifact = %name, files = ?removed, "deleted workbench artifact");
-            Ok(Json(DeleteArtifactResponse { removed }))
+            Ok(Json(DeleteArtifactResponse {
+                removed,
+                checkpoint_id,
+            }))
         }
         Err(e @ ArtifactDeleteError::InvalidName(_)) => {
             Err((StatusCode::BAD_REQUEST, e.to_string()))
@@ -126,6 +140,55 @@ async fn api_workbench_artifact_delete(
     }
 }
 
+/// How many times a delete widens its lock set before giving up.
+const DELETE_LOCK_ATTEMPTS: usize = 8;
+
+/// Delete the artifact under the team coordinator's locks: the page, the
+/// folder and everything in it, and the `<name>.*` data files. A file that
+/// appears after the lock set was chosen would be deleted unlocked, so the
+/// set is re-listed once the locks are held and widened until it covers
+/// everything. Each removed path is recorded as removed by the user, so an
+/// agent that read it learns who deleted it.
+async fn delete_coordinated(
+    state: &WorkbenchApiState,
+    name: &str,
+) -> Result<Vec<String>, ArtifactDeleteError> {
+    let Some(team) = &state.team else {
+        return workbench::delete_artifact(&state.dir, name).await;
+    };
+    if !workbench::is_valid_artifact_name(name) {
+        return workbench::delete_artifact(&state.dir, name).await;
+    }
+    let coordinator = team.coordinator();
+    let mut wanted: Vec<PathBuf> = Vec::new();
+    let mut held = Vec::new();
+    for _ in 0..DELETE_LOCK_ATTEMPTS {
+        let listed = workbench::artifact_paths(&state.dir, name).await;
+        if !held.is_empty() && listed.iter().all(|path| wanted.contains(path)) {
+            break;
+        }
+        drop(held);
+        for path in listed {
+            if !wanted.contains(&path) {
+                wanted.push(path);
+            }
+        }
+        held = coordinator.lock_all(&wanted).await;
+    }
+    let result = workbench::delete_artifact(&state.dir, name).await;
+    let folder = state.dir.join(name);
+    for guard in &held {
+        if tokio::fs::symlink_metadata(guard.path()).await.is_ok() {
+            continue;
+        }
+        guard.record_removed(team.writer());
+        if guard.path() == folder {
+            guard.record_tree_removed(team.writer());
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use axum::body::Body;
@@ -142,6 +205,7 @@ mod tests {
             serving,
             tunnel_status_rx: rx,
             checkpoints: crate::checkpoints::test_engine(),
+            team: None,
         })
     }
 
@@ -160,7 +224,7 @@ mod tests {
             origin: Some("https://bear.agent-residuum.com".into()),
             workbench_origin: Some("https://bear.workbench.agent-residuum.com".into()),
             instance: None,
-            a2a_token: None,
+            instance_origin: None,
         };
         let resp = app(
             dir.path(),
@@ -168,7 +232,7 @@ mod tests {
             connected,
         )
         .oneshot(
-            Request::get("/api/workbench/info")
+            Request::get("/api/team/workbench/info")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -195,7 +259,7 @@ mod tests {
             TunnelStatus::Disconnected,
         )
         .oneshot(
-            Request::get("/api/workbench/info")
+            Request::get("/api/team/workbench/info")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -220,7 +284,7 @@ mod tests {
             TunnelStatus::Disconnected,
         )
         .oneshot(
-            Request::get("/api/workbench/artifacts/chart")
+            Request::get("/api/team/workbench/artifacts/chart")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -230,12 +294,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_then_delete() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("chart.html"), "<title>My Chart</title>").unwrap();
-        std::fs::write(dir.path().join("chart.state.json"), "{}").unwrap();
+    async fn list_then_delete_operate_on_the_team_workbench() {
+        let root = tempfile::tempdir().unwrap();
+        let workbench = crate::workspace::layout::WorkspaceLayout::new(root.path().join("scout"))
+            .team()
+            .workbench_dir();
+        assert_eq!(workbench, root.path().join("team").join("workbench"));
+        std::fs::create_dir_all(&workbench).unwrap();
+        std::fs::write(workbench.join("chart.html"), "<title>My Chart</title>").unwrap();
+        std::fs::write(workbench.join("chart.state.json"), "{}").unwrap();
         let router = app(
-            dir.path(),
+            &workbench,
             WorkbenchServing::Running { port: 7702 },
             TunnelStatus::Disconnected,
         );
@@ -243,7 +312,7 @@ mod tests {
         let listing = router
             .clone()
             .oneshot(
-                Request::get("/api/workbench/artifacts")
+                Request::get("/api/team/workbench/artifacts")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -259,7 +328,7 @@ mod tests {
         let deleted = router
             .clone()
             .oneshot(
-                Request::delete("/api/workbench/artifacts/chart")
+                Request::delete("/api/team/workbench/artifacts/chart")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -273,12 +342,155 @@ mod tests {
 
         let deleted_again = router
             .oneshot(
-                Request::delete("/api/workbench/artifacts/chart")
+                Request::delete("/api/team/workbench/artifacts/chart")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(deleted_again.status(), StatusCode::NOT_FOUND);
+        assert!(
+            !workbench.join("chart.html").exists() && !workbench.join("chart.state.json").exists(),
+            "the artifact and its state file are gone from team/workbench"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_returns_the_team_checkpoint_taken_before_the_delete() {
+        let root = tempfile::tempdir().unwrap();
+        let workbench = root.path().join("team").join("workbench");
+        std::fs::create_dir_all(&workbench).unwrap();
+        std::fs::write(workbench.join("chart.html"), "<title>My Chart</title>").unwrap();
+        let checkpoints = std::sync::Arc::new(
+            crate::checkpoints::CheckpointEngine::new(
+                "test-agent",
+                root.path().join("scout"),
+                &crate::config::paths::TeamPaths::new(root.path().join("team")),
+                root.path().join("scout").join("config"),
+                root.path().join("hub"),
+                &root.path().join("hub").join("checkpoints"),
+                None,
+            )
+            .unwrap(),
+        );
+        let (_tx, rx) = tokio::sync::watch::channel(TunnelStatus::Disconnected);
+        let router = workbench_api_router(WorkbenchApiState {
+            dir: workbench.clone(),
+            serving: WorkbenchServing::Running { port: 7702 },
+            tunnel_status_rx: rx,
+            checkpoints: std::sync::Arc::clone(&checkpoints),
+            team: None,
+        });
+
+        let deleted = router
+            .oneshot(
+                Request::delete("/api/team/workbench/artifacts/chart")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(deleted.status(), StatusCode::OK, "delete should succeed");
+        let body = body_json(deleted).await;
+        let id = body
+            .get("checkpoint_id")
+            .and_then(serde_json::Value::as_str)
+            .expect("delete should name the checkpoint taken before it")
+            .to_string();
+
+        let stored = checkpoints
+            .file_content_at(
+                crate::checkpoints::RepoKind::Team,
+                id.clone(),
+                "workbench/chart.html".to_string(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            stored.is_some(),
+            "the returned team checkpoint must still contain the artifact"
+        );
+        assert!(!workbench.join("chart.html").exists());
+
+        checkpoints
+            .restore_path(
+                crate::checkpoints::RepoKind::Team,
+                id,
+                "workbench/chart.html".to_string(),
+                crate::checkpoints::CheckpointContext::system(
+                    crate::checkpoints::CheckpointTrigger::Restore,
+                    "undo delete",
+                ),
+                &crate::workspace::team_files::TeamWriter::User,
+            )
+            .await
+            .unwrap();
+        assert!(
+            workbench.join("chart.html").exists(),
+            "restoring from the team repo brings the artifact back"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_takes_the_path_locks_and_records_the_user() {
+        use crate::tools::team_namespace_tests::Hub;
+
+        let hub = Hub::new();
+        let workbench = hub.team().join("workbench");
+        std::fs::create_dir_all(&workbench).unwrap();
+        std::fs::write(workbench.join("chart.html"), "<title>Chart</title>").unwrap();
+        std::fs::write(workbench.join("chart.state.json"), "{}").unwrap();
+        let sam = hub.tools_for("sam");
+        let read = sam
+            .execute(
+                "read_file",
+                serde_json::json!({ "path": "team/workbench/chart.html" }),
+            )
+            .await
+            .unwrap();
+        assert!(!read.is_error, "{}", read.output);
+
+        let (_tx, rx) = tokio::sync::watch::channel(TunnelStatus::Disconnected);
+        let router = workbench_api_router(WorkbenchApiState {
+            dir: workbench.clone(),
+            serving: WorkbenchServing::Running { port: 7702 },
+            tunnel_status_rx: rx,
+            checkpoints: crate::checkpoints::test_engine(),
+            team: Some(hub.coordinator.view_for_user(hub.agent_dir("scout"))),
+        });
+
+        let held = hub
+            .coordinator
+            .lock(&workbench.join("chart.state.json"))
+            .await;
+        let deleting = router.oneshot(
+            Request::delete("/api/team/workbench/artifacts/chart")
+                .body(Body::empty())
+                .unwrap(),
+        );
+        tokio::pin!(deleting);
+        let data_file = workbench.join("chart.state.json");
+        tokio::select! {
+            _ = &mut deleting => panic!("the delete must wait for the data file's lock"),
+            () = crate::testing::wait::until_true("the delete to queue for the data file's lock", || {
+                hub.coordinator.lock_contenders(&data_file) == 2
+            }) => {}
+        }
+        assert!(workbench.join("chart.html").exists());
+
+        drop(held);
+        let response = deleting.await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!workbench.join("chart.html").exists());
+
+        let refused = sam
+            .execute(
+                "write_file",
+                serde_json::json!({ "path": "team/workbench/chart.html", "content": "again" }),
+            )
+            .await
+            .unwrap();
+        assert!(refused.is_error, "{}", refused.output);
+        assert!(refused.output.contains("the user"), "{}", refused.output);
     }
 }

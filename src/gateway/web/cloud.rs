@@ -4,24 +4,26 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
 use crate::config::secrets::SecretStore;
 use crate::gateway::types::ReloadSignal;
-use crate::tunnel::{TUNNEL_NONCE_HEADER, TunnelStatus, tunnel_nonce};
+use crate::tunnel::TunnelStatus;
 
 /// Shared state for cloud API endpoints.
 #[derive(Clone)]
 pub(crate) struct CloudApiState {
-    pub config_dir: PathBuf,
-    pub reload_tx: watch::Sender<ReloadSignal>,
+    pub hub_dir: PathBuf,
+    pub reload_tx: crate::gateway::types::ReloadSender,
     pub tunnel_status_rx: watch::Receiver<TunnelStatus>,
     pub secret_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
+/// The tunnel's status as `GET /api/hub/cloud/status` and the `tunnel` field
+/// of `GET /api/hub/status` report it.
 #[derive(Serialize)]
 pub(crate) struct CloudStatusResponse {
     status: &'static str,
@@ -34,39 +36,77 @@ pub(crate) struct CloudStatusResponse {
     /// is refused server-side (see `gateway::remote_control_guard`), so a
     /// remote viewer should never see a button that can't work.
     viewed_via_tunnel: bool,
+    /// Public origin of this user's web UI through the relay, while connected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    origin: Option<String>,
+    /// This hub's instance slug on the relay, while connected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instance: Option<String>,
+    /// This instance's own public address. The Teams messaging endpoint is
+    /// `{instance_origin}/teams/{agent}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instance_origin: Option<String>,
 }
 
-/// `GET /api/cloud/status` — return current tunnel status.
+impl CloudStatusResponse {
+    /// The status of the tunnel `tunnel_status_rx` watches, with the cloud
+    /// settings read from the hub config in `hub_dir`; `viewed_via_tunnel` says
+    /// whether the request arrived through Residuum Cloud.
+    pub(crate) fn current(
+        hub_dir: &std::path::Path,
+        tunnel_status_rx: &watch::Receiver<TunnelStatus>,
+        viewed_via_tunnel: bool,
+    ) -> Self {
+        let tunnel_status = tunnel_status_rx.borrow().clone();
+
+        let (status, user_id, origin, instance, instance_origin) = match tunnel_status {
+            TunnelStatus::Disconnected => ("disconnected", None, None, None, None),
+            TunnelStatus::Connecting => ("connecting", None, None, None, None),
+            TunnelStatus::Connected {
+                ref user_id,
+                ref origin,
+                ref instance,
+                ref instance_origin,
+                ..
+            } => (
+                "connected",
+                Some(user_id.clone()),
+                origin.clone(),
+                instance.clone(),
+                instance_origin.clone(),
+            ),
+        };
+
+        // Check config for cloud section presence
+        let config_path = hub_dir.join("config.toml");
+        let (has_token, enabled) = match std::fs::read_to_string(&config_path) {
+            Ok(raw) => parse_cloud_state(&raw),
+            Err(_) => (false, false),
+        };
+
+        Self {
+            status,
+            user_id,
+            has_token,
+            enabled,
+            viewed_via_tunnel,
+            origin,
+            instance,
+            instance_origin,
+        }
+    }
+}
+
+/// `GET /api/hub/cloud/status` — return current tunnel status.
 pub(crate) async fn api_cloud_status(
     State(state): State<CloudApiState>,
-    headers: HeaderMap,
+    parts: axum::http::request::Parts,
 ) -> Json<CloudStatusResponse> {
-    let tunnel_status = state.tunnel_status_rx.borrow().clone();
-
-    let (status, user_id) = match tunnel_status {
-        TunnelStatus::Disconnected => ("disconnected", None),
-        TunnelStatus::Connecting => ("connecting", None),
-        TunnelStatus::Connected { ref user_id, .. } => ("connected", Some(user_id.clone())),
-    };
-
-    // Check config for cloud section presence
-    let config_path = state.config_dir.join("config.toml");
-    let (has_token, enabled) = match std::fs::read_to_string(&config_path) {
-        Ok(raw) => parse_cloud_state(&raw),
-        Err(_) => (false, false),
-    };
-
-    let viewed_via_tunnel = headers
-        .get(TUNNEL_NONCE_HEADER)
-        .is_some_and(|v| v.as_bytes() == tunnel_nonce().as_bytes());
-
-    Json(CloudStatusResponse {
-        status,
-        user_id,
-        has_token,
-        enabled,
-        viewed_via_tunnel,
-    })
+    Json(CloudStatusResponse::current(
+        &state.hub_dir,
+        &state.tunnel_status_rx,
+        crate::pairing::remote::remote_context(&parts.extensions).is_some(),
+    ))
 }
 
 /// Parse `[cloud]` section from raw TOML to extract token presence and enabled state.
@@ -95,7 +135,7 @@ pub(crate) struct CallbackQuery {
 
 /// `GET /cloud/callback?token=...` — localhost OAuth callback.
 ///
-/// Stores the token in the secret store, updates config.toml to enable
+/// Stores the token in the secret store, updates hub config.toml to enable
 /// the cloud tunnel, and triggers a config reload.
 pub(crate) async fn cloud_callback(
     State(state): State<CloudApiState>,
@@ -109,15 +149,15 @@ pub(crate) async fn cloud_callback(
             .into_response();
     };
 
-    let config_dir = state.config_dir.clone();
+    let hub_dir = state.hub_dir.clone();
     let secret_lock = Arc::clone(&state.secret_lock);
 
     // Store the token as a secret
     let store_result = {
         let _guard = secret_lock.lock().await;
-        let dir = config_dir.clone();
+        let dir = hub_dir.clone();
         let tok = token.clone();
-        tokio::task::spawn_blocking(move || {
+        crate::util::spawn_blocking_in_span(move || {
             let mut store = SecretStore::load(&dir)?;
             store.set("cloud_token", &tok, &dir)?;
             Ok::<(), crate::util::FatalError>(())
@@ -145,13 +185,13 @@ pub(crate) async fn cloud_callback(
         Ok(Ok(())) => {}
     }
 
-    // Update config.toml to add/update [cloud] section
-    let config_path = config_dir.join("config.toml");
+    // Update hub config.toml to add/update [cloud] section
+    let config_path = hub_dir.join("config.toml");
     let current = std::fs::read_to_string(&config_path).unwrap_or_default();
     let updated = update_cloud_section(&current, true);
 
     if let Err(e) = std::fs::write(&config_path, &updated) {
-        tracing::error!(error = %e, "failed to write config.toml");
+        tracing::error!(error = %e, "failed to write hub config.toml");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Html(format!("<h1>Error</h1><p>Failed to update config: {e}</p>")),
@@ -160,20 +200,20 @@ pub(crate) async fn cloud_callback(
     }
 
     // Trigger reload
-    state.reload_tx.send(ReloadSignal::Root).ok();
+    state.reload_tx.send(ReloadSignal::Hub).ok();
 
     (StatusCode::OK, Html(SUCCESS_HTML.to_string())).into_response()
 }
 
-/// `POST /api/cloud/disconnect` — disable cloud tunnel without removing the token.
+/// `POST /api/hub/cloud/disconnect` — disable cloud tunnel without removing the token.
 pub(crate) async fn api_cloud_disconnect(
     State(state): State<CloudApiState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let config_path = state.config_dir.join("config.toml");
+    let config_path = state.hub_dir.join("config.toml");
     let current = std::fs::read_to_string(&config_path).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to read config.toml: {e}"),
+            format!("failed to read hub config.toml: {e}"),
         )
     })?;
 
@@ -181,12 +221,12 @@ pub(crate) async fn api_cloud_disconnect(
     std::fs::write(&config_path, &updated).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to write config.toml: {e}"),
+            format!("failed to write hub config.toml: {e}"),
         )
     })?;
 
     tracing::info!("cloud tunnel disconnected");
-    state.reload_tx.send(ReloadSignal::Root).ok();
+    state.reload_tx.send(ReloadSignal::Hub).ok();
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -220,13 +260,10 @@ fn update_cloud_section(raw: &str, enable: bool) -> String {
             new_section.push("enabled = false".to_string());
         }
 
-        // Preserve token line, relay_url, and local_port from original
+        // Preserve token line and relay_url from original
         for line in lines.get(start + 1..end).unwrap_or_default() {
             let trimmed = line.trim();
-            if trimmed.starts_with("token")
-                || trimmed.starts_with("relay_url")
-                || trimmed.starts_with("local_port")
-            {
+            if trimmed.starts_with("token") || trimmed.starts_with("relay_url") {
                 new_section.push(line.clone());
             }
         }
@@ -405,10 +442,10 @@ token = "secret:discord"
     }
 
     fn test_state() -> CloudApiState {
-        let (reload_tx, _reload_rx) = watch::channel(ReloadSignal::None);
+        let (reload_tx, _reload_rx) = tokio::sync::mpsc::unbounded_channel::<ReloadSignal>();
         let (_status_tx, tunnel_status_rx) = watch::channel(TunnelStatus::Disconnected);
         CloudApiState {
-            config_dir: std::env::temp_dir(),
+            hub_dir: std::env::temp_dir(),
             reload_tx,
             tunnel_status_rx,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -446,7 +483,7 @@ token = "secret:discord"
         use tower::ServiceExt;
 
         let req = axum::http::Request::get("/api/cloud/status")
-            .header(TUNNEL_NONCE_HEADER, tunnel_nonce())
+            .extension(crate::pairing::remote::RemoteTransport::default())
             .body(Body::empty())
             .unwrap();
         let resp = status_router().oneshot(req).await.unwrap();

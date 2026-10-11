@@ -20,6 +20,34 @@ pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
         .unwrap_or("<non-string panic payload>")
 }
 
+/// Spawn `future` as a task that keeps the caller's current tracing span.
+///
+/// A bare `tokio::spawn` starts the task with no span, so every log line it
+/// writes loses the `agent` field of the agent that started it. Everything
+/// an agent's runtime spawns goes through here (or [`spawn_blocking_in_span`])
+/// so the span opened at the agent's root reaches all of its tasks; a
+/// source-scan test in `crate::testing` fails if a bare spawn appears
+/// elsewhere in the crate.
+pub fn spawn_in_span<F>(future: F) -> JoinHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    tokio::spawn(future.in_current_span())
+}
+
+/// Run `work` on the blocking pool inside the caller's current tracing span.
+///
+/// The blocking counterpart of [`spawn_in_span`].
+pub fn spawn_blocking_in_span<F, R>(work: F) -> JoinHandle<R>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    let span = tracing::Span::current();
+    tokio::task::spawn_blocking(move || span.in_scope(work))
+}
+
 /// Spawn a monitored task that catches panics and logs them.
 ///
 /// Use this for long-lived tasks (adapters, tunnel) where a silent panic

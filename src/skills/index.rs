@@ -1,11 +1,11 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::util::xml_escape;
 
 use super::{
     parser::parse_skill_md,
-    types::{SkillIndexEntry, SkillSource},
+    types::{SkillDir, SkillIndexEntry, SkillSource},
 };
 
 /// In-memory index of discovered skills.
@@ -26,21 +26,20 @@ pub struct SkillIndex {
 }
 
 impl SkillIndex {
-    /// Scan configured directories.
+    /// Scan skill directories in layer priority order.
     ///
     /// For each subdirectory containing a `SKILL.md`, parses the frontmatter
     /// and builds an index entry. Invalid or missing files are warned and
-    /// skipped. Duplicate names keep the first found. A directory that
+    /// skipped. Duplicate names keep the first found; a skill hidden by a
+    /// higher-priority layer is logged at debug with both paths. A directory that
     /// cannot be read (e.g. a permissions error) is skipped with a warning
     /// — see [`Self::skipped_dirs`] — rather than discarding the rest of
     /// the scan; a missing directory is skipped silently.
     ///
     /// # Arguments
-    /// - `dirs`: Skill directories in priority order. `dirs[0]` is treated as
-    ///   the workspace skills directory (`SkillSource::Workspace`); remaining
-    ///   entries are `SkillSource::UserGlobal`. The order must be maintained by
-    ///   the caller — passing dirs in a different order will produce incorrect
-    ///   source tagging.
+    /// - `dirs`: Skill directories in priority order, each tagged with the
+    ///   layer its skills are attributed to. The first skill found under a
+    ///   given name wins.
     ///
     /// # Errors
     /// Never returns `Err` today — every failure a scan can hit (an
@@ -49,19 +48,15 @@ impl SkillIndex {
     /// as a `Result` so a future caller-facing failure mode doesn't need
     /// another signature change.
     #[tracing::instrument(skip_all, fields(dirs_count = dirs.len()))]
-    pub async fn scan(dirs: &[PathBuf]) -> anyhow::Result<Self> {
+    pub async fn scan(dirs: &[SkillDir]) -> anyhow::Result<Self> {
         let mut entries = Vec::new();
         let mut notices = Vec::new();
-        let mut seen_names: HashSet<String> = HashSet::new();
+        let mut seen_names: HashMap<String, SeenSkill> = HashMap::new();
         let mut skipped = Vec::new();
 
-        // Workspace is dirs[0], user-global are the rest
-        for (i, dir) in dirs.iter().enumerate() {
-            let source = if i == 0 {
-                SkillSource::Workspace
-            } else {
-                SkillSource::UserGlobal
-            };
+        for skill_dir in dirs {
+            let dir = &skill_dir.path;
+            let source = skill_dir.source;
             tracing::debug!(dir = %dir.display(), source = %source, "scanning skill dir");
             if let Err(err) =
                 scan_skill_directory(dir, source, &mut entries, &mut notices, &mut seen_names).await
@@ -110,8 +105,9 @@ impl SkillIndex {
         for entry in &self.entries {
             let skill_md = entry.skill_dir.join("SKILL.md");
             parts.push(format!(
-                "  <skill>\n    <name>{}</name>\n    <description>{}</description>\n    <location>{}</location>\n  </skill>",
+                "  <skill>\n    <name>{}</name>\n    <layer>{}</layer>\n    <description>{}</description>\n    <location>{}</location>\n  </skill>",
                 xml_escape(&entry.name),
+                entry.source,
                 xml_escape(&entry.description),
                 skill_md.display(),
             ));
@@ -138,6 +134,12 @@ impl SkillIndex {
     }
 }
 
+/// The skill that won a name during a scan, kept to report what shadows it.
+struct SeenSkill {
+    source: SkillSource,
+    skill_md: PathBuf,
+}
+
 /// Scan a single directory for skill subfolders.
 #[tracing::instrument(skip_all, fields(dir = %dir.display(), source = %source))]
 async fn scan_skill_directory(
@@ -145,7 +147,7 @@ async fn scan_skill_directory(
     source: SkillSource,
     entries: &mut Vec<SkillIndexEntry>,
     notices: &mut Vec<String>,
-    seen_names: &mut HashSet<String>,
+    seen_names: &mut HashMap<String, SeenSkill>,
 ) -> anyhow::Result<()> {
     let entries_before = entries.len();
     let mut read_dir = match tokio::fs::read_dir(dir).await {
@@ -197,7 +199,7 @@ async fn scan_skill_directory(
             continue;
         }
 
-        process_skill_folder(&entry, &source, entries, notices, seen_names).await;
+        process_skill_folder(&entry, source, entries, notices, seen_names).await;
     }
 
     tracing::debug!(dir = %dir.display(), source = %source, count = entries.len() - entries_before, "skill directory scanned");
@@ -208,10 +210,10 @@ async fn scan_skill_directory(
 /// and `seen_names` in place.
 async fn process_skill_folder(
     entry: &tokio::fs::DirEntry,
-    source: &SkillSource,
+    source: SkillSource,
     entries: &mut Vec<SkillIndexEntry>,
     notices: &mut Vec<String>,
-    seen_names: &mut HashSet<String>,
+    seen_names: &mut HashMap<String, SeenSkill>,
 ) {
     let skill_md = entry.path().join("SKILL.md");
     let file_content = match tokio::fs::read_to_string(&skill_md).await {
@@ -236,16 +238,34 @@ async fn process_skill_folder(
     match parse_skill_md(&file_content) {
         Ok((fm, _body)) => {
             let lower = fm.name.to_lowercase();
-            if seen_names.contains(&lower) {
-                tracing::warn!(
-                    name = %fm.name,
-                    path = %skill_md.display(),
-                    source = %source,
-                    "duplicate skill name, keeping first found"
-                );
+            if let Some(winner) = seen_names.get(&lower) {
+                if winner.source == source {
+                    tracing::warn!(
+                        name = %fm.name,
+                        path = %skill_md.display(),
+                        kept = %winner.skill_md.display(),
+                        source = %source,
+                        "duplicate skill name, keeping first found"
+                    );
+                } else {
+                    tracing::debug!(
+                        name = %fm.name,
+                        shadowed = %skill_md.display(),
+                        shadowed_layer = %source,
+                        winner = %winner.skill_md.display(),
+                        winner_layer = %winner.source,
+                        "skill shadowed by a higher-priority layer"
+                    );
+                }
                 return;
             }
-            seen_names.insert(lower);
+            seen_names.insert(
+                lower,
+                SeenSkill {
+                    source,
+                    skill_md: skill_md.clone(),
+                },
+            );
 
             if let Some(notice) =
                 super::parser::oversized_description_notice(&fm.name, &fm.description)
@@ -257,7 +277,7 @@ async fn process_skill_folder(
                 name: fm.name,
                 description: fm.description,
                 skill_dir: entry.path(),
-                source: source.clone(),
+                source,
             });
         }
         Err(e) => {
@@ -276,7 +296,7 @@ async fn process_skill_folder(
 mod tests {
     use std::path::PathBuf;
 
-    use super::super::types::{SkillIndexEntry, SkillSource};
+    use super::super::types::{SkillDir, SkillIndexEntry, SkillSource};
     use super::SkillIndex;
 
     // ── SkillIndex ───────────────────────────────────────────────────────────
@@ -284,7 +304,9 @@ mod tests {
     #[tokio::test]
     async fn scan_empty_dir() {
         let dir = tempfile::tempdir().unwrap();
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
+        let index = SkillIndex::scan(&[SkillDir::agent(dir.path())])
+            .await
+            .unwrap();
         assert!(
             index.entries().is_empty(),
             "empty dir should have no skills"
@@ -293,7 +315,7 @@ mod tests {
 
     #[tokio::test]
     async fn scan_nonexistent_dir() {
-        let index = SkillIndex::scan(&[PathBuf::from("/tmp/nonexistent-skills-dir")])
+        let index = SkillIndex::scan(&[SkillDir::agent("/tmp/nonexistent-skills-dir")])
             .await
             .unwrap();
         assert!(
@@ -314,13 +336,12 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
+        let index = SkillIndex::scan(&[SkillDir::agent(dir.path())])
+            .await
+            .unwrap();
         assert_eq!(index.entries().len(), 1, "should find one skill");
         assert_eq!(index.entries().first().unwrap().name, "my-skill");
-        assert_eq!(
-            index.entries().first().unwrap().source,
-            SkillSource::Workspace
-        );
+        assert_eq!(index.entries().first().unwrap().source, SkillSource::Agent);
     }
 
     #[tokio::test]
@@ -344,7 +365,9 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
+        let index = SkillIndex::scan(&[SkillDir::agent(dir.path())])
+            .await
+            .unwrap();
         assert_eq!(index.entries().len(), 1, "should only find valid skill");
         assert_eq!(
             index.notices().len(),
@@ -371,7 +394,9 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
+        let index = SkillIndex::scan(&[SkillDir::agent(dir.path())])
+            .await
+            .unwrap();
         assert_eq!(
             index.entries().len(),
             1,
@@ -412,16 +437,19 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[ws_dir.path().to_path_buf(), user_dir.path().to_path_buf()])
-            .await
-            .unwrap();
+        let index = SkillIndex::scan(&[
+            SkillDir::agent(ws_dir.path()),
+            SkillDir::configured(user_dir.path()),
+        ])
+        .await
+        .unwrap();
         assert_eq!(index.entries().len(), 2, "should find both skills");
 
         let user_entry = index.find_by_name("user-skill").unwrap();
-        assert_eq!(user_entry.source, SkillSource::UserGlobal);
+        assert_eq!(user_entry.source, SkillSource::Configured);
         assert_eq!(
             index.find_by_name("ws-skill").unwrap().source,
-            SkillSource::Workspace
+            SkillSource::Agent
         );
     }
 
@@ -450,9 +478,12 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[ws_dir.path().to_path_buf(), user_dir.path().to_path_buf()])
-            .await
-            .unwrap();
+        let index = SkillIndex::scan(&[
+            SkillDir::agent(ws_dir.path()),
+            SkillDir::configured(user_dir.path()),
+        ])
+        .await
+        .unwrap();
         assert_eq!(index.entries().len(), 1, "should deduplicate by name");
 
         let entry = index.find_by_name("shared").unwrap();
@@ -460,7 +491,75 @@ mod tests {
             entry.description, "Workspace version",
             "workspace skill should shadow user-global skill"
         );
-        assert_eq!(entry.source, SkillSource::Workspace);
+        assert_eq!(entry.source, SkillSource::Agent);
+    }
+
+    async fn write_skill(root: &std::path::Path, name: &str, description: &str) {
+        let dir = root.join(name);
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: \"{description}\"\n---\n"),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn agent_skill_shadows_team_skill_which_shadows_configured_skill() {
+        let agent = tempfile::tempdir().unwrap();
+        let team = tempfile::tempdir().unwrap();
+        let configured = tempfile::tempdir().unwrap();
+
+        write_skill(agent.path(), "everywhere", "agent copy").await;
+        write_skill(team.path(), "everywhere", "team copy").await;
+        write_skill(configured.path(), "everywhere", "configured copy").await;
+        write_skill(team.path(), "team-and-configured", "team copy").await;
+        write_skill(configured.path(), "team-and-configured", "configured copy").await;
+        write_skill(configured.path(), "configured-only", "configured copy").await;
+
+        let index = SkillIndex::scan(&[
+            SkillDir::agent(agent.path()),
+            SkillDir::team(team.path()),
+            SkillDir::configured(configured.path()),
+        ])
+        .await
+        .unwrap();
+
+        assert_eq!(index.entries().len(), 3, "one entry per distinct name");
+        let everywhere = index.find_by_name("everywhere").unwrap();
+        assert_eq!(everywhere.description, "agent copy");
+        assert_eq!(everywhere.source, SkillSource::Agent);
+        assert_eq!(everywhere.skill_dir, agent.path().join("everywhere"));
+
+        let shared = index.find_by_name("team-and-configured").unwrap();
+        assert_eq!(shared.description, "team copy");
+        assert_eq!(shared.source, SkillSource::Team);
+
+        let only = index.find_by_name("configured-only").unwrap();
+        assert_eq!(only.source, SkillSource::Configured);
+    }
+
+    #[tokio::test]
+    async fn prompt_index_shows_each_skills_layer() {
+        let agent = tempfile::tempdir().unwrap();
+        let team = tempfile::tempdir().unwrap();
+        write_skill(agent.path(), "mine", "agent skill").await;
+        write_skill(team.path(), "ours", "team skill").await;
+
+        let index = SkillIndex::scan(&[SkillDir::agent(agent.path()), SkillDir::team(team.path())])
+            .await
+            .unwrap();
+        let prompt = index.format_for_prompt();
+
+        assert!(
+            prompt.contains("<name>mine</name>\n    <layer>agent</layer>"),
+            "agent skill should be labelled agent: {prompt}"
+        );
+        assert!(
+            prompt.contains("<name>ours</name>\n    <layer>team</layer>"),
+            "team skill should be labelled team: {prompt}"
+        );
     }
 
     #[tokio::test]
@@ -487,9 +586,12 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[dir1.path().to_path_buf(), dir2.path().to_path_buf()])
-            .await
-            .unwrap();
+        let index = SkillIndex::scan(&[
+            SkillDir::agent(dir1.path()),
+            SkillDir::configured(dir2.path()),
+        ])
+        .await
+        .unwrap();
         assert_eq!(index.entries().len(), 1, "should deduplicate");
         assert_eq!(
             index.entries().first().unwrap().description,
@@ -525,7 +627,9 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
+        let index = SkillIndex::scan(&[SkillDir::agent(dir.path())])
+            .await
+            .unwrap();
 
         assert_eq!(
             index.entries().len(),
@@ -551,14 +655,14 @@ mod tests {
                 name: "my-skill".to_string(),
                 description: "A skill".to_string(),
                 skill_dir: PathBuf::from("/tmp/my-skill"),
-                source: SkillSource::Workspace,
+                source: SkillSource::Agent,
             }],
             notices: Vec::new(),
         };
 
         let entry = index.find_by_name("MY-SKILL").unwrap();
         assert_eq!(entry.name, "my-skill");
-        assert_eq!(entry.source, SkillSource::Workspace);
+        assert_eq!(entry.source, SkillSource::Agent);
         assert!(
             index.find_by_name("nonexistent").is_none(),
             "should not find missing"
@@ -582,7 +686,7 @@ mod tests {
                 name: "pdf-processing".to_string(),
                 description: "Extracts text from PDFs".to_string(),
                 skill_dir: PathBuf::from("/tmp/skills/pdf-processing"),
-                source: SkillSource::Workspace,
+                source: SkillSource::Agent,
             }],
             notices: Vec::new(),
         };
@@ -599,6 +703,10 @@ mod tests {
         assert!(
             output.contains("<name>pdf-processing</name>"),
             "should contain skill name"
+        );
+        assert!(
+            output.contains("<layer>agent</layer>"),
+            "should show the layer the skill came from"
         );
         assert!(
             output.contains("<description>Extracts text from PDFs</description>"),
@@ -619,7 +727,7 @@ mod tests {
                 name: "my-skill".to_string(),
                 description: "Handles <tags> & \"quotes\"".to_string(),
                 skill_dir: PathBuf::from("/tmp/my-skill"),
-                source: SkillSource::Workspace,
+                source: SkillSource::Agent,
             }],
             notices: Vec::new(),
         };

@@ -12,6 +12,7 @@ use crate::agent::HopCounter;
 use crate::background::registry::{MAIN_ADDRESS, SessionRegistry, generate_address};
 use crate::bus::{EventTrigger, SessionAddress};
 use crate::config::BackgroundModelTier;
+use crate::hub::team::TeamLink;
 use crate::inference::ToolDefinition;
 use crate::skills::SharedSkillState;
 
@@ -119,13 +120,14 @@ impl Tool for StopAgentTool {
 
 // ─── ListAgentsTool ──────────────────────────────────────────────────────────
 
-/// Tool for listing the main agent, every live session, and every remote A2A
-/// agent.
+/// Tool for listing the main agent, every live session, every teammate, and
+/// every remote A2A agent.
 pub struct ListAgentsTool {
     registry: Arc<SessionRegistry>,
     self_address: SessionAddress,
     a2a_hub: Arc<A2aClientHub>,
     a2a_tracker: Arc<RemoteTaskTracker>,
+    team: TeamLink,
 }
 
 impl ListAgentsTool {
@@ -136,12 +138,14 @@ impl ListAgentsTool {
         self_address: SessionAddress,
         a2a_hub: Arc<A2aClientHub>,
         a2a_tracker: Arc<RemoteTaskTracker>,
+        team: TeamLink,
     ) -> Self {
         Self {
             registry,
             self_address,
             a2a_hub,
             a2a_tracker,
+            team,
         }
     }
 }
@@ -155,12 +159,12 @@ impl Tool for ListAgentsTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "List the main agent, every live (running or idle) session, and every \
-                          remote agent reachable over A2A (address \"a2a:<name>\"): for sessions, \
-                          address, category, source, state, depth, spawner, elapsed time, and \
-                          purpose; for remote agents, online status, description, skills, and \
-                          your own open tasks with them. Completed sessions are not listed, but \
-                          their addresses remain valid."
+            description: "List the main agent, live (running or idle) sessions, teammates \
+                          (\"agent:<name>\", with state and role; you are marked), and remote \
+                          agents (\"a2a:<name>\", with online status, description, skills, and \
+                          your open tasks with them). Sessions show address, category, source, \
+                          state, depth, spawner, elapsed time, tool calls, and purpose. Completed \
+                          sessions are not listed but their addresses stay valid."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -186,14 +190,37 @@ impl Tool for ListAgentsTool {
                 .map_or_else(|| "-".to_string(), ToString::to_string);
             lines.push(format!(
                 "  [{address}] {source} — category: {category} — state: {state} — depth: {depth} \
-                 — spawner: {spawner} — running {elapsed}s — purpose: {purpose}",
+                 — spawner: {spawner} — running {elapsed}s — tool calls: {tool_calls} — \
+                 purpose: {purpose}",
                 address = info.address,
                 source = info.source_label,
                 category = info.category,
                 state = info.state,
                 depth = info.depth,
                 elapsed = elapsed_secs,
+                tool_calls = info.usage.tool_calls,
                 purpose = info.purpose,
+            ));
+        }
+
+        let members = self.team.members();
+        let teammate_count = members
+            .iter()
+            .filter(|member| member.name != self.team.name())
+            .count();
+        lines.push(String::new());
+        lines.push(format!("{teammate_count} teammate(s):"));
+        for member in &members {
+            let you = if member.name == self.team.name() {
+                " (you)"
+            } else {
+                ""
+            };
+            lines.push(format!(
+                "  [agent:{name}]{you} {state} — {role}",
+                name = member.label(),
+                state = member.state,
+                role = member.role.as_deref().unwrap_or("no role line yet"),
             ));
         }
 
@@ -398,6 +425,7 @@ impl Tool for SubagentSpawnTool {
             inbound: None,
             images: Vec::new(),
             overlap: None,
+            carried_history: Vec::new(),
         };
 
         self.publisher
@@ -556,6 +584,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spawn_accepts_a_team_skill_as_the_role() {
+        let agent_skills = tempfile::tempdir().unwrap();
+        let team_skills = tempfile::tempdir().unwrap();
+        let skill_dir = team_skills.path().join("shared-researcher");
+        tokio::fs::create_dir_all(&skill_dir).await.unwrap();
+        tokio::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: shared-researcher\ndescription: researches for the team\n---\nBody.",
+        )
+        .await
+        .unwrap();
+        let dirs = vec![
+            crate::skills::SkillDir::agent(agent_skills.path()),
+            crate::skills::SkillDir::team(team_skills.path()),
+        ];
+        let index = SkillIndex::scan(&dirs).await.unwrap();
+
+        let bus_handle = crate::bus::spawn_broker();
+        let tool = SubagentSpawnTool::new(
+            bus_handle.publisher(),
+            SkillState::new_shared(index, dirs),
+            SessionAddress::from(MAIN_ADDRESS),
+            0,
+            2,
+            HopCounter::new(0),
+        );
+
+        let res = tool
+            .execute(serde_json::json!({
+                "task": "research the thing",
+                "skill": "shared-researcher"
+            }))
+            .await
+            .unwrap();
+
+        assert!(!res.is_error, "got: {}", res.output);
+        assert!(res.output.contains("spawned-shared-researcher-"));
+    }
+
+    #[tokio::test]
     async fn spawn_with_skill_returns_address_and_skill_name() {
         let dir = tempfile::tempdir().unwrap();
         let skill_dir = dir.path().join("researcher");
@@ -566,11 +634,14 @@ mod tests {
         )
         .await
         .unwrap();
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
+        let index = SkillIndex::scan(&[crate::skills::SkillDir::agent(dir.path())])
+            .await
+            .unwrap();
 
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
-        let skill_state = SkillState::new_shared(index, vec![dir.path().to_path_buf()]);
+        let skill_state =
+            SkillState::new_shared(index, vec![crate::skills::SkillDir::agent(dir.path())]);
         let tool = SubagentSpawnTool::new(
             publisher,
             skill_state,
@@ -736,12 +807,63 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let registry = Arc::new(SessionRegistry::new());
         let (hub, tracker) = bare_a2a(dir.path()).await;
-        let tool = ListAgentsTool::new(registry, SessionAddress::from(MAIN_ADDRESS), hub, tracker);
+        let tool = ListAgentsTool::new(
+            registry,
+            SessionAddress::from(MAIN_ADDRESS),
+            hub,
+            tracker,
+            TeamLink::alone("agent"),
+        );
 
         let result = tool.execute(serde_json::json!({})).await.unwrap();
         assert!(!result.is_error);
         assert!(result.output.contains("main"));
         assert!(result.output.contains("remote agent(s)"));
+    }
+
+    #[tokio::test]
+    async fn list_agents_shows_a_live_sessions_tool_call_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        let info = crate::background::registry::SessionInfo {
+            address: SessionAddress::from("spawned-researcher-0001"),
+            run_id: "run-1".to_string(),
+            category: crate::background::registry::SessionCategory::Spawned,
+            trigger: EventTrigger::Agent,
+            source_label: "agent:researcher".to_string(),
+            state: crate::background::registry::SessionState::Running,
+            spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
+            depth: 1,
+            purpose: "research the thing".to_string(),
+            agent_skill: None,
+            model_tier: BackgroundModelTier::Medium,
+            conversation_target: None,
+            started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals {
+                tool_calls: 7,
+                ..Default::default()
+            },
+            overlap: None,
+        };
+        let _rx = registry
+            .register(info, tokio_util::sync::CancellationToken::new())
+            .unwrap();
+        let (hub, tracker) = bare_a2a(dir.path()).await;
+        let tool = ListAgentsTool::new(
+            registry,
+            SessionAddress::from(MAIN_ADDRESS),
+            hub,
+            tracker,
+            TeamLink::alone("agent"),
+        );
+
+        let result = tool.execute(serde_json::json!({})).await.unwrap();
+        assert!(!result.is_error);
+        assert!(
+            result.output.contains("tool calls: 7"),
+            "got: {}",
+            result.output
+        );
     }
 
     #[tokio::test]
@@ -766,7 +888,13 @@ mod tests {
                 0,
             )
             .await;
-        let tool = ListAgentsTool::new(registry, SessionAddress::from(MAIN_ADDRESS), hub, tracker);
+        let tool = ListAgentsTool::new(
+            registry,
+            SessionAddress::from(MAIN_ADDRESS),
+            hub,
+            tracker,
+            TeamLink::alone("agent"),
+        );
 
         let result = tool.execute(serde_json::json!({})).await.unwrap();
         assert!(!result.is_error);
@@ -797,7 +925,13 @@ mod tests {
             AgentSource::Config,
         )
         .await;
-        let tool = ListAgentsTool::new(registry, SessionAddress::from(MAIN_ADDRESS), hub, tracker);
+        let tool = ListAgentsTool::new(
+            registry,
+            SessionAddress::from(MAIN_ADDRESS),
+            hub,
+            tracker,
+            TeamLink::alone("agent"),
+        );
 
         let result = tool.execute(serde_json::json!({})).await.unwrap();
         assert!(!result.is_error);

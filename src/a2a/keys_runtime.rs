@@ -151,7 +151,7 @@ impl A2aKeys {
     {
         let _guard = self.write_lock.lock().await;
         let config_dir = self.config_dir.clone();
-        let (store, result) = tokio::task::spawn_blocking(move || {
+        let (store, result) = crate::util::spawn_blocking_in_span(move || {
             let _file_lock = lock_store_file(&config_dir)?;
             let mut store = A2aKeyStore::load(&config_dir)?;
             let result = change(&mut store)?;
@@ -172,7 +172,7 @@ impl A2aKeys {
 
     async fn load_blocking(&self) -> Result<A2aKeyStore, A2aKeyError> {
         let config_dir = self.config_dir.clone();
-        tokio::task::spawn_blocking(move || A2aKeyStore::load(&config_dir))
+        crate::util::spawn_blocking_in_span(move || A2aKeyStore::load(&config_dir))
             .await
             .map_err(|e| A2aKeyError::Storage(format!("A2A key load task failed: {e}")))?
     }

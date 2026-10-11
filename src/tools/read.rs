@@ -1,6 +1,6 @@
 //! File reading tool for the agent.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use base64::Engine;
@@ -11,6 +11,8 @@ use super::file_tracker::SharedFileTracker;
 use super::{Tool, ToolError, ToolResult};
 use crate::inference::{ImageData, ToolDefinition};
 use crate::interfaces::attachment::MAX_IMAGE_INLINE_SIZE;
+use crate::tools::path_policy::SharedPathPolicy;
+use crate::workspace::team_files::{FileStamp, TeamFiles};
 
 /// Default maximum lines returned when no explicit offset/limit is given.
 const DEFAULT_MAX_LINES: usize = 2000;
@@ -18,28 +20,114 @@ const DEFAULT_MAX_LINES: usize = 2000;
 /// Maximum characters per output line before truncation.
 const MAX_CHARS_PER_LINE: usize = 2000;
 
+/// How a completed read is recorded in the tracker.
+enum ReadRecord {
+    /// An agent-private file: only that it was read.
+    Private,
+    /// A team file, with its stamp from just before the read (`None` when it
+    /// couldn't be taken).
+    Team(Option<FileStamp>),
+}
+
 /// Tool that reads file contents with numbered lines.
 pub struct ReadTool {
     tracker: SharedFileTracker,
+    /// The agent's workspace root. A relative `path` argument is resolved
+    /// against this rather than the process's current directory, which is
+    /// shared across every agent hosted in the same process.
+    workspace_root: PathBuf,
+    /// Supplies the `team/` namespace, when the agent belongs to a team.
+    policy: Option<SharedPathPolicy>,
 }
 
 impl ReadTool {
-    /// Create a new `ReadTool` with shared file tracker.
+    /// Create a new `ReadTool` with a shared file tracker and the workspace
+    /// root a relative `path` argument resolves against.
     #[must_use]
-    pub fn new(tracker: SharedFileTracker) -> Self {
-        Self { tracker }
+    pub fn new(tracker: SharedFileTracker, workspace_root: PathBuf) -> Self {
+        Self {
+            tracker,
+            workspace_root,
+            policy: None,
+        }
+    }
+
+    /// Resolve `team/...` paths through the team namespace held by `policy`,
+    /// and record the version of each team file read so a later write can
+    /// detect a change made since.
+    #[must_use]
+    pub fn with_policy(mut self, policy: SharedPathPolicy) -> Self {
+        self.policy = Some(policy);
+        self
+    }
+
+    /// The agent's view of the team namespace, if it has one.
+    async fn team(&self) -> Option<TeamFiles> {
+        match &self.policy {
+            Some(policy) => policy.read().await.team().cloned(),
+            None => None,
+        }
+    }
+
+    /// Resolve a `path` argument, and for a team file take its stamp. The
+    /// stamp is taken before the file is read, so a write that lands
+    /// mid-read shows up as a conflict on the next write instead of going
+    /// unnoticed.
+    async fn locate(&self, path: &str) -> (PathBuf, ReadRecord) {
+        let Some(team) = self.team().await else {
+            return (self.workspace_root.join(path), ReadRecord::Private);
+        };
+        let resolved = team.resolve(path);
+        if !team.is_team_path(&resolved) {
+            return (resolved, ReadRecord::Private);
+        }
+        let stamp = team.coordinator().stamp(&resolved).await.ok();
+        (resolved, ReadRecord::Team(stamp))
+    }
+
+    /// Record a completed read.
+    async fn record_read(&self, resolved: &Path, record: ReadRecord) {
+        let key = resolved.to_string_lossy();
+        let mut tracker = self.tracker.lock().await;
+        match record {
+            ReadRecord::Team(stamp) => tracker.record_team_read(&key, stamp),
+            ReadRecord::Private => tracker.record_read(&key),
+        }
+    }
+
+    /// Record that a team file was found missing: the stamp taken before the
+    /// read (version `None`) becomes the file's known-absent state. Ignored
+    /// when the stamp shows the file existed a moment ago, or for private
+    /// files.
+    async fn record_absent(&self, resolved: &Path, record: ReadRecord) {
+        if let ReadRecord::Team(Some(stamp)) = &record
+            && stamp.version.is_none()
+        {
+            self.record_read(resolved, record).await;
+        }
     }
 
     /// Read an image file, base64-encode it, and return as a tool result with inline image data.
     #[expect(clippy::cast_precision_loss, reason = "file size in KB display only")]
-    async fn read_image(&self, path: &str, size: u64, mime: &str) -> Result<ToolResult, ToolError> {
-        let bytes = match tokio::fs::read(path).await {
+    async fn read_image(
+        &self,
+        display_path: &str,
+        resolved_path: &Path,
+        size: u64,
+        mime: &str,
+        record: ReadRecord,
+    ) -> Result<ToolResult, ToolError> {
+        let bytes = match tokio::fs::read(resolved_path).await {
             Ok(b) => b,
-            Err(e) => return Ok(ToolResult::error(format!("failed to read {path}: {e}"))),
+            Err(e) => {
+                return Ok(ToolResult::error(format!(
+                    "failed to read {display_path}: {e}"
+                )));
+            }
         };
 
         let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        let filename = Path::new(path)
+        let filename = resolved_path
             .file_name()
             .unwrap_or_default()
             .to_string_lossy();
@@ -47,7 +135,7 @@ impl ReadTool {
         let size_kb = size as f64 / 1024.0;
         let summary = format!("[Image: {filename}, {size_kb:.1} KB]");
 
-        self.tracker.lock().await.record_read(path);
+        self.record_read(resolved_path, record).await;
 
         Ok(ToolResult::success_with_images(
             summary,
@@ -84,7 +172,7 @@ impl Tool for ReadTool {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Absolute or relative path to the file to read"
+                        "description": "Absolute or relative path to the file to read. A path starting with \"team/\" is in the shared team folder"
                     },
                     "offset": {
                         "type": "integer",
@@ -111,23 +199,41 @@ impl Tool for ReadTool {
         let offset = arguments.get("offset").and_then(Value::as_u64).unwrap_or(0);
         let explicit_limit = arguments.get("limit").and_then(Value::as_u64);
 
-        let metadata = match tokio::fs::metadata(path).await {
+        // `path` as given by the model (absolute or workspace-relative) is
+        // kept for display; every filesystem operation and the tracker key
+        // use `resolved`, which resolves against the workspace root instead
+        // of the process's current directory — see `workspace_root`'s doc
+        // comment.
+        let (resolved, record) = self.locate(path).await;
+
+        let metadata = match tokio::fs::metadata(&resolved).await {
             Ok(m) => m,
-            Err(e) => return Ok(ToolResult::error(format!("failed to read {path}: {e}"))),
+            Err(e) => {
+                // A read that finds a team file gone still tells the tracker
+                // so: the agent has now seen the deletion, and its next write
+                // recreating the file must not conflict with the version it
+                // read before the file was removed.
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    self.record_absent(&resolved, record).await;
+                }
+                return Ok(ToolResult::error(format!("failed to read {path}: {e}")));
+            }
         };
         let total_size = metadata.len();
 
         // Check if this is a supported image file — return inline image data.
         // The size cap here is a model API fact (the maximum image size the
         // provider accepts inline), not a residuum-imposed limit.
-        if let Some(mime) = image_mime_type(Path::new(path)) {
+        if let Some(mime) = image_mime_type(&resolved) {
             if total_size > u64::from(MAX_IMAGE_INLINE_SIZE) {
                 return Ok(ToolResult::error(format!(
                     "image {path} is too large to send inline ({total_size} bytes, max \
                      {MAX_IMAGE_INLINE_SIZE} bytes — this is a model API limit)"
                 )));
             }
-            return self.read_image(path, total_size, mime).await;
+            return self
+                .read_image(path, &resolved, total_size, mime, record)
+                .await;
         }
 
         // Text files have no size limit: page through by offset/limit rather
@@ -145,7 +251,7 @@ impl Tool for ReadTool {
             |l| Some(usize::try_from(l).unwrap_or(usize::MAX)),
         );
 
-        let file = match tokio::fs::File::open(path).await {
+        let file = match tokio::fs::File::open(&resolved).await {
             Ok(f) => f,
             Err(e) => return Ok(ToolResult::error(format!("failed to read {path}: {e}"))),
         };
@@ -209,8 +315,10 @@ impl Tool for ReadTool {
             ));
         }
 
-        // Record read in tracker
-        self.tracker.lock().await.record_read(path);
+        // Record read in tracker, keyed by the resolved path so it matches
+        // what write_file/edit_file check against regardless of how this
+        // call's path argument was spelled.
+        self.record_read(&resolved, record).await;
 
         let header = warnings.join("\n");
         let body = selected.join("\n");
@@ -253,8 +361,15 @@ mod tests {
     use super::*;
     use crate::tools::file_tracker::FileTracker;
 
+    /// A workspace root that doesn't correspond to any real directory, for
+    /// tests that always pass an absolute `path` (join drops the base for
+    /// an absolute joined component, so its value never matters there).
+    fn unused_workspace_root() -> std::path::PathBuf {
+        std::path::PathBuf::from("/tmp/residuum-test-workspace-unused")
+    }
+
     fn make_tool() -> ReadTool {
-        ReadTool::new(FileTracker::new_shared())
+        ReadTool::new(FileTracker::new_shared(), unused_workspace_root())
     }
 
     #[tokio::test]
@@ -468,7 +583,7 @@ mod tests {
         tokio::fs::write(&file_path, "content").await.unwrap();
 
         let tracker = FileTracker::new_shared();
-        let tool = ReadTool::new(std::sync::Arc::clone(&tracker));
+        let tool = ReadTool::new(std::sync::Arc::clone(&tracker), unused_workspace_root());
 
         tool.execute(serde_json::json!({ "path": file_path.to_str().unwrap() }))
             .await
@@ -546,7 +661,7 @@ mod tests {
             .unwrap();
 
         let tracker = FileTracker::new_shared();
-        let tool = ReadTool::new(std::sync::Arc::clone(&tracker));
+        let tool = ReadTool::new(std::sync::Arc::clone(&tracker), unused_workspace_root());
 
         tool.execute(serde_json::json!({ "path": file_path.to_str().unwrap() }))
             .await
@@ -604,6 +719,37 @@ mod tests {
 
         assert!(!result.is_error, "reading empty file should succeed");
         assert!(result.images.is_empty(), "empty file should have no images");
+    }
+
+    #[tokio::test]
+    async fn relative_path_resolves_against_workspace_root_not_process_cwd() {
+        // The process's current directory here is the crate root (however
+        // `cargo test` was invoked), not `workspace_root` — so this only
+        // passes if the relative path is joined against `workspace_root`.
+        let workspace_root = tempfile::tempdir().unwrap();
+        tokio::fs::write(workspace_root.path().join("relative.txt"), "from workspace")
+            .await
+            .unwrap();
+
+        let tool = ReadTool::new(
+            FileTracker::new_shared(),
+            workspace_root.path().to_path_buf(),
+        );
+        let result = tool
+            .execute(serde_json::json!({ "path": "relative.txt" }))
+            .await
+            .unwrap();
+
+        assert!(
+            !result.is_error,
+            "a relative path should resolve against the workspace root: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("from workspace"),
+            "should read the file from the workspace root: {}",
+            result.output
+        );
     }
 
     #[test]

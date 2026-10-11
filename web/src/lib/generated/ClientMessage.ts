@@ -20,7 +20,7 @@ images?: Array<ImageAttachment>, } | { "type": "set_verbose",
 /**
  * Whether to receive tool events.
  */
-enabled: boolean, } | { "type": "ping" } | { "type": "reload" } | { "type": "server_command", 
+enabled: boolean, } | { "type": "ping" } | { "type": "resync_turn" } | { "type": "reload" } | { "type": "server_command", 
 /**
  * Command name.
  */

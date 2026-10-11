@@ -15,15 +15,17 @@ pub(crate) async fn publish_notice(publisher: &Publisher, message: String) {
     }
 }
 
-/// Publish an error to the system notification channel.
-pub(crate) async fn publish_error(publisher: &Publisher, message: String) {
+/// Publish an error to the system notification channel. `message` must be
+/// plain language safe to show as-is; `details` carries the technical cause
+/// chain behind a web UI details toggle (see [`ErrorEvent`]).
+pub(crate) async fn publish_error(publisher: &Publisher, message: String, details: Option<String>) {
     if let Err(e) = publisher
         .publish(
             topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
             ErrorEvent {
                 correlation_id: String::new(),
                 message,
-                details: None,
+                details,
             },
         )
         .await

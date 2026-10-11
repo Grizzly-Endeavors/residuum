@@ -14,9 +14,9 @@ use crate::agent::recent_messages::RecentMessages;
 use crate::agent::turn::{
     EventContext, EventTarget, SessionConversationTarget, TurnResources, execute_turn,
 };
+use crate::bus::MessageEvent;
 use crate::bus::{AgentMessageEvent, Publisher, SessionAddress};
 use crate::inference::{CompletionOptions, ImageData, InferenceProvider, Message, MessageSender};
-use crate::interfaces::types::InboundMessage;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::Observer;
@@ -58,9 +58,9 @@ pub(crate) enum TurnKickoff {
     /// A turn — the run's first, or a later one reached while idle — kicked
     /// off by an inbound conversation message: sender attribution and any
     /// buffered context arrive with it exactly as they do for the main
-    /// agent (see [`InboundMessage::into_history_messages`]). Always hop
+    /// agent (see [`MessageEvent::into_history_messages`]). Always hop
     /// count 0: inbound conversation messages are external input.
-    External(InboundMessage),
+    External(MessageEvent),
 }
 
 impl TurnKickoff {
@@ -228,6 +228,7 @@ pub async fn build_subagent_resources(
     let SubAgentBuildConfig {
         workspace_layout,
         config_dir,
+        hub_dir,
         identity,
         options,
         max_tool_iterations,
@@ -262,16 +263,15 @@ pub async fn build_subagent_resources(
         a2a_hub,
         a2a_tracker,
         checkpoints,
+        lifecycle,
     } = config;
 
     let (skill_state, skills_index) =
         prepare_session_skill_state(main_skill_state, skill.as_deref()).await?;
 
-    // Fresh file tracker (tracks reads within this sub-agent turn only)
-    let tracker = FileTracker::new_shared();
-
-    let tools = ToolRegistry::build_subagent_registry(SubagentToolDeps {
-        tracker,
+    let tools = ToolRegistry::build_subagent_registry(&SubagentToolDeps {
+        // Fresh file tracker (tracks reads within this sub-agent turn only)
+        tracker: FileTracker::new_shared(),
         path_policy,
         tools_path,
         agent_keys,
@@ -280,6 +280,7 @@ pub async fn build_subagent_resources(
         hybrid_searcher,
         workspace_dir: workspace_layout.root().to_path_buf(),
         config_dir,
+        hub_dir,
         episodes_dir: workspace_layout.episodes_dir(),
         sessions_dir: workspace_layout.sessions_dir(),
         agent_inbox_dir: workspace_layout.agent_inbox_dir(),
@@ -305,6 +306,7 @@ pub async fn build_subagent_resources(
         a2a_hub,
         a2a_tracker,
         checkpoints,
+        lifecycle,
     });
 
     Ok(SubAgentResources {
@@ -361,8 +363,8 @@ pub(crate) struct TurnExecution<'a> {
     /// `execute_turn`) so the run's transcript survives a crash mid-turn in
     /// the session store.
     pub(crate) transcript_sink: Option<&'a dyn crate::agent::turn::TranscriptSink>,
-    /// Where this turn's model-call usage accumulates, for the `SessionView`
-    /// footer. `None` for a turn that doesn't track session-level totals.
+    /// Where this turn's model-call usage accumulates, for the session panel's
+    /// spent tokens. `None` for a turn that doesn't track session-level totals.
     pub(crate) usage_sink: Option<&'a dyn crate::agent::usage::UsageSink>,
     /// The run's own long-lived interrupt channel: draining it is what
     /// delivers an agent message to a *running* turn at its next tool-call
@@ -456,6 +458,7 @@ pub(crate) async fn execute_subagent(
 
     let events = EventContext {
         publisher: identity.publisher,
+        reply_audience: None,
         target: EventTarget::Session {
             address: identity.address,
             run_id: identity.run_id,
@@ -495,8 +498,8 @@ pub(crate) fn test_memory_extras() -> (
     Arc<Observer>,
     Arc<MemoryMergeWriter>,
 ) {
-    let dir = tempfile::tempdir().unwrap().keep();
-    let layout = crate::workspace::layout::WorkspaceLayout::new(&dir);
+    let dir = tempfile::tempdir().unwrap();
+    let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path()).with_tempdir_guard(dir);
     let search_index = Arc::new(
         crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
     );
@@ -518,7 +521,8 @@ mod tests {
     use crate::agent::interrupt::dead_interrupt_rx;
     use crate::inference::{InferenceError, InferenceResponse, ToolDefinition};
     use crate::mcp::McpRegistry;
-    use crate::skills::{SkillIndex, SkillState};
+    use crate::skills::{SkillDir, SkillIndex, SkillState};
+    use crate::testing::wait;
     use async_trait::async_trait;
 
     /// A turn identity with no broker behind it: these tests exercise the
@@ -585,6 +589,50 @@ mod tests {
             episode_skip_token_floor: 2000,
             hop_counter: crate::agent::HopCounter::new(0),
         }
+    }
+
+    /// A skill that lives only in `team/skills/` resolves as a session role:
+    /// sub-agent spawns, pulses (`agent: <skill>`), and artifact sessions all
+    /// build their skill state here.
+    #[tokio::test]
+    async fn team_skill_activates_as_session_role() {
+        let agent_skills = tempfile::tempdir().unwrap();
+        let team_skills = tempfile::tempdir().unwrap();
+        let role_dir = team_skills.path().join("team-role");
+        tokio::fs::create_dir_all(&role_dir).await.unwrap();
+        tokio::fs::write(
+            role_dir.join("SKILL.md"),
+            "---\nname: team-role\ndescription: shared role\n---\n\nTeam role instructions.\n",
+        )
+        .await
+        .unwrap();
+
+        let dirs = vec![
+            SkillDir::agent(agent_skills.path()),
+            SkillDir::team(team_skills.path()),
+        ];
+        let index = SkillIndex::scan(&dirs).await.unwrap();
+        let main_state = SkillState::new_shared(index, dirs);
+
+        let (session_state, skills_index) =
+            prepare_session_skill_state(&main_state, Some("team-role"))
+                .await
+                .unwrap();
+
+        let active = session_state
+            .lock()
+            .await
+            .format_active_for_prompt()
+            .unwrap();
+        assert!(
+            active.contains("Team role instructions."),
+            "team skill body should be the session's role: {active}"
+        );
+        let skills_index = skills_index.unwrap();
+        assert!(
+            skills_index.contains("<layer>team</layer>"),
+            "index should label the team skill: {skills_index}"
+        );
     }
 
     #[tokio::test]
@@ -844,7 +892,7 @@ mod tests {
         let mut recent_messages = RecentMessages::new();
         let mut interrupt_rx = dead_interrupt_rx();
 
-        let inbound = InboundMessage {
+        let inbound = MessageEvent {
             id: "m1".to_string(),
             content: "can you check the build?".to_string(),
             origin: crate::interfaces::types::MessageOrigin {
@@ -857,7 +905,7 @@ mod tests {
                 }),
                 agent_sender: None,
             },
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Utc::now().naive_utc(),
             images: vec![],
             context: Some("[14:00] Sam: build is red".to_string()),
         };
@@ -947,7 +995,7 @@ mod tests {
         let resources = make_resources("wrapping up");
 
         let (tx, mut rx) = mpsc::unbounded_channel::<Interrupt>();
-        tx.send(Interrupt::UserMessage(InboundMessage {
+        tx.send(Interrupt::UserMessage(MessageEvent {
             id: "m2".to_string(),
             content: "any updates?".to_string(),
             origin: crate::interfaces::types::MessageOrigin {
@@ -960,7 +1008,7 @@ mod tests {
                 }),
                 agent_sender: None,
             },
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Utc::now().naive_utc(),
             images: vec![],
             context: None,
         }))
@@ -1125,6 +1173,7 @@ mod tests {
                         id: "call-1".to_string(),
                         name: "nonexistent_tool".to_string(),
                         arguments: serde_json::json!({}),
+                        server: None,
                     }],
                 ))
             } else {
@@ -1212,23 +1261,17 @@ mod tests {
 
         assert_eq!(summary, "build is green");
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), conv_sub.recv())
-            .await
-            .expect("intermediate text should reach the conversation promptly")
-            .unwrap()
-            .unwrap();
+        let event = wait::next_event(
+            "the intermediate text to reach the conversation",
+            &mut conv_sub,
+        )
+        .await;
         assert_eq!(event.content, "checking the build now");
         assert_eq!(event.session_address, address);
         assert_eq!(event.conversation_id, "chan-1");
 
         let session_event =
-            tokio::time::timeout(std::time::Duration::from_secs(1), session_sub.recv())
-                .await
-                .expect(
-                    "the session-stream event should also be published, same as any other session",
-                )
-                .unwrap()
-                .unwrap();
+            wait::next_event("the session-stream event to be published", &mut session_sub).await;
         assert_eq!(session_event.address, address);
         assert_eq!(session_event.run_id, "run-conv-tool");
         assert!(

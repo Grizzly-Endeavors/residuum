@@ -1,14 +1,18 @@
 //! CLI subcommand dispatch using clap.
 
 mod a2a;
+mod agent;
 mod agent_keys;
 mod bug_report;
 mod feedback;
+mod hub_client;
 mod logs;
+mod remote;
 mod secret;
 mod serve;
 mod setup;
 mod stop;
+mod teams;
 mod tracing_cmd;
 mod update;
 mod update_watchdog;
@@ -31,11 +35,15 @@ async fn checkpoint_config_before_write(checkpoints: Option<&CheckpointEngine>, 
         .await;
 }
 
-fn resolve_gateway_addr(config_dir: &std::path::Path) -> String {
-    use residuum::config::{Config, GatewayConfig};
-    Config::load_at(config_dir).map_or_else(
+fn resolve_gateway_addr(residuum_root: &std::path::Path) -> String {
+    use residuum::config::{GatewayConfig, HubConfig};
+    let hub_dir = residuum::config::paths::hub_dir(residuum_root);
+    // First launch has no timezone yet. Loading the way startup does still
+    // resolves the gateway address, including RESIDUUM_GATEWAY_PORT, so the
+    // welcome message names the address the hub will actually bind.
+    HubConfig::load_at_for_start(&hub_dir, residuum_root).map_or_else(
         |_| GatewayConfig::default().addr(),
-        |cfg| cfg.gateway.addr(),
+        |hub| hub.gateway.addr(),
     )
 }
 
@@ -59,17 +67,32 @@ enum Command {
         #[command(subcommand)]
         command: agent_keys::AgentKeysCommand,
     },
+    /// List, create, delete and control the hub's agents
+    Agent {
+        #[command(subcommand)]
+        command: agent::AgentCommand,
+    },
     /// Manage the A2A protocol listener
     A2a {
         #[command(subcommand)]
         command: a2a::A2aCommand,
+    },
+    /// Pair browsers for remote access through Residuum Cloud
+    Remote {
+        #[command(subcommand)]
+        command: remote::RemoteCommand,
     },
     /// Manage encrypted secret storage
     Secret {
         #[command(subcommand)]
         command: secret::SecretCommand,
     },
-    /// Stop a running gateway daemon
+    /// Manage Microsoft Teams bot integration and ATK setup
+    Teams {
+        #[command(subcommand)]
+        command: teams::TeamsCommand,
+    },
+    /// Stop the running hub and all its agents
     Stop(stop::StopArgs),
     /// Manage tracing and observability
     Tracing {
@@ -117,8 +140,19 @@ pub async fn run() -> Result<(), FatalError> {
 
     match command {
         Command::Secret { command } => secret::run_secret_command(&command).await,
+        Command::Teams { ref command } => teams::run_teams_command(command).await,
         Command::AgentKeys { ref command } => agent_keys::run_agent_keys_command(command).await,
         Command::A2a { ref command } => a2a::run_a2a_command(command).await,
+        Command::Agent { ref command } => {
+            residuum::util::tracing_init::init_default_tracing();
+            let gateway_addr = resolve_gateway_addr(&residuum::config::residuum_root()?);
+            agent::run_agent_command(command, &gateway_addr).await
+        }
+        Command::Remote { ref command } => {
+            residuum::util::tracing_init::init_default_tracing();
+            let gateway_addr = resolve_gateway_addr(&residuum::config::residuum_root()?);
+            remote::run_remote_command(command, &gateway_addr).await
+        }
         Command::Logs(ref args) => {
             residuum::util::tracing_init::init_default_tracing();
             logs::run_logs_command(args).await
@@ -138,31 +172,28 @@ pub async fn run() -> Result<(), FatalError> {
         Command::UpdateWatchdog(ref args) => update_watchdog::run_update_watchdog(args),
         Command::Tracing { ref command } => {
             residuum::util::tracing_init::init_default_tracing();
-            let config_dir = residuum::config::Config::config_dir()?;
-            let gateway_addr = resolve_gateway_addr(&config_dir);
+            let gateway_addr = resolve_gateway_addr(&residuum::config::residuum_root()?);
             tracing_cmd::run_tracing_command(command, &gateway_addr).await
         }
         Command::BugReport(ref args) => {
             residuum::util::tracing_init::init_default_tracing();
-            let config_dir = residuum::config::Config::config_dir()?;
-            let gateway_addr = resolve_gateway_addr(&config_dir);
+            let gateway_addr = resolve_gateway_addr(&residuum::config::residuum_root()?);
             bug_report::run_bug_report_command(args, &gateway_addr).await
         }
         Command::Feedback(ref args) => {
             residuum::util::tracing_init::init_default_tracing();
-            let config_dir = residuum::config::Config::config_dir()?;
-            let gateway_addr = resolve_gateway_addr(&config_dir);
+            let gateway_addr = resolve_gateway_addr(&residuum::config::residuum_root()?);
             feedback::run_feedback_command(args, &gateway_addr).await
         }
         Command::Serve(ref args) => {
             if args.foreground {
-                // Load config to get the configured log level
+                // Load the hub config to get the configured log level
+                // ([tracing] is hub-owned).
                 let log_level = {
-                    let config_dir = residuum::config::Config::config_dir()
-                        .unwrap_or_else(|_| std::path::PathBuf::from("."));
-                    residuum::config::Config::load_at(&config_dir)
-                        .map_or(residuum::config::LogLevel::default(), |cfg| {
-                            cfg.tracing.log_level
+                    residuum::config::default_hub_dir()
+                        .and_then(|hub_dir| residuum::config::HubConfig::load_at(&hub_dir))
+                        .map_or(residuum::config::LogLevel::default(), |hub| {
+                            hub.tracing.log_level
                         })
                 };
                 residuum::util::tracing_init::init_daemon_tracing(args.foreground, log_level);

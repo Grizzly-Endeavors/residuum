@@ -6,7 +6,7 @@ enum ConnectionState: Equatable {
     case disconnected
 }
 
-/// Manages a single WebSocket connection to one Residuum agent daemon.
+/// Manages a single WebSocket connection to one agent on the Residuum hub.
 ///
 /// Call `connect()` to start. The connection retries automatically on
 /// failure with exponential backoff (1 s → 2 s → 4 s → … → 30 s max).
@@ -28,6 +28,7 @@ final class ResiduumConnection: NSObject {
 
     private let host: String
     private let port: UInt16
+    private let agent: String
     private var task: URLSessionWebSocketTask?
     private lazy var session: URLSession = URLSession(
         configuration: .default,
@@ -40,9 +41,10 @@ final class ResiduumConnection: NSObject {
 
     // MARK: - Init
 
-    init(host: String, port: UInt16) {
+    init(host: String, port: UInt16, agent: String) {
         self.host = host
         self.port = port
+        self.agent = agent
     }
 
     // MARK: - Public API
@@ -80,7 +82,7 @@ final class ResiduumConnection: NSObject {
         components.scheme = "ws"
         components.host = host
         components.port = Int(port)
-        components.path = "/ws"
+        components.path = "/api/agents/\(agent)/ws"
         guard let url = components.url else { return }
 
         updateState(.connecting)
@@ -151,8 +153,7 @@ extension ResiduumConnection: URLSessionWebSocketDelegate {
         DispatchQueue.main.async {
             self.retryDelay = 1.0
             self.updateState(.connected)
-            // TODO: re-sync tab.verboseEnabled on reconnect once InputBar wiring is complete.
-            // For now, verbose always resets to off on reconnect.
+            // Verbose always resets to off on reconnect.
             self.send(.setVerbose(enabled: false))
             self.startPing()
         }

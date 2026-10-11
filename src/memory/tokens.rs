@@ -118,6 +118,7 @@ mod tests {
                 id: "call_1".to_string(),
                 name: "read_file".to_string(),
                 arguments: serde_json::json!({"path": "/tmp/test.txt"}),
+                server: None,
             }]),
         )];
         let tokens = estimate_message_tokens(&messages);
@@ -137,6 +138,7 @@ mod tests {
                     id: "call_1".to_string(),
                     name: "exec".to_string(),
                     arguments: serde_json::json!({"command": "ls /tmp"}),
+                    server: None,
                 }]),
             ),
             Message::tool("file1.txt\nfile2.txt", "call_1"),
@@ -146,6 +148,29 @@ mod tests {
         assert!(
             all_tokens > single_tokens,
             "more messages should mean more tokens"
+        );
+    }
+
+    #[test]
+    fn a_messages_size_does_not_count_the_models_thinking() {
+        let plain = Message::assistant("The answer is 42.".to_string(), None);
+        let reasoned = crate::inference::Message::assistant("The answer is 42.".to_string(), None)
+            .with_thinking(vec![crate::inference::ThinkingBlock {
+                text: "private reasoning about the answer".to_string(),
+                signature: Some("sig-opaque-token".to_string()),
+                redacted: Some("encrypted-blob".to_string()),
+                part: None,
+                origin: None,
+            }]);
+
+        assert_eq!(
+            estimate_single_message(&reasoned),
+            estimate_single_message(&plain),
+            "conversation size is what the agent said, not what it thought"
+        );
+        assert_eq!(
+            estimate_message_tokens(std::slice::from_ref(&reasoned)),
+            estimate_message_tokens(std::slice::from_ref(&plain))
         );
     }
 }

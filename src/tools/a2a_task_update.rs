@@ -9,7 +9,9 @@ use serde_json::Value;
 
 use crate::bus::{A2aTaskSignalEvent, A2aTaskSignalState, Publisher, SessionAddress, topics};
 use crate::inference::ToolDefinition;
+use crate::workspace::team_files::TeamFiles;
 
+use super::path_policy::SharedPathPolicy;
 use super::{Tool, ToolError, ToolResult};
 
 /// Hard cap on one artifact file's size (matches the plan's ~20 MB budget).
@@ -22,6 +24,8 @@ pub struct A2aTaskUpdateTool {
     address: SessionAddress,
     publisher: Publisher,
     workspace_dir: PathBuf,
+    /// Supplies the `team/` namespace, when the agent belongs to a team.
+    policy: Option<SharedPathPolicy>,
 }
 
 impl A2aTaskUpdateTool {
@@ -33,20 +37,40 @@ impl A2aTaskUpdateTool {
             address,
             publisher,
             workspace_dir,
+            policy: None,
         }
+    }
+
+    /// Let artifact paths starting with `team/` name files in the shared
+    /// team directory.
+    #[must_use]
+    pub fn with_policy(mut self, policy: SharedPathPolicy) -> Self {
+        self.policy = Some(policy);
+        self
     }
 }
 
-/// Resolve `relative` against `workspace_dir`, refusing a path that escapes
-/// the workspace or doesn't exist.
-async fn resolve_artifact_path(workspace_dir: &Path, relative: &str) -> Result<PathBuf, String> {
+/// Resolve `relative` against `workspace_dir` (or the team directory, for a
+/// `team/...` path), refusing a path that escapes it or doesn't exist.
+async fn resolve_artifact_path(
+    workspace_dir: &Path,
+    team: Option<&TeamFiles>,
+    relative: &str,
+) -> Result<PathBuf, String> {
     if relative.trim().is_empty() {
         return Err("artifact path must not be empty".to_string());
     }
-    let canonical_root = tokio::fs::canonicalize(workspace_dir)
+    let (root, in_root) = match team {
+        Some(team) => {
+            let (base, rest) = team.locate(relative);
+            (base.to_path_buf(), rest)
+        }
+        None => (workspace_dir.to_path_buf(), PathBuf::from(relative)),
+    };
+    let canonical_root = tokio::fs::canonicalize(&root)
         .await
         .map_err(|e| format!("failed to resolve the workspace root: {e}"))?;
-    let candidate = workspace_dir.join(relative);
+    let candidate = root.join(in_root);
     let canonical_target = tokio::fs::canonicalize(&candidate)
         .await
         .map_err(|e| format!("'{relative}' does not exist in the workspace: {e}"))?;
@@ -59,8 +83,12 @@ async fn resolve_artifact_path(workspace_dir: &Path, relative: &str) -> Result<P
 /// Read `relative` (validated against `workspace_dir`) into an [`a2a::Part`],
 /// as UTF-8 text when possible and raw bytes with a detected media type
 /// otherwise, capped at [`MAX_ARTIFACT_BYTES`].
-async fn build_artifact(workspace_dir: &Path, relative: &str) -> Result<a2a::Artifact, String> {
-    let resolved = resolve_artifact_path(workspace_dir, relative).await?;
+async fn build_artifact(
+    workspace_dir: &Path,
+    team: Option<&TeamFiles>,
+    relative: &str,
+) -> Result<a2a::Artifact, String> {
+    let resolved = resolve_artifact_path(workspace_dir, team, relative).await?;
     let metadata = tokio::fs::metadata(&resolved)
         .await
         .map_err(|e| format!("failed to read '{relative}': {e}"))?;
@@ -133,7 +161,8 @@ impl Tool for A2aTaskUpdateTool {
                         "type": "array",
                         "items": { "type": "string" },
                         "description": "Workspace-relative paths of files to attach as artifacts, \
-                            if any."
+                            if any. A path starting with \"team/\" is in the shared team \
+                            folder."
                     }
                 },
                 "required": ["state", "message"]
@@ -169,9 +198,13 @@ impl Tool for A2aTaskUpdateTool {
             })
             .unwrap_or_default();
 
+        let team = match &self.policy {
+            Some(policy) => policy.read().await.team().cloned(),
+            None => None,
+        };
         let mut artifacts = Vec::with_capacity(artifact_paths.len());
         for relative in &artifact_paths {
-            match build_artifact(&self.workspace_dir, relative).await {
+            match build_artifact(&self.workspace_dir, team.as_ref(), relative).await {
                 Ok(artifact) => artifacts.push(artifact),
                 Err(e) => {
                     return Ok(ToolResult::error(format!(
@@ -335,6 +368,60 @@ mod tests {
             .unwrap();
         assert!(result.is_error);
         assert!(result.output.contains("failed to attach artifact"));
+    }
+
+    #[tokio::test]
+    async fn attaches_an_artifact_from_the_team_folder() {
+        let bus = spawn_broker();
+        let hub = crate::tools::team_namespace_tests::Hub::new();
+        std::fs::write(hub.team().join("summary.md"), "team summary").unwrap();
+        let agent_dir = hub.agent_dir("scout");
+        std::fs::write(agent_dir.join("summary.md"), "private summary").unwrap();
+        let mut sub: Subscriber<A2aTaskSignalEvent> =
+            bus.subscribe(topics::A2aTaskSignal).await.unwrap();
+        let policy = crate::tools::PathPolicy::new_shared_with_team(
+            std::collections::HashSet::new(),
+            hub.coordinator.view_for_agent("scout", &agent_dir),
+        );
+        let tool = tool("external-a2a-0001", agent_dir, bus.publisher()).with_policy(policy);
+
+        let escaping = tool
+            .execute(serde_json::json!({
+                "state": "completed",
+                "message": "see both",
+                "artifacts": ["team/summary.md", "summary.md", "team/../scout/summary.md"]
+            }))
+            .await
+            .unwrap();
+        assert!(
+            escaping.is_error,
+            "a team path must not escape the team folder"
+        );
+
+        let result = tool
+            .execute(serde_json::json!({
+                "state": "completed",
+                "message": "see both",
+                "artifacts": ["team/summary.md", "summary.md"]
+            }))
+            .await
+            .unwrap();
+        assert!(!result.is_error, "got: {}", result.output);
+        let event = sub.recv().await.unwrap().unwrap();
+        let texts: Vec<String> = event
+            .artifacts
+            .iter()
+            .map(|artifact| format!("{artifact:?}"))
+            .collect();
+        assert_eq!(texts.len(), 2, "{texts:?}");
+        assert!(
+            texts.iter().any(|t| t.contains("team summary")),
+            "{texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("private summary")),
+            "{texts:?}"
+        );
     }
 
     #[tokio::test]

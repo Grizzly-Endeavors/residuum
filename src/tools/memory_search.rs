@@ -103,7 +103,7 @@ impl Tool for MemorySearchTool {
         };
 
         // Map the tool-facing source names onto the internal DocSource vocabulary,
-        // shared with the `/api/memory/search` HTTP endpoint. Omitted → None
+        // shared with the `/api/agents/{name}/memory/search` HTTP endpoint. Omitted → None
         // (search every source); an unrecognized value is rejected rather than
         // silently falling back to searching everything.
         let source_filter = match arguments.get("source").and_then(Value::as_str) {
@@ -312,7 +312,8 @@ mod tests {
     #[tokio::test]
     async fn search_tool_finds_wiki_pages_by_path() {
         let dir = tempfile::tempdir().unwrap();
-        let page = dir.path().join("wiki/homelab/cluster.md");
+        let team = crate::config::paths::TeamPaths::new(dir.path().join("team"));
+        let page = team.wiki_dir().join("homelab").join("cluster.md");
         std::fs::create_dir_all(page.parent().unwrap()).unwrap();
         std::fs::write(
             &page,
@@ -320,10 +321,11 @@ mod tests {
         )
         .unwrap();
         let index = MemoryIndex::open_or_create(&dir.path().join(".index")).unwrap();
-        let searcher =
-            HybridSearcher::new(Arc::new(index), None, None, SearchConfig::default()).with_wiki(
-                crate::memory::wiki_index::WikiIndexer::new(dir.path(), dir.path().join("wiki")),
-            );
+        let team_wiki = crate::memory::team_wiki::TeamWikiIndex::open(&team, None)
+            .await
+            .unwrap();
+        let searcher = HybridSearcher::new(Arc::new(index), None, None, SearchConfig::default())
+            .with_team_wiki(team_wiki);
         let tool = MemorySearchTool::new(Arc::new(searcher));
 
         let result = tool
@@ -333,7 +335,9 @@ mod tests {
 
         assert!(!result.is_error, "wiki search should succeed");
         assert!(
-            result.output.contains("[wiki] wiki/homelab/cluster.md"),
+            result
+                .output
+                .contains("[wiki] team/wiki/homelab/cluster.md"),
             "a wiki hit should show its source and page path, got: {}",
             result.output
         );

@@ -40,9 +40,9 @@ Scheduled action results flow through the pub/sub bus to the notification router
 
 See [notifications.md](notifications.md) for the full routing model.
 
-## Scheduled View
+## Schedule Place
 
-The web UI's Scheduled view (opened from the hamburger menu, and at `/scheduled`; see [heartbeats.md](heartbeats.md#scheduled-view)) lists every pending action — what it does, when it's due, its agent/skill, and whether it's currently running — with a cancel button for each, backed by `GET /api/scheduled/actions` and `DELETE /api/scheduled/actions/{id}`.
+The web UI's Schedule place (under each agent in the rail, at `/agent/<name>/schedule`; see [heartbeats.md](heartbeats.md#schedule-place)) lists every pending action — its name in words, when it's due in Home's words, its skill, and whether it's running now — with Cancel for each, backed by `GET /api/agents/{name}/scheduled/actions` and `DELETE /api/agents/{name}/scheduled/actions/{id}`.
 
 ## Persistence
 
@@ -50,6 +50,6 @@ The web UI's Scheduled view (opened from the hamburger menu, and at `/scheduled`
 - `ActionStore` handles concurrent access
 - IDs generated as `action-{8 hex chars}`
 - Managed exclusively via tools — the agent should not edit `scheduled_actions.json` directly
-- A stored action left over from before `agent: "main"` was removed is dropped at startup load — never silently reinterpreted as a plain session — logged as an error naming the action, and also raised as an owner-facing notice (a web UI toast, and the same message on any chat interface) naming every dropped action and linking to [`migrating-to-agent-sessions.md`](../guides/migrating-to-agent-sessions.md). This only happens once, right after the store loads at startup, since actions (unlike heartbeat pulses) aren't re-validated on a running tick.
+- A stored action left over from before `agent: "main"` was removed is dropped at startup load — never silently reinterpreted as a plain session — logged as an error naming the action, and also raised as an owner-facing notice (a web UI toast) naming every dropped action and linking to [`migrating-to-agent-sessions.md`](../guides/migrating-to-agent-sessions.md). This only happens once, right after the store loads at startup, since actions (unlike heartbeat pulses) aren't re-validated on a running tick.
 - A `scheduled_actions.json` that exists but isn't valid JSON is never overwritten: it's moved aside to `scheduled_actions.json.corrupt-<unix-timestamp>` in the same directory, preserving its original bytes, and the store starts empty at the normal path. The owner is notified naming the moved-aside file. This also only happens once, at startup load.
 - Fork/spawn failures for an action (e.g. naming a skill that doesn't exist) are deduped per action name: warn-logged and noticed once, not on every retry of an unchanged failure — a repeat with the same error is logged at `debug!` instead, and a fresh notice fires only if the error changes or after a later recovery and re-failure.

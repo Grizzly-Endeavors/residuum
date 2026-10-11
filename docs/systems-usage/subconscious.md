@@ -1,6 +1,6 @@
 # Subconscious
 
-The subconscious is a small-model classifier that watches the main agent's conversation and steers it when it drifts from its instructions — for example, when the agent acknowledges a user preference but forgets to persist it to `USER.md` or the wiki, or acts against a rule in `SOUL.md`/`AGENTS.md`. It is **opt-in** and disabled by default, because it adds a classifier call to every evaluated turn.
+The subconscious is a small-model classifier that watches the main agent's conversation and steers it when it drifts from its instructions — for example, when the agent acknowledges a user preference but forgets to persist it to `team/USER.md` or the wiki, or acts against a rule in `SOUL.md`/`AGENTS.md`. It is **opt-in** and disabled by default, because it adds a classifier call to every evaluated turn.
 
 ## When it runs
 
@@ -55,15 +55,15 @@ The file controls the *checks* only. The output format (the JSON findings schema
 
 The bundled default `SUBCONSCIOUS.md` watches for:
 
-- A stated user preference, fact, or standing instruction the agent acknowledged (or should have noticed) but did not persist to `USER.md` or the wiki
-- The agent directly contradicting a rule in `SOUL.md`, `AGENTS.md`, or `USER.md`
+- A stated user preference, fact, or standing instruction the agent acknowledged (or should have noticed) but did not persist to `team/USER.md` or the team wiki
+- The agent directly contradicting a rule in `SOUL.md`, `team/AGENTS.md`, or `team/USER.md`
 - The agent ignoring an explicit user request from earlier in the same conversation segment
 - The agent claiming it did something the transcript shows it did not do
 - The user asking what the agent can do (or whether something is possible) and the agent answering from guesswork without activating the `residuum-system` skill first
 
 The user or agent can edit this list at any time — it's a plain workspace file, not baked into the binary.
 
-The agent's own instruction files — `SOUL.md`, `AGENTS.md`, `USER.md`, `wiki/index.md` — are supplied to the classifier as the rules to check against. Missing files are skipped.
+The agent's instruction files — its own `SOUL.md` and the team's `AGENTS.md`, `USER.md` and `wiki/index.md` — are supplied to the classifier as the rules to check against. Missing files are skipped.
 
 ## Guards against over-steering
 
@@ -78,7 +78,7 @@ The subconscious is deliberately conservative:
 
 Enabling the subconscious adds LLM calls: up to one mid-turn call per `every_n_iterations` tool iterations, plus one end-of-turn call per user turn. Assign a cheap, fast model to the `subconscious` role in `providers.toml`.
 
-The end-of-turn evaluation runs **synchronously on the gateway event loop** (like the observer), so it adds one classifier round-trip before the next inbound message is handled. It does not delay the user-visible reply, which has already been sent by the time it runs. The mid-turn watch, by contrast, runs in detached tasks and never blocks the turn.
+The end-of-turn evaluation runs in the background, off the gateway event loop (like the observer — see [memory.md](memory.md)), so it never delays the next inbound message being handled, on top of already not delaying the user-visible reply (which was sent before it starts). At most one end-of-turn evaluation runs at a time; turns that end while one is still in flight coalesce into a single follow-up that evaluates them together, keeping each turn's mid-turn corrections and queued notes, rather than stacking. On shutdown or restart, an evaluation still waiting on its model is dropped. A `note` finding, or a queued mid-turn note delivered after a failed evaluation, reaches the agent as `[Subconscious note]` context on its next turn — one step later if that next turn already started before the evaluation finished. A correction turn and a `learner` spawn are published directly from the background evaluation, since neither needs to touch the agent's live conversation state the way injecting a note does. The web UI shows a quiet "Reviewing the last reply" line under the last reply while an evaluation is running.
 
 ## Configuration
 
@@ -93,7 +93,7 @@ The end-of-turn evaluation runs **synchronously on the gateway event loop** (lik
 | `learning` | `false` | Opt-in for `learn` signals (see [Learning trigger](#learning-trigger)). Independent of `enabled` — the subconscious can steer without learning enabled. |
 | `learning_cooldown_minutes` | `240` | Minimum time between `learner` spawns triggered by a `learn` signal. |
 
-The model is assigned via the `subconscious` role in `providers.toml`, following the standard `models.subconscious` → `models.default` → `main` precedence. All of these are also editable from the web Settings UI (Runtime and Providers panels).
+The model is assigned via the `subconscious` role in `providers.toml`, following the standard `models.subconscious` → `models.default` → `main` precedence. All of these are also editable from the web Settings UI: the switches and numbers under Reviewing replies and Learning from conversations in the agent's Memory settings, and the model under Reviewing replies in its Model settings. The reviewing settings and Learn from reviewed replies stay dimmed until Review replies is on.
 
 `[learning]` in `config.toml` is a separate, always-available section (not nested under `[subconscious]`) that covers the turn-count fallback:
 

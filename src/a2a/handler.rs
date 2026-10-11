@@ -424,7 +424,7 @@ pub async fn resume_in_progress_tasks(
     );
     for task in tasks {
         let handler = Arc::clone(&handler);
-        tokio::spawn(async move {
+        crate::util::spawn_in_span(async move {
             let Some(caller) = FileTaskStore::caller_of(&task).map(str::to_string) else {
                 tracing::warn!(task_id = %task.id, "a2a task left in progress has no recorded caller; cannot resume it");
                 return;

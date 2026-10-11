@@ -13,8 +13,7 @@ struct PopoverView: View {
             header
             VeinDivider()
 
-            if store.selectedTab?.connection.state == .disconnected
-                && store.selectedTab?.messages.isEmpty == true {
+            if store.connectionState == .disconnected && store.messages.isEmpty {
                 disconnectedBody
             } else {
                 ChatView()
@@ -42,8 +41,10 @@ struct PopoverView: View {
                 .foregroundStyle(Style.blue)
                 .kerning(3)
 
-            TabBar()
-                .frame(maxWidth: .infinity)
+            Text(store.agentName ?? "")
+                .font(Style.mono(size: 10))
+                .foregroundStyle(Style.textMuted)
+                .frame(maxWidth: .infinity, alignment: .trailing)
 
             Button { showSettings = true } label: {
                 Image(systemName: "gearshape")
@@ -68,17 +69,17 @@ struct PopoverView: View {
                 .foregroundStyle(Style.textDim)
                 .kerning(3)
             VStack(spacing: 6) {
-                Text("Daemon not running.")
+                Text(store.problem ?? "Couldn't connect to the agent.")
                     .font(Style.mono(size: 11))
                     .foregroundStyle(Style.textMuted)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
                 Text("residuum serve")
                     .font(Style.mono(size: 11))
                     .foregroundStyle(Style.blue.opacity(0.5))
             }
             Button("Reconnect") {
-                if let tab = store.selectedTab {
-                    store.reconnect(tab: tab)
-                }
+                store.connect()
             }
             .font(Style.mono(size: 10))
             .foregroundStyle(Style.blue)

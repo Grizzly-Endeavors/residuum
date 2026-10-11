@@ -63,8 +63,10 @@ newtype_string!(
 /// Subscribers register interest in a specific `(TopicId, TypeId)` pair.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TopicId {
-    /// Interactive endpoint turn activity (responses, tool calls, lifecycle, intermediate text).
+    /// What is delivered to a named endpoint (a chat interface's turns, the web UI's posts).
     Endpoint(EndpointName),
+    /// The main agent's whole conversation, one ordered stream for every turn.
+    MainConversation,
     /// Background task orchestration (spawn requests and task results).
     Background,
     /// Agent session lifecycle and session-tagged turn events.
@@ -75,6 +77,8 @@ pub enum TopicId {
     Notification(NotifyName),
     /// The user inbox for incoming notifications.
     Inbox,
+    /// Items agents add to the user inbox.
+    UserInbox,
     /// Workbench artifact file changes.
     Workbench,
     /// Debounced workspace file changes (the change feed).
@@ -87,11 +91,13 @@ impl fmt::Display for TopicId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Endpoint(name) => write!(f, "endpoint:{name}"),
+            Self::MainConversation => f.write_str("main:conversation"),
             Self::Background => f.write_str("background"),
             Self::Sessions => f.write_str("sessions"),
             Self::UserMessage => f.write_str("user:message"),
             Self::Notification(name) => write!(f, "notification:{name}"),
             Self::Inbox => f.write_str("inbox"),
+            Self::UserInbox => f.write_str("user:inbox"),
             Self::Workbench => f.write_str("workbench"),
             Self::Workspace => f.write_str("workspace"),
             Self::A2aTaskSignal => f.write_str("a2a:task-signal"),
@@ -207,6 +213,7 @@ mod tests {
     fn topic_id_display() {
         assert_eq!(TopicId::UserMessage.to_string(), "user:message");
         assert_eq!(TopicId::Inbox.to_string(), "inbox");
+        assert_eq!(TopicId::UserInbox.to_string(), "user:inbox");
         assert_eq!(TopicId::Background.to_string(), "background");
         assert_eq!(
             TopicId::Endpoint(EndpointName::from("ws")).to_string(),

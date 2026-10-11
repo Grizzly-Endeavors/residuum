@@ -15,6 +15,7 @@ use futures_util::stream::BoxStream;
 
 use crate::background::messaging::{AgentMessenger, ConversationSpawn};
 use crate::background::registry::{SessionRegistry, SessionState, conversation_session_address};
+use crate::bus::MessageEvent;
 use crate::bus::{
     A2aTaskSignalEvent, A2aTaskSignalState, AgentResultStatus, BusHandle, SessionEvent,
     SessionEventKind, topics,
@@ -24,9 +25,7 @@ use crate::inference::{ImageData, MessageSender};
 use crate::interfaces::attachment::{
     self, AttachmentInfo, MAX_IMAGE_INLINE_SIZE, is_supported_image,
 };
-use crate::interfaces::types::{
-    ConversationContext, ConversationKind, InboundMessage, MessageOrigin,
-};
+use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOrigin};
 use crate::skills::SharedSkillState;
 
 use super::auth::CALLER_HEADER;
@@ -139,7 +138,7 @@ impl AgentExecutor for SessionExecutor {
     ) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
         let executor = self.clone();
         let (tx, rx) = tokio::sync::mpsc::channel(32);
-        tokio::spawn(async move {
+        crate::util::spawn_in_span(async move {
             run_execution(executor, ctx, tx).await;
         });
         Box::pin(futures_util::stream::unfold(rx, |mut rx| async move {
@@ -308,7 +307,7 @@ async fn deliver_inbound(
     }
 
     let (display_name, location) = caller_display(caller);
-    let inbound = InboundMessage {
+    let inbound = MessageEvent {
         id: message.message_id.clone(),
         content,
         origin: MessageOrigin {
@@ -326,7 +325,7 @@ async fn deliver_inbound(
             }),
             agent_sender: None,
         },
-        timestamp: chrono::Utc::now(),
+        timestamp: crate::time::now_local(executor.tz),
         images,
         context: None,
     };

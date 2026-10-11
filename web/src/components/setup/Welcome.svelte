@@ -1,38 +1,56 @@
 <script lang="ts">
   import type { SetupWizardState } from "../../lib/types";
+  import { agentNameProblem } from "../../lib/agent-name";
+  import { isTimeZoneName, timeZoneChoices } from "../../lib/time-zones";
+  import { SelectField, TextField } from "../../lib/ui";
+  import SetupGroup from "./SetupGroup.svelte";
+  import SetupNav from "./SetupNav.svelte";
 
   interface Props {
     wizardState: SetupWizardState;
     onNext: () => void;
   }
 
-  let { wizardState, onNext }: Props = $props();
+  let { wizardState = $bindable(), onNext }: Props = $props();
+
+  let agentNameError = $derived(agentNameProblem(wizardState.agentName));
+  const zone = $derived(wizardState.timezone.trim());
+  const zoneChoices = $derived(timeZoneChoices(wizardState.timezone));
+  const zoneError = $derived(
+    zone !== "" && !isTimeZoneName(zone) ? "That doesn't look like a time zone name." : undefined,
+  );
 </script>
 
-<h2>Welcome to Residuum</h2>
-<p class="subtitle">Let's get your agent configured. This will only take a minute.</p>
-
-<div class="settings-field">
-  <label for="welcome-name">Your Name</label>
-  <input
-    id="welcome-name"
-    type="text"
+<SetupGroup>
+  <TextField
+    label="Your name"
     bind:value={wizardState.userName}
+    autocomplete="name"
     placeholder="What should your agent call you?"
+    hint="Optional. Your agents read it from the team's shared notes about you."
   />
-</div>
-
-<div class="settings-field">
-  <label for="welcome-timezone">Timezone (IANA format)</label>
-  <input
-    id="welcome-timezone"
-    type="text"
+  <TextField
+    label="Agent name"
+    bind:value={wizardState.agentName}
+    placeholder="assistant"
+    autocapitalize="off"
+    autocomplete="off"
+    spellcheck="false"
+    hint="Up to 32 characters. Capitals, spaces, and letters from any language are fine."
+    error={agentNameError ?? undefined}
+  />
+  <SelectField
+    label="Time zone"
     bind:value={wizardState.timezone}
-    placeholder="America/New_York"
+    options={zoneChoices.ungrouped}
+    groups={zoneChoices.groups}
+    placeholder="Choose a time zone"
+    hint="Schedules and timestamps use this."
+    error={zoneError}
   />
-</div>
+</SetupGroup>
 
-<div class="setup-nav">
-  <div></div>
-  <button class="btn btn-primary" onclick={onNext}>Next</button>
-</div>
+<SetupNav
+  {onNext}
+  nextDisabled={agentNameError !== null || zone === "" || zoneError !== undefined}
+/>

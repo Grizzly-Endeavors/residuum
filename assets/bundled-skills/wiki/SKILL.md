@@ -1,11 +1,11 @@
 ---
 name: wiki
-description: Page format, index rules, and ingest/lint procedures for the knowledge wiki in wiki/. Activate before creating, editing, moving, or deleting any wiki page. Also the role of the memory_tending and wiki_lint pulses.
+description: Page format, index rules, and ingest/lint procedures for the team knowledge wiki in team/wiki/. Activate before creating, editing, moving, or deleting any wiki page. Also the role of the memory_tending and wiki_lint pulses.
 ---
 
 # Knowledge Wiki
 
-`wiki/` is your long-term knowledge: an Open Knowledge Format (OKF) bundle of Markdown pages. Its root `index.md` is in your prompt as WIKI_INDEX; everything else you read on demand with read_file.
+`team/wiki/` is the team's long-term knowledge, shared by every agent: an Open Knowledge Format (OKF) bundle of Markdown pages. Its root `index.md` is in your prompt as WIKI_INDEX; everything else you read on demand with read_file.
 
 ## Pages
 
@@ -32,7 +32,7 @@ stale_after: 2027-03-01T00:00:00Z
 Body in plain Markdown. Link related pages: [homelab cluster](/homelab/cluster.md).
 ```
 
-- `type` (required): a short noun phrase. Before inventing a new type, list the ones in use (`grep -rh '^type:' wiki | sort | uniq -c` via exec) and reuse one that fits. Common ones: `Person`, `Project`, `Tool`, `Machine`, `Preference`, `Topic`, `Place`, `Organization`.
+- `type` (required): a short noun phrase. Before inventing a new type, list the ones in use (`grep -rh '^type:' team/wiki | sort | uniq -c` via exec) and reuse one that fits. Common ones: `Person`, `Project`, `Tool`, `Machine`, `Preference`, `Topic`, `Place`, `Organization`.
 - `title` and `description` (always set): the description is the one line that goes into the index, so make it say what the page tells you.
 - `status`: `draft` when only one episode supports it, `stable` once a second, independent episode does, `deprecated` when it no longer holds but is worth keeping for history. Default `stable`.
 - `sources`: where the knowledge came from, one entry per episode, with `resource: episode:<episode id>` (so memory_get can pull the transcript) and `last_modified` set to the episode's date. Cite an observation by the episode it came from. Add an entry each time new evidence confirms or changes the page.
@@ -43,7 +43,7 @@ Write the body as declarative facts ("The user prefers X"), not instructions to 
 
 ## Links
 
-Link other pages with bundle-relative paths starting with `/`, where `/` is `wiki/`: `[cluster](/homelab/cluster.md)`. Link whenever a page mentions a concept that has its own page.
+Link other pages with bundle-relative paths starting with `/`, where `/` is `team/wiki/`: `[cluster](/homelab/cluster.md)`. Link whenever a page mentions a concept that has its own page.
 
 ## Folders and indexes
 
@@ -61,20 +61,20 @@ List every page in its own folder's index, and list every subfolder in its paren
 ## After every change
 
 1. Update the `index.md` of each folder you touched: add new pages, fix moved or renamed links, drop deleted ones, refresh descriptions that changed.
-2. Append one line to `wiki/log.md`: `## [YYYY-MM-DD] <ingest|edit|restructure|lint> | <what changed and where>`. An `ingest` entry also names the last episode it covered: `## [2026-09-21] ingest | through ep-047 | ...`.
+2. Append one line to `team/wiki/log.md`: `## [YYYY-MM-DD] <ingest|edit|restructure|lint> | <what changed and where>`. An `ingest` entry also names the last episode it covered: `## [2026-09-21] ingest | through ep-047 | ...`.
 3. Re-read each index you edited and confirm every link points at a file that exists.
 
-## USER.md versus the wiki
+## team/USER.md versus the wiki
 
-USER.md holds only the user's core facts: a capped list (about 15) of durable identity and standing preferences needed on every turn. When it is full, replace an entry rather than adding one. Everything else about the user goes in wiki pages.
+`team/USER.md` holds only the user's core facts: a capped list (about 15) of durable identity and standing preferences needed on every turn. When it is full, replace an entry rather than adding one. Everything else about the user goes in wiki pages.
 
 ## Ingest (memory_tending pulse)
 
-1. Find the last `ingest` entry in `wiki/log.md` and the episode it went through (`through ep-NNN`). Episode IDs are sequential: read each later episode with memory_get (ep-NNN+1, +2, …) until one is not found. With no prior ingest entry, start at ep-001. Stop after 20 episodes in one run; the next run continues from the log entry.
+1. Find the last `ingest` entry in `team/wiki/log.md` and the episode it went through (`through ep-NNN`). Episode IDs are sequential: read each later episode with memory_get (ep-NNN+1, +2, …) until one is not found. With no prior ingest entry, start at ep-001. Stop after 20 episodes in one run; the next run continues from the log entry.
 2. For each durable fact, decision, or preference: update the existing page that covers it, or create a new page. Add the episode to its `sources`.
 3. A pattern seen in one episode goes in a `draft` page. Promote a draft to `stable` once a second, independent episode supports it.
 4. Correct pages the new evidence contradicts; mark pages `deprecated` when they stop being true.
-5. Update USER.md only for core facts, under the cap.
+5. Update `team/USER.md` only for core facts, under the cap.
 6. Finish with the After-every-change steps, recording the last episode you read in the `ingest` log entry.
 
 ## Lint (wiki_lint pulse)

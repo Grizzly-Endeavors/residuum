@@ -15,3 +15,16 @@ allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-dbg-in-tests = true
+
+# Temp-dir leak guardrail.
+#
+# These methods disable tempfile's cleanup-on-drop, so every call leaks a
+# directory or file into /tmp. Leaked test fixtures once filled /tmp's inode
+# table. Hold the guard for the lifetime of the test instead.
+disallowed-methods = [
+    { path = "tempfile::TempDir::keep", reason = "disables temp cleanup and leaks into /tmp; hold the TempDir guard for the test's lifetime instead" },
+    { path = "tempfile::TempDir::into_path", reason = "disables temp cleanup and leaks into /tmp; hold the TempDir guard for the test's lifetime instead" },
+    { path = "tempfile::NamedTempFile::keep", reason = "disables temp cleanup and leaks into /tmp; hold the NamedTempFile guard for the test's lifetime instead" },
+    { path = "tempfile::NamedTempFile::into_temp_path", reason = "detaches the file from its cleanup guard, risking a leak into /tmp; hold the NamedTempFile for the test's lifetime instead" },
+    { path = "tempfile::TempPath::keep", reason = "disables temp cleanup and leaks into /tmp; hold the TempPath guard for the test's lifetime instead" },
+]

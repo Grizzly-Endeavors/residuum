@@ -32,3 +32,14 @@ pub fn global_span_buffer() -> Option<&'static SpanBufferHandle> {
 pub fn set_global_span_buffer(handle: SpanBufferHandle) -> Result<(), SpanBufferHandle> {
     SPAN_BUFFER.set(handle)
 }
+
+/// The process span buffer, or a fresh in-memory one when tracing was not
+/// initialized (tests and CLI modes), so callers always have a buffer to
+/// hand to the tracing service.
+#[must_use]
+pub fn span_buffer() -> SpanBufferHandle {
+    global_span_buffer().cloned().unwrap_or_else(|| {
+        let (_layer, handle) = SpanBufferLayer::new(&SpanBufferConfig::default());
+        handle
+    })
+}

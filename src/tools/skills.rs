@@ -116,7 +116,7 @@ impl Tool for SkillDeactivateTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skills::{SkillIndex, SkillState};
+    use crate::skills::{SkillDir, SkillIndex, SkillState};
     use std::sync::Arc;
 
     #[test]
@@ -180,10 +180,12 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
+        let index = SkillIndex::scan(&[crate::skills::SkillDir::agent(dir.path())])
+            .await
+            .unwrap();
         let state = Arc::new(tokio::sync::Mutex::new(SkillState::new(
             index,
-            vec![dir.path().to_path_buf()],
+            vec![SkillDir::agent(dir.path())],
         )));
 
         let activate = SkillActivateTool::new(Arc::clone(&state));

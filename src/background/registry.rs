@@ -36,7 +36,7 @@ pub const MAIN_ADDRESS: &str = "main";
 pub const MAIN_DEPTH: u32 = 0;
 
 /// Sender address for a message the owner types into a session from the web
-/// UI's sessions sidebar. Not a session and never present in the registry:
+/// UI's session panel. Not a session and never present in the registry:
 /// the owner is not an agent, so a message to this address does not resolve.
 pub const OWNER_ADDRESS: &str = "owner";
 
@@ -50,6 +50,16 @@ pub const ARTIFACT_SENDER_PREFIX: &str = "artifact:";
 /// Category label an artifact's message to a session carries as its
 /// sender's category.
 pub const ARTIFACT_SENDER_CATEGORY: &str = "artifact";
+
+/// Prefix of a teammate address: `agent:<name>` for a teammate's main,
+/// `agent:<name>/<session-address>` for one of its sessions. A message from
+/// a teammate carries its sender's address in this form, so replying is a
+/// `message_agent` call to it. Never present in this agent's registry:
+/// session addresses never contain `:`.
+pub const TEAMMATE_SENDER_PREFIX: &str = "agent:";
+
+/// Category label a teammate's message carries as its sender's category.
+pub const TEAMMATE_SENDER_CATEGORY: &str = "teammate";
 
 /// The sender address (and source label) naming the workbench artifact
 /// `name`.
@@ -548,6 +558,23 @@ impl SessionRegistry {
         Some(entry.info.usage)
     }
 
+    /// Fold `n` more executed tool calls into a session's running totals.
+    ///
+    /// Returns the updated totals, or `None` if the address is unknown —
+    /// the session may already have completed and left the registry, which
+    /// the caller (the turn's [`crate::agent::usage::UsageSink`]) treats the
+    /// same as a turn with no sink to record into.
+    pub fn accumulate_tool_calls(
+        &self,
+        address: &SessionAddress,
+        n: u32,
+    ) -> Option<crate::agent::usage::SessionUsageTotals> {
+        let mut guard = self.lock();
+        let entry = guard.get_mut(address)?;
+        entry.info.usage.record_tool_calls(n);
+        Some(entry.info.usage)
+    }
+
     /// Stop a session: cancels its stop token so an in-flight turn or idle
     /// wait ends and the session moves to `completing`.
     ///
@@ -703,6 +730,12 @@ impl crate::agent::usage::UsageSink for SessionUsageSink<'_> {
     ) -> crate::agent::usage::SessionUsageTotals {
         self.registry
             .accumulate_usage(&self.address, usage)
+            .unwrap_or_default()
+    }
+
+    async fn record_tool_calls(&self, n: u32) -> crate::agent::usage::SessionUsageTotals {
+        self.registry
+            .accumulate_tool_calls(&self.address, n)
             .unwrap_or_default()
     }
 }
@@ -1088,6 +1121,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn accumulate_tool_calls_folds_into_the_running_session_entry() {
+        let registry = SessionRegistry::new();
+        let info = sample_info("spawned-researcher-0012");
+        let _rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
+
+        let first = registry
+            .accumulate_tool_calls(&info.address, 3)
+            .expect("a live session should accumulate");
+        assert_eq!(first.tool_calls, 3);
+
+        let second = registry
+            .accumulate_tool_calls(&info.address, 2)
+            .expect("a live session should still accumulate");
+        assert_eq!(
+            second.tool_calls, 5,
+            "tool calls must accumulate across batches"
+        );
+
+        assert_eq!(
+            registry.get(&info.address).unwrap().usage,
+            second,
+            "the registry entry's own usage field must reflect the latest totals"
+        );
+    }
+
+    #[test]
+    fn accumulate_tool_calls_on_unknown_address_returns_none() {
+        let registry = SessionRegistry::new();
+        assert!(
+            registry
+                .accumulate_tool_calls(&SessionAddress::from("ghost"), 1)
+                .is_none()
+        );
+    }
+
     #[tokio::test]
     async fn session_usage_sink_accumulates_through_the_registry() {
         let registry = SessionRegistry::new();
@@ -1103,6 +1174,23 @@ mod tests {
         let totals = crate::agent::usage::UsageSink::accumulate(&sink, Some(usage(200, 40))).await;
         assert_eq!(totals.input_tokens, 200);
         assert_eq!(registry.get(&info.address).unwrap().usage.output_tokens, 40);
+    }
+
+    #[tokio::test]
+    async fn session_usage_sink_records_tool_calls_through_the_registry() {
+        let registry = SessionRegistry::new();
+        let info = sample_info("spawned-researcher-0013");
+        let _rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
+
+        let sink = SessionUsageSink {
+            registry: &registry,
+            address: info.address.clone(),
+        };
+        let totals = crate::agent::usage::UsageSink::record_tool_calls(&sink, 4).await;
+        assert_eq!(totals.tool_calls, 4);
+        assert_eq!(registry.get(&info.address).unwrap().usage.tool_calls, 4);
     }
 
     #[tokio::test]
@@ -1405,7 +1493,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn wait_until_clear_returns_once_the_entry_is_removed() {
         let registry = std::sync::Arc::new(SessionRegistry::new());
         let info = sample_info("spawned-researcher-0007d");
@@ -1415,21 +1503,23 @@ mod tests {
 
         let waiter_registry = std::sync::Arc::clone(&registry);
         let address = info.address.clone();
-        let waiter = tokio::spawn(async move {
+        let waiter = crate::util::spawn_in_span(async move {
             waiter_registry.wait_until_clear(&address).await;
         });
 
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        crate::testing::clock::elapse(Duration::from_millis(20)).await;
         assert!(
             !waiter.is_finished(),
             "should still be waiting while the entry is live"
         );
 
         registry.remove(&info.address, &info.run_id);
-        tokio::time::timeout(Duration::from_secs(1), waiter)
-            .await
-            .expect("wait_until_clear should return once the entry is removed")
-            .unwrap();
+        crate::testing::wait::guarded(
+            "wait_until_clear to return once the entry is removed",
+            waiter,
+        )
+        .await
+        .unwrap();
     }
 
     fn sample_resume_point(run_id: &str) -> ResumePoint {
@@ -1548,7 +1638,7 @@ mod tests {
 
         let recordings = (0..32).map(|i| {
             let registry = std::sync::Arc::clone(&registry);
-            tokio::spawn(async move {
+            crate::util::spawn_in_span(async move {
                 let address = SessionAddress::from(format!("external-concurrent-{i}"));
                 registry
                     .record_resume_point(&address, sample_resume_point(&format!("run-{i}")))

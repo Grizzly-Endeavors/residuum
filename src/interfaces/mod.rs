@@ -8,6 +8,7 @@ pub mod commands;
 pub(crate) mod context_buffer;
 pub(crate) mod conversations;
 pub mod discord;
+mod outbound;
 pub(crate) mod reply_targets;
 pub mod teams;
 pub mod telegram;
@@ -19,7 +20,7 @@ use std::path::Path;
 
 use crate::background::registry::{SessionRegistry, conversation_session_address};
 use crate::bus::{
-    BusError, BusHandle, EndpointName, ErrorEvent, IntermediateEvent, NoticeEvent, NotifyName,
+    BusError, BusHandle, ConversationTypingEvent, EndpointName, ErrorEvent, IntermediateEvent,
     ResponseEvent, SessionResponseEvent, Subscriber, TurnLifecycleEvent, topics,
 };
 use crate::interfaces::types::{ConversationContext, ConversationKind};
@@ -32,21 +33,26 @@ pub(crate) struct BaseSubscribers {
     /// posts — see [`crate::bus::SessionResponseEvent`]).
     pub(crate) session_response: Subscriber<SessionResponseEvent>,
     pub(crate) turn_lifecycle: Subscriber<TurnLifecycleEvent>,
+    /// A conversation session's own turn start/end, for a typing indicator
+    /// on its conversation — the session equivalent of `turn_lifecycle`,
+    /// keyed by conversation id instead of correlation id.
+    pub(crate) conversation_typing: Subscriber<ConversationTypingEvent>,
     pub(crate) intermediate: Subscriber<IntermediateEvent>,
-    pub(crate) notice: Subscriber<NoticeEvent>,
-    pub(crate) error: Subscriber<ErrorEvent>,
+    /// Failures of main-agent turns this endpoint started. System notices
+    /// and other errors are not subscribed: an external chat carries only
+    /// conversation, and the web UI shows the rest.
+    pub(crate) turn_error: Subscriber<ErrorEvent>,
 }
 
 impl BaseSubscribers {
     pub(crate) async fn new(bus_handle: &BusHandle, ep: EndpointName) -> Result<Self, BusError> {
-        let system_topic = || topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL));
         Ok(Self {
             response: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
             session_response: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
             turn_lifecycle: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
-            intermediate: bus_handle.subscribe(topics::Endpoint(ep)).await?,
-            notice: bus_handle.subscribe(system_topic()).await?,
-            error: bus_handle.subscribe(system_topic()).await?,
+            conversation_typing: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
+            intermediate: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
+            turn_error: bus_handle.subscribe(topics::Endpoint(ep)).await?,
         })
     }
 }
@@ -83,7 +89,7 @@ pub(crate) async fn notify_main_of_undeliverable_session_output(
 
 /// Channels a chat adapter needs to carry out slash-command side effects.
 pub(crate) struct CommandDispatch<'a> {
-    pub(crate) reload_tx: &'a tokio::sync::watch::Sender<crate::gateway::types::ReloadSignal>,
+    pub(crate) reload_tx: &'a crate::gateway::types::ReloadSender,
     pub(crate) command_tx: &'a tokio::sync::mpsc::Sender<crate::gateway::types::ServerCommand>,
     pub(crate) stop_tx: &'a tokio::sync::mpsc::Sender<crate::gateway::types::StopRequest>,
     /// Looked up to stop a conversation session's turn — see
@@ -91,6 +97,11 @@ pub(crate) struct CommandDispatch<'a> {
     pub(crate) session_registry: &'a SessionRegistry,
     pub(crate) inbox_dir: &'a Path,
     pub(crate) tz: chrono_tz::Tz,
+    /// Publishes the spawn request `/multitask` starts its fork with.
+    pub(crate) publisher: &'a crate::bus::Publisher,
+    /// Main's saved conversation (`recent_messages.json`), which `/multitask`
+    /// forks.
+    pub(crate) main_conversation: &'a Path,
 }
 
 /// Run a slash command typed into a chat interface and return the reply text.
@@ -115,7 +126,7 @@ pub(crate) async fn run_chat_command(
             tracing::info!(interface, "reload requested via chat command");
             if dispatch
                 .reload_tx
-                .send(crate::gateway::types::ReloadSignal::Root)
+                .send(crate::gateway::types::ReloadSignal::Agent)
                 .is_err()
             {
                 tracing::warn!(command = %name, interface, "reload_tx closed, reload dropped");
@@ -155,7 +166,126 @@ pub(crate) async fn run_chat_command(
             )
             .await
         }
+        Some(commands::CommandSideEffect::StopSession(session_name)) => {
+            tracing::info!(session = %session_name, source = %source, "named session stop requested via chat command");
+            dispatch_stop_named_session(dispatch.session_registry, &session_name)
+        }
+        Some(commands::CommandSideEffect::ListSessions) => {
+            format_session_list(dispatch.session_registry)
+        }
+        Some(commands::CommandSideEffect::Multitask(task)) => {
+            start_multitask(dispatch, interface, conversation, task).await
+        }
         None => result.response,
+    }
+}
+
+/// Fork the main conversation into a session that works on `task` —
+/// `/multitask <task>` — and reply with where it is. Only main's own
+/// conversation (the owner's DM, per [`resolve_stop_target`]) can be forked;
+/// the fork posts its replies back into that DM.
+async fn start_multitask(
+    dispatch: &CommandDispatch<'_>,
+    interface: &str,
+    conversation: Option<&ConversationContext>,
+    task: String,
+) -> String {
+    if matches!(
+        resolve_stop_target(interface, conversation),
+        StopTarget::Conversation(_)
+    ) {
+        return "/multitask forks the conversation you and I have in our direct messages, \
+                so it only works there."
+            .to_string();
+    }
+    let history =
+        match crate::background::owner_session::load_main_conversation(dispatch.main_conversation)
+            .await
+        {
+            Ok(history) => history,
+            Err(e) => {
+                tracing::error!(
+                    error = format!("{e:#}"),
+                    interface,
+                    "couldn't read main's conversation for /multitask"
+                );
+                return "Couldn't read our conversation to fork it, so nothing was started. \
+                    The logs have the details."
+                    .to_string();
+            }
+        };
+    let event = crate::background::owner_session::OwnerSessionStart {
+        prompt: task,
+        model_tier: crate::config::BackgroundModelTier::Medium,
+        fork_of: Some(history),
+        conversation: conversation.map(|ctx| crate::bus::ConversationTarget {
+            endpoint: interface.to_string(),
+            conversation_id: ctx.id.clone(),
+        }),
+    }
+    .into_spawn_event();
+    let address = event.address.clone();
+    if let Err(e) = dispatch.publisher.publish(topics::Background, event).await {
+        tracing::warn!(error = %e, interface, "failed to publish a /multitask fork");
+        return "Couldn't start the fork because I'm shutting down or restarting. \
+                Try again shortly."
+            .to_string();
+    }
+    tracing::info!(address = %address, interface, "owner forked main's conversation with /multitask");
+    format!(
+        "Forked into session {address}. Its replies will show up here, starting with \
+         \"{address}:\". Open it from Activity in the web UI to follow up, or stop it with \
+         /stop {address}."
+    )
+}
+
+/// Stop a named session — `/stop <name>` — through the same registry stop
+/// path as the web UI's per-session stop button
+/// ([`crate::gateway::sessions::stop_session`]): a running turn is
+/// interrupted and an idle session is ended, so a session listed by
+/// `/sessions` can always be stopped by name.
+fn dispatch_stop_named_session(session_registry: &SessionRegistry, name: &str) -> String {
+    match crate::gateway::sessions::stop_session(session_registry, name) {
+        Ok(()) => format!("stopping session '{name}'."),
+        Err(e) => e.message,
+    }
+}
+
+/// Build the `/sessions` response: every live session's address, purpose,
+/// state, and elapsed time since it started.
+fn format_session_list(session_registry: &SessionRegistry) -> String {
+    let mut sessions = session_registry.list_live();
+    if sessions.is_empty() {
+        return "No sessions are running.".to_string();
+    }
+    sessions.sort_by(|a, b| a.address.as_ref().cmp(b.address.as_ref()));
+
+    let now = chrono::Utc::now();
+    let mut lines = vec![format!("{} running session(s):", sessions.len())];
+    for info in sessions {
+        let elapsed = now.signed_duration_since(info.started_at);
+        lines.push(format!(
+            "  {} [{}] {} ({})",
+            info.address,
+            info.state.as_str(),
+            info.purpose,
+            format_elapsed(elapsed)
+        ));
+    }
+    lines.join("\n")
+}
+
+/// Format a duration as a short, human "Xm" / "Xh Ym" label for the
+/// `/sessions` list. Negative or zero durations (clock skew, or a session
+/// that just started) render as `"0m"` rather than something confusing.
+fn format_elapsed(elapsed: chrono::Duration) -> String {
+    let total_mins = elapsed.num_minutes().max(0);
+    let hours = total_mins / 60;
+    let mins = total_mins % 60;
+    if hours > 0 {
+        format!("{hours}h {mins}m")
+    } else {
+        format!("{mins}m")
     }
 }
 
@@ -402,7 +532,7 @@ mod tests {
             )
             .unwrap();
         let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel::<StopRequest>(1);
-        tokio::spawn(async move {
+        crate::util::spawn_in_span(async move {
             let req = stop_rx.recv().await.unwrap();
             req.result_tx.unwrap().send(true).ok();
         });
@@ -427,7 +557,7 @@ mod tests {
     async fn web_ui_stop_with_no_conversation_reaches_main() {
         let registry = SessionRegistry::new();
         let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel::<StopRequest>(1);
-        tokio::spawn(async move {
+        crate::util::spawn_in_span(async move {
             let req = stop_rx.recv().await.unwrap();
             req.result_tx.unwrap().send(true).ok();
         });
@@ -494,6 +624,209 @@ mod tests {
         assert!(
             event.origin.belongs_to_main(),
             "the notice must reach main, never a conversation session"
+        );
+    }
+
+    /// What a `/multitask` test needs to run `start_multitask`: the channels a
+    /// dispatch borrows, a saved main conversation, and the bus its fork's
+    /// spawn request is published on.
+    struct MultitaskFixture {
+        bus: crate::bus::BusHandle,
+        reload_tx: crate::gateway::types::ReloadSender,
+        command_tx: tokio::sync::mpsc::Sender<crate::gateway::types::ServerCommand>,
+        stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
+        registry: SessionRegistry,
+        publisher: crate::bus::Publisher,
+        dir: tempfile::TempDir,
+    }
+
+    impl MultitaskFixture {
+        async fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            crate::memory::recent_messages::append_recent_messages(
+                &dir.path().join("recent_messages.json"),
+                &[crate::inference::Message::user(
+                    "should we repaint the shed?",
+                )],
+                crate::memory::types::Visibility::User,
+                chrono_tz::UTC,
+                Some("turn-1"),
+            )
+            .await
+            .unwrap();
+            let bus = crate::bus::spawn_broker();
+            Self {
+                publisher: bus.publisher(),
+                bus,
+                reload_tx: tokio::sync::mpsc::unbounded_channel().0,
+                command_tx: tokio::sync::mpsc::channel(1).0,
+                stop_tx: tokio::sync::mpsc::channel(1).0,
+                registry: SessionRegistry::new(),
+                dir,
+            }
+        }
+
+        fn main_conversation(&self) -> std::path::PathBuf {
+            self.dir.path().join("recent_messages.json")
+        }
+
+        async fn multitask(&self, conversation: &ConversationContext, task: &str) -> String {
+            let main_conversation = self.main_conversation();
+            let dispatch = CommandDispatch {
+                reload_tx: &self.reload_tx,
+                command_tx: &self.command_tx,
+                stop_tx: &self.stop_tx,
+                session_registry: &self.registry,
+                inbox_dir: self.dir.path(),
+                tz: chrono_tz::UTC,
+                publisher: &self.publisher,
+                main_conversation: &main_conversation,
+            };
+            run_chat_command(
+                "multitask",
+                Some(task),
+                &dispatch,
+                "telegram",
+                "owner",
+                Some(conversation),
+            )
+            .await
+        }
+    }
+
+    #[tokio::test]
+    async fn multitask_in_the_owner_s_dm_forks_main_and_replies_into_that_dm() {
+        let fx = MultitaskFixture::new().await;
+        let mut spawns: Subscriber<crate::bus::SpawnRequestEvent> =
+            fx.bus.subscribe(topics::Background).await.unwrap();
+
+        let reply = fx.multitask(&owner_dm("dm-1"), "price out the paint").await;
+
+        let spawn = crate::testing::wait::next_event("the fork's spawn request", &mut spawns).await;
+        assert!(reply.contains(spawn.address.as_ref()), "{reply}");
+        assert_eq!(spawn.prompt, "price out the paint");
+        assert_eq!(spawn.spawner, None, "its replies never go to main");
+        let carried: Vec<&str> = spawn
+            .carried_history
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect();
+        assert_eq!(carried, ["should we repaint the shed?"]);
+        let target = spawn.conversation.expect("the fork replies into the DM");
+        assert_eq!(target.endpoint, "telegram");
+        assert_eq!(target.conversation_id, "dm-1");
+    }
+
+    #[tokio::test]
+    async fn multitask_in_a_group_chat_is_refused() {
+        let fx = MultitaskFixture::new().await;
+
+        let reply = fx
+            .multitask(&group_chat("group-1"), "price out the paint")
+            .await;
+
+        assert!(reply.contains("only works there"), "{reply}");
+    }
+
+    #[test]
+    fn multitask_without_a_task_shows_its_usage() {
+        let result = commands::execute_command(
+            "multitask",
+            Some("  "),
+            &commands::CommandContext::default(),
+        );
+
+        assert_eq!(result.response, "usage: /multitask <task>");
+        assert!(result.side_effect.is_none());
+    }
+
+    #[test]
+    fn dispatch_stop_named_session_stops_a_running_session() {
+        let registry = SessionRegistry::new();
+        let token = CancellationToken::new();
+        let _rx = registry
+            .register(
+                session_info("pulse-email_check-0001", SessionState::Running),
+                token.clone(),
+            )
+            .unwrap();
+
+        let reply = dispatch_stop_named_session(&registry, "pulse-email_check-0001");
+
+        assert_eq!(reply, "stopping session 'pulse-email_check-0001'.");
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn dispatch_stop_named_session_ends_an_idle_session_like_the_web_ui() {
+        let registry = SessionRegistry::new();
+        let token = CancellationToken::new();
+        let _rx = registry
+            .register(
+                session_info("scheduled-backup-0001", SessionState::Idle),
+                token.clone(),
+            )
+            .unwrap();
+
+        let reply = dispatch_stop_named_session(&registry, "scheduled-backup-0001");
+
+        assert_eq!(reply, "stopping session 'scheduled-backup-0001'.");
+        assert!(
+            token.is_cancelled(),
+            "an idle session is ended, the same as the web UI's stop button"
+        );
+    }
+
+    #[test]
+    fn dispatch_stop_named_session_refuses_main() {
+        let registry = SessionRegistry::new();
+        let reply = dispatch_stop_named_session(&registry, "main");
+        assert_eq!(reply, "The main agent can't be stopped as a session.");
+    }
+
+    #[test]
+    fn dispatch_stop_named_session_reports_an_unknown_name() {
+        let registry = SessionRegistry::new();
+        let reply = dispatch_stop_named_session(&registry, "no-such-session");
+        assert_eq!(
+            reply,
+            "no-such-session isn't running, so there's nothing to stop."
+        );
+    }
+
+    #[test]
+    fn format_session_list_reports_nothing_running() {
+        let registry = SessionRegistry::new();
+        assert_eq!(format_session_list(&registry), "No sessions are running.");
+    }
+
+    #[test]
+    fn format_session_list_includes_address_state_and_purpose() {
+        let registry = SessionRegistry::new();
+        let token = CancellationToken::new();
+        let _rx = registry
+            .register(
+                session_info("pulse-email_check-0001", SessionState::Running),
+                token,
+            )
+            .unwrap();
+
+        let listing = format_session_list(&registry);
+
+        assert!(listing.contains("1 running session"));
+        assert!(listing.contains("pulse-email_check-0001"));
+        assert!(listing.contains("running"));
+        assert!(listing.contains("chat-1"), "purpose should be included");
+    }
+
+    #[test]
+    fn format_elapsed_renders_minutes_and_hours() {
+        assert_eq!(format_elapsed(chrono::Duration::minutes(5)), "5m");
+        assert_eq!(format_elapsed(chrono::Duration::minutes(65)), "1h 5m");
+        assert_eq!(
+            format_elapsed(chrono::Duration::seconds(-5)),
+            "0m",
+            "clock skew or a just-started session must not render negative"
         );
     }
 

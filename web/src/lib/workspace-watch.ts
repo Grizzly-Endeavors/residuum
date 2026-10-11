@@ -1,12 +1,10 @@
-// ── Workspace change feed (client side) ──────────────────────────────
+// ── Workspace watch paths (client side) ─────────────────────────────
 //
-// The gateway keeps one watch set per WebSocket connection: the workspace
-// path prefixes the connection wants `workspace_changed` frames for. The web
-// UI shows one artifact at a time, so the connection's set is the open
-// artifact's prefixes, empty when none is open. A new connection starts with
-// an empty set, so the set is sent again after every reconnect.
+// How a watched path prefix is spelled and matched, the way the gateway and
+// the hub do it. The socket's watch set itself is kept by the watch registry
+// (`watch-registry.ts`).
 
-import type { ClientMessage, WorkspaceChange } from "./types";
+import type { WorkspaceChange } from "./types";
 
 /**
  * Normalize a workspace path prefix the way the gateway does: `/`-separated,
@@ -24,6 +22,17 @@ export function normalizeWatchPrefix(prefix: string): string | null {
     kept.push(segment);
   }
   return kept.join("/");
+}
+
+/**
+ * Normalize a prefix for the hub connection's `watch_team`: `team` or a path
+ * under `team/` (`team/wiki`), the spelling the hub's change feed uses.
+ * Returns `null` for anything else, which the hub would refuse.
+ */
+export function normalizeTeamWatchPrefix(prefix: string): string | null {
+  const normalized = normalizeWatchPrefix(prefix);
+  if (normalized === null) return null;
+  return normalized === "team" || normalized.startsWith("team/") ? normalized : null;
 }
 
 /** Whether `path` is `ancestor` or lies under it, by whole path segments. */
@@ -50,31 +59,4 @@ export function changesUnder(
   prefixes: readonly string[],
 ): WorkspaceChange[] {
   return changes.filter((change) => prefixes.some((p) => changeMatchesPrefix(change.path, p)));
-}
-
-/** Keeps the connection's watch set in step with the open artifact. */
-export class WorkspaceWatchSync {
-  private prefixes: string[] = [];
-
-  constructor(private readonly send: (msg: ClientMessage) => void) {}
-
-  /** The prefixes the connection should watch now. */
-  get current(): readonly string[] {
-    return this.prefixes;
-  }
-
-  /** Replace the watched prefixes, telling the gateway only when they change. */
-  set(prefixes: readonly string[]): void {
-    const next = [...new Set(prefixes)].sort();
-    if (next.length === this.prefixes.length && next.every((p, i) => p === this.prefixes[i])) {
-      return;
-    }
-    this.prefixes = next;
-    this.send({ type: "watch_workspace", prefixes: next });
-  }
-
-  /** A connection opened: it watches nothing until told again. */
-  connected(): void {
-    if (this.prefixes.length > 0) this.send({ type: "watch_workspace", prefixes: this.prefixes });
-  }
 }

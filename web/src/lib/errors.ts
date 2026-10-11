@@ -45,10 +45,14 @@ function serverMessage(body: string): string | null {
   if (text.startsWith("{")) {
     try {
       const parsed: unknown = JSON.parse(text);
-      const field =
-        typeof parsed === "object" && parsed !== null && "error" in parsed
-          ? (parsed as { error: unknown }).error
-          : null;
+      let field: unknown = null;
+      if (typeof parsed === "object" && parsed !== null) {
+        if ("message" in parsed && typeof (parsed as { message: unknown }).message === "string") {
+          field = (parsed as { message: string }).message;
+        } else if ("error" in parsed && typeof (parsed as { error: unknown }).error === "string") {
+          field = (parsed as { error: string }).error;
+        }
+      }
       text = typeof field === "string" ? field.trim() : "";
     } catch {
       return null;

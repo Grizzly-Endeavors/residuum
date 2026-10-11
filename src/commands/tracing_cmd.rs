@@ -201,7 +201,7 @@ struct OtelEndpointInfo {
 }
 
 async fn cmd_status(gateway_addr: &str) -> Result<(), FatalError> {
-    let resp = api_get(gateway_addr, "/api/tracing/status").await?;
+    let resp = api_get(gateway_addr, "/api/hub/tracing/status").await?;
     check_response(&resp, "tracing status")?;
     let status: TracingStatusResponse = resp.json().await.map_err(|e| {
         FatalError::Gateway(format!("failed to parse tracing status response: {e}"))
@@ -253,18 +253,18 @@ async fn cmd_otel(command: &OtelCommand, gateway_addr: &str) -> Result<(), Fatal
                 "name": args.name,
                 "headers": headers,
             });
-            let resp = api_post(gateway_addr, "/api/tracing/otel/endpoints", &body).await?;
+            let resp = api_post(gateway_addr, "/api/hub/tracing/otel/endpoints", &body).await?;
             check_response(&resp, "add OTEL endpoint")?;
             println!("added endpoint: {}", args.url);
         }
         OtelCommand::Remove(args) => {
             let body = serde_json::json!({ "url": args.url });
-            let resp = api_delete(gateway_addr, "/api/tracing/otel/endpoints", &body).await?;
+            let resp = api_delete(gateway_addr, "/api/hub/tracing/otel/endpoints", &body).await?;
             check_response(&resp, "remove OTEL endpoint")?;
             println!("removed endpoint: {}", args.url);
         }
         OtelCommand::List => {
-            let resp = api_get(gateway_addr, "/api/tracing/otel/endpoints").await?;
+            let resp = api_get(gateway_addr, "/api/hub/tracing/otel/endpoints").await?;
             check_response(&resp, "list OTEL endpoints")?;
             let endpoints: Vec<OtelEndpointInfo> = resp.json().await.map_err(|e| {
                 FatalError::Gateway(format!("failed to parse endpoints response: {e}"))
@@ -281,7 +281,7 @@ async fn cmd_otel(command: &OtelCommand, gateway_addr: &str) -> Result<(), Fatal
         OtelCommand::Test(args) => {
             let url = args.url.as_deref().unwrap_or("all");
             let body = serde_json::json!({ "url": url });
-            let resp = api_post(gateway_addr, "/api/tracing/otel/test", &body).await?;
+            let resp = api_post(gateway_addr, "/api/hub/tracing/otel/test", &body).await?;
             check_response(&resp, "test OTEL connectivity")?;
             println!("connectivity test passed: {url}");
         }
@@ -295,7 +295,7 @@ struct DumpResult {
 }
 
 async fn cmd_dump(gateway_addr: &str, _endpoint: Option<&str>) -> Result<(), FatalError> {
-    let resp = api_post_empty(gateway_addr, "/api/tracing/dump").await?;
+    let resp = api_post_empty(gateway_addr, "/api/hub/tracing/dump").await?;
     check_response(&resp, "trace dump")?;
     let result: DumpResult = resp
         .json()
@@ -308,12 +308,12 @@ async fn cmd_dump(gateway_addr: &str, _endpoint: Option<&str>) -> Result<(), Fat
 async fn cmd_stream(command: &StreamCommand, gateway_addr: &str) -> Result<(), FatalError> {
     match command {
         StreamCommand::Start => {
-            let resp = api_post_empty(gateway_addr, "/api/tracing/stream/start").await?;
+            let resp = api_post_empty(gateway_addr, "/api/hub/tracing/stream/start").await?;
             check_response(&resp, "start streaming")?;
             println!("trace streaming started");
         }
         StreamCommand::Stop => {
-            let resp = api_post_empty(gateway_addr, "/api/tracing/stream/stop").await?;
+            let resp = api_post_empty(gateway_addr, "/api/hub/tracing/stream/stop").await?;
             check_response(&resp, "stop streaming")?;
             println!("trace streaming stopped");
         }
@@ -323,7 +323,7 @@ async fn cmd_stream(command: &StreamCommand, gateway_addr: &str) -> Result<(), F
 
 async fn cmd_sanitize(gateway_addr: &str, enabled: bool) -> Result<(), FatalError> {
     let body = serde_json::json!({ "enabled": enabled });
-    let resp = api_post(gateway_addr, "/api/tracing/sanitize", &body).await?;
+    let resp = api_post(gateway_addr, "/api/hub/tracing/sanitize", &body).await?;
     check_response(&resp, "set sanitization")?;
     println!(
         "content sanitization: {}",
@@ -334,7 +334,7 @@ async fn cmd_sanitize(gateway_addr: &str, enabled: bool) -> Result<(), FatalErro
 
 async fn cmd_error_reporting(gateway_addr: &str, enabled: bool) -> Result<(), FatalError> {
     let body = serde_json::json!({ "enabled": enabled });
-    let resp = api_post(gateway_addr, "/api/tracing/error-reporting", &body).await?;
+    let resp = api_post(gateway_addr, "/api/hub/tracing/error-reporting", &body).await?;
     check_response(&resp, "set error reporting")?;
     println!(
         "auto error reporting: {}",
