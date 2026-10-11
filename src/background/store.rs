@@ -1512,9 +1512,8 @@ mod tests {
             "the observation must not be duplicated by recovery"
         );
 
-        let latest = crate::memory::episode_store::latest_episode_id(&layout.episodes_dir())
-            .await
-            .unwrap();
+        let latest =
+            crate::memory::episode_store::latest_episode_id(&layout.episodes_dir()).unwrap();
         assert_eq!(
             latest, episode_id,
             "recovery must not mint a second episode for the same run"
