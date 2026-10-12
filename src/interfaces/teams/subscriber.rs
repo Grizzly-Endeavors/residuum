@@ -41,8 +41,16 @@ impl ChatOutbound for Arc<TeamsRuntime> {
         &self.publisher
     }
 
-    async fn reply_target(&self, correlation_id: &str) -> Option<ConversationRef> {
-        self.target_for(correlation_id).await
+    fn registered_target(&self, correlation_id: &str) -> Option<ConversationRef> {
+        self.reply_targets.get(correlation_id)
+    }
+
+    async fn owner_target(&self) -> Option<ConversationRef> {
+        self.owner_dm().await
+    }
+
+    fn deliver_unattended(&self) -> bool {
+        self.cfg.deliver_unattended
     }
 
     fn release_reply(&self, correlation_id: &str) {

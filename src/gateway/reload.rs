@@ -1144,6 +1144,7 @@ mod tests {
         new.discord = Some(DiscordConfig {
             token: "new-token".to_string(),
             respond_to_others: false,
+            deliver_unattended: true,
             context_messages: 20,
         });
 
@@ -1158,6 +1159,7 @@ mod tests {
         old.discord = Some(DiscordConfig {
             token: "existing-token".to_string(),
             respond_to_others: false,
+            deliver_unattended: true,
             context_messages: 20,
         });
         let mut new = old.clone();
@@ -1173,12 +1175,14 @@ mod tests {
         old.telegram = Some(TelegramConfig {
             token: "old-tg-token".to_string(),
             respond_to_others: false,
+            deliver_unattended: true,
             context_messages: 20,
         });
         let mut new = old.clone();
         new.telegram = Some(TelegramConfig {
             token: "new-tg-token".to_string(),
             respond_to_others: false,
+            deliver_unattended: true,
             context_messages: 20,
         });
 
@@ -1193,6 +1197,7 @@ mod tests {
             app_password: "secret".to_string(),
             tenant_id: "tenant".to_string(),
             respond_to_others: false,
+            deliver_unattended: true,
             context_messages: 20,
             port: 7701,
         }

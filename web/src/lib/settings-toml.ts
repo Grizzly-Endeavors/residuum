@@ -97,14 +97,17 @@ export interface ConfigFields {
   // integrations
   discord_token: string;
   discord_respond_to_others: boolean;
+  discord_deliver_unattended: boolean;
   discord_context_messages: string;
   telegram_token: string;
   telegram_respond_to_others: boolean;
+  telegram_deliver_unattended: boolean;
   telegram_context_messages: string;
   teams_app_id: string;
   teams_tenant_id: string;
   teams_app_password: string;
   teams_respond_to_others: boolean;
+  teams_deliver_unattended: boolean;
   teams_context_messages: string;
   teams_port: string;
   a2a_enabled: boolean;
@@ -200,14 +203,17 @@ export function defaultConfigFields(): ConfigFields {
     thinking: "",
     discord_token: "",
     discord_respond_to_others: false,
+    discord_deliver_unattended: true,
     discord_context_messages: "",
     telegram_token: "",
     telegram_respond_to_others: false,
+    telegram_deliver_unattended: true,
     telegram_context_messages: "",
     teams_app_id: "",
     teams_tenant_id: "",
     teams_app_password: "",
     teams_respond_to_others: false,
+    teams_deliver_unattended: true,
     teams_context_messages: "",
     teams_port: "",
     a2a_enabled: true,
@@ -397,6 +403,7 @@ export function parseConfigToml(raw: string, hubRaw = ""): ConfigFields {
   if (discord) {
     fields.discord_token = str(discord.token);
     fields.discord_respond_to_others = bool(discord.respond_to_others, false);
+    fields.discord_deliver_unattended = bool(discord.deliver_unattended, true);
     fields.discord_context_messages = str(discord.context_messages);
   }
 
@@ -404,6 +411,7 @@ export function parseConfigToml(raw: string, hubRaw = ""): ConfigFields {
   if (telegram) {
     fields.telegram_token = str(telegram.token);
     fields.telegram_respond_to_others = bool(telegram.respond_to_others, false);
+    fields.telegram_deliver_unattended = bool(telegram.deliver_unattended, true);
     fields.telegram_context_messages = str(telegram.context_messages);
   }
 
@@ -413,6 +421,7 @@ export function parseConfigToml(raw: string, hubRaw = ""): ConfigFields {
     fields.teams_tenant_id = str(teams.tenant_id);
     fields.teams_app_password = str(teams.app_password);
     fields.teams_respond_to_others = bool(teams.respond_to_others, false);
+    fields.teams_deliver_unattended = bool(teams.deliver_unattended, true);
     fields.teams_context_messages = str(teams.context_messages);
     fields.teams_port = str(teams.port);
   }
@@ -914,6 +923,12 @@ export const CONFIG_FIELD_MAP: readonly FieldSpec[] = [
     default: false,
   },
   {
+    key: "discord_deliver_unattended",
+    path: ["discord", "deliver_unattended"],
+    kind: "bool",
+    default: true,
+  },
+  {
     key: "discord_context_messages",
     path: ["discord", "context_messages"],
     kind: "numberDefault",
@@ -926,6 +941,12 @@ export const CONFIG_FIELD_MAP: readonly FieldSpec[] = [
     path: ["telegram", "respond_to_others"],
     kind: "bool",
     default: false,
+  },
+  {
+    key: "telegram_deliver_unattended",
+    path: ["telegram", "deliver_unattended"],
+    kind: "bool",
+    default: true,
   },
   {
     key: "telegram_context_messages",
@@ -942,6 +963,12 @@ export const CONFIG_FIELD_MAP: readonly FieldSpec[] = [
     path: ["teams", "respond_to_others"],
     kind: "bool",
     default: false,
+  },
+  {
+    key: "teams_deliver_unattended",
+    path: ["teams", "deliver_unattended"],
+    kind: "bool",
+    default: true,
   },
   {
     key: "teams_context_messages",

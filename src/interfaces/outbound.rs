@@ -2,8 +2,10 @@
 //!
 //! Each platform implements [`ChatOutbound`] for its own connection, id
 //! parsing, and send API. This loop is the delivery policy those three
-//! share: where a turn's replies go, typing indicators, and the rule that a
-//! conversation session never falls back to the owner's direct messages.
+//! share: where a turn's replies go, typing indicators, the rule that a
+//! conversation session never falls back to the owner's direct messages, and
+//! the `deliver_unattended` switch for main-agent turns no conversation
+//! started.
 //!
 //! Only conversation goes out: agent replies, and a turn's failure in place
 //! of its reply. System notices and errors stay in the web UI. A message the
@@ -38,9 +40,20 @@ pub(crate) trait ChatOutbound: Send + Sync {
     /// Publishes delivery-failure notices and notes to main.
     fn publisher(&self) -> &crate::bus::Publisher;
 
-    /// Where a main-agent turn replies: the conversation that started it, or
-    /// the owner's direct messages for proactive output.
-    async fn reply_target(&self, correlation_id: &str) -> Option<Self::Target>;
+    /// The conversation that started the turn `correlation_id`, or `None`
+    /// for a turn nobody in a chat started (a pulse, a scheduled action,
+    /// relayed work).
+    fn registered_target(&self, correlation_id: &str) -> Option<Self::Target>;
+
+    /// The owner's direct messages, or `None` before the owner has messaged
+    /// the bot.
+    async fn owner_target(&self) -> Option<Self::Target>;
+
+    /// Whether an unattended turn's output (see
+    /// [`registered_target`](Self::registered_target)) falls back to the
+    /// owner's direct messages. Set by `deliver_unattended` in the platform's
+    /// config section.
+    fn deliver_unattended(&self) -> bool;
 
     /// Drop the reply mapping for a turn that has ended.
     fn release_reply(&self, correlation_id: &str);
@@ -95,7 +108,7 @@ pub(crate) async fn run<C: ChatOutbound>(mut subs: BaseSubscribers, chat: C) {
                         break;
                     }
                     ControlFlow::Continue(TurnLifecycleEvent::Started { correlation_id }) => {
-                        if let Some(target) = chat.reply_target(&correlation_id).await {
+                        if let Some(target) = turn_target(&chat, &correlation_id).await {
                             typing.insert(correlation_id, chat.start_typing(target));
                         }
                     }
@@ -176,7 +189,7 @@ fn take_event<T>(event: Result<Option<T>, BusError>, interface: &str) -> Control
 }
 
 async fn deliver_intermediate<C: ChatOutbound>(chat: &C, event: IntermediateEvent) {
-    let Some(target) = reply_target_or_warn(chat, &event.correlation_id).await else {
+    let Some(target) = turn_target_or_warn(chat, &event.correlation_id).await else {
         return;
     };
     if let Err(reason) = chat.send(&target, &event.content, None).await {
@@ -209,8 +222,15 @@ async fn deliver_main<C: ChatOutbound>(chat: &C, response: ResponseEvent) {
             return;
         };
         (target, Some(id))
+    } else if response.correlation_id.is_empty() {
+        // `send_message` to the owner (no conversation named): a deliberate
+        // send, not a turn's output, so `deliver_unattended` doesn't apply.
+        let Some(target) = owner_target_or_warn(chat, &response.correlation_id).await else {
+            return;
+        };
+        (target, None)
     } else {
-        let Some(target) = reply_target_or_warn(chat, &response.correlation_id).await else {
+        let Some(target) = turn_target_or_warn(chat, &response.correlation_id).await else {
             return;
         };
         (target, None)
@@ -259,26 +279,56 @@ async fn deliver_session<C: ChatOutbound>(chat: &C, response: SessionResponseEve
     }
 }
 
-async fn reply_target_or_warn<C: ChatOutbound>(
-    chat: &C,
-    correlation_id: &str,
-) -> Option<C::Target> {
-    let target = chat.reply_target(correlation_id).await;
-    if target.is_none() {
-        tracing::warn!(
+/// Where a main-agent turn's output goes: the conversation that started it,
+/// else the owner's direct messages — unless `deliver_unattended` is off, in
+/// which case a turn no conversation started stays silent on chat.
+async fn turn_target<C: ChatOutbound>(chat: &C, correlation_id: &str) -> Option<C::Target> {
+    if let Some(target) = chat.registered_target(correlation_id) {
+        return Some(target);
+    }
+    if !chat.deliver_unattended() {
+        tracing::debug!(
             correlation_id,
             interface = chat.name(),
-            "no conversation to deliver to; the owner has not messaged the bot yet"
+            "withheld output from a turn no conversation started; deliver_unattended is off"
         );
+        return None;
+    }
+    chat.owner_target().await
+}
+
+async fn turn_target_or_warn<C: ChatOutbound>(chat: &C, correlation_id: &str) -> Option<C::Target> {
+    let target = turn_target(chat, correlation_id).await;
+    if target.is_none() && chat.deliver_unattended() {
+        warn_no_conversation(chat, correlation_id);
     }
     target
 }
 
+async fn owner_target_or_warn<C: ChatOutbound>(
+    chat: &C,
+    correlation_id: &str,
+) -> Option<C::Target> {
+    let target = chat.owner_target().await;
+    if target.is_none() {
+        warn_no_conversation(chat, correlation_id);
+    }
+    target
+}
+
+fn warn_no_conversation<C: ChatOutbound>(chat: &C, correlation_id: &str) {
+    tracing::warn!(
+        correlation_id,
+        interface = chat.name(),
+        "no conversation to deliver to; the owner has not messaged the bot yet"
+    );
+}
+
 /// A main-agent turn failed. The chat that started it hears why in place of
-/// the reply; proactive turns tell the owner's direct messages, as their
-/// replies would.
+/// the reply; unattended turns tell the owner's direct messages, as their
+/// replies would, unless `deliver_unattended` is off.
 async fn deliver_turn_error<C: ChatOutbound>(chat: &C, event: ErrorEvent) {
-    let Some(target) = reply_target_or_warn(chat, &event.correlation_id).await else {
+    let Some(target) = turn_target_or_warn(chat, &event.correlation_id).await else {
         return;
     };
     let text = format!("**Error:** {}", event.message);
@@ -331,7 +381,9 @@ mod tests {
         replies: HashMap<String, String>,
         conversations: Vec<String>,
         failing: Vec<String>,
+        unattended: bool,
         sent: Arc<Mutex<Vec<(String, String)>>>,
+        typing: Arc<Mutex<Vec<String>>>,
     }
 
     impl FakeChat {
@@ -341,7 +393,9 @@ mod tests {
                 replies: HashMap::new(),
                 conversations: Vec::new(),
                 failing: Vec::new(),
+                unattended: true,
                 sent: Arc::default(),
+                typing: Arc::default(),
             }
         }
 
@@ -366,13 +420,16 @@ mod tests {
             &self.publisher
         }
 
-        async fn reply_target(&self, correlation_id: &str) -> Option<String> {
-            Some(
-                self.replies
-                    .get(correlation_id)
-                    .cloned()
-                    .unwrap_or_else(|| "owner-dm".to_string()),
-            )
+        fn registered_target(&self, correlation_id: &str) -> Option<String> {
+            self.replies.get(correlation_id).cloned()
+        }
+
+        async fn owner_target(&self) -> Option<String> {
+            Some("owner-dm".to_string())
+        }
+
+        fn deliver_unattended(&self) -> bool {
+            self.unattended
         }
 
         fn release_reply(&self, _correlation_id: &str) {}
@@ -392,7 +449,8 @@ mod tests {
             target.clone()
         }
 
-        fn start_typing(&self, _target: String) -> tokio::sync::watch::Sender<()> {
+        fn start_typing(&self, target: String) -> tokio::sync::watch::Sender<()> {
+            self.typing.lock().unwrap().push(target);
             tokio::sync::watch::channel(()).0
         }
 
@@ -482,6 +540,153 @@ mod tests {
             vec![("owner-dm".to_string(), "hello".to_string())],
             "only the agent's reply may go out; system output stays in the web UI"
         );
+    }
+
+    fn endpoint() -> topics::Endpoint {
+        topics::Endpoint(EndpointName::from(ENDPOINT))
+    }
+
+    async fn publish_turn_output(handle: &BusHandle, correlation_id: &str, tag: &str) {
+        let publisher = handle.publisher();
+        publisher
+            .publish(
+                endpoint(),
+                IntermediateEvent {
+                    correlation_id: correlation_id.to_string(),
+                    content: format!("{tag} narration"),
+                },
+            )
+            .await
+            .unwrap();
+        publisher
+            .publish(
+                endpoint(),
+                response(correlation_id, &format!("{tag} close"), None),
+            )
+            .await
+            .unwrap();
+        publisher
+            .publish(
+                endpoint(),
+                ErrorEvent {
+                    correlation_id: correlation_id.to_string(),
+                    message: format!("{tag} failed"),
+                    details: None,
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    fn sorted(mut sent: Vec<(String, String)>) -> Vec<(String, String)> {
+        sent.sort();
+        sent
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unattended_turns_reach_the_owner_by_default() {
+        let handle = crate::bus::spawn_broker();
+        let chat = FakeChat::new(&handle);
+        start(&handle, chat.clone()).await;
+
+        publish_turn_output(&handle, "pulse-1", "pulse").await;
+
+        wait_for_sends(&chat, 3).await;
+        assert_eq!(
+            sorted(chat.sent()),
+            vec![
+                (
+                    "owner-dm".to_string(),
+                    "**Error:** pulse failed".to_string()
+                ),
+                ("owner-dm".to_string(), "pulse close".to_string()),
+                ("owner-dm".to_string(), "pulse narration".to_string()),
+            ],
+            "intermediates, the final close and the error all fall back to the owner's DM"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unattended_turns_stay_silent_when_deliver_unattended_is_off() {
+        let handle = crate::bus::spawn_broker();
+        let mut chat = FakeChat::new(&handle);
+        chat.unattended = false;
+        chat.replies.insert("m1".to_string(), "group-7".to_string());
+        start(&handle, chat.clone()).await;
+
+        publish_turn_output(&handle, "pulse-1", "pulse").await;
+        publish_turn_output(&handle, "m1", "chat").await;
+
+        wait_for_sends(&chat, 3).await;
+        clock::elapse(Duration::from_millis(50)).await;
+        assert_eq!(
+            sorted(chat.sent()),
+            vec![
+                ("group-7".to_string(), "**Error:** chat failed".to_string()),
+                ("group-7".to_string(), "chat close".to_string()),
+                ("group-7".to_string(), "chat narration".to_string()),
+            ],
+            "only the conversation the owner started hears anything"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn explicit_sends_still_reach_the_owner_when_deliver_unattended_is_off() {
+        let handle = crate::bus::spawn_broker();
+        let mut chat = FakeChat::new(&handle);
+        chat.unattended = false;
+        chat.conversations.push("group-7".to_string());
+        start(&handle, chat.clone()).await;
+        let publisher = handle.publisher();
+
+        // `send_message` publishes with no correlation id.
+        publisher
+            .publish(endpoint(), response("", "ping", None))
+            .await
+            .unwrap();
+        publisher
+            .publish(endpoint(), response("", "hello group", Some("group-7")))
+            .await
+            .unwrap();
+
+        wait_for_sends(&chat, 2).await;
+        assert_eq!(
+            sorted(chat.sent()),
+            vec![
+                ("group-7".to_string(), "hello group".to_string()),
+                ("owner-dm".to_string(), "ping".to_string()),
+            ],
+            "a deliberate send is not unattended output"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn typing_indicator_skips_unattended_turns_when_deliver_unattended_is_off() {
+        let handle = crate::bus::spawn_broker();
+        let mut chat = FakeChat::new(&handle);
+        chat.unattended = false;
+        chat.replies.insert("m1".to_string(), "group-7".to_string());
+        start(&handle, chat.clone()).await;
+        let publisher = handle.publisher();
+
+        for id in ["pulse-1", "m1"] {
+            publisher
+                .publish(
+                    endpoint(),
+                    TurnLifecycleEvent::Started {
+                        correlation_id: id.to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        wait::until_true("typing started for the owner's conversation", || {
+            !chat.typing.lock().unwrap().is_empty()
+        })
+        .await;
+        clock::elapse(Duration::from_millis(50)).await;
+        assert_eq!(*chat.typing.lock().unwrap(), vec!["group-7".to_string()]);
     }
 
     #[tokio::test]

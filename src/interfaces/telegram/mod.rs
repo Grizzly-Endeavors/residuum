@@ -9,7 +9,9 @@
 //!   `[telegram] respond_to_others` is on. Commands run only for the owner.
 //! - Replies go back to the chat a message came from; proactive output goes
 //!   to the owner's chat unless `send_message` names a conversation. Notices
-//!   and errors only ever go to the owner.
+//!   and errors only ever go to the owner. Output from turns no chat started
+//!   (pulses, scheduled actions) stays off Telegram when
+//!   `[telegram] deliver_unattended` is off.
 
 mod groups;
 mod handler;
@@ -34,6 +36,8 @@ const ENDPOINT: &str = "telegram";
 /// State shared by the polling loop and the outbound subscriber.
 pub(super) struct TelegramState {
     respond_to_others: bool,
+    /// Whether turns no chat started may fall back to the owner's DM.
+    deliver_unattended: bool,
     /// The owner and every chat the bot has seen, keyed by chat ID.
     store: ChatStateStore<ChatRef>,
     /// Chat each in-flight turn should answer in, by correlation ID.
@@ -47,15 +51,6 @@ pub(super) struct TelegramState {
 }
 
 impl TelegramState {
-    /// Where output for `correlation_id` goes: the chat that started the
-    /// turn, or the owner's DM for proactive output.
-    async fn target_for(&self, correlation_id: &str) -> Option<ChatId> {
-        match self.reply_targets.get(correlation_id) {
-            Some(chat) => Some(chat),
-            None => self.owner_dm().await,
-        }
-    }
-
     async fn owner_dm(&self) -> Option<ChatId> {
         let owner = self.store.owner().await?;
         match owner.dm_conversation_id.parse::<i64>() {
@@ -133,6 +128,7 @@ impl TelegramInterface {
         }
         let state = Arc::new(TelegramState {
             respond_to_others: self.cfg.respond_to_others,
+            deliver_unattended: self.cfg.deliver_unattended,
             store: chat_store,
             reply_targets: ReplyTargets::default(),
             context_buffer: ContextBuffer::new(self.cfg.context_messages),

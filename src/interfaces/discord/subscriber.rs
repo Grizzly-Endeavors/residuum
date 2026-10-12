@@ -50,8 +50,16 @@ impl ChatOutbound for DiscordOutbound {
         &self.state.publisher
     }
 
-    async fn reply_target(&self, correlation_id: &str) -> Option<ChannelId> {
-        self.state.target_for(correlation_id).await
+    fn registered_target(&self, correlation_id: &str) -> Option<ChannelId> {
+        self.state.reply_targets.get(correlation_id)
+    }
+
+    async fn owner_target(&self) -> Option<ChannelId> {
+        self.state.owner_dm().await
+    }
+
+    fn deliver_unattended(&self) -> bool {
+        self.state.deliver_unattended
     }
 
     fn release_reply(&self, correlation_id: &str) {
@@ -160,6 +168,71 @@ async fn send_file_attachment(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    use crate::interfaces::chat_state::{ChatStateStore, Owner};
+    use crate::interfaces::context_buffer::ContextBuffer;
+    use crate::interfaces::reply_targets::ReplyTargets;
+
+    async fn outbound(deliver_unattended: bool) -> (DiscordOutbound, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ChatStateStore::load(dir.path().join("discord_state.json"))
+            .await
+            .unwrap()
+            .0;
+        store
+            .claim_owner(Owner {
+                user_id: "1".to_string(),
+                name: "Owner".to_string(),
+                dm_conversation_id: "42".to_string(),
+            })
+            .await
+            .unwrap();
+        let state = Arc::new(DiscordState {
+            respond_to_others: false,
+            deliver_unattended,
+            store,
+            reply_targets: ReplyTargets::default(),
+            bot_id: OnceLock::new(),
+            channel_labels: Mutex::new(HashMap::new()),
+            context_buffer: ContextBuffer::new(0),
+            publisher: crate::bus::spawn_broker().publisher(),
+        });
+        state.reply_targets.track("m1", ChannelId::new(7));
+        (
+            DiscordOutbound {
+                http: Arc::new(Http::new("test-token")),
+                state,
+            },
+            dir,
+        )
+    }
+
+    #[tokio::test]
+    async fn unattended_turns_have_the_owner_dm_to_fall_back_to() {
+        let (out, _dir) = outbound(true).await;
+        assert!(out.deliver_unattended());
+        assert_eq!(out.registered_target("m1"), Some(ChannelId::new(7)));
+        assert_eq!(out.registered_target("pulse-1"), None);
+        assert_eq!(out.owner_target().await, Some(ChannelId::new(42)));
+    }
+
+    #[tokio::test]
+    async fn deliver_unattended_off_is_read_from_the_config() {
+        let (out, _dir) = outbound(false).await;
+        assert!(!out.deliver_unattended());
+        assert_eq!(
+            out.registered_target("m1"),
+            Some(ChannelId::new(7)),
+            "conversations the owner started still resolve"
+        );
+        assert_eq!(
+            out.owner_target().await,
+            Some(ChannelId::new(42)),
+            "explicit sends to the owner still resolve"
+        );
+    }
 
     #[test]
     fn parse_channel_id_accepts_a_valid_id() {

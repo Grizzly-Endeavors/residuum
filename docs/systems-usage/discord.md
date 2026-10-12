@@ -52,7 +52,8 @@ The buffer for that channel is emptied when it is delivered, so each message rea
 - A DM reply goes to the owner from the main agent's own conversation.
 - A server channel or thread's reply comes from that channel's own session and always goes back to that same channel. It never falls back to the owner's DM: if Discord refuses the post (the bot lacks permission there, or was removed), the output is dropped, the error is logged naming the session and channel, and main gets a notice so the owner can be told if it matters.
 - `send_message` with a `conversation` from `list_conversations` posts into that DM or channel, from whichever agent (main or a session) calls it. If Discord refuses main's own send (or the conversation is unknown), the owner sees a notice in the web UI and main gets a `[Delivery Failed]` message; a session's send is subject to the same never-falls-back rule as its own replies above.
-- Other proactive output from main — `send_message` without a conversation, results routed through `idle_channel = "discord"`, background turns — goes to the owner's DM. Until an owner exists it is dropped with a warning in the log.
+- `send_message` without a conversation goes to the owner's DM. Until an owner exists it is dropped with a warning in the log.
+- Output from a main-agent turn that no Discord message started — a pulse, a scheduled action, work relayed from a teammate, results routed through `idle_channel = "discord"` — also goes to the owner's DM: its intermediate text, its final reply, and its error if it fails. `[discord] deliver_unattended = false` stops that. Those turns then send nothing to Discord (no text, no error, no typing indicator) and still appear in the web UI and session streams; turns the owner started in Discord, and `send_message`, are not affected. With it off, an unattended turn's error is visible only in the web UI; the `agent_failed` push notification covers an agent that stops, not an individual failed turn.
 - When a main-agent turn started from Discord fails, the plain-language error goes back where its reply would have. System notices and other errors are never sent to Discord; they appear in the web UI.
 - The web UI follows the main agent's turns from Discord as they happen: the owner's message, the agent's text and tool calls in order, the reply and the end of the turn, each marked as having come from Discord. A web message sent while such a turn runs joins it, the same as a Discord message would. See [The Main Conversation Stream](turn-control.md#the-main-conversation-stream).
 
@@ -71,6 +72,7 @@ Long replies are split into 2000-character messages. A typing indicator shows in
 [discord]
 token = "secret:discord"   # or a "${ENV_VAR}" reference, or a literal
 respond_to_others = false
+deliver_unattended = true   # false: turns no Discord message started stay off Discord
 context_messages = 20
 ```
 

@@ -340,6 +340,7 @@ mod tests {
         config.discord = Some(crate::config::DiscordConfig {
             token: "test-token".to_string(),
             respond_to_others: false,
+            deliver_unattended: true,
             context_messages: 20,
         });
 
@@ -364,6 +365,7 @@ mod tests {
         config.discord = Some(crate::config::DiscordConfig {
             token: "added-on-reload".to_string(),
             respond_to_others: false,
+            deliver_unattended: true,
             context_messages: 20,
         });
         registry.refresh(&config, &[]);
@@ -391,6 +393,7 @@ mod tests {
             app_password: "secret".to_string(),
             tenant_id: "tenant".to_string(),
             respond_to_others: false,
+            deliver_unattended: true,
             context_messages: 20,
             port: 7701,
         });

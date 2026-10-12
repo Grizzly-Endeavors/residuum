@@ -58,7 +58,8 @@ The buffer for that conversation is emptied when it is delivered, so each messag
 - A DM reply goes to the owner from the main agent's own conversation.
 - A group chat or channel's reply comes from that conversation's own session and always goes back to that same conversation (a channel reply lands in the same thread). It never falls back to the owner's DM: if Teams refuses the post, the output is dropped, the error is logged naming the session and conversation, and main gets a notice so the owner can be told if it matters.
 - `send_message` with a `conversation` from `list_conversations` posts into that DM, group chat, or channel (a channel post starts a new thread), from whichever agent (main or a session) calls it. If Teams refuses main's own send (or the conversation is unknown), the owner sees a notice in the web UI and main gets a `[Delivery Failed]` message; a session's send is subject to the same never-falls-back rule as its own replies above.
-- Other proactive output from main with no originating Teams message — `send_message` without a conversation, results routed through `idle_channel = "teams"`, background turns whose last user message came from Teams — goes to the owner's DM.
+- `send_message` without a conversation goes to the owner's DM.
+- Output from a main-agent turn that no Teams message started — a pulse, a scheduled action, work relayed from a teammate, results routed through `idle_channel = "teams"`, background turns whose last user message came from Teams — also goes to the owner's DM: its intermediate text, its final reply, and its error if it fails. `[teams] deliver_unattended = false` stops that. Those turns then send nothing to Teams (no text, no error, no typing indicator) and still appear in the web UI and session streams; turns the owner started in Teams, and `send_message`, are not affected. With it off, an unattended turn's error is visible only in the web UI; the `agent_failed` push notification covers an agent that stops, not an individual failed turn.
 - When a main-agent turn started from Teams fails, the plain-language error goes back where its reply would have. System notices and other errors are never sent to Teams; they appear in the web UI.
 - The web UI follows the main agent's turns from Teams as they happen: the owner's message, the agent's text and tool calls in order, the reply and the end of the turn, each marked as having come from Teams. A web message sent while such a turn runs joins it, the same as a Teams message would. See [The Main Conversation Stream](turn-control.md#the-main-conversation-stream).
 - If a turn is already running when another Teams message arrives, the new message joins that turn (main's own turn for the owner's DM, or a session's turn for its own conversation) and the answer goes to the conversation that started it.
@@ -79,6 +80,7 @@ app_id = "11111111-2222-3333-4444-555555555555"   # bot ID from the Teams Develo
 tenant_id = "your-directory-tenant-id"
 app_password = "secret:teams"                     # client secret; or a "${ENV_VAR}" reference, or a literal
 respond_to_others = false
+deliver_unattended = true                         # false: turns no Teams message started stay off Teams
 context_messages = 20
 port = 7701
 ```

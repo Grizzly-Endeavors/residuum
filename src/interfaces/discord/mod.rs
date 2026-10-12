@@ -9,7 +9,9 @@
 //!   `[discord] respond_to_others` is on.
 //! - Replies go back to the channel a message came from; proactive output
 //!   goes to the owner's DM unless `send_message` names a conversation.
-//!   Notices and errors only ever go to the owner.
+//!   Notices and errors only ever go to the owner. Output from turns no
+//!   channel started (pulses, scheduled actions) stays off Discord when
+//!   `[discord] deliver_unattended` is off.
 //!
 //! Supports:
 //! - Slash commands from the shared command registry (owner only)
@@ -42,6 +44,8 @@ const ENDPOINT: &str = "discord";
 /// State shared by the event handler and the outbound subscriber.
 pub(super) struct DiscordState {
     respond_to_others: bool,
+    /// Whether turns no channel started may fall back to the owner's DM.
+    deliver_unattended: bool,
     /// The owner and every conversation the bot has seen, keyed by channel ID.
     store: ChatStateStore<ChatRef>,
     /// Channel each in-flight turn should answer in, by correlation ID.
@@ -71,15 +75,6 @@ impl DiscordState {
 
     fn cache_label(&self, channel_id: ChannelId, label: String) {
         self.labels().insert(channel_id, label);
-    }
-
-    /// Where output for `correlation_id` goes: the channel that started the
-    /// turn, or the owner's DM for proactive output.
-    async fn target_for(&self, correlation_id: &str) -> Option<ChannelId> {
-        match self.reply_targets.get(correlation_id) {
-            Some(channel) => Some(channel),
-            None => self.owner_dm().await,
-        }
     }
 
     async fn owner_dm(&self) -> Option<ChannelId> {
@@ -154,6 +149,7 @@ impl DiscordInterface {
         }
         let state = Arc::new(DiscordState {
             respond_to_others: self.cfg.respond_to_others,
+            deliver_unattended: self.cfg.deliver_unattended,
             store: chat_store,
             reply_targets: ReplyTargets::default(),
             bot_id: OnceLock::new(),

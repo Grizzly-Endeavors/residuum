@@ -132,6 +132,12 @@
     label="Let others talk to this agent"
     hint={othersHint}
   />
+  <ConfigToggle
+    {scope}
+    field={`${channel}_deliver_unattended`}
+    label="Send background output to your messages"
+    hint={`On: what ${agent} does on its own (pulses, scheduled actions, work relayed from teammates) is also sent to you here. Off: only conversations you start get replies here, and errors from background turns stay in this app.`}
+  />
   <ConfigNumber
     {scope}
     field={`${channel}_context_messages`}

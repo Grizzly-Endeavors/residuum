@@ -827,6 +827,7 @@ mod tests {
         let user_messages = bus.subscribe(topics::UserMessage).await.unwrap();
         let state = Arc::new(TelegramState {
             respond_to_others,
+            deliver_unattended: true,
             store: ChatStateStore::load(dir.path().join("telegram_state.json"))
                 .await
                 .unwrap()

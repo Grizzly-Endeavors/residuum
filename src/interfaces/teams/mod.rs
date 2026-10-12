@@ -12,6 +12,8 @@
 //!   in memory and handed over as background context on the next mention.
 //! - Replies go back to the conversation a message came from; proactive
 //!   output (scheduled results, `send_message`) goes to the owner's DM.
+//!   Scheduled results stay off Teams when `[teams] deliver_unattended` is off;
+//!   `send_message` still reaches the owner.
 
 mod activity;
 pub mod atk;
@@ -72,15 +74,6 @@ pub(super) struct TeamsRuntime {
 }
 
 impl TeamsRuntime {
-    /// Where output for `correlation_id` goes: the conversation that started
-    /// the turn, or the owner's DM for proactive output.
-    async fn target_for(&self, correlation_id: &str) -> Option<ConversationRef> {
-        match self.reply_targets.get(correlation_id) {
-            Some(target) => Some(target),
-            None => self.owner_dm().await,
-        }
-    }
-
     async fn owner_dm(&self) -> Option<ConversationRef> {
         let owner = self.store.owner().await?;
         self.store.conversation(&owner.dm_conversation_id).await

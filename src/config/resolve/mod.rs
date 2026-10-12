@@ -1289,7 +1289,41 @@ candidate_multiplier = 8
         assert_eq!(cfg.telegram.map(|t| t.respond_to_others), Some(true));
     }
 
+    #[test]
+    fn chat_bots_deliver_unattended_output_by_default() {
+        let cfg = chat_bots_config("");
+        assert_eq!(cfg.discord.map(|d| d.deliver_unattended), Some(true));
+        assert_eq!(cfg.telegram.map(|t| t.deliver_unattended), Some(true));
+    }
+
+    #[test]
+    fn chat_bots_withhold_unattended_output_when_disabled() {
+        let cfg = chat_bots_config("deliver_unattended = false\n");
+        assert_eq!(cfg.discord.map(|d| d.deliver_unattended), Some(false));
+        assert_eq!(cfg.telegram.map(|t| t.deliver_unattended), Some(false));
+    }
+
     // ── Teams config ───────────────────────────────────────────────────────
+
+    #[test]
+    fn teams_deliver_unattended_defaults_on_and_can_be_disabled() {
+        let teams_toml = |extra: &str| {
+            format!(
+                "[teams]\napp_id = \"app\"\ntenant_id = \"tenant\"\napp_password = \"secret\"\n{extra}"
+            )
+        };
+        let resolve = |extra: &str| {
+            resolve_test(
+                &teams_toml(extra),
+                "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+            )
+            .unwrap()
+            .teams
+            .unwrap()
+        };
+        assert!(resolve("").deliver_unattended);
+        assert!(!resolve("deliver_unattended = false\n").deliver_unattended);
+    }
 
     #[test]
     fn teams_section_resolves_with_defaults() {

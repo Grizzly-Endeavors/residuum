@@ -40,6 +40,7 @@ pub(super) fn resolve_discord_config(
         (_, Some(tok)) => Some(DiscordConfig {
             token: tok,
             respond_to_others: section.and_then(|s| s.respond_to_others).unwrap_or(false),
+            deliver_unattended: section.and_then(|s| s.deliver_unattended).unwrap_or(true),
             context_messages: section
                 .and_then(|s| s.context_messages)
                 .unwrap_or(DEFAULT_DISCORD_CONTEXT_MESSAGES),
@@ -69,6 +70,7 @@ pub(super) fn resolve_telegram_config(
         (_, Some(tok)) => Some(TelegramConfig {
             token: tok,
             respond_to_others: section.and_then(|s| s.respond_to_others).unwrap_or(false),
+            deliver_unattended: section.and_then(|s| s.deliver_unattended).unwrap_or(true),
             context_messages: section
                 .and_then(|s| s.context_messages)
                 .unwrap_or(DEFAULT_TELEGRAM_CONTEXT_MESSAGES),
@@ -130,6 +132,7 @@ pub(super) fn resolve_teams_config(
         app_password,
         tenant_id,
         respond_to_others: section.respond_to_others.unwrap_or(false),
+        deliver_unattended: section.deliver_unattended.unwrap_or(true),
         context_messages: section
             .context_messages
             .unwrap_or(DEFAULT_TEAMS_CONTEXT_MESSAGES),

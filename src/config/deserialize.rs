@@ -422,6 +422,8 @@ pub(super) struct DiscordConfigFile {
     pub(super) token: Option<String>,
     /// Whether people other than the owner can talk to the agent.
     pub(super) respond_to_others: Option<bool>,
+    /// Whether output from turns no conversation started reaches the owner's DM.
+    pub(super) deliver_unattended: Option<bool>,
     /// How many earlier unmentioned server messages to hand the agent on @mention.
     pub(super) context_messages: Option<usize>,
 }
@@ -434,6 +436,8 @@ pub(super) struct TelegramConfigFile {
     pub(super) token: Option<String>,
     /// Whether people other than the owner can talk to the agent.
     pub(super) respond_to_others: Option<bool>,
+    /// Whether output from turns no conversation started reaches the owner's DM.
+    pub(super) deliver_unattended: Option<bool>,
     /// How many earlier unmentioned group messages to hand the agent when addressed.
     pub(super) context_messages: Option<usize>,
 }
@@ -450,6 +454,8 @@ pub(super) struct TeamsConfigFile {
     pub(super) tenant_id: Option<String>,
     /// Whether people other than the owner can talk to the agent.
     pub(super) respond_to_others: Option<bool>,
+    /// Whether output from turns no conversation started reaches the owner's DM.
+    pub(super) deliver_unattended: Option<bool>,
     /// How many earlier group chat / channel messages to hand the agent on @mention.
     pub(super) context_messages: Option<usize>,
     /// Port for the dedicated Teams messaging listener.

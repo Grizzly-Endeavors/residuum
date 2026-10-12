@@ -220,7 +220,8 @@ impl MessageEvent {
 /// Agent response destined for an endpoint.
 #[derive(Debug, Clone)]
 pub struct ResponseEvent {
-    /// Links back to the originating message.
+    /// Links back to the originating message. Empty for a `send_message`
+    /// post, which chat interfaces deliver even when `deliver_unattended` is off.
     pub correlation_id: String,
     /// Response body.
     pub content: String,

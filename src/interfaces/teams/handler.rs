@@ -569,6 +569,10 @@ mod tests {
     }
 
     async fn harness(respond_to_others: bool) -> Harness {
+        harness_with(respond_to_others, true).await
+    }
+
+    async fn harness_with(respond_to_others: bool, deliver_unattended: bool) -> Harness {
         let dir = tempfile::tempdir().unwrap();
         let bus = crate::bus::spawn_broker();
         let user_messages = bus.subscribe(topics::UserMessage).await.unwrap();
@@ -580,6 +584,7 @@ mod tests {
                 app_password: "unused".to_string(),
                 tenant_id: TENANT.to_string(),
                 respond_to_others,
+                deliver_unattended,
                 context_messages: 10,
                 port: 0,
             },
@@ -768,6 +773,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deliver_unattended_off_keeps_started_conversations_and_the_owner_dm() {
+        use crate::interfaces::outbound::ChatOutbound as _;
+
+        let mut h = harness_with(false, false).await;
+        deliver(&mut h, &dm_from_owner("hello")).await;
+        let event = next_user_message(&mut h, "dm published").await;
+
+        assert!(!h.rt.deliver_unattended());
+        assert_eq!(
+            h.rt.registered_target(&event.id)
+                .map(|c| c.conversation_id)
+                .as_deref(),
+            Some("a:dm-bear"),
+            "the conversation the owner started still resolves"
+        );
+        assert!(
+            h.rt.registered_target("pulse-1").is_none(),
+            "a turn nobody started has no conversation"
+        );
+        assert_eq!(
+            h.rt.owner_target()
+                .await
+                .map(|c| c.conversation_id)
+                .as_deref(),
+            Some("a:dm-bear"),
+            "explicit sends to the owner still resolve"
+        );
+    }
+
+    #[tokio::test]
     async fn group_mention_carries_the_chatter_since_the_last_mention() {
         let mut h = harness(false).await;
         deliver(&mut h, &dm_from_owner("hello")).await;
@@ -797,8 +832,8 @@ mod tests {
             Some("group chat \"Launch\"")
         );
         assert_eq!(
-            h.rt.target_for(&event.id)
-                .await
+            h.rt.reply_targets
+                .get(&event.id)
                 .map(|c| c.conversation_id)
                 .as_deref(),
             Some("19:launch@thread.v2"),

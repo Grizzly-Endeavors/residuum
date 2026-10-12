@@ -166,6 +166,9 @@ pub struct DiscordConfig {
     pub token: String,
     /// Whether people other than the owner can talk to the agent.
     pub respond_to_others: bool,
+    /// Whether output from turns no conversation started (pulses, scheduled
+    /// actions, relayed work) is delivered to the owner's DM.
+    pub deliver_unattended: bool,
     /// How many earlier unmentioned server messages to hand the agent on @mention.
     pub context_messages: usize,
 }
@@ -175,6 +178,7 @@ impl std::fmt::Debug for DiscordConfig {
         f.debug_struct("DiscordConfig")
             .field("token", &"[redacted]")
             .field("respond_to_others", &self.respond_to_others)
+            .field("deliver_unattended", &self.deliver_unattended)
             .field("context_messages", &self.context_messages)
             .finish()
     }
@@ -187,6 +191,9 @@ pub struct TelegramConfig {
     pub token: String,
     /// Whether people other than the owner can talk to the agent.
     pub respond_to_others: bool,
+    /// Whether output from turns no conversation started (pulses, scheduled
+    /// actions, relayed work) is delivered to the owner's DM.
+    pub deliver_unattended: bool,
     /// How many earlier unmentioned group messages to hand the agent when addressed.
     pub context_messages: usize,
 }
@@ -196,6 +203,7 @@ impl std::fmt::Debug for TelegramConfig {
         f.debug_struct("TelegramConfig")
             .field("token", &"[redacted]")
             .field("respond_to_others", &self.respond_to_others)
+            .field("deliver_unattended", &self.deliver_unattended)
             .field("context_messages", &self.context_messages)
             .finish()
     }
@@ -212,6 +220,9 @@ pub struct TeamsConfig {
     pub tenant_id: String,
     /// Whether people other than the owner can talk to the agent.
     pub respond_to_others: bool,
+    /// Whether output from turns no conversation started (pulses, scheduled
+    /// actions, relayed work) is delivered to the owner's DM.
+    pub deliver_unattended: bool,
     /// How many earlier group chat / channel messages to hand the agent on @mention.
     pub context_messages: usize,
     /// Port for the dedicated messaging listener (bound on the gateway's address).
@@ -228,6 +239,7 @@ impl std::fmt::Debug for TeamsConfig {
             .field("app_password", &"[redacted]")
             .field("tenant_id", &self.tenant_id)
             .field("respond_to_others", &self.respond_to_others)
+            .field("deliver_unattended", &self.deliver_unattended)
             .field("context_messages", &self.context_messages)
             .field("port", &self.port)
             .finish()

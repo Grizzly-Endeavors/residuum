@@ -89,6 +89,8 @@ enabled = true
 # [discord]
 # token = "secret:discord_token"
 # respond_to_others = false   # true: anyone who can DM or @mention the bot can use the agent
+# deliver_unattended = true   # false: pulses, scheduled actions and other turns you didn't start in Discord
+#                             # send nothing there, errors included (they stay in the web UI)
 # context_messages = 20       # earlier unmentioned server messages shared on @mention
 
 # ── Telegram bot (optional) ──────────────────────────────────────────────────
@@ -101,6 +103,8 @@ enabled = true
 # [telegram]
 # token = "secret:telegram_token"
 # respond_to_others = false   # true: anyone who can reach the bot can use the agent
+# deliver_unattended = true   # false: pulses, scheduled actions and other turns you didn't start in Telegram
+#                             # send nothing there, errors included (they stay in the web UI)
 # context_messages = 20       # earlier unmentioned group messages shared when addressed; requires
 #                              # privacy mode off in BotFather (or the bot made a group admin)
 
@@ -118,6 +122,8 @@ enabled = true
 # tenant_id = "your-directory-tenant-id"
 # app_password = "secret:teams"
 # respond_to_others = false   # true: coworkers can @mention / message the agent
+# deliver_unattended = true   # false: pulses, scheduled actions and other turns you didn't start in Teams
+#                             # send nothing there, errors included (they stay in the web UI)
 # context_messages = 20       # earlier group chat messages shared on @mention
 # port = 7701
 
