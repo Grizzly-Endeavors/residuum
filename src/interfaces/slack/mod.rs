@@ -269,7 +269,7 @@ mod tests {
     use crate::background::registry::SessionRegistry;
     use crate::bus::{
         EndpointName, MessageEvent, NoticeEvent, NotifyName, ResponseEvent, SYSTEM_CHANNEL,
-        Subscriber, topics,
+        Subscriber, TurnLifecycleEvent, topics,
     };
     use crate::config::SlackConfig;
     use crate::gateway::event_loop::AdapterSenders;
@@ -279,7 +279,7 @@ mod tests {
 
     use super::ENDPOINT;
     use super::api::{SlackApi, SlackApiError};
-    use super::subscriber::SLACK_MAX_CHARS;
+    use super::subscriber::{PLACEHOLDER_TEXT, SLACK_MAX_CHARS};
 
     /// What the fake Slack surfaces to the driver.
     #[derive(Debug, Clone)]
@@ -380,20 +380,36 @@ mod tests {
 
     /// The Web API seam, faked at the fake server's boundaries: Socket Mode
     /// opens hand out the fake's ws URL, `chat.postMessage` records its
-    /// calls — `api.rs`'s test fake, pointed at this server.
+    /// calls and returns a synthetic ts, `chat.update` records its edits —
+    /// `api.rs`'s test fake, pointed at this server.
     #[derive(Clone, Default)]
     struct RecordingApi {
         ws_url: String,
         posted: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+        updated: Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
     }
 
     #[async_trait::async_trait]
     impl SlackApi for RecordingApi {
-        async fn post_message(&self, channel: &str, text: &str) -> Result<(), SlackApiError> {
-            self.posted
+        async fn post_message(&self, channel: &str, text: &str) -> Result<String, SlackApiError> {
+            let mut posted = self
+                .posted
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            posted.push((channel.to_string(), text.to_string()));
+            Ok(format!("ts.{}", posted.len()))
+        }
+
+        async fn chat_update(
+            &self,
+            channel: &str,
+            ts: &str,
+            text: &str,
+        ) -> Result<(), SlackApiError> {
+            self.updated
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push((channel.to_string(), text.to_string()));
+                .push((channel.to_string(), ts.to_string(), text.to_string()));
             Ok(())
         }
 
@@ -592,13 +608,18 @@ mod tests {
                 .clone()
         }
 
+        /// Recorded `chat.update` calls: (channel, ts, text).
+        fn updated(&self) -> Vec<(String, String, String)> {
+            self.api
+                .updated
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+
         /// Publish an agent reply for `correlation_id`, as the agent runtime
-        /// would, and wait until every chunk of it has been posted.
-        async fn reply_and_wait(
-            &self,
-            correlation_id: &str,
-            content: &str,
-        ) -> Vec<(String, String)> {
+        /// would.
+        async fn publish_response(&self, correlation_id: &str, content: &str) {
             self.core
                 .publisher
                 .publish(
@@ -613,12 +634,78 @@ mod tests {
                 )
                 .await
                 .unwrap();
+        }
+
+        /// Publish an agent reply and wait until every chunk of it has been
+        /// posted as fresh messages (no placeholder to edit).
+        async fn reply_and_wait(
+            &self,
+            correlation_id: &str,
+            content: &str,
+        ) -> Vec<(String, String)> {
+            self.publish_response(correlation_id, content).await;
             let expected = self.posted().len() + chunk_text(content, SLACK_MAX_CHARS).len();
             wait::until_true(format!("{expected} chat.postMessage call(s)"), || {
                 self.posted().len() >= expected
             })
             .await;
             self.posted()
+        }
+
+        /// The typing-feedback round trip through the real pipeline: the
+        /// turn-start signal for a tracked correlation posts the
+        /// placeholder, the correlation's first reply edits it in place by
+        /// the posted ts, and the turn's end then finds nothing left to
+        /// sweep. The channel is the fixture DM's `D0001`.
+        async fn placeholder_round_trip(&self, correlation_id: &str) {
+            self.core
+                .publisher
+                .publish(
+                    topics::Endpoint(EndpointName::from(ENDPOINT)),
+                    TurnLifecycleEvent::Started {
+                        correlation_id: correlation_id.to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+            wait::until_true("the placeholder posts", || !self.posted().is_empty()).await;
+            assert_eq!(
+                self.posted(),
+                vec![("D0001".to_string(), PLACEHOLDER_TEXT.to_string())],
+                "the placeholder posts to the DM channel the turn started in"
+            );
+
+            self.publish_response(correlation_id, "**bold** and `code`")
+                .await;
+            wait::until_true("the placeholder is edited into the reply", || {
+                !self.updated().is_empty()
+            })
+            .await;
+            assert_eq!(
+                self.updated(),
+                vec![(
+                    "D0001".to_string(),
+                    "ts.1".to_string(),
+                    "*bold* and `code`".to_string()
+                )],
+                "a single-chunk reply becomes an edit of the placeholder, in mrkdwn"
+            );
+            assert_eq!(
+                self.posted().len(),
+                1,
+                "nothing posted fresh: the placeholder carried the reply"
+            );
+
+            self.core
+                .publisher
+                .publish(
+                    topics::Endpoint(EndpointName::from(ENDPOINT)),
+                    TurnLifecycleEvent::Ended {
+                        correlation_id: correlation_id.to_string(),
+                    },
+                )
+                .await
+                .unwrap();
         }
     }
 
@@ -669,31 +756,30 @@ mod tests {
         })
         .await;
 
-        // Outbound: an agent reply to that correlation reaches Slack through
-        // the subscriber, chunker, and mrkdwn converter.
-        let posted = e2e.reply_and_wait(&event.id, "**bold** and `code`").await;
-        assert_eq!(
-            posted,
-            vec![("D0001".to_string(), "*bold* and `code`".to_string())],
-            "the reply goes to the DM channel, converted to mrkdwn"
-        );
+        // Typing feedback, through the real pipeline: the turn-start signal
+        // posts the placeholder, the first reply edits it in place, and the
+        // turn's end finds nothing left to sweep.
+        e2e.placeholder_round_trip(&event.id).await;
 
-        // A longer reply exercises the chunker through the same pipeline.
+        // A longer reply afterwards exercises the chunker through the same
+        // pipeline with no placeholder left to edit.
         let long = "*emphasis* on a long reply\n\nx".to_string() + &"x".repeat(8600);
         let long_posted = e2e.reply_and_wait(&event.id, &long).await;
+        // The placeholder is long_posted's first entry; the chunks follow it.
+        let chunks = long_posted.iter().skip(1).collect::<Vec<_>>();
+        assert!(chunks.len() > 1, "a long reply is chunked: {long_posted:?}");
         assert!(
-            long_posted.len() > 1,
-            "a long reply is chunked: {long_posted:?}"
-        );
-        assert!(
-            long_posted.iter().all(|(channel, _)| channel == "D0001"),
+            chunks.iter().all(|(channel, _)| channel == "D0001"),
             "every chunk goes to the DM channel: {long_posted:?}"
         );
         assert!(
-            long_posted
-                .iter()
-                .all(|(_, text)| text.len() <= SLACK_MAX_CHARS),
+            chunks.iter().all(|(_, text)| text.len() <= SLACK_MAX_CHARS),
             "no chunk exceeds the Slack budget: {long_posted:?}"
+        );
+        assert_eq!(
+            e2e.updated().len(),
+            1,
+            "the ended turn's placeholder was already consumed; nothing new is edited"
         );
 
         // Teardown: shutdown takes the whole interface down with it.

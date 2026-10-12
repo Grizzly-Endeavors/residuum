@@ -622,8 +622,17 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SlackApi for ScriptedApi {
-        async fn post_message(&self, _channel: &str, _text: &str) -> Result<(), SlackApiError> {
+        async fn post_message(&self, _channel: &str, _text: &str) -> Result<String, SlackApiError> {
             panic!("run_socket never posts messages; acks ride their own client");
+        }
+
+        async fn chat_update(
+            &self,
+            _channel: &str,
+            _ts: &str,
+            _text: &str,
+        ) -> Result<(), SlackApiError> {
+            panic!("run_socket never edits messages; acks ride their own client");
         }
 
         async fn open_connection(&self) -> anyhow::Result<String> {

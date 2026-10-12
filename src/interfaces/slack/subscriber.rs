@@ -7,7 +7,7 @@
 //! same reply routing through the state's correlation→channel map, same
 //! chunking through the shared fence-aware chunker.
 //!
-//! Two Slack-specific policies:
+//! Three Slack-specific policies:
 //!
 //! * chunks are converted to mrkdwn ([`super::format`]) one at a time, just
 //!   before each send — the chunker splits the markdown the agent produced,
@@ -16,7 +16,13 @@
 //! * sends are awaited inline in the delivery loop, never queued: nothing
 //!   buffers ahead of [`RateLimitedSender`], whose mutex spans its backoff
 //!   sleeps (Task 3 review note) — a slow send backpressures the loop
-//!   instead of piling up an unbounded queue behind it.
+//!   instead of piling up an unbounded queue behind it;
+//! * typing feedback is the placeholder pattern: Slack exposes no typing
+//!   signal a bot can send, so a slack-originated turn's start posts
+//!   "Thinking…", the first text the turn sends (reply chunk, failure
+//!   report-back, …) edits that message in place, and a turn that ends
+//!   without sending anything sweeps it — every write through the same
+//!   rate-limited sender as replies.
 
 use std::sync::Arc;
 
@@ -36,11 +42,38 @@ use super::format::markdown_to_mrkdwn;
 /// the module's end-to-end test sizes its chunk expectations from it.
 pub(super) const SLACK_MAX_CHARS: usize = 4000;
 
+/// Placeholder copy posted while a slack-originated turn runs — the typing
+/// feedback Slack's API cannot give a bot (task 10 brief: constant copy).
+/// `pub(super)`: the module's end-to-end test asserts it.
+pub(super) const PLACEHOLDER_TEXT: &str = "Thinking…";
+
+/// What a turn-end sweep leaves in place of a placeholder no text ever
+/// consumed — the placeholder must not survive as a stale "Thinking…"
+/// (task 10 brief, requirement 4), and `chat.update` is this MVP's only
+/// editing surface, so the sweep rewrites rather than deletes.
+const TURN_ENDED_TEXT: &str = "_Turn ended without a reply._";
+
 /// The outbound side: the rate-limited sender plus the state shared with
-/// the inbound handler.
+/// the inbound handler, and the turn placeholders.
 struct SlackOutbound<A: SlackApi> {
     sender: Arc<RateLimitedSender<A>>,
     state: Arc<SlackState>,
+    /// Live placeholders for in-flight turns, oldest first, as
+    /// `(correlation id, placeholder)`. A `Vec`, not a map: in-flight turns
+    /// are few, the turn-end sweep looks entries up by correlation, and the
+    /// send path consumes by channel in posted order (FIFO) when the bus
+    /// event that triggered it no longer names the turn (see
+    /// [`SlackOutbound::take_placeholder_for`]). A std mutex, like the
+    /// reply-target map it mirrors: critical sections never await.
+    placeholders: std::sync::Mutex<Vec<(String, Placeholder)>>,
+}
+
+/// One posted "Thinking…" awaiting its turn's first text.
+struct Placeholder {
+    /// Channel the placeholder was posted to.
+    channel: String,
+    /// `ts` Slack assigned the placeholder — the handle `chat.update` edits.
+    ts: String,
 }
 
 /// Receives events from the bus and delivers them to Slack channels.
@@ -53,7 +86,15 @@ pub(super) async fn run_slack_subscriber<A: SlackApi>(
     sender: Arc<RateLimitedSender<A>>,
     state: Arc<SlackState>,
 ) {
-    crate::interfaces::outbound::run(subs, SlackOutbound { sender, state }).await;
+    crate::interfaces::outbound::run(
+        subs,
+        SlackOutbound {
+            sender,
+            state,
+            placeholders: std::sync::Mutex::new(Vec::new()),
+        },
+    )
+    .await;
 }
 
 #[async_trait]
@@ -97,11 +138,78 @@ impl<A: SlackApi> ChatOutbound for SlackOutbound<A> {
         target.clone()
     }
 
-    /// Slack's Web API has no typing indicator to send from the bot's side
-    /// (and v1's surface is `chat.postMessage` only), so this is a stop
-    /// channel with no loop behind it — dropping it is the whole contract.
+    /// Slack's Web API has no typing indicator to send from the bot's side,
+    /// so typing feedback is the placeholder pattern instead (see the module
+    /// docs) and this remains a stop channel with no loop behind it —
+    /// dropping it is the whole contract.
     fn start_typing(&self, _target: String) -> tokio::sync::watch::Sender<()> {
         tokio::sync::watch::channel(()).0
+    }
+
+    /// A turn started: when the correlation is one the Slack handler
+    /// tracked — a slack-originated turn; the strict reply-target map, NOT
+    /// [`SlackState::target_for`]'s owner-DM fallback, which would light up
+    /// foreign turns (telegram, cron, …) — post the placeholder and
+    /// remember its `ts` for the first text the turn sends. The post rides
+    /// the same rate-limited sender as every reply, awaited inline in the
+    /// delivery loop so it strictly precedes anything the turn produces.
+    ///
+    /// A post that fails logs and moves on: there is simply no placeholder
+    /// to edit, and the turn's text posts fresh.
+    async fn turn_started(&self, correlation_id: &str) {
+        let Some(channel) = self.state.reply_targets.get(correlation_id) else {
+            return;
+        };
+        match self.sender.send(&channel, PLACEHOLDER_TEXT).await {
+            Ok(ts) => self
+                .placeholders
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((correlation_id.to_string(), Placeholder { channel, ts })),
+            Err(e) => tracing::warn!(
+                correlation_id,
+                error = %e,
+                "could not post the slack placeholder; the reply will post fresh"
+            ),
+        }
+    }
+
+    /// A turn ended: if no text ever reached the channel (an empty reply,
+    /// or one addressed elsewhere), sweep the placeholder so no stale
+    /// "Thinking…" survives — best-effort, like the rest of the pattern.
+    /// The sweep rewrites rather than deletes because `chat.update` is this
+    /// MVP's only editing surface.
+    ///
+    /// Race note: the loop's `select!` may process this before an already
+    /// queued reply, in which case the sweep fires early and the reply then
+    /// posts fresh — rare, honest, and the same cross-subscription ordering
+    /// the typing indicator already lives with.
+    async fn turn_ended(&self, correlation_id: &str) {
+        let index = self
+            .placeholders
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .position(|(id, _)| id == correlation_id);
+        let Some(index) = index else {
+            return; // the turn's text already consumed its placeholder
+        };
+        let (_, placeholder) = self
+            .placeholders
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(index);
+        if let Err(e) = self
+            .sender
+            .edit(&placeholder.channel, &placeholder.ts, TURN_ENDED_TEXT)
+            .await
+        {
+            tracing::warn!(
+                correlation_id,
+                error = %e,
+                "could not sweep the slack placeholder; it stays as last sent"
+            );
+        }
     }
 
     async fn send(
@@ -117,9 +225,36 @@ impl<A: SlackApi> ChatOutbound for SlackOutbound<A> {
             None if content.is_empty() => return Ok(()),
             None => content.to_string(),
         };
-        send_chunks(&self.sender, channel, &text)
+        // The first text a channel sees takes that channel's placeholder —
+        // reply chunk, failure report-back, or intermediate output alike:
+        // whatever turns "Thinking…" into substance in the owner's eyes.
+        // Taken before the chunks are built so an empty chunk list (all
+        // content, no chunks — unreachable past the early return above)
+        // could never strand it.
+        let placeholder = self.take_placeholder_for(channel);
+        send_chunks(&self.sender, channel, &text, placeholder.as_ref())
             .await
             .map_err(|e| e.to_string())
+    }
+}
+
+impl<A: SlackApi> SlackOutbound<A> {
+    /// Take the oldest placeholder posted to `channel`, if any. The send
+    /// path knows only the channel it is sending to — the bus event that
+    /// triggered it carries the correlation, but [`ChatOutbound::send`]
+    /// does not — so consumption is by channel, in posted order. Two
+    /// concurrent turns in one channel each get a placeholder consumed by
+    /// one text of that channel, in order; Slack's DM-only MVP has one
+    /// conversation per channel anyway.
+    fn take_placeholder_for(&self, channel: &str) -> Option<Placeholder> {
+        let mut placeholders = self
+            .placeholders
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let index = placeholders
+            .iter()
+            .position(|(_, placeholder)| placeholder.channel == channel);
+        index.map(|index| placeholders.remove(index).1)
     }
 }
 
@@ -140,13 +275,26 @@ fn parse_channel_id(conversation_id: &str) -> Option<String> {
 }
 
 /// Send `content` in mrkdwn-converted chunks, stopping at the first failure
-/// — Telegram's `send_chunks` policy verbatim.
+/// — Telegram's `send_chunks` policy verbatim. When the turn left a
+/// placeholder, the FIRST chunk edits it in place (by its remembered `ts`);
+/// every later chunk posts fresh, in order.
 async fn send_chunks<A: SlackApi>(
     sender: &RateLimitedSender<A>,
     channel: &str,
     content: &str,
+    placeholder: Option<&Placeholder>,
 ) -> anyhow::Result<()> {
-    for chunk in chunk_text(content, SLACK_MAX_CHARS) {
+    let mut chunks = chunk_text(content, SLACK_MAX_CHARS).into_iter();
+    if let Some(chunk) = chunks.next() {
+        let mrkdwn = markdown_to_mrkdwn(&chunk);
+        match placeholder {
+            Some(placeholder) => sender.edit(channel, &placeholder.ts, &mrkdwn).await?,
+            None => {
+                sender.send(channel, &mrkdwn).await?;
+            }
+        }
+    }
+    for chunk in chunks {
         let mrkdwn = markdown_to_mrkdwn(&chunk);
         sender.send(channel, &mrkdwn).await?;
     }
@@ -178,7 +326,7 @@ mod tests {
 
     use crate::bus::{
         BusHandle, EndpointName, ErrorEvent, NoticeEvent, NotifyName, ResponseEvent,
-        SYSTEM_CHANNEL, spawn_broker, topics,
+        SYSTEM_CHANNEL, TurnLifecycleEvent, spawn_broker, topics,
     };
     use crate::interfaces::BaseSubscribers;
     use crate::interfaces::chat_state::ChatStateStore;
@@ -188,23 +336,40 @@ mod tests {
     use super::super::ENDPOINT;
     use super::super::api::SlackApiError;
 
-    /// Records every `post_message` call — the fake from `api.rs`'s tests,
-    /// minus the scripted results (sender behavior is tested there; here
-    /// every call succeeds). The log is a std mutex so tests can poll it
-    /// from `wait::until_true`'s sync closure, like `outbound.rs`'s
+    /// Records every `post_message` and `chat_update` call — the fake from
+    /// `api.rs`'s tests, minus the scripted results (sender behavior is
+    /// tested there; here every call succeeds). A post returns a synthetic
+    /// ts derived from the call count, so a test can assert which ts an
+    /// edit targeted. The logs are std mutexes so tests can poll them from
+    /// `wait::until_true`'s sync closure, like `outbound.rs`'s
     /// `FakeChat`.
     #[derive(Clone, Default)]
     struct FakeApi {
         calls: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+        updates: Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
     }
 
     #[async_trait]
     impl SlackApi for FakeApi {
-        async fn post_message(&self, channel: &str, text: &str) -> Result<(), SlackApiError> {
-            self.calls
+        async fn post_message(&self, channel: &str, text: &str) -> Result<String, SlackApiError> {
+            let mut calls = self
+                .calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            calls.push((channel.to_string(), text.to_string()));
+            Ok(format!("ts.{}", calls.len()))
+        }
+
+        async fn chat_update(
+            &self,
+            channel: &str,
+            ts: &str,
+            text: &str,
+        ) -> Result<(), SlackApiError> {
+            self.updates
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push((channel.to_string(), text.to_string()));
+                .push((channel.to_string(), ts.to_string(), text.to_string()));
             Ok(())
         }
 
@@ -252,6 +417,7 @@ mod tests {
             SlackOutbound {
                 sender,
                 state: Arc::clone(&state),
+                placeholders: std::sync::Mutex::new(Vec::new()),
             },
         ));
         Harness {
@@ -277,9 +443,46 @@ mod tests {
                 .clone()
         }
 
+        fn updates(&self) -> Vec<(String, String, String)> {
+            self.api
+                .updates
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+
         async fn wait_for_calls(&self, count: usize) {
             wait::until_true(format!("{count} slack call(s)"), || {
                 self.calls().len() >= count
+            })
+            .await;
+        }
+
+        async fn wait_for_updates(&self, count: usize) {
+            wait::until_true(format!("{count} slack edit(s)"), || {
+                self.updates().len() >= count
+            })
+            .await;
+        }
+
+        async fn publish_lifecycle(&self, event: TurnLifecycleEvent) {
+            self.bus
+                .publisher()
+                .publish(topics::Endpoint(EndpointName::from(ENDPOINT)), event)
+                .await
+                .unwrap();
+        }
+
+        async fn publish_turn_started(&self, correlation_id: &str) {
+            self.publish_lifecycle(TurnLifecycleEvent::Started {
+                correlation_id: correlation_id.to_string(),
+            })
+            .await;
+        }
+
+        async fn publish_turn_ended(&self, correlation_id: &str) {
+            self.publish_lifecycle(TurnLifecycleEvent::Ended {
+                correlation_id: correlation_id.to_string(),
             })
             .await;
         }
@@ -424,6 +627,170 @@ mod tests {
             )],
             "the failure goes where the reply would have, converted like any other text"
         );
+    }
+
+    #[tokio::test]
+    async fn a_slack_turn_start_posts_the_thinking_placeholder() {
+        let h = harness().await;
+        h.track("slack-D0001-1234.0001", "D0001");
+
+        h.publish_turn_started("slack-D0001-1234.0001").await;
+
+        h.wait_for_calls(1).await;
+        assert_eq!(
+            h.calls(),
+            vec![("D0001".to_string(), PLACEHOLDER_TEXT.to_string())],
+            "a tracked (slack-originated) turn start posts the placeholder to its channel"
+        );
+        assert!(
+            h.updates().is_empty(),
+            "the placeholder is a fresh post, not an edit"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_foreign_turn_start_never_posts_a_placeholder() {
+        // An owner is bound, so the owner-DM fallback door exists — a
+        // foreign turn (telegram, cron, …) must not light it up. The slack
+        // turn started afterwards proves the loop had its chance to
+        // mis-post for the foreign one.
+        let h = harness().await;
+        h.state
+            .store
+            .claim_owner(crate::interfaces::chat_state::Owner {
+                user_id: "U1".to_string(),
+                name: "U1".to_string(),
+                dm_conversation_id: "D0OWNER1".to_string(),
+            })
+            .await
+            .unwrap();
+
+        h.publish_turn_started("telegram-123-456").await;
+        h.track("slack-D0001-1234.0001", "D0001");
+        h.publish_turn_started("slack-D0001-1234.0001").await;
+
+        h.wait_for_calls(1).await;
+        assert_eq!(
+            h.calls(),
+            vec![("D0001".to_string(), PLACEHOLDER_TEXT.to_string())],
+            "only the slack-originated turn posts a placeholder; the owner DM stays quiet"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_first_reply_chunk_edits_the_placeholder_and_the_rest_post_fresh() {
+        let h = harness().await;
+        h.track("slack-D0001-1234.0001", "D0001");
+        h.publish_turn_started("slack-D0001-1234.0001").await;
+        h.wait_for_calls(1).await; // the placeholder, with ts "ts.1"
+
+        let content = "x".repeat(SLACK_MAX_CHARS * 2 + 500);
+        h.publish_response("slack-D0001-1234.0001", &content).await;
+
+        let chunks = chunk_text(&content, SLACK_MAX_CHARS);
+        // Placeholder post + every chunk after the first.
+        h.wait_for_calls(1 + chunks.len() - 1).await;
+        h.wait_for_updates(1).await;
+
+        let first_chunk = chunks.first().expect("a multi-chunk reply has chunks");
+        assert_eq!(
+            h.updates(),
+            vec![("D0001".to_string(), "ts.1".to_string(), first_chunk.clone())],
+            "the first chunk edits the placeholder in place, by its remembered ts"
+        );
+        // The placeholder was calls[0] (posted before the reply was even
+        // published); everything after it is the reply's fresh chunks.
+        let mut sent = vec![first_chunk.clone()];
+        sent.extend(h.calls().iter().skip(1).map(|(_, text)| text.clone()));
+        assert_eq!(
+            sent.iter().map(String::as_str).collect::<String>(),
+            content,
+            "edit + fresh posts recombine to the reply exactly, in order"
+        );
+        assert!(
+            h.calls()
+                .iter()
+                .skip(1)
+                .all(|(channel, _)| channel == "D0001"),
+            "every later chunk goes to the reply channel"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_turn_edits_the_placeholder_with_the_failure_text() {
+        let h = harness().await;
+        h.track("slack-D0001-1234.0001", "D0001");
+        h.publish_turn_started("slack-D0001-1234.0001").await;
+        h.wait_for_calls(1).await; // the placeholder, with ts "ts.1"
+
+        h.publish_turn_error("slack-D0001-1234.0001", "The model is unavailable.")
+            .await;
+
+        h.wait_for_updates(1).await;
+        assert_eq!(
+            h.updates(),
+            vec![(
+                "D0001".to_string(),
+                "ts.1".to_string(),
+                "*Error:* The model is unavailable.".to_string()
+            )],
+            "the report-back edits the placeholder, never leaves a stale Thinking…"
+        );
+        assert_eq!(
+            h.calls().len(),
+            1,
+            "only the placeholder posted; the failure is the edit"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_ends_without_text_sweeps_the_placeholder() {
+        let h = harness().await;
+        h.track("slack-D0001-1234.0001", "D0001");
+        h.publish_turn_started("slack-D0001-1234.0001").await;
+        h.wait_for_calls(1).await; // the placeholder, with ts "ts.1"
+
+        // An empty reply sends nothing at all; the turn then ends.
+        h.publish_response("slack-D0001-1234.0001", "").await;
+        h.publish_turn_ended("slack-D0001-1234.0001").await;
+
+        h.wait_for_updates(1).await;
+        assert_eq!(
+            h.updates(),
+            vec![(
+                "D0001".to_string(),
+                "ts.1".to_string(),
+                TURN_ENDED_TEXT.to_string()
+            )],
+            "a turn that produced no text sweeps its placeholder"
+        );
+
+        // And a later turn's reply posts fresh: the placeholder is gone,
+        // not reused. (A new correlation, tracked as the handler would for
+        // a new turn — the old turn's mapping was released at its end.)
+        h.track("slack-D0001-9999.000900", "D0001");
+        h.publish_response("slack-D0001-9999.000900", "later").await;
+        h.wait_for_calls(2).await;
+        assert_eq!(
+            h.calls().last(),
+            Some(&("D0001".to_string(), "later".to_string())),
+            "after the sweep the next text posts fresh"
+        );
+        assert_eq!(h.updates().len(), 1, "nothing further is edited");
+    }
+
+    #[tokio::test]
+    async fn a_reply_without_a_turn_start_posts_fresh_as_before() {
+        // The placeholder is opt-in per turn: no turn-start signal, no
+        // placeholder to edit — the pre-task-10 behavior, unchanged.
+        let h = harness().await;
+        h.track("slack-D0001-1234.0001", "D0001");
+
+        h.publish_response("slack-D0001-1234.0001", "hello").await;
+
+        h.wait_for_calls(1).await;
+        assert_eq!(h.calls(), vec![("D0001".to_string(), "hello".to_string())]);
+        assert!(h.updates().is_empty(), "nothing to edit, nothing edited");
     }
 
     #[tokio::test]
