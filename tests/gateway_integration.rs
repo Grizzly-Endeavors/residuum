@@ -422,8 +422,9 @@ mod gateway_integration {
                     }
                 }
                 // SetVerbose (client-side), Reload, ServerCommand, InboxAdd,
-                // Cancel, the session commands, workspace watching and turn
-                // resyncs are not handled in the test stub
+                // Cancel, the session commands, workspace watching, turn
+                // resyncs and waiting-message commands are not handled in the
+                // test stub
                 ClientMessage::SetVerbose { .. }
                 | ClientMessage::Reload
                 | ClientMessage::ServerCommand { .. }
@@ -432,6 +433,8 @@ mod gateway_integration {
                 | ClientMessage::SessionSendMessage { .. }
                 | ClientMessage::SessionStop { .. }
                 | ClientMessage::WatchWorkspace { .. }
+                | ClientMessage::SendQueuedNow { .. }
+                | ClientMessage::WithdrawQueued { .. }
                 | ClientMessage::ResyncTurn => {}
             }
         }

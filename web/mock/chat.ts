@@ -152,6 +152,10 @@ export interface ChatSimulator {
   receive: (content: string, source: MessageSource) => void;
   /** Stop the turn answering `replyTo`, if it is still running. */
   cancel: (replyTo: string) => void;
+  /** Send a waiting message now (`send_queued_now`); false when it isn't waiting. */
+  sendWaitingNow: (id: string) => boolean;
+  /** Take back a waiting message (`withdraw_queued`); false when it isn't waiting. */
+  withdrawWaiting: (id: string) => boolean;
 }
 
 /**
@@ -178,6 +182,8 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
   const { state } = agent;
   const { env } = hub;
   const inFlight = new Map<string, TurnInFlight>();
+  /** Messages that arrived while a turn ran, oldest first, waiting for the agent to read them. */
+  const waiting: Array<{ id: string; content: string; source: MessageSource }> = [];
   let responseIndex = 0;
   const WEB: MessageSource = { endpoint: "ws" };
 
@@ -334,6 +340,7 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
               );
             }
             hub.overview.changed(agent);
+            startNextWaiting();
           });
         }),
       );
@@ -559,18 +566,52 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
         { role: "assistant", content: response, ...ofTurn },
       );
       hub.overview.changed(agent);
+      startNextWaiting();
     }
   }
 
+  /**
+   * Start a turn for a message, or, while a turn runs, keep it waiting and
+   * tell every page so. The mock reads a waiting message only once the
+   * running turn ends, as the backend does with one that arrives after the
+   * turn's last checkpoint.
+   */
+  function arrive(id: string, content: string, source: MessageSource): void {
+    if (inFlight.size === 0 && waiting.length === 0) {
+      start(id, content, source);
+      return;
+    }
+    waiting.push({ id, content, source });
+    state.broadcast({
+      type: "message_queued",
+      message: {
+        id,
+        content,
+        ...(source.images === undefined || source.images.length === 0
+          ? {}
+          : { images: source.images }),
+        ...(source.sender === undefined ? {} : { sender: source.sender }),
+        endpoint: source.endpoint,
+      },
+    });
+  }
+
+  /** The turn that ran has ended: the oldest waiting message starts the next. */
+  function startNextWaiting(): void {
+    if (inFlight.size > 0) return;
+    const next = waiting.shift();
+    if (next !== undefined) start(next.id, next.content, next.source);
+  }
+
   function send(msg: SendMessage): void {
-    start(msg.id, msg.content, {
+    arrive(msg.id, msg.content, {
       ...WEB,
       ...(msg.images === undefined ? {} : { images: msg.images }),
     });
   }
 
   function receive(content: string, source: MessageSource): void {
-    start(`${source.endpoint}-${String(env.nextId())}`, content, source);
+    arrive(`${source.endpoint}-${String(env.nextId())}`, content, source);
   }
 
   function cancel(replyTo: string): void {
@@ -582,7 +623,30 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
     hub.setBusy(agent, false);
     recordUserMessage(turn.content, turn.source);
     hub.overview.changed(agent);
+    startNextWaiting();
   }
 
-  return { send, receive, cancel };
+  /**
+   * Send a waiting message now: it goes first, and the running turn stops.
+   * False when it isn't waiting.
+   */
+  function sendWaitingNow(id: string): boolean {
+    const index = waiting.findIndex((message) => message.id === id);
+    if (index === -1) return false;
+    const [message] = waiting.splice(index, 1);
+    if (message !== undefined) waiting.unshift(message);
+    for (const replyTo of [...inFlight.keys()]) cancel(replyTo);
+    return true;
+  }
+
+  /** Take back a waiting message, telling every page. False when it isn't waiting. */
+  function withdrawWaiting(id: string): boolean {
+    const index = waiting.findIndex((message) => message.id === id);
+    if (index === -1) return false;
+    waiting.splice(index, 1);
+    state.broadcast({ type: "message_withdrawn", id });
+    return true;
+  }
+
+  return { send, receive, cancel, sendWaitingNow, withdrawWaiting };
 }

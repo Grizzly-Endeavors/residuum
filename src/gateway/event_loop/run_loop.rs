@@ -429,6 +429,7 @@ fn build_gateway_state(
     } = routes;
     GatewayState {
         turn_journal,
+        queued: Arc::clone(&core.queued),
         reload_tx: core.reload_tx.clone(),
         command_tx: core.command_tx.clone(),
         stop_tx: core.stop_tx.clone(),
@@ -770,6 +771,7 @@ async fn build_runtime(
         ),
         post_turn_result_rx,
         deferred_inbound: std::collections::VecDeque::new(),
+        queued: Arc::clone(&core.queued),
         hybrid_searcher: parts.hybrid_searcher,
         session_runtime: parts.session_runtime,
         session_registry: parts.session_registry,
@@ -1062,7 +1064,11 @@ async fn graceful_shutdown(rt: &mut AgentRuntime) {
     // (message_agent, the web UI) were already told delivery succeeded.
     // Drained before the bus infrastructure is aborted further down, while
     // this subscriber can still see what is queued for it.
-    let mut undelivered: Vec<_> = rt.deferred_inbound.drain(..).collect();
+    let mut undelivered: Vec<_> = rt
+        .deferred_inbound
+        .drain(..)
+        .filter(|message| rt.queued.claim_turn_start(&message.id))
+        .collect();
     undelivered.extend(rt.agent_subscriber.drain());
     super::turns::inject_undelivered_messages(
         &mut rt.agent,
@@ -1384,6 +1390,24 @@ pub(crate) fn spawn_agent_loop(runtime: AgentRuntime) -> tokio::task::JoinHandle
     )
 }
 
+/// The message waiting in `deferred_inbound` to run next: one the person asked
+/// to send now goes ahead of the rest. A message withdrawn while it waited
+/// is dropped here, and the next one taken instead.
+fn next_deferred_message(rt: &mut AgentRuntime) -> Option<crate::bus::MessageEvent> {
+    loop {
+        let next = rt
+            .deferred_inbound
+            .iter()
+            .position(|message| rt.queued.is_send_now(&message.id))
+            .unwrap_or(0);
+        let message = rt.deferred_inbound.remove(next)?;
+        if rt.queued.claim_turn_start(&message.id) {
+            return Some(message);
+        }
+        tracing::info!(msg_id = %message.id, "dropped a message withdrawn before the agent read it");
+    }
+}
+
 /// Run the agent's main event loop.
 ///
 /// Processes inbound messages, pulse ticks, action ticks, and memory pipeline
@@ -1403,7 +1427,7 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
         // Messages that arrived after the last turn's final checkpoint run
         // first: their senders are waiting on a reply, and anything queued
         // on the bus arrived after them.
-        if let Some(message) = rt.deferred_inbound.pop_front() {
+        if let Some(message) = next_deferred_message(&mut rt) {
             if let Some(exit) = apply_bus_event(
                 Ok(Some(message)),
                 &mut rt,

@@ -7,13 +7,14 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::Agent;
 use crate::agent::context::{PromptContext, SkillsContext};
-use crate::agent::interrupt::Interrupt;
+use crate::agent::interrupt::{Interrupt, InterruptSource};
 use crate::bus::{
     EndpointName, ErrorEvent, MainConversationEvent, MessageEvent, NotifyName, Publisher,
     ResponseEvent, SYSTEM_CHANNEL, Subscriber, TurnLifecycleEvent, TurnOrigin, topics,
 };
 
 use crate::config::Config;
+use crate::gateway::queued_messages::{CheckpointTake, QueuedMessages};
 use crate::gateway::types::{AgentRuntime, StopRequest};
 use crate::hub::activity::ActivityTracker;
 use crate::inference::ImageData;
@@ -295,18 +296,78 @@ fn stop_turn_for_agent_stop(
     }
 }
 
+/// The main turn's interrupt channel as the turn loop drains it, asking
+/// [`QueuedMessages`] about each person's message first: a withdrawn one is
+/// dropped, and one to send now is held back for the turn after this one.
+struct MainInterrupts<'a> {
+    rx: mpsc::UnboundedReceiver<Interrupt>,
+    queued: &'a QueuedMessages,
+    /// Messages to send now, drained at a checkpoint but kept out of the turn.
+    held: Vec<MessageEvent>,
+}
+
+impl<'a> MainInterrupts<'a> {
+    fn new(rx: mpsc::UnboundedReceiver<Interrupt>, queued: &'a QueuedMessages) -> Self {
+        Self {
+            rx,
+            queued,
+            held: Vec::new(),
+        }
+    }
+
+    /// What is still queued once the turn has ended: the messages to send
+    /// now first, so they start the next turn, then the rest in order, less
+    /// any withdrawn since.
+    fn into_leftovers(mut self) -> Vec<Interrupt> {
+        let mut leftovers: Vec<Interrupt> =
+            self.held.drain(..).map(Interrupt::UserMessage).collect();
+        for interrupt in drain_interrupts(&mut self.rx) {
+            if let Interrupt::UserMessage(msg) = &interrupt
+                && !self.queued.keep_after_turn(&msg.id)
+            {
+                tracing::info!(msg_id = %msg.id, "dropped a message withdrawn before the agent read it");
+                continue;
+            }
+            leftovers.push(interrupt);
+        }
+        leftovers
+    }
+}
+
+impl InterruptSource for MainInterrupts<'_> {
+    fn try_recv(&mut self) -> Result<Interrupt, mpsc::error::TryRecvError> {
+        loop {
+            let interrupt = self.rx.try_recv()?;
+            let Interrupt::UserMessage(msg) = interrupt else {
+                return Ok(interrupt);
+            };
+            match self.queued.take_at_checkpoint(&msg.id) {
+                CheckpointTake::Deliver => return Ok(Interrupt::UserMessage(msg)),
+                CheckpointTake::Hold => {
+                    tracing::info!(msg_id = %msg.id, "holding a message to send now for the next turn");
+                    self.held.push(msg);
+                }
+                CheckpointTake::Drop => {
+                    tracing::info!(msg_id = %msg.id, "dropped a message withdrawn before the agent read it");
+                }
+            }
+        }
+    }
+}
+
 /// Fold one mid-turn message-bus event into the turn: inject it if it
 /// belongs to main, route it elsewhere (off this select loop) otherwise, or
 /// just log a closed channel / type mismatch.
 ///
 /// Split out of `run_agent_turn_with_interrupts` purely to keep that
 /// function's line count down.
-fn handle_mid_turn_message(
+async fn handle_mid_turn_message(
     next_msg: Result<Option<MessageEvent>, crate::bus::BusError>,
     agent_messenger: &crate::background::messaging::AgentMessenger,
     conversation_router: &Arc<crate::background::ConversationRouter>,
     interrupt_tx: &mpsc::UnboundedSender<Interrupt>,
     hop_counter: &crate::agent::HopCounter,
+    waiting: (&QueuedMessages, &Publisher),
 ) {
     match next_msg {
         Ok(Some(inbound)) => {
@@ -322,6 +383,14 @@ fn handle_mid_turn_message(
                 // send would claim a hop the turn never actually received.
                 let hop = agent_messenger.take_main_hop(&inbound.id);
                 let id = inbound.id.clone();
+                // A person's message waits until the turn reads it, and is
+                // announced as waiting first: the turn can't read it before
+                // it is on the channel, so its "read" always follows.
+                if let Some(queued_event) = MainConversationEvent::message_queued(&inbound) {
+                    let (queued, publisher) = waiting;
+                    queued.enqueue(&id);
+                    publish_main_conversation(publisher, queued_event).await;
+                }
                 if interrupt_tx.send(Interrupt::UserMessage(inbound)).is_ok() {
                     hop_counter.bump(hop);
                     agent_messenger.note_mid_turn_hop(&id, hop);
@@ -407,6 +476,7 @@ async fn run_agent_turn_with_interrupts(
     stop_rx: &mut mpsc::Receiver<StopRequest>,
     agent_stop_rx: &mut mpsc::Receiver<()>,
     subconscious: Option<Arc<crate::subconscious::Subconscious>>,
+    queued: &QueuedMessages,
 ) -> (
     anyhow::Result<Vec<String>>,
     Vec<Interrupt>,
@@ -433,7 +503,8 @@ async fn run_agent_turn_with_interrupts(
     // refers to the same shared cell, so mid-turn bumps below and reads from
     // the `message_agent`/`subagent_spawn` tools stay in sync regardless.
     let hop_counter = agent.hop_counter().clone();
-    let (interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel::<Interrupt>();
+    let (interrupt_tx, interrupt_rx) = mpsc::unbounded_channel::<Interrupt>();
+    let mut interrupt_rx = MainInterrupts::new(interrupt_rx, queued);
     let watch =
         subconscious.map(|s| crate::subconscious::SubconsciousWatch::new(s, interrupt_tx.clone()));
     // Cancelled to abort an in-flight model call immediately; a stop that
@@ -467,7 +538,9 @@ async fn run_agent_turn_with_interrupts(
                         conversation_router,
                         &interrupt_tx,
                         &hop_counter,
-                    );
+                        (queued, publisher),
+                    )
+                    .await;
                 }
                 stop_req = stop_rx.recv() => {
                     handle_mid_turn_stop_request(stop_req, correlation_id, &stop_token, &interrupt_tx);
@@ -490,7 +563,7 @@ async fn run_agent_turn_with_interrupts(
         .map(crate::subconscious::SubconsciousWatch::scratch);
 
     drop(interrupt_tx);
-    let leftover_interrupts = drain_interrupts(&mut interrupt_rx);
+    let leftover_interrupts = interrupt_rx.into_leftovers();
 
     (turn_result, leftover_interrupts, scratch, stop_requested)
 }
@@ -896,6 +969,7 @@ pub async fn handle_inbound_message(
             &mut rt.agent_stop_rx,
             (!is_background && rt.subconscious.mid_turn_enabled())
                 .then(|| Arc::clone(&rt.subconscious)),
+            &rt.queued,
         )
         .await;
 
@@ -1627,6 +1701,7 @@ mod tests {
                 &mut stop_rx,
                 &mut agent_stop_rx,
                 None,
+                &QueuedMessages::default(),
             )
             .await;
             turn_result.expect("gated turn should complete successfully");
@@ -1736,6 +1811,7 @@ mod tests {
             &mut stop_rx,
             &mut agent_stop_rx,
             None,
+            &QueuedMessages::default(),
         )
         .await;
 
@@ -1829,6 +1905,7 @@ mod tests {
                 &mut stop_rx,
                 &mut agent_stop_rx,
                 None,
+                &QueuedMessages::default(),
             )
             .await;
             turn_result.expect("gated turn should complete successfully");
@@ -2224,6 +2301,7 @@ mod tests {
         publisher: Publisher,
         messenger: Arc<crate::background::messaging::AgentMessenger>,
         router: Arc<crate::background::ConversationRouter>,
+        queued: Arc<QueuedMessages>,
         /// Kept alive for the rig's lifetime: the broker, and the stop
         /// channels' senders (a closed channel would make the turn's select
         /// arm for it fire on every poll).
@@ -2266,6 +2344,7 @@ mod tests {
                 publisher,
                 messenger,
                 router,
+                queued: Arc::default(),
                 keep_alive: (handle, stop_tx, agent_stop_tx),
             }
         }
@@ -2298,11 +2377,176 @@ mod tests {
                 &mut self.stop_rx,
                 &mut self.agent_stop_rx,
                 None,
+                &self.queued,
             )
             .await;
             result.expect("the turn completes");
             leftovers
         }
+    }
+
+    /// A provider whose model calls each announce they started and then wait
+    /// for the gate: the first answers with a call to a tool (which runs and
+    /// fails, being unknown), so a checkpoint follows it, and the second
+    /// answers with text.
+    struct ToolThenTextProvider {
+        started: Arc<tokio::sync::Notify>,
+        gate: Arc<tokio::sync::Notify>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::inference::InferenceProvider for ToolThenTextProvider {
+        async fn complete(
+            &self,
+            _messages: &[crate::inference::Message],
+            _tools: &[crate::inference::ToolDefinition],
+            _options: &crate::inference::CompletionOptions,
+        ) -> Result<crate::inference::InferenceResponse, crate::inference::InferenceError> {
+            self.started.notify_one();
+            self.gate.notified().await;
+            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                Ok(crate::inference::InferenceResponse::new(
+                    String::new(),
+                    vec![crate::inference::ToolCall {
+                        id: "call-1".to_string(),
+                        name: "look_around".to_string(),
+                        arguments: serde_json::json!({}),
+                        server: None,
+                    }],
+                ))
+            } else {
+                Ok(crate::inference::InferenceResponse::new(
+                    "done".to_string(),
+                    vec![],
+                ))
+            }
+        }
+
+        fn model_name(&self) -> &'static str {
+            "tool-then-text"
+        }
+    }
+
+    /// A person's message from the web UI.
+    fn person_message(id: &str, content: &str) -> MessageEvent {
+        MessageEvent {
+            id: id.to_string(),
+            content: content.to_string(),
+            origin: MessageOrigin {
+                endpoint: "ws".to_string(),
+                sender: None,
+                conversation: None,
+                agent_sender: None,
+            },
+            timestamp: chrono::Utc::now().naive_utc(),
+            images: vec![],
+            context: None,
+        }
+    }
+
+    /// What became of a person's message sent while the first model call of
+    /// a tool-then-text turn ran, after `act` did something to it once it
+    /// was announced as waiting: the turn's leftovers, the main
+    /// conversation's events naming it, and the rig, for its history.
+    async fn while_a_message_waits(
+        act: impl FnOnce(&QueuedMessages, &str),
+    ) -> (Vec<Interrupt>, Vec<String>, TurnRig) {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let started = Arc::new(tokio::sync::Notify::new());
+        let mut rig = TurnRig::new(ToolThenTextProvider {
+            started: Arc::clone(&started),
+            gate: Arc::clone(&gate),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        })
+        .await;
+        let queued = Arc::clone(&rig.queued);
+        let publisher = rig.publisher.clone();
+        let mut main: Subscriber<MainConversationEvent> =
+            rig.bus().subscribe(topics::MainConversation).await.unwrap();
+
+        let turn = crate::util::spawn_in_span(async move {
+            let leftovers = rig.run_turn("kickoff", "corr-wait", None).await;
+            (leftovers, rig)
+        });
+        // Past the checkpoint before the first model call, so the message
+        // waits for the one after the tool call.
+        wait::guarded("the first model call to start", started.notified()).await;
+        publisher
+            .publish(
+                topics::UserMessage,
+                person_message("m1", "also check the logs"),
+            )
+            .await
+            .unwrap();
+        let mut events = Vec::new();
+        loop {
+            let event = wait::guarded("the message to be announced as waiting", main.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let waiting =
+                matches!(&event, MainConversationEvent::MessageQueued { id, .. } if id == "m1");
+            events.push(event);
+            if waiting {
+                break;
+            }
+        }
+        act(&queued, "m1");
+        // The tool call, then the reply.
+        gate.notify_one();
+        gate.notify_one();
+        let (leftovers, ended) = wait::guarded("the turn to end", turn).await.unwrap();
+        wait::bus_barrier(ended.bus()).await;
+        events.extend(main.drain());
+        let named = events
+            .iter()
+            .filter_map(|event| {
+                if let MainConversationEvent::MessageQueued { id, .. } = event {
+                    Some(format!("queued:{id}"))
+                } else if let MainConversationEvent::UserMessage { id, .. } = event {
+                    Some(format!("read:{id}"))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        (leftovers, named, ended)
+    }
+
+    #[tokio::test]
+    async fn a_message_sent_mid_turn_is_announced_waiting_then_read_at_the_checkpoint() {
+        let (leftovers, named, rig) = while_a_message_waits(|_, _| {}).await;
+        assert_eq!(named, ["queued:m1", "read:m1"]);
+        assert!(leftovers.is_empty());
+        assert_eq!(history_mentions(&rig.agent, "also check the logs"), 1);
+        assert!(!rig.queued.withdraw("m1"), "a read message no longer waits");
+    }
+
+    #[tokio::test]
+    async fn a_withdrawn_message_never_reaches_the_turn() {
+        let (leftovers, named, rig) = while_a_message_waits(|queued, id| {
+            assert!(queued.withdraw(id));
+        })
+        .await;
+        assert_eq!(named, ["queued:m1"], "it is never announced as read");
+        assert!(leftovers.is_empty(), "and starts no turn of its own");
+        assert_eq!(history_mentions(&rig.agent, "also check the logs"), 0);
+    }
+
+    #[tokio::test]
+    async fn a_message_to_send_now_is_kept_out_of_the_turn_and_left_to_start_the_next() {
+        let (leftovers, named, rig) = while_a_message_waits(|queued, id| {
+            assert!(queued.send_now(id));
+        })
+        .await;
+        assert_eq!(named, ["queued:m1"]);
+        assert_eq!(history_mentions(&rig.agent, "also check the logs"), 0);
+        let [Interrupt::UserMessage(message)] = leftovers.as_slice() else {
+            panic!("expected the message back to start the next turn");
+        };
+        assert_eq!(message.id, "m1");
+        assert!(rig.queued.is_send_now("m1"), "it still waits, to run first");
     }
 
     #[tokio::test]
@@ -2453,6 +2697,7 @@ mod tests {
                 &mut stop_rx,
                 &mut agent_stop_rx,
                 None,
+                &QueuedMessages::default(),
             )
             .await
         });

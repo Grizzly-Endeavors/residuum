@@ -54,8 +54,13 @@ pub fn dead_interrupt_rx() -> mpsc::UnboundedReceiver<Interrupt> {
 /// The turn loop (`crate::agent::turn::execute_turn`) only ever drains
 /// what's already queued, so this needs nothing beyond a non-blocking
 /// receive.
-pub(crate) trait InterruptSource: Send {
+pub trait InterruptSource: Send {
     /// Non-blocking: take the next already-queued interrupt, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TryRecvError::Empty` when nothing is queued, and
+    /// `TryRecvError::Disconnected` when nothing more ever will be.
     fn try_recv(&mut self) -> Result<Interrupt, mpsc::error::TryRecvError>;
 }
 

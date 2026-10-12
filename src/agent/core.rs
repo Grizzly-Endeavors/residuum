@@ -374,7 +374,7 @@ impl Agent {
         correlation_id: &str,
         origin: Option<&MessageOrigin>,
         prompt_ctx: &PromptContext<'_>,
-        interrupt_rx: &mut tokio::sync::mpsc::UnboundedReceiver<interrupt::Interrupt>,
+        interrupt_rx: &mut dyn interrupt::InterruptSource,
         images: &[crate::inference::ImageData],
         subconscious: Option<&crate::subconscious::SubconsciousWatch>,
         stop_token: &CancellationToken,
