@@ -255,6 +255,16 @@
       label="Let others talk to this agent"
       hint={`Off: only you, the first person to DM the app. On: anyone who can DM the app can talk to ${agent}.`}
     />
+    <TextField
+      label="Working reaction"
+      bind:value={scope.config.slack_working_reaction}
+      placeholder="eyes"
+      autocomplete="off"
+      spellcheck={false}
+      code
+      hint={`The emoji ${agent} puts on your message while it works, by its Slack name (zap, test_tube, …). Leave it empty for 👀.`}
+      error={configFieldError(scope, "slack_working_reaction")}
+    />
   </ChannelGroup>
 
   <ChannelGroup

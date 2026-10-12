@@ -163,6 +163,18 @@ describe("Slack", () => {
     expect(patches()).toEqual([{ slack: { respond_to_others: true } }]);
   });
 
+  it("sets the agent's working reaction, and leaves the default unwritten", async () => {
+    await open("connections", {
+      config: '[slack]\nbot_token = "xoxb-1"\napp_token = "xapp-1"\n',
+    });
+    const slack = group("Slack");
+    expect(slack.getByLabelText("Working reaction")).toHaveValue("");
+
+    await type(slack.getByLabelText("Working reaction"), "zap");
+    await save();
+    expect(patches()).toEqual([{ slack: { working_reaction: "zap" } }]);
+  });
+
   it("warns while Slack is half filled, and clears when it is complete or empty", async () => {
     await open("connections");
     const slack = group("Slack");
