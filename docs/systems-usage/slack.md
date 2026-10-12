@@ -40,6 +40,10 @@ respond_to_others = false
 
 Both tokens are required (each also accepts a `"${ENV_VAR}"` reference or a literal); a `[slack]` section with either missing resolves to no Slack adapter, with a warning in the log. Changing any `[slack]` value restarts the Slack adapter on reload — the old socket is drained and closed and a new one opens — and removing the section stops the adapter.
 
+## Known limits (v1)
+
+- **An envelope dropped after its ack is lost.** Every envelope is acknowledged to Slack before the agent processes it, so Slack never retries it. Between the socket and the message handler sits a bounded queue (256 envelopes); if that queue is ever full — the handler badly stalled while messages keep arriving — further envelopes are dropped with a warning (`envelope queue full — dropping an envelope that was ALREADY ACKED …`), and those messages never become agent turns. The sender would have to send them again. This is a deliberate trade: blocking the socket instead would delay every ack and invite Slack's retry storm.
+
 ## Code
 
 `src/interfaces/slack/`: `mod.rs` (shared state, reply routing, conversation listing), `handler.rs` (inbound DM events, owner binding, dedup, bus dispatch), `socket.rs` (Socket Mode client — connect, ack-first, reconnect, liveness), `subscriber.rs` (outbound delivery), `api.rs` (Web API client, rate-limited sender), `format.rs` (markdown → mrkdwn), `events.rs` (envelope and DM event types). Owner and conversation state is `src/interfaces/chat_state.rs`, shared with Discord, Teams, and Telegram.

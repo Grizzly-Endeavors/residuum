@@ -262,8 +262,10 @@ where
 /// Send the Socket Mode ack — the text frame `{"envelope_id": "<id>"}` —
 /// on the socket the envelope arrived on.
 ///
-/// Envelopes without an `envelope_id` (only `hello` and `disconnect` per
-/// the docs) cannot be acked and are not. A failed send warns and moves on:
+/// Envelopes without an `envelope_id` cannot be acked and are not. For
+/// `hello` and `disconnect` that is the documented shape (debug); for any
+/// other type it contradicts the docs, so it warns — Slack will retry the
+/// un-ackable event — but is still tolerated, never an error. A failed send warns and moves on:
 /// if the write side is dead the next read fails and reconnects, and Slack's
 /// retry is absorbed by the handler's message-identity dedup.
 async fn ack<S>(sink: &mut S, envelope: &Envelope)
@@ -272,10 +274,20 @@ where
     S::Error: std::fmt::Display,
 {
     if envelope.id.is_empty() {
-        tracing::debug!(
-            envelope_type = ?envelope.kind,
-            "slack socket: envelope carries no envelope_id — nothing to ack"
-        );
+        match envelope.kind {
+            EnvelopeKind::Hello | EnvelopeKind::Disconnect => {
+                tracing::debug!(
+                    envelope_type = ?envelope.kind,
+                    "slack socket: lifecycle envelope carries no envelope_id — nothing to ack"
+                );
+            }
+            EnvelopeKind::EventsApi | EnvelopeKind::Unknown(_) => {
+                tracing::warn!(
+                    envelope_type = ?envelope.kind,
+                    "slack socket: event envelope carries no envelope_id — cannot ack it, Slack may retry; processing it anyway"
+                );
+            }
+        }
         return;
     }
     let frame = serde_json::json!({ "envelope_id": envelope.id }).to_string();

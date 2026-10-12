@@ -149,10 +149,13 @@ impl InboundHandler {
             );
             return;
         };
-        // Slack redelivers un-acked envelopes under the same id; the ack
-        // happened upstream, so only recent history can overlap. An empty id
-        // (the field was missing — only hello/disconnect fixtures do) cannot
-        // be deduped, so it is processed as-is.
+        // A repeat of an envelope id we already handled (e.g. a reconnect
+        // replaying the same envelope) is absorbed here. Slack's retries of
+        // an UN-ACKED event do NOT reuse the id — they arrive under a NEW
+        // envelope id (PR #498 live probe, 2026-10-12) — so they pass this
+        // check and are caught by the (channel, ts) message dedup below. An
+        // empty id (only hello/disconnect lack one) cannot be deduped here,
+        // so it falls through to the message dedup as-is.
         if !envelope.id.is_empty() && self.dedup.seen(&envelope.id) {
             tracing::debug!(
                 envelope_id = %envelope.id,
@@ -336,9 +339,12 @@ impl SlackInbound {
     /// The `on_envelope` callback for [`super::socket::run_socket`].
     ///
     /// Only ever `try_send`s: the socket invokes it synchronously between
-    /// acks, and a blocking send there would backpressure every subsequent
     /// ack. A full queue drops the envelope instead (warned) — preferable
     /// to stalling the connection over one message.
+    ///
+    /// Known v1 limit: the socket has ALREADY acked the envelope by the time
+    /// it reaches this callback, so Slack will not retry it — a dropped
+    /// envelope's message is lost, not deferred.
     pub(super) fn forwarder(&self) -> impl FnMut(Envelope) + Send + 'static {
         let tx = self.tx.clone();
         move |envelope| match tx.try_send(envelope) {
@@ -346,13 +352,13 @@ impl SlackInbound {
             Err(mpsc::error::TrySendError::Full(envelope)) => {
                 tracing::warn!(
                     envelope_id = %envelope.id,
-                    "slack handler: envelope queue full — dropping the envelope rather than block the socket's ack"
+                    "slack handler: envelope queue full — dropping an envelope that was ALREADY ACKED; Slack will not retry it, so this message is lost"
                 );
             }
             Err(mpsc::error::TrySendError::Closed(envelope)) => {
                 tracing::warn!(
                     envelope_id = %envelope.id,
-                    "slack handler: envelope channel closed — envelope dropped"
+                    "slack handler: envelope channel closed — dropping an envelope that was already acked; Slack will not retry it, so this message is lost"
                 );
             }
         }
