@@ -11,6 +11,10 @@
     "bot_user": {
       "display_name": "Residuum Agent",
       "always_online": true
+    },
+    "app_home": {
+      "messages_tab_enabled": true,
+      "messages_tab_readonly_enabled": false
     }
   },
   "oauth_config": {
