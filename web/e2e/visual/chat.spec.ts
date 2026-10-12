@@ -91,7 +91,11 @@ test.describe("chat feed", { tag: "@visual" }, () => {
     await step.click();
     const details = page.locator(`#${(await step.getAttribute("aria-controls")) ?? ""}`);
     await expect(details).toContainText("Last observer run: 3 minutes ago");
+    // The reader scrolls the step to the middle by hand. Their wheel ends the
+    // feed's hold on the place of the control they pressed, which otherwise
+    // undoes a scroll made in the moment after the press.
     await step.evaluate((el) => {
+      el.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
       el.scrollIntoView({ block: "center" });
     });
     await page.mouse.move(0, 0);
