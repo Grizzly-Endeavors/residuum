@@ -622,7 +622,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SlackApi for ScriptedApi {
-        async fn post_message(&self, _channel: &str, _text: &str) -> Result<String, SlackApiError> {
+        async fn post_message(
+            &self,
+            _channel: &str,
+            _text: &str,
+        ) -> Result<Option<String>, SlackApiError> {
             panic!("run_socket never posts messages; acks ride their own client");
         }
 

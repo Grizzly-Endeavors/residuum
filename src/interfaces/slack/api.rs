@@ -55,13 +55,22 @@ pub(crate) enum SlackApiError {
 #[async_trait]
 pub(crate) trait SlackApi: Send + Sync {
     /// Post `text` to `channel` via `chat.postMessage`, returning the posted
-    /// message's `ts` — the handle a later [`Self::chat_update`] edits.
+    /// message's `ts` when Slack reports one — the handle a later
+    /// [`Self::chat_update`] edits. An `ok` body without a `ts` still
+    /// delivered the message, so it succeeds as `None`: only the
+    /// placeholder path needs the ts, and it degrades to "no placeholder"
+    /// — an ordinary reply chunk must not fail (and stop the rest of the
+    /// reply) over a field it never uses.
     ///
     /// # Errors
     /// [`SlackApiError::RateLimited`] on HTTP 429 — the caller is expected to
     /// honor `retry_after`; `Fatal` for Slack-side `ok:false` rejections;
     /// `Http` for transport failures.
-    async fn post_message(&self, channel: &str, text: &str) -> Result<String, SlackApiError>;
+    async fn post_message(
+        &self,
+        channel: &str,
+        text: &str,
+    ) -> Result<Option<String>, SlackApiError>;
 
     /// Edit the message `ts` in `channel` to `text` via `chat.update`.
     /// Errors are classified exactly like [`Self::post_message`]'s.
@@ -112,7 +121,11 @@ impl ReqwestSlackApi {
 
 #[async_trait]
 impl SlackApi for ReqwestSlackApi {
-    async fn post_message(&self, channel: &str, text: &str) -> Result<String, SlackApiError> {
+    async fn post_message(
+        &self,
+        channel: &str,
+        text: &str,
+    ) -> Result<Option<String>, SlackApiError> {
         let response = self
             .http
             .post(POST_MESSAGE_URL)
@@ -207,15 +220,13 @@ fn interpret_ok_body(body: &str, method: &str) -> Result<Value, SlackApiError> {
 }
 
 /// Interpret a `chat.postMessage` response body into the posted message's
-/// `ts` — the handle the placeholder pattern later edits.
-fn interpret_post_message(body: &str) -> Result<String, SlackApiError> {
+/// `ts` — the handle the placeholder pattern later edits. An `ok` body
+/// without a `ts` delivered the message, so it is `None`, not an error:
+/// only the placeholder path needs the ts, and no reply chunk should fail
+/// over a field it never reads.
+fn interpret_post_message(body: &str) -> Result<Option<String>, SlackApiError> {
     let body = interpret_ok_body(body, "chat.postMessage")?;
-    body.get("ts")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .ok_or_else(|| {
-            SlackApiError::Http(anyhow::anyhow!("chat.postMessage returned ok without a ts"))
-        })
+    Ok(body.get("ts").and_then(Value::as_str).map(str::to_string))
 }
 
 /// Interpret a `chat.update` response body: `ok:true` succeeds, anything
@@ -261,13 +272,13 @@ pub(crate) struct RateLimitedSender<A: SlackApi> {
 
 impl<A: SlackApi> RateLimitedSender<A> {
     /// Post `text` to `channel` via `chat.postMessage`, returning the posted
-    /// message's `ts`. Rate limiting and error propagation as
-    /// [`Self::exchange`] describes.
+    /// message's `ts` when Slack reports one. Rate limiting and error
+    /// propagation as [`Self::exchange`] describes.
     ///
     /// # Errors
     /// Propagates the underlying API's `Fatal`/`Http` errors as-is, or an
     /// error stating the rate limit persisted after the bounded retries.
-    pub(crate) async fn send(&self, channel: &str, text: &str) -> anyhow::Result<String> {
+    pub(crate) async fn send(&self, channel: &str, text: &str) -> anyhow::Result<Option<String>> {
         self.exchange(channel, "posting to", || {
             self.api.post_message(channel, text)
         })
@@ -371,16 +382,20 @@ mod tests {
     /// of results. An exhausted (or empty) script means "succeed"; a post
     /// "succeeds" with a synthetic ts derived from the call count, so a test
     /// can feed it straight back into an edit.
+    /// One scripted `post_message` result: the post's reported ts, or the
+    /// error to surface.
+    type ScriptedPost = Result<Option<String>, SlackApiError>;
+
     #[derive(Clone, Default)]
     struct FakeApi {
         calls: Arc<tokio::sync::Mutex<Vec<RecordedCall>>>,
         updates: Arc<tokio::sync::Mutex<Vec<RecordedUpdate>>>,
-        script: Arc<tokio::sync::Mutex<VecDeque<Result<String, SlackApiError>>>>,
+        script: Arc<tokio::sync::Mutex<VecDeque<ScriptedPost>>>,
         update_script: Arc<tokio::sync::Mutex<VecDeque<Result<(), SlackApiError>>>>,
     }
 
     impl FakeApi {
-        fn scripted(results: Vec<Result<String, SlackApiError>>) -> Self {
+        fn scripted(results: Vec<ScriptedPost>) -> Self {
             Self {
                 script: Arc::new(tokio::sync::Mutex::new(results.into_iter().collect())),
                 ..FakeApi::default()
@@ -398,14 +413,18 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SlackApi for FakeApi {
-        async fn post_message(&self, channel: &str, text: &str) -> Result<String, SlackApiError> {
+        async fn post_message(
+            &self,
+            channel: &str,
+            text: &str,
+        ) -> Result<Option<String>, SlackApiError> {
             let ts = format!("ts.{}", self.calls.lock().await.len() + 1);
             self.calls.lock().await.push(RecordedCall {
                 channel: channel.to_string(),
                 text: text.to_string(),
                 at: tokio::time::Instant::now(),
             });
-            self.script.lock().await.pop_front().unwrap_or(Ok(ts))
+            self.script.lock().await.pop_front().unwrap_or(Ok(Some(ts)))
         }
 
         async fn chat_update(
@@ -476,7 +495,7 @@ mod tests {
             Err(SlackApiError::RateLimited {
                 retry_after: std::time::Duration::from_secs(2),
             }),
-            Ok("ts.2".to_string()),
+            Ok(Some("ts.2".to_string())),
         ]);
         let sender = sender(&api, 100);
 
@@ -568,7 +587,11 @@ mod tests {
         let api = FakeApi::default();
         let sender = sender(&api, 1000);
 
-        let ts = sender.send("D1", "one").await.unwrap();
+        let ts = sender
+            .send("D1", "one")
+            .await
+            .unwrap()
+            .expect("the fake reports a ts for every post");
         sender.edit("D1", &ts, "one (edited)").await.unwrap();
 
         let calls = api.calls().await;
@@ -654,17 +677,18 @@ mod tests {
         assert_eq!(
             interpret_post_message(r#"{"ok":true,"ts":"1728558000.000100"}"#)
                 .expect("ok:true with a ts is a successful post"),
-            "1728558000.000100",
+            Some("1728558000.000100".to_string()),
             "the ts is what chat.update needs, so the post must surface it"
         );
     }
 
     #[test]
-    fn post_message_ok_body_without_ts_is_http() {
-        let err = interpret_post_message(r#"{"ok":true}"#).unwrap_err();
-        assert!(
-            matches!(err, SlackApiError::Http(_)),
-            "ok:true missing its ts is unusable for the placeholder edit: {err:?}"
+    fn post_message_ok_body_without_ts_yields_none() {
+        assert_eq!(
+            interpret_post_message(r#"{"ok":true}"#)
+                .expect("the message was delivered, so the post succeeded"),
+            None,
+            "a delivered post must not fail over a ts it may never need"
         );
     }
 

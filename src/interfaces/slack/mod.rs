@@ -391,13 +391,17 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SlackApi for RecordingApi {
-        async fn post_message(&self, channel: &str, text: &str) -> Result<String, SlackApiError> {
+        async fn post_message(
+            &self,
+            channel: &str,
+            text: &str,
+        ) -> Result<Option<String>, SlackApiError> {
             let mut posted = self
                 .posted
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             posted.push((channel.to_string(), text.to_string()));
-            Ok(format!("ts.{}", posted.len()))
+            Ok(Some(format!("ts.{}", posted.len())))
         }
 
         async fn chat_update(

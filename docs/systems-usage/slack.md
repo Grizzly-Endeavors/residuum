@@ -20,7 +20,7 @@ The **owner** is whoever first sends the app a direct message. Their Slack user 
 ## Where replies go
 
 - A reply goes back to the DM that started the turn, from the agent's bot user.
-- While a Slack-started turn runs, the DM shows a “Thinking…” message: Slack gives bots no typing signal, so one is posted when the turn starts and edited into the turn's first outgoing text — reply or failure — when it arrives. Turns started elsewhere never post one.
+- While a Slack-started turn runs, the DM shows a “Thinking…” message: Slack gives bots no typing signal, so one is posted when the turn starts and edited into the turn's first outgoing text — reply or failure — when it arrives. Turns started elsewhere never post one. A turn that ends without sending any text (an empty reply, or one the agent addressed elsewhere) leaves “_Turn ended without a reply._” in its place instead of a stale “Thinking…”.
 - Other proactive output — `send_message` without a conversation, results routed through `idle_channel = "slack"` — goes to the owner's DM. Until an owner exists it is dropped with a warning in the log.
 - When a main-agent turn started from Slack fails, the plain-language error goes back where its reply would have. System notices and other errors are never sent to Slack; they appear in the web UI.
 - Long replies are split into 4,000-character messages, and the agent's markdown is converted to Slack's mrkdwn on the way out (code fences survive the split). Posts are rate-limited to Slack's roughly-one-per-second Web API budget, with backoff on 429s.

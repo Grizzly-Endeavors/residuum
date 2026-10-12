@@ -22,7 +22,12 @@
 //!   "Thinking…", the first text the turn sends (reply chunk, failure
 //!   report-back, …) edits that message in place, and a turn that ends
 //!   without sending anything sweeps it — every write through the same
-//!   rate-limited sender as replies.
+//!   rate-limited sender as replies. Ordering — reply before `Ended`, so
+//!   the sweep never beats the reply — is the run loop's biased `select!`
+//!   guarantee (see `outbound.rs`); one residual: an intermediate message
+//!   queued at the same instant as its turn's `Started` can post before
+//!   the placeholder, take nothing, and leave the placeholder for the
+//!   final reply — one extra message, never a false one.
 
 use std::sync::Arc;
 
@@ -161,11 +166,18 @@ impl<A: SlackApi> ChatOutbound for SlackOutbound<A> {
             return;
         };
         match self.sender.send(&channel, PLACEHOLDER_TEXT).await {
-            Ok(ts) => self
+            Ok(Some(ts)) => self
                 .placeholders
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push((correlation_id.to_string(), Placeholder { channel, ts })),
+            // The placeholder posted, but Slack did not report a ts, so
+            // there is nothing to edit — the turn's text posts fresh.
+            Ok(None) => tracing::warn!(
+                correlation_id,
+                channel,
+                "slack did not report a ts for the placeholder; the reply will post fresh"
+            ),
             Err(e) => tracing::warn!(
                 correlation_id,
                 error = %e,
@@ -180,25 +192,29 @@ impl<A: SlackApi> ChatOutbound for SlackOutbound<A> {
     /// The sweep rewrites rather than deletes because `chat.update` is this
     /// MVP's only editing surface.
     ///
-    /// Race note: the loop's `select!` may process this before an already
-    /// queued reply, in which case the sweep fires early and the reply then
-    /// posts fresh — rare, honest, and the same cross-subscription ordering
-    /// the typing indicator already lives with.
+    /// Ordering: the run loop's biased `select!` polls the output topics
+    /// before this hook's `turn_lifecycle` arm, and the gateway publishes a
+    /// turn's reply (or error) before its `Ended` — so by the time this
+    /// runs, the turn's text has already consumed the placeholder whenever
+    /// there was one. `a_turns_reply_is_edited_in_before_the_sweep` holds
+    /// that invariant.
     async fn turn_ended(&self, correlation_id: &str) {
-        let index = self
-            .placeholders
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .position(|(id, _)| id == correlation_id);
-        let Some(index) = index else {
+        let placeholder = {
+            // Find and remove under one guard — a separate find and remove
+            // would race any future second mutator into an out-of-range
+            // panic, the shape `take_placeholder_for` already avoids.
+            let mut placeholders = self
+                .placeholders
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            placeholders
+                .iter()
+                .position(|(id, _)| id == correlation_id)
+                .map(|index| placeholders.remove(index).1)
+        };
+        let Some(placeholder) = placeholder else {
             return; // the turn's text already consumed its placeholder
         };
-        let (_, placeholder) = self
-            .placeholders
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(index);
         if let Err(e) = self
             .sender
             .edit(&placeholder.channel, &placeholder.ts, TURN_ENDED_TEXT)
@@ -277,7 +293,11 @@ fn parse_channel_id(conversation_id: &str) -> Option<String> {
 /// Send `content` in mrkdwn-converted chunks, stopping at the first failure
 /// — Telegram's `send_chunks` policy verbatim. When the turn left a
 /// placeholder, the FIRST chunk edits it in place (by its remembered `ts`);
-/// every later chunk posts fresh, in order.
+/// every later chunk posts fresh, in order. An edit that fails — the owner
+/// deleted the placeholder, the workspace's edit window closed, a transient
+/// transport error — falls back to posting that chunk as a fresh message
+/// rather than losing the reply: the placeholder is already spent, so
+/// nothing else would deliver it.
 async fn send_chunks<A: SlackApi>(
     sender: &RateLimitedSender<A>,
     channel: &str,
@@ -288,7 +308,17 @@ async fn send_chunks<A: SlackApi>(
     if let Some(chunk) = chunks.next() {
         let mrkdwn = markdown_to_mrkdwn(&chunk);
         match placeholder {
-            Some(placeholder) => sender.edit(channel, &placeholder.ts, &mrkdwn).await?,
+            Some(placeholder) => {
+                if let Err(e) = sender.edit(channel, &placeholder.ts, &mrkdwn).await {
+                    tracing::warn!(
+                        channel,
+                        ts = %placeholder.ts,
+                        error = %e,
+                        "chat.update failed; posting the chunk as a fresh message instead"
+                    );
+                    sender.send(channel, &mrkdwn).await?;
+                }
+            }
             None => {
                 sender.send(channel, &mrkdwn).await?;
             }
@@ -337,27 +367,33 @@ mod tests {
     use super::super::api::SlackApiError;
 
     /// Records every `post_message` and `chat_update` call — the fake from
-    /// `api.rs`'s tests, minus the scripted results (sender behavior is
-    /// tested there; here every call succeeds). A post returns a synthetic
+    /// `api.rs`'s tests, minus the post scripting (sender behavior is
+    /// tested there; here every post succeeds). A post returns a synthetic
     /// ts derived from the call count, so a test can assert which ts an
-    /// edit targeted. The logs are std mutexes so tests can poll them from
-    /// `wait::until_true`'s sync closure, like `outbound.rs`'s
+    /// edit targeted; `chat_update` results are scriptable, for the
+    /// edit-failure fallback. The logs are std mutexes so tests can poll
+    /// them from `wait::until_true`'s sync closure, like `outbound.rs`'s
     /// `FakeChat`.
     #[derive(Clone, Default)]
     struct FakeApi {
         calls: Arc<std::sync::Mutex<Vec<(String, String)>>>,
         updates: Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
+        update_script: Arc<std::sync::Mutex<std::collections::VecDeque<Result<(), SlackApiError>>>>,
     }
 
     #[async_trait]
     impl SlackApi for FakeApi {
-        async fn post_message(&self, channel: &str, text: &str) -> Result<String, SlackApiError> {
+        async fn post_message(
+            &self,
+            channel: &str,
+            text: &str,
+        ) -> Result<Option<String>, SlackApiError> {
             let mut calls = self
                 .calls
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             calls.push((channel.to_string(), text.to_string()));
-            Ok(format!("ts.{}", calls.len()))
+            Ok(Some(format!("ts.{}", calls.len())))
         }
 
         async fn chat_update(
@@ -370,7 +406,11 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push((channel.to_string(), ts.to_string(), text.to_string()));
-            Ok(())
+            self.update_script
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pop_front()
+                .unwrap_or(Ok(()))
         }
 
         async fn open_connection(&self) -> anyhow::Result<String> {
@@ -485,6 +525,15 @@ mod tests {
                 correlation_id: correlation_id.to_string(),
             })
             .await;
+        }
+
+        /// Make the next `chat_update` fail with `error`.
+        fn fail_next_update(&self, error: SlackApiError) {
+            self.api
+                .update_script
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push_back(Err(error));
         }
 
         fn response(correlation_id: &str, content: &str) -> ResponseEvent {
@@ -740,6 +789,123 @@ mod tests {
             h.calls().len(),
             1,
             "only the placeholder posted; the failure is the edit"
+        );
+    }
+
+    /// The gateway publishes a turn's reply and its `Ended` back to back
+    /// (`turns.rs`'s `publish_turn_outcome`), on separate subscriber
+    /// channels — so delivery order is the run loop's to keep. The loop's
+    /// `select!` is biased with `turn_lifecycle` polled last, which makes
+    /// "reply first, sweep finds nothing" an invariant rather than a coin
+    /// flip (review C-1: the unbiased loop swept ~67% of turns). Many
+    /// turns, because each turn under a broken ordering is only a
+    /// probabilistic catch; twenty makes a miss astronomically unlikely
+    /// while staying fast at zero spacing.
+    #[tokio::test]
+    async fn a_turns_reply_is_edited_in_before_the_sweep() {
+        let h = harness().await;
+        let turns = 20;
+        for i in 0..turns {
+            let correlation_id = format!("slack-D0001-{i}.0001");
+            h.track(&correlation_id, "D0001");
+            h.publish_turn_started(&correlation_id).await;
+            h.wait_for_calls(i + 1).await; // this turn's placeholder
+
+            // The gateway's exact shape: Response then Ended, back to back.
+            h.publish_response(&correlation_id, "the answer").await;
+            h.publish_turn_ended(&correlation_id).await;
+
+            h.wait_for_updates(i + 1).await;
+            let updates = h.updates();
+            let edit = updates.last().expect("the placeholder was edited");
+            assert_eq!(
+                edit.2, "the answer",
+                "turn {i}: the reply must be the placeholder's edit, not the sweep"
+            );
+            assert!(
+                updates.iter().all(|(_, _, text)| text != TURN_ENDED_TEXT),
+                "turn {i}: the sweep must never fire on a turn that replied"
+            );
+        }
+        assert_eq!(
+            h.calls().len(),
+            turns,
+            "only the placeholders were ever posted: every reply arrived as an edit"
+        );
+    }
+
+    /// The failure path has the same back-to-back shape — `ErrorEvent` then
+    /// `Ended` — and the same guarantee: the error text edits the
+    /// placeholder, the sweep finds nothing.
+    #[tokio::test]
+    async fn a_failed_turns_error_is_edited_in_before_the_sweep() {
+        let h = harness().await;
+        let turns = 20;
+        for i in 0..turns {
+            let correlation_id = format!("slack-D0001-{i}.0001");
+            h.track(&correlation_id, "D0001");
+            h.publish_turn_started(&correlation_id).await;
+            h.wait_for_calls(i + 1).await; // this turn's placeholder
+
+            h.publish_turn_error(&correlation_id, "The model is unavailable.")
+                .await;
+            h.publish_turn_ended(&correlation_id).await;
+
+            h.wait_for_updates(i + 1).await;
+            let updates = h.updates();
+            let edit = updates.last().expect("the placeholder was edited");
+            assert_eq!(
+                edit.2, "*Error:* The model is unavailable.",
+                "turn {i}: the error must be the placeholder's edit, not the sweep"
+            );
+            assert!(
+                updates.iter().all(|(_, _, text)| text != TURN_ENDED_TEXT),
+                "turn {i}: the sweep must never fire on a turn that reported its failure"
+            );
+        }
+        assert_eq!(
+            h.calls().len(),
+            turns,
+            "only the placeholders were ever posted: every failure arrived as an edit"
+        );
+    }
+
+    /// A failed edit (the owner deleted the placeholder, the workspace edit
+    /// window closed, a transient error) must not lose the reply: the chunk
+    /// posts fresh, and the rest of the reply continues (review I-1).
+    #[tokio::test]
+    async fn a_failed_edit_falls_back_to_posting_the_chunk_fresh() {
+        let h = harness().await;
+        h.track("slack-D0001-1234.0001", "D0001");
+        h.publish_turn_started("slack-D0001-1234.0001").await;
+        h.wait_for_calls(1).await; // the placeholder, with ts "ts.1"
+        h.fail_next_update(SlackApiError::Fatal("message_not_found".to_string()));
+
+        let content = "x".repeat(SLACK_MAX_CHARS * 2 + 500); // three chunks
+        h.publish_response("slack-D0001-1234.0001", &content).await;
+
+        // The placeholder plus every chunk as a fresh post — the edit
+        // failed, so nothing was lost and the loop ran to the end.
+        let chunks = chunk_text(&content, SLACK_MAX_CHARS);
+        h.wait_for_calls(1 + chunks.len()).await;
+        assert_eq!(h.updates().len(), 1, "the edit was attempted exactly once");
+        let sent = h
+            .calls()
+            .iter()
+            .skip(1) // the placeholder
+            .map(|(_, text)| text.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            sent.iter().map(String::as_str).collect::<String>(),
+            content,
+            "every chunk was delivered despite the failed edit"
+        );
+        assert!(
+            h.calls()
+                .iter()
+                .skip(1)
+                .all(|(channel, _)| channel == "D0001"),
+            "the fallback posts go to the reply channel"
         );
     }
 

@@ -91,6 +91,20 @@ pub(crate) trait ChatOutbound: Send + Sync {
 }
 
 /// Receive bus events for one chat platform until a subscription closes.
+///
+/// The `select!` below is deliberately `biased` with the `turn_lifecycle`
+/// arm polled LAST. Each event type arrives on its own subscriber channel,
+/// so nothing at the bus orders them against each other — but the gateway
+/// always publishes a turn's reply (or its failure) before the turn's
+/// `Ended`, on the broker's single ordered command stream. Polling the
+/// output topics before the lifecycle topic turns that publish order into
+/// processing order: by the time `Ended` is observable, its turn's output
+/// is already queued and is drained first, so an `Ended` handler (typing
+/// stop, `release_reply`, Slack's placeholder sweep) always runs after the
+/// turn's text — never between the text and its audience. The unbiased
+/// loop processed a queued `Ended` first ~67% of the time (task-10 review
+/// C-1), which made the sweep overwrite "Thinking…" with a false "Turn
+/// ended without a reply." beside the very reply it denied.
 pub(crate) async fn run<C: ChatOutbound>(mut subs: BaseSubscribers, chat: C) {
     // One typing loop per in-flight turn, stopped by dropping its sender.
     let mut typing: std::collections::HashMap<String, tokio::sync::watch::Sender<()>> =
@@ -104,25 +118,10 @@ pub(crate) async fn run<C: ChatOutbound>(mut subs: BaseSubscribers, chat: C) {
 
     loop {
         tokio::select! {
-            event = subs.turn_lifecycle.recv() => {
-                match take_event(event, chat.name()) {
-                    ControlFlow::Break(clean) => {
-                        clean_exit = clean;
-                        break;
-                    }
-                    ControlFlow::Continue(TurnLifecycleEvent::Started { correlation_id }) => {
-                        chat.turn_started(&correlation_id).await;
-                        if let Some(target) = chat.reply_target(&correlation_id).await {
-                            typing.insert(correlation_id, chat.start_typing(target));
-                        }
-                    }
-                    ControlFlow::Continue(TurnLifecycleEvent::Ended { correlation_id }) => {
-                        typing.remove(&correlation_id);
-                        chat.turn_ended(&correlation_id).await;
-                        chat.release_reply(&correlation_id);
-                    }
-                }
-            }
+            // Biased, lifecycle last — see this function's doc comment.
+            // The output topics come first in poll order so a turn's text
+            // is always delivered before its `Ended` is processed.
+            biased;
             event = subs.conversation_typing.recv() => {
                 match take_event(event, chat.name()) {
                     ControlFlow::Break(clean) => {
@@ -173,6 +172,28 @@ pub(crate) async fn run<C: ChatOutbound>(mut subs: BaseSubscribers, chat: C) {
                         break;
                     }
                     ControlFlow::Continue(err) => deliver_turn_error(&chat, err).await,
+                }
+            }
+            // Polled last: a turn's output, already queued whenever its
+            // `Ended` is, is always processed first (see the `biased` note
+            // above).
+            event = subs.turn_lifecycle.recv() => {
+                match take_event(event, chat.name()) {
+                    ControlFlow::Break(clean) => {
+                        clean_exit = clean;
+                        break;
+                    }
+                    ControlFlow::Continue(TurnLifecycleEvent::Started { correlation_id }) => {
+                        chat.turn_started(&correlation_id).await;
+                        if let Some(target) = chat.reply_target(&correlation_id).await {
+                            typing.insert(correlation_id, chat.start_typing(target));
+                        }
+                    }
+                    ControlFlow::Continue(TurnLifecycleEvent::Ended { correlation_id }) => {
+                        typing.remove(&correlation_id);
+                        chat.turn_ended(&correlation_id).await;
+                        chat.release_reply(&correlation_id);
+                    }
                 }
             }
         }
