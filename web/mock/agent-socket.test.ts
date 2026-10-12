@@ -208,6 +208,55 @@ describe("agent socket", () => {
       expect(await socket.nextOfType("turn_snapshot")).toEqual({
         type: "turn_snapshot",
         turn: null,
+        queued: [],
+      });
+    });
+
+    it("keeps a message sent while a turn runs waiting, and starts its turn once that one ends", async () => {
+      socket.send({ type: "send_message", id: "m1", content: "a long one" });
+      await socket.nextOfType("turn_started");
+      socket.send({ type: "send_message", id: "m2", content: "and another" });
+      expect(await socket.nextOfType("message_queued")).toEqual({
+        type: "message_queued",
+        message: { id: "m2", content: "and another", endpoint: "ws" },
+      });
+      socket.send({ type: "resync_turn" });
+      const snapshot = await socket.nextOfType("turn_snapshot");
+      expect(snapshot.queued).toEqual([{ id: "m2", content: "and another", endpoint: "ws" }]);
+
+      socket.send({ type: "cancel", reply_to: "m1" });
+      await socket.nextOfType("turn_ended");
+      expect(await socket.nextOfType("turn_started")).toMatchObject({ reply_to: "m2" });
+    });
+
+    it("sends a waiting message now by stopping the turn in flight", async () => {
+      socket.send({ type: "send_message", id: "m1", content: "a long one" });
+      await socket.nextOfType("turn_started");
+      socket.send({ type: "send_message", id: "m2", content: "first" });
+      socket.send({ type: "send_message", id: "m3", content: "second" });
+      await socket.nextOfType("message_queued");
+      await socket.nextOfType("message_queued");
+
+      socket.send({ type: "send_queued_now", id: "m3" });
+      expect(await socket.nextOfType("turn_ended")).toEqual({ type: "turn_ended", reply_to: "m1" });
+      expect(await socket.nextOfType("turn_started")).toMatchObject({ reply_to: "m3" });
+    });
+
+    it("takes back a waiting message, and says when one no longer waits", async () => {
+      socket.send({ type: "send_message", id: "m1", content: "a long one" });
+      await socket.nextOfType("turn_started");
+      socket.send({ type: "send_message", id: "m2", content: "never mind" });
+      await socket.nextOfType("message_queued");
+
+      socket.send({ type: "withdraw_queued", id: "m2" });
+      expect(await socket.nextOfType("message_withdrawn")).toEqual({
+        type: "message_withdrawn",
+        id: "m2",
+      });
+      socket.send({ type: "withdraw_queued", id: "m2" });
+      expect(await socket.nextOfType("queued_message_unavailable")).toEqual({
+        type: "queued_message_unavailable",
+        id: "m2",
       });
     });
 

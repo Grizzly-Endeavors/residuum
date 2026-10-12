@@ -68,6 +68,9 @@ export function parseClientMessage(raw: string): ClientMessage {
       return { type, body: requiredString(body, "body") };
     case "cancel":
       return { type, reply_to: requiredString(body, "reply_to") };
+    case "send_queued_now":
+    case "withdraw_queued":
+      return { type, id: requiredString(body, "id") };
     case "session_send_message":
       return {
         type,
@@ -162,6 +165,15 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
         chat.cancel(msg.reply_to);
         break;
 
+      case "send_queued_now":
+        if (!chat.sendWaitingNow(msg.id)) reply({ type: "queued_message_unavailable", id: msg.id });
+        break;
+
+      case "withdraw_queued":
+        if (!chat.withdrawWaiting(msg.id))
+          reply({ type: "queued_message_unavailable", id: msg.id });
+        break;
+
       case "set_verbose":
         if (msg.enabled) verbose.add(ws);
         else verbose.delete(ws);
@@ -172,7 +184,7 @@ export function openAgentSocket(host: UpgradeHost | null, hub: MockHub, agent: M
         if (turn !== null && !verbose.has(ws)) {
           turn.frames = turn.frames.filter((entry) => !VERBOSE_ONLY_FRAMES.has(entry.frame.type));
         }
-        reply({ type: "turn_snapshot", turn });
+        reply({ type: "turn_snapshot", turn, queued: journal.queued() });
         break;
       }
 

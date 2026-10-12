@@ -141,6 +141,9 @@ pub(crate) struct GatewayCore {
     pub hub_dir: std::path::PathBuf,
     pub bus_handle: BusHandle,
     pub publisher: Publisher,
+    /// People's messages waiting for the main agent to read them, which the
+    /// web UI can withdraw or have sent now.
+    pub queued: Arc<crate::gateway::queued_messages::QueuedMessages>,
 }
 
 /// Receiver halves consumed by the event loop.
@@ -171,6 +174,7 @@ impl GatewayCore {
             hub_dir,
             bus_handle,
             publisher,
+            queued: Arc::default(),
         };
         let receivers = CoreReceivers {
             reload: reload_rx,
@@ -216,6 +220,9 @@ pub(crate) struct GatewayState {
     /// The main conversation's turn in flight, which every connection
     /// follows the conversation through and can ask to be shown.
     pub turn_journal: crate::gateway::turn_journal::TurnJournal,
+    /// People's messages waiting for the main agent, for `withdraw_queued`
+    /// and `send_queued_now`.
+    pub queued: Arc<crate::gateway::queued_messages::QueuedMessages>,
     /// Workspace layout, for the Schedule place's reads of HEARTBEAT.yml,
     /// `pulse_state.json`, and its in-place edits to HEARTBEAT.yml.
     pub layout: WorkspaceLayout,
@@ -271,6 +278,11 @@ pub(crate) struct AgentRuntime {
     /// checkpoint drain (see `process_leftover_interrupts`). The event loop
     /// runs them as turns before it waits on anything else.
     pub deferred_inbound: std::collections::VecDeque<crate::bus::MessageEvent>,
+    /// People's messages waiting for the agent to read them: on a turn's
+    /// interrupt channel or in `deferred_inbound`. Asked before either hands
+    /// one on, so a withdrawn message is dropped and one to send now is held
+    /// for the next turn.
+    pub queued: Arc<crate::gateway::queued_messages::QueuedMessages>,
     pub hybrid_searcher: Arc<HybridSearcher>,
     pub session_runtime: Arc<SessionRuntime>,
     pub session_registry: Arc<SessionRegistry>,

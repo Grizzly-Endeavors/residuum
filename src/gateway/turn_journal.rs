@@ -7,7 +7,9 @@
 //! keeps the events of the turn in flight, and relays every event on to the
 //! connections that follow it, numbered. A connection asks for a
 //! [`TurnSnapshot`] and drops the relayed events it already covers, so it sees
-//! each event once and in order.
+//! each event once and in order. The journal also keeps the people's messages
+//! still waiting for the agent to read them, from the same events, so a
+//! snapshot's waiting messages agree with the events that follow it.
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -15,6 +17,7 @@ use chrono::{DateTime, Utc};
 use tokio::sync::mpsc;
 
 use crate::bus::{BusError, BusHandle, MainConversationEvent, topics};
+use crate::gateway::protocol::QueuedMessage;
 
 /// An event of the main conversation, numbered in the order the journal saw it.
 #[derive(Debug)]
@@ -49,12 +52,15 @@ pub struct TurnSnapshot {
     pub through: u64,
     /// The turn in flight, or `None` when no turn is running.
     pub turn: Option<TurnRecord>,
+    /// People's messages waiting for the agent to read them, oldest first.
+    pub queued: Vec<QueuedMessage>,
 }
 
 #[derive(Default)]
 struct JournalState {
     seq: u64,
     turn: Option<TurnRecord>,
+    queued: Vec<QueuedMessage>,
     followers: Vec<mpsc::UnboundedSender<JournaledEvent>>,
     /// The journal no longer reads the conversation: following it ends at once.
     closed: bool,
@@ -62,7 +68,48 @@ struct JournalState {
 
 impl JournalState {
     fn record(&mut self, event: &MainConversationEvent, at: DateTime<Utc>) {
-        let turn_id = turn_of(event);
+        match event {
+            MainConversationEvent::MessageQueued {
+                id,
+                content,
+                images,
+                sender,
+                endpoint,
+            } => {
+                if !self.queued.iter().any(|queued| &queued.id == id) {
+                    self.queued.push(QueuedMessage {
+                        id: id.clone(),
+                        content: content.clone(),
+                        images: images.clone(),
+                        sender: sender.clone(),
+                        endpoint: endpoint.clone(),
+                    });
+                }
+                return;
+            }
+            MainConversationEvent::MessageWithdrawn { id } => {
+                self.queued.retain(|queued| &queued.id != id);
+                return;
+            }
+            // The agent read it: it waits no longer.
+            MainConversationEvent::UserMessage { id, .. } => {
+                self.queued.retain(|queued| &queued.id != id);
+            }
+            MainConversationEvent::TurnStarted { .. }
+            | MainConversationEvent::TurnEnded { .. }
+            | MainConversationEvent::ToolCall { .. }
+            | MainConversationEvent::ToolResult(_)
+            | MainConversationEvent::TextDelta { .. }
+            | MainConversationEvent::ThinkingDelta { .. }
+            | MainConversationEvent::StreamRestart { .. }
+            | MainConversationEvent::Thinking { .. }
+            | MainConversationEvent::Intermediate { .. }
+            | MainConversationEvent::Response { .. }
+            | MainConversationEvent::TurnUsage(_) => {}
+        }
+        let Some(turn_id) = turn_of(event) else {
+            return;
+        };
         if let MainConversationEvent::TurnEnded { .. } = event {
             if self.turn.as_ref().is_some_and(|t| t.turn_id == turn_id) {
                 self.turn = None;
@@ -122,9 +169,9 @@ fn merge_piece(last: &mut MainConversationEvent, next: &MainConversationEvent) -
     }
 }
 
-/// The turn an event belongs to.
-fn turn_of(event: &MainConversationEvent) -> &str {
-    match event {
+/// The turn an event belongs to, or `None` for one of no turn's.
+fn turn_of(event: &MainConversationEvent) -> Option<&str> {
+    let turn_id = match event {
         MainConversationEvent::TurnStarted { turn_id, .. }
         | MainConversationEvent::TurnEnded { turn_id }
         | MainConversationEvent::UserMessage { turn_id, .. }
@@ -137,7 +184,10 @@ fn turn_of(event: &MainConversationEvent) -> &str {
         MainConversationEvent::ToolCall { event, .. } => &event.correlation_id,
         MainConversationEvent::ToolResult(result) => &result.correlation_id,
         MainConversationEvent::TurnUsage(usage) => &usage.correlation_id,
-    }
+        MainConversationEvent::MessageQueued { .. }
+        | MainConversationEvent::MessageWithdrawn { .. } => return None,
+    };
+    Some(turn_id)
 }
 
 /// The main conversation's turn in flight, and the relay to the connections following it.
@@ -225,6 +275,7 @@ impl TurnJournal {
         TurnSnapshot {
             through: state.seq,
             turn: state.turn.clone(),
+            queued: state.queued.clone(),
         }
     }
 
@@ -421,5 +472,67 @@ mod tests {
             journal.snapshot().turn.map(|t| t.turn_id),
             Some("t1".to_owned())
         );
+    }
+
+    fn queued(id: &str) -> MainConversationEvent {
+        MainConversationEvent::MessageQueued {
+            id: id.into(),
+            content: format!("say {id}"),
+            images: vec![],
+            sender: None,
+            endpoint: "ws".into(),
+        }
+    }
+
+    fn read(id: &str, turn: &str) -> MainConversationEvent {
+        MainConversationEvent::UserMessage {
+            id: id.into(),
+            turn_id: turn.into(),
+            content: format!("say {id}"),
+            images: vec![],
+            sender: None,
+            endpoint: "ws".into(),
+        }
+    }
+
+    fn waiting(journal: &TurnJournal) -> Vec<String> {
+        journal
+            .snapshot()
+            .queued
+            .into_iter()
+            .map(|message| message.id)
+            .collect()
+    }
+
+    #[test]
+    fn a_snapshot_lists_the_messages_still_waiting_to_be_read() {
+        let journal = TurnJournal::default();
+        journal.observe(&started("t1"));
+        journal.observe(&queued("a"));
+        journal.observe(&queued("b"));
+        journal.observe(&queued("c"));
+        assert_eq!(waiting(&journal), ["a", "b", "c"]);
+
+        // Read at a checkpoint, withdrawn, and read as the next turn's opening message.
+        journal.observe(&read("a", "t1"));
+        journal.observe(&MainConversationEvent::MessageWithdrawn { id: "b".into() });
+        journal.observe(&MainConversationEvent::TurnEnded {
+            turn_id: "t1".into(),
+        });
+        assert_eq!(
+            waiting(&journal),
+            ["c"],
+            "waiting outlasts the turn it waited on"
+        );
+        journal.observe(&read("c", "c"));
+        assert!(waiting(&journal).is_empty());
+    }
+
+    #[test]
+    fn waiting_messages_are_no_part_of_the_turn() {
+        let journal = TurnJournal::default();
+        journal.observe(&started("t1"));
+        journal.observe(&queued("a"));
+        assert_eq!(texts(&journal.snapshot()), ["started:t1"]);
     }
 }

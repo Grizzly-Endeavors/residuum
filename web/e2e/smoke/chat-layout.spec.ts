@@ -267,7 +267,7 @@ test.describe("the message box", () => {
     await page.setViewportSize({ width: 320, height: 640 });
     await openChat(page);
     const composer = page.locator("form.composer");
-    const send = page.getByRole("button", { name: "Send" });
+    const send = page.getByRole("button", { name: "Send", exact: true });
     const outer = await rect(composer);
     const padding = await composer.evaluate((form) =>
       parseFloat(getComputedStyle(form).paddingRight),
@@ -280,7 +280,7 @@ test.describe("the message box", () => {
   test("keeps focus after Send is pressed", async ({ isMobile, page }) => {
     await openChat(page);
     await box(page).fill("Check the wiki");
-    const send = page.getByRole("button", { name: "Send" });
+    const send = page.getByRole("button", { name: "Send", exact: true });
     const at = await rect(send);
     if (isMobile) await page.touchscreen.tap(at.x + at.w / 2, at.y + at.h / 2);
     else await page.mouse.click(at.x + at.w / 2, at.y + at.h / 2);
@@ -301,7 +301,7 @@ test.describe("the message box", () => {
       await page.keyboard.press("Enter");
       await page.keyboard.type("second");
       await expect(box(page)).toHaveValue("first\nsecond");
-      await page.getByRole("button", { name: "Send" }).click();
+      await page.getByRole("button", { name: "Send", exact: true }).click();
     } else {
       await expect(box(page)).not.toHaveAttribute("enterkeyhint");
       await page.keyboard.type("first");

@@ -367,6 +367,7 @@ mod tests {
 
         GatewayState {
             turn_journal: crate::gateway::turn_journal::TurnJournal::default(),
+            queued: std::sync::Arc::default(),
             reload_tx: core.reload_tx,
             command_tx: core.command_tx,
             stop_tx: core.stop_tx,

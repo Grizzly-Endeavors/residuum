@@ -5,6 +5,7 @@ export type { ClientMessage } from "./ClientMessage";
 export type { ServerMessage } from "./ServerMessage";
 export type { TurnInProgress } from "./TurnInProgress";
 export type { SnapshotFrame } from "./SnapshotFrame";
+export type { QueuedMessage } from "./QueuedMessage";
 export type { PostTurnActivityKind } from "./PostTurnActivityKind";
 export type { MessageSender } from "./MessageSender";
 export type { TurnOrigin } from "./TurnOrigin";
