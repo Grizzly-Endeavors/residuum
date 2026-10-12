@@ -8,6 +8,13 @@
 //! Tolerant-unknowns rule (design D4): an envelope type Slack adds later
 //! deserializes to [`EnvelopeKind::Unknown`] carrying the type string, is
 //! logged, skipped, and still acknowledged — never an error.
+//!
+//! Envelope shape authority: <https://docs.slack.dev/apis/events-api/using-socket-mode>
+//! §4 — `{payload, envelope_id, type, accepts_response_payload}`. There is
+//! no top-level `response_url`: the ack is a websocket frame (§5, see
+//! `socket.rs`). Fields Slack sends that we do not model are ignored —
+//! including `accepts_response_payload`: v1 acks bare, never with a
+//! response payload, so the flag has no reader.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -15,7 +22,10 @@ use serde_json::Value;
 /// The Socket Mode envelope wrapper every event arrives in.
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct Envelope {
-    /// Unique id for this delivery; redeliveries reuse it (dedup key).
+    /// Unique id for this delivery — what the ack frame echoes back. Absent
+    /// (empty) on `hello`/`disconnect`. Slack's retries of an un-acked event
+    /// arrive under a NEW id, so it is not a message identity; the handler
+    /// also dedups on (channel, ts).
     #[serde(default, rename = "envelope_id")]
     pub(crate) id: String,
     /// What the envelope carries.
@@ -24,9 +34,6 @@ pub(crate) struct Envelope {
     /// Type-specific payload; `None` on `hello`.
     #[serde(default)]
     pub(crate) payload: Option<Value>,
-    /// Where the ack is sent via HTTP `POST`; empty on envelopes that need no ack.
-    #[serde(default)]
-    pub(crate) response_url: String,
 }
 
 impl Envelope {
@@ -119,20 +126,24 @@ mod tests {
             serde_json::from_str(include_str!("fixtures/envelope-hello.json")).unwrap();
         assert_eq!(hello.kind, EnvelopeKind::Hello);
         assert!(hello.payload.is_none());
+        assert!(
+            hello.id.is_empty(),
+            "hello carries no envelope_id — never acked"
+        );
 
         let events: Envelope =
             serde_json::from_str(include_str!("fixtures/envelope-events-api-message.json"))
                 .unwrap();
         assert_eq!(events.kind, EnvelopeKind::EventsApi);
         assert_eq!(events.id, "env-evt-1");
-        assert_eq!(
-            events.response_url,
-            "https://hooks.slack.com/response/abc123"
-        );
 
         let disconnect: Envelope =
             serde_json::from_str(include_str!("fixtures/envelope-disconnect.json")).unwrap();
         assert_eq!(disconnect.kind, EnvelopeKind::Disconnect);
+        assert!(
+            disconnect.id.is_empty(),
+            "disconnect carries no envelope_id"
+        );
     }
 
     #[test]
@@ -140,6 +151,10 @@ mod tests {
         let raw = include_str!("fixtures/envelope-unknown.json");
         let env: Envelope = serde_json::from_str(raw).unwrap();
         assert_eq!(env.kind, EnvelopeKind::Unknown("slash_commands".into()));
+        assert_eq!(
+            env.id, "env-unknown-1",
+            "unknown types still carry an ackable id"
+        );
     }
 
     #[test]

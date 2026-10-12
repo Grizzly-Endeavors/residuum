@@ -1,11 +1,7 @@
 {
-  "envelope_id": "env-evt-1",
-  "type": "events_api",
   "payload": {
     "token": "verification-token",
     "team_id": "T0001",
-    "context_team_id": "T0001",
-    "context_enterprise_id": null,
     "api_app_id": "A0001",
     "event": {
       "type": "message",
@@ -18,12 +14,9 @@
     },
     "type": "event_callback",
     "event_id": "Ev0001",
-    "event_time": 1728558000,
-    "authorizations": [{"enterprise_id": null, "team_id": "T0001", "user_id": "U0002", "is_bot": true}],
-    "is_ext_shared_channel": false
+    "event_time": 1728558000
   },
-  "retry_attempt": 0,
-  "retry_context": {"retries_this_hour": 0, "retries_today": 0},
-  "accepts_unknown_payload": false,
-  "response_url": "https://hooks.slack.com/response/abc123"
+  "envelope_id": "env-evt-1",
+  "type": "events_api",
+  "accepts_response_payload": false
 }

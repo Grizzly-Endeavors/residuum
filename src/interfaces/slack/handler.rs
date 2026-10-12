@@ -1,7 +1,7 @@
 //! Inbound Slack envelope handler — filter chain, owner binding, dedup, dispatch.
 //!
 //! The socket client ([`super::socket::run_socket`]) invokes its callback
-//! SYNCHRONOUSLY, right after each envelope's ack POST. Processing an
+//! SYNCHRONOUSLY, right after each envelope's ack frame is written. Processing an
 //! envelope inline there would backpressure every subsequent ack (Slack
 //! redelivers un-acked envelopes and eventually drops the connection), so
 //! the contract here is the opposite of inline: [`SlackInbound::forwarder`]
@@ -12,7 +12,11 @@
 //! 1. **Structural filter** — [`DmMessageEvent::parse`] keeps only plain
 //!    messages in DM channels; everything else is logged and skipped.
 //! 2. **Dedup** — Slack redelivers envelopes (deliberately, after a slow or
-//!    missing ack); [`EnvelopeDedup`] absorbs the overlap by envelope id.
+//!    missing ack). A redelivery may reuse the envelope id, but Slack's
+//!    retry of an un-acked event arrives under a NEW one (the PR #498 live
+//!    probe saw 4x/7x duplicate turns that way), so [`EnvelopeDedup`] keys
+//!    on the envelope id AND [`MessageDedup`] on the message identity
+//!    (channel, ts), which is stable across retries.
 //! 3. **Bot exclusion** — a message authored by any bot (our own echoes
 //!    included) is dropped before it can bind the owner or publish.
 //! 4. **Owner binding** — the first human DM claims ownership, persisted in
@@ -101,10 +105,31 @@ impl EnvelopeDedup {
     }
 }
 
-/// Everything the handler task owns: the dedup ring, the config flag, and
+/// A fixed-capacity ring of message identities — (channel, ts) — already
+/// handled. Slack's retries of one event carry fresh envelope ids but the
+/// same message, so this is the guard that actually holds across retries.
+/// Same ring discipline (and capacity) as [`EnvelopeDedup`].
+#[derive(Default)]
+pub(super) struct MessageDedup {
+    ids: EnvelopeDedup,
+}
+
+impl MessageDedup {
+    /// Whether the message `ts` in `channel` was already seen: `false` the
+    /// first time (and it is remembered), `true` on every repeat. A Slack
+    /// `ts` is unique only within its channel, hence the pair.
+    pub(super) fn seen(&mut self, channel: &str, ts: &str) -> bool {
+        // NUL cannot occur in a Slack channel id, so the joined key is
+        // unambiguous.
+        self.ids.seen(&format!("{channel}\0{ts}"))
+    }
+}
+
+/// Everything the handler task owns: the dedup rings, the config flag, and
 /// the state shared with the outbound subscriber.
 struct InboundHandler {
     dedup: EnvelopeDedup,
+    message_dedup: MessageDedup,
     /// Owner, DM channel references, reply mappings, and the bus publisher,
     /// shared with the outbound subscriber (`subscriber.rs`).
     state: Arc<SlackState>,
@@ -132,6 +157,17 @@ impl InboundHandler {
             tracing::debug!(
                 envelope_id = %envelope.id,
                 "slack handler: redelivered envelope — dedup absorbs it"
+            );
+            return;
+        }
+        // Slack's retry of an un-acked event arrives under a new envelope
+        // id; the message identity is what stays the same.
+        if self.message_dedup.seen(&event.channel, &event.ts) {
+            tracing::debug!(
+                envelope_id = %envelope.id,
+                channel = %event.channel,
+                ts = %event.ts,
+                "slack handler: message already handled under another envelope — dedup absorbs it"
             );
             return;
         }
@@ -283,6 +319,7 @@ impl SlackInbound {
         let (tx, mut rx) = mpsc::channel(ENVELOPE_QUEUE_CAPACITY);
         let mut handler = InboundHandler {
             dedup: EnvelopeDedup::default(),
+            message_dedup: MessageDedup::default(),
             state,
             respond_to_others,
             tz,
@@ -414,7 +451,6 @@ mod tests {
                     "ts": ts,
                 }
             })),
-            response_url: String::new(),
         }
     }
 
@@ -448,7 +484,6 @@ mod tests {
                     "ts": "1",
                 }
             })),
-            response_url: String::new(),
         }
     }
 
@@ -646,6 +681,59 @@ mod tests {
             h.user_messages.drain().is_empty(),
             "non-DM and empty-text envelopes publish nothing"
         );
+    }
+
+    /// The live-probe defect (PR #498, 2026-10-12): Slack retries an
+    /// un-acked event under a NEW `envelope_id`, so envelope-id dedup is
+    /// blind to it. The message identity (channel, ts) is stable across
+    /// retries — the same message under two envelope ids publishes once.
+    #[tokio::test]
+    async fn the_same_message_under_a_new_envelope_id_publishes_once() {
+        let mut h = harness(false).await;
+        h.feed(dm_envelope(
+            "env-first-try",
+            "U1",
+            "hello",
+            "1728558000.000100",
+        ));
+        // Slack's retry: same event, fresh envelope id.
+        h.feed(dm_envelope(
+            "env-retry-1",
+            "U1",
+            "hello",
+            "1728558000.000100",
+        ));
+        h.feed(dm_envelope(
+            "env-retry-2",
+            "U1",
+            "hello",
+            "1728558000.000100",
+        ));
+        // A genuinely new message (new ts) in the same channel still flows.
+        h.feed(dm_envelope("env-next", "U1", "again", "1728558001.000200"));
+
+        let first = h.next_user_message("the first delivery published").await;
+        assert_eq!(first.content, "hello");
+        assert_eq!(first.id, "slack-D0001-1728558000.000100");
+        let second = h.next_user_message("the next message published").await;
+        assert_eq!(second.content, "again");
+        wait::bus_barrier(&h.bus).await;
+        assert!(
+            h.user_messages.drain().is_empty(),
+            "the retries under new envelope ids published nothing"
+        );
+    }
+
+    #[test]
+    fn message_dedup_keys_on_channel_and_ts() {
+        let mut d = MessageDedup::default();
+        assert!(!d.seen("D0001", "1.0001"));
+        assert!(d.seen("D0001", "1.0001"), "same channel + ts is a repeat");
+        assert!(
+            !d.seen("D0002", "1.0001"),
+            "a ts is unique only within its channel"
+        );
+        assert!(!d.seen("D0001", "1.0002"), "a new ts is a new message");
     }
 
     #[tokio::test]

@@ -223,8 +223,8 @@ impl SlackInterface {
             }
             result = &mut socket.0 => {
                 match result {
-                    // run_socket only returns on a failed client build; it
-                    // reconnects through everything else.
+                    // run_socket never returns in practice; it reconnects
+                    // through everything.
                     Ok(Ok(())) => tracing::info!("slack socket task exited"),
                     Ok(Err(e)) => return Err(e.context("slack socket task failed")),
                     Err(e) => return Err(anyhow::Error::new(e).context("slack socket task panicked")),
@@ -254,15 +254,15 @@ mod tests {
     //! Only the Web API boundary is faked — a `SlackApi` whose
     //! `open_connection` hands out the fake's ws URL and whose
     //! `post_message` records its calls, mirroring `api.rs`'s tests. The
-    //! socket, ack POSTs, handler, dedup, owner binding, state file,
+    //! socket, websocket ack frames, handler, dedup, owner binding, state file,
     //! subscriber, chunker, and mrkdwn converter all run for real.
     use std::sync::Arc;
 
     use axum::Router;
+    use axum::extract::State;
     use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
-    use axum::extract::{Path, State};
     use axum::response::IntoResponse;
-    use axum::routing::{get, post};
+    use axum::routing::get;
     use tokio::net::TcpListener;
     use tokio::sync::mpsc;
 
@@ -288,8 +288,9 @@ mod tests {
         Connected {
             cmds: mpsc::UnboundedSender<ServerCmd>,
         },
-        /// An ack POST landed on the fake's `/ack/{id}` route.
-        Ack { id: String, body: String },
+        /// The client sent a text frame on the websocket — the Socket Mode
+        /// ack `{"envelope_id": "<id>"}` (Slack docs, using-socket-mode §5).
+        AckFrame { body: String },
     }
 
     /// Driver → live fake connection (the `socket.rs` tests' pattern).
@@ -305,7 +306,8 @@ mod tests {
     }
 
     /// The fake Socket Mode endpoint: accepts ws connections the driver
-    /// scripts and records ack POSTs. It never sends unsolicited frames.
+    /// scripts and records the ack frames the client sends back. It never
+    /// sends unsolicited frames.
     async fn socket_mode_route(
         upgrade: WebSocketUpgrade,
         State(shared): State<FakeSlackShared>,
@@ -331,6 +333,12 @@ mod tests {
                     frame = socket.recv() => {
                         match frame {
                             None | Some(Err(_) | Ok(WsMessage::Close(_))) => break,
+                            Some(Ok(WsMessage::Text(text))) => {
+                                shared
+                                    .obs
+                                    .send(Observed::AckFrame { body: text.to_string() })
+                                    .expect("the driver is still observing");
+                            }
                             Some(Ok(_)) => {}
                         }
                     }
@@ -339,22 +347,9 @@ mod tests {
         })
     }
 
-    async fn ack_route(
-        State(shared): State<FakeSlackShared>,
-        Path(id): Path<String>,
-        body: String,
-    ) -> &'static str {
-        shared
-            .obs
-            .send(Observed::Ack { id, body })
-            .expect("the driver is still observing");
-        "ok"
-    }
-
     /// A running fake Slack on a loopback port.
     struct FakeSlack {
         ws_url: String,
-        http_base: String,
         obs_rx: mpsc::UnboundedReceiver<Observed>,
     }
 
@@ -362,7 +357,6 @@ mod tests {
         let (obs_tx, obs_rx) = mpsc::unbounded_channel();
         let router = Router::new()
             .route("/ws", get(socket_mode_route))
-            .route("/ack/{id}", post(ack_route))
             .with_state(FakeSlackShared { obs: obs_tx });
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -373,7 +367,6 @@ mod tests {
         });
         FakeSlack {
             ws_url: format!("ws://{addr}/ws"),
-            http_base: format!("http://{addr}"),
             obs_rx,
         }
     }
@@ -428,7 +421,6 @@ mod tests {
     struct EndToEnd {
         api: RecordingApi,
         core: GatewayCore,
-        http_base: String,
         user_messages: Subscriber<MessageEvent>,
         notices: Subscriber<NoticeEvent>,
         shutdown_tx: tokio::sync::watch::Sender<bool>,
@@ -461,7 +453,6 @@ mod tests {
         EndToEnd {
             api,
             core,
-            http_base: fake.http_base,
             user_messages,
             notices,
             shutdown_tx,
@@ -572,35 +563,27 @@ mod tests {
         async fn connected(&mut self, what: &str) -> mpsc::UnboundedSender<ServerCmd> {
             match self.next(what).await {
                 Observed::Connected { cmds } => cmds,
-                Observed::Ack { .. } => panic!("expected a socket connection for {what}"),
+                Observed::AckFrame { .. } => panic!("expected a socket connection for {what}"),
             }
         }
 
-        async fn ack_post(&mut self, what: &str) -> (String, String) {
+        /// The next ack frame the client sent over the websocket, parsed;
+        /// asserts the documented shape `{"envelope_id": id}` exactly.
+        async fn ack_frame(&mut self, what: &str) -> String {
             match self.next(what).await {
-                Observed::Ack { id, body } => (id, body),
-                Observed::Connected { .. } => panic!("expected an ack POST for {what}"),
+                Observed::AckFrame { body } => {
+                    let frame: serde_json::Value =
+                        serde_json::from_str(&body).expect("the ack frame is JSON");
+                    let id = frame
+                        .get("envelope_id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_else(|| panic!("the ack names an envelope_id: {body}"))
+                        .to_string();
+                    assert_eq!(frame, serde_json::json!({ "envelope_id": id }), "ack shape");
+                    id
+                }
+                Observed::Connected { .. } => panic!("expected an ack frame for {what}"),
             }
-        }
-
-        /// The events-api fixture rewired: identity set, ack pointed at the
-        /// fake's own POST route (the `socket.rs` tests' rewire rule).
-        fn dm_envelope(&self, id: &str) -> String {
-            let mut envelope: serde_json::Value =
-                serde_json::from_str(include_str!("fixtures/envelope-events-api-message.json"))
-                    .expect("fixture parses");
-            let object = envelope
-                .as_object_mut()
-                .expect("envelope fixture is an object");
-            object.insert(
-                "envelope_id".to_string(),
-                serde_json::Value::String(id.into()),
-            );
-            object.insert(
-                "response_url".to_string(),
-                serde_json::Value::String(format!("{}/ack/{id}", self.http_base)),
-            );
-            serde_json::to_string(&envelope).expect("rewired envelope serializes")
         }
 
         /// Recorded `chat.postMessage` calls.
@@ -713,6 +696,35 @@ mod tests {
         }
     }
 
+    /// The events-api fixture (documented shape) with its identity set.
+    fn dm_envelope(id: &str) -> String {
+        dm_envelope_with_ts(id, None)
+    }
+
+    /// [`dm_envelope`], optionally carrying a different message: the inner
+    /// event's `ts` replaced, so (channel, ts) names a new message.
+    fn dm_envelope_with_ts(id: &str, ts: Option<&str>) -> String {
+        let mut envelope: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/envelope-events-api-message.json"))
+                .expect("fixture parses");
+        let object = envelope
+            .as_object_mut()
+            .expect("envelope fixture is an object");
+        object.insert(
+            "envelope_id".to_string(),
+            serde_json::Value::String(id.into()),
+        );
+        if let Some(ts) = ts {
+            let event = object
+                .get_mut("payload")
+                .and_then(|payload| payload.get_mut("event"))
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("the fixture carries payload.event");
+            event.insert("ts".to_string(), serde_json::Value::String(ts.into()));
+        }
+        serde_json::to_string(&envelope).expect("rewired envelope serializes")
+    }
+
     /// The spec's acceptance criteria, executable: a DM arrives over the
     /// socket, is acked, and reaches the bus as a `UserMessage`; an agent
     /// reply published to the endpoint topic lands at Slack as
@@ -728,14 +740,13 @@ mod tests {
             include_str!("fixtures/envelope-hello.json").to_string(),
         ))
         .expect("the scripted connection is open");
-        conn.send(ServerCmd::Text(e2e.dm_envelope("env-e2e-1")))
+        conn.send(ServerCmd::Text(dm_envelope("env-e2e-1")))
             .expect("the scripted connection is open");
 
-        // Inbound, half one: the ack POST lands at the fake before anything
-        // else happens.
-        let (ack_id, ack_body) = e2e.ack_post("the ack for the DM envelope").await;
+        // Inbound, half one: the fake receives the ack frame over the same
+        // websocket (hello carries no envelope_id, so this is the first).
+        let ack_id = e2e.ack_frame("the ack frame for the DM envelope").await;
         assert_eq!(ack_id, "env-e2e-1");
-        assert_eq!(ack_body, "{}", "the ack body is the empty object");
 
         // Inbound, half two: the DM is a UserMessage on the bus, correlation
         // identifying channel + ts, owner-bound.
@@ -794,10 +805,11 @@ mod tests {
             .expect("start_with_api returns Ok on shutdown");
     }
 
-    /// Slack redelivers an envelope whose ack was slow or lost; the dedup
-    /// cache absorbs the overlap. The same envelope delivered twice → the
-    /// ack fires both times (ack-first: Slack stops retrying on the ack)
-    /// but exactly one `UserMessage` reaches the bus.
+    /// Slack redelivers an envelope whose ack was slow or lost — and retries
+    /// an un-acked event under a NEW envelope id (the PR #498 live-probe
+    /// defect). Every delivery is acked over the socket (ack-first: Slack
+    /// stops retrying on the ack), but exactly one `UserMessage` per
+    /// message (channel, ts) reaches the bus.
     #[tokio::test]
     async fn a_redelivered_envelope_is_acked_again_but_published_once() {
         let mut e2e = end_to_end().await;
@@ -810,10 +822,10 @@ mod tests {
         .expect("the scripted connection is open");
 
         // First delivery: acked, published.
-        let envelope = e2e.dm_envelope("env-dup-1");
+        let envelope = dm_envelope("env-dup-1");
         conn.send(ServerCmd::Text(envelope.clone()))
             .expect("the scripted connection is open");
-        let (ack_id, _) = e2e.ack_post("the ack for the first delivery").await;
+        let ack_id = e2e.ack_frame("the ack for the first delivery").await;
         assert_eq!(ack_id, "env-dup-1");
         let first = e2e.next_user_message("the first delivery published").await;
         assert_eq!(first.id, "slack-D0001-1728558000.000100");
@@ -822,27 +834,37 @@ mod tests {
         // stop at the ack, which the socket owes for every delivery.
         conn.send(ServerCmd::Text(envelope))
             .expect("the scripted connection is open");
-        let (redelivered_ack_id, _) = e2e.ack_post("the ack for the redelivery").await;
+        let redelivered_ack_id = e2e.ack_frame("the ack for the redelivery").await;
         assert_eq!(
             redelivered_ack_id, "env-dup-1",
             "a redelivery is acked again"
         );
 
-        // ...but publishes nothing. The handler processes envelopes in
-        // order, so once a FRESH envelope's message lands, the duplicate
-        // has already been through the filter chain; a bus barrier then
-        // proves anything it tried to publish was fanned out, and the
-        // subscriber holds no leftovers.
-        conn.send(ServerCmd::Text(e2e.dm_envelope("env-dup-2")))
+        // Slack's retry of the same event under a fresh envelope id: acked,
+        // and absorbed by the message-identity dedup.
+        conn.send(ServerCmd::Text(dm_envelope("env-dup-retry")))
             .expect("the scripted connection is open");
-        let fresh = e2e.next_user_message("the fresh envelope published").await;
-        assert_eq!(fresh.id, "slack-D0001-1728558000.000100");
+        let retry_ack_id = e2e.ack_frame("the ack for the retry").await;
+        assert_eq!(retry_ack_id, "env-dup-retry", "a retry is acked too");
+
+        // ...but neither publishes. The handler processes envelopes in
+        // order, so once a FRESH message lands, the duplicates have already
+        // been through the filter chain; a bus barrier then proves anything
+        // they tried to publish was fanned out, and the subscriber holds no
+        // leftovers.
+        conn.send(ServerCmd::Text(dm_envelope_with_ts(
+            "env-dup-2",
+            Some("1728558001.000200"),
+        )))
+        .expect("the scripted connection is open");
+        let fresh = e2e.next_user_message("the fresh message published").await;
+        assert_eq!(fresh.id, "slack-D0001-1728558001.000200");
 
         wait::bus_barrier(&e2e.core.bus_handle).await;
         let leftover = e2e.user_messages.drain();
         assert!(
             leftover.is_empty(),
-            "the redelivered envelope published nothing: {leftover:?}"
+            "the redelivery and the retry published nothing: {leftover:?}"
         );
 
         e2e.shutdown_tx.send(true).unwrap();

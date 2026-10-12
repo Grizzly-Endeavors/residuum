@@ -34,8 +34,8 @@ per-agent, so some agents can be workspace-open while others stay owner-only.
 
 **D3 — Hand-rolled on in-tree primitives.** The Socket Mode client is built directly on
 `tokio-tungstenite` + `reqwest` (both already in the dependency tree): `apps.connections.open`
-→ websocket → JSON envelopes → ack via the envelope's `response_url` → `chat.postMessage` for
-outbound. *Rejected:* a full Slack framework crate (`slack-morphism`-class) — it drags a second
+→ websocket → JSON envelopes → ack as a `{"envelope_id": …}` text frame on the same websocket →
+`chat.postMessage` for outbound. *Rejected:* a full Slack framework crate (`slack-morphism`-class) — it drags a second
 HTTP/TLS stack alongside the pinned one, repeating exactly the transitive-TLS advisory class
 `deny.toml` already documents and tolerates line-by-line, and the DM-only protocol subset is
 small enough that pre-built event types buy little. *Rejected:* a lightweight middle crate — the
@@ -85,12 +85,18 @@ uses. Zero new dependencies.
 1. **Connect.** Agent start (or config reload) with a valid `[slack]` section calls
    `apps.connections.open` with the app token, receives a websocket URL, connects, and waits
    for the `hello` envelope. Connection state changes are logged.
-2. **Envelope arrives.** Every event rides an envelope carrying `envelope_id`, `type`, and a
-   retry counter.
-3. **Ack before processing.** Slack expects an ack (HTTP POST to the envelope's `response_url`)
-   within seconds or it redelivers. The adapter acks immediately on receipt, before any
-   processing. A small dedup cache of recent `envelope_id`s absorbs redeliveries from reconnects
-   or ack failures — two guards against one failure mode (a message processed twice).
+2. **Envelope arrives.** Every event rides an envelope
+   `{payload, envelope_id, type, accepts_response_payload}` (Slack docs, *Using Socket Mode* §4).
+3. **Ack before processing.** Slack expects an ack — a text frame `{"envelope_id": "<id>"}`
+   sent back over the **same websocket** (*Using Socket Mode* §5) — or it retries. The adapter
+   acks immediately on receipt, before any processing, for every envelope that carries an
+   `envelope_id` (hello and disconnect carry none and are not acked). Slack's retries of an
+   un-acked event arrive under a **new** `envelope_id`, so dedup keys on both the
+   `envelope_id` and the message identity (channel, `ts`), which is stable across retries —
+   two guards against one failure mode (a message processed twice).
+   *Correction (PR #498 live probe, 2026-10-12):* this step originally said "HTTP POST to the
+   envelope's `response_url`" — a field written from memory that Socket Mode envelopes do not
+   carry. Nothing was ever acked, and every DM produced several duplicate agent turns.
 4. **Filter chain, cheapest first:** envelope type is a consumed kind → event is a plain
    `message` in a DM (`channel_type: "im"`) → no filtered subtype (edits, deletions, bot
    messages are skipped in v1) → not the bot's own message echoing back → **owner check**
@@ -165,8 +171,8 @@ deployment's existing secret-handling conventions; the adapter reads config, not
    are honored immediately; TCP drops are detected and reconnected through a fresh
    `apps.connections.open` with capped exponential backoff. State changes are logged without
    spamming during normal cycling.
-4. **Ack failures.** A failed ack POST logs a warning; Slack's redelivery plus the dedup cache
-   turns the transient failure into a no-op.
+4. **Ack failures.** A failed ack frame send logs a warning; Slack's retry plus the
+   message-identity dedup turns the transient failure into a no-op.
 5. **Shutdown.** Clean socket close; in-flight outbound drains, and anything undeliverable
    follows the D6 contract. No zombie connections.
 6. **Sustained rate limiting.** Sustained 429s surface as errors rather than silent throttling.
@@ -180,14 +186,16 @@ deployment's existing secret-handling conventions; the adapter reads config, not
 2. **Formatting converter:** fixture-pair tests for the mapping table, including pass-through
    oddities.
 3. **Filter chain:** pure-function tests — DM gate, owner gate, subtype skips, self-message
-   guard, dedup-cache behavior (one envelope delivered twice → one processed message).
+   guard, dedup-cache behavior (one envelope delivered twice, and one message retried under a
+   new `envelope_id` → one processed message).
 4. **Conversation-only contract, executable:** the same test family as the existing
    post-`22c0773e` tests — system notices must never produce a Slack send; replies and
    failed-turn report-backs must.
 5. **Rate limiter:** minimum-interval enforcement and 429 `Retry-After` honored, against a
    hand-rolled fake behind the API trait.
 6. **Transport wiring:** a loopback fake-Slack websocket server (existing in-repo websocket
-   server machinery) plays the protocol — connect, `hello`, envelope, expect ack, message
+   server machinery) plays the protocol — connect, `hello`, envelope, expect the ack frame
+   on the websocket, message
    event, expect outbound post. No network dependency.
 7. **CI never touches real Slack.** Live verification is a documented manual acceptance step
    in the setup guide, performed at first deployment.
@@ -197,8 +205,10 @@ deployment's existing secret-handling conventions; the adapter reads config, not
 Shapes below are written from Slack's published documentation and are **assumed until probed**
 — replaced by captured payloads at first deployment. Full JSON fixtures live beside the tests.
 
-- **Socket Mode envelope:** `{envelope_id, type: "events_api"|"hello"|"disconnect"|…, payload,
-  retry_attempt, retry_context, accepts_unknown_payload, response_url}`; ack is a POST to
+- **Socket Mode envelope** ([Using Socket Mode §4–5](https://docs.slack.dev/apis/events-api/using-socket-mode)):
+  `{payload, envelope_id, type: "events_api"|"slash_commands"|…, accepts_response_payload}`;
+  lifecycle frames `hello` and `disconnect` carry no `envelope_id`. Ack is a websocket text
+  frame `{"envelope_id": <id>, "payload"?: …}` on the same connection — there is no top-level
   `response_url`.
 - **DM message event (Events API, subscribed):** `{type: "message", channel_type: "im",
   channel, user, text, ts, event_ts}` — subtypes (`message_changed`, `message_deleted`,

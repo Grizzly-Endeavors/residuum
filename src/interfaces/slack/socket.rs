@@ -3,8 +3,11 @@
 //! Owns one WebSocket per Slack connection: every cycle starts with a fresh
 //! `apps.connections.open` (the wss URL rotates between connections), reads
 //! `Message::Text` frames as [`Envelope`]s, and acknowledges *before*
-//! dispatching — Slack redelivers un-acked envelopes and upstream dedup
-//! absorbs the overlap (design doc, Lifecycle §4). A `disconnect` envelope
+//! dispatching by writing `{"envelope_id": "<id>"}` back on the same
+//! websocket (Slack docs, <https://docs.slack.dev/apis/events-api/using-socket-mode>
+//! §5 "Acknowledge events"). Slack retries un-acked events — under a fresh
+//! `envelope_id` — and upstream dedup on the message identity absorbs the
+//! overlap (design doc, Lifecycle §4). A `disconnect` envelope
 //! reconnects immediately; socket errors and closes reconnect through capped
 //! exponential backoff that resets once `hello` says the new connection is
 //! live. The loop shapes mirror the Telegram adapter
@@ -18,7 +21,7 @@
 use std::time::Duration;
 
 use anyhow::Context as _;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{Sink, SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
 use super::api::SlackApi;
@@ -29,10 +32,6 @@ use super::events::{Envelope, EnvelopeKind};
 const BACKOFF_START: Duration = Duration::from_secs(1);
 /// Ceiling the reconnect backoff doubles up to, but never past.
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
-/// Budget for one ack POST. Slack answers acks in well under a second; a
-/// stuck one must not stall envelope processing for good.
-const ACK_TIMEOUT: Duration = Duration::from_secs(15);
-
 /// Liveness (Task 4 review I-1): tokio-tungstenite 0.26's connect helpers
 /// build their own `TcpStream` with no hook to set TCP keepalive on it (the
 /// Telegram adapter's `tcp_keepalive(60s)` route is unreachable for us), so
@@ -59,25 +58,20 @@ type SlackSocket =
 /// Run the Socket Mode client until the task is aborted.
 ///
 /// Every `events_api` envelope is dispatched to `on_envelope` **after** its
-/// ack POST has been attempted (ack-first). `hello` and `disconnect` are
-/// connection lifecycle, not conversation: handled here, never dispatched.
-/// Unknown envelope types are logged, acked when they carry a top-level
-/// `response_url`, and skipped (design D4).
+/// ack frame has been written to the socket (ack-first). `hello` and
+/// `disconnect` are connection lifecycle, not conversation: handled here,
+/// never acked (they carry no `envelope_id`), never dispatched. Unknown
+/// envelope types are logged, acked, and skipped (design D4).
 ///
 /// # Errors
-/// Only when the ack HTTP client cannot be built (TLS setup). Every connect
-/// or read failure reconnects forever with capped backoff instead of
-/// surfacing.
+/// Never in practice: every connect or read failure reconnects forever with
+/// capped backoff instead of surfacing. The `Result` is kept so the
+/// interface's task plumbing (`mod.rs`) stays unchanged.
 pub(crate) async fn run_socket<A, F>(api: A, mut on_envelope: F) -> anyhow::Result<()>
 where
     A: SlackApi + 'static,
     F: FnMut(Envelope) + Send + 'static,
 {
-    let ack_http = reqwest::Client::builder()
-        .timeout(ACK_TIMEOUT)
-        .build()
-        .context("failed to build the slack ack client")?;
-
     let mut backoff = BACKOFF_START;
     let mut consecutive_failures: u32 = 0;
     let mut ever_connected = false;
@@ -95,7 +89,6 @@ where
 
         match read_cycle(
             socket,
-            &ack_http,
             &mut on_envelope,
             &mut consecutive_failures,
             &mut backoff,
@@ -140,7 +133,8 @@ enum Cycle {
 }
 
 /// Read envelopes off one live connection until it ends, acking each
-/// `events_api` and unknown envelope before it is dispatched or skipped.
+/// `events_api` and unknown envelope on this same socket before it is
+/// dispatched or skipped.
 ///
 /// Liveness runs alongside the reads (see [`KEEPALIVE_PING_INTERVAL`]): the
 /// socket is split so keepalive pings and pongs can be written while a read
@@ -149,7 +143,6 @@ enum Cycle {
 /// feeding the caller's reconnect path exactly like a read error.
 async fn read_cycle<F>(
     socket: SlackSocket,
-    ack_http: &reqwest::Client,
     on_envelope: &mut F,
     consecutive_failures: &mut u32,
     backoff: &mut Duration,
@@ -187,6 +180,9 @@ where
                             }
                         };
                         match &envelope.kind {
+                            EnvelopeKind::EventsApi | EnvelopeKind::Unknown(_) => {
+                                ack_then_dispatch(&mut sink, envelope, &mut *on_envelope).await;
+                            }
                             EnvelopeKind::Hello => {
                                 if *consecutive_failures > 0 {
                                     tracing::info!(
@@ -199,19 +195,6 @@ where
                                 *ever_connected = true;
                                 *consecutive_failures = 0;
                                 *backoff = BACKOFF_START;
-                            }
-                            // Ack-first (design, Lifecycle §4): Slack redelivers
-                            // un-acked envelopes; upstream dedup absorbs the overlap.
-                            EnvelopeKind::EventsApi => {
-                                ack(ack_http, &envelope).await;
-                                on_envelope(envelope);
-                            }
-                            EnvelopeKind::Unknown(kind) => {
-                                tracing::debug!(
-                                    envelope_type = %kind,
-                                    "slack socket: unknown envelope type — acked when it carries a response_url, then skipped"
-                                );
-                                ack(ack_http, &envelope).await;
                             }
                             EnvelopeKind::Disconnect => return Cycle::GracefulDisconnect,
                         }
@@ -250,42 +233,58 @@ where
     }
 }
 
-/// POST `{}` to the envelope's ack URL — before any dispatch.
+/// Ack one envelope on the socket, then hand it on: `events_api` envelopes
+/// go to `on_envelope`, unknown types are logged and skipped (design D4).
 ///
-/// RULING (from the fixture review): ack only when the top-level
-/// `response_url` is present and non-empty; unknown/interactive envelopes
-/// may carry one inside the payload or not at all, so never assume. Ack
-/// failures warn and move on: Slack redelivers, upstream dedup absorbs it
-/// (design, Lifecycle §4).
-async fn ack(http: &reqwest::Client, envelope: &Envelope) {
-    if envelope.response_url.is_empty() {
+/// Ack-first (design, Lifecycle §4; Slack docs §5): the ack frame is written
+/// before dispatch, so a slow handler can never delay it. Generic over the
+/// sink so the ordering is unit-testable without a network.
+async fn ack_then_dispatch<S, F>(sink: &mut S, envelope: Envelope, on_envelope: &mut F)
+where
+    S: Sink<Message> + Unpin,
+    S::Error: std::fmt::Display,
+    F: FnMut(Envelope),
+{
+    ack(sink, &envelope).await;
+    match &envelope.kind {
+        EnvelopeKind::EventsApi => on_envelope(envelope),
+        EnvelopeKind::Unknown(kind) => {
+            tracing::debug!(
+                envelope_type = %kind,
+                envelope_id = %envelope.id,
+                "slack socket: unknown envelope type — acked, then skipped"
+            );
+        }
+        EnvelopeKind::Hello | EnvelopeKind::Disconnect => {}
+    }
+}
+
+/// Send the Socket Mode ack — the text frame `{"envelope_id": "<id>"}` —
+/// on the socket the envelope arrived on.
+///
+/// Envelopes without an `envelope_id` (only `hello` and `disconnect` per
+/// the docs) cannot be acked and are not. A failed send warns and moves on:
+/// if the write side is dead the next read fails and reconnects, and Slack's
+/// retry is absorbed by the handler's message-identity dedup.
+async fn ack<S>(sink: &mut S, envelope: &Envelope)
+where
+    S: Sink<Message> + Unpin,
+    S::Error: std::fmt::Display,
+{
+    if envelope.id.is_empty() {
         tracing::debug!(
-            envelope_id = %envelope.id,
-            "slack socket: no response_url on the envelope — skipping the ack"
+            envelope_type = ?envelope.kind,
+            "slack socket: envelope carries no envelope_id — nothing to ack"
         );
         return;
     }
-    match http
-        .post(&envelope.response_url)
-        .json(&serde_json::json!({}))
-        .send()
-        .await
-    {
-        Ok(response) if response.status().is_success() => {}
-        Ok(response) => {
-            tracing::warn!(
-                envelope_id = %envelope.id,
-                status = %response.status(),
-                "slack socket: ack answered non-success — Slack may redeliver; upstream dedup absorbs it"
-            );
-        }
-        Err(error) => {
-            tracing::warn!(
-                envelope_id = %envelope.id,
-                error = %error,
-                "slack socket: ack failed — Slack will redeliver; upstream dedup absorbs it"
-            );
-        }
+    let frame = serde_json::json!({ "envelope_id": envelope.id }).to_string();
+    if let Err(error) = sink.send(Message::text(frame)).await {
+        tracing::warn!(
+            envelope_id = %envelope.id,
+            error = %error,
+            "slack socket: ack send failed — Slack will retry; message dedup absorbs it"
+        );
     }
 }
 
@@ -329,27 +328,27 @@ mod tests {
     use std::time::Duration;
 
     use axum::Router;
+    use axum::extract::State;
     use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
-    use axum::extract::{Path, State};
     use axum::response::IntoResponse;
-    use axum::routing::{get, post};
+    use axum::routing::get;
     use tokio::net::TcpListener;
     use tokio::sync::mpsc;
 
     use crate::interfaces::slack::api::SlackApiError;
     use crate::testing::wait;
 
-    /// What the driver observes: connections accepted, ack POSTs received,
-    /// envelopes dispatched to the callback. One channel so the *order*
-    /// between them is provable.
+    /// What the driver observes: connections accepted, ack frames received
+    /// over the websocket, envelopes dispatched to the callback.
     #[derive(Debug, Clone)]
     enum Observed {
         /// A ws connection was accepted; the driver steers it through `cmds`.
         Connected {
             cmds: mpsc::UnboundedSender<ServerCmd>,
         },
-        /// An ack POST landed on the fake server's `/ack/{id}` route.
-        Ack { id: String, body: String },
+        /// The client sent a text frame on the websocket — the Socket Mode
+        /// ack, `{"envelope_id": "<id>"}` (docs §5 "Acknowledge events").
+        AckFrame { body: String },
         /// `run_socket` dispatched an envelope to the callback.
         Dispatch { id: String },
         /// The client answered the server's ping — proof its read loop is
@@ -378,8 +377,7 @@ mod tests {
     }
 
     /// The fake Slack: accepts ws connections the driver scripts, and
-    /// records ack POSTs. Real fixture texts are used as envelope templates
-    /// with the ack pointed at this server's own POST route.
+    /// records every text frame the client sends back on the socket (acks).
     async fn slack_socket_route(
         upgrade: WebSocketUpgrade,
         State(shared): State<FakeSlackShared>,
@@ -419,7 +417,12 @@ mod tests {
                                     .send(Observed::ClientPing)
                                     .expect("the driver is still observing");
                             }
-                            Some(Ok(WsMessage::Text(_) | WsMessage::Binary(_))) => {}
+                            Some(Ok(WsMessage::Text(text))) => {
+                                shared.obs
+                                    .send(Observed::AckFrame { body: text.to_string() })
+                                    .expect("the driver is still observing");
+                            }
+                            Some(Ok(WsMessage::Binary(_))) => {}
                         }
                     }
                 }
@@ -427,24 +430,10 @@ mod tests {
         })
     }
 
-    async fn ack_route(
-        State(shared): State<FakeSlackShared>,
-        Path(id): Path<String>,
-        body: String,
-    ) -> &'static str {
-        shared
-            .obs
-            .send(Observed::Ack { id, body })
-            .expect("the driver is still observing");
-        "ok"
-    }
-
     /// A running fake Slack on a loopback port.
     struct FakeSlack {
         /// What the fake `SlackApi::open_connection` returns.
         ws_url: String,
-        /// Base for `response_url`s the scripted envelopes carry.
-        http_base: String,
         obs_tx: mpsc::UnboundedSender<Observed>,
         obs_rx: mpsc::UnboundedReceiver<Observed>,
     }
@@ -453,7 +442,6 @@ mod tests {
         let (obs_tx, obs_rx) = mpsc::unbounded_channel();
         let router = Router::new()
             .route("/ws", get(slack_socket_route))
-            .route("/ack/{id}", post(ack_route))
             .with_state(FakeSlackShared {
                 obs: obs_tx.clone(),
             });
@@ -466,7 +454,6 @@ mod tests {
         });
         FakeSlack {
             ws_url: format!("ws://{addr}/ws"),
-            http_base: format!("http://{addr}"),
             obs_tx,
             obs_rx,
         }
@@ -518,7 +505,7 @@ mod tests {
             let observed = self.next(what).await;
             match observed {
                 Observed::Connected { cmds } => cmds,
-                Observed::Ack { .. }
+                Observed::AckFrame { .. }
                 | Observed::Dispatch { .. }
                 | Observed::Pong
                 | Observed::ClientPing => panic!(
@@ -527,29 +514,27 @@ mod tests {
             }
         }
 
-        async fn ack_post(&mut self, what: &str) -> (String, String) {
+        /// The next ack frame, parsed: the `envelope_id` it acks, plus the
+        /// whole frame as JSON for shape assertions.
+        async fn ack_frame(&mut self, what: &str) -> (String, serde_json::Value) {
             let observed = self.next(what).await;
             match observed {
-                Observed::Ack { id, body } => (id, body),
+                Observed::AckFrame { body } => {
+                    let frame: serde_json::Value =
+                        serde_json::from_str(&body).expect("the ack frame is JSON");
+                    let id = frame
+                        .get("envelope_id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_else(|| panic!("the ack frame names an envelope_id: {body}"))
+                        .to_string();
+                    (id, frame)
+                }
                 Observed::Connected { .. }
                 | Observed::Dispatch { .. }
                 | Observed::Pong
                 | Observed::ClientPing => {
-                    panic!("expected an ack POST while waiting for {what}, saw {observed:?}")
+                    panic!("expected an ack frame while waiting for {what}, saw {observed:?}")
                 }
-            }
-        }
-
-        async fn dispatched(&mut self, what: &str) -> String {
-            let observed = self.next(what).await;
-            match observed {
-                Observed::Dispatch { id } => id,
-                Observed::Connected { .. }
-                | Observed::Ack { .. }
-                | Observed::Pong
-                | Observed::ClientPing => panic!(
-                    "expected an envelope dispatch while waiting for {what}, saw {observed:?}"
-                ),
             }
         }
 
@@ -558,7 +543,7 @@ mod tests {
             match observed {
                 Observed::Pong => {}
                 Observed::Connected { .. }
-                | Observed::Ack { .. }
+                | Observed::AckFrame { .. }
                 | Observed::Dispatch { .. }
                 | Observed::ClientPing => {
                     panic!("expected the client's pong while waiting for {what}, saw {observed:?}");
@@ -571,7 +556,7 @@ mod tests {
             match observed {
                 Observed::ClientPing => {}
                 Observed::Connected { .. }
-                | Observed::Ack { .. }
+                | Observed::AckFrame { .. }
                 | Observed::Dispatch { .. }
                 | Observed::Pong => {
                     panic!(
@@ -580,11 +565,43 @@ mod tests {
                 }
             }
         }
-    }
 
-    /// Index of the first observation matching `pred`, for order proofs.
-    fn position_of(log: &[Observed], pred: impl Fn(&Observed) -> bool) -> Option<usize> {
-        log.iter().position(pred)
+        /// The ack frame and the dispatch for one `events_api` envelope, in
+        /// whichever order they reach the driver: the ack crosses the wire
+        /// to the fake server while the dispatch is a local callback, so
+        /// their *arrival* order here is a race. The client-side order (ack
+        /// written before dispatch) is proven deterministically by
+        /// `acks_on_the_socket_before_dispatching`.
+        async fn acked_and_dispatched(&mut self, id: &str) {
+            let mut acked = false;
+            let mut dispatched = false;
+            while !(acked && dispatched) {
+                let observed = self
+                    .next(&format!("the ack frame and dispatch of {id}"))
+                    .await;
+                match observed {
+                    Observed::AckFrame { body } => {
+                        assert!(!acked, "{id} was acked twice: {body}");
+                        let frame: serde_json::Value =
+                            serde_json::from_str(&body).expect("the ack frame is JSON");
+                        assert_eq!(
+                            frame,
+                            expected_ack(id),
+                            "the ack is exactly {{envelope_id}}"
+                        );
+                        acked = true;
+                    }
+                    Observed::Dispatch { id: seen } => {
+                        assert!(!dispatched, "{id} was dispatched twice");
+                        assert_eq!(seen, id);
+                        dispatched = true;
+                    }
+                    Observed::Connected { .. } | Observed::Pong | Observed::ClientPing => {
+                        panic!("expected {id}'s ack frame or dispatch, saw {observed:?}");
+                    }
+                }
+            }
+        }
     }
 
     /// `SlackApi` fake: every `open_connection` is recorded (tokio clock, so
@@ -627,7 +644,7 @@ mod tests {
             _channel: &str,
             _text: &str,
         ) -> Result<Option<String>, SlackApiError> {
-            panic!("run_socket never posts messages; acks ride their own client");
+            panic!("run_socket never posts messages; acks ride the websocket");
         }
 
         async fn chat_update(
@@ -636,7 +653,7 @@ mod tests {
             _ts: &str,
             _text: &str,
         ) -> Result<(), SlackApiError> {
-            panic!("run_socket never edits messages; acks ride their own client");
+            panic!("run_socket never edits messages; acks ride the websocket");
         }
 
         async fn open_connection(&self) -> anyhow::Result<String> {
@@ -651,7 +668,7 @@ mod tests {
         }
     }
 
-    /// The hello fixture text — no `response_url`, no `envelope_id`.
+    /// The hello fixture text — no `envelope_id`.
     fn hello_text() -> String {
         include_str!("fixtures/envelope-hello.json").to_string()
     }
@@ -662,29 +679,21 @@ mod tests {
         include_str!("fixtures/envelope-disconnect.json").to_string()
     }
 
-    /// The `events_api` fixture with its identity and ack destination swapped:
-    /// the fake server controls `response_url`, so each envelope acks to the
-    /// server's own POST route. `None` drops the field entirely.
-    fn events_envelope(id: &str, response_url: Option<&str>) -> String {
+    /// The `events_api` fixture (documented shape: no top-level
+    /// `response_url`) with its identity swapped.
+    fn events_envelope(id: &str) -> String {
         rewire(
             include_str!("fixtures/envelope-events-api-message.json"),
             id,
-            response_url,
         )
     }
 
-    /// The unknown-type fixture, likewise rewired. Fixture review ruling: a
-    /// `response_url` may sit at the top level, inside the payload, or nowhere
-    /// — the client acks only on the top-level field, never assumes.
-    fn unknown_envelope(id: &str, response_url: Option<&str>) -> String {
-        rewire(
-            include_str!("fixtures/envelope-unknown.json"),
-            id,
-            response_url,
-        )
+    /// The unknown-type (`slash_commands`) fixture, likewise rewired.
+    fn unknown_envelope(id: &str) -> String {
+        rewire(include_str!("fixtures/envelope-unknown.json"), id)
     }
 
-    fn rewire(fixture: &str, id: &str, response_url: Option<&str>) -> String {
+    fn rewire(fixture: &str, id: &str) -> String {
         let mut envelope: serde_json::Value =
             serde_json::from_str(fixture).expect("fixture parses");
         let object = envelope
@@ -694,46 +703,32 @@ mod tests {
             "envelope_id".to_string(),
             serde_json::Value::String(id.to_string()),
         );
-        match response_url {
-            Some(url) => {
-                object.insert(
-                    "response_url".to_string(),
-                    serde_json::Value::String(url.to_string()),
-                );
-            }
-            None => {
-                object.remove("response_url");
-            }
-        }
         serde_json::to_string(&envelope).expect("rewired fixture serializes")
     }
 
+    /// The ack frame the docs (§5) prescribe: exactly `{"envelope_id": id}`.
+    fn expected_ack(id: &str) -> serde_json::Value {
+        serde_json::json!({ "envelope_id": id })
+    }
+
     #[tokio::test]
-    async fn acks_before_dispatch_then_reconnects_on_disconnect() {
+    async fn acks_each_events_envelope_over_the_websocket_then_reconnects_on_disconnect() {
         let fake = spawn_fake_slack().await;
-        let http_base = fake.http_base.clone();
         let ws_url = fake.ws_url.clone();
         let mut harness = fake.drive(ScriptedApi::live(ws_url));
 
-        // Connection one: hello, then a DM event that must be acked first.
+        // Connection one: hello (never acked: no envelope_id), then a DM
+        // event the client must ack with a websocket frame.
         let conn1 = harness.connected("the first socket connection").await;
         conn1
             .send(ServerCmd::Text(hello_text()))
             .expect("the scripted connection is still open");
         conn1
-            .send(ServerCmd::Text(events_envelope(
-                "env-evt-1",
-                Some(&format!("{http_base}/ack/env-evt-1")),
-            )))
+            .send(ServerCmd::Text(events_envelope("env-evt-1")))
             .expect("the scripted connection is still open");
+        harness.acked_and_dispatched("env-evt-1").await;
 
-        let (ack_id, ack_body) = harness.ack_post("the ack POST for env-evt-1").await;
-        assert_eq!(ack_id, "env-evt-1");
-        assert_eq!(ack_body, "{}", "the ack body is the empty object");
-        let dispatched = harness.dispatched("the dispatch of env-evt-1").await;
-        assert_eq!(dispatched, "env-evt-1");
-
-        // Graceful disconnect → immediate reconnect → hello again.
+        // Graceful disconnect → immediate reconnect → acks ride the NEW socket.
         conn1
             .send(ServerCmd::Text(disconnect_text()))
             .expect("the scripted connection is still open");
@@ -742,40 +737,33 @@ mod tests {
             .send(ServerCmd::Text(hello_text()))
             .expect("the scripted connection is still open");
         conn2
-            .send(ServerCmd::Text(events_envelope(
-                "env-evt-2",
-                Some(&format!("{http_base}/ack/env-evt-2")),
-            )))
+            .send(ServerCmd::Text(events_envelope("env-evt-2")))
             .expect("the scripted connection is still open");
-        let (ack_two, _) = harness.ack_post("the ack POST for env-evt-2").await;
-        assert_eq!(ack_two, "env-evt-2");
-        let dispatched_two = harness.dispatched("the dispatch of env-evt-2").await;
-        assert_eq!(dispatched_two, "env-evt-2");
+        harness.acked_and_dispatched("env-evt-2").await;
+
+        // A ping round-trip after everything: frames on one connection are
+        // ordered, so the pong proves no stray ack (hello/disconnect) is
+        // still in flight behind the ones counted.
+        conn2
+            .send(ServerCmd::Ping)
+            .expect("the scripted connection is still open");
+        harness.pong("the pong that flushes the connection").await;
 
         harness.client.abort();
-
         let log = &harness.log;
         let connections = log
             .iter()
             .filter(|observed| matches!(observed, Observed::Connected { .. }))
             .count();
         assert_eq!(connections, 2, "both connections were seen: {log:?}");
-        for id in ["env-evt-1", "env-evt-2"] {
-            let ack_at = position_of(
-                log,
-                |observed| matches!(observed, Observed::Ack { id: seen, .. } if seen == id),
-            )
-            .unwrap_or_else(|| panic!("no ack POST for {id} observed: {log:?}"));
-            let dispatch_at = position_of(
-                log,
-                |observed| matches!(observed, Observed::Dispatch { id: seen } if seen == id),
-            )
-            .unwrap_or_else(|| panic!("no dispatch for {id} observed: {log:?}"));
-            assert!(
-                ack_at < dispatch_at,
-                "ack-first: the ack POST for {id} must land before its dispatch: {log:?}"
-            );
-        }
+        let acks = log
+            .iter()
+            .filter(|observed| matches!(observed, Observed::AckFrame { .. }))
+            .count();
+        assert_eq!(
+            acks, 2,
+            "exactly one ack per events_api envelope; hello and disconnect are never acked: {log:?}"
+        );
         assert!(
             !log.iter().any(|observed| matches!(
                 observed,
@@ -786,9 +774,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_envelopes_ack_only_with_a_response_url_and_empty_urls_skip_the_ack() {
+    async fn unknown_envelopes_are_acked_over_the_socket_and_never_dispatched() {
         let fake = spawn_fake_slack().await;
-        let http_base = fake.http_base.clone();
         let ws_url = fake.ws_url.clone();
         let mut harness = fake.drive(ScriptedApi::live(ws_url));
 
@@ -797,37 +784,24 @@ mod tests {
             .send(ServerCmd::Text(hello_text()))
             .expect("the scripted connection is still open");
 
-        // Unknown type carrying a top-level response_url: acked, not dispatched.
+        // An unknown type (slash_commands) still carries an envelope_id:
+        // acked (or Slack retries it forever, D4), never dispatched.
         conn1
-            .send(ServerCmd::Text(unknown_envelope(
-                "env-unknown-1",
-                Some(&format!("{http_base}/ack/env-unknown-1")),
-            )))
+            .send(ServerCmd::Text(unknown_envelope("env-unknown-1")))
             .expect("the scripted connection is still open");
-        let (ack_id, ack_body) = harness.ack_post("the ack for the unknown envelope").await;
+        let (ack_id, frame) = harness.ack_frame("the ack for the unknown envelope").await;
         assert_eq!(ack_id, "env-unknown-1");
-        assert_eq!(ack_body, "{}");
+        assert_eq!(frame, expected_ack("env-unknown-1"));
 
-        // events_api without any response_url: dispatched, ack log-skipped.
+        // A following events_api envelope proves the unknown one was
+        // handled in order without being dispatched.
         conn1
-            .send(ServerCmd::Text(events_envelope("env-evt-nourl", None)))
+            .send(ServerCmd::Text(events_envelope("env-evt-after")))
             .expect("the scripted connection is still open");
-        let dispatched = harness
-            .dispatched("dispatch of the url-less envelope")
-            .await;
-        assert_eq!(dispatched, "env-evt-nourl");
+        harness.acked_and_dispatched("env-evt-after").await;
 
         harness.client.abort();
-
         let log = &harness.log;
-        let acks = log
-            .iter()
-            .filter(|observed| matches!(observed, Observed::Ack { .. }))
-            .count();
-        assert_eq!(
-            acks, 1,
-            "exactly one ack — the url-less envelope skips it: {log:?}"
-        );
         assert!(
             !log.iter().any(|observed| matches!(
                 observed,
@@ -838,40 +812,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_acks_do_not_block_dispatch() {
+    async fn a_malformed_text_frame_is_skipped_and_the_connection_stays_up() {
         let fake = spawn_fake_slack().await;
-        // A loopback port that nothing will ever listen on: the ack POST is
-        // refused instantly instead of hanging.
-        let closed = TcpListener::bind("127.0.0.1:0").await.expect("bind probe");
-        let dead_port = closed.local_addr().expect("probe address").port();
-        drop(closed);
-
         let ws_url = fake.ws_url.clone();
         let mut harness = fake.drive(ScriptedApi::live(ws_url));
+
         let conn1 = harness.connected("the socket connection").await;
         conn1
             .send(ServerCmd::Text(hello_text()))
             .expect("the scripted connection is still open");
+        // Mid-stream garbage: not JSON at all. The client warns, skips the
+        // frame, and keeps reading the same connection (Task 4 review I-2).
         conn1
-            .send(ServerCmd::Text(events_envelope(
-                "env-evt-deadack",
-                Some(&format!("http://127.0.0.1:{dead_port}/ack/env-evt-deadack")),
-            )))
+            .send(ServerCmd::Text("not json".to_string()))
             .expect("the scripted connection is still open");
-
-        let dispatched = harness
-            .dispatched("dispatch despite the dead ack destination")
-            .await;
-        assert_eq!(dispatched, "env-evt-deadack");
+        conn1
+            .send(ServerCmd::Text(events_envelope("env-after-garbage")))
+            .expect("the scripted connection is still open");
+        harness.acked_and_dispatched("env-after-garbage").await;
 
         harness.client.abort();
+        let log = &harness.log;
+        let connections = log
+            .iter()
+            .filter(|observed| matches!(observed, Observed::Connected { .. }))
+            .count();
+        assert_eq!(
+            connections, 1,
+            "a malformed frame must not drop the connection: {log:?}"
+        );
         assert!(
-            !harness
-                .log
-                .iter()
-                .any(|observed| matches!(observed, Observed::Ack { .. })),
-            "no ack can arrive from a dead destination: {:?}",
-            harness.log
+            !log.iter().any(|observed| matches!(
+                observed,
+                Observed::Dispatch { id } if id.is_empty()
+            )),
+            "the garbage frame dispatched nothing: {log:?}"
         );
     }
 
@@ -908,57 +883,6 @@ mod tests {
         harness.pong("the pong on the reconnected socket").await;
 
         harness.client.abort();
-    }
-
-    #[tokio::test]
-    async fn a_malformed_text_frame_is_skipped_and_the_connection_stays_up() {
-        let fake = spawn_fake_slack().await;
-        let http_base = fake.http_base.clone();
-        let ws_url = fake.ws_url.clone();
-        let mut harness = fake.drive(ScriptedApi::live(ws_url));
-
-        let conn1 = harness.connected("the socket connection").await;
-        conn1
-            .send(ServerCmd::Text(hello_text()))
-            .expect("the scripted connection is still open");
-        // Mid-stream garbage: not JSON at all. The client warns, skips the
-        // frame, and keeps reading the same connection (Task 4 review I-2).
-        conn1
-            .send(ServerCmd::Text("not json".to_string()))
-            .expect("the scripted connection is still open");
-        conn1
-            .send(ServerCmd::Text(events_envelope(
-                "env-after-garbage",
-                Some(&format!("{http_base}/ack/env-after-garbage")),
-            )))
-            .expect("the scripted connection is still open");
-
-        let (ack_id, _) = harness
-            .ack_post("the ack for the envelope after the garbage frame")
-            .await;
-        assert_eq!(ack_id, "env-after-garbage");
-        let dispatched = harness
-            .dispatched("the dispatch of the envelope after the garbage frame")
-            .await;
-        assert_eq!(dispatched, "env-after-garbage");
-
-        harness.client.abort();
-        let log = &harness.log;
-        let connections = log
-            .iter()
-            .filter(|observed| matches!(observed, Observed::Connected { .. }))
-            .count();
-        assert_eq!(
-            connections, 1,
-            "a malformed frame must not drop the connection: {log:?}"
-        );
-        assert!(
-            !log.iter().any(|observed| matches!(
-                observed,
-                Observed::Dispatch { id } if id.is_empty()
-            )),
-            "the garbage frame dispatched nothing: {log:?}"
-        );
     }
 
     /// Liveness (Task 4 review I-1): with no traffic at all, the client
@@ -1036,6 +960,103 @@ mod tests {
                 Duration::from_secs(16),
             ],
             "backoff doubles from 1s on every consecutive failure"
+        );
+    }
+
+    /// One step in the in-memory ordering log: a frame the sink was asked to
+    /// write, or an envelope handed to the dispatch callback.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum Step {
+        Sent(String),
+        Dispatched(String),
+    }
+
+    fn parsed(fixture: &str) -> Envelope {
+        serde_json::from_str(fixture).expect("fixture parses")
+    }
+
+    /// Ack-first, deterministically: with a sink and a callback that write
+    /// to one shared log, the ack frame is written strictly before the
+    /// envelope is dispatched — no network, no race in the observation.
+    #[tokio::test]
+    async fn acks_on_the_socket_before_dispatching() {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink_log = Arc::clone(&log);
+        let mut sink = Box::pin(futures_util::sink::unfold((), move |(), frame: Message| {
+            let sink_log = Arc::clone(&sink_log);
+            async move {
+                let text = frame
+                    .into_text()
+                    .expect("the ack is a text frame")
+                    .to_string();
+                sink_log.lock().expect("log lock").push(Step::Sent(text));
+                Ok::<(), std::convert::Infallible>(())
+            }
+        }));
+        let dispatch_log = Arc::clone(&log);
+        let mut on_envelope = move |envelope: Envelope| {
+            dispatch_log
+                .lock()
+                .expect("log lock")
+                .push(Step::Dispatched(envelope.id));
+        };
+
+        let events = parsed(&events_envelope("env-order-1"));
+        ack_then_dispatch(&mut sink, events, &mut on_envelope).await;
+        let unknown = parsed(&unknown_envelope("env-order-unknown"));
+        ack_then_dispatch(&mut sink, unknown, &mut on_envelope).await;
+
+        let steps = log.lock().expect("log lock").clone();
+        assert_eq!(
+            steps,
+            [
+                Step::Sent(r#"{"envelope_id":"env-order-1"}"#.to_string()),
+                Step::Dispatched("env-order-1".to_string()),
+                Step::Sent(r#"{"envelope_id":"env-order-unknown"}"#.to_string()),
+            ],
+            "ack frame first, then dispatch; unknown types are acked but never dispatched"
+        );
+    }
+
+    /// Envelopes without an `envelope_id` (hello, disconnect) are never
+    /// acked, and a failing ack send never blocks dispatch.
+    #[tokio::test]
+    async fn id_less_envelopes_skip_the_ack_and_a_failed_ack_still_dispatches() {
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sink_attempts = Arc::clone(&attempts);
+        let mut failing = Box::pin(futures_util::sink::unfold(
+            (),
+            move |(), _frame: Message| {
+                sink_attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async { Err::<(), _>("the write side is gone".to_string()) }
+            },
+        ));
+        let mut dispatched = Vec::new();
+
+        let hello = parsed(&hello_text());
+        ack(&mut failing, &hello).await;
+        let disconnect = parsed(&disconnect_text());
+        ack(&mut failing, &disconnect).await;
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "hello and disconnect carry no envelope_id and are never acked"
+        );
+
+        let events = parsed(&events_envelope("env-deadack"));
+        ack_then_dispatch(&mut failing, events, &mut |envelope: Envelope| {
+            dispatched.push(envelope.id);
+        })
+        .await;
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the ack was attempted"
+        );
+        assert_eq!(
+            dispatched,
+            ["env-deadack"],
+            "a failed ack never blocks dispatch"
         );
     }
 
