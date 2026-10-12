@@ -98,6 +98,18 @@ pub(crate) fn free_port() -> u16 {
     probe_free_port().0
 }
 
+/// A port in the gap that follows `port`, a port handed out here, that no
+/// probe in any test process ever picks, for a test that moves a running
+/// component to a new port. The component binds the new port only after
+/// work the test can't hold a reservation across (a config watcher noticing
+/// a change), and another process's probe could take a released reservation
+/// in that time. The port sits halfway up the gap, so it stays out of reach
+/// of the workbench's upward scan from `port` itself.
+#[must_use]
+pub(crate) fn unprobed_port_after(port: u16) -> u16 {
+    port + STRIDE / 2
+}
+
 /// Reserve a loopback port the same way [`free_port`] does, but keep holding
 /// it open so the caller can do other setup — writing config files, starting
 /// unrelated mock servers — without another test process taking the port out

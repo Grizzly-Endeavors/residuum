@@ -1200,6 +1200,20 @@ mod tests {
             .await;
         }
 
+        /// The boot id of whatever hub answers on `port`, if one does.
+        async fn boot_id_on(&self, port: u16) -> Option<String> {
+            let page: serde_json::Value = self
+                .http
+                .get(format!("http://127.0.0.1:{port}/api/hub/events?limit=1"))
+                .send()
+                .await
+                .ok()?
+                .json()
+                .await
+                .ok()?;
+            page.pointer("/boot_id")?.as_str().map(str::to_string)
+        }
+
         /// The hub's team event log over HTTP: its boot id and every entry,
         /// oldest first.
         async fn team_events(&self) -> (String, Vec<serde_json::Value>) {
@@ -1409,8 +1423,8 @@ mod tests {
         let hub = RunningHub::start().await;
         hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", Some(200))
             .await;
-        let new_port_reservation = reserve_port();
-        let new_port = new_port_reservation.port();
+        let (boot_id, _) = hub.team_events().await;
+        let new_port = crate::util::test_ports::unprobed_port_after(hub.gateway_port);
 
         std::fs::write(
             hub.hub_config_path(),
@@ -1420,17 +1434,21 @@ mod tests {
             ),
         )
         .unwrap();
-        // The config watcher picks this up and rebinds the gateway on
-        // `new_port` asynchronously; drop the reservation now, as close to
-        // that rebind as this test can get.
-        drop(new_port_reservation);
 
         hub.eventually_status(new_port, "/api/agents/scout/status", Some(200))
             .await;
         hub.eventually_status(new_port, "/api/agents/atlas/status", Some(200))
             .await;
-        hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", None)
-            .await;
+        // Another test process may bind the old port once this hub lets go of
+        // it, so the check is that this hub no longer answers there, not that
+        // nothing does.
+        crate::testing::wait::until(
+            format!("this hub to stop answering on port {}", hub.gateway_port),
+            || async {
+                (hub.boot_id_on(hub.gateway_port).await.as_ref() != Some(&boot_id)).then_some(())
+            },
+        )
+        .await;
         let mut hub = hub;
         hub.gateway_port = new_port;
         hub.shut_down().await;
