@@ -2,16 +2,18 @@
   import { onDestroy } from "svelte";
   import { toast } from "../lib/toast.svelte";
   import type { AssistantFeedItem } from "../lib/types";
-  import { Button, VisuallyHidden } from "../lib/ui";
+  import { IconButton, VisuallyHidden } from "../lib/ui";
   import { endpointName } from "./feed-words";
   import Prose from "./Prose.svelte";
   import Timestamp from "./Timestamp.svelte";
 
   // An agent's reply as unboxed prose. While it streams in, its prose ends in
   // a blinking caret. One cut short by a stop keeps what arrived and says so,
-  // and a reply delivered to a chat interface says where it went. Under it, a
-  // quiet row holds Copy, which puts the reply's Markdown on the clipboard,
-  // and when it was sent. Both wait until the reply is whole.
+  // and a reply delivered to a chat interface says where it went. Its quiet
+  // details, Copy (the reply's Markdown to the clipboard) and when it was
+  // sent, take no room of their own: they sit in the margin left of the
+  // reply's last line where the conversation has one, and otherwise float
+  // over the gap below it. Both wait until the reply is whole.
 
   let { item, agent }: { item: AssistantFeedItem; agent: string } = $props();
 
@@ -48,19 +50,14 @@
   {#if item.deliveredTo !== undefined}
     <p class="reply-note">Sent to {endpointName(item.deliveredTo)}</p>
   {/if}
-  <!-- Kept while it streams, out of sight and out of reach, so the reply doesn't move when it is done. -->
-  <div class="reply-foot" data-message-meta inert={item.streaming === true}>
-    <span class="reply-copy">
-      <Button
-        variant="quiet"
-        size="sm"
-        icon={copied ? "check" : "copy"}
-        aria-label={copied ? undefined : "Copy reply"}
-        onclick={() => void copy()}
-      >
-        {copied ? "Copied" : "Copy"}
-      </Button>
-    </span>
+  <!-- Kept while it streams, out of sight and out of reach, so nothing moves when it is done. -->
+  <div class="reply-meta" data-message-meta inert={item.streaming === true}>
+    <IconButton
+      size="sm"
+      icon={copied ? "check" : "copy"}
+      label={copied ? "Copied" : "Copy reply"}
+      onclick={() => void copy()}
+    />
     {#if item.timestamp !== undefined}
       <Timestamp timestamp={item.timestamp} />
     {/if}
@@ -70,6 +67,7 @@
 
 <style>
   .reply {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
@@ -81,27 +79,39 @@
     font-size: var(--font-size-xs);
   }
 
-  /* Lined up with the text, and hanging into the gap below, so the row takes little height. */
-  .reply-foot {
+  /* Beside nothing until shown: over the gap under the reply, as a small floating row. */
+  .reply-meta {
+    position: absolute;
+    top: calc(100% + var(--space-2));
+    left: calc(-1 * var(--space-4));
+    z-index: var(--z-sticky);
     display: flex;
     align-items: center;
-    gap: var(--space-8);
-    margin: 0 0 calc(-1 * var(--space-12)) calc(-1 * var(--space-8));
-  }
-
-  .reply[data-streaming] .reply-foot {
-    visibility: hidden;
-  }
-
-  /* Quiet until the message is hovered or focused; a touch screen has neither, so there it stays. */
-  .reply-copy {
+    gap: var(--space-4);
+    padding: var(--space-2) var(--space-10) var(--space-2) var(--space-2);
+    border-radius: var(--corner-pill);
+    background: var(--color-stone-3);
+    box-shadow: var(--shadow-float);
     opacity: var(--message-meta, 1);
+    pointer-events: var(--message-meta-events, auto);
     transition: opacity var(--duration-fast) var(--ease-out);
   }
 
-  @media (hover: none) {
-    .reply-copy {
-      opacity: 1;
+  .reply[data-streaming] .reply-meta {
+    visibility: hidden;
+  }
+
+  /* Where the conversation has a margin wide enough, they sit in it, left of the reply's last line.
+     1000px is the reading column (768px) plus room for the details on either side. */
+  @container feed (min-width: 1000px) {
+    .reply-meta {
+      top: auto;
+      right: calc(100% + var(--space-8));
+      bottom: 0;
+      left: auto;
+      padding: 0;
+      background: none;
+      box-shadow: none;
     }
   }
 </style>
