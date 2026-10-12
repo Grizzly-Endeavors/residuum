@@ -84,7 +84,7 @@ test("a message from another day names the date as well", async ({ page }) => {
   expect(labels.some((label) => /^\d{1,2}:\d{2}/.test(label))).toBe(true);
 });
 
-test("Copy is quiet on a screen that hovers and in sight on one that doesn't, and reaches the keyboard", async ({
+test("Copy is quiet until the reply is hovered, tapped or focused, and reaches the keyboard", async ({
   page,
   isMobile,
 }) => {
@@ -94,7 +94,9 @@ test("Copy is quiet on a screen that hovers and in sight on one that doesn't, an
   await expect(copy).toBeAttached();
 
   if (isMobile) {
-    // No hover to reveal it, so it stays where a thumb can find it.
+    // No hover to reveal it: a tap on the reply floats its details over the gap below.
+    await expect(copy.locator("xpath=..")).toHaveCSS("opacity", "0");
+    await message.getByText(GREETING).tap();
     await expect(copy).toBeVisible();
     await expect(copy.locator("xpath=..")).toHaveCSS("opacity", "1");
   } else {
@@ -115,6 +117,7 @@ test("Copy puts the reply's Markdown on the clipboard and says Copied", async ({
   page,
   browserName,
   context,
+  isMobile,
 }) => {
   test.skip(browserName === "webkit", "WebKit grants no clipboard permission to a test.");
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
@@ -126,6 +129,9 @@ test("Copy puts the reply's Markdown on the clipboard and says Copied", async ({
     .filter({ hasText: "The observer keeps three things" });
   await reply.scrollIntoViewIfNeeded();
 
+  // Copy shows once the reply is hovered, or tapped where nothing hovers.
+  if (isMobile) await reply.getByText("The observer keeps three things").tap();
+  else await reply.hover();
   await reply.getByRole("button", { name: "Copy reply" }).click();
 
   const copied = await page.evaluate(() => navigator.clipboard.readText());
@@ -134,7 +140,7 @@ test("Copy puts the reply's Markdown on the clipboard and says Copied", async ({
   expect(copied).toMatch(/^1\. /m);
   // The button says so, and a polite status says it for a screen reader.
   await expect(reply.getByRole("button", { name: "Copied" })).toBeVisible();
-  await expect(reply.locator(".reply-foot [role=status]")).toHaveText("Copied");
+  await expect(reply.locator(".reply-meta [role=status]")).toHaveText("Copied");
   await expect(reply.getByRole("button", { name: "Copy reply" })).toBeVisible();
 });
 
@@ -149,7 +155,7 @@ test("a reply that has streamed in gets its time once it is whole", async ({ pag
     (window as unknown as { streamingFootInert: boolean[] }).streamingFootInert = seen;
     new MutationObserver(() => {
       for (const foot of document.querySelectorAll<HTMLElement>(
-        ".reply[data-streaming] .reply-foot",
+        ".reply[data-streaming] .reply-meta",
       )) {
         seen.push(foot.inert);
       }
@@ -176,5 +182,5 @@ test("a reply that has streamed in gets its time once it is whole", async ({ pag
   expect(inert.every(Boolean)).toBe(true);
   const finished = feed.locator(".reply").last();
   await expect(finished.locator("time")).toHaveText(/^\d{1,2}:\d{2}/);
-  await expect(finished.locator(".reply-foot")).toHaveJSProperty("inert", false);
+  await expect(finished.locator(".reply-meta")).toHaveJSProperty("inert", false);
 });

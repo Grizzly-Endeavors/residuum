@@ -449,10 +449,12 @@
     line-height: var(--line-height-ui);
   }
 
+  /* A container, so a message can tell whether the margin beside the column has room for its details. */
   .feed-scroll {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
+    container: feed / inline-size;
     /* loadOlder() alone moves the scroll position across a prepend. */
     overflow-anchor: none;
 

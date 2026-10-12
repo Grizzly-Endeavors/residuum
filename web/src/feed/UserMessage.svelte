@@ -3,15 +3,17 @@
   import { notifications } from "../lib/notifications.svelte";
   import { turnChangedWorkspace, undoTurn } from "../lib/turn-undo";
   import type { UserFeedItem } from "../lib/types";
-  import { Button } from "../lib/ui";
+  import { IconButton } from "../lib/ui";
   import ImageViewer from "./ImageViewer.svelte";
   import { viewImageLabel, type ViewerImage } from "./image-viewer";
   import Timestamp from "./Timestamp.svelte";
 
   // The user's message: a moss bubble on the right, with a sender line when
-  // it came from another interface or a workbench artifact, and its time under
-  // it. Its images open full size. A turn observed live that changed files
-  // offers Undo this turn, in `agent`'s workspace.
+  // it came from another interface or a workbench artifact. Its time sits left
+  // of the bubble, taking no room below it; where the conversation is too
+  // narrow for that, it floats over the gap under the bubble. Its images open
+  // full size. A turn observed live that changed files offers Undo this turn,
+  // in `agent`'s workspace, always in sight beside the bubble.
 
   let { item, agent }: { item: UserFeedItem; agent: string } = $props();
 
@@ -80,44 +82,40 @@
   {#if senderLine}
     <p class="user-sender">{senderLine}</p>
   {/if}
-  <div class="user-bubble">
-    {#if item.content}
-      <p class="user-text">{item.content}</p>
+  <div class="user-row">
+    {#if item.turn?.changed}
+      <IconButton
+        size="sm"
+        icon="restore"
+        label="Undo this turn"
+        loading={undoing}
+        onclick={() => void undo()}
+      />
     {/if}
-    {#if pictures.length > 0}
-      <div class="user-images">
-        {#each pictures as picture, index (index)}
-          <button
-            type="button"
-            class="user-image"
-            aria-haspopup="dialog"
-            aria-label={viewImageLabel(picture.alt)}
-            onclick={() => (viewing = index)}
-          >
-            <img src={picture.src} alt={picture.alt} />
-          </button>
-        {/each}
-      </div>
+    {#if item.timestamp !== undefined}
+      <span class="user-time"><Timestamp timestamp={item.timestamp} /></span>
     {/if}
-  </div>
-  {#if item.turn?.changed === true || item.timestamp !== undefined}
-    <div class="user-foot" data-message-meta>
-      {#if item.turn?.changed}
-        <Button
-          variant="quiet"
-          size="sm"
-          icon="restore"
-          loading={undoing}
-          onclick={() => void undo()}
-        >
-          Undo this turn
-        </Button>
+    <div class="user-bubble">
+      {#if item.content}
+        <p class="user-text">{item.content}</p>
       {/if}
-      {#if item.timestamp !== undefined}
-        <Timestamp timestamp={item.timestamp} />
+      {#if pictures.length > 0}
+        <div class="user-images">
+          {#each pictures as picture, index (index)}
+            <button
+              type="button"
+              class="user-image"
+              aria-haspopup="dialog"
+              aria-label={viewImageLabel(picture.alt)}
+              onclick={() => (viewing = index)}
+            >
+              <img src={picture.src} alt={picture.alt} />
+            </button>
+          {/each}
+        </div>
       {/if}
     </div>
-  {/if}
+  </div>
 </div>
 
 <ImageViewer images={pictures} bind:index={viewing} />
@@ -139,6 +137,8 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-8);
+    flex: 0 1 auto;
+    min-width: 0;
     max-width: min(82%, 560px);
     padding: var(--space-8) var(--space-14);
     border-radius: var(--corner-lg) var(--corner-lg) var(--corner-sm) var(--corner-lg);
@@ -176,14 +176,37 @@
     line-height: 0;
   }
 
-  /* Under the bubble: Undo this turn, and when it was sent. The row hangs into the gap below it, so the time takes little height. */
-  .user-foot {
+  /* Undo and the time line up left of the bubble, on its last line. */
+  .user-row {
+    position: relative;
     display: flex;
-    align-items: center;
+    align-items: flex-end;
+    align-self: stretch;
     justify-content: flex-end;
     gap: var(--space-8);
-    min-height: var(--space-20);
-    margin-bottom: calc(-1 * var(--space-12));
+  }
+
+  /* On the baseline of the bubble's last line. */
+  .user-time {
+    display: flex;
+    align-self: last baseline;
+  }
+
+  /* Too narrow to spare the room beside the bubble: the time floats over the gap under it. */
+  @container feed (max-width: 639px) {
+    .user-time {
+      position: absolute;
+      top: calc(100% + var(--space-2));
+      right: 0;
+      z-index: var(--z-sticky);
+      padding: var(--space-4) var(--space-10);
+      border-radius: var(--corner-pill);
+      background: var(--color-stone-3);
+      box-shadow: var(--shadow-float);
+      opacity: var(--message-meta, 1);
+      pointer-events: var(--message-meta-events, auto);
+      transition: opacity var(--duration-fast) var(--ease-out);
+    }
   }
 
   @media (max-width: 760px) {
