@@ -1,7 +1,8 @@
 //! Anthropic Messages API provider implementation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{LazyLock, Mutex, PoisonError};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -38,6 +39,37 @@ const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
 
 /// The least thinking budget the API accepts in manual mode.
 const MIN_THINKING_BUDGET: u32 = 1024;
+
+/// Models already warned about a dropped temperature. Process-wide because
+/// clients are rebuilt per background session, and each would warn again.
+static WARNED_SAMPLING_DROP: LazyLock<Mutex<BTreeSet<String>>> =
+    LazyLock::new(|| Mutex::new(BTreeSet::new()));
+
+/// Whether the API answers a non-default `temperature`, `top_p` or `top_k`
+/// with a 400 for this model: Claude Opus 4.7 and later, Sonnet 5 and later,
+/// Haiku 5 and later, and every Fable and Mythos model. Anything unrecognised
+/// is treated as accepting them, so a new family gets the old behavior until
+/// it is added here.
+fn rejects_sampling_params(model: &str) -> bool {
+    let Some((_, id)) = model.rsplit_once("claude-") else {
+        return false;
+    };
+    let mut parts = id.split('-');
+    let family = parts.next().unwrap_or_default();
+    let major = parts.next().and_then(|p| p.parse::<u32>().ok());
+    // A date suffix (`claude-opus-4-20250514`) is not a minor version.
+    let minor = parts
+        .next()
+        .and_then(|p| p.parse::<u32>().ok())
+        .filter(|m| *m < 100)
+        .unwrap_or(0);
+    match family {
+        "fable" | "mythos" => true,
+        "opus" => major.is_some_and(|m| (m, minor) >= (4, 7)),
+        "sonnet" | "haiku" => major.is_some_and(|m| m >= 5),
+        _ => false,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Public client
@@ -247,6 +279,27 @@ impl AnthropicClient {
         entries
     }
 
+    /// The temperature to send: the requested one, or none when this model
+    /// rejects it. The drop is logged once per model.
+    fn temperature_to_send(&self, requested: Option<f32>) -> Option<f32> {
+        let temperature = requested?;
+        if !rejects_sampling_params(&self.model) {
+            return Some(temperature);
+        }
+        let first_drop = WARNED_SAMPLING_DROP
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(self.model.clone());
+        if first_drop {
+            warn!(
+                model = %self.model,
+                temperature,
+                "ignoring the configured temperature: this Anthropic model rejects non-default sampling parameters, so requests are sent without it"
+            );
+        }
+        None
+    }
+
     /// Build everything about a request that stays the same across retries.
     fn prepare(
         &self,
@@ -295,7 +348,7 @@ impl AnthropicClient {
             messages,
             tools,
             output_format,
-            temperature: options.temperature,
+            temperature: self.temperature_to_send(options.temperature),
             max_tokens,
             thinking: options.thinking.clone(),
         }
@@ -1945,6 +1998,165 @@ mod tests {
         assert!(
             body.get("temperature").is_none(),
             "temperature should be absent from request body when None"
+        );
+    }
+
+    fn client_for_model(base_url: &str, model: &str) -> AnthropicClient {
+        let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(5)).unwrap();
+        AnthropicClient::new(
+            http,
+            base_url,
+            "test-api-key",
+            model,
+            1024,
+            RetryConfig::no_retry(),
+        )
+    }
+
+    async fn mount_ok(server: &MockServer) {
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response_body()))
+            .mount(server)
+            .await;
+    }
+
+    async fn sent_bodies(server: &MockServer) -> Vec<Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| serde_json::from_slice(&r.body).unwrap())
+            .collect()
+    }
+
+    const DROP_WARNING: &str = "ignoring the configured temperature";
+
+    #[test]
+    fn sampling_params_rejected_by_model_id() {
+        for model in [
+            "claude-opus-4-7",
+            "claude-opus-4-8",
+            "claude-opus-5",
+            "claude-opus-5-5",
+            "claude-sonnet-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+            "claude-fable-5",
+            "claude-fable-5-1",
+            "claude-mythos-5",
+            "claude-mythos-5-1",
+            "anthropic.claude-opus-5-5",
+        ] {
+            assert!(rejects_sampling_params(model), "{model} should reject them");
+        }
+        for model in [
+            "claude-opus-4-6",
+            "claude-opus-4-5",
+            "claude-opus-4-1-20250805",
+            "claude-opus-4-20250514",
+            "claude-sonnet-4-6",
+            "claude-sonnet-4-20250514",
+            "claude-haiku-4-5-20251001",
+            "claude-3-7-sonnet-latest",
+            "claude-3-5-haiku-20241022",
+            "some-other-model",
+        ] {
+            assert!(
+                !rejects_sampling_params(model),
+                "{model} should accept them"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn temperature_dropped_with_one_warning_for_model_that_rejects_it() {
+        let log = crate::hub::test_support::EventLog::default();
+        let _guard = log.capture();
+        let server = MockServer::start().await;
+        mount_ok(&server).await;
+
+        let client = client_for_model(&server.uri(), "claude-opus-5-5");
+        let options = CompletionOptions {
+            temperature: Some(0.7),
+            ..CompletionOptions::default()
+        };
+        for _ in 0..2 {
+            let result = client.complete(&simple_user_message(), &[], &options).await;
+            assert!(
+                result.is_ok(),
+                "the turn should succeed without temperature"
+            );
+        }
+
+        for body in sent_bodies(&server).await {
+            assert!(
+                body.get("temperature").is_none(),
+                "temperature should be omitted for a model that rejects it"
+            );
+        }
+        let warnings = log.matching(DROP_WARNING);
+        assert_eq!(
+            warnings.len(),
+            1,
+            "the drop should be logged once per model"
+        );
+        let warning = warnings.first().unwrap();
+        assert_eq!(warning.level, tracing::Level::WARN);
+        assert!(
+            warning.text.contains("claude-opus-5-5"),
+            "the warning should name the model: {}",
+            warning.text
+        );
+    }
+
+    #[tokio::test]
+    async fn temperature_still_sent_to_older_model_without_warning() {
+        let log = crate::hub::test_support::EventLog::default();
+        let _guard = log.capture();
+        let server = MockServer::start().await;
+        mount_ok(&server).await;
+
+        let client = client_for_model(&server.uri(), "claude-opus-4-6");
+        let options = CompletionOptions {
+            temperature: Some(0.7),
+            ..CompletionOptions::default()
+        };
+        let result = client.complete(&simple_user_message(), &[], &options).await;
+        assert!(result.is_ok(), "request with temperature should succeed");
+
+        let bodies = sent_bodies(&server).await;
+        let temperature = bodies
+            .first()
+            .and_then(|body| body.get("temperature"))
+            .and_then(Value::as_f64)
+            .unwrap();
+        assert!(
+            (temperature - 0.7).abs() < 1e-6,
+            "an older model should still receive the temperature, got {temperature}"
+        );
+        assert!(
+            log.matching(DROP_WARNING).is_empty(),
+            "nothing is dropped for an older model"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_warning_for_model_that_rejects_temperature_when_none_is_set() {
+        let log = crate::hub::test_support::EventLog::default();
+        let _guard = log.capture();
+        let server = MockServer::start().await;
+        mount_ok(&server).await;
+
+        let client = client_for_model(&server.uri(), "claude-haiku-5-5");
+        let result = client
+            .complete(&simple_user_message(), &[], &CompletionOptions::default())
+            .await;
+        assert!(result.is_ok(), "request without temperature should succeed");
+        assert!(
+            log.matching(DROP_WARNING).is_empty(),
+            "no warning when no temperature was configured"
         );
     }
 
