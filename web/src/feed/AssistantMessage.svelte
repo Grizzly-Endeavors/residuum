@@ -79,10 +79,11 @@
     font-size: var(--font-size-xs);
   }
 
-  /* Beside nothing until shown: over the gap under the reply, as a small floating row. */
+  /* Beside nothing until shown: over the gap under the reply, as a small floating row. It touches
+     the reply, so the pointer keeps the hover that shows it on its way from the text to Copy. */
   .reply-meta {
     position: absolute;
-    top: calc(100% + var(--space-2));
+    top: 100%;
     left: calc(-1 * var(--space-4));
     z-index: var(--z-sticky);
     display: flex;
@@ -106,10 +107,10 @@
   @container feed (min-width: 1000px) {
     .reply-meta {
       top: auto;
-      right: calc(100% + var(--space-8));
+      right: 100%;
       bottom: 0;
       left: auto;
-      padding: 0;
+      padding: 0 var(--space-8) 0 0;
       background: none;
       box-shadow: none;
     }

@@ -117,6 +117,7 @@ test("Copy puts the reply's Markdown on the clipboard and says Copied", async ({
   page,
   browserName,
   context,
+  isMobile,
 }) => {
   test.skip(browserName === "webkit", "WebKit grants no clipboard permission to a test.");
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
@@ -128,6 +129,9 @@ test("Copy puts the reply's Markdown on the clipboard and says Copied", async ({
     .filter({ hasText: "The observer keeps three things" });
   await reply.scrollIntoViewIfNeeded();
 
+  // Copy shows once the reply is hovered, or tapped where nothing hovers.
+  if (isMobile) await reply.getByText("The observer keeps three things").tap();
+  else await reply.hover();
   await reply.getByRole("button", { name: "Copy reply" }).click();
 
   const copied = await page.evaluate(() => navigator.clipboard.readText());
