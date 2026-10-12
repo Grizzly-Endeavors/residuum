@@ -73,6 +73,9 @@ pub(super) fn resolve_slack_config(
             bot_token: bot,
             app_token: app,
             respond_to_others: section.and_then(|s| s.respond_to_others).unwrap_or(false),
+            working_reaction: resolve_working_reaction(
+                section.and_then(|s| s.working_reaction.as_deref()),
+            ),
         }),
         (Some(_), _, _) => {
             tracing::warn!(
@@ -83,6 +86,21 @@ pub(super) fn resolve_slack_config(
         }
         (None, _, _) => None,
     }
+}
+
+/// The working reaction Slack uses when `[slack] working_reaction` is unset:
+/// 👀, the acknowledgement Slack's own agent samples use.
+const DEFAULT_SLACK_WORKING_REACTION: &str = "eyes";
+
+/// Resolve `[slack] working_reaction`: unset is the default, `""` turns the
+/// reaction off, and surrounding colons (`":zap:"`, as Slack displays a
+/// shortcode) are tolerated — the API takes the bare name.
+fn resolve_working_reaction(raw: Option<&str>) -> Option<String> {
+    let Some(raw) = raw else {
+        return Some(DEFAULT_SLACK_WORKING_REACTION.to_string());
+    };
+    let name = raw.trim().trim_matches(':');
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// Resolve Telegram configuration from the TOML section.

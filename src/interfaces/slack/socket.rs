@@ -654,18 +654,28 @@ mod tests {
         async fn post_message(
             &self,
             _channel: &str,
+            _thread_ts: Option<&str>,
             _text: &str,
-        ) -> Result<Option<String>, SlackApiError> {
+        ) -> Result<(), SlackApiError> {
             panic!("run_socket never posts messages; acks ride the websocket");
         }
 
-        async fn chat_update(
+        async fn add_reaction(
             &self,
             _channel: &str,
             _ts: &str,
-            _text: &str,
+            _name: &str,
         ) -> Result<(), SlackApiError> {
-            panic!("run_socket never edits messages; acks ride the websocket");
+            panic!("run_socket never reacts; acks ride the websocket");
+        }
+
+        async fn remove_reaction(
+            &self,
+            _channel: &str,
+            _ts: &str,
+            _name: &str,
+        ) -> Result<(), SlackApiError> {
+            panic!("run_socket never reacts; acks ride the websocket");
         }
 
         async fn open_connection(&self) -> anyhow::Result<String> {

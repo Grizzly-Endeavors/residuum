@@ -62,7 +62,7 @@ pub(crate) trait ChatOutbound: Send + Sync {
     /// before the loop's own typing handling, and awaited inline — the same
     /// backpressure discipline as sends. The event carries only the
     /// correlation id, so a platform that needs the turn's origin (Slack's
-    /// placeholder, which must fire only for its own turns) resolves the
+    /// working reaction, which must fire only for its own turns) resolves the
     /// correlation through its own reply-target map. Default: nothing —
     /// Telegram, Discord, and Teams signal typing through
     /// [`Self::start_typing`] alone.
@@ -100,11 +100,11 @@ pub(crate) trait ChatOutbound: Send + Sync {
 /// output topics before the lifecycle topic turns that publish order into
 /// processing order: by the time `Ended` is observable, its turn's output
 /// is already queued and is drained first, so an `Ended` handler (typing
-/// stop, `release_reply`, Slack's placeholder sweep) always runs after the
-/// turn's text — never between the text and its audience. The unbiased
-/// loop processed a queued `Ended` first ~67% of the time (task-10 review
-/// C-1), which made the sweep overwrite "Thinking…" with a false "Turn
-/// ended without a reply." beside the very reply it denied.
+/// stop, `release_reply`, Slack's working-reaction removal) always runs
+/// after the turn's text — never between the text and its audience. The
+/// unbiased loop processed a queued `Ended` first ~67% of the time (task-10
+/// review C-1), so an end-of-turn handler routinely ran before the reply it
+/// was meant to follow.
 pub(crate) async fn run<C: ChatOutbound>(mut subs: BaseSubscribers, chat: C) {
     // One typing loop per in-flight turn, stopped by dropping its sender.
     let mut typing: std::collections::HashMap<String, tokio::sync::watch::Sender<()>> =

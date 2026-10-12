@@ -374,6 +374,7 @@ mod tests {
             bot_token: "xoxb-test".to_string(),
             app_token: "xapp-test".to_string(),
             respond_to_others: false,
+            working_reaction: Some("eyes".to_string()),
         });
         let slack = reg_has_slack(&config).unwrap();
         assert_eq!(slack.display_name, "Slack");

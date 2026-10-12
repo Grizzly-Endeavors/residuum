@@ -451,6 +451,8 @@ pub(super) struct SlackConfigFile {
     pub(super) app_token: Option<String>,
     /// Whether people other than the owner can talk to the agent.
     pub(super) respond_to_others: Option<bool>,
+    /// Emoji shortcode for the working reaction; `""` turns it off.
+    pub(super) working_reaction: Option<String>,
 }
 
 /// Raw TOML `[teams]` section.

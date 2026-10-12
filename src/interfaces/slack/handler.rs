@@ -29,8 +29,9 @@
 //! 6. **Dispatch** — the DM channel is recorded in the shared
 //!    [`SlackState`] store (Telegram records every addressed chat the same
 //!    way, so `list_conversations` and delivery labels work), the
-//!    correlation→channel reply mapping is tracked for the outbound
-//!    subscriber (Telegram's `reply_targets.track`), and a `UserMessage`
+//!    correlation→reply mapping (channel, the thread the owner wrote in, and
+//!    the message's own ts for the working reaction) is tracked for the
+//!    outbound subscriber (Telegram's `reply_targets.track`), and a `UserMessage`
 //!    bus event built like Telegram's (`telegram/handler.rs`'s
 //!    `dispatch_message`) is published to [`crate::bus::topics::UserMessage`];
 //!    a publish failure is logged and the loop continues.
@@ -44,7 +45,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use super::events::{DmMessageEvent, Envelope};
-use super::{ENDPOINT, SlackState};
+use super::{ENDPOINT, SlackReply, SlackState, SlackTarget};
 use crate::bus::topics;
 use crate::inference::MessageSender;
 use crate::interfaces::chat_state::{ChatRef, Owner};
@@ -267,10 +268,20 @@ impl InboundHandler {
         let correlation_id = format!("slack-{}-{}", ev.channel, ev.ts);
         // Where the turn this message starts should reply — Telegram tracks
         // the chat at this exact spot in `dispatch_message`; the outbound
-        // subscriber reads the mapping when the turn's output arrives.
-        self.state
-            .reply_targets
-            .track(&correlation_id, ev.channel.clone());
+        // subscriber reads the mapping when the turn's output arrives. A
+        // message written inside a thread is answered in that thread (it
+        // still reaches main — threads are not separate conversations in
+        // v1); a top-level one is answered at the top level.
+        self.state.reply_targets.track(
+            &correlation_id,
+            SlackReply {
+                target: SlackTarget {
+                    channel: ev.channel.clone(),
+                    thread_ts: ev.thread_ts.clone(),
+                },
+                message_ts: ev.ts.clone(),
+            },
+        );
         let msg_event = crate::bus::MessageEvent {
             id: correlation_id,
             content: ev.text.clone(),
@@ -499,6 +510,7 @@ mod tests {
             user: user.to_string(),
             text: text.to_string(),
             ts: "1".to_string(),
+            thread_ts: None,
             bot_id: None,
         }
     }
@@ -542,9 +554,12 @@ mod tests {
         // The correlation the subscriber will see on the bus resolves back
         // to the channel the message arrived in.
         assert_eq!(
-            h.state.target_for(&event.id).await.as_deref(),
-            Some("D0001"),
-            "the handler must track correlation -> channel at dispatch"
+            h.state.reply_targets.get(&event.id),
+            Some(SlackReply {
+                target: SlackTarget::top_level("D0001"),
+                message_ts: "1234.0001".to_string(),
+            }),
+            "the handler must track correlation -> top-level reply and the message's ts"
         );
         // The channel itself is recorded, so list_conversations and the
         // subscriber's delivery labels know it.
@@ -554,6 +569,40 @@ mod tests {
         };
         assert_eq!(only.id, "D0001");
         assert_eq!(only.label, "direct message with U1");
+    }
+
+    #[tokio::test]
+    async fn a_message_written_in_a_thread_is_answered_in_that_thread() {
+        let mut h = harness(false).await;
+        let mut envelope = dm_envelope("env-1", "U1", "in the thread", "1234.0002");
+        envelope
+            .payload
+            .as_mut()
+            .unwrap()
+            .get_mut("event")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert("thread_ts".to_string(), serde_json::json!("1234.0001"));
+        h.feed(envelope);
+
+        let event = h.next_user_message("the thread reply published").await;
+
+        assert_eq!(
+            h.state.reply_targets.get(&event.id),
+            Some(SlackReply {
+                target: SlackTarget {
+                    channel: "D0001".to_string(),
+                    thread_ts: Some("1234.0001".to_string()),
+                },
+                message_ts: "1234.0002".to_string(),
+            }),
+            "the reply goes into the thread; the reaction goes on the message itself"
+        );
+        assert!(
+            event.origin.belongs_to_main(),
+            "v1: a thread message from the owner still reaches main"
+        );
     }
 
     #[test]

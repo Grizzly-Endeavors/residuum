@@ -8,7 +8,7 @@ You will need a Slack workspace where you can create apps — most workspaces, i
 
 ## 1. What the manifest is
 
-`assets/slack-app-manifest.json` in the Residuum checkout is a filled-in Slack app definition: Socket Mode on, the `message.im` event subscribed (the app sees DMs), and the two bot scopes the interface needs — `chat:write` to post replies and `im:history` to read DM history. Nothing more; the scope list is deliberately minimal. The verification notes beside it (`assets/slack-app-manifest.README.md`) record what was checked against Slack's current manifest documentation and why `connections:write` is not in it (that one belongs to the app-level token you'll create in step 3).
+`assets/slack-app-manifest.json` in the Residuum checkout is a filled-in Slack app definition: Socket Mode on, the `message.im` event subscribed (the app sees DMs), and the bot scopes the interface needs — `chat:write` to post replies, `im:history` to read DM history, `im:write` to open the DM, and `reactions:write` for the reaction it puts on your message while it works. Nothing more; the scope list is deliberately minimal. The verification notes beside it (`assets/slack-app-manifest.README.md`) record what was checked against Slack's current manifest documentation and why `connections:write` is not in it (that one belongs to the app-level token you'll create in step 3).
 
 ## 2. Create the app from the manifest
 
@@ -39,6 +39,7 @@ Then:
 bot_token = "secret:slack_bot_token"   # xoxb-… — posts messages as the bot user
 app_token = "secret:slack_app_token"   # xapp-… — opens the Socket Mode connection
 respond_to_others = false   # true: anyone who can DM the app can use the agent
+working_reaction = "eyes"   # emoji on your message while the agent works; "" turns it off
 ```
 
 Each token also accepts a `"${ENV_VAR}"` reference or a literal, if you'd rather pull them from the environment:
@@ -69,6 +70,8 @@ Messages you send never reach the agent:
 
 - No `slack socket connected` in the log: the app token can't open the connection. Check it starts with `xapp-`, was generated with the `connections:write` scope (step 3), and matches the installed app.
 - `slack interface started` never appears: the `[slack]` section didn't load — the log warns `section present but bot_token/app_token incomplete; set both in config`. It doesn't say which token is the problem, so check both (your `secret:` references with `residuum secret list`, or the `${ENV_VAR}` spellings).
+
+No reaction appears on your message while the agent works, and the log says `could not add the slack working reaction` with `missing_scope`: the app was installed before `reactions:write` was in its manifest. Add the scope (or re-paste the manifest), then **reinstall the app** — Slack only grants new scopes on reinstall. Replies still work meanwhile.
 
 The agent gets messages but replies never show up in Slack:
 

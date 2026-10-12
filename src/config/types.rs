@@ -210,6 +210,9 @@ pub struct SlackConfig {
     pub app_token: String,
     /// Whether people other than the owner can talk to the agent.
     pub respond_to_others: bool,
+    /// Emoji shortcode (no colons) the agent reacts with on a message while
+    /// its turn runs; `None` turns the working reaction off.
+    pub working_reaction: Option<String>,
 }
 
 impl std::fmt::Debug for SlackConfig {
@@ -218,6 +221,7 @@ impl std::fmt::Debug for SlackConfig {
             .field("bot_token", &"[redacted]")
             .field("app_token", &"[redacted]")
             .field("respond_to_others", &self.respond_to_others)
+            .field("working_reaction", &self.working_reaction)
             .finish()
     }
 }

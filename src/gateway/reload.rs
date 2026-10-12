@@ -1234,6 +1234,7 @@ mod tests {
             bot_token: "xoxb-token".to_string(),
             app_token: "xapp-token".to_string(),
             respond_to_others: false,
+            working_reaction: Some("eyes".to_string()),
         }
     }
 

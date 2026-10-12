@@ -1293,6 +1293,51 @@ candidate_multiplier = 8
         assert_eq!(cfg.slack.map(|s| s.respond_to_others), Some(true));
     }
 
+    fn slack_config_with(extra: &str) -> crate::config::SlackConfig {
+        let cfg_toml =
+            format!("[slack]\nbot_token = \"xoxb-token\"\napp_token = \"xapp-token\"\n{extra}");
+        resolve_test(
+            &cfg_toml,
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap()
+        .slack
+        .expect("both tokens set")
+    }
+
+    #[test]
+    fn slack_working_reaction_defaults_to_eyes() {
+        assert_eq!(
+            slack_config_with("").working_reaction.as_deref(),
+            Some("eyes")
+        );
+    }
+
+    #[test]
+    fn slack_working_reaction_is_configurable_and_tolerates_colons() {
+        assert_eq!(
+            slack_config_with("working_reaction = \"zap\"\n")
+                .working_reaction
+                .as_deref(),
+            Some("zap")
+        );
+        assert_eq!(
+            slack_config_with("working_reaction = \":test_tube:\"\n")
+                .working_reaction
+                .as_deref(),
+            Some("test_tube"),
+            "the shortcode as Slack displays it resolves to the bare name"
+        );
+    }
+
+    #[test]
+    fn an_empty_slack_working_reaction_turns_it_off() {
+        assert_eq!(
+            slack_config_with("working_reaction = \"\"\n").working_reaction,
+            None
+        );
+    }
+
     // ── Teams config ───────────────────────────────────────────────────────
 
     #[test]

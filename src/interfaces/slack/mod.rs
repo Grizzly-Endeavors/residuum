@@ -34,6 +34,38 @@ pub(crate) const ENDPOINT: &str = "slack";
 /// never approaches that, and 1 s keeps a chunked reply streaming naturally.
 const POST_MIN_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Where a reply goes: a channel, and the thread inside it when the owner
+/// wrote in one. `ChatOutbound::Target` for Slack.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SlackTarget {
+    /// Channel id (`"D…"` for a DM) — what `chat.postMessage` posts to.
+    pub(crate) channel: String,
+    /// Root `ts` of the thread the reply belongs in; `None` posts at the top
+    /// level of the conversation.
+    pub(crate) thread_ts: Option<String>,
+}
+
+impl SlackTarget {
+    /// A top-level target in `channel`.
+    pub(crate) fn top_level(channel: impl Into<String>) -> Self {
+        Self {
+            channel: channel.into(),
+            thread_ts: None,
+        }
+    }
+}
+
+/// What the handler records for each message it dispatches: where the
+/// turn's reply goes, and the message itself — what the working reaction
+/// is put on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SlackReply {
+    /// Where the turn's output goes.
+    pub(crate) target: SlackTarget,
+    /// The owner's message `ts` — the reaction's anchor.
+    pub(crate) message_ts: String,
+}
+
 /// State shared by the inbound handler and the outbound subscriber —
 /// `telegram/mod.rs`'s `TelegramState`, minus the group machinery Slack's
 /// DM-only MVP does not have (context buffering, group membership).
@@ -41,25 +73,25 @@ pub(crate) struct SlackState {
     /// The owner and every DM channel the bot has seen, keyed by channel id,
     /// persisted in `slack_state.json`.
     pub(crate) store: ChatStateStore<ChatRef>,
-    /// Channel each in-flight turn should answer in, by correlation id,
-    /// recorded by the handler at dispatch (`telegram/handler.rs`'s
-    /// `reply_targets.track`).
-    pub(crate) reply_targets: ReplyTargets<String>,
+    /// Where each in-flight turn should answer, and the message that started
+    /// it, by correlation id — recorded by the handler at dispatch
+    /// (`telegram/handler.rs`'s `reply_targets.track`).
+    pub(crate) reply_targets: ReplyTargets<SlackReply>,
     /// For notifying main when output cannot be delivered (see
     /// `interfaces/outbound.rs`).
     pub(crate) publisher: Publisher,
 }
 
 impl SlackState {
-    /// Where output for `correlation_id` goes: the channel that started the
-    /// turn, or the owner's DM for proactive output — Telegram's
-    /// `target_for` verbatim. Like Telegram, Slack does not parse the
+    /// Where output for `correlation_id` goes: the channel (and thread) that
+    /// started the turn, or the owner's DM for proactive output —
+    /// Telegram's `target_for`. Like Telegram, Slack does not parse the
     /// correlation at reply time; the handler recorded the mapping when the
     /// message was dispatched, and only the proactive fallback resolves here.
-    pub(crate) async fn target_for(&self, correlation_id: &str) -> Option<String> {
+    pub(crate) async fn target_for(&self, correlation_id: &str) -> Option<SlackTarget> {
         match self.reply_targets.get(correlation_id) {
-            Some(channel) => Some(channel),
-            None => self.owner_dm().await,
+            Some(reply) => Some(reply.target),
+            None => self.owner_dm().await.map(SlackTarget::top_level),
         }
     }
 
@@ -206,7 +238,12 @@ impl SlackInterface {
             last: tokio::sync::Mutex::new(None),
         });
         let _outbound = AbortOnDrop(crate::util::spawn_in_span(
-            subscriber::run_slack_subscriber(subs, Arc::clone(&sender), Arc::clone(&state)),
+            subscriber::run_slack_subscriber(
+                subs,
+                Arc::clone(&sender),
+                Arc::clone(&state),
+                self.cfg.working_reaction.clone(),
+            ),
         ));
 
         // The socket task reconnects forever on its own; start() stays alive
@@ -253,7 +290,7 @@ mod tests {
     //!
     //! Only the Web API boundary is faked — a `SlackApi` whose
     //! `open_connection` hands out the fake's ws URL and whose
-    //! `post_message` records its calls, mirroring `api.rs`'s tests. The
+    //! Web API calls are recorded, mirroring `api.rs`'s tests. The
     //! socket, websocket ack frames, handler, dedup, owner binding, state file,
     //! subscriber, chunker, and mrkdwn converter all run for real.
     use std::sync::Arc;
@@ -279,7 +316,7 @@ mod tests {
 
     use super::ENDPOINT;
     use super::api::{SlackApi, SlackApiError};
-    use super::subscriber::{PLACEHOLDER_TEXT, SLACK_MAX_CHARS};
+    use super::subscriber::SLACK_MAX_CHARS;
 
     /// What the fake Slack surfaces to the driver.
     #[derive(Debug, Clone)]
@@ -372,14 +409,23 @@ mod tests {
     }
 
     /// The Web API seam, faked at the fake server's boundaries: Socket Mode
-    /// opens hand out the fake's ws URL, `chat.postMessage` records its
-    /// calls and returns a synthetic ts, `chat.update` records its edits —
-    /// `api.rs`'s test fake, pointed at this server.
+    /// opens hand out the fake's ws URL; posts and reactions are recorded in
+    /// one ordered log — `api.rs`'s test fake, pointed at this server.
     #[derive(Clone, Default)]
     struct RecordingApi {
         ws_url: String,
-        posted: Arc<std::sync::Mutex<Vec<(String, String)>>>,
-        updated: Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
+        /// `(method, channel, detail)`: a post's text, or a reaction's
+        /// `ts:name`.
+        calls: Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
+    }
+
+    impl RecordingApi {
+        fn record(&self, method: &str, channel: &str, detail: String) {
+            self.calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((method.to_string(), channel.to_string(), detail));
+        }
     }
 
     #[async_trait::async_trait]
@@ -387,26 +433,30 @@ mod tests {
         async fn post_message(
             &self,
             channel: &str,
+            _thread_ts: Option<&str>,
             text: &str,
-        ) -> Result<Option<String>, SlackApiError> {
-            let mut posted = self
-                .posted
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            posted.push((channel.to_string(), text.to_string()));
-            Ok(Some(format!("ts.{}", posted.len())))
+        ) -> Result<(), SlackApiError> {
+            self.record("post", channel, text.to_string());
+            Ok(())
         }
 
-        async fn chat_update(
+        async fn add_reaction(
             &self,
             channel: &str,
             ts: &str,
-            text: &str,
+            name: &str,
         ) -> Result<(), SlackApiError> {
-            self.updated
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push((channel.to_string(), ts.to_string(), text.to_string()));
+            self.record("react", channel, format!("{ts}:{name}"));
+            Ok(())
+        }
+
+        async fn remove_reaction(
+            &self,
+            channel: &str,
+            ts: &str,
+            name: &str,
+        ) -> Result<(), SlackApiError> {
+            self.record("unreact", channel, format!("{ts}:{name}"));
             Ok(())
         }
 
@@ -482,6 +532,7 @@ mod tests {
                     bot_token: "xoxb-e2e".to_string(),
                     app_token: "xapp-e2e".to_string(),
                     respond_to_others: false,
+                    working_reaction: Some("zap".to_string()),
                 },
                 senders,
                 self.workspace.clone(),
@@ -586,22 +637,31 @@ mod tests {
             }
         }
 
-        /// Recorded `chat.postMessage` calls.
-        fn posted(&self) -> Vec<(String, String)> {
+        /// Every recorded Web API call, in order.
+        fn calls(&self) -> Vec<(String, String, String)> {
             self.api
-                .posted
+                .calls
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone()
         }
 
-        /// Recorded `chat.update` calls: (channel, ts, text).
-        fn updated(&self) -> Vec<(String, String, String)> {
-            self.api
-                .updated
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone()
+        /// Recorded `chat.postMessage` calls: (channel, text).
+        fn posted(&self) -> Vec<(String, String)> {
+            self.calls()
+                .into_iter()
+                .filter(|(method, _, _)| method == "post")
+                .map(|(_, channel, text)| (channel, text))
+                .collect()
+        }
+
+        /// Publish an event on the slack endpoint topic, as the gateway would.
+        async fn publish_lifecycle(&self, event: TurnLifecycleEvent) {
+            self.core
+                .publisher
+                .publish(topics::Endpoint(EndpointName::from(ENDPOINT)), event)
+                .await
+                .unwrap();
         }
 
         /// Publish an agent reply for `correlation_id`, as the agent runtime
@@ -624,75 +684,55 @@ mod tests {
         }
 
         /// Publish an agent reply and wait until every chunk of it has been
-        /// posted as fresh messages (no placeholder to edit).
+        /// posted.
         async fn reply_and_wait(
             &self,
             correlation_id: &str,
             content: &str,
         ) -> Vec<(String, String)> {
+            let before = self.posted().len();
             self.publish_response(correlation_id, content).await;
-            let expected = self.posted().len() + chunk_text(content, SLACK_MAX_CHARS).len();
+            let expected = before + chunk_text(content, SLACK_MAX_CHARS).len();
             wait::until_true(format!("{expected} chat.postMessage call(s)"), || {
                 self.posted().len() >= expected
             })
             .await;
-            self.posted()
+            self.posted().split_off(before)
         }
 
-        /// The typing-feedback round trip through the real pipeline: the
-        /// turn-start signal for a tracked correlation posts the
-        /// placeholder, the correlation's first reply edits it in place by
-        /// the posted ts, and the turn's end then finds nothing left to
-        /// sweep. The channel is the fixture DM's `D0001`.
-        async fn placeholder_round_trip(&self, correlation_id: &str) {
-            self.core
-                .publisher
-                .publish(
-                    topics::Endpoint(EndpointName::from(ENDPOINT)),
-                    TurnLifecycleEvent::Started {
-                        correlation_id: correlation_id.to_string(),
-                    },
-                )
-                .await
-                .unwrap();
-            wait::until_true("the placeholder posts", || !self.posted().is_empty()).await;
-            assert_eq!(
-                self.posted(),
-                vec![("D0001".to_string(), PLACEHOLDER_TEXT.to_string())],
-                "the placeholder posts to the DM channel the turn started in"
-            );
+        /// The working-reaction round trip through the real pipeline: the
+        /// turn's start reacts on the owner's message, the reply posts flat,
+        /// and the turn's end takes the reaction off — in that order. The
+        /// channel and ts are the fixture DM's.
+        async fn reaction_round_trip(&self, correlation_id: &str) {
+            self.publish_lifecycle(TurnLifecycleEvent::Started {
+                correlation_id: correlation_id.to_string(),
+            })
+            .await;
+            wait::until_true("the working reaction lands", || !self.calls().is_empty()).await;
 
             self.publish_response(correlation_id, "**bold** and `code`")
                 .await;
-            wait::until_true("the placeholder is edited into the reply", || {
-                !self.updated().is_empty()
+            self.publish_lifecycle(TurnLifecycleEvent::Ended {
+                correlation_id: correlation_id.to_string(),
             })
             .await;
-            assert_eq!(
-                self.updated(),
-                vec![(
-                    "D0001".to_string(),
-                    "ts.1".to_string(),
-                    "*bold* and `code`".to_string()
-                )],
-                "a single-chunk reply becomes an edit of the placeholder, in mrkdwn"
-            );
-            assert_eq!(
-                self.posted().len(),
-                1,
-                "nothing posted fresh: the placeholder carried the reply"
-            );
+            wait::until_true("reaction, reply, and removal", || self.calls().len() >= 3).await;
 
-            self.core
-                .publisher
-                .publish(
-                    topics::Endpoint(EndpointName::from(ENDPOINT)),
-                    TurnLifecycleEvent::Ended {
-                        correlation_id: correlation_id.to_string(),
-                    },
-                )
-                .await
-                .unwrap();
+            let reaction = "1728558000.000100:zap".to_string();
+            assert_eq!(
+                self.calls(),
+                vec![
+                    ("react".to_string(), "D0001".to_string(), reaction.clone()),
+                    (
+                        "post".to_string(),
+                        "D0001".to_string(),
+                        "*bold* and `code`".to_string()
+                    ),
+                    ("unreact".to_string(), "D0001".to_string(), reaction),
+                ],
+                "reaction on the owner's message, flat mrkdwn reply, reaction off"
+            );
         }
     }
 
@@ -771,30 +811,22 @@ mod tests {
         })
         .await;
 
-        // Typing feedback, through the real pipeline: the turn-start signal
-        // posts the placeholder, the first reply edits it in place, and the
-        // turn's end finds nothing left to sweep.
-        e2e.placeholder_round_trip(&event.id).await;
+        // Working feedback, through the real pipeline: reaction on at the
+        // turn's start, reply, reaction off at its end.
+        e2e.reaction_round_trip(&event.id).await;
 
         // A longer reply afterwards exercises the chunker through the same
-        // pipeline with no placeholder left to edit.
+        // pipeline.
         let long = "*emphasis* on a long reply\n\nx".to_string() + &"x".repeat(8600);
-        let long_posted = e2e.reply_and_wait(&event.id, &long).await;
-        // The placeholder is long_posted's first entry; the chunks follow it.
-        let chunks = long_posted.iter().skip(1).collect::<Vec<_>>();
-        assert!(chunks.len() > 1, "a long reply is chunked: {long_posted:?}");
+        let chunks = e2e.reply_and_wait(&event.id, &long).await;
+        assert!(chunks.len() > 1, "a long reply is chunked: {chunks:?}");
         assert!(
             chunks.iter().all(|(channel, _)| channel == "D0001"),
-            "every chunk goes to the DM channel: {long_posted:?}"
+            "every chunk goes to the DM channel: {chunks:?}"
         );
         assert!(
             chunks.iter().all(|(_, text)| text.len() <= SLACK_MAX_CHARS),
-            "no chunk exceeds the Slack budget: {long_posted:?}"
-        );
-        assert_eq!(
-            e2e.updated().len(),
-            1,
-            "the ended turn's placeholder was already consumed; nothing new is edited"
+            "no chunk exceeds the Slack budget: {chunks:?}"
         );
 
         // Teardown: shutdown takes the whole interface down with it.

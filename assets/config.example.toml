@@ -115,6 +115,7 @@ enabled = true
 # bot_token = "secret:slack_bot_token"   # xoxb-… — posts messages as the bot user
 # app_token = "secret:slack_app_token"   # xapp-… — opens the Socket Mode connection
 # respond_to_others = false   # true: anyone who can DM the app can use the agent
+# working_reaction = "eyes"   # emoji on the owner's message while a turn runs; "" = off
 
 # ── Microsoft Teams bot (optional) ───────────────────────────────────────────
 # Setup walkthrough: docs/guides/teams-setup.md.

@@ -19,6 +19,11 @@ Field shapes and scopes were checked against Slack's current documentation on
   bot-token scopes that belong in `oauth_config.scopes.bot`; both appear in
   the current manifest reference example:
   <https://docs.slack.dev/reference/app-manifest/>
+- `reactions:write` is the bot scope `reactions.add` and `reactions.remove`
+  require (the working reaction the agent puts on your message while it
+  works) — checked 2026-10-12:
+  <https://docs.slack.dev/reference/methods/reactions.add/>,
+  <https://docs.slack.dev/reference/methods/reactions.remove/>
 - `message.im` is a valid `bot_events` subscription (DM message events) and
   appears in the current manifest reference example:
   <https://docs.slack.dev/reference/app-manifest/>

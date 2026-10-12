@@ -23,7 +23,8 @@
       "bot": [
         "chat:write",
         "im:history",
-        "im:write"
+        "im:write",
+        "reactions:write"
       ]
     }
   },

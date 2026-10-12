@@ -83,6 +83,12 @@ pub(crate) struct DmMessageEvent {
     pub(crate) text: String,
     /// Message timestamp (Slack ts string).
     pub(crate) ts: String,
+    /// The thread this message was posted in — its root's `ts` — when the
+    /// owner wrote inside a thread; `None` for a top-level DM message. A
+    /// thread's root message carries `thread_ts == ts` once it has replies,
+    /// but the root is never re-delivered as a new message, so any value
+    /// here names a thread the reply belongs in.
+    pub(crate) thread_ts: Option<String>,
     /// Set when a bot (ours or another) authored the message; the handler's
     /// self/bot guard keys on this.
     pub(crate) bot_id: Option<String>,
@@ -108,6 +114,10 @@ impl DmMessageEvent {
             user: event.get("user")?.as_str()?.to_string(),
             text: event.get("text")?.as_str()?.to_string(),
             ts: event.get("ts")?.as_str()?.to_string(),
+            thread_ts: event
+                .get("thread_ts")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             bot_id: event
                 .get("bot_id")
                 .and_then(Value::as_str)
@@ -167,6 +177,19 @@ mod tests {
         assert_eq!(ev.channel, "D0001");
         assert_eq!(ev.user, "U0001");
         assert!(ev.bot_id.is_none());
+        assert!(ev.thread_ts.is_none(), "a top-level DM names no thread");
+    }
+
+    #[test]
+    fn a_dm_written_in_a_thread_carries_its_thread() {
+        let in_thread = serde_json::json!({
+            "type": "message", "channel_type": "im",
+            "channel": "D0001", "user": "U0001", "text": "a reply",
+            "ts": "1728558100.000200", "thread_ts": "1728558000.000100"
+        });
+        let ev = DmMessageEvent::parse(&in_thread).expect("a thread reply is a plain DM message");
+        assert_eq!(ev.thread_ts.as_deref(), Some("1728558000.000100"));
+        assert_eq!(ev.ts, "1728558100.000200");
     }
 
     #[test]
