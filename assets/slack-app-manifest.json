@@ -13,15 +13,17 @@
       "always_online": true
     },
     "app_home": {
+      "home_tab_enabled": false,
       "messages_tab_enabled": true,
-      "messages_tab_readonly_enabled": false
+      "messages_tab_read_only_enabled": false
     }
   },
   "oauth_config": {
     "scopes": {
       "bot": [
         "chat:write",
-        "im:history"
+        "im:history",
+        "im:write"
       ]
     }
   },
