@@ -249,4 +249,40 @@ mod tests {
                 .any(|n| n.contains("not_a_real_key"))
         );
     }
+
+    #[test]
+    fn load_at_keeps_gateway_section_when_it_has_an_unknown_key() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "timezone = \"UTC\"\n\n[gateway]\nbind = \"127.0.0.1\"\nport = 4321\nfuture_knob = true\n",
+        )
+        .unwrap();
+
+        let cfg = HubConfig::load_at(dir.path()).unwrap();
+
+        assert_eq!(cfg.gateway.bind, "127.0.0.1");
+        assert_eq!(cfg.gateway.port, 4321);
+        assert_eq!(
+            cfg.load_notices
+                .iter()
+                .filter(|n| n.contains("future_knob"))
+                .count(),
+            1,
+            "{:?}",
+            cfg.load_notices
+        );
+    }
+
+    #[test]
+    fn load_at_still_fails_on_a_type_error_in_gateway() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "timezone = \"UTC\"\n\n[gateway]\nport = \"not-a-port\"\nfuture_knob = true\n",
+        )
+        .unwrap();
+
+        assert!(HubConfig::load_at(dir.path()).is_err());
+    }
 }
