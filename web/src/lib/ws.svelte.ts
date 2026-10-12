@@ -53,6 +53,11 @@ class WsCoordinator {
   /** The agent started while bound, so its chat may be behind once the connection opens. */
   private catchUpOnConnect = false;
   private frameListeners = new Set<(msg: ServerMessage, agent: string | null) => void>();
+  /** Withdrawals of waiting messages awaiting the agent's answer, by message id. */
+  private withdrawals = new Map<
+    string,
+    { resolve: (withdrawn: boolean) => void; reject: (err: Error) => void }
+  >();
   /**
    * The bound agent's workspace watches. Whatever follows changes on this
    * socket registers here, and the registry keeps the socket's one watch set
@@ -97,6 +102,7 @@ class WsCoordinator {
         this.sessions.handleFrame(msg);
         return;
       }
+      this.settleWithdrawal(msg);
       if (msg.type === "error") {
         notifications.surface("error", msg.message, msg.details ?? undefined);
       } else if (msg.type === "workspace_watch_unavailable") {
@@ -123,6 +129,8 @@ class WsCoordinator {
     };
 
     this.transport.onConnected = () => {
+      // Before anything goes out on it, so a message sent from here on counts as this connection's.
+      this.store.connected();
       // First on every connection: the activity line is built from the tool
       // frames, which the agent sends only to a connection that asks.
       this.transport.send({ type: "set_verbose", enabled: true });
@@ -192,6 +200,30 @@ class WsCoordinator {
   private connectionClosed(): void {
     this.watches.disconnected();
     this.store.clearPostTurnActivity();
+    this.store.forgetAsks();
+    this.failWithdrawals("The connection to the agent dropped before it answered.");
+  }
+
+  /** A frame that answers a withdrawal: taken back, no longer waiting, or read. */
+  private settleWithdrawal(msg: ServerMessage): void {
+    if (
+      msg.type !== "message_withdrawn" &&
+      msg.type !== "queued_message_unavailable" &&
+      msg.type !== "user_message"
+    ) {
+      return;
+    }
+    const pending = this.withdrawals.get(msg.id);
+    if (pending === undefined) return;
+    this.withdrawals.delete(msg.id);
+    pending.resolve(msg.type === "message_withdrawn");
+  }
+
+  /** Every withdrawal still awaiting an answer will get none: it fails with `reason`. */
+  private failWithdrawals(reason: string): void {
+    const pending = [...this.withdrawals.values()];
+    this.withdrawals.clear();
+    for (const { reject } of pending) reject(new Error(reason));
   }
 
   // ── Agent binding ─────────────────────────────────────────────────
@@ -232,6 +264,7 @@ class WsCoordinator {
    * with the agent already bound does nothing.
    */
   useAgent(name: string | null): void {
+    this.failWithdrawals("The chat moved to another agent before it answered.");
     if (name === this.agent) return;
     this.transport.reset();
     const store = this.createFeed(name);
@@ -381,8 +414,35 @@ class WsCoordinator {
       content,
       ...(images !== undefined && images.length > 0 ? { images } : {}),
     };
+    const delivered = this.transport.status === "connected";
     this.transport.send(msg);
-    this.store.pushUserMessage(content, images, id);
+    this.store.pushUserMessage(content, images, id, delivered);
+  }
+
+  /**
+   * Have the waiting message `id` sent now: the turn in flight stops, and the
+   * message starts the next one.
+   */
+  sendWaitingNow(id: string): void {
+    this.store.askOfWaiting(id, "send-now");
+    this.store.askStop();
+    this.transport.send({ type: "send_queued_now", id });
+  }
+
+  /**
+   * Take back the waiting message `id` before the agent reads it. Resolves to
+   * whether it was taken back: `false` when the agent had already read it.
+   * Fails when the connection is down, or drops before the agent answers.
+   */
+  withdrawWaiting(id: string): Promise<boolean> {
+    if (this.transport.status !== "connected") {
+      return Promise.reject(new Error("The agent isn't connected right now."));
+    }
+    this.store.askOfWaiting(id, "withdraw");
+    return new Promise((resolve, reject) => {
+      this.withdrawals.set(id, { resolve, reject });
+      this.transport.send({ type: "withdraw_queued", id });
+    });
   }
 
   /**

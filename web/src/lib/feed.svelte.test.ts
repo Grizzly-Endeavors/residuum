@@ -563,7 +563,7 @@ describe("FeedStore with a turn id history already holds", () => {
 });
 
 describe("FeedStore flagging messages that reach a running turn", () => {
-  it("flags a user message sent while a turn runs, and not one that starts a turn", () => {
+  it("flags a user message the running turn read, and not one that starts a turn", () => {
     const store = storeWithSettledHistory();
     store.pushUserMessage("Draft the post", undefined, "web-a");
     store.handleMessage({
@@ -572,6 +572,13 @@ describe("FeedStore flagging messages that reach a running turn", () => {
       origin: { endpoint: "ws", visibility: "user" },
     });
     store.pushUserMessage("Keep it short", undefined, "web-b");
+    store.handleMessage({
+      type: "user_message",
+      id: "web-b",
+      turn_id: "web-a",
+      content: "Keep it short",
+      endpoint: "ws",
+    });
 
     const users = store.feed.filter((item) => item.kind === "user").slice(-2);
     expect(users[0]).not.toHaveProperty("midTurn");

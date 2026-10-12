@@ -124,6 +124,26 @@ test.describe("chat feed", { tag: "@visual" }, () => {
     await chatScreenshot(page, "chat-live-turn");
   });
 
+  test("messages waiting for the agent to read them", async ({ page, mock }) => {
+    await page.goto("/agent/atlas");
+    const feed = conversation(page);
+    await expect(feed.getByText(GREETING)).toBeInViewport();
+    await mock.manualTime();
+    const box = page.getByRole("combobox", { name: "Message atlas" });
+    await box.fill("Check the wiki index");
+    await sendFromComposer(box);
+    await expect(feed.getByText("Working", { exact: true })).toBeVisible();
+    await mock.advance(1_000);
+    for (const text of ["Also check the error logs from last night", "And summarize them"]) {
+      await box.fill(text);
+      await sendFromComposer(box);
+    }
+    const waiting = page.getByRole("region", { name: "Waiting for atlas to read" });
+    await expect(waiting.getByRole("listitem")).toHaveCount(2);
+    await expect(feed.locator("[data-turn-head]").getByText("1s", { exact: true })).toBeVisible();
+    await chatScreenshot(page, "chat-waiting-messages");
+  });
+
   test("the header's menu", async ({ page }) => {
     await page.goto("/agent/atlas");
     await expect(conversation(page).getByText(GREETING)).toBeInViewport();

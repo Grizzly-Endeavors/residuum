@@ -7,6 +7,6 @@ import type { Locator } from "@playwright/test";
  */
 export async function sendFromComposer(box: Locator): Promise<void> {
   const touch = await box.evaluate(() => window.matchMedia("(pointer: coarse)").matches);
-  if (touch) await box.page().getByRole("button", { name: "Send" }).click();
+  if (touch) await box.page().getByRole("button", { name: "Send", exact: true }).click();
   else await box.press("Enter");
 }
