@@ -19,14 +19,6 @@ export interface ScreenshotOptions {
   mask?: readonly Locator[];
 }
 
-/** A rectangle of the window, in CSS pixels from its top left corner. */
-export interface Clip {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
 /**
  * Wait for the page to be usable for a shot: the clock frozen, the app up, the
  * animations that end done, and the fonts and images the page uses loaded.
@@ -66,16 +58,29 @@ export async function expectScreenshot(
 }
 
 /**
- * Compare a rectangle of the window with the baseline called `name`, for a
- * component whose parts do not share one element: a reply's hover details sit
- * outside the reply's box, so no locator's box holds both. The spec builds the
- * rectangle from the boxes of the component's own parts.
+ * Compare the rectangle of the window round `parts` with the baseline called
+ * `name`, for a component whose parts do not share one element: a reply's hover
+ * details sit outside the reply's box, so no locator's box holds both. The parts
+ * are measured after the page settles, so the rectangle is where they are when
+ * the shot is taken.
  */
-export async function expectClipScreenshot(page: Page, clip: Clip, name: string): Promise<void> {
+export async function expectClipScreenshot(
+  parts: readonly [Locator, ...Locator[]],
+  name: string,
+): Promise<void> {
+  const [first] = parts;
+  const page = first.page();
   await settle(page);
+  const boxes = await Promise.all(parts.map((part) => part.boundingBox()));
+  const laidOut = boxes.filter((box) => box !== null);
+  expect(laidOut, "every part must be laid out").toHaveLength(parts.length);
+  const left = Math.floor(Math.min(...laidOut.map((box) => box.x)));
+  const top = Math.floor(Math.min(...laidOut.map((box) => box.y)));
+  const right = Math.ceil(Math.max(...laidOut.map((box) => box.x + box.width)));
+  const bottom = Math.ceil(Math.max(...laidOut.map((box) => box.y + box.height)));
   await expect(page).toHaveScreenshot(`${name}.png`, {
     animations: "disabled",
     caret: "hide",
-    clip,
+    clip: { x: left, y: top, width: right - left, height: bottom - top },
   });
 }
