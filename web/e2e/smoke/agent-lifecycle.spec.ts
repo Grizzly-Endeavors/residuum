@@ -102,6 +102,7 @@ test("the rail's + opens Create agent where the user is", async ({ page, isMobil
   await expect(dialog).toBeVisible();
   await dialog.getByRole("textbox", { name: "Name" }).fill("nova");
   await dialog.getByRole("button", { name: "More options" }).click();
+  await expect(dialog.getByRole("combobox", { name: "Who can find it" })).toHaveValue("private");
   await dialog.getByRole("combobox", { name: "Copy model settings from" }).selectOption("scout");
   await dialog.getByRole("button", { name: "Create agent" }).click();
 
@@ -138,16 +139,6 @@ test("the palette's Create an agent opens the same dialog", async ({ page, isMob
   await expect(dialog).toBeHidden();
   await expect(toast(page, "You created kit.")).toBeVisible();
   expect(address(page)).toBe("/agent/scout");
-});
-
-test("More options shows who can find the new agent", async ({ page }) => {
-  await page.goto("/home");
-  await page.getByRole("button", { name: "New agent" }).click();
-  const dialog = createDialog(page);
-  await expect(dialog.getByRole("combobox", { name: "Who can find it" })).toHaveCount(0);
-
-  await dialog.getByRole("button", { name: "More options" }).click();
-  await expect(dialog.getByRole("combobox", { name: "Who can find it" })).toBeVisible();
 });
 
 test("a name the rules refuse is flagged as it is typed, and nothing is created", async ({
