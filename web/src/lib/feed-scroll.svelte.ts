@@ -12,17 +12,17 @@
 // they are: a move that brings them within `followWithinPx` of the end follows
 // again.
 //
-// The scroller is the only thing that moves the feed's scroll position, and it
-// records each position it sets. A scroll event that finds the position
-// somewhere else was moved by the reader: by hand, by momentum after a flick,
-// by the scrollbar, or with no input event in the feed at all (find in page, a
-// screen reader, the page's own `scrollIntoView`). Three moves aren't the
-// reader's: a glide toward the end, Jump to latest's moving down or the
-// browser's for End (it ends on arriving, at `scrollend`, at reader input or at
-// the scroller's next move of its own, and a move up ends Jump to latest's);
-// the browser moving a reader at the very bottom up to keep the position in
-// range as the content or the view changes size; and a move the browser makes
-// while the page changes the feed's items (`takeInUpdate`).
+// The scroller is the only code in the page that moves the feed's scroll
+// position, and it records each position it sets. A scroll event that finds
+// the position somewhere else was moved by the reader: by hand, by momentum
+// after a flick, by the scrollbar, or with no input event in the feed at all
+// (find in page, a screen reader, the page's own `scrollIntoView`). Three moves
+// are the browser's, not the reader's: its glide for End, which can move up a
+// little first as Chromium carries a keyboard scroll still under way into it
+// (the glide ends on arriving, at `scrollend`, at reader input or at the
+// scroller's next move of its own); moving the position up to keep it in range
+// when the content or the view shrinks past it; and a move it makes while the
+// page changes the feed's items (`takeInUpdate`).
 //
 // "The end" means the end of the content, not the end of the scrolling area.
 // A feed can reserve room below its last line (a persistent buffer, and a
@@ -49,34 +49,6 @@ function isEndKey(event: Event): boolean {
   if (event.type !== "keydown") return false;
   const { key, altKey, ctrlKey, metaKey, shiftKey } = event as KeyboardEvent;
   return key === "End" && !altKey && !ctrlKey && !metaKey && !shiftKey;
-}
-
-/** A field the key types into rather than scrolls. */
-function isEditable(target: EventTarget | null): boolean {
-  if (typeof Element === "undefined" || !(target instanceof Element)) return false;
-  return (
-    target.closest("input, textarea, select, [contenteditable]:not([contenteditable=false])") !==
-    null
-  );
-}
-
-/**
- * Whether something scrollable inside the feed, between `target` and the
- * feed, can still scroll up: it takes a wheel or key before the feed does.
- */
-function innerAreaScrollsFirst(target: EventTarget | null, feed: HTMLElement): boolean {
-  if (typeof Element === "undefined" || !(target instanceof Element)) return false;
-  for (
-    let node: Element | null = target;
-    node !== null && node !== feed;
-    node = node.parentElement
-  ) {
-    if (node.scrollTop > 0 && node.scrollHeight > node.clientHeight) {
-      const { overflowY } = getComputedStyle(node);
-      if (overflowY === "auto" || overflowY === "scroll") return true;
-    }
-  }
-  return false;
 }
 
 function isHidden(el: HTMLElement): boolean {
@@ -151,10 +123,10 @@ export class FeedScroller {
    */
   private knownTop: number | null = null;
   /**
-   * A glide toward the end is under way: Jump to latest's, or the browser's
-   * for End. Its scroll events aren't the reader's.
+   * The browser's glide for End is under way: its moves, either way, aren't
+   * the reader's.
    */
-  private glide: "jump" | "end" | null = null;
+  private endGlide = false;
   /**
    * The page has said its items are about to change (`takeInPendingScroll`),
    * and the `contentChanged` of that change hasn't come yet. Both come in one
@@ -203,7 +175,7 @@ export class FeedScroller {
 
   /**
    * Take in where the scroll position is now. A move the scroller didn't make
-   * is the reader's, unless it is a glide toward the end on its way.
+   * is the reader's, unless it is the browser's.
    */
   private takeInScroll(): void {
     const el = this.el;
@@ -222,20 +194,19 @@ export class FeedScroller {
     }
     if (from === null || Math.abs(top - from) < 1) return;
     const up = top < from;
-    // A move up during Jump to latest's glide is the reader's. The browser's
-    // glide for End can move up first: Chromium carries a keyboard scroll
-    // still under way (Home, a moment before) into the next one.
-    if (this.glide === "end" || (this.glide === "jump" && !up)) {
-      if (this.atBottom()) this.glide = null;
+    // The browser's glide for End can move up first: Chromium carries a
+    // keyboard scroll still under way (Home, a moment before) into the next one.
+    if (this.endGlide) {
+      if (this.atBottom()) this.endGlide = false;
       return;
     }
-    this.glide = null;
     if (this.held) return;
-    if (up && !this.atBottom()) {
+    // The browser moves the position up by itself only to keep it in range:
+    // where it was is past the end of the range now, and it lands at the end.
+    const clamped = up && from > el.scrollHeight - el.clientHeight + 0.5 && this.atBottom();
+    if (up && !clamped) {
       this.following = false;
     } else if (this.nearEnd()) {
-      // Up and still at the very bottom is the browser keeping the position
-      // in range as the content or the view changed size, not the reader.
       this.following = true;
     }
     this.refreshPill();
@@ -278,7 +249,7 @@ export class FeedScroller {
     this.knownTop = el.scrollTop;
     this.hidden = false;
     // An instant scroll ends a glide under way.
-    this.glide = null;
+    this.endGlide = false;
   }
 
   /**
@@ -296,7 +267,7 @@ export class FeedScroller {
   // The reader taking over the scroll ends a glide in progress, a reload's
   // hold on their state, and any hold on the place of a control they pressed.
   private readonly onReaderInput = (event: Event): void => {
-    this.glide = null;
+    this.endGlide = false;
     this.held = false;
     this.letGoOfPlace();
     if (event.type === "wheel") {
@@ -308,23 +279,24 @@ export class FeedScroller {
   };
 
   private wheelScrollsUp(event: WheelEvent): boolean {
-    // Ctrl zooms, and Shift turns the wheel sideways.
+    // Ctrl zooms, Shift turns the wheel sideways, and a swipe that is mostly
+    // sideways scrolls something sideways (a code block, a table).
     if (!(event.deltaY < 0) || event.ctrlKey || event.shiftKey) return false;
-    return this.canScrollUp(event.target);
+    if (Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return false;
+    return this.canScrollUp();
   }
 
   private keyScrollsUp(event: KeyboardEvent): boolean {
-    if (event.defaultPrevented || event.altKey || isEditable(event.target)) return false;
+    if (event.defaultPrevented || event.altKey) return false;
     // Space pages, with Shift up, only from the area itself: on a control it presses the control.
     const up =
       UP_KEYS.has(event.key) || (event.key === " " && event.shiftKey && event.target === this.el);
-    return up && this.canScrollUp(event.target);
+    return up && this.canScrollUp();
   }
 
-  /** Whether scrolling up from `target` moves the feed: it isn't at the top, and nothing inside takes it first. */
-  private canScrollUp(target: EventTarget | null): boolean {
-    const el = this.el;
-    return el !== null && el.scrollTop > 0 && !innerAreaScrollsFirst(target, el);
+  /** Whether the feed has anywhere to scroll up to. */
+  private canScrollUp(): boolean {
+    return this.el !== null && this.el.scrollTop > 0;
   }
 
   /** The reader scrolled up: stop following at once, however near the end they still are. */
@@ -335,7 +307,7 @@ export class FeedScroller {
 
   /** A glide that runs to its end, or is cut short, is over. */
   private readonly onScrollEnd = (): void => {
-    this.glide = null;
+    this.endGlide = false;
   };
 
   // Seen before the control's own handler: open or close, the control stays
@@ -411,7 +383,7 @@ export class FeedScroller {
       for (const type of READER_INPUT_EVENTS) el.removeEventListener(type, this.onReaderInput);
       el.removeEventListener("click", this.onPress, true);
       this.letGoOfPlace();
-      this.glide = null;
+      this.endGlide = false;
       if (this.el === el) {
         this.el = null;
         this.content = null;
@@ -454,7 +426,7 @@ export class FeedScroller {
   hold(): void {
     this.held = true;
     this.following = false;
-    this.glide = null;
+    this.endGlide = false;
     this.scrolledUp = true;
   }
 
@@ -487,7 +459,6 @@ export class FeedScroller {
       this.write(el.scrollHeight);
       return;
     }
-    this.glide = "jump";
     el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }
 
@@ -500,7 +471,7 @@ export class FeedScroller {
   private followFromEnd(): void {
     this.following = true;
     // Already at the bottom, the browser has nowhere to glide.
-    this.glide = this.atBottom() ? null : "end";
+    this.endGlide = !this.atBottom();
     this.scrolledUp = false;
     this.unseen = false;
   }
@@ -590,7 +561,7 @@ export class FeedScroller {
     const content = this.content;
     if (!el || !content) return;
     this.following = false;
-    this.glide = null;
+    this.endGlide = false;
     const item = control.closest<HTMLElement>("[data-feed-item]");
     this.keeping = {
       control,

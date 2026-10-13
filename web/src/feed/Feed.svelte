@@ -240,9 +240,10 @@
   // hasn't taken in yet is judged against the content it was made over: its
   // event comes a frame later, after whatever has landed by then.
   $effect.pre(() => {
+    // What the change effect below reacts to, so that each of these is
+    // followed by its `contentChanged` in the same task.
     void items.length;
-    void items[0];
-    void items.at(-1);
+    void items.at(-1)?.id;
     void live;
     untrack(() => {
       scroller.takeInPendingScroll();

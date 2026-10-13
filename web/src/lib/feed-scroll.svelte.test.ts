@@ -435,9 +435,41 @@ describe("FeedScroller", () => {
       expect(feed.scrollTo).not.toHaveBeenCalled();
     });
 
+    it("a slow drag up of 1px a frame during a stream is the reader leaving", () => {
+      const { feed, observer, scroller } = attached();
+      feed.scrollBy(1499);
+      feed.geometry.scrollHeight = 2025;
+      observer.notify();
+      expect(feed.geometry.scrollTop).toBe(1499);
+      expect(scroller.isFollowing).toBe(false);
+    });
+
+    it("a wheel turned up stays left after its first 1px of scroll", () => {
+      const { feed, observer, scroller } = attached();
+      feed.fire("wheel", { deltaY: -1 });
+      feed.scrollBy(1499);
+      expect(scroller.isFollowing).toBe(false);
+      feed.geometry.scrollHeight = 2025;
+      observer.notify();
+      expect(feed.geometry.scrollTop).toBe(1499);
+    });
+
+    it("keeps a reader at the bottom following when the content shrinks 1px under them", () => {
+      const { feed, observer, scroller } = attached();
+      // The browser keeps the position in range.
+      feed.geometry.scrollHeight = 1999;
+      feed.scrollBy(1499);
+      expect(scroller.isFollowing).toBe(true);
+      feed.geometry.scrollHeight = 2100;
+      observer.notify();
+      expect(feed.geometry.scrollTop).toBe(2100);
+    });
+
     it("keeps following through a wheel turned down, sideways or to zoom", () => {
       const { feed, scroller } = attached();
       feed.fire("wheel", { deltaY: 100 });
+      // A swipe over a code block that is mostly sideways.
+      feed.fire("wheel", { deltaY: -2, deltaX: 40 });
       feed.fire("wheel", { deltaY: -100, shiftKey: true });
       feed.fire("wheel", { deltaY: -100, ctrlKey: true });
       expect(scroller.isFollowing).toBe(true);
