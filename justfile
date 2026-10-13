@@ -219,6 +219,11 @@ fmt: rust-fmt web-fmt
 [group('check')]
 fmt-check: rust-fmt-check web-fmt-check
 
+# Every failing test in the latest CI runs for a PR, branch, release tag or commit (default: current branch), with touched and seen-elsewhere flags
+[group('check')]
+ci-failures *args:
+    scripts/ci-failures.sh {{ args }}
+
 # --- misc --------------------------------------------------------------------
 
 # Lines-of-code summary (needs cloc); extra args go to cloc
