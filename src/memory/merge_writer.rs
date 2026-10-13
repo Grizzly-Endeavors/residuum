@@ -6,14 +6,15 @@
 //! every session run's completion pipeline call the same writer, so episode
 //! numbering and log appends never race between concurrent runs.
 //!
-//! Two locks divide the work: `merge_lock` serializes episode id allocation
-//! and the durable per-episode writes (transcript, observation archives,
-//! chunk index, merged-run record, completion marker), and is released
-//! before indexing, embedding, or the reflector run — so a slow network or
-//! LLM call there never blocks a concurrent merge's episode id allocation.
-//! `log_lock` separately serializes the global observation log itself: a
-//! merge's append and the reflector's compress-and-replace rewrite of that
-//! file must never interleave.
+//! No lock is held across a model or embedding call, so a slow reflection
+//! never holds up another run's merge or a config reload. `merge_lock`
+//! serializes episode id allocation and the durable per-episode writes
+//! (transcript, observation archives, chunk index, merged-run record,
+//! completion marker). `log_lock` serializes writes to the global
+//! observation log: a merge's append, and the reflector's replacement of the
+//! log once its model call has returned. `reflection_lock` keeps reflections
+//! to one at a time. The reflector and embedding provider are copied out of
+//! their lock before use, so a reload swaps them without waiting.
 //!
 //! A session run's completion pipeline can run more than once for the same
 //! run id — a crash between a successful merge and the run record being
@@ -34,12 +35,14 @@ use crate::memory::episode_store::{
     episode_idx_path, episode_obs_path, next_episode_id, write_completion_marker,
     write_episode_transcript_tagged,
 };
-use crate::memory::log_store::{append_observations, save_episode_observations};
+use crate::memory::log_store::{
+    append_observations, load_observation_log, save_episode_observations,
+};
 use crate::memory::observer::Extraction;
-use crate::memory::reflector::{Reflector, ReflectorConfig};
+use crate::memory::reflector::{Reflector, ReflectorConfig, replace_with_compressed};
 use crate::memory::search::MemoryIndex;
 use crate::memory::types::{
-    Episode, IndexChunk, IndexManifest, ManifestFileEntry, Observation, SourceTag,
+    Episode, IndexChunk, IndexManifest, ManifestFileEntry, Observation, ObservationLog, SourceTag,
 };
 use crate::memory::vector_store::VectorStore;
 use crate::time::now_local;
@@ -69,13 +72,10 @@ pub struct MergeOutcome {
     pub reflector_notice: Option<crate::util::NoticeAction>,
 }
 
-/// State that is mutated on a config/provider reload: the reflector and the
-/// embedding provider. Kept together so a reload's writes and a concurrent
-/// merge's reads never interleave. Locked only around the
-/// indexing/embedding/reflection phase of a merge — never around episode id
-/// allocation or the durable writes in [`MemoryMergeWriter::persist_episode`]
-/// — so a slow embedding call or reflector LLM call never blocks a
-/// concurrent merge from allocating its episode id.
+/// State that is replaced on a config/provider reload: the reflector and the
+/// embedding provider. Locked only long enough to copy them out or swap them
+/// in; a merge or reflection runs with the copy it took, and a reload takes
+/// effect for the next one.
 struct MergeState {
     reflector: Reflector,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
@@ -93,9 +93,13 @@ pub struct MemoryMergeWriter {
     /// never races. Released before indexing, embedding, or reflection run.
     merge_lock: Mutex<()>,
     /// Serializes writes to the global observation log: a merge's append
-    /// (inside `persist_episode`) and the reflector's compress-and-replace
-    /// rewrite of that same file must never interleave.
+    /// (inside `persist_episode`) and the reflector's replacement of that
+    /// same file must never interleave. Never held across a model call.
     log_lock: Mutex<()>,
+    /// Held for the whole of a reflection, model call included, so two
+    /// reflections never compress the same log. An automatic reflection
+    /// that finds one running skips instead of waiting.
+    reflection_lock: Mutex<()>,
     state: Mutex<MergeState>,
     layout: WorkspaceLayout,
     search_index: Arc<MemoryIndex>,
@@ -124,6 +128,7 @@ impl MemoryMergeWriter {
         Self {
             merge_lock: Mutex::new(()),
             log_lock: Mutex::new(()),
+            reflection_lock: Mutex::new(()),
             state: Mutex::new(MergeState {
                 reflector,
                 embedding_provider,
@@ -166,14 +171,39 @@ impl MemoryMergeWriter {
         self.state.lock().await.embedding_provider = embedding_provider;
     }
 
+    /// Copy out the reflector and embedding provider, releasing their lock
+    /// before either is used.
+    async fn snapshot_state(&self) -> (Reflector, Option<Arc<dyn EmbeddingProvider>>) {
+        let state = self.state.lock().await;
+        (state.reflector.clone(), state.embedding_provider.clone())
+    }
+
     /// Force a reflection cycle regardless of the observation log's size.
+    /// Waits for a reflection already running to finish first.
     ///
     /// # Errors
     /// Returns an error if the LLM call fails or file persistence fails.
-    pub async fn force_reflect(&self) -> anyhow::Result<crate::memory::types::ObservationLog> {
-        let state = self.state.lock().await;
+    pub async fn force_reflect(&self) -> anyhow::Result<ObservationLog> {
+        let _reflection = self.reflection_lock.lock().await;
+        let (reflector, _) = self.snapshot_state().await;
+        let log = load_observation_log(&self.layout.observations_json()).await?;
+        self.reflect_and_replace(&reflector, log).await
+    }
+
+    /// Compress `log` and write the result back, keeping anything merged
+    /// into the log while the model was working. Only the final write holds
+    /// `log_lock`. The caller holds `reflection_lock`.
+    async fn reflect_and_replace(
+        &self,
+        reflector: &Reflector,
+        log: ObservationLog,
+    ) -> anyhow::Result<ObservationLog> {
+        if log.observations.is_empty() {
+            return Ok(log);
+        }
+        let compressed = reflector.compress(&self.layout, &log).await?;
         let _log_guard = self.log_lock.lock().await;
-        state.reflector.reflect(&self.layout).await
+        replace_with_compressed(&self.layout, &log, compressed).await
     }
 
     /// Whether `tag` names a session run that has already been durably
@@ -246,9 +276,9 @@ impl MemoryMergeWriter {
     /// [`Self::persist_episode`] are serialized against every other merge
     /// (main agent or session) through the writer's merge lock, so episode
     /// numbering and log appends never race. That lock is released before
-    /// indexing, embedding, and the reflector check run, so a slow network
-    /// or LLM call there never blocks a concurrent merge's episode id
-    /// allocation.
+    /// indexing, embedding, and the reflector check run, and none of those
+    /// hold a lock across their network or model calls, so a slow one never
+    /// blocks a concurrent merge.
     ///
     /// # Errors
     /// Returns an error if the episode id cannot be allocated or the
@@ -293,11 +323,17 @@ impl MemoryMergeWriter {
         drop(merge_guard);
 
         let date_str = episode.date.to_string();
-        let (reflected, reflector_notice) = {
-            let state = self.state.lock().await;
-            self.index_embed_and_reflect(&state, &episode.id, &date_str, &observations, &chunks)
-                .await
-        };
+        let (reflector, embedding_provider) = self.snapshot_state().await;
+        let (reflected, reflector_notice) = self
+            .index_embed_and_reflect(
+                &reflector,
+                embedding_provider.as_deref(),
+                &episode.id,
+                &date_str,
+                &observations,
+                &chunks,
+            )
+            .await;
 
         tracing::info!(
             episode_id = %episode.id,
@@ -381,9 +417,8 @@ impl MemoryMergeWriter {
             .context("failed to write per-episode observation archive")?;
 
         {
-            // Serialized against the reflector's compress-and-replace
-            // rewrite of the same file, via `log_lock` — never appended to
-            // while a reflection is reading and rewriting it.
+            // Serialized against the reflector's replacement of the same
+            // file, so neither write loses the other's.
             let _log_guard = self.log_lock.lock().await;
             append_observations(&self.layout.observations_json(), observations.clone())
                 .await
@@ -420,11 +455,13 @@ impl MemoryMergeWriter {
     /// Returns whether the reflector fired, and a notice for the caller to
     /// surface exactly when an automatic reflector failure streak starts or
     /// clears (`crate::util::NoticeAction::None` otherwise, including when
-    /// backed off or not due). Never fails the merge — every failure here is
-    /// logged and degrades search/reflection, not the durable record.
+    /// backed off, not due, or another reflection is already running). Never
+    /// fails the merge — every failure here is logged and degrades
+    /// search/reflection, not the durable record.
     async fn index_embed_and_reflect(
         &self,
-        state: &MergeState,
+        reflector: &Reflector,
+        embedding_provider: Option<&dyn EmbeddingProvider>,
         episode_id: &str,
         date_str: &str,
         observations: &[Observation],
@@ -443,7 +480,7 @@ impl MemoryMergeWriter {
 
         let embedded = embed_and_insert(
             self.vector_store.as_deref(),
-            state.embedding_provider.as_deref(),
+            embedding_provider,
             episode_id,
             date_str,
             observations,
@@ -461,10 +498,17 @@ impl MemoryMergeWriter {
         )
         .await;
 
-        let log = crate::memory::log_store::load_observation_log(&self.layout.observations_json())
+        // A reflection already running carries this merge's observations
+        // over into the log it writes; a later merge checks the threshold
+        // again against that log.
+        let Ok(_reflection) = self.reflection_lock.try_lock() else {
+            tracing::debug!("a reflection is already running, skipping this check");
+            return (false, crate::util::NoticeAction::None);
+        };
+        let log = load_observation_log(&self.layout.observations_json())
             .await
             .unwrap_or_default();
-        if !state.reflector.should_reflect(&log) {
+        if !reflector.should_reflect(&log) {
             return (false, crate::util::NoticeAction::None);
         }
         if self.reflector_failure.gate() == crate::util::RetryGate::Skip {
@@ -473,11 +517,7 @@ impl MemoryMergeWriter {
             );
             return (false, crate::util::NoticeAction::None);
         }
-        // Serialized against a concurrent merge's observation-log append via
-        // `log_lock` — the reflector reads and rewrites the whole file, so it
-        // must never interleave with an append.
-        let _log_guard = self.log_lock.lock().await;
-        match state.reflector.reflect(&self.layout).await {
+        match self.reflect_and_replace(reflector, log).await {
             Ok(compressed) => {
                 tracing::info!(
                     episodes = compressed.observations.len(),
@@ -740,6 +780,92 @@ mod tests {
             crate::util::RetryGate::Skip,
             "the failed manual retry should extend, not clear, the automatic backoff"
         );
+    }
+
+    /// A reflector that is always due and whose model call waits at `gate`.
+    fn writer_with_gated_reflector(
+        dir: &Path,
+        gate: &crate::testing::gate::Gate,
+    ) -> MemoryMergeWriter {
+        let layout = WorkspaceLayout::new(dir);
+        let search_index =
+            Arc::new(MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap());
+        let reflector = Reflector::new(
+            Box::new(crate::testing::model::GatedProvider::new(
+                gate,
+                r#"{"observations": [{"content": "compressed", "timestamp": "2026-02-21T14:30", "visibility": "user"}]}"#,
+            )),
+            ReflectorConfig {
+                threshold_tokens: 0,
+                ..ReflectorConfig::default()
+            },
+        );
+        MemoryMergeWriter::new(reflector, layout, search_index, None, None)
+    }
+
+    #[tokio::test]
+    async fn a_running_reflection_holds_up_neither_merges_nor_reloads() {
+        use crate::testing::wait::guarded;
+
+        let dir = tempfile::tempdir().unwrap();
+        let gate = crate::testing::gate::Gate::closed("reflector");
+        let mw = Arc::new(writer_with_gated_reflector(dir.path(), &gate));
+
+        let reflecting = tokio::spawn({
+            let mw = Arc::clone(&mw);
+            async move {
+                mw.merge(sample_extraction("one"), SourceTag::main(), chrono_tz::UTC)
+                    .await
+            }
+        });
+        gate.until_held(1).await;
+
+        let second = guarded(
+            "a merge while the reflector's model call is held",
+            mw.merge(sample_extraction("two"), SourceTag::main(), chrono_tz::UTC),
+        )
+        .await
+        .unwrap();
+        assert!(
+            !second.reflected,
+            "a merge that finds a reflection running should skip its own"
+        );
+        guarded(
+            "a reflector config reload while the reflector's model call is held",
+            mw.update_reflector_config(ReflectorConfig::default()),
+        )
+        .await;
+
+        gate.open_all();
+        let first = guarded("the held reflection to finish", reflecting)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(first.reflected, "the first merge's reflection should land");
+
+        let layout = WorkspaceLayout::new(dir.path());
+        let log = crate::memory::log_store::load_observation_log(&layout.observations_json())
+            .await
+            .unwrap();
+        let contents: Vec<&str> = log
+            .observations
+            .iter()
+            .map(|o| o.content.as_str())
+            .collect();
+        assert_eq!(
+            contents,
+            ["compressed", "two"],
+            "the merge made during the reflection should survive it"
+        );
+    }
+
+    #[tokio::test]
+    async fn force_reflect_on_an_empty_log_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mw = writer_with_always_failing_reflector(dir.path());
+
+        let log = mw.force_reflect().await.unwrap();
+        assert!(log.observations.is_empty(), "empty log should stay empty");
     }
 
     #[tokio::test]
