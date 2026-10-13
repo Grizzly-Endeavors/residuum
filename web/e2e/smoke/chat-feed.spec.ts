@@ -1,7 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
 import { expect, test } from "../support/fixtures";
-import { sendFromComposer } from "../support/composer";
+import { FIRST_RECONNECT_MS, reconnectingLine, sendFromComposer } from "../support/composer";
 import { expectFileOpen } from "../support/lazy";
 
 /**
@@ -175,9 +175,11 @@ test.describe("after the connection drops", () => {
     await mock.manualTime();
     await send(page, "drop finish: check the routing doc");
     // The connection drops at 600ms, and the turn ends at 900ms while the page is away.
-    // The page comes back about a second of real time after the drop, and loads the turn from history.
     await expect(feed.getByText("Working")).toBeVisible();
     await mock.advance(1_000);
+    // The page tries again a second after it saw the drop, and loads the turn from history.
+    await expect(reconnectingLine(page)).toBeVisible();
+    await mock.advance(FIRST_RECONNECT_MS);
 
     await expect(feed.getByText(FIRST_REPLY)).toBeVisible();
     await expect(feed.getByText("drop finish: check the routing doc")).toHaveCount(1);
@@ -192,10 +194,11 @@ test.describe("after the connection drops", () => {
     await mock.manualTime();
     await send(page, "drop: keep going");
     await expect(feed.getByText("Working")).toBeVisible();
-    // The connection drops at 600ms. The page is back about a second of real time later, while
+    // The connection drops at 600ms. The page tries again a second after it saw the drop, while
     // the turn is still running: the mock's connection returns at 3.5s, and the turn ends at 4s.
     await mock.advance(1_000);
-    await expect.poll(() => connectedPages(page)).toBe(0);
+    await expect(reconnectingLine(page)).toBeVisible();
+    await mock.advance(FIRST_RECONNECT_MS);
     await expect.poll(() => connectedPages(page)).toBe(1);
     await mock.advance(60_000);
 
@@ -238,9 +241,10 @@ test.describe("after the connection drops", () => {
     await expect(page.getByRole("button", { name: "Jump to latest" })).toBeVisible();
 
     // The connection drops at 600ms, the history is compressed while it is down, and the page
-    // is back about a second of real time later, before the turn ends at 4s.
+    // tries again a second after it saw the drop, before the turn ends at 4s.
     await mock.advance(1_000);
-    await expect.poll(() => connectedPages(page)).toBe(0);
+    await expect(reconnectingLine(page)).toBeVisible();
+    await mock.advance(FIRST_RECONNECT_MS);
     await expect.poll(() => connectedPages(page)).toBe(1);
     await mock.advance(60_000);
 
