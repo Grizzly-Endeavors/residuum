@@ -1,7 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { sendFromComposer } from "../support/composer";
 import { expect, test } from "../support/fixtures";
-import { expectScreenshot } from "../support/screenshot";
+import { expectClipScreenshot, expectScreenshot } from "../support/screenshot";
 
 /**
  * The chat's design reference: a finished turn with a step's details open, a
@@ -26,9 +26,14 @@ function messageBox(page: Page): Locator {
   return page.getByRole("combobox", { name: "Message atlas" });
 }
 
-/** The turn in `feed` that holds `content`, which is looked up inside each turn. A turn is the block of one reply's steps and messages. */
+/**
+ * The turn in `feed` that holds `content`, which is looked up inside each turn.
+ * A turn is the block of one reply's steps and messages. It has no role a
+ * screen reader should announce for every turn, so it is found by its
+ * `data-feed-turn` attribute.
+ */
 function turnWith(feed: Locator, content: Locator): Locator {
-  return feed.locator(".feed-turn").filter({ has: content });
+  return feed.locator("[data-feed-turn]").filter({ has: content });
 }
 
 test.describe("chat", { tag: "@visual" }, () => {
@@ -53,9 +58,7 @@ test.describe("chat", { tag: "@visual" }, () => {
       el.scrollIntoView({ block: "center" });
     });
     await page.mouse.move(0, 0);
-    await expectScreenshot(turn, "chat-turn", {
-      mask: [page.getByRole("button", { name: "Jump to latest" })],
-    });
+    await expectScreenshot(turn, "chat-turn");
   });
 
   test("a turn running, with its steps", async ({ page, mock }) => {
@@ -92,8 +95,25 @@ test.describe("chat", { tag: "@visual" }, () => {
     await expect(page.getByRole("button", { name: /^Model: Claude Sonnet 4\.6/ })).toBeAttached();
     await reply.hover();
     await expect(reply.locator("time").first()).toHaveCSS("opacity", "1");
-    // The time and Copy sit in the conversation's margin, outside the reply's own box.
-    await expectScreenshot(conversation(page), "message-details");
+    // The time and Copy sit in the conversation's margin, outside the reply's own box, and no
+    // element holds both. The shot is the rectangle round the reply and its details.
+    const [replyBox, detailsBox] = await Promise.all([
+      reply.boundingBox(),
+      reply.locator("[data-message-meta]").boundingBox(),
+    ]);
+    if (!replyBox || !detailsBox)
+      throw new Error("the reply and its details must both be laid out");
+    const left = Math.floor(Math.min(replyBox.x, detailsBox.x));
+    const top = Math.floor(Math.min(replyBox.y, detailsBox.y));
+    const right = Math.ceil(Math.max(replyBox.x + replyBox.width, detailsBox.x + detailsBox.width));
+    const bottom = Math.ceil(
+      Math.max(replyBox.y + replyBox.height, detailsBox.y + detailsBox.height),
+    );
+    await expectClipScreenshot(
+      page,
+      { x: left, y: top, width: right - left, height: bottom - top },
+      "message-details",
+    );
   });
 
   test("the composer with a draft and an attached image", async ({ page }) => {
@@ -106,8 +126,7 @@ test.describe("chat", { tag: "@visual" }, () => {
     await messageBox(page).fill("Can you read the error in this screenshot?");
     // The composer has read the agent's model.
     await expect(page.getByRole("button", { name: /^Model: Claude Sonnet 4\.6/ })).toBeAttached();
-    const composer = page.locator("form").filter({ has: messageBox(page) });
-    await expectScreenshot(composer, "composer");
+    await expectScreenshot(page.getByRole("form", { name: "Message atlas" }), "composer");
   });
 
   test("a Markdown reply: headings, checklist, code and a question", async ({ page }) => {

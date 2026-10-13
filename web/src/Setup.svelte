@@ -242,7 +242,7 @@
     <span class="setup-wordmark"><Icon name="mark" size={18} />Residuum</span>
   </header>
   <main class="setup-scroller" bind:this={scroller}>
-    <div class="setup-column">
+    <section class="setup-column" aria-label="Setup">
       <SetupProgress labels={stepLabels} current={step} />
 
       <div class="setup-head">
@@ -278,7 +278,7 @@
       {:else if step === 5}
         <Review bind:wizardState onBack={back} onComplete={handleComplete} />
       {/if}
-    </div>
+    </section>
   </main>
 </div>
 
