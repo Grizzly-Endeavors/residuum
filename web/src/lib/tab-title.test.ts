@@ -45,6 +45,7 @@ describe("placeSubject", () => {
     [{ kind: "inbox", agent: "scout", tab: "active", item: null }, "Inbox"],
     [{ kind: "workbench", artifact: null }, "Workbench"],
     [{ kind: "shared-files" }, "Shared files"],
+    [{ kind: "not-found", path: "/agent/atlas/nowhere" }, "Page not found"],
     [{ kind: "chat", agent: "atlas" }, "ATLAS"],
     [{ kind: "activity", agent: "atlas" }, "ATLAS"],
     [{ kind: "schedule", agent: "atlas" }, "ATLAS"],

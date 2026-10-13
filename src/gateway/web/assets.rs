@@ -21,7 +21,7 @@ use axum::http::header;
 use axum::http::{
     Extensions, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, Version,
 };
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use tower_http::compression::{CompressionLayer, CompressionLevel};
@@ -56,8 +56,12 @@ pub(crate) fn static_assets() -> Router {
 
 /// Serves the file at the requested URI path, falling back to `index.html`
 /// for the web UI's client-side routes (paths without file extensions).
-/// Unknown API and WebSocket paths get a 404 rather than the app shell, so a
-/// client calling a missing endpoint sees the failure instead of HTML.
+///
+/// A missing file is a 404 in the form its asker reads: a browser loading a
+/// page gets the app shell with the 404 status, so the app's Not Found page
+/// shows; a script, image or other subresource gets a plain 404. Unknown API
+/// and WebSocket paths get the API's JSON error, so a client calling a missing
+/// endpoint sees the failure instead of HTML.
 async fn static_handler(method: Method, uri: Uri, request_headers: HeaderMap) -> Response {
     let path = uri.path().trim_start_matches('/');
 
@@ -66,23 +70,59 @@ async fn static_handler(method: Method, uri: Uri, request_headers: HeaderMap) ->
         return resp;
     }
 
-    if is_client_route(path)
+    if is_api_path(path) {
+        return api_not_found();
+    }
+
+    if !path.contains('.')
         && let Some(resp) = serve_embedded("index.html", &method, &request_headers)
     {
         return resp;
     }
 
+    if is_page_load(&request_headers)
+        && let Some(mut resp) = serve_embedded("index.html", &method, &request_headers)
+    {
+        *resp.status_mut() = StatusCode::NOT_FOUND;
+        return resp;
+    }
+
     Response::builder()
         .status(StatusCode::NOT_FOUND)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
         .body(Body::from("not found"))
         .unwrap_or_default()
 }
 
-/// Whether `path` (without its leading slash) is a web UI route that the
-/// client-side router handles, rather than a missing asset or server endpoint.
-fn is_client_route(path: &str) -> bool {
+/// Whether `path` (without its leading slash) is under the hub's API or its
+/// socket, which answer for themselves and never with the app shell.
+fn is_api_path(path: &str) -> bool {
     let first_segment = path.split('/').next().unwrap_or_default();
-    !path.contains('.') && first_segment != "api" && first_segment != "ws"
+    first_segment == "api" || first_segment == "ws"
+}
+
+/// The API's `{ "error" }` 404 for a path no endpoint serves.
+fn api_not_found() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        axum::Json(serde_json::json!({ "error": "no API endpoint at this path" })),
+    )
+        .into_response()
+}
+
+/// Whether the request is a browser loading a page, as opposed to a
+/// subresource or a programmatic call. `Sec-Fetch-Dest` says so where the
+/// browser sends it; otherwise an `Accept` that asks for HTML does.
+fn is_page_load(request_headers: &HeaderMap) -> bool {
+    if let Some(dest) = request_headers.get("sec-fetch-dest") {
+        return dest.as_bytes() == b"document";
+    }
+    request_headers
+        .get_all(header::ACCEPT)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|media| media.trim().starts_with("text/html"))
 }
 
 /// Serve an embedded file by path, returning `None` if it doesn't exist.
@@ -401,6 +441,79 @@ mod tests {
             );
             assert!(resp.headers().get("etag").is_none(), "{path}");
             assert!(resp.headers().get("content-encoding").is_none(), "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_api_and_socket_paths_answer_the_apis_json_error() {
+        for path in ["/api/nope", "/api", "/ws/extra"] {
+            for asker in [&[][..], &[("sec-fetch-dest", "document")][..]] {
+                let resp = get(path, asker).await;
+                assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{path}");
+                assert_eq!(
+                    header_of(&resp, "content-type"),
+                    Some("application/json"),
+                    "{path}"
+                );
+                let body: serde_json::Value = serde_json::from_slice(&body_of(resp).await).unwrap();
+                assert!(
+                    body.get("error").is_some_and(serde_json::Value::is_string),
+                    "{path}: {body}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_page_load_of_a_missing_file_gets_the_app_shell_as_a_404() {
+        let index_body = embedded_bytes("index.html");
+        for asker in [
+            &[("sec-fetch-dest", "document")][..],
+            &[("accept", "text/html,application/xhtml+xml,*/*;q=0.8")][..],
+        ] {
+            for path in [
+                "/does-not-exist.txt",
+                "/agent/atlas/notes.md",
+                "/old/page.html",
+            ] {
+                let resp = get(path, asker).await;
+                assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{path} {asker:?}");
+                assert_eq!(
+                    header_of(&resp, "content-type"),
+                    Some("text/html"),
+                    "{path}"
+                );
+                assert_eq!(
+                    header_of(&resp, "cache-control"),
+                    Some("no-cache"),
+                    "{path}"
+                );
+                assert_eq!(body_of(resp).await, index_body, "{path} is the app shell");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_subresource_that_is_missing_gets_a_plain_404() {
+        for asker in [
+            &[][..],
+            &[("sec-fetch-dest", "script"), ("accept", "*/*")][..],
+            &[
+                ("sec-fetch-dest", "image"),
+                ("accept", "image/avif,image/*"),
+            ][..],
+            // An iframe or fetch that asks for HTML is still not a page load.
+            &[("sec-fetch-dest", "iframe"), ("accept", "text/html")][..],
+            &[("accept", "application/json")][..],
+        ] {
+            let resp = get("/assets/missing-abc123.js", asker).await;
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{asker:?}");
+            assert_eq!(
+                header_of(&resp, "content-type"),
+                Some("text/plain; charset=utf-8"),
+                "{asker:?}"
+            );
+            assert_eq!(body_of(resp).await, b"not found", "{asker:?}");
         }
     }
 
