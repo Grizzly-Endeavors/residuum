@@ -32,7 +32,7 @@ All changes go through pull requests.
 1. Create a feature branch from `main` with a descriptive name
 2. Make your changes and commit frequently
 3. Push your branch and open a PR against `main`
-4. The git hooks are the first quality gate: formatting, the generated-types check, the dependency audit, and the source scans run on every commit; clippy, the whole test suite, and the web checks run on every push, against your branch merged with the current `main`. CI then runs the full Rust checks on PRs that change Rust code and the full web checks on PRs that change `web/` (see [Quality Gates](#quality-gates)). CI runs on self-hosted runners, so PRs from forks don't run it; a maintainer re-runs the checks locally before merging a contributor's PR.
+4. The git hooks are the first quality gate: formatting and the dependency audit run on every commit; clippy, the whole test suite, the source scans, the generated-types check, and the web checks run on every push, against your branch merged with the current `main`. CI then runs the full Rust checks on PRs that change Rust code and the full web checks on PRs that change `web/` (see [Quality Gates](#quality-gates)). CI runs on self-hosted runners, so PRs from forks don't run it; a maintainer re-runs the checks locally before merging a contributor's PR.
 5. Cross-platform checks (clippy for aarch64 Linux, Windows, and macOS, plus tests on Windows) are opt-in; see below
 
 ### Rust Toolchain
@@ -72,14 +72,13 @@ The git hooks split the checks between commit and push: a commit runs the quick 
 On every commit (pre-commit), on what is staged:
 - `cargo fmt` — formatting (auto-applied and staged)
 - Prettier on the staged web files (auto-applied and staged)
-- `testing::source_scan` — the source scans (see [Waiting in tests](#waiting-in-tests))
-- `scripts/check-generated-types.sh` — the web app's TypeScript protocol types match the Rust types
-- `cargo deny check` — dependency audit
+- `cargo deny check` — dependency audit, when Rust or a manifest is staged
 - `scripts/ci-failures-test.sh` — the `just ci-failures` log parser against its fixtures, when a `scripts/ci-failures*` file is staged
 - No `dbg!()` or `#[allow(...)]` in the staged diff, and no growth of the wall-clock backlog
 
 On every push (pre-push), against the pushed branch merged with the current `main` (the hook fetches `origin/main` and, when the branch is behind it, builds the merge in a temporary worktree; a conflict fails the push until you merge `main` into your branch):
-- When the pushed commits change Rust, a manifest, `Cargo.lock`, or `assets/`: `cargo clippy` (pedantic linting with strict denials) and the whole test suite
+- When the pushed commits change Rust, a manifest, `Cargo.lock`, or `assets/`: `cargo clippy` (pedantic linting with strict denials), the whole test suite, and the source scans (`testing::source_scan`, see [Waiting in tests](#waiting-in-tests))
+- When they change Rust, a manifest, `Cargo.lock`, `assets/`, or the generated web types in `web/src/lib/generated/`: `scripts/check-generated-types.sh`, which checks that the web app's TypeScript protocol types match the Rust types
 - When they change `web/`: ESLint and the style lint (Stylelint), `svelte-check` (warnings fail it), and the web unit and component tests (Vitest)
 
 Every push check runs even after one fails, and the hook ends with a summary of what failed. Do not bypass the hooks: `--no-verify` is not allowed on `git commit` or `git push`. If a hook fails, fix the issue and try again.
@@ -104,7 +103,7 @@ A test waits on the event it checks, never on elapsed time: a duration that hold
 
 #### Waiting in tests
 
-Test code waits through `crate::testing`, never with `tokio::time::sleep`, `tokio::time::timeout`, `std::thread::sleep` or wiremock's `set_delay`. A source-scan test (`testing::source_scan`) fails on any of those outside `src/testing/`; the pre-commit hook runs it on every Rust commit. The waits that predate the rule are counted per file in `src/testing/wall_clock_backlog.rs`, and the counts only go down: converting a file's waits means lowering its entry, and the hook refuses a commit that adds one.
+Test code waits through `crate::testing`, never with `tokio::time::sleep`, `tokio::time::timeout`, `std::thread::sleep` or wiremock's `set_delay`. A source-scan test (`testing::source_scan`) fails on any of those outside `src/testing/`; the pre-push hook runs it on every push that changes Rust. The waits that predate the rule are counted per file in `src/testing/wall_clock_backlog.rs`, and the counts only go down: converting a file's waits means lowering its entry, and the hook refuses a commit that adds one.
 
 - **Something will arrive on a channel or watch.** `testing::wait::next`, `next_matching` (skips to the first match), `next_where` (everything received up to the match) or `watch_until`; a bus `Subscriber` is waited on with `next_event`. For state with no channel to wait on, `wait::until` polls a check. Each runs under `wait::HANG_GUARD`, the suite's only deadline, which exists to stop a hung test and names what it was waiting for; never shorten it or add another.
 - **A state must last while the test looks at it** (an agent mid-turn, a session queued behind another). Hold the call that would end it at a closed `testing::gate::Gate`: `gate.until_held(1)` proves the call is waiting, the test looks, then `gate.release(1)`. The model has gated versions: `testing::model::GatedModel` (an HTTP model, either in front of a wiremock server or with a fixed reply; the hub test fixture puts one in front of every agent's mock), `GatedProvider` in process, and the scripted stream server's `Step::Hold`.
