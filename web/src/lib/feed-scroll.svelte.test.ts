@@ -116,6 +116,28 @@ describe("FeedScroller", () => {
     expect(feed.geometry.scrollTop).toBe(3000);
   });
 
+  it("follows from End though the browser's glide first carries on up from Home", () => {
+    const { feed, observer, scroller } = attached();
+    feed.press({ key: "Home" });
+    feed.scrollBy(900);
+    // End, while the scroll for Home is still under way: it carries on up a little.
+    feed.press({ key: "End" });
+    feed.scrollBy(860);
+    expect(scroller.isFollowing).toBe(true);
+    expect(scroller.scrolledUp).toBe(false);
+    feed.scrollBy(1200);
+    feed.geometry.scrollHeight = 2800;
+    observer.notify();
+    expect(feed.geometry.scrollTop).toBe(2800);
+  });
+
+  it("starts no glide from End at the bottom, so a later move up is the reader's", () => {
+    const { feed, scroller } = attached();
+    feed.press({ key: "End" });
+    feed.scrollBy(1300);
+    expect(scroller.isFollowing).toBe(false);
+  });
+
   it("leaves End with a modifier, and other keys, to the browser alone", () => {
     const { feed, observer } = attached();
     feed.scrollBy(0);

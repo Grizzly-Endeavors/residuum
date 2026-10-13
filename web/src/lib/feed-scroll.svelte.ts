@@ -17,12 +17,12 @@
 // somewhere else was moved by the reader: by hand, by momentum after a flick,
 // by the scrollbar, or with no input event in the feed at all (find in page, a
 // screen reader, the page's own `scrollIntoView`). Three moves aren't the
-// reader's: a glide toward the end that the scroller or End started, whose
-// events move toward the end (a move away from the end, reader input, the
-// glide's `scrollend` or the scroller's next move of its own ends it); the
-// browser moving a reader at the very bottom up to keep the position in range
-// as the content or the view changes size; and a move the browser makes while
-// the page changes the feed's items (`takeInUpdate`).
+// reader's: a glide toward the end, Jump to latest's moving down or the
+// browser's for End (it ends on arriving, at `scrollend`, at reader input or at
+// the scroller's next move of its own, and a move up ends Jump to latest's);
+// the browser moving a reader at the very bottom up to keep the position in
+// range as the content or the view changes size; and a move the browser makes
+// while the page changes the feed's items (`takeInUpdate`).
 //
 // "The end" means the end of the content, not the end of the scrolling area.
 // A feed can reserve room below its last line (a persistent buffer, and a
@@ -151,10 +151,10 @@ export class FeedScroller {
    */
   private knownTop: number | null = null;
   /**
-   * A glide toward the end is under way (Jump to latest, or the browser's for
-   * End). Its scroll events move toward the end and aren't the reader's.
+   * A glide toward the end is under way: Jump to latest's, or the browser's
+   * for End. Its scroll events aren't the reader's.
    */
-  private gliding = false;
+  private glide: "jump" | "end" | null = null;
   /**
    * The page has said its items are about to change (`takeInPendingScroll`),
    * and the `contentChanged` of that change hasn't come yet. Both come in one
@@ -222,11 +222,14 @@ export class FeedScroller {
     }
     if (from === null || Math.abs(top - from) < 1) return;
     const up = top < from;
-    if (this.gliding && !up) {
-      if (this.atBottom()) this.gliding = false;
+    // A move up during Jump to latest's glide is the reader's. The browser's
+    // glide for End can move up first: Chromium carries a keyboard scroll
+    // still under way (Home, a moment before) into the next one.
+    if (this.glide === "end" || (this.glide === "jump" && !up)) {
+      if (this.atBottom()) this.glide = null;
       return;
     }
-    this.gliding = false;
+    this.glide = null;
     if (this.held) return;
     if (up && !this.atBottom()) {
       this.following = false;
@@ -275,7 +278,7 @@ export class FeedScroller {
     this.knownTop = el.scrollTop;
     this.hidden = false;
     // An instant scroll ends a glide under way.
-    this.gliding = false;
+    this.glide = null;
   }
 
   /**
@@ -293,7 +296,7 @@ export class FeedScroller {
   // The reader taking over the scroll ends a glide in progress, a reload's
   // hold on their state, and any hold on the place of a control they pressed.
   private readonly onReaderInput = (event: Event): void => {
-    this.gliding = false;
+    this.glide = null;
     this.held = false;
     this.letGoOfPlace();
     if (event.type === "wheel") {
@@ -332,7 +335,7 @@ export class FeedScroller {
 
   /** A glide that runs to its end, or is cut short, is over. */
   private readonly onScrollEnd = (): void => {
-    this.gliding = false;
+    this.glide = null;
   };
 
   // Seen before the control's own handler: open or close, the control stays
@@ -408,7 +411,7 @@ export class FeedScroller {
       for (const type of READER_INPUT_EVENTS) el.removeEventListener(type, this.onReaderInput);
       el.removeEventListener("click", this.onPress, true);
       this.letGoOfPlace();
-      this.gliding = false;
+      this.glide = null;
       if (this.el === el) {
         this.el = null;
         this.content = null;
@@ -451,7 +454,7 @@ export class FeedScroller {
   hold(): void {
     this.held = true;
     this.following = false;
-    this.gliding = false;
+    this.glide = null;
     this.scrolledUp = true;
   }
 
@@ -484,7 +487,7 @@ export class FeedScroller {
       this.write(el.scrollHeight);
       return;
     }
-    this.gliding = true;
+    this.glide = "jump";
     el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }
 
@@ -496,7 +499,8 @@ export class FeedScroller {
    */
   private followFromEnd(): void {
     this.following = true;
-    this.gliding = true;
+    // Already at the bottom, the browser has nowhere to glide.
+    this.glide = this.atBottom() ? null : "end";
     this.scrolledUp = false;
     this.unseen = false;
   }
@@ -586,7 +590,7 @@ export class FeedScroller {
     const content = this.content;
     if (!el || !content) return;
     this.following = false;
-    this.gliding = false;
+    this.glide = null;
     const item = control.closest<HTMLElement>("[data-feed-item]");
     this.keeping = {
       control,
