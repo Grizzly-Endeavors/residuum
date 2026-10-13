@@ -3,9 +3,9 @@
 # Pre-push gate: the slow checks, once per push, on the branch as it would be
 # merged with the current main.
 #
-# Rust changes in the pushed range run clippy, the whole test suite and the
-# source scans. The generated-types check runs when Rust or the generated web
-# types change. Web changes run ESLint and the style lint, svelte-check and the
+# Rust changes in the pushed range run clippy and the whole test suite, which
+# includes the source scans. The generated-types check runs when Rust or the
+# generated web types change. Web changes run ESLint and the style lint, svelte-check and the
 # web tests. Every check runs even after one fails, so a push reports all of its
 # problems at once instead of one per attempt, and a summary at the end lists
 # what failed.
@@ -28,13 +28,11 @@ note() { echo -e "${YELLOW}$1${NC}" >&2; }
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 CHECKOUT_HEAD="$(git rev-parse HEAD)"
-# In a linked worktree git exports GIT_DIR to this hook. Every git command run
-# elsewhere would inherit it and act on this repository instead: the merge in
-# the temporary worktree, and any tool or test that runs git in a directory of
-# its own (cargo deny's advisory database update once ran
-# `git reset --hard FETCH_HEAD` against a worktree's repository this way).
-# Without it, git finds the repository from the working directory.
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+# Git hands hooks its repository variables, which in a linked worktree point at
+# the worktree. Every git call here finds the repository from the working
+# directory, and the temporary worktree's `git -C` must not be pinned to this
+# one, so the hook runs without them (the reasoning is in .githooks/pre-commit).
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
 # The worktree shares this checkout's build output, so the merge is checked
 # with warm dependencies instead of a cold build of the whole tree.
 SHARED_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
@@ -117,7 +115,14 @@ ensure_web_deps() {
 
 TEMP_DIR=""
 TEMP_TREE=""
+TEST_LOG=""
+cleanup_test_log() {
+    [ -n "$TEST_LOG" ] || return 0
+    rm -f "$TEST_LOG"
+    TEST_LOG=""
+}
 cleanup() {
+    cleanup_test_log
     [ -n "$TEMP_DIR" ] || return 0
     # Unlink the borrowed node_modules first so nothing below can reach
     # through it into this checkout's copy.
@@ -158,17 +163,25 @@ prepare_worktree() {
     fi
 }
 
-# Test code must wait on events, not the clock: the scan fails on any wait that
-# is not in the wall-clock backlog.
-source_scan_check() {
-    cargo_in "$1" test --quiet --lib testing::source_scan && return 0
-    echo -e "${RED}ERROR: a source scan failed. A test that waits on elapsed time should wait on the event instead (CONTRIBUTING.md, \"Waiting in tests\").${NC}" >&2
-    return 1
+# The full suite includes the source scans (testing::source_scan), which fail on
+# any test that waits on elapsed time instead of an event, so they are not run
+# a second time. When one fails, its name in the output gets the hint on how to
+# fix it. The output is kept in TEST_LOG for the search and removed afterwards.
+run_cargo_test() {
+    local dir="$1" result=0
+    TEST_LOG="$(mktemp)" || return 1
+    cargo_in "$dir" test --quiet --no-fail-fast 2>&1 | tee "$TEST_LOG" || result=1
+    if [ "$result" -ne 0 ] && grep -qE '^(---- |    )testing::source_scan::' "$TEST_LOG"; then
+        echo -e "${RED}ERROR: a source scan failed. A test that waits on elapsed time should wait on the event instead (CONTRIBUTING.md, \"Waiting in tests\").${NC}" >&2
+    fi
+    cleanup_test_log
+    return "$result"
 }
 
 # The web app's protocol types are generated from the Rust types. The check
-# regenerates them and compares the result with the index, so a push that
-# changes Rust has to carry the regenerated files.
+# regenerates them into a scratch directory and compares the result with the
+# index, so a push that changes Rust has to carry the regenerated files, and the
+# checkout's own files and index are left as they are.
 generated_types_check() {
     (cd "$1" && CARGO_TARGET_DIR="$SHARED_TARGET_DIR" scripts/check-generated-types.sh) && return 0
     echo -e "${RED}ERROR: web/src/lib/generated is out of date with the Rust types. Run 'just types', stage the result, and commit again.${NC}" >&2
@@ -200,8 +213,7 @@ run_rust_checks() {
     }
     if [ "$TOUCHES_RUST" = 1 ]; then
         run_check "clippy" cargo_in "$dir" clippy --all-targets --all-features -- -D warnings
-        run_check "cargo test" cargo_in "$dir" test --quiet --no-fail-fast
-        run_check "source scans" source_scan_check "$dir"
+        run_check "cargo test (includes the source scans)" run_cargo_test "$dir"
     fi
     run_check "generated types" generated_types_check "$dir"
 }

@@ -32,7 +32,7 @@ All changes go through pull requests.
 1. Create a feature branch from `main` with a descriptive name
 2. Make your changes and commit frequently
 3. Push your branch and open a PR against `main`
-4. The git hooks are the first quality gate: formatting and the dependency audit run on every commit; clippy, the whole test suite, the source scans, the generated-types check, and the web checks run on every push, against your branch merged with the current `main`. CI then runs the full Rust checks on PRs that change Rust code and the full web checks on PRs that change `web/` (see [Quality Gates](#quality-gates)). CI runs on self-hosted runners, so PRs from forks don't run it; a maintainer re-runs the checks locally before merging a contributor's PR.
+4. The git hooks are the first quality gate: formatting and the dependency audit run on every commit; clippy, the whole test suite (which includes the source scans), the generated-types check, and the web checks run on every push, against your branch merged with the current `main`. CI then runs the full Rust checks on PRs that change Rust code and the full web checks on PRs that change `web/` (see [Quality Gates](#quality-gates)). CI runs on self-hosted runners, so PRs from forks don't run it; a maintainer re-runs the checks locally before merging a contributor's PR.
 5. Cross-platform checks (clippy for aarch64 Linux, Windows, and macOS, plus tests on Windows) are opt-in; see below
 
 ### Rust Toolchain
@@ -77,7 +77,7 @@ On every commit (pre-commit), on what is staged:
 - No `dbg!()` or `#[allow(...)]` in the staged diff, and no growth of the wall-clock backlog
 
 On every push (pre-push), against the pushed branch merged with the current `main` (the hook fetches `origin/main` and, when the branch is behind it, builds the merge in a temporary worktree; a conflict fails the push until you merge `main` into your branch):
-- When the pushed commits change Rust, a manifest, `Cargo.lock`, or `assets/`: `cargo clippy` (pedantic linting with strict denials), the whole test suite, and the source scans (`testing::source_scan`, see [Waiting in tests](#waiting-in-tests))
+- When the pushed commits change Rust, a manifest, `Cargo.lock`, or `assets/`: `cargo clippy` (pedantic linting with strict denials), the whole test suite, which includes the source scans (`testing::source_scan`, see [Waiting in tests](#waiting-in-tests))
 - When they change Rust, a manifest, `Cargo.lock`, `assets/`, or the generated web types in `web/src/lib/generated/`: `scripts/check-generated-types.sh`, which checks that the web app's TypeScript protocol types match the Rust types
 - When they change `web/`: ESLint and the style lint (Stylelint), `svelte-check` (warnings fail it), and the web unit and component tests (Vitest)
 
