@@ -197,6 +197,11 @@ web-e2e-update *args: _web-deps
 web-e2e-webkit *args: _web-deps
     scripts/with-playwright-container.sh npm --prefix web run e2e:webkit -- {{ args }}
 
+# The end-to-end specs this branch adds or changes, each run repeatedly (WEB_STRESS_REPEAT, default 5) without the CI runner's CPU load; args go to playwright, e.g. `just web-stress --grep "tab title"`
+[group('web')]
+web-stress *args: _web-e2e-browsers
+    scripts/web-stress.sh {{ args }}
+
 # --- checks ------------------------------------------------------------------
 
 web_checks := "web-fmt-check web-lint web-typecheck web-test web-size"
