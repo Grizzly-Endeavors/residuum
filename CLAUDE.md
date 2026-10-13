@@ -12,7 +12,7 @@
 
 Superseded documents live in [`docs/archive/`](./docs/archive/); they record history and do not describe current behavior.
 
-**Web interface:** The Residuum web UI lives in `residuum/web/` (Svelte 5 SPA). See `web/CLAUDE.md` for details. **Do not confuse with `relay/web/`**, the marketing landing page — it lives in a separate repository, not this one.
+**Web interface:** The Residuum web UI lives in `residuum/web/` (Svelte 5 SPA). See `web/CLAUDE.md` for details. **Do not confuse with `relay/web/`**, the agent-residuum.com site (marketing pages, Cloud sign-in and the account dashboard) — it lives in a separate repository, not this one.
 
 ## Build & Quality Gates
 
