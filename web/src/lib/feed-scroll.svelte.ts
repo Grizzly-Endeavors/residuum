@@ -16,10 +16,14 @@
 // records each position it sets. A scroll event that finds the position
 // somewhere else was moved by the reader: by hand, by momentum after a flick,
 // by the scrollbar, or with no input event in the feed at all (find in page, a
-// screen reader, the page's own `scrollIntoView`). The one exception is a glide
-// toward the end that the scroller or End started, whose events move toward
-// the end; a move away from the end, reader input, the glide's `scrollend` or
-// the scroller's next move of its own ends the glide.
+// screen reader, the page's own `scrollIntoView`). Two moves aren't the
+// reader's: a glide toward the end that the scroller or End started, whose
+// events move toward the end (a move away from the end, reader input, the
+// glide's `scrollend` or the scroller's next move of its own ends it), and the
+// browser moving a reader at the very bottom up to keep the position in range
+// as the content or the view changes size. While a finger is on the feed, or a
+// mouse button on its scrollbar, the scroller holds its own moves until the
+// press ends: moving the position under a drag cuts the drag short.
 //
 // "The end" means the end of the content, not the end of the scrolling area.
 // A feed can reserve room below its last line (a persistent buffer, and a
