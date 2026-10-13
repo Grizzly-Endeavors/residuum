@@ -9,8 +9,6 @@
 //! the sequence once that background cycle's result comes back on the main
 //! loop.
 
-use std::sync::Arc;
-
 use crate::gateway::memory::MemorySubsystems;
 use crate::gateway::post_turn::IdleContinuation;
 use crate::gateway::types::AgentRuntime;
@@ -35,14 +33,8 @@ pub(super) async fn execute_idle_transition(
     // wait for it via `apply_idle_continuation` so a message that hasn't
     // yet been observed is never wiped out by the clear below racing ahead
     // of it.
-    let mem = MemorySubsystems {
-        observer: Arc::clone(&rt.observer),
-        merge_writer: Arc::clone(&rt.merge_writer),
-        layout: rt.layout.clone(),
-        tz: rt.tz,
-        publisher: rt.publisher.clone(),
-    };
-    rt.post_turn_observe.trigger_for_idle(
+    let mem = MemorySubsystems::from_runtime(rt);
+    rt.memory_worker.trigger_for_idle(
         mem,
         IdleContinuation {
             timeout_mins,

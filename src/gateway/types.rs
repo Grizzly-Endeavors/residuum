@@ -265,9 +265,10 @@ pub(crate) struct AgentRuntime {
     /// `crate::gateway::post_turn`) and the main loop's own turn-count
     /// fallback can both reach it without racing.
     pub learning_state: Arc<std::sync::Mutex<crate::subconscious::LearningState>>,
-    /// Background worker for the automatic observe cycle (including the
-    /// idle transition's) — see `crate::gateway::post_turn`.
-    pub post_turn_observe: Arc<crate::gateway::post_turn::ObserveWorker>,
+    /// Background worker for the memory cycle: automatic observation
+    /// (including the idle transition's) and the `/observe` and `/reflect`
+    /// commands — see `crate::gateway::post_turn`.
+    pub memory_worker: Arc<crate::gateway::post_turn::MemoryWorker>,
     /// Background worker for the end-of-turn subconscious evaluation.
     pub post_turn_subconscious: Arc<crate::gateway::post_turn::SubconsciousWorker>,
     /// Results from both post-turn workers above, applied on the main loop
