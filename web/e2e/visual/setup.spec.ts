@@ -14,6 +14,6 @@ test.describe("setup wizard", { tag: "@visual" }, () => {
     await page.getByRole("button", { name: "Next" }).click();
     await page.getByRole("switch", { name: "OpenAI" }).click();
     await expect(page.getByRole("heading", { level: 1 })).toHaveText("Add model providers");
-    await expectScreenshot(page.getByRole("region", { name: "Setup", exact: true }), "setup");
+    await expectScreenshot(page.getByRole("main").locator("[data-setup-column]"), "setup");
   });
 });

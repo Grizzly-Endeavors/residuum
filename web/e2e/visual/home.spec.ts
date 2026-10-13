@@ -16,7 +16,7 @@ test.describe("home", { tag: "@visual" }, () => {
       page.getByRole("region", { name: "Coming up" }).getByRole("listitem"),
     ).not.toHaveCount(0);
     // The block that holds the board and the team's column, which scrolls inside the page: shot whole, not as far as the window shows.
-    const content = page.getByRole("group", { name: "Home overview" });
+    const content = page.getByRole("main").locator("[data-home-overview]");
     await expectScreenshot(content, "home");
   });
 });

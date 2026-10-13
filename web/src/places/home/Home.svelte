@@ -59,7 +59,7 @@
 </PlaceHeader>
 
 <div class="home-scroll">
-  <div class="home" role="group" aria-label="Home overview">
+  <div class="home" data-home-overview>
     <div class="home-main">
       <p class="tally-phone">{@render tallyLine()}</p>
 
