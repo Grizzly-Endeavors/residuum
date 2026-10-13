@@ -23,7 +23,7 @@ export default tseslint.config(
 
   // ── TypeScript files ────────────────────────────────────────────────
   {
-    files: ["src/**/*.ts", "build/**/*.ts", "mock/**/*.ts", "e2e/**/*.ts"],
+    files: ["src/**/*.ts", "build/**/*.ts", "mock/**/*.ts", "scripts/**/*.ts", "e2e/**/*.ts"],
     languageOptions: {
       parserOptions: {
         projectService: true,
@@ -100,6 +100,20 @@ export default tseslint.config(
     },
   },
 
+  // ── Node scripts ────────────────────────────────────────────────────
+  // CI runs these with plain Node, so they are JavaScript outside the
+  // TypeScript project and get the base rules without type information.
+  {
+    files: ["scripts/**/*.mjs"],
+    extends: [tseslint.configs.disableTypeChecked],
+    languageOptions: { globals: globals.node },
+    rules: {
+      "no-console": "error",
+      "prefer-const": "error",
+      eqeqeq: ["error", "always", { null: "ignore" }],
+    },
+  },
+
   // ── End-to-end specs wait on conditions ─────────────────────────────
   // A fixed sleep passes on a quiet machine and fails on a loaded one, and on
   // a quiet one it only slows the suite. Wait for what the next step needs
@@ -134,7 +148,7 @@ export default tseslint.config(
   // `shouldAdvanceTime` lets real time run them again, so it is banned too.
   // A zero delay only flushes a macrotask, and stays allowed.
   {
-    files: ["src/**/*.test.ts", "mock/**/*.test.ts"],
+    files: ["src/**/*.test.ts", "mock/**/*.test.ts", "scripts/**/*.test.ts"],
     rules: {
       "no-restricted-properties": [
         "error",

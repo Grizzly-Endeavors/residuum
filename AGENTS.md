@@ -26,7 +26,7 @@ Bypass is **FORBIDDEN**.
 
 ### Local Tasks
 
-The `justfile` wraps the commands above; `just` lists the recipes. `just check` runs everything CI runs except the web end-to-end suite (web checks, then fmt, clippy, tests, and `cargo deny`; a failing check does not stop the others, and the failures are listed at the end), `just test <filter>` runs `cargo test --quiet --no-fail-fast <filter>`, `just web-mock` runs the web UI against the mock API, and `just web-e2e` runs the web end-to-end, accessibility and visual suite (the visual comparisons render in the Playwright container, so it needs Docker; `just web-e2e-fast` leaves them out). Every cargo recipe builds `web/dist` first when it is missing, because `build.rs` refuses to compile without it.
+The `justfile` wraps the commands above; `just` lists the recipes. `just check` runs everything CI runs except the web end-to-end suite (web checks, then fmt, clippy, tests, and `cargo deny`; a failing check does not stop the others, and the failures are listed at the end), `just test <filter>` runs `cargo test --quiet --no-fail-fast <filter>`, `just web-mock` runs the web UI against the mock API, and `just web-e2e` runs the web end-to-end, accessibility and visual suite (the visual comparisons render in the Playwright container, so it needs Docker; `just web-e2e-fast` leaves them out). In CI the visual comparisons run in a job of their own that never fails a pull request or a release, and report changed shots in one pull request comment. Every cargo recipe builds `web/dist` first when it is missing, because `build.rs` refuses to compile without it.
 
 ### Cross-Platform Targets
 
@@ -37,11 +37,11 @@ Release builds target Linux x86_64, Linux aarch64, macOS aarch64 (Apple Silicon)
 
 CI does not cross-compile by default; when it does, it runs clippy with `-D warnings` for each target and the test suite on a Windows runner. For platform-sensitive changes (unsafe/FFI, `cfg(target_os)`/`cfg(windows)`/`cfg(unix)` branches, paths, process spawning, signals, permissions), add the `cross-compile` label to the PR, or run `gh workflow run cross-compile.yml --ref <branch>`. PRs that change `Cargo.toml`, `Cargo.lock`, `build.rs`, or `rust-toolchain.toml` cross-compile automatically. See CONTRIBUTING.md.
 
+To run on real Windows locally (tests, clippy with the native toolchain, and desktop checks such as toast notifications), use the VM harness in `scripts/windows-vm/`; see [docs/runbooks/windows-harness.md](./docs/runbooks/windows-harness.md).
+
 ### Rust Toolchain
 
 The Rust version is pinned in `rust-toolchain.toml` so the pre-commit hook, CI, and release builds all use the same compiler and clippy. Bumping it is its own PR, together with fixes for any new lints.
-
-To run on real Windows locally (tests, clippy with the native toolchain, and desktop checks such as toast notifications), use the VM harness in `scripts/windows-vm/`; see [docs/runbooks/windows-harness.md](./docs/runbooks/windows-harness.md).
 
 ### Lint Rules
 

@@ -66,6 +66,10 @@ test.describe("a live turn", () => {
       feed.getByRole("button", { name: /^Read(ing)? team\/wiki\/index\.md/ }),
     ).toBeVisible();
     await expect(feed.getByText("Looking through recent notes first.")).toBeVisible();
+    // The hub has heard the agent is busy: the header's mark is working. The head
+    // shows the turn's elapsed time in whole seconds, so 1.3s reads as 1s.
+    await expect(page.getByRole("main").locator("[data-working]").first()).toBeAttached();
+    await expect(feed.locator("[data-turn-head]").getByText("1s", { exact: true })).toBeVisible();
     await expectNoAxeViolations(page);
 
     await mock.post("/api/mock/turn-hold", { data: { held: false } });
@@ -76,6 +80,7 @@ test.describe("a live turn", () => {
     await expect(line).toBeVisible();
     await expect(line).toHaveAttribute("aria-expanded", "false");
     await expect(feed.getByText("Working")).toHaveCount(0);
+    await expect(page.getByRole("main").locator("[data-working]")).toHaveCount(0);
     // The turn did work worth timing, so its close says how long: from 0 to
     // the move that reached 61.3s.
     await expect(feed.getByText("Worked for 1m 01s", { exact: true })).toBeVisible();
@@ -152,6 +157,7 @@ test("a turn from history opens to its steps, and a step to its details", async 
   const details = page.locator(`#${(await step.getAttribute("aria-controls")) ?? ""}`);
   await expect(details).toContainText("$ residuum memory stats");
   await expect(details).toContainText("Context window: 12,847 / 200,000 tokens (6.4%)");
+  await expect(details).toContainText(/Last observer run: \S/);
   await expectNoAxeViolations(page);
 
   await line.click();

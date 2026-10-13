@@ -263,7 +263,7 @@
   );
 </script>
 
-<form class="composer" {onsubmit} {onfocusout} {@attach watchKeys}>
+<form class="composer" aria-labelledby={labelId} {onsubmit} {onfocusout} {@attach watchKeys}>
   {#if showMenu}
     <SlashMenu
       id={menuId}

@@ -63,6 +63,11 @@ test("lists every agent's items, and opening one marks it read and drops the cou
   await expectNoAxeViolations(page);
 });
 
+test("an agent's archive with nothing in it says so", async ({ page }) => {
+  await page.goto("/inbox?agent=drifter&tab=archived");
+  await expect(inbox(page).getByText("Nothing from drifter is archived.")).toBeVisible();
+});
+
 test("Back closes the open item before it leaves the Inbox", async ({ page }) => {
   await page.goto("/home");
   await page.goto("/inbox");
