@@ -10,7 +10,6 @@ on:
       - "web/**"
       - "scripts/with-playwright-container.sh"
       - "scripts/web-initial-route-size.sh"
-      - "scripts/visual-report.mjs"
       - ".github/workflows/quality-checks.yml"
       - ".github/workflows/web-pr.yml"
 
@@ -34,7 +33,9 @@ jobs:
   # a later run finds it and edits it instead of adding another. A run whose
   # shots all match edits an existing comment to say so and posts nothing when
   # there is none: a pull request that changes no look has no reason to carry a
-  # comment. Posting is best effort and never fails the pull request's checks.
+  # comment. A run with no status at all (the visual job broke before it sorted
+  # the shots) says so in the comment, so an earlier push's result never stands
+  # as the current one. Posting is best effort and never fails the pull request's checks.
   # A superseded run is cancelled and posts nothing; the run that replaces it
   # reports.
   visual-report:
@@ -53,16 +54,11 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          QUALITY_RESULT: ${{ needs.quality.result }}
           STATUS: ${{ needs.quality.outputs.visual_status }}
           BODY: ${{ needs.quality.outputs.visual_body }}
         run: |
           marker='<!-- residuum-visual-report -->'
           if [ -z "$STATUS" ]; then
-            if [ "$QUALITY_RESULT" = "success" ]; then
-              echo 'The visual comparisons did not run; nothing to report.'
-              exit 0
-            fi
             BODY="$marker"$'\n\n'"### Web visual comparisons"$'\n\n'"The visual comparisons produced no result. See [the workflow run]($RUN_URL)."$'\n'
           fi
 
