@@ -1,6 +1,7 @@
 import type { PreviewServer, ViteDevServer } from "vite";
 import { apiRoutes } from "./api-routes";
 import { startArtifactsListener } from "./artifacts-listener";
+import { createCloudCallbackHandler } from "./cloud";
 import { createMockEnv } from "./env";
 import { createHub } from "./hub";
 import { apiMiddleware, createApiHandler, firstToHandle } from "./middleware";
@@ -68,9 +69,12 @@ export function startMock(
     seed: options.setup ? undefined : seedAgents,
   });
   const api = createApiHandler({ hub, routes: apiRoutes });
+  const appOrigin = firstToHandle(api, createCloudCallbackHandler(hub));
   host.middlewares.use(
     apiMiddleware(
-      distDir === undefined ? api : firstToHandle(api, createRebuiltWorkerHandler(hub, distDir)),
+      distDir === undefined
+        ? appOrigin
+        : firstToHandle(appOrigin, createRebuiltWorkerHandler(hub, distDir)),
     ),
   );
   const listener = startArtifactsListener(

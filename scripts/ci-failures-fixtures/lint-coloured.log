@@ -1,0 +1,11 @@
+2026-10-12T19:20:01.0000000Z ##[group]Run npm --prefix web run lint:css
+2026-10-12T19:20:04.0000000Z [4msrc/lib/probe.css[24m
+2026-10-12T19:20:04.1000000Z   [2m2:10[22m  [31m✖[39m  Use a color token instead of a named color.  [2mcolor-named[22m
+2026-10-12T19:20:04.2000000Z   [2m3:10[22m  [31m✖[39m  Use a color token instead of a named color.  [2mcolor-named[22m
+2026-10-12T19:20:04.3000000Z 
+2026-10-12T19:20:04.4000000Z [31m✖[39m 2 problems (2 errors, 0 warnings)
+2026-10-12T19:20:04.5000000Z ##[error]Process completed with exit code 2.
+2026-10-12T19:20:05.0000000Z ##[group]Run npm --prefix web run lint:rest
+2026-10-12T19:20:08.0000000Z [4m/home/runner/_work/residuum/residuum/web/src/lib/a.ts[24m
+2026-10-12T19:20:08.1000000Z   [2m1:7[22m  [31merror[39m  'unused' is assigned a value but never used.  [2m@typescript-eslint/no-unused-vars[22m
+2026-10-12T19:20:08.5000000Z ##[error]Process completed with exit code 1.

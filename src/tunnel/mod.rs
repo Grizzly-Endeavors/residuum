@@ -17,6 +17,10 @@ pub enum TunnelStatus {
     Disconnected,
     /// Attempting to connect to the relay.
     Connecting,
+    /// The relay refused this install's token (HTTP 401 or 403 on
+    /// registration). The tunnel keeps trying at the longest backoff, so a
+    /// token the relay accepts again reconnects without a restart.
+    Refused,
     /// Connected to the relay, which Residuum accepted as the one it was set
     /// up with.
     Connected {

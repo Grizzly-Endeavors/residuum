@@ -67,7 +67,7 @@ Use prefixed branch names:
 
 ### Quality Gates
 
-The git hooks split the checks between commit and push, so a commit takes seconds and the slow checks run once per push.
+The git hooks split the checks between commit and push: a commit runs the quick checks on what is staged, and the slow ones run once per push.
 
 On every commit (pre-commit), on what is staged:
 - `cargo fmt` — formatting (auto-applied and staged)
@@ -75,6 +75,7 @@ On every commit (pre-commit), on what is staged:
 - `testing::source_scan` — the source scans (see [Waiting in tests](#waiting-in-tests))
 - `scripts/check-generated-types.sh` — the web app's TypeScript protocol types match the Rust types
 - `cargo deny check` — dependency audit
+- `scripts/ci-failures-test.sh` — the `just ci-failures` log parser against its fixtures, when a `scripts/ci-failures*` file is staged
 - No `dbg!()` or `#[allow(...)]` in the staged diff, and no growth of the wall-clock backlog
 
 On every push (pre-push), against the pushed branch merged with the current `main` (the hook fetches `origin/main` and, when the branch is behind it, builds the merge in a temporary worktree; a conflict fails the push until you merge `main` into your branch):
@@ -84,6 +85,8 @@ On every push (pre-push), against the pushed branch merged with the current `mai
 Every push check runs even after one fails, and the hook ends with a summary of what failed. Do not bypass the hooks: `--no-verify` is not allowed on `git commit` or `git push`. If a hook fails, fix the issue and try again.
 
 CI repeats these checks and adds four. Its Rust half runs on every pull request that changes Rust code or what the build embeds (`src/`, `tests/`, `assets/`, the Cargo and lint configuration, the generated web types), its web half on every pull request that changes `web/`, and both on release tags. The Rust half runs the whole test suite, then runs it again as two concurrent copies under CPU load (`just stress`, see Testing), and the Pebble tests (`just pebble`), which issue certificates from the Let's Encrypt test CA in Docker. It runs the whole web end-to-end, accessibility and visual suite against the mock, in the Playwright container's browser, so the runners need no Chromium of their own (`just web-e2e` runs it locally; `just web-e2e-fast` leaves out the visual comparisons and runs in your own Chromium; see [web/CONTRIBUTING.md](web/CONTRIBUTING.md#testing)). It regenerates the web's TypeScript protocol types from the Rust types and fails when `web/src/lib/generated/` differs from what is committed, so after changing an exported Rust type run `just types` and commit the result (`just types-check` runs the same check as CI). It also reports web test coverage in the job summary, with no threshold.
+
+When a CI run fails, `just ci-failures` lists every failing test of the latest runs for your branch, grouped by job and step, so one pass can fix them all. It takes a PR number, a branch, a release tag or a commit instead when you want another one. Each failure carries two flags: `touched` when this change edits the failing test's file, and `seen elsewhere` when the same failure was in a failed run on another branch or tag in the last 14 days. A failure that is not `touched` but is `seen elsewhere` is marked `likely flake`: it may be a flake, or a breakage other branches share, so check `main` before treating it as this change's. Every other failure is presumed to come from this change. Failed jobs' logs are cached under `target/ci-failures-cache/`. The log parser has fixtures: `just ci-failures-test` checks it.
 
 ### Style
 

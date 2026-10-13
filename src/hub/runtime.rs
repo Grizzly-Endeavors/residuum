@@ -10,11 +10,13 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use axum::http::request::Parts;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
 use crate::config::{Config, HubConfig};
+use crate::gateway::browser_landing::{self, Landing};
 use crate::gateway::last_known_good;
 use crate::gateway::types::{GatewayExit, ReloadReceiver, ReloadSignal, TermSignal};
 use crate::inference::EmbeddingProvider;
@@ -195,7 +197,8 @@ impl RemoteWiring {
         let notices = Arc::clone(host);
         Self {
             ui_router: app.clone(),
-            workbench_router: workbench_router.unwrap_or_else(workbench_unavailable_router),
+            workbench_router: workbench_router
+                .unwrap_or_else(|| workbench_unavailable_router(services.pairing.clone())),
             pairing: services.pairing.clone(),
             slot: services.remote_access.clone(),
             notify: Arc::new(move |message| notices.notice(NoticeLevel::Warn, message, None)),
@@ -204,13 +207,32 @@ impl RemoteWiring {
 }
 
 /// Stands in for the workbench router when its listener couldn't start.
-fn workbench_unavailable_router() -> axum::Router {
-    axum::Router::new().fallback(|| async {
-        (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+fn workbench_unavailable_router(pairing: crate::pairing::DevicePairing) -> axum::Router {
+    axum::Router::new().fallback(move |request: Parts| {
+        let ui_origin = pairing.origin_of(crate::pairing::Surface::Ui);
+        std::future::ready(workbench_unavailable(&request, ui_origin))
+    })
+}
+
+/// A tab goes to the Workbench in the app, which shows why artifacts aren't
+/// available; anything else is told here.
+fn workbench_unavailable(request: &Parts, ui_origin: Option<String>) -> axum::response::Response {
+    if let Some(origin) = &ui_origin
+        && browser_landing::is_top_level_navigation(&request.method, &request.headers)
+    {
+        return browser_landing::redirect_to_app_origin(origin, "/team/workbench");
+    }
+    let link = ui_origin.map(|origin| format!("{origin}/team/workbench"));
+    browser_landing::page_or_text(
+        &request.method,
+        &request.headers,
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        &Landing::new(
+            "Workbench unavailable",
             "Workbench artifacts aren't available on this Residuum instance right now. Check Residuum's logs for why its artifacts listener couldn't start.",
         )
-    })
+        .with_app_link(link.as_deref(), "Open the Workbench"),
+    )
 }
 
 /// The handles a relay tunnel is started with.
