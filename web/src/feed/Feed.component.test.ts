@@ -314,6 +314,51 @@ describe("Jump to latest", () => {
   });
 });
 
+describe("following", () => {
+  it("keeps the reader at the end when the browser moved them just before older items landed", async () => {
+    const recent: FeedItem[] = [
+      { id: 10, kind: "user", content: "Recent question" },
+      { id: 11, kind: "assistant", content: "Recent answer" },
+    ];
+    const older: FeedItem[] = [
+      { id: 1, kind: "user", content: "Older question" },
+      { id: 2, kind: "assistant", content: "Older answer" },
+    ];
+    const { rerender } = render(Feed, {
+      agent: "atlas",
+      items: recent,
+      label: "Conversation with atlas",
+    });
+    const region = screen.getByRole("region", { name: "Conversation with atlas" });
+    const geometry = { clientHeight: 500, scrollTop: 1500 };
+    // Each item adds 430px once it is in the page: 2000px with the recent two.
+    Object.defineProperty(region, "scrollHeight", {
+      get: () => 1140 + 430 * region.querySelectorAll("[data-feed-item]").length,
+    });
+    Object.defineProperty(region, "clientHeight", { get: () => geometry.clientHeight });
+    Object.defineProperty(region, "scrollTop", { get: () => geometry.scrollTop });
+    region.scrollTo = ((options: { top: number }) => {
+      geometry.scrollTop = options.top;
+    }) as typeof region.scrollTo;
+    await settle();
+    scrollReader(region, geometry, 1500);
+    await settle();
+
+    // Seen on a 320px phone as the chat opened: the page settled around the
+    // feed, so the browser moved the position back 4px to keep it in range,
+    // and an older episode was prepended before that move's scroll event.
+    geometry.clientHeight = 504;
+    geometry.scrollTop = 1496;
+    await rerender({ items: [...older, ...recent] });
+    await settle();
+    region.dispatchEvent(new Event("scroll"));
+    await settle();
+
+    expect(screen.queryByRole("button", { name: /Jump to latest/ })).toBeNull();
+    expect(geometry.scrollTop).toBe(2860);
+  });
+});
+
 describe("a dock over the foot of the feed", () => {
   it("floats beside the scrolling region, outside it, and tells the feed it is docked", () => {
     const { container } = render(Feed, {

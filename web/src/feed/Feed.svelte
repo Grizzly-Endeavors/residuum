@@ -231,6 +231,19 @@
 
   // ── Following ──────────────────────────────────────────────────────
 
+  // Before the items change the content, a scroll position the scroller
+  // hasn't taken in yet is judged against the content it was made over: its
+  // event comes a frame later, measured against whatever has landed by then.
+  $effect.pre(() => {
+    void items.length;
+    void items[0];
+    void items.at(-1);
+    void live;
+    untrack(() => {
+      scroller.catchUpWithScroll();
+    });
+  });
+
   let lastTailId: number | undefined;
   let lastLength = 0;
   let lastLive = false;
