@@ -41,15 +41,19 @@ SHARED_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 # checks below run tools that would otherwise read the rest of it.
 mapfile -t PUSHED_REFS
 
+# MAIN_FRESH: origin/main is what the remote has now, so merging it shows the
+# branch as it would land. MAIN_KNOWN: some copy of it exists, which is enough
+# to tell where a branch left main.
+MAIN_FRESH=0
+MAIN_KNOWN=0
 # A fetch that can't reach the remote must not hang on a credential prompt.
-if ! GIT_TERMINAL_PROMPT=0 git fetch --quiet origin "+refs/heads/main:$MAIN_REF"; then
-    note "WARNING: couldn't fetch main from origin; checking the pushed commits without merging main into them."
-    MAIN_AVAILABLE=0
-elif git rev-parse --verify --quiet "$MAIN_REF" >/dev/null; then
-    MAIN_AVAILABLE=1
+if GIT_TERMINAL_PROMPT=0 git fetch --quiet origin "+refs/heads/main:$MAIN_REF"; then
+    MAIN_FRESH=1
 else
-    MAIN_AVAILABLE=0
+    note "WARNING: couldn't fetch main from origin; checking the pushed commits without merging main into them."
 fi
+git rev-parse --verify --quiet "$MAIN_REF" >/dev/null && MAIN_KNOWN=1
+[ "$MAIN_KNOWN" = 1 ] || MAIN_FRESH=0
 
 # Which parts of the tree the commits being pushed change. The range starts at
 # what the remote already has, or for a new branch where it left main. With
@@ -60,7 +64,7 @@ classify_range() {
     local local_sha="$1" remote_sha="$2" base=""
     if [ "$remote_sha" != "$ZERO_SHA" ] && git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
         base="$remote_sha"
-    elif [ "$MAIN_AVAILABLE" = 1 ]; then
+    elif [ "$MAIN_KNOWN" = 1 ]; then
         base="$(git merge-base "$local_sha" "$MAIN_REF" 2>/dev/null)"
     fi
     if [ -z "$base" ]; then
@@ -159,7 +163,13 @@ run_rust_checks() {
         if [ "$dir" != "$REPO_ROOT" ] || [ ! -f web/dist/index.html ] || [ ! -f web/dist/sw.js ]; then
             ensure_web_deps web || exit 1
             echo "Building web/dist..."
-            (cd web && npm run build >/dev/null) || exit 1
+            # Vite's output, chunk-size advice included, only matters when the
+            # build fails.
+            local build_output
+            build_output="$(cd web && npm run build 2>&1)" || {
+                echo "$build_output" >&2
+                exit 1
+            }
         fi
     ) || {
         FAILED+=("${CHECK_SCOPE}web build for the Rust checks")
@@ -208,7 +218,7 @@ for line in "${PUSHED_REFS[@]}"; do
     CHECKED_ANY=1
 
     merge=0
-    if [ "$MAIN_AVAILABLE" = 1 ] && ! git merge-base --is-ancestor "$MAIN_REF" "$local_sha"; then
+    if [ "$MAIN_FRESH" = 1 ] && ! git merge-base --is-ancestor "$MAIN_REF" "$local_sha"; then
         if git merge-base "$local_sha" "$MAIN_REF" >/dev/null 2>&1; then
             merge=1
         else
