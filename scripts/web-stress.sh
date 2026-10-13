@@ -62,9 +62,11 @@ base="$(git merge-base "$base_ref" HEAD)" || {
     exit 1
 }
 
-# Git prints paths from the repository root, Playwright takes them from web/.
-edited="$(git diff --name-only --diff-filter=d "$base" -- 'web/e2e/**/*.spec.ts')"
-added="$(git ls-files --others --exclude-standard -- 'web/e2e/**/*.spec.ts')"
+# Git prints paths from the repository root, Playwright takes them from web/. The
+# first pathspec needs a directory between web/e2e/ and the spec; the second also
+# matches a spec directly under web/e2e/.
+edited="$(git diff --name-only --diff-filter=d "$base" -- 'web/e2e/**/*.spec.ts' 'web/e2e/*.spec.ts')"
+added="$(git ls-files --others --exclude-standard -- 'web/e2e/**/*.spec.ts' 'web/e2e/*.spec.ts')"
 changed="$(printf '%s\n%s\n' "$edited" "$added" | sed -e '/^$/d' -e 's|^web/||' | sort -u)"
 
 # The workflow's job summary row reads this step output, so it can say what ran.
@@ -85,14 +87,30 @@ if [ "${#specs[@]}" -eq 0 ]; then
 fi
 echo "Changed specs against $base_ref (merge base $base):"
 printf '  %s\n' "${specs[@]}"
+spec_list="$(printf '%s, ' "${specs[@]}" | sed 's/, $//')"
 
 cd "$repo/web"
 
-# --list runs no test and starts no server. Playwright exits non-zero when no test
-# matches, which a spec of visual tests alone does here, so the Total line decides
-# whether anything runs and the exit status only matters when tests were listed.
+# --list runs no test and starts no server. --pass-with-no-tests makes Playwright exit 0
+# when the selection holds only tests outside these projects (visual specs), so a
+# non-zero status here means the listing itself failed, such as a spec that does not
+# load. That fails the step before the zero-test check can read it as "nothing to repeat".
 list_status=0
-listing="$(npm run --silent e2e:fast -- --list "${specs[@]}" "$@")" || list_status=$?
+# stderr is captured too: a spec that fails to load reports its error there.
+listing="$(npm run --silent e2e:fast -- --list --pass-with-no-tests "${specs[@]}" "$@" 2>&1)" || list_status=$?
+if [ "$list_status" -ne 0 ]; then
+    # Playwright names the file that failed as `smoke/x.spec.ts` (relative to web/e2e)
+    # or with its absolute path, so match on the part after `e2e/`.
+    broken=""
+    for spec in "${specs[@]}"; do
+        if grep -qF "${spec#e2e/}" <<<"$listing"; then
+            broken+="${broken:+, }$spec"
+        fi
+    done
+    printf '%s\n' "$listing" >&2
+    echo "error: Playwright could not load the changed specs (status $list_status). Failed to load: ${broken:-not identified, see the output above}. Fix the error the output shows; the step fails until the listing succeeds." >&2
+    exit "$list_status"
+fi
 instances="$(sed -n 's/^Total: \([0-9]*\) tests\{0,1\} in .*$/\1/p' <<<"$listing")"
 if ! [[ "$instances" =~ ^[0-9]+$ ]]; then
     printf '%s\n' "$listing" >&2
@@ -104,11 +122,6 @@ if [ "$instances" -eq 0 ]; then
     record "changed specs have no tests in these projects"
     exit 0
 fi
-if [ "$list_status" -ne 0 ]; then
-    printf '%s\n' "$listing" >&2
-    echo "error: Playwright's listing failed with status $list_status." >&2
-    exit "$list_status"
-fi
 
 repeat="$repeat_cap"
 lowered=""
@@ -118,7 +131,7 @@ if (( instances * repeat > instance_budget )); then
     lowered="; WEB_STRESS_REPEAT=$repeat_cap lowered by the budget of $instance_budget instance-runs"
 fi
 
-record "$(IFS=', '; echo "${specs[*]}") ($instances test instances, $repeat run(s) each, CPU throttled ${throttle}x, $workers workers)"
+record "$spec_list ($instances test instances, $repeat run(s) each, CPU throttled ${throttle}x, $workers workers)"
 
 echo "Stress: $instances test instances, $repeat run(s) each$lowered. $workers workers, CPU throttled ${throttle}x."
 
