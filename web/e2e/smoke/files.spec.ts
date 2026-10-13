@@ -273,6 +273,7 @@ test("Shared files follows the team's folder live", async ({ page, isMobile, moc
   await expect(page.getByRole("heading", { name: "Shared files", level: 1 })).toBeVisible();
   await row(page, "wiki").click();
   await expect(row(page, "wiki/index.md")).toBeVisible();
+  await expect(row(page, "wiki/projects")).toBeVisible();
   await expectNoAxeViolations(page);
 
   await mock.post("/api/mock/team-file", {

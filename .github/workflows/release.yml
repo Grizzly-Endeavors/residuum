@@ -39,9 +39,12 @@ jobs:
           echo "**Tag:** ${{ steps.version.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
           echo "**Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
 
+  # The visual comparisons report on pull requests and never gate a release.
   quality:
     name: Quality Checks
     uses: ./.github/workflows/quality-checks.yml
+    with:
+      visual: false
 
   # The builds run beside the quality checks instead of after them. Nothing
   # leaves the workflow until both pass: the Docker image and the GitHub

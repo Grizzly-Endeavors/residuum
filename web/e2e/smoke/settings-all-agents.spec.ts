@@ -44,6 +44,7 @@ test.describe("General", () => {
 
     await page.getByLabel("Timezone").selectOption("Europe/Berlin");
     await page.getByRole("button", { name: "More options" }).click();
+    await expect(page.getByLabel("Bind address")).toBeVisible();
     await page.getByLabel("Port", { exact: true }).fill("7711");
     await expect(saveBar(page)).toContainText("You have unsaved changes.");
     await expectNoAxeViolations(page, { within: OVERLAY });
@@ -221,6 +222,9 @@ test.describe("Session limits and Diagnostics", () => {
     page,
   }) => {
     await openSection(page, "diagnostics");
+    await expect(
+      page.getByRole("switch", { name: "Redact content in trace exports" }),
+    ).toBeChecked();
     const report = page.getByRole("switch", { name: "Report errors automatically" });
     await expect(report).not.toBeChecked();
     await expectNoAxeViolations(page, { within: OVERLAY });

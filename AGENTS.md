@@ -27,7 +27,7 @@ Bypassing a hook with `--no-verify` is **FORBIDDEN**, on `git push` as on `git c
 
 ### Local Tasks
 
-The `justfile` wraps the commands above; `just` lists the recipes. `just check` runs everything CI runs except the web end-to-end suite (web checks, then fmt, clippy, tests, and `cargo deny`; a failing check does not stop the others, and the failures are listed at the end), `just test <filter>` runs `cargo test --quiet --no-fail-fast <filter>`, `just web-mock` runs the web UI against the mock API, and `just web-e2e` runs the web end-to-end, accessibility and visual suite (the visual comparisons render in the Playwright container, so it needs Docker; `just web-e2e-fast` leaves them out). Every cargo recipe builds `web/dist` first when it is missing, because `build.rs` refuses to compile without it.
+The `justfile` wraps the commands above; `just` lists the recipes. `just check` runs everything CI runs except the web end-to-end suite (web checks, then fmt, clippy, tests, and `cargo deny`; a failing check does not stop the others, and the failures are listed at the end), `just test <filter>` runs `cargo test --quiet --no-fail-fast <filter>`, `just web-mock` runs the web UI against the mock API, and `just web-e2e` runs the web end-to-end, accessibility and visual suite (the visual comparisons render in the Playwright container, so it needs Docker; `just web-e2e-fast` leaves them out). In CI the visual comparisons run in a job of their own that never fails a pull request or a release, and report changed shots in one pull request comment. Every cargo recipe builds `web/dist` first when it is missing, because `build.rs` refuses to compile without it.
 
 ### Cross-Platform Targets
 
@@ -175,7 +175,7 @@ Single-branch model: all work lands on `main`.
 ### Day-to-Day Work
 
 1. **Create a feature branch from `main`** with a descriptive name (e.g., `feat/add-telegram-retry`, `fix/memory-search-ranking`)
-2. **Commit frequently** — the pre-commit hook formats and audits what is staged; clippy, the tests and the generated-types check run once per push. Commit especially often during large multi-phase tasks.
+2. **Commit frequently** — the pre-commit hook formats and audits what is staged; clippy, the tests, the generated-types check and the web checks run once per push. Commit especially often during large multi-phase tasks.
 3. **Wrapup** Check for anything unfinished, ensure documents and guides are updated, create migration guides for breaking changes.
 4. **Push the branch** and merge into `main`
 
