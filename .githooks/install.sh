@@ -18,7 +18,7 @@ GIT_COMMON_DIR="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-com
 HOOK_DIR="$GIT_COMMON_DIR/hooks"
 mkdir -p "$HOOK_DIR"
 
-for hook in pre-commit commit-msg post-commit; do
+for hook in pre-commit commit-msg post-commit pre-push; do
     chmod +x "$SCRIPT_DIR/$hook"
     ln -sf "$SCRIPT_DIR/$hook" "$HOOK_DIR/$hook"
     echo "installed $hook"

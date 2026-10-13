@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 #
-# Pre-commit gate: format, lint, test, audit, then block two specific things
-# from entering the history.
+# Pre-commit gate: the fast checks, on what is staged. It formats the staged
+# files, keeps the generated types and the dependency audit in step with the
+# commit, and blocks a few things outright from entering the history.
+#
+# The slow checks (clippy, the whole test suite, the web lint, type check and
+# tests) run once per push in pre-push. They cost minutes, and paying that on
+# every commit pushes authors to commit less often or to route around the hook.
 #
 # Bypassing this hook with --no-verify is forbidden. If it fails, fix the
 # underlying issue — a hook you route around is a hook that isn't there.
@@ -18,24 +23,26 @@ fail() {
 }
 
 # Only the paths that were actually staged. Captured before formatting, because
-# the formatters rewrite the whole tree and we need to know what to put back.
+# cargo fmt rewrites the whole tree and we need to know what to put back.
 STAGED_RUST="$(git diff --cached --name-only --diff-filter=ACM -- '*.rs')"
 # Cargo.lock belongs here alongside the manifests: a lockfile-only commit is a
 # dependency bump, which is the change most likely to pull in a new advisory.
 # Matching on '*.toml' alone would let it through the gate unaudited.
 STAGED_MANIFEST="$(git diff --cached --name-only --diff-filter=ACM -- '*.toml' 'Cargo.lock')"
-# Anything under web/ can break the web checks: the app, its mock server, the
-# config files, the lockfile. A deletion counts too, since the file may still be
-# imported.
-STAGED_WEB="$(git diff --cached --name-only --diff-filter=ACDMR -- 'web/')"
-
-if [ -z "$STAGED_RUST" ] && [ -z "$STAGED_MANIFEST" ] && [ -z "$STAGED_WEB" ]; then
-    exit 0
-fi
+# The staged web files Prettier formats: the globs of the "format" script in
+# web/package.json, which is what CI's format check covers. Formatting a file
+# outside them (vite.config.ts, the README) would churn files nobody checks.
+STAGED_WEB_FORMAT="$(git diff --cached --name-only --diff-filter=ACMR -- 'web/' | while IFS= read -r file; do
+    case "${file#web/}" in
+    src/*.ts | src/*.svelte | src/*.js | src/*.json | src/*.css | build/*.ts | mock/*.ts | e2e/*.ts | playwright.config.ts)
+        echo "$file"
+        ;;
+    esac
+done)"
 
 # Re-stage a formatter's edits to files that were already staged.
 #
-# `git add -u` is the obvious thing here and it is wrong: the formatter rewrites
+# `git add -u` is the obvious thing here and it is wrong: cargo fmt rewrites
 # the whole tree, not just the staged paths, so `-u` also sweeps unrelated
 # working-tree edits the author deliberately left out of this commit. Passing
 # the captured paths keeps the commit to what was actually staged.
@@ -52,25 +59,9 @@ if [ -n "$STAGED_RUST" ] || [ -n "$STAGED_MANIFEST" ]; then
     cargo fmt --all || fail "ERROR: cargo fmt failed."
     restage "$STAGED_RUST"
 
-    echo "Linting..."
-    cargo clippy --all-targets --all-features -- -D warnings \
-        || fail "ERROR: clippy found issues. Fix them, or use #[expect(lint, reason = \"...\")] with a real reason."
-
-    echo "Testing..."
-    # Scope to the modules touched by this commit. residuum's full suite is slow
-    # enough that running all of it per commit pushes authors toward --no-verify,
-    # which costs more than the coverage it buys. CI runs everything.
-    CHANGED_MODULES="$(sed -n 's|^src/\([^/]*\).*\.rs$|\1|p' <<<"$STAGED_RUST" | sed 's|\.rs$||' | sort -u)"
-    if [ -n "$CHANGED_MODULES" ]; then
-        for mod in $CHANGED_MODULES; do
-            cargo test --quiet "${mod}::" || fail "ERROR: tests failed in ${mod}::."
-        done
-    else
-        cargo test --quiet || fail "ERROR: tests failed."
-    fi
-
     # The source scans read the whole crate, so a commit to any module can
-    # break them, and the touched-module runs above wouldn't notice.
+    # break them. They are the one test kept here: a wait on elapsed time is
+    # cheap to fix while the commit that adds it is still being written.
     echo "Scanning sources..."
     cargo test --quiet --lib testing::source_scan \
         || fail "ERROR: a source scan failed. A test that waits on elapsed time should wait on the event instead (CONTRIBUTING.md, \"Waiting in tests\")."
@@ -93,19 +84,19 @@ if [ -n "$STAGED_RUST" ] || [ -n "$STAGED_MANIFEST" ]; then
     fi
 fi
 
-if [ -n "$STAGED_WEB" ]; then
+if [ -n "$STAGED_WEB_FORMAT" ]; then
     echo "Formatting web..."
-    (cd web && npm run format >/dev/null 2>&1) || fail "ERROR: web formatter failed."
-    restage "$STAGED_WEB"
-
-    echo "Linting web..."
-    (cd web && npm run lint) || fail "ERROR: ESLint or the style lint found issues."
-
-    echo "Type-checking web..."
-    (cd web && npm run check) || fail "ERROR: svelte-check found issues."
-
-    echo "Testing web..."
-    (cd web && npm test) || fail "ERROR: web unit tests failed."
+    [ -x web/node_modules/.bin/prettier ] \
+        || fail "ERROR: web/node_modules is missing. Run 'npm ci' in web/ (or 'just web-install') and commit again."
+    # Prettier runs from web/ so it picks up web/.prettierrc and skips what
+    # web/.prettierignore lists, even when the path is named explicitly.
+    web_files=()
+    while IFS= read -r file; do
+        web_files+=("${file#web/}")
+    done <<<"$STAGED_WEB_FORMAT"
+    (cd web && node_modules/.bin/prettier --write --log-level warn -- "${web_files[@]}") \
+        || fail "ERROR: the web formatter failed."
+    restage "$STAGED_WEB_FORMAT"
 fi
 
 # Content gates on the staged diff. These catch the two things clippy cannot:
@@ -154,4 +145,4 @@ if [ -n "$BACKLOG_GROWTH" ]; then
     exit 1
 fi
 
-echo -e "${GREEN}All checks passed.${NC}"
+echo -e "${GREEN}Pre-commit checks passed. Clippy, the tests and the web checks run on push.${NC}"
