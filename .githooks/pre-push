@@ -91,6 +91,10 @@ run_check() {
 # as `just` does before any web recipe.
 ensure_web_deps() {
     local web="$1"
+    # A node_modules borrowed from this checkout was matched to the lockfile
+    # when it was linked, and the fresh checkout makes the lockfile look newer
+    # than it. npm ci would empty the checkout's copy through the link.
+    [ -L "$web/node_modules" ] && return 0
     [ "$web/node_modules/.package-lock.json" -nt "$web/package-lock.json" ] && return 0
     echo "Installing web dependencies in $web..."
     (cd "$web" && npm ci --no-audit --no-fund >/dev/null)
