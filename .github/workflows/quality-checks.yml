@@ -39,6 +39,9 @@ on:
         default: true
 
 jobs:
+  # Every check runs even when an earlier one fails, so one run lists every
+  # failure. A check runs only when the dependencies it needs were installed,
+  # and the job still fails if any step failed.
   web:
     name: Web Checks
     if: inputs.web
@@ -48,28 +51,34 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install web dependencies
+        id: web_install
         run: cd web && npm ci
 
       - name: Web format check
         id: web_format
+        if: ${{ !cancelled() && steps.web_install.outcome == 'success' }}
         run: cd web && npm run format:check
 
       - name: Web lint
         id: web_lint
+        if: ${{ !cancelled() && steps.web_install.outcome == 'success' }}
         run: cd web && npm run lint
 
       - name: Web type check
         id: web_typecheck
+        if: ${{ !cancelled() && steps.web_install.outcome == 'success' }}
         run: cd web && npm run check
 
       # The same tests as `npm test`, with a coverage report. Reported in the
       # job summary below, with no threshold.
       - name: Web unit tests
         id: web_test
+        if: ${{ !cancelled() && steps.web_install.outcome == 'success' }}
         run: cd web && npm run test:coverage
 
       - name: Build web assets
         id: web_build
+        if: ${{ !cancelled() && steps.web_install.outcome == 'success' }}
         run: cd web && npm run build
 
       - name: Build summary
@@ -80,6 +89,7 @@ jobs:
             echo ''
             echo '| Check | Status |'
             echo '|-------|--------|'
+            echo "| Install | ${{ steps.web_install.outcome }} |"
             echo "| Format | ${{ steps.web_format.outcome }} |"
             echo "| Lint | ${{ steps.web_lint.outcome }} |"
             echo "| Types | ${{ steps.web_typecheck.outcome }} |"
@@ -173,7 +183,7 @@ jobs:
         if: always()
         run: |
           {
-            echo '## Web End-to-End Results (shard ${{ matrix.shard }} of 4)'
+            echo "## Web End-to-End Results (shard ${{ matrix.shard }} of 4)"
             echo ''
             echo '| Check | Status |'
             echo '|-------|--------|'
@@ -181,7 +191,7 @@ jobs:
             if [ "${{ inputs.visual }}" = "true" ]; then
               echo "| Visual comparisons | ${{ steps.web_e2e_visual.outcome }} |"
             else
-              echo '| Visual comparisons | skipped: the `visual` input is off |'
+              echo "| Visual comparisons | skipped: the \`visual\` input is off |"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -196,23 +206,31 @@ jobs:
       # Install the version pinned in rust-toolchain.toml as its own toolchain;
       # the runner image's baked-in toolchain can't be updated in place.
       - name: Install pinned Rust toolchain
+        id: toolchain
         run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
 
       # build.rs refuses to compile without web/dist, which gets embedded in the binary
       - name: Build web assets
+        id: web_assets
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cd web && npm ci && npm run build
 
+      # The checks below run whether or not an earlier one failed, so one run
+      # lists every failure. Format and the dependency audit need only the
+      # toolchain; clippy also needs the web build, which the Rust build embeds.
       - name: Check formatting
         id: fmt
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cargo fmt --all --check
 
       - name: Clippy
         id: clippy
+        if: ${{ !cancelled() && steps.web_assets.outcome == 'success' }}
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Dependency audit
         id: deny
-        if: always() && steps.fmt.outcome != 'skipped'
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cargo deny check
 
       - name: Build summary
@@ -223,6 +241,7 @@ jobs:
             echo ''
             echo '| Check | Status |'
             echo '|-------|--------|'
+            echo "| Web assets | ${{ steps.web_assets.outcome }} |"
             echo "| Format | ${{ steps.fmt.outcome }} |"
             echo "| Clippy | ${{ steps.clippy.outcome }} |"
             echo "| Deny | ${{ steps.deny.outcome }} |"
@@ -243,23 +262,41 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install pinned Rust toolchain
+        id: toolchain
         run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
 
       - name: Build web assets
+        id: web_assets
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cd web && npm ci && npm run build
 
+      # Compiles every test binary before any test runs. The test steps depend on
+      # this build, not on each other, so a compile error is reported here once.
+      - name: Build test binaries
+        id: build_tests
+        if: ${{ !cancelled() && steps.web_assets.outcome == 'success' }}
+        run: cargo test --quiet --no-run
+
+      # --no-fail-fast runs every test binary, so one run lists every failing test.
+      # The output is kept for the Stress step, which tells the failures apart.
       - name: Tests
         id: test
-        run: cargo test --quiet
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
+        run: |
+          set -o pipefail
+          cargo test --quiet --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/tests.log"
 
       # The suite again, as two concurrent copies with every CPU busy: how it
-      # runs when several agents share a machine. Reuses the binaries the Tests
-      # step built. A failure here is a test waiting on time instead of the
-      # event it checks; fix the wait (CONTRIBUTING.md, "Waiting in tests"),
-      # never rerun past it.
+      # runs when several agents share a machine. Reuses the binaries the Build
+      # test binaries step built, and runs whether or not the Tests step passed.
+      # A test that fails only here is waiting on time instead of the event it
+      # checks: fix the wait (CONTRIBUTING.md, "Waiting in tests"), never rerun
+      # past it. A test that also fails in Tests is an ordinary failure.
       - name: Stress
         id: stress
-        if: steps.test.outcome == 'success'
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
+        env:
+          STRESS_TESTS_LOG: ${{ runner.temp }}/tests.log
         run: scripts/stress-tests.sh
 
       # Remote access issuance against Pebble, the Let's Encrypt test CA, in
@@ -270,14 +307,14 @@ jobs:
       # parallel tests can take each other's ports.
       - name: Pebble tests
         id: pebble
-        if: always() && steps.test.outcome != 'skipped'
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
         run: cargo test --quiet --lib -- --ignored --test-threads=1 pebble system_tests
 
       # Regenerates web/src/lib/generated from the Rust protocol types and
       # fails on any difference from what is committed.
       - name: Generated types are up to date
         id: types
-        if: always() && steps.test.outcome != 'skipped'
+        if: ${{ !cancelled() && steps.build_tests.outcome == 'success' }}
         run: scripts/check-generated-types.sh
 
       - name: Build summary
@@ -288,6 +325,8 @@ jobs:
             echo ''
             echo '| Check | Status |'
             echo '|-------|--------|'
+            echo "| Web assets | ${{ steps.web_assets.outcome }} |"
+            echo "| Test binaries | ${{ steps.build_tests.outcome }} |"
             echo "| Tests | ${{ steps.test.outcome }} |"
             echo "| Stress (2 copies under load) | ${{ steps.stress.outcome }} |"
             echo "| Pebble tests | ${{ steps.pebble.outcome }} |"

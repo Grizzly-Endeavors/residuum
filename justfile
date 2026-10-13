@@ -44,10 +44,10 @@ build: _web-dist
 release: web-build
     cargo build --release
 
-# Run tests, quietly; args are cargo's filters, e.g. `just test memory::` or `just test --test smoke`
+# Run tests, quietly, and run every test binary even after one fails, so the run lists every failure; args are cargo's filters, e.g. `just test memory::` or `just test --test smoke`
 [group('rust')]
 test *args: _web-dist
-    cargo test --quiet {{ args }}
+    cargo test --quiet --no-fail-fast {{ args }}
 
 # Run the tests under load: two copies at once plus CPU burners (STRESS_COPIES, STRESS_ROUNDS, STRESS_BURN); args are a libtest filter, e.g. `just stress hub::`
 [group('rust')]
@@ -199,25 +199,31 @@ web-e2e-webkit *args: _web-deps
 
 # --- checks ------------------------------------------------------------------
 
-# CI's web job except the end-to-end suite, which has its own recipes (web-e2e-fast, web-e2e); web-size builds, then prints the initial route's size
-[group('check')]
-web-check: web-fmt-check web-lint web-typecheck web-test web-size
+web_checks := "web-fmt-check web-lint web-typecheck web-test web-size"
 
-# Everything CI's rust job runs
+# CI's web job except the end-to-end suite, which has its own recipes (web-e2e-fast, web-e2e); web-size builds, then prints the initial route's size. Runs every check and lists the failures.
 [group('check')]
-rust-check: rust-fmt-check clippy test types-check deny
+web-check: _web-deps
+    {{ quote(just_executable()) }} _run-parts {{ web_checks }}
 
-# Everything CI runs except the web end-to-end suite (web-e2e-fast, web-e2e); web goes first because the Rust build embeds web/dist
+# Everything CI's rust job runs. Runs every check and lists the failures.
 [group('check')]
-check: web-check rust-check
+rust-check: _web-dist
+    {{ quote(just_executable()) }} _run-parts rust-fmt-check clippy test types-check deny
+
+# Everything CI runs except the web end-to-end suite (web-e2e-fast, web-e2e); web goes first because the Rust build embeds web/dist, so a broken web build stops rust-check before its checks run. Runs every check and lists the failures.
+[group('check')]
+check: _web-deps
+    {{ quote(just_executable()) }} _run-parts {{ web_checks }} rust-check
 
 # Format Rust and web sources
 [group('check')]
 fmt: rust-fmt web-fmt
 
-# Check Rust and web formatting without rewriting
+# Check Rust and web formatting without rewriting; runs both and lists the failures
 [group('check')]
-fmt-check: rust-fmt-check web-fmt-check
+fmt-check:
+    {{ quote(just_executable()) }} _run-parts rust-fmt-check web-fmt-check
 
 # Every failing test in the latest CI runs for a PR, branch, release tag or commit (default: current branch), with touched and seen-elsewhere flags
 [group('check')]
@@ -267,3 +273,23 @@ _web-dist: _web-deps
         echo "web/dist is older than $newer: rebuilding"
     fi
     npm run build
+
+# Runs each named recipe in its own `just` process, so its prerequisites still run. A failing recipe does not stop the rest; the failures are listed at the end and the exit status is non-zero if any failed.
+[private]
+_run-parts +parts:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    trap 'echo "interrupted" >&2; exit 130' INT TERM
+    parts=({{ parts }})
+    failed=()
+    for part in "${parts[@]}"; do
+        echo "==> $part"
+        if ! {{ quote(just_executable()) }} "$part"; then
+            failed+=("$part")
+        fi
+    done
+    if [ "${#failed[@]}" -gt 0 ]; then
+        echo "${#failed[@]} of ${#parts[@]} checks failed: ${failed[*]}" >&2
+        exit 1
+    fi
+    echo "all ${#parts[@]} checks passed"
