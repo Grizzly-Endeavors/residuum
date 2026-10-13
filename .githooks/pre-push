@@ -78,8 +78,10 @@ classify_range() {
 # Every check runs and its result is recorded; nothing exits early.
 FAILED=()
 PASSED=()
+# Names each result after its branch when one push checks several.
+CHECK_SCOPE=""
 run_check() {
-    local name="$1"
+    local name="$CHECK_SCOPE$1"
     shift
     echo -e "${BOLD}==> $name${NC}"
     local started=$SECONDS
@@ -160,7 +162,7 @@ run_rust_checks() {
             (cd web && npm run build >/dev/null) || exit 1
         fi
     ) || {
-        FAILED+=("web build for the Rust checks")
+        FAILED+=("${CHECK_SCOPE}web build for the Rust checks")
         echo -e "${RED}FAILED: building web/dist, which the Rust build needs. Skipping clippy and the tests.${NC}" >&2
         return
     }
@@ -177,7 +179,7 @@ cargo_in() {
 run_web_checks() {
     local dir="$1"
     if ! ensure_web_deps "$dir/web"; then
-        FAILED+=("npm ci")
+        FAILED+=("${CHECK_SCOPE}npm ci")
         echo -e "${RED}FAILED: installing web dependencies. Skipping the web checks.${NC}" >&2
         return
     fi
@@ -186,11 +188,18 @@ run_web_checks() {
     run_check "web tests (Vitest)" npm --prefix "$dir/web" test
 }
 
+PUSHED_COMMITS=0
+for line in "${PUSHED_REFS[@]}"; do
+    read -r _ local_sha _ _ <<<"$line"
+    [ "$local_sha" = "$ZERO_SHA" ] || PUSHED_COMMITS=$((PUSHED_COMMITS + 1))
+done
+
 CHECKED_ANY=0
 for line in "${PUSHED_REFS[@]}"; do
     read -r local_ref local_sha _remote_ref remote_sha <<<"$line"
     # Deleting a remote branch pushes nothing to check.
     [ "$local_sha" = "$ZERO_SHA" ] && continue
+    [ "$PUSHED_COMMITS" -gt 1 ] && CHECK_SCOPE="${local_ref#refs/heads/}: "
 
     TOUCHES_RUST=0
     TOUCHES_WEB=0
@@ -233,15 +242,17 @@ if [ "$CHECKED_ANY" = 0 ]; then
     exit 0
 fi
 
+echo >&2
+for name in "${PASSED[@]}"; do
+    echo -e "${GREEN}  passed: $name${NC}" >&2
+done
+for name in "${FAILED[@]}"; do
+    echo -e "${RED}  FAILED: $name${NC}" >&2
+done
+
 if [ "${#FAILED[@]}" -gt 0 ]; then
-    echo >&2
-    echo -e "${RED}${BOLD}Pre-push checks failed:${NC}" >&2
-    for name in "${FAILED[@]}"; do
-        echo -e "${RED}  - $name${NC}" >&2
-    done
-    [ "${#PASSED[@]}" -gt 0 ] && echo "Passed: ${PASSED[*]}" >&2
-    echo "Each check's output is above. Fix the failures, commit, and push again." >&2
+    echo -e "${RED}${BOLD}Pre-push checks failed (${#FAILED[@]}).${NC} Each check's output is above. Fix every failure, commit, and push again." >&2
     exit 1
 fi
 
-echo -e "${GREEN}Pre-push checks passed: ${PASSED[*]}${NC}"
+echo -e "${GREEN}Pre-push checks passed.${NC}" >&2
