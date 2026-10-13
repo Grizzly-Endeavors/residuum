@@ -4,6 +4,7 @@ import { startArtifactsListener } from "./artifacts-listener";
 import { createCloudCallbackHandler } from "./cloud";
 import { createMockEnv } from "./env";
 import { createHub } from "./hub";
+import { keepIdleConnectionsOpen } from "./http";
 import { apiMiddleware, createApiHandler, firstToHandle } from "./middleware";
 import { createRebuiltWorkerHandler } from "./rebuilt-worker";
 import { seedAgents } from "./scenario";
@@ -63,6 +64,10 @@ export function startMock(
   log: (message: string) => void,
   distDir?: string,
 ): MockHub {
+  // An HTTP/2 server, which Vite starts for HTTPS, has no idle timeout to lift; the mock serves plain HTTP.
+  if (host.httpServer !== null && "keepAliveTimeout" in host.httpServer) {
+    keepIdleConnectionsOpen(host.httpServer);
+  }
   const hub = createHub(host.httpServer, {
     env: createMockEnv(options),
     // With no agents the web UI shows the setup wizard, and finishing it creates the first one.
