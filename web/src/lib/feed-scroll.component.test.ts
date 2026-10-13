@@ -197,6 +197,10 @@ describe("FeedScroller, opening and closing things", () => {
     button.click();
     expect(scroller.isFollowing).toBe(false);
 
+    // Up to read what opened, then back down to the end.
+    layout.scrollTop = 1000;
+    scroll.dispatchEvent(new Event("scroll"));
+    expect(scroller.isFollowing).toBe(false);
     layout.scrollTop = 1500;
     scroll.dispatchEvent(new Event("scroll"));
     expect(scroller.isFollowing).toBe(true);
