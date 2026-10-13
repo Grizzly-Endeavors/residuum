@@ -44,10 +44,10 @@ build: _web-dist
 release: web-build
     cargo build --release
 
-# Run tests, quietly; args are cargo's filters, e.g. `just test memory::` or `just test --test smoke`
+# Run tests, quietly, and run every test binary even after one fails, so the run lists every failure; args are cargo's filters, e.g. `just test memory::` or `just test --test smoke`
 [group('rust')]
 test *args: _web-dist
-    cargo test --quiet {{ args }}
+    cargo test --quiet --no-fail-fast {{ args }}
 
 # Run the tests under load: two copies at once plus CPU burners (STRESS_COPIES, STRESS_ROUNDS, STRESS_BURN); args are a libtest filter, e.g. `just stress hub::`
 [group('rust')]
