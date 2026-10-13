@@ -455,11 +455,14 @@ describe("sending a line", () => {
 });
 
 describe("loading the history", () => {
-  afterEach(() => {
-    ws.historyError = null;
-  });
+  const historyPath = "/api/agents/atlas/chat/history";
 
   it("stands in for the conversation with a skeleton until it has loaded", async () => {
+    // The history request never answers, so the conversation stays loading
+    // until the test hands the feed its history.
+    mockFetch((url) =>
+      url === historyPath ? new Promise<Response>(() => {}) : jsonResponse({}, 404),
+    );
     setViewedAgent("atlas");
     render(ChatPlace, { agent: "atlas", actions: shell });
     await settle();
@@ -472,8 +475,8 @@ describe("loading the history", () => {
   });
 
   it("says why it didn't load, in the conversation, and offers Retry", async () => {
+    mockFetch((url) => jsonResponse({}, url === historyPath ? 500 : 404));
     setViewedAgent("atlas");
-    ws.historyError = "Residuum ran into a problem on its end.";
     const load = vi.spyOn(ws, "loadMainHistory").mockResolvedValue();
     render(ChatPlace, { agent: "atlas", actions: shell });
     await settle();
