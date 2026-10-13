@@ -4,6 +4,7 @@ import "./styles/ui-base.css";
 import { mount } from "svelte";
 import App from "./App.svelte";
 import { startServiceWorker } from "./lib/app-update.svelte";
+import { captureCloudHandoff } from "./lib/cloud-handoff";
 import { startConfigSync } from "./lib/config-sync";
 import { PAIRING_PATH } from "./lib/pairing";
 import { startInstallOffer } from "./shell/install-offer";
@@ -28,6 +29,8 @@ if (__UI_GALLERY__ && window.location.pathname === UI_GALLERY_PATH) {
     mount(PairingPage, { target }),
   );
 } else {
+  // The Cloud sign-in's outcome, before the router drops it from the address.
+  captureCloudHandoff(window.location.search);
   // Config changes made outside this page reach the views that show them.
   startConfigSync();
   startInstallOffer();

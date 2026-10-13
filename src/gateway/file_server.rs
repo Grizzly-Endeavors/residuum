@@ -13,8 +13,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use axum::http::{HeaderMap, Method, StatusCode};
+use axum::response::{IntoResponse, Response};
 use tokio::sync::RwLock;
 use tokio::time::Instant;
+
+use crate::gateway::browser_landing::{self, AppNotice, Fallback};
 
 /// How long a registered file remains available (1 hour).
 const FILE_TTL_SECS: u64 = 3600;
@@ -165,24 +169,47 @@ async fn sweep_entries(entries: &RwLock<HashMap<String, FileEntry>>) -> (usize, 
 }
 
 /// Axum handler to serve a registered file by ID.
+///
+/// A link whose registration expired (or whose file is gone) sends a browser
+/// that opened it to the agent's chat, which says the link expired and how to
+/// get the file again; anything else gets a JSON error.
 pub async fn serve_file(
+    method: Method,
+    headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
     axum::extract::State(registry): axum::extract::State<FileRegistry>,
-) -> axum::response::Response {
-    use axum::http::StatusCode;
-    use axum::response::IntoResponse;
-
+) -> Response {
     let Some((path, mime_type, filename)) = registry.get(&id).await else {
         tracing::debug!(file_id = %id, "file link expired or unknown, refusing to serve");
-        return StatusCode::NOT_FOUND.into_response();
+        return expired_link(&registry, &method, &headers);
     };
 
     let Ok(bytes) = tokio::fs::read(&path).await else {
         tracing::warn!(file_id = %id, path = %path.display(), "registered file not readable");
-        return StatusCode::NOT_FOUND.into_response();
+        return expired_link(&registry, &method, &headers);
     };
 
     respond_with_file(bytes, &mime_type, &filename)
+}
+
+/// The answer for a token link that no longer leads to a file.
+fn expired_link(registry: &FileRegistry, method: &Method, headers: &HeaderMap) -> Response {
+    if browser_landing::is_top_level_navigation(method, headers) {
+        return browser_landing::app_redirect(
+            &browser_landing::app_path(
+                &format!("/agent/{}", registry.agent_name),
+                &[("notice", AppNotice::FileLinkExpired.code())],
+            ),
+            Fallback {
+                title: "This link has expired",
+                message: "This file link has expired. Ask the agent to send the file again.",
+            },
+        );
+    }
+    json_error(
+        StatusCode::NOT_FOUND,
+        "This file link has expired. Ask the agent to send the file again.",
+    )
 }
 
 /// Query parameters for [`serve_workspace_file`].
@@ -195,52 +222,87 @@ pub struct WorkspaceFileQuery {
 /// Axum handler serving a file by its workspace-relative path — the
 /// counterpart to [`serve_file`] for files inside the workspace, which
 /// never expires as long as the file itself still exists there.
+///
+/// When the file can't be served, a browser that opened the link goes to the
+/// file in the agent's Files, which shows what became of it; anything else
+/// gets a JSON error.
 pub async fn serve_workspace_file(
+    method: Method,
+    headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<WorkspaceFileQuery>,
     axum::extract::State(registry): axum::extract::State<FileRegistry>,
-) -> axum::response::Response {
-    use axum::http::StatusCode;
-    use axum::response::IntoResponse;
+) -> Response {
+    match read_workspace_file(&registry, &query.path).await {
+        Ok(response) => response,
+        Err((status, message)) => {
+            if browser_landing::is_top_level_navigation(&method, &headers) {
+                let panel = format!("file:{}", query.path);
+                return browser_landing::app_redirect(
+                    &browser_landing::app_path(
+                        &format!("/agent/{}/files", registry.agent_name),
+                        &[("panel", &panel)],
+                    ),
+                    Fallback {
+                        title: "File unavailable",
+                        message: "This file isn't available from the workspace. It may have been moved or deleted.",
+                    },
+                );
+            }
+            json_error(status, message)
+        }
+    }
+}
 
+/// The response serving the workspace file at `relative`, or the status and
+/// plain-language reason it can't be served.
+async fn read_workspace_file(
+    registry: &FileRegistry,
+    relative: &str,
+) -> Result<Response, (StatusCode, &'static str)> {
+    const MISSING: (StatusCode, &str) = (
+        StatusCode::NOT_FOUND,
+        "This file is no longer in the workspace. It may have been moved or deleted.",
+    );
     let Some(root) = &registry.workspace_root else {
         tracing::warn!("workspace file link requested but no workspace root is configured");
-        return StatusCode::NOT_FOUND.into_response();
+        return Err(MISSING);
     };
 
-    if crate::workspace::access::is_blocked_path(&query.path) {
-        tracing::warn!(path = %query.path, "refusing to serve a blocked workspace path");
-        return StatusCode::NOT_FOUND.into_response();
+    if crate::workspace::access::is_blocked_path(relative) {
+        tracing::warn!(path = %relative, "refusing to serve a blocked workspace path");
+        return Err((
+            StatusCode::NOT_FOUND,
+            "This file can't be opened from a link.",
+        ));
     }
 
     let Ok(canonical_root) = tokio::fs::canonicalize(root).await else {
         tracing::warn!(root = %root.display(), "failed to canonicalize workspace root while serving a file link");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Couldn't read the workspace. Residuum's logs have the details.",
+        ));
     };
 
-    let missing_file_response = || {
-        (
-            StatusCode::NOT_FOUND,
-            "This file is no longer available in the workspace.",
-        )
-            .into_response()
-    };
-
-    let target = root.join(&query.path);
+    let target = root.join(relative);
     let canonical_target = match tokio::fs::canonicalize(&target).await {
         Ok(p) => p,
         Err(e) => {
-            tracing::debug!(path = %query.path, error = %e, "workspace file link points at a file that no longer exists");
-            return missing_file_response();
+            tracing::debug!(path = %relative, error = %e, "workspace file link points at a file that no longer exists");
+            return Err(MISSING);
         }
     };
     if !canonical_target.starts_with(&canonical_root) {
-        tracing::warn!(path = %query.path, "workspace file link escaped the workspace root, refusing");
-        return StatusCode::FORBIDDEN.into_response();
+        tracing::warn!(path = %relative, "workspace file link escaped the workspace root, refusing");
+        return Err((
+            StatusCode::FORBIDDEN,
+            "This link points outside the workspace.",
+        ));
     }
 
     let Ok(bytes) = tokio::fs::read(&canonical_target).await else {
-        tracing::warn!(path = %query.path, "workspace file link target not readable");
-        return missing_file_response();
+        tracing::warn!(path = %relative, "workspace file link target not readable");
+        return Err(MISSING);
     };
 
     let filename = canonical_target
@@ -248,16 +310,20 @@ pub async fn serve_workspace_file(
         .and_then(|n| n.to_str())
         .unwrap_or("file");
     let mime_type = crate::interfaces::attachment::detect_mime_type(&canonical_target);
-    respond_with_file(bytes, &mime_type, filename)
+    Ok(respond_with_file(bytes, &mime_type, filename))
+}
+
+/// A `{ "error": message }` response, the API's error shape.
+fn json_error(status: StatusCode, message: &str) -> Response {
+    (status, axum::Json(serde_json::json!({ "error": message }))).into_response()
 }
 
 /// Build the HTTP response for a file's bytes, with a content-disposition
 /// naming `filename` (quotes and backslashes stripped, since they'd need
 /// escaping in the header value) and, when it parses as a valid header
 /// value, `mime_type` as the content type.
-fn respond_with_file(bytes: Vec<u8>, mime_type: &str, filename: &str) -> axum::response::Response {
+fn respond_with_file(bytes: Vec<u8>, mime_type: &str, filename: &str) -> Response {
     use axum::http::{HeaderValue, header};
-    use axum::response::IntoResponse;
 
     let safe_filename: String = filename
         .chars()
@@ -417,42 +483,115 @@ mod tests {
         );
     }
 
+    /// What a script's `fetch` sends.
+    fn fetch_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("accept", "*/*".parse().unwrap());
+        headers.insert("sec-fetch-dest", "empty".parse().unwrap());
+        headers
+    }
+
+    /// What a browser opening a link in a tab sends.
+    fn tab_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("accept", "text/html,*/*;q=0.8".parse().unwrap());
+        headers.insert("sec-fetch-dest", "document".parse().unwrap());
+        headers.insert("sec-fetch-mode", "navigate".parse().unwrap());
+        headers
+    }
+
+    async fn workspace_file(registry: FileRegistry, path: &str, headers: HeaderMap) -> Response {
+        serve_workspace_file(
+            Method::GET,
+            headers,
+            axum::extract::Query(WorkspaceFileQuery {
+                path: path.to_string(),
+            }),
+            axum::extract::State(registry),
+        )
+        .await
+    }
+
+    async fn token_file(registry: FileRegistry, id: &str, headers: HeaderMap) -> Response {
+        serve_file(
+            Method::GET,
+            headers,
+            axum::extract::Path(id.to_string()),
+            axum::extract::State(registry),
+        )
+        .await
+    }
+
+    fn location(resp: &Response) -> &str {
+        resp.headers()
+            .get(axum::http::header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+    }
+
     #[tokio::test]
     async fn serve_workspace_file_serves_an_existing_file() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("report.md"), "# hello").unwrap();
         let registry = FileRegistry::new("scout").with_workspace_root(dir.path().to_path_buf());
 
-        let resp = serve_workspace_file(
-            axum::extract::Query(WorkspaceFileQuery {
-                path: "report.md".to_string(),
-            }),
-            axum::extract::State(registry),
-        )
-        .await;
-
-        assert_eq!(resp.status(), axum::http::StatusCode::OK);
-        assert_eq!(body_text(resp).await, "# hello");
+        for headers in [fetch_headers(), tab_headers()] {
+            let resp = workspace_file(registry.clone(), "report.md", headers).await;
+            assert_eq!(resp.status(), StatusCode::OK, "served");
+            assert_eq!(body_text(resp).await, "# hello", "the file");
+        }
     }
 
     #[tokio::test]
-    async fn serve_workspace_file_missing_file_gives_a_plain_explanation() {
+    async fn serve_workspace_file_missing_file_explains_itself_to_a_fetch() {
         let dir = tempfile::tempdir().unwrap();
         let registry = FileRegistry::new("scout").with_workspace_root(dir.path().to_path_buf());
 
-        let resp = serve_workspace_file(
-            axum::extract::Query(WorkspaceFileQuery {
-                path: "gone.md".to_string(),
-            }),
-            axum::extract::State(registry),
-        )
-        .await;
+        let resp = workspace_file(registry, "gone.md", fetch_headers()).await;
 
-        assert_eq!(resp.status(), axum::http::StatusCode::NOT_FOUND);
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "missing");
+        let body: serde_json::Value = serde_json::from_str(&body_text(resp).await).unwrap();
         assert!(
-            body_text(resp).await.contains("no longer available"),
-            "a missing file should explain itself in plain language, not a bare 404"
+            body.get("error")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|e| e.contains("no longer in the workspace")),
+            "a missing file explains itself in the API's error shape: {body}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_tab_opening_a_workspace_file_that_cant_be_served_goes_to_it_in_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("ws/.index")).unwrap();
+        std::fs::write(dir.path().join("ws/.index/segment.bin"), "data").unwrap();
+        std::fs::write(dir.path().join("secret.txt"), "nope").unwrap();
+        let registry = FileRegistry::new("scout").with_workspace_root(dir.path().join("ws"));
+
+        for (path, expected) in [
+            (
+                "notes/gone.md",
+                "/agent/scout/files?panel=file%3Anotes%2Fgone.md",
+            ),
+            (
+                ".index/segment.bin",
+                "/agent/scout/files?panel=file%3A.index%2Fsegment.bin",
+            ),
+            (
+                "../secret.txt",
+                "/agent/scout/files?panel=file%3A..%2Fsecret.txt",
+            ),
+        ] {
+            let resp = workspace_file(registry.clone(), path, tab_headers()).await;
+            assert_eq!(resp.status(), StatusCode::SEE_OTHER, "{path}");
+            assert_eq!(location(&resp), expected, "{path}");
+            assert!(
+                resp.extensions()
+                    .get::<browser_landing::AppRedirect>()
+                    .is_some(),
+                "{path}: marked as a redirect into the app"
+            );
+        }
     }
 
     #[tokio::test]
@@ -463,15 +602,13 @@ mod tests {
         std::fs::write(dir.path().join("secret.txt"), "nope").unwrap();
         let registry = FileRegistry::new("scout").with_workspace_root(workspace);
 
-        let resp = serve_workspace_file(
-            axum::extract::Query(WorkspaceFileQuery {
-                path: "../secret.txt".to_string(),
-            }),
-            axum::extract::State(registry),
-        )
-        .await;
+        let resp = workspace_file(registry, "../secret.txt", fetch_headers()).await;
 
-        assert_eq!(resp.status(), axum::http::StatusCode::FORBIDDEN);
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "refused");
+        assert!(
+            !body_text(resp).await.contains("nope"),
+            "the file isn't served"
+        );
     }
 
     #[tokio::test]
@@ -481,14 +618,51 @@ mod tests {
         std::fs::write(dir.path().join(".index/segment.bin"), "data").unwrap();
         let registry = FileRegistry::new("scout").with_workspace_root(dir.path().to_path_buf());
 
-        let resp = serve_workspace_file(
-            axum::extract::Query(WorkspaceFileQuery {
-                path: ".index/segment.bin".to_string(),
-            }),
-            axum::extract::State(registry),
-        )
-        .await;
+        let resp = workspace_file(registry, ".index/segment.bin", fetch_headers()).await;
 
-        assert_eq!(resp.status(), axum::http::StatusCode::NOT_FOUND);
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "refused");
+    }
+
+    #[tokio::test]
+    async fn an_expired_token_link_sends_a_tab_to_the_chat_and_tells_a_fetch() {
+        let registry = FileRegistry::new("scout");
+
+        let tab = token_file(registry.clone(), "expired-id", tab_headers()).await;
+        assert_eq!(tab.status(), StatusCode::SEE_OTHER, "a tab is redirected");
+        assert_eq!(
+            location(&tab),
+            "/agent/scout?notice=file-link-expired",
+            "to the agent's chat, with the notice"
+        );
+
+        let fetch = token_file(registry, "expired-id", fetch_headers()).await;
+        assert_eq!(fetch.status(), StatusCode::NOT_FOUND, "a fetch gets 404");
+        let body: serde_json::Value = serde_json::from_str(&body_text(fetch).await).unwrap();
+        assert!(
+            body.get("error")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|e| e.contains("has expired")),
+            "with the reason: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_token_link_whose_file_is_gone_counts_as_expired() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = FileRegistry::new("scout");
+        let id = registry
+            .register(
+                dir.path().join("removed.pdf"),
+                "application/pdf".to_string(),
+                "removed.pdf".to_string(),
+            )
+            .await;
+
+        let tab = token_file(registry, &id, tab_headers()).await;
+        assert_eq!(
+            location(&tab),
+            "/agent/scout?notice=file-link-expired",
+            "to the agent's chat, with the notice"
+        );
     }
 }

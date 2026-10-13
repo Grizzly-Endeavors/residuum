@@ -3,10 +3,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::extract::{Query, State};
+use axum::extract::{RawQuery, State};
 use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse, Json, Response};
-use serde::{Deserialize, Serialize};
+use axum::response::{IntoResponse, Json, Redirect, Response};
+use serde::Serialize;
 use tokio::sync::watch;
 
 use crate::config::secrets::SecretStore;
@@ -62,6 +62,7 @@ impl CloudStatusResponse {
         let (status, user_id, origin, instance, instance_origin) = match tunnel_status {
             TunnelStatus::Disconnected => ("disconnected", None, None, None, None),
             TunnelStatus::Connecting => ("connecting", None, None, None, None),
+            TunnelStatus::Refused => ("refused", None, None, None, None),
             TunnelStatus::Connected {
                 ref user_id,
                 ref origin,
@@ -128,107 +129,134 @@ fn parse_cloud_state(raw: &str) -> (bool, bool) {
     (has_token, enabled)
 }
 
-#[derive(Deserialize)]
-pub(crate) struct CallbackQuery {
-    token: Option<String>,
+/// Where the sign-in callback sends the browser: Settings → Residuum Cloud,
+/// which shows the tunnel's real state and the outcome `cloud=` names.
+const CLOUD_SETTINGS_PATH: &str = "/home?settings=_all/cloud";
+
+/// What the sign-in callback tells the app, as `cloud=` on the Settings URL.
+/// The web app reads it in `web/src/lib/cloud-handoff.ts`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallbackOutcome {
+    /// The token is saved and the tunnel is starting; the section follows it.
+    Connecting,
+    /// The relay sent the browser back without a token.
+    MissingToken,
+    /// The token or the `[cloud]` switch couldn't be saved.
+    SaveFailed,
 }
 
-/// `GET /cloud/callback?token=...` — localhost OAuth callback.
+impl CallbackOutcome {
+    fn param(self) -> &'static str {
+        match self {
+            Self::Connecting => "connecting",
+            Self::MissingToken => "missing-token",
+            Self::SaveFailed => "save-failed",
+        }
+    }
+
+    /// A `303` into the app, which says what happened in plain language.
+    fn hand_off(self) -> Response {
+        Redirect::to(&format!("{CLOUD_SETTINGS_PATH}&cloud={}", self.param())).into_response()
+    }
+}
+
+/// The first non-empty `token` in a raw query string. The query is read by
+/// hand so a repeated or malformed parameter still lands in the app rather
+/// than on an extractor's plain-text rejection.
+fn token_from_query(query: Option<&str>) -> Option<String> {
+    url::form_urlencoded::parse(query.unwrap_or_default().as_bytes())
+        .find(|(key, value)| key == "token" && !value.trim().is_empty())
+        .map(|(_, value)| value.into_owned())
+}
+
+/// `GET /cloud/callback?token=...` — where the relay sends the browser after
+/// sign-in.
 ///
-/// Stores the token in the secret store, updates hub config.toml to enable
-/// the cloud tunnel, and triggers a config reload.
+/// Stores the token in the secret store, switches the tunnel on in the hub's
+/// `config.toml`, triggers a config reload, and hands the browser to Settings
+/// → Residuum Cloud, which follows the tunnel from there. Every outcome is a
+/// redirect into the app; a failure is logged here and named by `cloud=`.
 pub(crate) async fn cloud_callback(
     State(state): State<CloudApiState>,
-    Query(query): Query<CallbackQuery>,
+    RawQuery(query): RawQuery,
 ) -> Response {
-    let Some(token) = query.token.filter(|t| !t.is_empty()) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Html("<h1>Error</h1><p>Missing token parameter.</p>".to_string()),
-        )
-            .into_response();
+    let Some(token) = token_from_query(query.as_deref()) else {
+        tracing::warn!("the cloud sign-in callback arrived without a token");
+        return CallbackOutcome::MissingToken.hand_off();
     };
 
     let hub_dir = state.hub_dir.clone();
-    let secret_lock = Arc::clone(&state.secret_lock);
-
-    // Store the token as a secret
     let store_result = {
-        let _guard = secret_lock.lock().await;
+        let _guard = state.secret_lock.lock().await;
         let dir = hub_dir.clone();
-        let tok = token.clone();
         crate::util::spawn_blocking_in_span(move || {
             let mut store = SecretStore::load(&dir)?;
-            store.set("cloud_token", &tok, &dir)?;
+            store.set("cloud_token", &token, &dir)?;
             Ok::<(), crate::util::FatalError>(())
         })
         .await
     };
-
     match store_result {
-        Err(e) => {
-            tracing::error!(error = %e, "failed to store cloud token");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!("<h1>Error</h1><p>Failed to store token: {e}</p>")),
-            )
-                .into_response();
-        }
-        Ok(Err(e)) => {
-            tracing::error!(error = %e, "cloud token store operation failed");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!("<h1>Error</h1><p>Failed to store token: {e}</p>")),
-            )
-                .into_response();
-        }
         Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, hub_dir = %hub_dir.display(), "failed to store the cloud token");
+            return CallbackOutcome::SaveFailed.hand_off();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "the cloud token store task failed");
+            return CallbackOutcome::SaveFailed.hand_off();
+        }
     }
 
-    // Update hub config.toml to add/update [cloud] section
     let config_path = hub_dir.join("config.toml");
-    let current = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let updated = update_cloud_section(&current, true);
-
-    if let Err(e) = std::fs::write(&config_path, &updated) {
-        tracing::error!(error = %e, "failed to write hub config.toml");
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Html(format!("<h1>Error</h1><p>Failed to update config: {e}</p>")),
-        )
-            .into_response();
+    let current = match std::fs::read_to_string(&config_path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            tracing::error!(error = %e, path = %config_path.display(), "failed to read hub config.toml for the cloud sign-in");
+            return CallbackOutcome::SaveFailed.hand_off();
+        }
+    };
+    if let Err(e) = std::fs::write(&config_path, update_cloud_section(&current, true)) {
+        tracing::error!(error = %e, path = %config_path.display(), "failed to write hub config.toml for the cloud sign-in");
+        return CallbackOutcome::SaveFailed.hand_off();
     }
 
-    // Trigger reload
+    tracing::info!("cloud sign-in saved, starting the tunnel");
     state.reload_tx.send(ReloadSignal::Hub).ok();
-
-    (StatusCode::OK, Html(SUCCESS_HTML.to_string())).into_response()
+    CallbackOutcome::Connecting.hand_off()
 }
 
 /// `POST /api/hub/cloud/disconnect` — disable cloud tunnel without removing the token.
-pub(crate) async fn api_cloud_disconnect(
-    State(state): State<CloudApiState>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+pub(crate) async fn api_cloud_disconnect(State(state): State<CloudApiState>) -> Response {
     let config_path = state.hub_dir.join("config.toml");
-    let current = std::fs::read_to_string(&config_path).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to read hub config.toml: {e}"),
-        )
-    })?;
-
-    let updated = update_cloud_section(&current, false);
-    std::fs::write(&config_path, &updated).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to write hub config.toml: {e}"),
-        )
-    })?;
+    let current = match std::fs::read_to_string(&config_path) {
+        Ok(raw) => raw,
+        Err(e) => {
+            tracing::error!(error = %e, path = %config_path.display(), "failed to read hub config.toml to disconnect the cloud tunnel");
+            return disconnect_failed();
+        }
+    };
+    if let Err(e) = std::fs::write(&config_path, update_cloud_section(&current, false)) {
+        tracing::error!(error = %e, path = %config_path.display(), "failed to write hub config.toml to disconnect the cloud tunnel");
+        return disconnect_failed();
+    }
 
     tracing::info!("cloud tunnel disconnected");
     state.reload_tx.send(ReloadSignal::Hub).ok();
 
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Json(serde_json::json!({ "ok": true })).into_response()
+}
+
+/// The API's `{ "error" }` body for a disconnect that couldn't change the hub's config.
+fn disconnect_failed() -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({
+            "error": "Residuum couldn't update its settings file to switch the tunnel off. The details are in Residuum's logs."
+        })),
+    )
+        .into_response()
 }
 
 /// Update or insert the `[cloud]` section in config TOML.
@@ -294,28 +322,6 @@ fn update_cloud_section(raw: &str, enable: bool) -> String {
     }
     result
 }
-
-const SUCCESS_HTML: &str = r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Connected - Residuum</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
-        .card { background: #1a1a1a; border: 1px solid #333; border-radius: 12px; padding: 2.5rem; width: 100%; max-width: 400px; text-align: center; }
-        h1 { font-size: 1.5rem; margin-bottom: 0.5rem; color: #4ade80; }
-        p { color: #888; font-size: 0.95rem; }
-    </style>
-</head>
-<body>
-    <div class="card">
-        <h1>Connected successfully!</h1>
-        <p>Your cloud tunnel is now active. You can close this tab.</p>
-    </div>
-</body>
-</html>"#;
 
 #[cfg(test)]
 mod tests {
@@ -439,6 +445,68 @@ token = "secret:discord"
         assert!(result.contains("[gateway]"));
         assert!(result.contains("[discord]"));
         assert!(result.contains("enabled = false"));
+    }
+
+    #[test]
+    fn the_callback_takes_the_first_token_it_can_use() {
+        assert_eq!(
+            token_from_query(Some("token=rst_a")).as_deref(),
+            Some("rst_a")
+        );
+        assert_eq!(
+            token_from_query(Some("token=&token=rst_b&token=rst_c")).as_deref(),
+            Some("rst_b")
+        );
+        assert_eq!(
+            token_from_query(Some("token=rst%2Bplus")).as_deref(),
+            Some("rst+plus")
+        );
+        assert_eq!(token_from_query(Some("token=%20%20")), None);
+        assert_eq!(token_from_query(Some("%zz&&=x&token")), None);
+        assert_eq!(token_from_query(None), None);
+    }
+
+    /// Where a callback answer sends the browser.
+    fn hand_off_target(resp: &Response) -> &str {
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        resp.headers()["location"].to_str().unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_callback_that_cannot_save_hands_off_with_save_failed() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let hub_dir = tempfile::tempdir().unwrap();
+        // A directory where the config file should be: the token saves, the switch can't.
+        std::fs::create_dir(hub_dir.path().join("config.toml")).unwrap();
+        let (reload_tx, mut reload_rx) = tokio::sync::mpsc::unbounded_channel::<ReloadSignal>();
+        let (_status_tx, tunnel_status_rx) = watch::channel(TunnelStatus::Disconnected);
+        let app = axum::Router::new()
+            .route("/cloud/callback", axum::routing::get(cloud_callback))
+            .with_state(CloudApiState {
+                hub_dir: hub_dir.path().to_path_buf(),
+                reload_tx,
+                tunnel_status_rx,
+                secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            });
+
+        let resp = app
+            .oneshot(
+                axum::http::Request::get("/cloud/callback?token=rst_x")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            hand_off_target(&resp),
+            "/home?settings=_all/cloud&cloud=save-failed"
+        );
+        assert!(
+            reload_rx.try_recv().is_err(),
+            "nothing was switched on, so nothing reloads"
+        );
     }
 
     fn test_state() -> CloudApiState {

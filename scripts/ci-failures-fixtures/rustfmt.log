@@ -1,0 +1,13 @@
+2026-10-12T14:40:01.0000000Z ##[group]Run cargo fmt --all --check
+2026-10-12T14:40:01.0000001Z shell: /usr/bin/bash -e {0}
+2026-10-12T14:40:01.0000002Z ##[endgroup]
+2026-10-12T14:40:03.1000000Z Diff in /home/runner/_work/residuum/residuum/src/lib.rs:1:
+2026-10-12T14:40:03.1000000Z  fn main() {
+2026-10-12T14:40:03.1000000Z -let x = 1;
+2026-10-12T14:40:03.1000000Z -    println!("{}",x );
+2026-10-12T14:40:03.1000000Z +    let x = 1;
+2026-10-12T14:40:03.1000000Z +    println!("{}", x);
+2026-10-12T14:40:03.1000000Z  }
+2026-10-12T14:40:03.1000000Z  
+2026-10-12T14:40:03.2000000Z ##[error]Process completed with exit code 1.
+2026-10-12T14:40:03.3000000Z Post job cleanup.

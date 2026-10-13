@@ -1,0 +1,20 @@
+2026-10-12T19:10:01.0000000Z ##[group]Run npm --prefix web run lint:css
+2026-10-12T19:10:04.0000000Z src/lib/probe.css
+2026-10-12T19:10:04.1000000Z   2:10  ✖  Use a color token instead of a named color.  color-named
+2026-10-12T19:10:04.2000000Z   3:10  ✖  Use a color token instead of a named color.  color-named
+2026-10-12T19:10:04.3000000Z
+2026-10-12T19:10:04.4000000Z ✖ 2 problems (2 errors, 0 warnings)
+2026-10-12T19:10:04.5000000Z ##[error]Process completed with exit code 2.
+2026-10-12T19:10:05.0000000Z ##[group]Run npm --prefix web run lint:rest
+2026-10-12T19:10:08.0000000Z /home/runner/_work/residuum/residuum/web/src/lib/a.ts
+2026-10-12T19:10:08.1000000Z   1:7  error  'unused' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+2026-10-12T19:10:08.2000000Z   4:2  warning  Unexpected console statement  no-console
+2026-10-12T19:10:08.3000000Z
+2026-10-12T19:10:08.4000000Z ✖ 2 problems (1 error, 1 warning)
+2026-10-12T19:10:08.5000000Z ##[error]Process completed with exit code 1.
+2026-10-12T19:10:09.0000000Z ##[group]Run npm --prefix web run lint:svelte
+2026-10-12T19:10:10.0000000Z /home/runner/_work/residuum/residuum/web/src/lib/b.svelte
+2026-10-12T19:10:10.1000000Z   1:1  warning  Unused CSS selector ".x"  svelte/no-unused-svelte-ht
+2026-10-12T19:10:10.2000000Z
+2026-10-12T19:10:10.3000000Z ✖ 1 problem (0 errors, 1 warning)
+2026-10-12T19:10:11.0000000Z ##[group]Post job cleanup.

@@ -1,0 +1,17 @@
+2026-10-12T16:31:31.0637071Z ##[group]Run scripts/with-playwright-container.sh npm --prefix web run e2e -- --shard=4/4
+2026-10-12T16:37:24.3552820Z   1) [visual-desktop] › e2e/visual/settings-connections.spec.ts:49:3 › settings connections and tools › Connections, with Discord connected @visual 
+2026-10-12T16:37:24.3553986Z 
+2026-10-12T16:37:24.3554164Z     Error: expect(page).toHaveScreenshot(expected) failed
+2026-10-12T16:37:24.3554685Z 
+2026-10-12T16:37:24.3555030Z       11613 pixels (ratio 0.01 of all image pixels) are different.
+2026-10-12T16:37:24.3555600Z 
+2026-10-12T16:37:24.3555756Z       Snapshot: settings-connections.png
+2026-10-12T16:37:24.3628887Z   4) [visual-phone] › e2e/visual/settings-connections.spec.ts:49:3 › settings connections and tools › Connections, with Discord connected @visual 
+2026-10-12T16:37:24.3629519Z 
+2026-10-12T16:37:24.3629666Z     Error: expect(page).toHaveScreenshot(expected) failed
+2026-10-12T16:37:24.3629902Z 
+2026-10-12T16:37:24.3630206Z       6823 pixels (ratio 0.03 of all image pixels) are different.
+2026-10-12T16:37:24.3630475Z 
+2026-10-12T16:37:24.3630579Z       Snapshot: settings-connections.png
+2026-10-12T16:37:24.9607341Z ##[error]Process completed with exit code 1.
+2026-10-12T16:37:28.2520608Z Post job cleanup.

@@ -19,6 +19,7 @@ use axum::http::{Method, Request, Response, StatusCode};
 use tracing::{error, warn};
 
 use super::engine_limit::PeerRateLimiter;
+use crate::gateway::browser_landing::{self, Landing};
 
 /// How long the listener may take to start answering.
 const RESPONSE_START_TIMEOUT: Duration = Duration::from_secs(120);
@@ -54,7 +55,49 @@ pub(crate) struct InstanceTargets<'a> {
     pub(crate) a2a_port: Option<u16>,
     /// Each agent's Teams listener port.
     pub(crate) teams_ports: &'a BTreeMap<String, u16>,
+    /// The web app's origin, when Residuum Cloud has announced it.
+    pub(crate) ui_origin: Option<String>,
 }
+
+/// How the instance host answers a request itself: a browser navigation gets
+/// the fallback page saying what this address is for, anything else (another
+/// agent, Microsoft Teams, a script) gets plain text.
+struct Answer {
+    navigation: bool,
+    ui_origin: Option<String>,
+}
+
+impl Answer {
+    fn for_request(req: &Request<Body>, ui_origin: Option<String>) -> Self {
+        Self {
+            navigation: browser_landing::is_navigation(req.method(), req.headers()),
+            ui_origin,
+        }
+    }
+
+    fn say(&self, status: StatusCode, message: &str) -> Response<Body> {
+        if !self.navigation {
+            return text_response(status, message);
+        }
+        self.page(status, message)
+    }
+
+    fn page(&self, status: StatusCode, message: &str) -> Response<Body> {
+        let mut response = browser_landing::fallback_page(
+            status,
+            &Landing::new("Residuum instance address", message)
+                .with_detail(INSTANCE_HOST_PURPOSE)
+                .with_app_link(self.ui_origin.as_deref(), "Open Residuum"),
+        );
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        response
+    }
+}
+
+/// What the instance host is, for a person who opened it in a browser.
+const INSTANCE_HOST_PURPOSE: &str = "This address is where other agents (over A2A) and Microsoft Teams reach this Residuum instance's agents. It isn't a page to open in a browser.";
 
 /// Serves requests for the instance host.
 pub(crate) struct InstanceProxy {
@@ -93,14 +136,19 @@ impl InstanceProxy {
         peer_ip: &str,
         targets: InstanceTargets<'_>,
     ) -> Response<Body> {
+        let answer = Answer::for_request(&req, targets.ui_origin);
         let path = req.uri().path().to_string();
         if path == "/a2a" || path.starts_with("/a2a/") {
-            return self.handle_a2a(req, &path, peer_ip, targets.a2a_port).await;
+            return self
+                .handle_a2a(req, &answer, &path, peer_ip, targets.a2a_port)
+                .await;
         }
         if let Some(agent) = path.strip_prefix("/teams/") {
-            return self.handle_teams(req, agent, targets.teams_ports).await;
+            return self
+                .handle_teams(req, &answer, agent, targets.teams_ports)
+                .await;
         }
-        text_response(
+        answer.say(
             StatusCode::NOT_FOUND,
             "Nothing is served at this address. This host answers /a2a/{agent} and /teams/{agent}.",
         )
@@ -109,6 +157,7 @@ impl InstanceProxy {
     async fn handle_a2a(
         &self,
         req: Request<Body>,
+        answer: &Answer,
         path: &str,
         peer_ip: &str,
         a2a_port: Option<u16>,
@@ -119,7 +168,7 @@ impl InstanceProxy {
                 retry_after_secs = wait.as_secs_f64(),
                 "rate limited an A2A request"
             );
-            let mut response = text_response(
+            let mut response = answer.say(
                 StatusCode::TOO_MANY_REQUESTS,
                 "Too many requests from your address. Wait a moment and try again.",
             );
@@ -136,7 +185,7 @@ impl InstanceProxy {
             None => (after_prefix, String::new()),
         };
         if agent.is_empty() {
-            return text_response(
+            return answer.say(
                 StatusCode::NOT_FOUND,
                 "This A2A request didn't name an agent. Agents are reached at /a2a/{agent}.",
             );
@@ -147,32 +196,37 @@ impl InstanceProxy {
         };
         let listener_path = match a2a_listener_path(Some(agent), &with_query) {
             Ok(listener_path) => listener_path,
-            Err(message) => return text_response(StatusCode::NOT_FOUND, message),
+            Err(message) => return answer.say(StatusCode::NOT_FOUND, message),
         };
         let Some(port) = a2a_port else {
-            return text_response(
+            return answer.say(
                 StatusCode::NOT_FOUND,
                 "The A2A endpoint isn't available on this Residuum instance right now: its A2A listener isn't running. Check Residuum's logs for why it couldn't start.",
             );
         };
-        self.forward(req, format!("http://127.0.0.1:{port}{listener_path}"))
-            .await
+        self.forward(
+            req,
+            answer,
+            format!("http://127.0.0.1:{port}{listener_path}"),
+        )
+        .await
     }
 
     async fn handle_teams(
         &self,
         req: Request<Body>,
+        answer: &Answer,
         agent: &str,
         teams_ports: &BTreeMap<String, u16>,
     ) -> Response<Body> {
         if agent.contains('/') || crate::config::paths::validate_agent_name(agent).is_err() {
-            return text_response(
+            return answer.say(
                 StatusCode::NOT_FOUND,
                 "No agent with that name is available on this Residuum instance.",
             );
         }
         if req.method() != Method::POST {
-            let mut response = text_response(
+            let mut response = answer.say(
                 StatusCode::METHOD_NOT_ALLOWED,
                 "Teams messages are delivered with POST.",
             );
@@ -186,13 +240,14 @@ impl InstanceProxy {
                 agent,
                 "a Teams message arrived for an agent with no Teams listener"
             );
-            return text_response(
+            return answer.say(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "This agent isn't set up to receive Teams messages right now.",
             );
         };
         self.forward(
             req,
+            answer,
             format!(
                 "http://127.0.0.1:{port}{}",
                 crate::interfaces::teams::MESSAGES_PATH
@@ -209,9 +264,9 @@ impl InstanceProxy {
     }
 
     /// Send `req` to `url` and stream the answer back.
-    async fn forward(&self, req: Request<Body>, url: String) -> Response<Body> {
+    async fn forward(&self, req: Request<Body>, answer: &Answer, url: String) -> Response<Body> {
         let Some(client) = &self.client else {
-            return text_response(
+            return answer.say(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "Remote access can't reach this Residuum instance's services right now. Check Residuum's logs.",
             );
@@ -238,14 +293,14 @@ impl InstanceProxy {
             Ok(Ok(response)) => response,
             Ok(Err(e)) => {
                 warn!(error = %e, url = %url, "couldn't reach a local listener for a remote request");
-                return text_response(
+                return answer.say(
                     StatusCode::BAD_GATEWAY,
                     "Residuum couldn't reach that service on this machine. Try again in a moment.",
                 );
             }
             Err(_) => {
                 warn!(url = %url, timeout_secs = RESPONSE_START_TIMEOUT.as_secs(), "a local listener didn't start answering a remote request in time");
-                return text_response(
+                return answer.say(
                     StatusCode::GATEWAY_TIMEOUT,
                     "Residuum's service took too long to answer. Try again in a moment.",
                 );
@@ -253,6 +308,15 @@ impl InstanceProxy {
         };
 
         let status = response.status();
+        // An A2A endpoint answers a browser's GET with an error meant for
+        // another agent; the person gets the page saying what this is.
+        if answer.navigation && (status.is_client_error() || status.is_server_error()) {
+            tracing::debug!(%status, url = %url, "a browser opened an instance-host address the service refused");
+            return answer.page(
+                status,
+                "There's nothing to open at this address in a browser.",
+            );
+        }
         let headers = hardened_response_headers(response.headers());
         let mut out = Response::new(Body::from_stream(response.bytes_stream()));
         *out.status_mut() = status;
@@ -385,6 +449,87 @@ fn percent_decode(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const UI_ORIGIN: &str = "https://bear.agent-residuum.com";
+
+    async fn answer_to(
+        request: Request<Body>,
+        ui_origin: Option<&str>,
+    ) -> (Response<Body>, String) {
+        let ports = BTreeMap::new();
+        let mut response = InstanceProxy::new()
+            .handle(
+                request,
+                "203.0.113.9",
+                InstanceTargets {
+                    a2a_port: None,
+                    teams_ports: &ports,
+                    ui_origin: ui_origin.map(str::to_string),
+                },
+            )
+            .await;
+        let body = std::mem::take(response.body_mut());
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        (response, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    fn tab(path: &str) -> Request<Body> {
+        Request::get(path)
+            .header("sec-fetch-dest", "document")
+            .header("sec-fetch-mode", "navigate")
+            .header(header::ACCEPT, "text/html,*/*;q=0.8")
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_browser_opening_the_instance_host_is_told_what_it_is_for() {
+        let (response, page) = answer_to(tab("/"), Some(UI_ORIGIN)).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "nothing here");
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/html; charset=utf-8",
+            "a page"
+        );
+        assert!(page.contains("Microsoft Teams"), "{page}");
+        assert!(
+            page.contains(r#"<a href="https://bear.agent-residuum.com">Open Residuum</a>"#),
+            "links to Residuum: {page}"
+        );
+
+        let (_, unlinked) = answer_to(tab("/"), None).await;
+        assert!(
+            !unlinked.contains("<a "),
+            "no link without the app's address"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_teams_address_opened_in_a_browser_gets_the_page_with_its_405() {
+        let (response, page) = answer_to(tab("/teams/scout"), Some(UI_ORIGIN)).await;
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED, "405");
+        assert_eq!(response.headers()[header::ALLOW], "POST", "says POST");
+        assert!(
+            page.contains("Teams messages are delivered with POST."),
+            "{page}"
+        );
+    }
+
+    #[tokio::test]
+    async fn machines_still_get_plain_text() {
+        let request = Request::get("/teams/scout").body(Body::empty()).unwrap();
+        let (response, body) = answer_to(request, Some(UI_ORIGIN)).await;
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED, "405");
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/plain; charset=utf-8",
+            "text"
+        );
+        assert_eq!(
+            body, "Teams messages are delivered with POST.\n",
+            "the reason"
+        );
+    }
 
     #[test]
     fn an_agent_request_maps_onto_the_agents_prefix() {

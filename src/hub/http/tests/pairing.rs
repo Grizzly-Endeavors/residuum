@@ -751,7 +751,7 @@ impl Workbench {
         let api = HubApi::new();
         api.bind(h.app.clone());
         Self {
-            router: crate::workbench::server::router(dir, api, h.pairing.clone()),
+            router: crate::workbench::server::router(dir, api, h.pairing.clone(), 7700),
         }
     }
 
@@ -831,6 +831,33 @@ async fn a_workbench_navigation_without_a_credential_goes_to_the_artifact_in_the
     assert_eq!(
         headers.get("location").unwrap(),
         "https://bear.agent-residuum.com/team/workbench/notes"
+    );
+}
+
+#[tokio::test]
+async fn a_workbench_frame_without_a_credential_gets_the_page_linking_to_the_app() {
+    let h = Harness::new();
+    announce(&h).await;
+    let workbench = Workbench::new(&h);
+    let frame = set(
+        set(remote(Method::GET, "/notes/"), "sec-fetch-mode", "navigate"),
+        "sec-fetch-dest",
+        "iframe",
+    );
+    let response = workbench
+        .router
+        .clone()
+        .oneshot(empty(frame))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let page = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let page = String::from_utf8(page.to_vec()).unwrap();
+    assert!(
+        page.contains(r#"href="https://bear.agent-residuum.com/team/workbench/notes""#),
+        "{page}"
     );
 }
 

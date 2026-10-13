@@ -1,0 +1,21 @@
+2026-10-12T14:21:24.3271548Z ##[group]Run cargo test --quiet
+2026-10-12T14:21:24.3288112Z shell: /usr/bin/bash -e {0}
+2026-10-12T14:21:24.3288512Z ##[endgroup]
+2026-10-12T14:21:31.0100000Z warning: unused import: `Ipv4Addr`
+2026-10-12T14:21:31.0100001Z  --> src/hub/mod.rs:3:5
+2026-10-12T14:21:31.0100002Z   |
+2026-10-12T14:21:31.0100003Z 3 | use std::net::Ipv4Addr;
+2026-10-12T14:21:31.0100004Z   |     ^^^^^^^^^
+2026-10-12T14:21:31.0100005Z   |
+2026-10-12T14:21:31.0100006Z   = note: `#[warn(unused_imports)]` on by default
+2026-10-12T14:21:31.0100007Z
+2026-10-12T14:21:32.2000000Z    Compiling residuum v2026.10.12 (/home/runner/_work/residuum/residuum)
+2026-10-12T14:24:52.0000000Z running 412 tests
+2026-10-12T14:24:52.0000001Z test hub::runtime::tests::changing_the_gateway_port_rebinds_the_server ... ok
+2026-10-12T14:25:03.4000000Z error: test failed, to rerun pass `--lib`
+2026-10-12T14:25:03.4000001Z
+2026-10-12T14:25:03.4000002Z Caused by:
+2026-10-12T14:25:03.4000003Z   process didn't exit successfully: `/home/runner/_work/residuum/residuum/target/debug/deps/residuum-3f9c1e7a0b2d4e5f --quiet` (signal: 11, SIGSEGV: invalid memory reference)
+2026-10-12T14:25:03.5000000Z ##[error]Process completed with exit code 101.
+2026-10-12T14:25:03.6000000Z ##[group]Run scripts/check-generated-types.sh
+2026-10-12T14:25:05.1000000Z Post job cleanup.
