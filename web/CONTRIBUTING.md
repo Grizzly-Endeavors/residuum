@@ -612,7 +612,7 @@ Before submitting changes, run:
 ```bash
 npm run lint          # ESLint, then the style lint
 npm run format        # Prettier auto-format
-npm run format:check  # Prettier check, as the pre-commit hook runs it
+npm run format:check  # Prettier check, as CI runs it
 npm run check         # TypeScript / Svelte type check; warnings fail it
 npm test              # Vitest: lib unit tests and Svelte component tests
 npm run test:coverage # The same tests with a coverage summary (HTML report in coverage/)
@@ -647,7 +647,7 @@ Tests sit in five layers. Use the lowest one that can show the behavior: a lower
 
 A unit or component test waits on the condition it checks, never on elapsed time. Use `findBy*` for an element that shows up, and `waitFor` from `src/test/wait.ts` for any other condition (not `vi.waitFor`). `findBy*` polls on `setInterval`, which fake timers stand still, so under fake timers use `waitFor`, which steps the faked clock as it checks. Their bounds come from `src/test/guard.ts`, which also sets the per-test timeout. They are hang guards, set well above how long a machine shared with other suites takes, so a wait that ends on its condition never notices them. A slow machine is never a reason to raise them. A test that needs time to pass uses fake timers (`vi.useFakeTimers()`) and steps them with `vi.advanceTimersByTimeAsync`; `shouldAdvanceTime` is not allowed, since it lets real time run the faked clock. ESLint rejects `vi.waitFor`, `shouldAdvanceTime`, and a `setTimeout` with a non-zero delay in `src/**/*.test.ts` and `mock/**/*.test.ts`. A zero-delay `setTimeout` only flushes a macrotask, and stays allowed.
 
-The unit and component layers run in `npm test`, and the pre-commit hook runs them. The other three run through Playwright and are not part of the hook. A pull request that changes `web/` runs the end-to-end and accessibility specs in CI (`.github/workflows/web-pr.yml`), and so does the release workflow. The visual comparisons run in a CI job of their own that never fails a pull request or a release (see [CI](#ci)). `just web-e2e` runs everything locally first.
+The unit and component layers run in `npm test`, and the pre-push hook runs them. The other three run through Playwright and are not part of the hooks. A pull request that changes `web/` runs the end-to-end and accessibility specs in CI (`.github/workflows/web-pr.yml`), and so does the release workflow. The visual comparisons run in a CI job of their own that never fails a pull request or a release (see [CI](#ci)). `just web-e2e` runs everything locally first.
 
 ### Running the end-to-end suite
 

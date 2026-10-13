@@ -1,0 +1,350 @@
+#!/usr/bin/env bash
+#
+# Pre-push gate: the slow checks, once per push, on each pushed commit as it
+# would be merged with the current main.
+#
+# Rust changes in the pushed range run clippy and the whole test suite, which
+# includes the source scans, and the generated-types check. Web changes run
+# ESLint and the style lint, svelte-check and the web tests. Every check runs
+# even after one fails, so a push reports all of its problems at once, and a
+# summary at the end lists what failed.
+#
+# Written for bash 3.2, the shell macOS ships: no mapfile, no associative
+# arrays, and arrays expand as ${arr[@]+"${arr[@]}"} so an empty one is safe
+# under set -u.
+#
+# Bypassing this hook with --no-verify is forbidden, for a push as for a
+# commit. If it fails, fix the underlying issue — a hook you route around is a
+# hook that isn't there.
+set -uo pipefail
+
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+GREEN='\033[0;32m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+ZERO_SHA=0000000000000000000000000000000000000000
+MAIN_REF=refs/remotes/origin/main
+# The paths that run the Rust checks. This mirrors the `paths` list of
+# .github/workflows/rust-pr.yml, which triggers the same checks in CI; change
+# both together.
+RUST_PATHS_RE='^(src|tests|assets)/|^(build\.rs|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|deny\.toml)$|^web/src/lib/generated/|^web/src/styles/tokens\.css$|^(scripts/check-generated-types\.sh|\.github/workflows/(quality-checks|rust-pr|release)\.yml)$'
+
+note() { echo -e "${YELLOW}$1${NC}" >&2; }
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+CHECKOUT_HEAD="$(git rev-parse HEAD)"
+# Git hands hooks its repository variables, which in a linked worktree point at
+# the worktree. Every git call here finds the repository from the working
+# directory, and the temporary worktree's `git -C` must not be pinned to this
+# one, so the hook runs without them (the reasoning is in .githooks/pre-commit).
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
+# Every check that builds uses this target directory, not the checkout's own
+# target/, so a push never replaces the artifacts a cargo run in the checkout
+# depends on. sccache shares the dependency builds between the two.
+PRE_PUSH_TARGET_DIR="$REPO_ROOT/target/pre-push"
+
+# Git passes one line per pushed ref on stdin. Read them all up front: the
+# checks below run tools that would otherwise read the rest of it.
+PUSHED_REFS=()
+while IFS= read -r line || [ -n "$line" ]; do
+    PUSHED_REFS+=("$line")
+done
+
+# MAIN_FRESH: origin/main is what the remote has now, so merging it shows the
+# branch as it would land. MAIN_KNOWN: some copy of it exists, which is enough
+# to tell where a branch left main.
+MAIN_FRESH=0
+MAIN_KNOWN=0
+# A fetch that can't reach the remote must not hang on a credential prompt.
+if GIT_TERMINAL_PROMPT=0 git fetch --quiet origin "+refs/heads/main:$MAIN_REF"; then
+    MAIN_FRESH=1
+else
+    note "WARNING: couldn't fetch main from origin; checking the pushed commits without merging main into them."
+fi
+git rev-parse --verify --quiet "$MAIN_REF" >/dev/null && MAIN_KNOWN=1
+[ "$MAIN_KNOWN" = 1 ] || MAIN_FRESH=0
+
+# Which parts of the tree the commits being pushed change. The range starts at
+# what the remote already has, or for a new branch where it left main. With
+# neither, every check runs.
+TOUCHES_RUST=0
+TOUCHES_WEB=0
+classify_range() {
+    local local_sha="$1" remote_sha="$2" base=""
+    if [ "$remote_sha" != "$ZERO_SHA" ] && git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+        base="$remote_sha"
+    elif [ "$MAIN_KNOWN" = 1 ]; then
+        base="$(git merge-base "$local_sha" "$MAIN_REF" 2>/dev/null)"
+    fi
+    if [ -z "$base" ]; then
+        TOUCHES_RUST=1
+        TOUCHES_WEB=1
+        return
+    fi
+    local changed
+    changed="$(git diff --name-only "$base" "$local_sha")"
+    grep -qE "$RUST_PATHS_RE" <<<"$changed" && TOUCHES_RUST=1
+    grep -q '^web/' <<<"$changed" && TOUCHES_WEB=1
+}
+
+# Every check runs and its result is recorded; nothing exits early.
+FAILED=()
+PASSED=()
+# Names each result after its branch when one push checks several.
+CHECK_SCOPE=""
+run_check() {
+    local name="$CHECK_SCOPE$1"
+    shift
+    echo -e "${BOLD}==> $name${NC}"
+    local started=$SECONDS
+    if "$@" </dev/null; then
+        PASSED+=("$name ($((SECONDS - started))s)")
+    else
+        FAILED+=("$name ($((SECONDS - started))s)")
+        echo -e "${RED}FAILED: $name${NC}" >&2
+    fi
+}
+
+# Install web dependencies when they are missing or older than the lockfile,
+# as `just` does before any web recipe.
+ensure_web_deps() {
+    local web="$1"
+    # A node_modules borrowed from this checkout was matched to the lockfile
+    # when it was linked, and the fresh checkout makes the lockfile look newer
+    # than it. npm ci would empty the checkout's copy through the link.
+    [ -L "$web/node_modules" ] && return 0
+    [ "$web/node_modules/.package-lock.json" -nt "$web/package-lock.json" ] && return 0
+    echo "Installing web dependencies in $web..."
+    (cd "$web" && npm ci --no-audit --no-fund >/dev/null)
+}
+
+TEMP_DIR=""
+TEMP_TREE=""
+TEST_LOG=""
+TS_EXPORT_DIR=""
+cleanup_test_scratch() {
+    if [ -n "$TEST_LOG" ]; then
+        rm -f "$TEST_LOG"
+        TEST_LOG=""
+    fi
+    if [ -n "$TS_EXPORT_DIR" ]; then
+        rm -rf "$TS_EXPORT_DIR"
+        TS_EXPORT_DIR=""
+    fi
+}
+cleanup() {
+    cleanup_test_scratch
+    [ -n "$TEMP_DIR" ] || return 0
+    # Unlink the borrowed node_modules first so nothing below can reach
+    # through it into this checkout's copy.
+    [ -L "$TEMP_TREE/web/node_modules" ] && rm -f "$TEMP_TREE/web/node_modules"
+    git worktree remove --force "$TEMP_TREE" >/dev/null 2>&1 || rm -rf "$TEMP_TREE"
+    git worktree prune >/dev/null 2>&1
+    rm -rf "$TEMP_DIR"
+    TEMP_DIR=""
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Check out the pushed commit, merged with main when it is behind, in a
+# temporary worktree that borrows this checkout's caches. Leaves its path in
+# TEMP_TREE. Returns 3 when the merge conflicts and 1 for any other failure.
+# Never call it in a subshell: the cleanup trap needs the paths it sets.
+prepare_worktree() {
+    local sha="$1" merge="$2"
+    cleanup
+    TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/residuum-pre-push.XXXXXX")" || return 1
+    TEMP_TREE="$TEMP_DIR/tree"
+    git worktree add --quiet --detach "$TEMP_TREE" "$sha" >&2 || return 1
+    if [ "$merge" = 1 ]; then
+        # --no-commit leaves the merge in the working tree, where the checks
+        # read it, without needing a committer identity or running commit
+        # hooks for a commit nobody keeps.
+        if ! git -C "$TEMP_TREE" merge --quiet --no-ff --no-commit "$MAIN_REF" >&2; then
+            echo -e "${RED}ERROR: this branch conflicts with origin/main.${NC}" >&2
+            echo "Merge main into it (git merge origin/main), resolve the conflicts, commit, and push again." >&2
+            return 3
+        fi
+    fi
+    # Symlinking node_modules skips an install, which only holds while the
+    # merge leaves the lockfile as this checkout has it.
+    if [ -d "$REPO_ROOT/web/node_modules" ] && cmp -s "$REPO_ROOT/web/package-lock.json" "$TEMP_TREE/web/package-lock.json"; then
+        ln -s "$REPO_ROOT/web/node_modules" "$TEMP_TREE/web/node_modules"
+    fi
+}
+
+# The full suite includes the source scans (testing::source_scan), which fail on
+# any test that waits on elapsed time instead of an event, so they are not run
+# a second time. When one fails, its name in the output gets the hint on how to
+# fix it. The output is kept in TEST_LOG for the search and removed afterwards.
+# The suite's ts_export test writes the generated types to a scratch directory,
+# so the checkout's web/src/lib/generated is never rewritten by a push.
+run_cargo_test() {
+    local dir="$1" result=0
+    TEST_LOG="$(mktemp)" || return 1
+    TS_EXPORT_DIR="$(mktemp -d)" || return 1
+    (cd "$dir" && RESIDUUM_TS_EXPORT_DIR="$TS_EXPORT_DIR" CARGO_TARGET_DIR="$PRE_PUSH_TARGET_DIR" cargo test --quiet --no-fail-fast) 2>&1 | tee "$TEST_LOG" || result=1
+    if [ "$result" -ne 0 ] && grep -qE '^(---- |    )testing::source_scan::' "$TEST_LOG"; then
+        echo -e "${RED}ERROR: a source scan failed. A test that waits on elapsed time should wait on the event instead (CONTRIBUTING.md, \"Waiting in tests\").${NC}" >&2
+    fi
+    cleanup_test_scratch
+    return "$result"
+}
+
+# The web app's protocol types are generated from the Rust types. The check
+# regenerates them into a scratch directory and compares the result with the
+# index, so a push that changes Rust has to carry the regenerated files, and the
+# checkout's own files and index are left as they are.
+generated_types_check() {
+    (cd "$1" && CARGO_TARGET_DIR="$PRE_PUSH_TARGET_DIR" scripts/check-generated-types.sh) && return 0
+    echo -e "${RED}ERROR: web/src/lib/generated is out of date with the Rust types. Run 'just types', stage the result, and commit again.${NC}" >&2
+    return 1
+}
+
+run_rust_checks() {
+    local dir="$1"
+    (
+        cd "$dir" || exit 1
+        # build.rs refuses to compile without web/dist, and the gateway's tests
+        # read the built service worker. A push that changes web/ rebuilds it
+        # from the sources being checked, and a temporary worktree has no dist
+        # of its own. Otherwise an existing dist is reused.
+        if [ "$dir" != "$REPO_ROOT" ] || [ "$TOUCHES_WEB" = 1 ] || [ ! -f web/dist/index.html ] || [ ! -f web/dist/sw.js ]; then
+            ensure_web_deps web || exit 1
+            echo "Building web/dist..."
+            # Vite's output, chunk-size advice included, only matters when the
+            # build fails.
+            local build_output
+            build_output="$(cd web && npm run build 2>&1)" || {
+                echo "$build_output" >&2
+                exit 1
+            }
+        fi
+    ) || {
+        FAILED+=("${CHECK_SCOPE}web build for the Rust checks")
+        echo -e "${RED}FAILED: building web/dist, which the Rust build needs. Skipping the Rust checks.${NC}" >&2
+        return
+    }
+    run_check "clippy" cargo_in "$dir" clippy --all-targets --all-features -- -D warnings
+    run_check "cargo test (includes the source scans)" run_cargo_test "$dir"
+    run_check "generated types" generated_types_check "$dir"
+}
+
+cargo_in() {
+    local dir="$1"
+    shift
+    (cd "$dir" && CARGO_TARGET_DIR="$PRE_PUSH_TARGET_DIR" cargo "$@")
+}
+
+run_web_checks() {
+    local dir="$1"
+    if ! ensure_web_deps "$dir/web"; then
+        FAILED+=("${CHECK_SCOPE}npm ci")
+        echo -e "${RED}FAILED: installing web dependencies. Skipping the web checks.${NC}" >&2
+        return
+    fi
+    run_check "web lint (ESLint, style lint)" npm --prefix "$dir/web" run lint
+    run_check "web type check (svelte-check)" npm --prefix "$dir/web" run check
+    run_check "web tests (Vitest)" npm --prefix "$dir/web" test
+}
+
+PUSHED_COMMITS=0
+for line in ${PUSHED_REFS[@]+"${PUSHED_REFS[@]}"}; do
+    read -r _ local_sha _ _ <<<"$line"
+    [ "$local_sha" = "$ZERO_SHA" ] || PUSHED_COMMITS=$((PUSHED_COMMITS + 1))
+done
+
+CHECKED_ANY=0
+# The commits already checked, space-separated. A branch and a tag on the same
+# commit are checked once.
+CHECKED_SHAS=" "
+for line in ${PUSHED_REFS[@]+"${PUSHED_REFS[@]}"}; do
+    read -r local_ref local_sha _remote_ref remote_sha <<<"$line"
+    # Deleting a remote branch pushes nothing to check.
+    [ "$local_sha" = "$ZERO_SHA" ] && continue
+    # An annotated tag names a tag object; the commit it points at is what gets checked.
+    commit_sha="$(git rev-parse --verify --quiet "$local_sha^{commit}")" || commit_sha="$local_sha"
+    case "$CHECKED_SHAS" in
+    *" $commit_sha "*) continue ;;
+    esac
+    CHECKED_SHAS="$CHECKED_SHAS$commit_sha "
+    local_sha="$commit_sha"
+
+    scope_name="${local_ref#refs/heads/}"
+    scope_name="${scope_name#refs/tags/}"
+    [ "$PUSHED_COMMITS" -gt 1 ] && CHECK_SCOPE="$scope_name: "
+
+    TOUCHES_RUST=0
+    TOUCHES_WEB=0
+    classify_range "$local_sha" "$remote_sha"
+    [ "$TOUCHES_RUST" = 1 ] || [ "$TOUCHES_WEB" = 1 ] || continue
+    CHECKED_ANY=1
+
+    merge=0
+    if [ "$MAIN_FRESH" = 1 ] && ! git merge-base --is-ancestor "$MAIN_REF" "$local_sha"; then
+        if git merge-base "$local_sha" "$MAIN_REF" >/dev/null 2>&1; then
+            merge=1
+        else
+            # A shallow clone can lack the history that joins the two.
+            note "WARNING: $local_ref shares no history with origin/main here (a shallow clone?); checking it without merging main."
+        fi
+    fi
+
+    # The checkout itself is the commit being pushed only when HEAD is that
+    # commit and nothing uncommitted or untracked would leak into the checks:
+    # a file the author forgot to add compiles here and fails everywhere else.
+    if [ "$merge" = 0 ] && [ "$local_sha" = "$CHECKOUT_HEAD" ] && [ -z "$(git status --porcelain --untracked-files=normal)" ]; then
+        dir="$REPO_ROOT"
+        echo -e "${BOLD}Checking $local_ref in place.${NC}"
+    else
+        if [ "$merge" = 1 ]; then
+            echo -e "${BOLD}Checking $local_ref merged with origin/main in a temporary worktree.${NC}"
+        else
+            echo -e "${BOLD}Checking $local_ref in a temporary worktree.${NC}"
+        fi
+        prepare_worktree "$local_sha" "$merge"
+        prepare_status=$?
+        if [ "$prepare_status" -ne 0 ]; then
+            cleanup
+            # The conflict is named by its own check so it reads as a merge problem.
+            if [ "$prepare_status" -eq 3 ]; then
+                FAILED+=("${CHECK_SCOPE}merge with origin/main (conflict)")
+                echo -e "${RED}FAILED: merge with origin/main (conflict)${NC}" >&2
+            else
+                FAILED+=("${CHECK_SCOPE}temporary worktree")
+                echo -e "${RED}FAILED: preparing a temporary worktree for $local_ref${NC}" >&2
+            fi
+            continue
+        fi
+        dir="$TEMP_TREE"
+    fi
+
+    if [ "$TOUCHES_RUST" = 1 ]; then
+        run_rust_checks "$dir"
+    fi
+    [ "$TOUCHES_WEB" = 1 ] && run_web_checks "$dir"
+    cleanup
+done
+
+if [ "$CHECKED_ANY" = 0 ]; then
+    exit 0
+fi
+
+echo >&2
+for name in ${PASSED[@]+"${PASSED[@]}"}; do
+    echo -e "${GREEN}  passed: $name${NC}" >&2
+done
+for name in ${FAILED[@]+"${FAILED[@]}"}; do
+    echo -e "${RED}  FAILED: $name${NC}" >&2
+done
+
+if [ "${#FAILED[@]}" -gt 0 ]; then
+    echo -e "${RED}${BOLD}Pre-push checks failed (${#FAILED[@]}).${NC} Each check's output is above. Fix every failure, commit, and push again." >&2
+    exit 1
+fi
+
+echo -e "${GREEN}Pre-push checks passed.${NC}" >&2
