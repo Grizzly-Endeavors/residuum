@@ -32,6 +32,7 @@ set -euo pipefail
 
 readonly LOOKBACK_DAYS=14
 readonly LOOKBACK_RUNS=150
+readonly RUNS_PER_PAGE=100
 # An agent session started by an @claude mention, not a CI check: its runs are
 # never part of the report.
 readonly EXCLUDED_WORKFLOW="Claude Code"
@@ -167,11 +168,15 @@ fi
 
 target_branch="$(jq -r '.head_branch' "$work/target.jsonl" | sed -n 1p)"
 
-# Recent completed runs on other branches, for the seen-elsewhere flag.
+# Recent completed runs on other branches, for the seen-elsewhere flag: the
+# LOOKBACK_RUNS most recent, fetched in pages of at most RUNS_PER_PAGE.
 lookback_ok=yes
 : > "$work/recent.jsonl"
-for page in 1 2; do
-    if gh api "repos/$repo/actions/runs?status=completed&per_page=100&page=$page" > "$work/recent-page.json"; then
+left=$LOOKBACK_RUNS
+for (( page = 1; left > 0; page++ )); do
+    per_page=$(( left < RUNS_PER_PAGE ? left : RUNS_PER_PAGE ))
+    left=$(( left - per_page ))
+    if gh api "repos/$repo/actions/runs?status=completed&per_page=$per_page&page=$page" > "$work/recent-page.json"; then
         jq -c '.workflow_runs[]' "$work/recent-page.json" >> "$work/recent.jsonl" \
             || die "could not read the recent CI runs"
     else
@@ -187,9 +192,9 @@ done
 : > "$work/look.jsonl"
 if [[ "$lookback_ok" == yes && -s "$work/recent.jsonl" ]]; then
     jq -s -c --arg excluded "$EXCLUDED_WORKFLOW" --arg br "$target_branch" --arg sha "$sha" \
-        --argjson days "$LOOKBACK_DAYS" --argjson lim "$LOOKBACK_RUNS" '
+        --argjson days "$LOOKBACK_DAYS" '
         (now - $days * 86400 | todate) as $cut
-        | .[0:$lim][]
+        | .[]
         | select(.name != $excluded and .head_branch != $br and .head_sha != $sha and .created_at >= $cut)
         | select(.conclusion == "failure" or .run_attempt > 1)
         | {id, name, run_attempt, head_branch, html_url}
