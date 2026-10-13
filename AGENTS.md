@@ -26,7 +26,7 @@ Bypass is **FORBIDDEN**.
 
 ### Local Tasks
 
-The `justfile` wraps the commands above; `just` lists the recipes. `just check` runs everything CI runs except the web end-to-end suite (web checks, then fmt, clippy, tests, and `cargo deny`), `just test <filter>` runs `cargo test --quiet <filter>`, `just web-mock` runs the web UI against the mock API, and `just web-e2e` runs the web end-to-end, accessibility and visual suite (the visual comparisons render in the Playwright container, so it needs Docker; `just web-e2e-fast` leaves them out). In CI the visual comparisons run in a job of their own that never fails a pull request or a release, and report changed shots in one pull request comment. Every cargo recipe builds `web/dist` first when it is missing, because `build.rs` refuses to compile without it.
+The `justfile` wraps the commands above; `just` lists the recipes. `just check` runs everything CI runs except the web end-to-end suite (web checks, then fmt, clippy, tests, and `cargo deny`; a failing check does not stop the others, and the failures are listed at the end), `just test <filter>` runs `cargo test --quiet --no-fail-fast <filter>`, `just web-mock` runs the web UI against the mock API, and `just web-e2e` runs the web end-to-end, accessibility and visual suite (the visual comparisons render in the Playwright container, so it needs Docker; `just web-e2e-fast` leaves them out). In CI the visual comparisons run in a job of their own that never fails a pull request or a release, and report changed shots in one pull request comment. Every cargo recipe builds `web/dist` first when it is missing, because `build.rs` refuses to compile without it.
 
 ### Cross-Platform Targets
 
@@ -37,11 +37,11 @@ Release builds target Linux x86_64, Linux aarch64, macOS aarch64 (Apple Silicon)
 
 CI does not cross-compile by default; when it does, it runs clippy with `-D warnings` for each target and the test suite on a Windows runner. For platform-sensitive changes (unsafe/FFI, `cfg(target_os)`/`cfg(windows)`/`cfg(unix)` branches, paths, process spawning, signals, permissions), add the `cross-compile` label to the PR, or run `gh workflow run cross-compile.yml --ref <branch>`. PRs that change `Cargo.toml`, `Cargo.lock`, `build.rs`, or `rust-toolchain.toml` cross-compile automatically. See CONTRIBUTING.md.
 
+To run on real Windows locally (tests, clippy with the native toolchain, and desktop checks such as toast notifications), use the VM harness in `scripts/windows-vm/`; see [docs/runbooks/windows-harness.md](./docs/runbooks/windows-harness.md).
+
 ### Rust Toolchain
 
 The Rust version is pinned in `rust-toolchain.toml` so the pre-commit hook, CI, and release builds all use the same compiler and clippy. Bumping it is its own PR, together with fixes for any new lints.
-
-To run on real Windows locally (tests, clippy with the native toolchain, and desktop checks such as toast notifications), use the VM harness in `scripts/windows-vm/`; see [docs/runbooks/windows-harness.md](./docs/runbooks/windows-harness.md).
 
 ### Lint Rules
 
@@ -63,7 +63,7 @@ Testing is a first-class operation — NEVER skip test implementation.
 - Always run `cargo test --quiet` — never plain `cargo test`. The `--quiet` flag suppresses per-test noise and only shows failures and the summary.
 - Unit tests: `#[cfg(test)] mod tests` at file bottom
 - Integration tests: `tests/` directory
-- A test waits on the event it checks, never on elapsed time. A flaky test is fixed by making it wait on an event the code exposes (adding the signal to the code when there is none), never by widening a timeout, adding a sleep, or rerunning past it. `just stress <filter>` runs tests as two concurrent copies under CPU load, which is how they run when several agents share a machine; a test you add or fix must pass it. CI runs the whole suite that way in the Stress step of the Rust tests, and a red Stress step blocks the merge: fix the wait, never rerun past it. Tests wait through `crate::testing` (waits under one hang guard, gates, a paused-clock helper); `CONTRIBUTING.md`, "Waiting in tests", says which fits where, and a source-scan test enforces it.
+- A test waits on the event it checks, never on elapsed time. A flaky test is fixed by making it wait on an event the code exposes (adding the signal to the code when there is none), never by widening a timeout, adding a sleep, or rerunning past it. `just stress <filter>` runs tests as two concurrent copies under CPU load, which is how they run when several agents share a machine; a test you add or fix must pass it. CI runs the whole suite that way in the Stress step of the Rust tests. A test under the Stress step's "failed under load only" list waits on time: fix the wait, never rerun past it. A test under its "also failed in the Tests step" list is an ordinary failure. Tests wait through `crate::testing` (waits under one hang guard, gates, a paused-clock helper); `CONTRIBUTING.md`, "Waiting in tests", says which fits where, and a source-scan test enforces it.
 - After a red CI run, run `just ci-failures` (or `just ci-failures <pr-number|branch>`) and fix every listed failure before pushing again, except one marked `likely flake` (not `touched`, but `seen elsewhere`). That one may be a flake or a breakage other branches share: check whether `main` fails the same way, and file or add to an `investigate` issue rather than chasing it in this PR. The Stress rule above still applies to a red Stress step. Every other failure, `touched` or not, is this change's to fix until you show otherwise.
 
 ## Code Style
