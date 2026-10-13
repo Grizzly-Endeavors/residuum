@@ -147,9 +147,12 @@ test.describe("the service worker", { tag: "@preview" }, () => {
   test("opens the shell and the hub banner on a reload with no network", async ({
     page,
     context,
+    mock,
   }) => {
-    await page.clock.install();
     await openWithWorker(page);
+    // Manual time holds the socket's own reconnect timer, which would otherwise
+    // race the click below once the network is back, so only Retry can reconnect it.
+    await mock.manualTime();
 
     await context.setOffline(true);
     await page.reload();
@@ -159,10 +162,7 @@ test.describe("the service worker", { tag: "@preview" }, () => {
     await expect(banner).toBeVisible();
     await expectNoAxeViolations(page);
 
-    // Back online, Retry reconnects and the banner goes. Hold the socket's own
-    // reconnect timer, which would otherwise race the click once the network
-    // is back, so only Retry can reconnect it.
-    await page.clock.pauseAt(Date.now() + 2_000);
+    // Back online, Retry reconnects and the banner goes.
     const retry = banner.getByRole("button", { name: "Retry" });
     await expect(retry).not.toHaveAttribute("aria-busy", "true");
     await context.setOffline(false);

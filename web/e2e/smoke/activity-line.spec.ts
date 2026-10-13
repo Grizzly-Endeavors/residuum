@@ -1,6 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
-import { sendFromComposer } from "../support/composer";
+import { FIRST_RECONNECT_MS, reconnectingLine, sendFromComposer } from "../support/composer";
 import { expect, test } from "../support/fixtures";
 
 /**
@@ -220,8 +220,11 @@ test.describe("connecting while a turn runs", () => {
     await expect(feed.getByText("Working")).toBeVisible();
 
     // The connection drops at 600ms, and the reads finish at 900ms and 1.2s while it is down.
-    // The page reconnects about a second of real time later, and asks for the turn in flight.
     await mock.advance(1_300);
+    // The page tries again a second after it saw the drop, and asks for the turn in flight.
+    await expect(reconnectingLine(page)).toBeVisible();
+    await mock.advance(FIRST_RECONNECT_MS);
+    await expect(reconnectingLine(page)).toHaveCount(0);
     await expect(
       feed.getByRole("button", { name: /^Read(ing)? team\/wiki\/index\.md/ }),
     ).toBeVisible();

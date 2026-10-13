@@ -374,7 +374,8 @@ test.describe("residuum.sessions", () => {
     await page.routeWebSocket(/\/api\/hub\/ws$/, (ws) => {
       void ws.close();
     });
-    await page.clock.install();
+    // The page's ten seconds run only as the spec moves the mock's time.
+    await mock.manualTime();
     await writeProbe(mock);
     const sent = apiRequests(page);
     await page.goto(`${artifactsOrigin()}/${PROBE}/`);
@@ -399,8 +400,7 @@ test.describe("residuum.sessions", () => {
           },
         ),
     );
-    await page.clock.runFor(9_000);
-    await page.clock.runFor(1_000);
+    await mock.advance(10_000);
     expect(await outcome).toMatch(/^no_live_connection: .*live connection isn't available/);
     expect(sent.filter((r) => r.method() === "POST")).toEqual([]);
   });
