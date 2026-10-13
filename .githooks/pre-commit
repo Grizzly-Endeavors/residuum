@@ -22,6 +22,17 @@ fail() {
     exit 1
 }
 
+# In a linked worktree git exports GIT_DIR and GIT_INDEX_FILE to this hook, and
+# a tool that runs git in some other repository inherits them and acts on this
+# one: cargo deny's advisory database update ran `git reset --hard FETCH_HEAD`
+# against the worktree's repository and checked it out into the database's
+# directory. The hook's own git commands find the repository from the working
+# directory, so GIT_DIR goes. GIT_INDEX_FILE stays for them, because
+# `git commit <paths>` stages into a temporary index, and every other tool runs
+# without it.
+unset GIT_DIR GIT_WORK_TREE
+cargo() { env -u GIT_INDEX_FILE cargo "$@"; }
+
 # Only the paths that were actually staged. Captured before formatting, because
 # cargo fmt rewrites the whole tree and we need to know what to put back.
 STAGED_RUST="$(git diff --cached --name-only --diff-filter=ACM -- '*.rs')"

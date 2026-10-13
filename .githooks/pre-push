@@ -26,8 +26,12 @@ note() { echo -e "${YELLOW}$1${NC}" >&2; }
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 CHECKOUT_HEAD="$(git rev-parse HEAD)"
-# Git can export these to hooks, and they would point the commands run inside
-# the temporary worktree back at this checkout.
+# In a linked worktree git exports GIT_DIR to this hook. Every git command run
+# elsewhere would inherit it and act on this repository instead: the merge in
+# the temporary worktree, and any tool or test that runs git in a directory of
+# its own (cargo deny's advisory database update once ran
+# `git reset --hard FETCH_HEAD` against a worktree's repository this way).
+# Without it, git finds the repository from the working directory.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 # The worktree shares this checkout's build output, so the merge is checked
 # with warm dependencies instead of a cold build of the whole tree.
