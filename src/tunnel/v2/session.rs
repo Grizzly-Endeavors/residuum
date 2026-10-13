@@ -43,7 +43,9 @@ pub(in crate::tunnel) enum ConnectOutcome {
     /// The relay has no registration endpoint or wants a capability this client lacks
     /// (HTTP 404 or 426); the status is attached.
     Unsupported(u16),
-    /// Any other failure (auth, network, TLS).
+    /// The relay refused the token (HTTP 401 or 403); the status is attached.
+    Unauthorized(u16),
+    /// Any other failure (network, TLS, a server error).
     Failed(WsError),
 }
 
@@ -55,6 +57,9 @@ pub(in crate::tunnel) async fn connect(
         Ok((ws, _response)) => ConnectOutcome::Connected(Box::new(ws)),
         Err(WsError::Http(response)) if matches!(response.status().as_u16(), 404 | 426) => {
             ConnectOutcome::Unsupported(response.status().as_u16())
+        }
+        Err(WsError::Http(response)) if matches!(response.status().as_u16(), 401 | 403) => {
+            ConnectOutcome::Unauthorized(response.status().as_u16())
         }
         Err(e) => ConnectOutcome::Failed(e),
     }

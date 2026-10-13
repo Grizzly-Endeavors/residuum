@@ -63,18 +63,26 @@ describe("connectTarget", () => {
 });
 
 describe("phaseOf", () => {
-  it("tells the four states apart", () => {
+  it("tells the five states apart", () => {
     expect(phaseOf(status({ status: "connected", has_token: true, enabled: true }))).toBe(
       "connected",
     );
     expect(phaseOf(status({ status: "connecting", has_token: true, enabled: true }))).toBe(
       "connecting",
     );
+    expect(phaseOf(status({ status: "refused", has_token: true, enabled: true }))).toBe("refused");
     expect(phaseOf(status({ has_token: true, enabled: false }))).toBe("disconnected");
     expect(phaseOf(status())).toBe("none");
   });
 
   it("counts a saved token that is switched on as connecting while the tunnel isn't up yet", () => {
     expect(phaseOf(status({ has_token: true, enabled: true }))).toBe("connecting");
+  });
+
+  it("reads a refusal the tunnel left behind as switched off once the token is off or gone", () => {
+    expect(phaseOf(status({ status: "refused", has_token: true, enabled: false }))).toBe(
+      "disconnected",
+    );
+    expect(phaseOf(status({ status: "refused" }))).toBe("none");
   });
 });

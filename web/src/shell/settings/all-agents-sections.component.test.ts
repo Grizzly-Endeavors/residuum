@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup } from "@testing-library/svelte";
+import { captureCloudHandoff, takeCloudHandoff } from "../../lib/cloud-handoff";
 import { settingsModel, type AllScopeModel } from "../../lib/settings-model.svelte";
 import type {
   CloudStatusResponse,
@@ -635,5 +637,82 @@ describe("Residuum Cloud", () => {
     await advance(3100);
 
     expect(screen.getByText("Connected")).toBeInTheDocument();
+  });
+
+  describe("after the sign-in callback hands a tab over", () => {
+    beforeEach(() => {
+      // Nothing left over from a page another test opened.
+      takeCloudHandoff();
+    });
+
+    it("follows a saved sign-in from Connecting to the tunnel's real answer, claiming nothing first", async () => {
+      vi.useFakeTimers();
+      captureCloudHandoff("?settings=_all/cloud&cloud=connecting");
+      status = cloudStatus({ status: "connecting", has_token: true, enabled: true });
+      render(CloudSection, { scope, section: "cloud" });
+      await settle();
+      expect(screen.getByText("Connecting…")).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(screen.queryByText("Connected")).not.toBeInTheDocument();
+
+      status = cloudStatus({ status: "refused", has_token: true, enabled: true });
+      await advance(3100);
+
+      expect(screen.getByText("Sign-in not accepted")).toBeInTheDocument();
+      expect(screen.getByText(/no longer accepts this install's sign-in/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
+    });
+
+    it.each([
+      ["missing-token", /sent you back without signing this install in\. Try connecting again\./],
+      ["save-failed", /couldn't save the sign-in on this machine\. Try connecting again/],
+    ])("says what a %s hand-off means and offers to connect again", async (outcome, words) => {
+      const opened = vi.spyOn(window, "open").mockReturnValue(null);
+      captureCloudHandoff(`?settings=_all/cloud&cloud=${outcome}`);
+      await view();
+
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent(words);
+      expect(alert).not.toHaveTextContent(/error|token parameter|failed to/i);
+
+      await fireEvent.click(await button("Try connecting again"));
+      expect(opened).toHaveBeenLastCalledWith(
+        "https://agent-residuum.com/connect?port=7701",
+        "_blank",
+        "noopener",
+      );
+      await waitFor(() => {
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      });
+    });
+
+    it("shows the outcome once: the section opened again says nothing", async () => {
+      captureCloudHandoff("?settings=_all/cloud&cloud=missing-token");
+      await view();
+      expect(await screen.findByRole("alert")).toBeInTheDocument();
+      cleanup();
+
+      await view();
+      expect(screen.getByText("Not connected")).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+  });
+
+  it("offers to sign in again when the relay refuses the saved sign-in", async () => {
+    const opened = vi.spyOn(window, "open").mockReturnValue(null);
+    status = cloudStatus({ status: "refused", has_token: true, enabled: true });
+    await view();
+
+    expect(screen.getByText("Sign-in not accepted")).toBeInTheDocument();
+    expect(screen.getByText(/Opens agent-residuum.com in a new tab/)).toBeInTheDocument();
+    await fireEvent.click(await button("Sign in again"));
+    expect(opened).toHaveBeenLastCalledWith(
+      "https://agent-residuum.com/connect?port=7701",
+      "_blank",
+      "noopener",
+    );
+
+    await fireEvent.click(await button("Disconnect"));
+    expect(await screen.findByText("Disconnected")).toBeInTheDocument();
   });
 });

@@ -57,11 +57,16 @@ export function connectTarget(relayUrl: string, gatewayPort: string): ConnectTar
   return { url: `${origin}/connect?port=${encodeURIComponent(port)}`, host };
 }
 
-/** What the section shows for a tunnel status. A saved token that is switched on counts as connecting: the tunnel is being started, or retrying. */
-export type CloudPhase = "connected" | "connecting" | "disconnected" | "none";
+/**
+ * What the section shows for a tunnel status. A saved token that is switched
+ * on counts as connecting: the tunnel is being started, or retrying. Refused
+ * is a switched-on token the relay turned away.
+ */
+export type CloudPhase = "connected" | "connecting" | "refused" | "disconnected" | "none";
 
 export function phaseOf(status: CloudStatusResponse): CloudPhase {
   if (status.status === "connected") return "connected";
+  if (status.status === "refused" && status.has_token && status.enabled) return "refused";
   if (status.status === "connecting" || (status.has_token && status.enabled)) return "connecting";
   return status.has_token ? "disconnected" : "none";
 }

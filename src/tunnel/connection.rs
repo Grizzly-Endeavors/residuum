@@ -55,6 +55,7 @@ pub(crate) async fn start_tunnel(
     handler: Arc<dyn SessionHandler>,
 ) {
     let mut backoff = MIN_BACKOFF;
+    let mut first_attempt = true;
 
     loop {
         if *shutdown_rx.borrow() {
@@ -63,11 +64,17 @@ pub(crate) async fn start_tunnel(
             return;
         }
 
-        status_tx
-            .send(TunnelStatus::Connecting)
-            .unwrap_or_else(|_| {
-                debug!("status receiver dropped");
-            });
+        // A refused token stays refused while the same token is retried, so
+        // the status keeps saying why nothing connects. A started tunnel may
+        // carry a new token, so its first attempt always reads as connecting.
+        status_tx.send_if_modified(|status| {
+            if !first_attempt && *status == TunnelStatus::Refused {
+                return false;
+            }
+            *status = TunnelStatus::Connecting;
+            true
+        });
+        first_attempt = false;
         debug!(url = %cfg.relay_url, "connecting to relay");
 
         let attempt = Attempt {
@@ -147,6 +154,20 @@ impl Attempt<'_> {
                 self.handler.on_relay_unsupported();
                 status_tx.send(TunnelStatus::Disconnected).ok();
                 return Step::Wait(None);
+            }
+            ConnectOutcome::Unauthorized(status) => {
+                // Logged once per refusal, not on every retry of the same token.
+                if *status_tx.borrow() == TunnelStatus::Refused {
+                    debug!(status, "the relay still refuses this install's token");
+                } else {
+                    error!(
+                        status,
+                        url = %url,
+                        "the relay refused this install's Residuum Cloud token; sign in again under Settings, Residuum Cloud"
+                    );
+                }
+                status_tx.send_replace(TunnelStatus::Refused);
+                return Step::Wait(Some(MAX_BACKOFF));
             }
             ConnectOutcome::Failed(e) => {
                 warn!(error = %e, "failed to connect to relay, will retry");
