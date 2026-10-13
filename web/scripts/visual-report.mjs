@@ -12,7 +12,7 @@
 //   new     the shot has no baseline yet
 //   errored the test failed for another reason, such as a timeout, or the shot
 //           never held still long enough to be compared
-// A shot that ran more than once (retries, `--repeat-each`) is one shot; the
+// A test that ran more than once (retries, `--repeat-each`) is one shot; the
 // worst outcome among its runs counts. A report that is missing, unreadable or
 // lists no tests is status `error`; a run where every test skipped itself is
 // status `skipped`.
@@ -46,6 +46,12 @@ const SNAPSHOT_LINE = /^\s*Snapshot:\s*(.+?)\.(?:png|jpe?g|webp)\s*$/m;
 const UNSTABLE_DETAIL =
   "the shot never held still: something in it moves or changes; mask or freeze it";
 
+// A failed screenshot assertion opens with this line; its cause is in the
+// indented lines that follow, before the `Snapshot:` and `Call log:` sections.
+const SCREENSHOT_FAILED = /^Error: expect\(.+\)\.\w+\(.*\) failed$/;
+const DETAIL_END = /^\s*(?:Snapshot:|Call log:)/m;
+const LOCATOR = /^Locator: (.+)$/m;
+
 // Worst outcome wins when one shot has several runs.
 const RANK = { skipped: 0, matched: 1, errored: 2, new: 3, differ: 4 };
 
@@ -56,6 +62,20 @@ function firstLineOf(text) {
       .find((l) => l.trim() !== "")
       ?.trim() ?? "no error message"
   );
+}
+
+/** Why a test failed, in one line: its cause and the locator it was waiting for. */
+function reasonOf(text) {
+  const head = firstLineOf(text);
+  if (!SCREENSHOT_FAILED.test(head)) return head;
+  const detail = stripVTControlCharacters(text).split(DETAIL_END)[0] ?? "";
+  const cause =
+    detail
+      .split("\n")
+      .find((line) => /^\s+\S/.test(line))
+      ?.trim() ?? head;
+  const locator = LOCATOR.exec(detail)?.[1];
+  return locator === undefined ? cause : `${cause} (Locator: ${locator})`;
 }
 
 function lastResult(test) {
@@ -88,7 +108,7 @@ function outcomeOf(test) {
   return {
     kind: "errored",
     shot,
-    detail: errors.length > 0 ? firstLineOf(text) : "no error message",
+    detail: errors.length > 0 ? reasonOf(text) : "no error message",
   };
 }
 
@@ -109,7 +129,9 @@ function classify(report) {
       const outcome = outcomeOf(test);
       const title = [...describes, spec.title].join(" › ");
       const project = test.projectName ?? "";
-      const key = `${project}\u0000${outcome.shot ?? title}`;
+      // Every repeat of a test is its own spec with the same file and title, so
+      // keying on those puts the runs of one test together.
+      const key = `${project}\u0000${file.title}\u0000${title}`;
       const known = shots.get(key);
       if (known === undefined || RANK[outcome.kind] > RANK[known.kind]) {
         shots.set(key, { ...outcome, title, project });

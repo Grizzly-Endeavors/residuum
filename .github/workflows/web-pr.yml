@@ -33,9 +33,10 @@ jobs:
   # a later run finds it and edits it instead of adding another. A run whose
   # shots all match edits an existing comment to say so and posts nothing when
   # there is none: a pull request that changes no look has no reason to carry a
-  # comment. A run with no status at all (the visual job broke before it sorted
-  # the shots) says so in the comment, so an earlier push's result never stands
-  # as the current one. Posting is best effort and never fails the pull request's checks.
+  # comment. A run with no status or no body (the visual job broke before it
+  # sorted the shots, or rendering failed) says so in the comment, so an earlier
+  # push's result never stands as the current one. Posting is best effort and
+  # never fails the pull request's checks.
   # A superseded run is cancelled and posts nothing; the run that replaces it
   # reports.
   visual-report:
@@ -58,7 +59,7 @@ jobs:
           BODY: ${{ needs.quality.outputs.visual_body }}
         run: |
           marker='<!-- residuum-visual-report -->'
-          if [ -z "$STATUS" ]; then
+          if [ -z "$STATUS" ] || [ -z "$BODY" ]; then
             BODY="$marker"$'\n\n'"### Web visual comparisons"$'\n\n'"The visual comparisons produced no result. See [the workflow run]($RUN_URL)."$'\n'
           fi
 

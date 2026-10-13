@@ -1,111 +1,86 @@
 {
   "config": {
-    "rootDir": "/repo/web/e2e",
+    "argv": [
+      "node",
+      "/repo/web/node_modules/.bin/playwright",
+      "test",
+      "--config",
+      "/repo/web/scripts/fixtures/visual-report/capture/playwright.config.mjs",
+      "--project=visual-desktop",
+      "--workers=1",
+      "--grep",
+      "chat|the navigation|settings|the phone layout"
+    ],
+    "configFile": "/repo/web/scripts/fixtures/visual-report/capture/playwright.config.mjs",
+    "rootDir": "/repo/web/scripts/fixtures/visual-report/capture/tests",
+    "failOnFlakyTests": false,
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
     "projects": [
       {
+        "outputDir": "/capture-scratch/results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
         "id": "visual-desktop",
         "name": "visual-desktop",
-        "retries": 0,
-        "repeatEach": 1
-      },
-      {
-        "id": "visual-phone",
-        "name": "visual-phone",
-        "retries": 0,
-        "repeatEach": 1
+        "testDir": "/repo/web/scripts/fixtures/visual-report/capture/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
       }
-    ]
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "json",
+        {
+          "outputFile": "/capture-scratch/report.json"
+        }
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.63.0",
+    "workers": 1,
+    "webServer": null
   },
   "suites": [
     {
-      "title": "visual/home.spec.ts",
-      "file": "visual/home.spec.ts",
-      "column": 0,
-      "line": 0,
-      "specs": [],
-      "suites": [
-        {
-          "title": "home",
-          "file": "visual/home.spec.ts",
-          "line": 5,
-          "column": 1,
-          "specs": [
-            {
-              "title": "the home page",
-              "ok": true,
-              "tags": [],
-              "tests": [
-                {
-                  "timeout": 30000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "visual-desktop",
-                  "projectName": "visual-desktop",
-                  "results": [
-                    {
-                      "workerIndex": 0,
-                      "parallelIndex": 0,
-                      "status": "passed",
-                      "duration": 1800,
-                      "errors": [],
-                      "stdout": [],
-                      "stderr": [],
-                      "retry": 0,
-                      "startTime": "2026-10-13T12:00:00.000Z",
-                      "annotations": [],
-                      "attachments": []
-                    }
-                  ],
-                  "status": "expected"
-                },
-                {
-                  "timeout": 30000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "visual-phone",
-                  "projectName": "visual-phone",
-                  "results": [
-                    {
-                      "workerIndex": 0,
-                      "parallelIndex": 0,
-                      "status": "passed",
-                      "duration": 1800,
-                      "errors": [],
-                      "stdout": [],
-                      "stderr": [],
-                      "retry": 0,
-                      "startTime": "2026-10-13T12:00:00.000Z",
-                      "annotations": [],
-                      "attachments": []
-                    }
-                  ],
-                  "status": "expected"
-                }
-              ],
-              "id": "the-home-page",
-              "file": "visual/x.spec.ts",
-              "line": 8,
-              "column": 3
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "title": "visual/chat.spec.ts",
-      "file": "visual/chat.spec.ts",
+      "title": "visual.spec.mjs",
+      "file": "visual.spec.mjs",
       "column": 0,
       "line": 0,
       "specs": [],
       "suites": [
         {
           "title": "chat",
-          "file": "visual/chat.spec.ts",
-          "line": 5,
-          "column": 1,
+          "file": "visual.spec.mjs",
+          "line": 32,
+          "column": 6,
           "specs": [
             {
-              "title": "a finished turn",
+              "title": "a finished turn's activity line, open to a step's details",
               "ok": true,
               "tags": [],
               "tests": [
@@ -120,45 +95,22 @@
                       "workerIndex": 0,
                       "parallelIndex": 0,
                       "status": "passed",
-                      "duration": 1800,
+                      "duration": 951,
                       "errors": [],
                       "stdout": [],
                       "stderr": [],
                       "retry": 0,
-                      "startTime": "2026-10-13T12:00:00.000Z",
+                      "startTime": "2026-10-13T19:46:15.891Z",
                       "annotations": [],
                       "attachments": []
                     }
                   ],
                   "status": "expected"
-                },
-                {
-                  "timeout": 30000,
-                  "annotations": [],
-                  "expectedStatus": "skipped",
-                  "projectId": "visual-phone",
-                  "projectName": "visual-phone",
-                  "results": [
-                    {
-                      "workerIndex": 0,
-                      "parallelIndex": 0,
-                      "status": "skipped",
-                      "duration": 1800,
-                      "errors": [],
-                      "stdout": [],
-                      "stderr": [],
-                      "retry": 0,
-                      "startTime": "2026-10-13T12:00:00.000Z",
-                      "annotations": [],
-                      "attachments": []
-                    }
-                  ],
-                  "status": "skipped"
                 }
               ],
-              "id": "a-finished-turn",
-              "file": "visual/x.spec.ts",
-              "line": 12,
+              "id": "a9e8504622c1797aedfc-0a456c35605fe7038934",
+              "file": "visual.spec.mjs",
+              "line": 33,
               "column": 3
             },
             {
@@ -177,35 +129,12 @@
                       "workerIndex": 0,
                       "parallelIndex": 0,
                       "status": "passed",
-                      "duration": 1800,
+                      "duration": 380,
                       "errors": [],
                       "stdout": [],
                       "stderr": [],
                       "retry": 0,
-                      "startTime": "2026-10-13T12:00:00.000Z",
-                      "annotations": [],
-                      "attachments": []
-                    }
-                  ],
-                  "status": "expected"
-                },
-                {
-                  "timeout": 30000,
-                  "annotations": [],
-                  "expectedStatus": "passed",
-                  "projectId": "visual-phone",
-                  "projectName": "visual-phone",
-                  "results": [
-                    {
-                      "workerIndex": 0,
-                      "parallelIndex": 0,
-                      "status": "passed",
-                      "duration": 1800,
-                      "errors": [],
-                      "stdout": [],
-                      "stderr": [],
-                      "retry": 0,
-                      "startTime": "2026-10-13T12:00:00.000Z",
+                      "startTime": "2026-10-13T19:46:17.158Z",
                       "annotations": [],
                       "attachments": []
                     }
@@ -213,9 +142,181 @@
                   "status": "expected"
                 }
               ],
-              "id": "the-composer",
-              "file": "visual/x.spec.ts",
-              "line": 30,
+              "id": "a9e8504622c1797aedfc-92ce40298499b3af66ea",
+              "file": "visual.spec.mjs",
+              "line": 38,
+              "column": 3
+            },
+            {
+              "title": "a message's details",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "visual-desktop",
+                  "projectName": "visual-desktop",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 333,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-13T19:46:17.627Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "a9e8504622c1797aedfc-8c001c149ae79fee89cd",
+              "file": "visual.spec.mjs",
+              "line": 43,
+              "column": 3
+            }
+          ]
+        },
+        {
+          "title": "settings",
+          "file": "visual.spec.mjs",
+          "line": 57,
+          "column": 6,
+          "specs": [
+            {
+              "title": "a settings section",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 1000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "visual-desktop",
+                  "projectName": "visual-desktop",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 326,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-13T19:46:18.076Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "a9e8504622c1797aedfc-4a8ca9711968d9ba5bb6",
+              "file": "visual.spec.mjs",
+              "line": 58,
+              "column": 3
+            }
+          ]
+        },
+        {
+          "title": "shell",
+          "file": "visual.spec.mjs",
+          "line": 68,
+          "column": 6,
+          "specs": [
+            {
+              "title": "the navigation",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "visual-desktop",
+                  "projectName": "visual-desktop",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 366,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-13T19:46:18.452Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "a9e8504622c1797aedfc-3e6408360dfc9039ecf0",
+              "file": "visual.spec.mjs",
+              "line": 69,
+              "column": 3
+            },
+            {
+              "title": "the phone layout",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [
+                    {
+                      "type": "skip",
+                      "description": "phone",
+                      "location": {
+                        "file": "/repo/web/scripts/fixtures/visual-report/capture/tests/visual.spec.mjs",
+                        "line": 87,
+                        "column": 10
+                      }
+                    }
+                  ],
+                  "expectedStatus": "skipped",
+                  "projectId": "visual-desktop",
+                  "projectName": "visual-desktop",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "skipped",
+                      "duration": 4,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-13T19:46:18.861Z",
+                      "annotations": [
+                        {
+                          "type": "skip",
+                          "description": "phone",
+                          "location": {
+                            "file": "/repo/web/scripts/fixtures/visual-report/capture/tests/visual.spec.mjs",
+                            "line": 87,
+                            "column": 10
+                          }
+                        }
+                      ],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "skipped"
+                }
+              ],
+              "id": "a9e8504622c1797aedfc-364310be1ca472d9216e",
+              "file": "visual.spec.mjs",
+              "line": 86,
               "column": 3
             }
           ]
@@ -225,10 +326,10 @@
   ],
   "errors": [],
   "stats": {
-    "startTime": "2026-10-13T12:00:00.000Z",
-    "duration": 20000,
-    "expected": 0,
-    "skipped": 0,
+    "startTime": "2026-10-13T19:46:14.921Z",
+    "duration": 4138.400000000001,
+    "expected": 5,
+    "skipped": 1,
     "unexpected": 0,
     "flaky": 0
   }

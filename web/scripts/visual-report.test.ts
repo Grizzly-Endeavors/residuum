@@ -1,9 +1,8 @@
-// Runs scripts/visual-report.mjs the way CI does, as a subprocess, against
-// Playwright JSON reports in fixtures/visual-report/. The reports have the shape
-// and wording Playwright 1.63 writes (the JSON reporter in playwright/lib/runner,
-// the messages in playwright/lib/matchers/expect.js and playwright-core), so a
-// Playwright upgrade that changes either shows up here as a failing test instead
-// of a pull request comment that files every changed shot under "errored".
+// Runs scripts/visual-report.mjs the way CI does, as a subprocess, against the
+// Playwright JSON reports in fixtures/visual-report/. Those are Playwright 1.63
+// output: fixtures/visual-report/capture/capture.mjs runs the suite in capture/ on
+// that version and writes them. A Playwright bump is checked by re-running the
+// capture and this file; a changed report shape or message then fails here.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -76,6 +75,13 @@ function classify(input: string): Classified {
   };
 }
 
+/** A report written to the temp directory, for a case that no fixture needs to carry. */
+function writeReport(name: string, report: unknown): string {
+  const path = join(dir, `${name}.json`);
+  writeFileSync(path, JSON.stringify(report));
+  return path;
+}
+
 interface Rendered {
   markdown: string;
   githubOutput: string;
@@ -139,7 +145,7 @@ describe("classify", () => {
     ]);
     expect(classification.new).toEqual([]);
     expect(classification.errored).toEqual([]);
-    expect(classification.matched).toBe(4);
+    expect(classification.matched).toBe(1);
     expect(githubOutput).toBe("status=differ\n");
   });
 
@@ -159,11 +165,24 @@ describe("classify", () => {
       {
         title: "settings › a settings section",
         project: "visual-desktop",
-        detail: "Error: Test timeout of 30000ms exceeded.",
+        detail: "Test timeout of 1000ms exceeded.",
       },
     ]);
     expect(classification.differ).toEqual([]);
     expect(githubOutput).toBe("status=error\n");
+  });
+
+  it("gives a shot whose locator matches nothing the cause and the locator, not Playwright's generic header", () => {
+    const { classification } = classify(fixture("missing-locator"));
+    expect(classification.status).toBe("error");
+    expect(classification.errored).toEqual([
+      {
+        shot: "missing-element",
+        title: "shell › the missing element",
+        project: "visual-desktop",
+        detail: "Timeout 2000ms exceeded. (Locator: locator('#nope'))",
+      },
+    ]);
   });
 
   it("calls a shot that never held still errored, with or without a baseline, though Playwright attaches a diff", () => {
@@ -185,31 +204,41 @@ describe("classify", () => {
     expect(classification.matched).toBe(3);
     expect(classification.errored).toEqual([]);
     expect(classification.differ).toEqual([
-      { shot: "message-details", title: "chat › a message's details", project: "visual-phone" },
+      { shot: "message-details", title: "chat › a message's details", project: "visual-desktop" },
     ]);
   });
 
-  it("counts the repeats of one shot once", () => {
+  it("counts the repeats of one test once: a repeat that matches and one that differs make one differing shot", () => {
     const { classification } = classify(fixture("repeat-each"));
+    expect(classification.status).toBe("differ");
     expect(shotsOf(classification.differ)).toEqual(["chat-turn (visual-desktop)"]);
-    expect(classification.matched).toBe(3);
+    expect(classification.matched).toBe(0);
     expect(classification.errored).toEqual([]);
   });
 
-  it("reports an error of the run itself", () => {
+  it("reports an error of the run itself, with the error Playwright gives", () => {
     const { classification } = classify(fixture("run-error"));
     expect(classification.status).toBe("error");
-    expect(classification.errored).toEqual([
-      {
-        title: "the run",
-        project: "",
-        detail: "Error: Cannot find module './missing-helper'",
-      },
+    expect(classification.errored.map((e) => [e.title, e.project])).toEqual([
+      ["the run", ""],
+      ["the run", ""],
+    ]);
+    expect(classification.errored.map((e) => e.detail)).toEqual([
+      expect.stringMatching(/^Error: Cannot find module '.*missing-helper\.mjs'/),
+      "Error: No tests found",
     ]);
   });
 
-  it("calls a report with no tests an error, not a match", () => {
+  it("calls a grep that selects no test an error, with Playwright's message", () => {
     const { classification } = classify(fixture("no-tests"));
+    expect(classification.status).toBe("error");
+    expect(classification.errored).toEqual([
+      { title: "the run", project: "", detail: "Error: No tests found" },
+    ]);
+  });
+
+  it("calls a report with no tests and no errors an error, not a match", () => {
+    const { classification } = classify(writeReport("empty", { suites: [], errors: [] }));
     expect(classification.status).toBe("error");
     expect(classification.reason).toBe("the Playwright report lists no tests");
   });
@@ -306,20 +335,35 @@ describe("render", () => {
     const { markdown } = renderFixture("mixed", links);
     expect(markdown).toContain("**2 shots could not be compared:**");
     expect(markdown).toContain(
-      "- `settings › a settings section` (visual-desktop)\n  - Error: Test timeout of 30000ms exceeded.",
+      "- `settings › a settings section` (visual-desktop)\n  - Test timeout of 1000ms exceeded.",
     );
     expect(markdown).toContain(
       "- `shell-nav` (visual-desktop): shell › the navigation\n  - the shot never held still: something in it moves or changes; mask or freeze it",
     );
   });
 
+  it("shows the cause and the locator under the entry of a shot whose locator matches nothing", () => {
+    const { markdown } = renderFixture("missing-locator", links);
+    expect(markdown).toContain(
+      "- `missing-element` (visual-desktop): shell › the missing element\n  - Timeout 2000ms exceeded. (Locator: locator('#nope'))",
+    );
+  });
+
   it("lists an error of the run without a project", () => {
     const { markdown } = renderFixture("run-error", links);
-    expect(markdown).toContain("- `the run`\n  - Error: Cannot find module './missing-helper'");
+    expect(markdown).toContain("- `the run`\n  - Error: Cannot find module '");
+    expect(markdown).toContain("- `the run`\n  - Error: No tests found");
+  });
+
+  it("says why a grep that selects no test has no results, under the run's error", () => {
+    const { markdown } = renderFixture("no-tests", links);
+    expect(markdown).toContain("**1 shot could not be compared:**");
+    expect(markdown).toContain("- `the run`\n  - Error: No tests found");
   });
 
   it("says why a report without results has none, linking the run", () => {
-    const { markdown } = renderFixture("no-tests", links);
+    const { classification } = classify(writeReport("empty", { suites: [], errors: [] }));
+    const { markdown } = render(classification, links);
     expect(markdown).toContain(
       "The visual comparisons produced no results (the Playwright report lists no tests). See [the workflow run](https://example.test/runs/2).",
     );
