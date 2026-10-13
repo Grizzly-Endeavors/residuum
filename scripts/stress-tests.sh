@@ -11,11 +11,15 @@
 #   STRESS_COPIES  copies of the suite run at once (default 2)
 #   STRESS_ROUNDS  times the whole run repeats (default 1)
 #   STRESS_BURN    CPU burners alongside (default: the number of CPUs)
+#   STRESS_TESTS_LOG  output of the unloaded `cargo test --no-fail-fast` run.
+#                  When set, the failures are split by whether that run also
+#                  failed them (see below).
 #
 # Each copy's output is kept under target/stress/<round>/<copy>.log, and the
-# table of failures under target/stress/summary.txt. Fix a failure by making
-# the test wait on the event it checks (CONTRIBUTING.md, "Waiting in tests"),
-# never by widening a timeout.
+# failures under target/stress/summary.txt. A failure that failed only under
+# load is a test waiting on time: fix it by making the test wait on the event
+# it checks (CONTRIBUTING.md, "Waiting in tests"), never by widening a timeout.
+# A failure that also failed in the unloaded run is an ordinary failure.
 set -euo pipefail
 
 copies="${STRESS_COPIES:-2}"
@@ -24,6 +28,10 @@ burn="${STRESS_BURN:-$(nproc)}"
 out=target/stress
 
 command -v jq >/dev/null || { echo "error: jq is required to read cargo's build output; install it and run again." >&2; exit 1; }
+if [ -n "${STRESS_TESTS_LOG:-}" ] && [ ! -f "$STRESS_TESTS_LOG" ]; then
+    echo "error: STRESS_TESTS_LOG is set to $STRESS_TESTS_LOG, which is not a file." >&2
+    exit 1
+fi
 
 # ts_export writes web/src/lib/generated, so concurrent copies would race on
 # the working tree. It has no timing to stress.
@@ -44,7 +52,9 @@ inotify_in_use() {
 
 burners=()
 stop_burners() {
-    [ "${#burners[@]}" -gt 0 ] && kill "${burners[@]}" 2>/dev/null || true
+    if [ "${#burners[@]}" -gt 0 ]; then
+        kill "${burners[@]}" 2>/dev/null || true
+    fi
     burners=()
 }
 trap stop_burners EXIT INT TERM
@@ -100,15 +110,46 @@ done
             /^=== [^ ]+ exited [0-9]+$/ && !named { print bin " (exited " $4 " without naming a failed test)" }
         ' "$log"
     done
-} | sort | uniq -c | sort -rn >"$out/summary.txt"
+} | sort | uniq -c | sort -rn >"$out/counts.txt"
+
+# Writes one heading and its lines, or nothing when there are none.
+section() {
+    [ -n "$2" ] || return 0
+    echo "$1"
+    printf '%s' "$2"
+    echo
+}
 
 runs=$((copies * rounds))
-if [ -s "$out/summary.txt" ]; then
+if [ -s "$out/counts.txt" ]; then
+    if [ -n "${STRESS_TESTS_LOG:-}" ]; then
+        advice="the summary says which failures waited on time and which also failed in the Tests step"
+        tests_failed="$(sed -n 's/^---- \(.*\) stdout ----$/\1/p' "$STRESS_TESTS_LOG" | sort -u)"
+        load_only="" both="" crashed=""
+        while read -r count name; do
+            line="$count $name"$'\n'
+            if [[ "$name" == *"(exited "* ]]; then
+                crashed+="$line"
+            elif grep -Fxq -- "$name" <<<"$tests_failed"; then
+                both+="$line"
+            else
+                load_only+="$line"
+            fi
+        done <"$out/counts.txt"
+        {
+            section "Failed under load only, so a test waiting on time (fix the wait; CONTRIBUTING.md, \"Waiting in tests\"):" "$load_only"
+            section "Also failed in the Tests step, an ordinary failure (see the Tests step):" "$both"
+            section "Exited without naming a failed test (see the Tests step and the copy logs):" "$crashed"
+        } >"$out/summary.txt"
+    else
+        advice="make each test wait on the event it checks (CONTRIBUTING.md, \"Waiting in tests\")"
+        cp "$out/counts.txt" "$out/summary.txt"
+    fi
     echo
     echo "Failures (count out of $runs runs of each test):"
     cat "$out/summary.txt"
     echo
-    echo "error: tests failed under load. Logs are in $out/; make each test wait on the event it checks (CONTRIBUTING.md, \"Waiting in tests\")." >&2
+    echo "error: tests failed under load. Logs are in $out/; $advice." >&2
     exit 1
 fi
 echo "No failures in $runs runs of each test."
