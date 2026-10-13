@@ -30,9 +30,6 @@ on:
       visual_body:
         description: The Markdown of the pull request comment that reports the visual comparisons, with the marker that finds the comment again
         value: ${{ jobs.web-visual.outputs.body }}
-      visual_artifact_url:
-        description: The URL of the artifact with the visual report and the expected, actual and diff images, empty when everything matches
-        value: ${{ jobs.web-visual.outputs.artifact_url }}
   workflow_dispatch:
     inputs:
       web:
@@ -187,7 +184,7 @@ jobs:
   # (web/CONTRIBUTING.md, "Visual"): they never fail the workflow, a pull
   # request's checks or a release. One job runs all of them, in the Playwright
   # container like the shards above, with Playwright's JSON report beside the
-  # HTML one. scripts/visual-report.mjs sorts each shot into matches, differs,
+  # HTML one. web/scripts/visual-report.mjs sorts each shot into matches, differs,
   # new (no baseline) or errored, and writes the Markdown that the pull request
   # workflow posts as its one comment (web-pr.yml, `visual-report`). The report
   # and the expected, actual and diff images are uploaded whenever a shot is
@@ -202,7 +199,6 @@ jobs:
     outputs:
       status: ${{ steps.classify.outputs.status }}
       body: ${{ steps.render.outputs.body }}
-      artifact_url: ${{ steps.upload.outputs.artifact-url }}
 
     env:
       E2E_ALL_IN_CONTAINER: '1'
@@ -226,7 +222,7 @@ jobs:
       - name: Sort the shots
         id: classify
         if: always()
-        run: node scripts/visual-report.mjs classify "$RUNNER_TEMP/visual-results.json" "$RUNNER_TEMP/visual-classification.json"
+        run: node web/scripts/visual-report.mjs classify "$RUNNER_TEMP/visual-results.json" "$RUNNER_TEMP/visual-classification.json"
 
       - name: Upload Playwright report and images
         id: upload
@@ -246,7 +242,7 @@ jobs:
         env:
           ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: node scripts/visual-report.mjs render "$RUNNER_TEMP/visual-classification.json" "$RUNNER_TEMP/visual-report.md"
+        run: node web/scripts/visual-report.mjs render "$RUNNER_TEMP/visual-classification.json" "$RUNNER_TEMP/visual-report.md"
 
   rust-lint:
     name: Rust Lint

@@ -1,0 +1,442 @@
+{
+  "config": {
+    "rootDir": "/repo/web/e2e",
+    "projects": [
+      {
+        "id": "visual-desktop",
+        "name": "visual-desktop",
+        "retries": 0,
+        "repeatEach": 1
+      },
+      {
+        "id": "visual-phone",
+        "name": "visual-phone",
+        "retries": 0,
+        "repeatEach": 1
+      }
+    ]
+  },
+  "suites": [
+    {
+      "title": "visual/chat.spec.ts",
+      "file": "visual/chat.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "chat",
+          "file": "visual/chat.spec.ts",
+          "line": 5,
+          "column": 1,
+          "specs": [
+            {
+              "title": "a finished turn's activity line, open to a step's details",
+              "ok": false,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "visual-desktop",
+                  "projectName": "visual-desktop",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 1800,
+                      "errors": [
+                        {
+                          "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveScreenshot\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator: getByRole('region', { name: 'Conversation with atlas' })\n  1243 pixels (ratio 0.03 of all image pixels) are different.\n\n  Snapshot: chat-turn.png\n\nCall log:\n  \u001b[2m- Expect \"toHaveScreenshot(chat-turn.png)\" with timeout 5000ms\u001b[22m\n"
+                        }
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-13T12:00:00.000Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "chat-turn-expected.png",
+                          "contentType": "image/png",
+                          "path": "/repo/web/test-results/chat-turn-expected.png"
+                        },
+                        {
+                          "name": "chat-turn-actual.png",
+                          "contentType": "image/png",
+                          "path": "/repo/web/test-results/chat-turn-actual.png"
+                        },
+                        {
+                          "name": "chat-turn-diff.png",
+                          "contentType": "image/png",
+                          "path": "/repo/web/test-results/chat-turn-diff.png"
+                        }
+                      ]
+                    }
+                  ],
+                  "status": "unexpected"
+                },
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "visual-phone",
+                  "projectName": "visual-phone",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 1800,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-13T12:00:00.000Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "a-finished-turn-s-activity-line-open-to-a-step-s-details",
+              "file": "visual/x.spec.ts",
+              "line": 12,
+              "column": 3
+            },
+            {
+              "title": "the composer",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "visual-desktop",
+                  "projectName": "visual-desktop",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 1800,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-13T12:00:00.000Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                },
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "visual-phone",
+                  "projectName": "visual-phone",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 1800,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-13T12:00:00.000Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "the-composer",
+              "file": "visual/x.spec.ts",
+              "line": 30,
+              "column": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "visual/gallery.spec.ts",
+      "file": "visual/gallery.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "gallery",
+          "file": "visual/gallery.spec.ts",
+          "line": 5,
+          "column": 1,
+          "specs": [
+            {
+              "title": "the open menu",
+              "ok": false,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "visual-desktop",
+                  "projectName": "visual-desktop",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 1800,
+                      "errors": [
+                        {
+                          "message": "Error: A snapshot doesn't exist at /repo/web/e2e/__screenshots__/visual/x.spec.ts/gallery-menu-visual-desktop.png, writing actual."
+                        }
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-13T12:00:00.000Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "gallery-menu-expected.png",
+                          "contentType": "image/png",
+                          "path": "/repo/web/test-results/gallery-menu-expected.png"
+                        },
+                        {
+                          "name": "gallery-menu-actual.png",
+                          "contentType": "image/png",
+                          "path": "/repo/web/test-results/gallery-menu-actual.png"
+                        }
+                      ]
+                    }
+                  ],
+                  "status": "unexpected"
+                },
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "visual-phone",
+                  "projectName": "visual-phone",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 1800,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-13T12:00:00.000Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "the-open-menu",
+              "file": "visual/x.spec.ts",
+              "line": 14,
+              "column": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "visual/settings.spec.ts",
+      "file": "visual/settings.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "settings",
+          "file": "visual/settings.spec.ts",
+          "line": 5,
+          "column": 1,
+          "specs": [
+            {
+              "title": "a settings section",
+              "ok": false,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "visual-desktop",
+                  "projectName": "visual-desktop",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "timedOut",
+                      "duration": 1800,
+                      "errors": [
+                        {
+                          "message": "Error: Test timeout of 30000ms exceeded."
+                        }
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-13T12:00:00.000Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "unexpected"
+                },
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "visual-phone",
+                  "projectName": "visual-phone",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 1800,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-13T12:00:00.000Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "a-settings-section",
+              "file": "visual/x.spec.ts",
+              "line": 20,
+              "column": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "visual/shell.spec.ts",
+      "file": "visual/shell.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "shell",
+          "file": "visual/shell.spec.ts",
+          "line": 5,
+          "column": 1,
+          "specs": [
+            {
+              "title": "the navigation",
+              "ok": false,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "visual-desktop",
+                  "projectName": "visual-desktop",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 1800,
+                      "errors": [
+                        {
+                          "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveScreenshot\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed\n\nLocator: getByRole('region', { name: 'Conversation with atlas' })\n  Failed to take two consecutive stable screenshots.\n\n  Snapshot: shell-nav.png\n"
+                        }
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-13T12:00:00.000Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "shell-nav-previous.png",
+                          "contentType": "image/png",
+                          "path": "/repo/web/test-results/shell-nav-previous.png"
+                        },
+                        {
+                          "name": "shell-nav-actual.png",
+                          "contentType": "image/png",
+                          "path": "/repo/web/test-results/shell-nav-actual.png"
+                        },
+                        {
+                          "name": "shell-nav-diff.png",
+                          "contentType": "image/png",
+                          "path": "/repo/web/test-results/shell-nav-diff.png"
+                        }
+                      ]
+                    }
+                  ],
+                  "status": "unexpected"
+                },
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "visual-phone",
+                  "projectName": "visual-phone",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 1800,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-13T12:00:00.000Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "the-navigation",
+              "file": "visual/x.spec.ts",
+              "line": 16,
+              "column": 3
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-10-13T12:00:00.000Z",
+    "duration": 20000,
+    "expected": 0,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  }
+}
