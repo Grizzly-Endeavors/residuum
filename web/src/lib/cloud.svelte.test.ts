@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { connectTarget, phaseOf, teamsMessagingEndpoint } from "./cloud.svelte";
+import { accountTarget, connectTarget, phaseOf, teamsMessagingEndpoint } from "./cloud.svelte";
 import type { CloudStatusResponse } from "./types";
 
 function status(overrides: Partial<CloudStatusResponse> = {}): CloudStatusResponse {
@@ -30,6 +30,25 @@ describe("teamsMessagingEndpoint", () => {
   it("has no address until the status names an instance origin", () => {
     expect(teamsMessagingEndpoint({}, "scout")).toBeNull();
     expect(teamsMessagingEndpoint({ instance_origin: "" }, "scout")).toBeNull();
+  });
+});
+
+describe("accountTarget", () => {
+  it("manages the account on Residuum Cloud's dashboard when no relay is set", () => {
+    expect(accountTarget("")).toEqual({
+      url: "https://agent-residuum.com/dashboard",
+      host: "agent-residuum.com",
+    });
+  });
+
+  it("follows the relay URL", () => {
+    expect(accountTarget("ws://127.0.0.1:8080/tunnel/v2/register")?.url).toBe(
+      "http://127.0.0.1:8080/dashboard",
+    );
+  });
+
+  it("has nowhere to go for an address that isn't a ws or wss one", () => {
+    expect(accountTarget("https://relay.example.com")).toBeNull();
   });
 });
 
