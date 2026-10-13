@@ -45,6 +45,9 @@ test.describe("primitives gallery", { tag: "@visual" }, () => {
     await toasts.getByRole("button", { name: "With Undo" }).click();
     await expect(page.getByText("Couldn't save the settings.")).toBeVisible();
     await expect(page.getByText("Removed the Brave Search key.")).toBeVisible();
-    await expectScreenshot(page.locator(".ui-toasts"), "toasts");
+    await expectScreenshot(
+      page.getByRole("region", { name: "Notifications", exact: true }),
+      "toasts",
+    );
   });
 });
