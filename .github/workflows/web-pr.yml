@@ -10,6 +10,7 @@ on:
       - "web/**"
       - "scripts/with-playwright-container.sh"
       - "scripts/web-initial-route-size.sh"
+      - "scripts/web-stress.sh"
       - ".github/workflows/quality-checks.yml"
       - ".github/workflows/web-pr.yml"
 
