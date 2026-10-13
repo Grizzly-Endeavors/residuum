@@ -244,6 +244,42 @@ describe("agents that don't exist", () => {
   });
 });
 
+describe("links the backend redirected here", () => {
+  it("says why the link landed here, and drops the notice from the address", async () => {
+    const page = await boot("/agent/scout?notice=file-link-expired");
+    expect(page.router.place).toEqual(chat("scout"));
+    expect(page.notices).toEqual(["That file link has expired. Ask scout to send the file again."]);
+    expect(page.url()).toBe("/agent/scout");
+    expect(page.replaces).toEqual(["/agent/scout"]);
+  });
+
+  it("keeps the rest of the address", async () => {
+    const page = await boot("/agent/scout?settings=scout%2Fconnections&notice=webhook-address");
+    expect(page.url()).toBe("/agent/scout?settings=scout/connections");
+    expect(page.router.settings).toEqual({ scope: "scout", section: "connections" });
+    expect(page.notices).toHaveLength(1);
+    expect(page.notices[0]).toContain("webhook");
+  });
+
+  it("names the missing artifact on the Workbench", async () => {
+    const page = await boot("/team/workbench?notice=artifact-missing&artifact=tip-splitter");
+    expect(page.url()).toBe("/team/workbench");
+    expect(page.notices).toEqual([
+      `There's no workbench artifact named "tip-splitter". It may have been renamed or deleted.`,
+    ]);
+  });
+
+  it("doesn't say it again on Back", async () => {
+    const page = await boot("/inbox?item=scout%3Aitem-1&notice=inbox-attachment-missing");
+    expect(page.notices).toHaveLength(1);
+    await page.router.openPlace(home);
+    window.history.back();
+    await settle();
+    expect(page.router.place.kind).toBe("inbox");
+    expect(page.notices).toHaveLength(1);
+  });
+});
+
 describe("the bound agent", () => {
   it("is the viewed agent on an agent place, and is published", async () => {
     const page = await boot("/agent/scout");

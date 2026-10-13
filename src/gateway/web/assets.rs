@@ -28,6 +28,7 @@ use tower_http::compression::{CompressionLayer, CompressionLevel};
 use tracing::warn;
 
 use super::WebAssets;
+use crate::gateway::browser_landing::is_top_level_navigation;
 
 /// Directory of build output whose file names carry a content hash.
 const HASHED_ASSET_DIR: &str = "assets/";
@@ -80,7 +81,7 @@ async fn static_handler(method: Method, uri: Uri, request_headers: HeaderMap) ->
         return resp;
     }
 
-    if is_page_load(&request_headers)
+    if is_top_level_navigation(&method, &request_headers)
         && let Some(mut resp) = serve_embedded("index.html", &method, &request_headers)
     {
         *resp.status_mut() = StatusCode::NOT_FOUND;
@@ -108,21 +109,6 @@ fn api_not_found() -> Response {
         axum::Json(serde_json::json!({ "error": "no API endpoint at this path" })),
     )
         .into_response()
-}
-
-/// Whether the request is a browser loading a page, as opposed to a
-/// subresource or a programmatic call. `Sec-Fetch-Dest` says so where the
-/// browser sends it; otherwise an `Accept` that asks for HTML does.
-fn is_page_load(request_headers: &HeaderMap) -> bool {
-    if let Some(dest) = request_headers.get("sec-fetch-dest") {
-        return dest.as_bytes() == b"document";
-    }
-    request_headers
-        .get_all(header::ACCEPT)
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(','))
-        .any(|media| media.trim().starts_with("text/html"))
 }
 
 /// Serve an embedded file by path, returning `None` if it doesn't exist.

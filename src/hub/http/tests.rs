@@ -1660,6 +1660,79 @@ async fn webhooks_reach_the_named_agents_webhook_route() {
     assert_eq!(unknown["error"], "no agent named 'ghost'");
 }
 
+/// A browser opening `uri` in a tab.
+fn tab(uri: &str) -> Request<Body> {
+    Request::get(uri)
+        .header("sec-fetch-dest", "document")
+        .header("sec-fetch-mode", "navigate")
+        .header("accept", "text/html,*/*;q=0.8")
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_webhook_address_opened_in_a_tab_goes_to_its_settings() {
+    let h = Harness::new();
+    for (uri, expected) in [
+        (
+            "/webhook/scout/deploy",
+            "/agent/scout?settings=scout%2Fconnections&notice=webhook-address",
+        ),
+        (
+            "/webhook/scout",
+            "/agent/scout?settings=scout%2Fconnections&notice=webhook-address",
+        ),
+        ("/webhook", "/home?notice=webhook-address"),
+        ("/webhook/Bad_Name/x", "/home?notice=webhook-address"),
+    ] {
+        let (status, headers, _) = h.send(tab(uri)).await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "{uri}");
+        assert_eq!(headers["location"], expected, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn a_script_reading_a_webhook_address_is_told_it_takes_posts() {
+    let h = Harness::new();
+    let refused = h
+        .get_expect("/webhook/scout/deploy", StatusCode::METHOD_NOT_ALLOWED)
+        .await;
+    assert_eq!(
+        refused["error"],
+        "Webhooks receive POST requests from other services."
+    );
+    let incomplete = h.post_expect("/webhook/scout", StatusCode::NOT_FOUND).await;
+    assert!(
+        incomplete["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("/webhook/{agent}/{name}")),
+        "{incomplete}"
+    );
+}
+
+#[tokio::test]
+async fn a_link_to_a_stopped_or_missing_agent_opened_in_a_tab_goes_to_the_app() {
+    let h = Harness::new();
+    for (uri, expected) in [
+        (
+            "/api/agents/quiet/files/abc",
+            "/agent/quiet?notice=agent-stopped",
+        ),
+        (
+            "/api/agents/quiet/files/workspace?path=a.md",
+            "/agent/quiet?notice=agent-stopped",
+        ),
+        ("/api/agents/ghost/files/abc", "/agent/ghost"),
+    ] {
+        let (status, headers, _) = h.send(tab(uri)).await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "{uri}");
+        assert_eq!(headers["location"], expected, "{uri}");
+    }
+    // A script still gets the contract errors.
+    h.get_expect("/api/agents/quiet/files/abc", StatusCode::CONFLICT)
+        .await;
+}
+
 // ---- artifact sessions ---------------------------------------------------
 
 #[tokio::test]

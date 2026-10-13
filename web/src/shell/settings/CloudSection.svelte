@@ -3,10 +3,12 @@
   import {
     CloudConnection,
     DEFAULT_RELAY_URL,
+    accountTarget,
     connectTarget,
     phaseOf,
   } from "../../lib/cloud.svelte";
   import { handoffProblem, takeCloudHandoff } from "../../lib/cloud-handoff";
+  import { Icon } from "../../lib/icons";
   import {
     Badge,
     Banner,
@@ -15,6 +17,7 @@
     SecretField,
     Skeleton,
     TextField,
+    VisuallyHidden,
   } from "../../lib/ui";
   import DevicesGroup from "./DevicesGroup.svelte";
   import RemoteAccessGroup from "./RemoteAccessGroup.svelte";
@@ -48,6 +51,8 @@
   const relayUnsaved = $derived(scope.config.cloud_relay_url !== baseline.cloud_relay_url);
   // The sign-in page sends the browser back to the gateway's port as it is now, so the saved one; the relay is the one being typed.
   const signIn = $derived(connectTarget(scope.config.cloud_relay_url, baseline.gateway_port));
+  // The account the saved token belongs to is on the saved relay.
+  const account = $derived(accountTarget(baseline.cloud_relay_url));
 
   let tokenOpen = $state(false);
   let token = $state("");
@@ -132,6 +137,13 @@
         {#if status.user_id !== null}Connected as <strong>{status.user_id}</strong>.{/if}
         Your agents can be reached through your Residuum Cloud address.
       </p>
+      {#if account !== null}
+        <a class="cloud-account" href={account.url} target="_blank" rel="noopener noreferrer">
+          Manage your account and instances
+          <Icon name="external-link" size={13} />
+          <VisuallyHidden>(opens in a new tab)</VisuallyHidden>
+        </a>
+      {/if}
     {:else if phase === "connecting"}
       <p class="cloud-line">
         Connecting to Residuum Cloud. This usually takes a few seconds, and Residuum keeps trying if
@@ -289,6 +301,14 @@
   .cloud-line :global(strong) {
     color: var(--color-text);
     font-weight: var(--font-weight-medium);
+  }
+
+  .cloud-account {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-6);
+    align-self: flex-start;
+    font-size: var(--font-size-sm);
   }
 
   .cloud-hint {
