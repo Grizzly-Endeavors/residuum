@@ -149,12 +149,19 @@ describe("opening the app", () => {
     ["/team/workbench/tip-splitter?full", "/team/workbench/tip-splitter"],
     ["/workbench", "/team/workbench"],
     ["/team", "/home"],
-    ["/nowhere", "/home"],
   ])("redirects %s to %s by replace", async (from, to) => {
     const page = await boot(from);
     expect(page.url()).toBe(to);
     expect(page.replaces).toEqual([to]);
     expect(page.pushes).toEqual([]);
+  });
+
+  it("shows an address the app doesn't have as Not Found, leaving the address and history alone", async () => {
+    const page = await boot("/nowhere/at/all");
+    expect(page.router.place).toEqual({ kind: "not-found", path: "/nowhere/at/all" });
+    expect(page.url()).toBe("/nowhere/at/all");
+    expect(page.pushes).toEqual([]);
+    expect(page.notices).toEqual([]);
   });
 
   it("tells the user about a settings scope that can't exist", async () => {

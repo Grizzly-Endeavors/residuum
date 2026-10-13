@@ -2198,13 +2198,52 @@ async fn the_cross_site_guard_covers_the_embedded_app() {
 }
 
 #[tokio::test]
-async fn the_cloud_callback_stays_at_the_root() {
-    let h = Harness::new();
-    let (status, bytes) = h
-        .send_body(Request::get("/cloud/callback").body(Body::empty()).unwrap())
+async fn the_cloud_callback_saves_the_sign_in_and_hands_off_to_settings() {
+    let mut h = Harness::new();
+    let (status, headers, _) = h
+        .send(
+            Request::get("/cloud/callback?token=rst_signed_in")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(String::from_utf8(bytes).unwrap().contains("Missing token"));
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        headers["location"],
+        "/home?settings=_all/cloud&cloud=connecting"
+    );
+
+    let hub_dir = h.root.path().join("hub");
+    let store = crate::config::secrets::SecretStore::load(&hub_dir).unwrap();
+    assert_eq!(store.get("cloud_token"), Some("rst_signed_in"));
+    let config = std::fs::read_to_string(hub_dir.join("config.toml")).unwrap();
+    assert!(config.contains("enabled = true"), "{config}");
+    assert!(
+        config.contains("token = \"secret:cloud_token\""),
+        "{config}"
+    );
+    assert!(matches!(h.reload_rx.try_recv(), Ok(ReloadSignal::Hub)));
+}
+
+#[tokio::test]
+async fn a_cloud_callback_without_a_usable_token_hands_off_to_settings() {
+    let mut h = Harness::new();
+    for uri in [
+        "/cloud/callback",
+        "/cloud/callback?token=",
+        "/cloud/callback?token&token",
+        "/cloud/callback?%zz=%",
+    ] {
+        let (status, headers, _) = h.send(Request::get(uri).body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "{uri}");
+        assert_eq!(
+            headers["location"], "/home?settings=_all/cloud&cloud=missing-token",
+            "{uri}"
+        );
+    }
+    let config = std::fs::read_to_string(h.root.path().join("hub/config.toml")).unwrap();
+    assert!(!config.contains("[cloud]"), "{config}");
+    assert!(h.reload_rx.try_recv().is_err());
 }
 
 // ---- hub websocket -------------------------------------------------------

@@ -57,7 +57,9 @@ export function handlingOf(
   const url = new URL(request.url);
   if (url.origin !== origin || HUB_SEGMENTS.has(firstSegment(url.pathname))) return "pass";
   if (request.mode === "navigate") {
-    // A path with a dot names a file, which the hub serves or answers 404 itself.
+    // A path with a dot names a file. The hub serves it, or answers a page
+    // load of a file it doesn't have with the shell and a 404, so the app's
+    // Not Found page shows there too.
     return url.pathname === SHELL_URL || !url.pathname.includes(".") ? "navigate" : "pass";
   }
   return isHashedAsset(url.pathname) || precached.has(url.pathname) ? "cache-first" : "pass";

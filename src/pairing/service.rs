@@ -99,7 +99,9 @@ impl DevicePairing {
                         ui_origin: origin.clone(),
                         workbench_origin: workbench_origin.clone(),
                     }),
-                    TunnelStatus::Disconnected | TunnelStatus::Connecting => None,
+                    TunnelStatus::Disconnected
+                    | TunnelStatus::Connecting
+                    | TunnelStatus::Refused => None,
                 };
                 if let Some(announced) = announced
                     && let Err(e) = pairing.update_identity(announced).await

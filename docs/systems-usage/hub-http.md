@@ -166,12 +166,16 @@ A session runs on one agent, so an artifact names it (`residuum.sessions.start({
 
 ## Embedded web app
 
-The web app is embedded in the binary (`web/dist/`, served by `src/gateway/web/assets.rs`) and answers every path the routes above don't claim. A path naming an embedded file serves that file. A path with no dot that doesn't start with `api` or `ws`, a client-side route such as `/agent/atlas/files`, serves `index.html` so the app's router takes over. Every other path answers `404`, including a missing file and an unknown `/api` or `/ws` path, so a client calling a missing endpoint sees the failure rather than HTML.
+The web app is embedded in the binary (`web/dist/`, served by `src/gateway/web/assets.rs`) and answers every path the routes above don't claim. A path naming an embedded file serves that file. A path with no dot that doesn't start with `api` or `ws`, a client-side route such as `/agent/atlas/files`, serves `index.html` so the app's router takes over, and the app shows its Not Found page for a route it doesn't have. Every other path answers `404`, in the form its asker reads:
+
+- An unknown `/api` or `/ws` path answers the API's `{ "error" }` JSON, so a client calling a missing endpoint sees the failure rather than HTML.
+- A browser opening a missing file in a tab (the same test as [Browser landings](#browser-landings)) gets `index.html` with status `404`, so the app shows its Not Found page there too.
+- Anything else, such as a missing script or image, gets a plain-text `not found`.
 
 | Files | `Cache-Control` | Validator |
 |-------|-----------------|-----------|
 | Everything under `/assets/`, which the build names by content hash | `public, max-age=31536000, immutable` | None. |
-| HTML documents: `index.html`, also when it answers a client route | `no-cache` | None. |
+| HTML documents: `index.html`, also when it answers a client route or a page load of a missing file | `no-cache` | None. |
 | Every other embedded file: `/sw.js`, `/manifest.webmanifest`, the icons, `favicon.svg`, `mcp-catalog.json` | `no-cache` | A strong `ETag` from a hash of the file's content. |
 
 A `GET` or `HEAD` for a file with an `ETag` whose `If-None-Match` lists that `ETag` (or `*`; a `W/` prefix on the client's copy is ignored) gets `304` with no body, carrying the `ETag`, `Cache-Control`, and `Vary`. An HTML document has no `ETag` and never answers `304`, so a browser always fetches it whole. The relay rewrites top-level HTML on the way out (see below), and a `304` would leave the browser showing its old rewrite.

@@ -318,7 +318,8 @@ export interface UpdateStatusResponse {
   unverified_update: UnverifiedUpdateResponse | null;
 }
 
-export type CloudTunnelStatus = "disconnected" | "connecting" | "connected";
+/** The tunnel as the hub reports it. `refused`: the relay turned the saved token away. */
+export type CloudTunnelStatus = "disconnected" | "connecting" | "refused" | "connected";
 
 export interface CloudStatusResponse {
   status: CloudTunnelStatus;
