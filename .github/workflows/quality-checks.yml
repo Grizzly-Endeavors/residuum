@@ -190,6 +190,69 @@ jobs:
             echo "| End-to-end and accessibility | ${{ steps.web_e2e.outcome }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # The end-to-end specs that a pull request adds or changes, run repeatedly
+  # with the browser's CPU throttled (scripts/web-stress.sh): the web counterpart
+  # of the Rust Stress step, and it blocks the same way. A spec that races fails
+  # the pull request that adds it, not some later one. Pull requests only: a
+  # release or a push has no change to select, and the shards above run the
+  # whole suite. The specs are the spec files the pull request changes against
+  # the merge base with the base branch, so a pull request that changes no spec
+  # reports that and passes. The browser runs in the Playwright container, so
+  # the throttle, not the runner's load, is what slows it.
+  web-stress:
+    name: Web Stress
+    if: inputs.web && github.event_name == 'pull_request'
+    runs-on: lab-runners-wide
+    timeout-minutes: 40
+
+    env:
+      E2E_ALL_IN_CONTAINER: '1'
+      PLAYWRIGHT_IMAGE_REGISTRY: registry.registry.svc.cluster.local:5000/mcr
+      WEB_STRESS_BASE: origin/${{ github.event.pull_request.base.ref }}
+      WEB_STRESS_REPEAT: '5'
+      WEB_STRESS_WORKERS: '4'
+
+    steps:
+      # The merge base with the base branch needs the history, not the shallow clone.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Start the CPU report
+        run: scripts/ci-cpu-report.sh start
+
+      - name: Install web dependencies
+        run: cd web && npm ci
+
+      - name: Web stress
+        id: web_stress
+        run: scripts/with-playwright-container.sh scripts/web-stress.sh
+
+      - name: CPU report
+        if: always()
+        run: scripts/ci-cpu-report.sh report | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Playwright report and traces
+        if: always() && steps.web_stress.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-stress-report
+          path: |
+            web/playwright-report
+            web/test-results
+          retention-days: 14
+
+      - name: Build summary
+        if: always()
+        run: |
+          {
+            echo '## Web Stress Results'
+            echo ''
+            echo '| Check | Status |'
+            echo '|-------|--------|'
+            echo "| Changed specs, repeated with CPU throttled | ${{ steps.web_stress.outcome }}: ${{ steps.web_stress.outputs.summary || 'not reached' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # The visual comparisons are a design reference for a human to look at
   # (web/CONTRIBUTING.md, "Visual"): they never fail the workflow, a pull
   # request's checks or a release. One job runs all of them, in the Playwright

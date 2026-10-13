@@ -179,6 +179,31 @@ function keepBrowserFrames(): void {
   }
 }
 
+/**
+ * The CPU slow-down `E2E_CPU_THROTTLE` asks for, or `null` when it is unset.
+ * `scripts/web-stress.sh` sets it, to run the pages on a slowed CPU as a busy
+ * machine does.
+ */
+function cpuThrottleRate(): number | null {
+  const raw = process.env.E2E_CPU_THROTTLE;
+  if (raw === undefined || raw === "") return null;
+  const rate = Number(raw);
+  if (!Number.isInteger(rate) || rate < 1) {
+    throw new Error(`E2E_CPU_THROTTLE must be a whole number of at least 1, got "${raw}"`);
+  }
+  return rate;
+}
+
+/**
+ * Slow the page's CPU by `rate` through Chromium's `Emulation.setCPUThrottlingRate`.
+ * The throttle stays with the page across its navigations, so it holds for
+ * every page the test opens.
+ */
+async function throttlePageCpu(page: Page, rate: number): Promise<void> {
+  const session = await page.context().newCDPSession(page);
+  await session.send("Emulation.setCPUThrottlingRate", { rate });
+}
+
 const USE_CONTAINER_HINT = "or run `just web-e2e-webkit` to use the Playwright container";
 
 /** Why WebKit can't start on this machine, in one line, or `null` when it can. Probed once per worker. */
@@ -307,10 +332,18 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
     { auto: true },
   ],
 
-  context: async ({ context, frozenClock, baseURL }, use) => {
+  context: async ({ context, frozenClock, baseURL, browserName }, use) => {
+    const throttle = cpuThrottleRate();
+    if (throttle !== null && browserName !== "chromium") {
+      throw new Error(
+        `E2E_CPU_THROTTLE needs Chromium's CPU throttling, and this project drives ${browserName}`,
+      );
+    }
+    const throttles: Promise<void>[] = [];
     // Every page, the test's own and any it opens, such as a second tab.
     context.on("page", (page) => {
       waitForAppAfterLoads(page, baseURL);
+      if (throttle !== null) throttles.push(throttlePageCpu(page, throttle));
     });
     await context.route(leavesLoopback, (route) => route.abort("blockedbyclient"));
     pageClock.fixedAt = frozenClock ? FIXED_START_MS : null;
@@ -326,6 +359,8 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
       await setOffline(offline);
     };
     await use(context);
+    // A page whose throttle failed fails the test here, not silently at full speed.
+    await Promise.all(throttles);
   },
 });
 
