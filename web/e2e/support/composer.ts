@@ -1,12 +1,11 @@
 import type { Locator, Page } from "@playwright/test";
 
 /**
- * How long the chat socket waits before its first try to connect again after
- * the connection drops (`reconnectDelay` in `src/lib/transport.svelte.ts`). In
- * manual time the page's timers wait for the mock's time, so a spec moves time
- * this far for the page to come back.
+ * The chat socket's first reconnect delay. In manual time the page's timers
+ * wait for the mock's time, so a spec moves time this far for the page to come
+ * back.
  */
-export const FIRST_RECONNECT_MS = 1_000;
+export { FIRST_RECONNECT_MS } from "../../src/lib/reconnect";
 
 /**
  * Send what is in the chat's message box the way the device sends it: Enter
