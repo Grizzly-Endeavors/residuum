@@ -105,7 +105,10 @@ function keepAliveHeaders(url: string): Promise<{ connection?: string; keepAlive
       res.resume();
       res.on("end", () => {
         agent.destroy();
-        resolve({ connection: res.headers.connection, keepAlive: res.headers["keep-alive"] });
+        resolve({
+          connection: res.headers.connection,
+          keepAlive: res.headers["keep-alive"]?.toString(),
+        });
       });
     }).on("error", (err) => {
       agent.destroy();
