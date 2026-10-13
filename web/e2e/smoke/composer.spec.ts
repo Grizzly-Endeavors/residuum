@@ -310,6 +310,7 @@ test.describe("the conversation size", () => {
     const panel = await sizePanel(page, isMobile);
     await expect(panel).toContainText("About 14,000 words go to the model each time atlas replies");
     await expect(panel).toContainText("37 times");
+    await expect(panel.getByText("Tools used", { exact: true })).toBeVisible();
     await panel.getByRole("button", { name: "Token counts" }).click();
     await expect(panel.getByText("412,880")).toBeVisible();
     await expectNoAxeViolations(page, isMobile ? { within: OVERLAYS } : {});

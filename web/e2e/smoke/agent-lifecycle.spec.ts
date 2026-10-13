@@ -140,6 +140,16 @@ test("the palette's Create an agent opens the same dialog", async ({ page, isMob
   expect(address(page)).toBe("/agent/scout");
 });
 
+test("More options shows who can find the new agent", async ({ page }) => {
+  await page.goto("/home");
+  await page.getByRole("button", { name: "New agent" }).click();
+  const dialog = createDialog(page);
+  await expect(dialog.getByRole("combobox", { name: "Who can find it" })).toHaveCount(0);
+
+  await dialog.getByRole("button", { name: "More options" }).click();
+  await expect(dialog.getByRole("combobox", { name: "Who can find it" })).toBeVisible();
+});
+
 test("a name the rules refuse is flagged as it is typed, and nothing is created", async ({
   page,
 }) => {
@@ -254,6 +264,10 @@ test("Recently deleted restores an agent", async ({ page }) => {
   const removed = await page.request.delete("/api/hub/agents/drifter");
   expect(removed.ok()).toBe(true);
   await expect(boardRow(page, "drifter")).toHaveCount(0);
+  const deleted = page.getByRole("status").filter({ hasText: "You deleted drifter." });
+  await expect(deleted).toBeVisible();
+  await deleted.getByRole("button", { name: "Dismiss notification" }).click();
+  await expect(deleted).toBeHidden();
 
   const recent = page.getByRole("button", { name: "Recently deleted" });
   await expect(recent).toHaveAttribute("aria-expanded", "false");

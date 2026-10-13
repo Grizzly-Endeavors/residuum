@@ -88,6 +88,25 @@ test.describe("Connections", () => {
     expect(file).not.toContain("hook-secret");
   });
 
+  test("lists every webhook the config holds", async ({ page }) => {
+    const config = [
+      "[webhooks.github-issues]",
+      'secret = "secret:webhook_github-issues"',
+      'routing = "agent:code-review"',
+      "",
+      "[webhooks.deploys]",
+      'format = "raw"',
+      "",
+    ].join("\n");
+    expect((await page.request.put("/api/agents/atlas/config/raw", { data: config })).ok()).toBe(
+      true,
+    );
+    await page.goto("/agent/atlas?settings=atlas/connections");
+    const hooks = group(page, "Incoming webhooks");
+    await expect(hooks.getByText("/webhook/atlas/github-issues")).toBeVisible();
+    await expect(hooks.getByText("/webhook/atlas/deploys")).toBeVisible();
+  });
+
   test("removes a webhook as a staged change, and Save writes the removal", async ({ page }) => {
     await page.goto("/agent/atlas?settings=atlas/connections");
     const hooks = group(page, "Incoming webhooks");

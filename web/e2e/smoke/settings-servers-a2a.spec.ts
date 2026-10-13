@@ -42,6 +42,12 @@ test("a catalog server is added with its key and saved, and removing it waits fo
   expect(Object.keys(await serversOnDisk(page))).toContain("github");
 });
 
+test("a remote server opens for editing, with its headers", async ({ page }) => {
+  await page.goto("/agent/atlas?settings=atlas/servers");
+  await servers(page).getByRole("button", { name: "Edit remote-search" }).click();
+  await expect(page.getByLabel("Headers", { exact: true })).toBeVisible();
+});
+
 test("Undo after saving a removal puts the server back on disk", async ({ page }) => {
   await page.goto("/agent/atlas?settings=atlas/servers");
   await servers(page).getByRole("button", { name: "Remove filesystem" }).click();

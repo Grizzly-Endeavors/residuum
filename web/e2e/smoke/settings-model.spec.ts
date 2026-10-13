@@ -72,6 +72,12 @@ test("a provider is added with its key stored, then removed", async ({ page }) =
       hasText: "work (OpenAI)",
     }),
   ).toHaveCount(1);
+  const edit = page.getByRole("button", { name: "Edit work" });
+  await edit.click();
+  await expect(edit).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByLabel("Address")).toBeVisible();
+  await edit.click();
+  await expect(edit).toHaveAttribute("aria-expanded", "false");
   await saveChanges(page, "providers.toml");
   expect(parseToml(await fileText(page, "atlas", "providers"))).toMatchObject({
     providers: { work: { type: "openai", api_key: "secret:work" } },
