@@ -191,17 +191,19 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # The end-to-end specs that a pull request adds or changes, run repeatedly
-  # under CPU load (scripts/web-stress.sh): the web counterpart of the Rust
-  # Stress step, and it blocks the same way. A spec that races fails the pull
-  # request that adds it, not some later one. Pull requests only: a release
-  # or a push has no change to select, and the shards above run the whole
-  # suite. The specs are selected against the merge base with the base branch
-  # (Playwright's --only-changed), so a pull request that changes no spec
-  # reports that and passes.
+  # with the browser's CPU throttled (scripts/web-stress.sh): the web counterpart
+  # of the Rust Stress step, and it blocks the same way. A spec that races fails
+  # the pull request that adds it, not some later one. Pull requests only: a
+  # release or a push has no change to select, and the shards above run the
+  # whole suite. The specs are the spec files the pull request changes against
+  # the merge base with the base branch, so a pull request that changes no spec
+  # reports that and passes. The browser runs in the Playwright container, so
+  # the throttle, not the runner's load, is what slows it.
   web-stress:
     name: Web Stress
     if: inputs.web && github.event_name == 'pull_request'
     runs-on: lab-runners-wide
+    timeout-minutes: 40
 
     env:
       E2E_ALL_IN_CONTAINER: '1'
@@ -209,7 +211,6 @@ jobs:
       WEB_STRESS_BASE: origin/${{ github.event.pull_request.base.ref }}
       WEB_STRESS_REPEAT: '5'
       WEB_STRESS_WORKERS: '4'
-      WEB_STRESS_BURN: auto
 
     steps:
       # The merge base with the base branch needs the history, not the shallow clone.
@@ -249,7 +250,7 @@ jobs:
             echo ''
             echo '| Check | Status |'
             echo '|-------|--------|'
-            echo "| Changed specs, repeated under load | ${{ steps.web_stress.outcome }} |"
+            echo "| Changed specs, repeated with CPU throttled | ${{ steps.web_stress.outcome }}: ${{ steps.web_stress.outputs.summary || 'not reached' }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # The visual comparisons are a design reference for a human to look at

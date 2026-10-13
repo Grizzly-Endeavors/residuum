@@ -4,13 +4,11 @@
 2026-10-13T10:00:00.1000003Z   E2E_ALL_IN_CONTAINER: 1
 2026-10-13T10:00:00.1000004Z   WEB_STRESS_REPEAT: 5
 2026-10-13T10:00:00.1000005Z   WEB_STRESS_WORKERS: 4
-2026-10-13T10:00:00.1000006Z   WEB_STRESS_BURN: auto
-2026-10-13T10:00:00.1000007Z ##[endgroup]
+2026-10-13T10:00:00.1000006Z ##[endgroup]
 2026-10-13T10:00:04.2000000Z Changed specs against origin/main (merge base 87220f8aae2af2f69b1625688e37b747720addfe):
-2026-10-13T10:00:04.2000001Z   smoke/tab-title.spec.ts
-2026-10-13T10:00:04.2000002Z Stress: 20 test instances, each run 5 times, 4 workers, 12 CPU burners.
-2026-10-13T10:00:04.2000003Z Load before: 1.02 0.88 0.71
-2026-10-13T10:00:31.8000000Z Running 40 tests using 4 workers
+2026-10-13T10:00:04.2000001Z   e2e/smoke/tab-title.spec.ts
+2026-10-13T10:00:04.2000002Z Stress: 20 test instances, 5 run(s) each. 4 workers, CPU throttled 4x.
+2026-10-13T10:00:31.8000000Z Running 100 tests using 4 workers
 2026-10-13T10:00:50.4000000Z   ✘  13 [desktop] › e2e/smoke/tab-title.spec.ts:18:1 › the tab is titled with the agent or place the page is on (25.2s)
 2026-10-13T10:01:02.9000000Z   1) [desktop] › e2e/smoke/tab-title.spec.ts:18:1 › the tab is titled with the agent or place the page is on
 2026-10-13T10:01:02.9000001Z
@@ -24,8 +22,7 @@
 2026-10-13T10:01:02.9000009Z
 2026-10-13T10:01:03.0000000Z   1 failed
 2026-10-13T10:01:03.0000001Z     [desktop] › e2e/smoke/tab-title.spec.ts:18:1 › the tab is titled with the agent or place the page is on
-2026-10-13T10:01:03.0000002Z   39 passed (1.2m)
-2026-10-13T10:01:03.1000000Z Load after: 9.40 6.10 3.20
-2026-10-13T10:01:03.1000001Z error: the stress run failed (5 runs each, 4 workers, 12 CPU burners): a spec failed under load, or the run did not start. The failures and the report (web/playwright-report) are above. A spec that fails only under load is waiting on time instead of the event it checks: fix the wait (web/CONTRIBUTING.md, "Writing a spec"), never rerun past it.
+2026-10-13T10:01:03.0000002Z   99 passed (1.2m)
+2026-10-13T10:01:03.1000000Z error: the stress run failed (5 run(s) each, 4 workers, CPU throttled 4x): a spec failed under load, or the run did not start. The failures and the report (web/playwright-report) are above. A spec that fails only under load is waiting on time instead of the event it checks: fix the wait (web/CONTRIBUTING.md, "Writing a spec"), never rerun past it.
 2026-10-13T10:01:03.2000000Z ##[error]Process completed with exit code 1.
 2026-10-13T10:01:03.3000000Z Post job cleanup.
