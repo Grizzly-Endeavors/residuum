@@ -37,33 +37,28 @@ interface Compiled {
 }
 
 /**
- * How many times a request that never got an answer is made. The server
- * closes the idle connections its clients keep, so a request that reuses one
- * a moment too late is reset; asking again opens a new connection. An answer
- * with an error status is a module that does not compile, and is final.
+ * Ask for one module. An answer with an error status is a module that does not
+ * compile; no answer at all is a server that is down or broken. The mock leaves
+ * idle connections open (`keepIdleConnectionsOpen` in `mock/http.ts`), so a
+ * request never meets a connection the server is closing.
  */
-const ATTEMPTS = 3;
-
 async function compile(origin: string, path: string): Promise<Compiled> {
-  let failure = "";
-  for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
-    try {
-      const response = await fetch(`${origin}${path}`);
-      const body = await response.text();
-      if (!response.ok) {
-        const firstLine = body.split("\n", 1)[0] ?? "";
-        return { path, imports: [], failure: `${response.status} ${firstLine}`.trim() };
-      }
-      return {
-        path,
-        imports: Array.from(body.matchAll(SPECIFIER), (match) => match[1] ?? ""),
-        failure: null,
-      };
-    } catch (error) {
-      failure = error instanceof Error ? error.message : String(error);
+  try {
+    const response = await fetch(`${origin}${path}`);
+    const body = await response.text();
+    if (!response.ok) {
+      const firstLine = body.split("\n", 1)[0] ?? "";
+      return { path, imports: [], failure: `${response.status} ${firstLine}`.trim() };
     }
+    return {
+      path,
+      imports: Array.from(body.matchAll(SPECIFIER), (match) => match[1] ?? ""),
+      failure: null,
+    };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { path, imports: [], failure: `no answer: ${reason}` };
   }
-  return { path, imports: [], failure: `no answer after ${ATTEMPTS} attempts: ${failure}` };
 }
 
 /** Compile `paths` on the server at `origin`, `CONCURRENCY` at a time. */
