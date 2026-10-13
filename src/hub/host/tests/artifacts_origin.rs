@@ -11,6 +11,9 @@ use crate::workbench::forward::HubApi;
 type PageSocket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
+/// The web app's port the artifacts listener under test is told about.
+const GATEWAY_PORT: u16 = 7700;
+
 /// Serve the artifacts listener over a hub router built on `hub`, and return
 /// its address.
 async fn artifacts_port(hub: &Fixture) -> String {
@@ -30,6 +33,7 @@ async fn artifacts_port(hub: &Fixture) -> String {
         hub.root.path().join("team/workbench"),
         api,
         hub.services.pairing.clone(),
+        GATEWAY_PORT,
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();

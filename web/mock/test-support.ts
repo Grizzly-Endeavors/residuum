@@ -8,7 +8,8 @@ import { HUB_STATE_NAME } from "./constants";
 import { createMockEnv, type EnvOptions, type MockEnv } from "./env";
 import { createHub, mockListing } from "./hub";
 import { json } from "./http";
-import { createApiHandler } from "./middleware";
+import { createCloudCallbackHandler } from "./cloud";
+import { createApiHandler, firstToHandle } from "./middleware";
 import { dispatchRoute, type Route } from "./routes";
 import { seedAgents } from "./scenario";
 import { frameText } from "./sockets";
@@ -298,7 +299,10 @@ export async function startMockServer(options: MockServerOptions = {}): Promise<
     env: createMockEnv(options),
     seed: (options.seed ?? true) ? seedAgents : undefined,
   });
-  const handle = createApiHandler({ hub, routes: options.routes ?? apiRoutes });
+  const handle = firstToHandle(
+    createApiHandler({ hub, routes: options.routes ?? apiRoutes }),
+    createCloudCallbackHandler(hub),
+  );
   server.on("request", (req, res) => {
     void handle(req, res).then((handled) => {
       if (!handled) {

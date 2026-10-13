@@ -99,6 +99,29 @@ describe("the Residuum Cloud routes", () => {
     expect((await call("POST", "/api/mock/cloud-callback", { token: "" })).status).toBe(422);
   });
 
+  it("answers the gateway's sign-in callback by saving the token and handing off to Settings", async () => {
+    const handedOff = await fetch(`${harness.baseUrl}/cloud/callback?token=&token=rst_two`, {
+      redirect: "manual",
+    });
+    expect(handedOff.status).toBe(303);
+    expect(handedOff.headers.get("location")).toBe("/home?settings=_all/cloud&cloud=connecting");
+    expect(harness.hub.hubState.secrets.get("cloud_token")).toBe("rst_two");
+    expect(await status()).toMatchObject({ status: "connected", has_token: true, enabled: true });
+  });
+
+  it("hands a callback without a token off to Settings without saving anything", async () => {
+    const handedOff = await fetch(`${harness.baseUrl}/cloud/callback`, { redirect: "manual" });
+    expect(handedOff.status).toBe(303);
+    expect(handedOff.headers.get("location")).toBe("/home?settings=_all/cloud&cloud=missing-token");
+    expect(await status()).toMatchObject({ has_token: false });
+  });
+
+  it("holds the tunnel at refused", async () => {
+    await call("POST", "/api/mock/cloud-callback");
+    expect((await call("POST", "/api/mock/cloud", { tunnel: "refused" })).status).toBe(200);
+    expect(await status()).toMatchObject({ status: "refused", has_token: true, enabled: true });
+  });
+
   it("starts over on reset", async () => {
     await call("POST", "/api/mock/cloud-callback");
     await call("POST", "/api/mock/cloud", { via_tunnel: true });

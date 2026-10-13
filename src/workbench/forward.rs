@@ -27,11 +27,14 @@ use std::sync::{Arc, OnceLock};
 
 use axum::Router;
 use axum::extract::{Request, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Json, Response};
 use serde_json::json;
 use tower::ServiceExt;
+
+use super::server::UiAddress;
+use crate::gateway::browser_landing::{self, AppRedirect, Landing};
 
 /// Marks a request as arriving through the artifacts origin.
 ///
@@ -96,18 +99,50 @@ impl HubApi {
 /// The split is a middleware over a router that has no routes of its own, not
 /// a route, so nothing matches the request before the hub router does (see the
 /// module docs for what a match would leave behind).
-pub(super) fn forwarding(artifacts: Router, api: HubApi) -> Router {
+///
+/// A hub answer that hands a browser to the web app by an app-relative path
+/// (see [`AppRedirect`]) would land on this host, which isn't the app's, so it
+/// is pointed at the app's origin (`ui`), or replaced by the fallback page
+/// when that isn't known.
+pub(super) fn forwarding(artifacts: Router, api: HubApi, ui: UiAddress) -> Router {
     Router::new()
         .fallback_service(artifacts)
-        .layer(axum::middleware::from_fn_with_state(api, split_api))
+        .layer(axum::middleware::from_fn_with_state((api, ui), split_api))
 }
 
-async fn split_api(State(api): State<HubApi>, req: Request, next: Next) -> Response {
-    if is_api_path(req.uri().path()) {
-        api.dispatch(req).await
-    } else {
-        next.run(req).await
+async fn split_api(
+    State((api, ui)): State<(HubApi, UiAddress)>,
+    req: Request,
+    next: Next,
+) -> Response {
+    if !is_api_path(req.uri().path()) {
+        return next.run(req).await;
     }
+    let (parts, body) = req.into_parts();
+    let origin = ui.origin_for(&parts);
+    let response = api.dispatch(Request::from_parts(parts, body)).await;
+    match response.extensions().get::<AppRedirect>().copied() {
+        Some(redirect) => to_app_origin(response, redirect, origin.as_deref()),
+        None => response,
+    }
+}
+
+/// Point an app redirect from the hub at the app's `origin`, or show its
+/// fallback when there's no origin to point it at.
+fn to_app_origin(mut response: Response, redirect: AppRedirect, origin: Option<&str>) -> Response {
+    let target = response
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .filter(|target| target.starts_with('/') && !target.starts_with("//"))
+        .map(str::to_owned);
+    if let (Some(origin), Some(target)) = (origin, target)
+        && let Ok(location) = HeaderValue::from_str(&format!("{origin}{target}"))
+    {
+        response.headers_mut().insert(header::LOCATION, location);
+        return response;
+    }
+    browser_landing::fallback_page(StatusCode::NOT_FOUND, &Landing::from(redirect.fallback))
 }
 
 /// Whether `path` is `/api` or below it. `/apix` and `/api-tools` are not.
@@ -173,7 +208,14 @@ mod tests {
     }
 
     fn listener(api: &HubApi) -> Router {
-        forwarding(artifacts_stand_in(), api.clone())
+        forwarding(artifacts_stand_in(), api.clone(), ui_on_port(7700))
+    }
+
+    /// The app's address on `port` of whatever host a request names, with no
+    /// Residuum Cloud identity.
+    fn ui_on_port(port: u16) -> UiAddress {
+        let no_hub = std::env::temp_dir().join("residuum-forward-tests-no-hub");
+        UiAddress::new(crate::pairing::DevicePairing::open(&no_hub), port)
     }
 
     async fn get_body(app: Router, path: &str) -> (StatusCode, String) {

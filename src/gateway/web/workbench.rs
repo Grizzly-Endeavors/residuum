@@ -75,9 +75,10 @@ async fn api_workbench_info(State(state): State<WorkbenchApiState>) -> Json<Work
             ui_origin: ui_origin.clone(),
             artifacts_origin: artifacts_origin.clone(),
         }),
-        TunnelStatus::Connected { .. } | TunnelStatus::Connecting | TunnelStatus::Disconnected => {
-            None
-        }
+        TunnelStatus::Connected { .. }
+        | TunnelStatus::Connecting
+        | TunnelStatus::Refused
+        | TunnelStatus::Disconnected => None,
     };
     Json(WorkbenchInfo {
         port,
