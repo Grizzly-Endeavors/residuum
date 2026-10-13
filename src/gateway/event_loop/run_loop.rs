@@ -763,9 +763,7 @@ async fn build_runtime(
         learning_state: Arc::new(std::sync::Mutex::new(
             crate::subconscious::LearningState::default(),
         )),
-        post_turn_observe: crate::gateway::post_turn::ObserveWorker::new(
-            post_turn_result_tx.clone(),
-        ),
+        memory_worker: crate::gateway::post_turn::MemoryWorker::new(post_turn_result_tx.clone()),
         post_turn_subconscious: crate::gateway::post_turn::SubconsciousWorker::new(
             post_turn_result_tx,
         ),
@@ -1081,9 +1079,7 @@ async fn graceful_shutdown(rt: &mut AgentRuntime) {
     // Before sessions: a post-turn cycle may itself be about to publish a
     // notice or spawn a learner, which still needs the bus infrastructure
     // (aborted further down) alive to land.
-    rt.post_turn_observe
-        .shutdown(POST_TURN_SHUTDOWN_TIMEOUT)
-        .await;
+    rt.memory_worker.shutdown(POST_TURN_SHUTDOWN_TIMEOUT).await;
     rt.post_turn_subconscious
         .shutdown(POST_TURN_SHUTDOWN_TIMEOUT)
         .await;
@@ -1143,6 +1139,11 @@ async fn apply_post_turn_result(
         PostTurnResult::ObservationReady => {
             crate::gateway::memory::apply_observation_reload(&mut rt.agent, &rt.layout).await;
         }
+        PostTurnResult::ReflectionReady => {
+            if let Err(e) = rt.agent.reload_observations(&rt.layout).await {
+                tracing::warn!(error = %e, "failed to reload observations after reflection");
+            }
+        }
         PostTurnResult::IdleObservationReady {
             reload_needed,
             continuation,
@@ -1163,14 +1164,8 @@ async fn apply_post_turn_result(
 
 /// Run the memory observation pipeline.
 fn run_observation(rt: &AgentRuntime) {
-    let mem = crate::gateway::memory::MemorySubsystems {
-        observer: Arc::clone(&rt.observer),
-        merge_writer: Arc::clone(&rt.merge_writer),
-        layout: rt.layout.clone(),
-        tz: rt.tz,
-        publisher: rt.publisher.clone(),
-    };
-    rt.post_turn_observe.trigger(mem);
+    let mem = crate::gateway::memory::MemorySubsystems::from_runtime(rt);
+    rt.memory_worker.trigger(mem);
 }
 
 /// Await a `JoinHandle` if present, or pend forever if `None`.

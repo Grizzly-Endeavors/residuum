@@ -81,20 +81,33 @@ pub(crate) struct MemorySubsystems {
     pub publisher: Publisher,
 }
 
+impl MemorySubsystems {
+    /// Snapshot the runtime's current memory components.
+    pub(crate) fn from_runtime(rt: &crate::gateway::types::AgentRuntime) -> Self {
+        Self {
+            observer: Arc::clone(&rt.observer),
+            merge_writer: Arc::clone(&rt.merge_writer),
+            layout: rt.layout.clone(),
+            tz: rt.tz,
+            publisher: rt.publisher.clone(),
+        }
+    }
+}
+
 /// Run one observation cycle: extract, merge, and persist the file-only
 /// outcomes (recent-context narrative, clearing observed messages).
 ///
 /// Returns whether the caller should follow up with
 /// [`apply_observation_reload`] — this function never touches `Agent`
 /// itself, which is what makes it safe to run off the event loop (see
-/// `crate::gateway::post_turn::ObserveWorker`); the reload it may call for
+/// `crate::gateway::post_turn::MemoryWorker`); the reload it may call for
 /// has to happen back on the main loop instead.
 ///
 /// This is the *automatic* trigger (a threshold crossing) — it backs off
 /// after a failure rather than re-attempting, and re-spending an LLM call,
 /// on every later crossing while recent messages keep accumulating
 /// unobserved; see [`Observer::automatic_failure_tracker`]. A manually
-/// forced observe ([`run_forced_observe`]) always attempts regardless.
+/// forced observe ([`execute_forced_observation`]) always attempts regardless.
 ///
 /// `shutdown` cancelled while the extraction call is in flight drops the
 /// cycle with nothing written; once extraction returns, the merge and the
@@ -250,10 +263,10 @@ async fn persist_observation_outcome(
 /// in-memory history and reload the observations/recent-context views it
 /// assembles prompts from.
 ///
-/// Always applied on the main loop — from a manually forced observe
-/// immediately, or from the background worker's result once a cycle
-/// finishes (see `crate::gateway::post_turn`) — never from inside the
-/// background task itself, since `Agent` isn't shared off the event loop.
+/// Always applied on the main loop, from the background worker's result
+/// once a cycle finishes (see `crate::gateway::post_turn`) — never from
+/// inside the background task itself, since `Agent` isn't shared off the
+/// event loop.
 /// This is the "one step stale" window the owner accepted: a turn that
 /// starts before this runs still sees the pre-observation context.
 pub(crate) async fn apply_observation_reload(agent: &mut Agent, layout: &WorkspaceLayout) {
@@ -266,16 +279,19 @@ pub(crate) async fn apply_observation_reload(agent: &mut Agent, layout: &Workspa
     }
 }
 
-/// Force an observation cycle regardless of token threshold.
+/// Force an observation cycle regardless of token threshold (`/observe`):
+/// extract, merge, remove the observed messages, and tell the user how it
+/// went. Returns whether it merged anything, for the caller to follow up
+/// with [`apply_observation_reload`] on the main loop.
 ///
-/// Loads recent messages, extracts and merges, removes the observed messages,
-/// and publishes a notice.
+/// Unlike [`execute_observation`], this ignores the automatic backoff and
+/// reports every outcome to the user. `shutdown` cancels it the same way.
 #[tracing::instrument(skip_all)]
-pub(super) async fn run_forced_observe(
+pub(crate) async fn execute_forced_observation(
     mem: &MemorySubsystems,
-    agent: &mut Agent,
-    publisher: &Publisher,
-) {
+    shutdown: &tokio_util::sync::CancellationToken,
+) -> bool {
+    let publisher = &mem.publisher;
     let recent = match load_recent_messages(&mem.layout.recent_messages_json()).await {
         Ok(msgs) => msgs,
         Err(e) => {
@@ -286,7 +302,7 @@ pub(super) async fn run_forced_observe(
                 Some(format!("{e:#}")),
             )
             .await;
-            return;
+            return false;
         }
     };
 
@@ -296,14 +312,22 @@ pub(super) async fn run_forced_observe(
             "There are no recent messages to summarize.".to_string(),
         )
         .await;
-        return;
+        return false;
     }
 
+    let extraction = tokio::select! {
+        biased;
+        () = shutdown.cancelled() => {
+            tracing::debug!("shutting down, dropping forced observation before anything was written");
+            return false;
+        }
+        extraction = mem.observer.extract(&recent, &mem.layout) => extraction,
+    };
     // A manual force always attempts regardless of the automatic tracker's
     // backoff state, but still reports its outcome to it — a working manual
     // retry should un-stick a stuck automatic backoff just as readily as a
     // later automatic success would.
-    let extraction = match mem.observer.extract(&recent, &mem.layout).await {
+    let extraction = match extraction {
         Ok(e) => {
             mem.observer.automatic_failure_tracker().record_success();
             e
@@ -317,7 +341,7 @@ pub(super) async fn run_forced_observe(
                 Some(format!("{e:#}")),
             )
             .await;
-            return;
+            return false;
         }
     };
 
@@ -335,12 +359,11 @@ pub(super) async fn run_forced_observe(
                 Some(format!("{e:#}")),
             )
             .await;
-            return;
+            return false;
         }
     };
 
     persist_observation_outcome(mem, &outcome, recent.len()).await;
-    apply_observation_reload(agent, &mem.layout).await;
 
     let suffix = if outcome.reflected {
         " and condensed the memory log"
@@ -353,26 +376,37 @@ pub(super) async fn run_forced_observe(
         if count == 1 { "" } else { "s" }
     );
     publish_notice(publisher, notice).await;
+    true
 }
 
-/// Force a reflection cycle regardless of observation log size.
+/// Force a reflection cycle regardless of observation log size (`/reflect`)
+/// and tell the user how it went. Returns whether the log was rewritten,
+/// for the caller to reload the agent's observations on the main loop.
 ///
-/// Runs the reflector, reloads observations into the agent, and publishes a notice.
+/// `shutdown` drops the reflection. Its one write to the log is atomic, so
+/// the log is either replaced or left as it was.
 #[tracing::instrument(skip_all)]
-pub(super) async fn run_forced_reflect(
-    merge_writer: &MemoryMergeWriter,
-    layout: &WorkspaceLayout,
-    agent: &mut Agent,
-    publisher: &Publisher,
-) {
-    // Same reasoning as `run_forced_observe`: this bypasses the automatic
-    // reflector tracker's backoff gate, but still reports its outcome to it.
-    match merge_writer.force_reflect().await {
+pub(crate) async fn execute_forced_reflection(
+    mem: &MemorySubsystems,
+    shutdown: &tokio_util::sync::CancellationToken,
+) -> bool {
+    let publisher = &mem.publisher;
+    let result = tokio::select! {
+        biased;
+        () = shutdown.cancelled() => {
+            tracing::debug!("shutting down, dropping forced reflection");
+            return false;
+        }
+        result = mem.merge_writer.force_reflect() => result,
+    };
+    // Same reasoning as `execute_forced_observation`: this bypasses the
+    // automatic reflector tracker's backoff gate, but still reports its
+    // outcome to it.
+    match result {
         Ok(compressed) => {
-            merge_writer.reflector_failure_tracker().record_success();
-            if let Err(e) = agent.reload_observations(layout).await {
-                tracing::warn!(error = %e, "failed to reload observations after forced reflect");
-            }
+            mem.merge_writer
+                .reflector_failure_tracker()
+                .record_success();
             publish_notice(
                 publisher,
                 format!(
@@ -381,9 +415,12 @@ pub(super) async fn run_forced_reflect(
                 ),
             )
             .await;
+            true
         }
         Err(e) => {
-            merge_writer.reflector_failure_tracker().record_failure();
+            mem.merge_writer
+                .reflector_failure_tracker()
+                .record_failure();
             tracing::warn!(error = %e, "forced reflect failed");
             publish_error(
                 publisher,
@@ -391,6 +428,7 @@ pub(super) async fn run_forced_reflect(
                 Some(format!("{e:#}")),
             )
             .await;
+            false
         }
     }
 }
@@ -618,7 +656,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_forced_observe_with_no_recent_messages_reads_as_plain_language() {
+    async fn forced_observe_with_no_recent_messages_reads_as_plain_language() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path());
         tokio::fs::create_dir_all(layout.memory_dir())
@@ -635,16 +673,14 @@ mod tests {
             tz: TEST_TZ,
             publisher: publisher.clone(),
         };
-        let mut agent = test_agent();
-
-        run_forced_observe(&mem, &mut agent, &publisher).await;
+        execute_forced_observation(&mem, &tokio_util::sync::CancellationToken::new()).await;
 
         let notice = wait::next_event("the published notice", &mut notices).await;
         assert_eq!(notice.message, "There are no recent messages to summarize.");
     }
 
     #[tokio::test]
-    async fn run_forced_observe_failure_reports_plain_message_with_cause_in_details() {
+    async fn forced_observe_failure_reports_plain_message_with_cause_in_details() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path());
         tokio::fs::create_dir_all(layout.memory_dir())
@@ -670,9 +706,7 @@ mod tests {
             tz: TEST_TZ,
             publisher: publisher.clone(),
         };
-        let mut agent = test_agent();
-
-        run_forced_observe(&mem, &mut agent, &publisher).await;
+        execute_forced_observation(&mem, &tokio_util::sync::CancellationToken::new()).await;
 
         let error = wait::next_event("the published error", &mut errors).await;
         assert_eq!(
@@ -686,7 +720,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_forced_observe_success_notice_reads_as_plain_language() {
+    async fn forced_observe_success_notice_reads_as_plain_language() {
         const EXTRACT_RESPONSE: &str = r#"{
             "observations": [
                 {"content": "an observation", "timestamp": "2026-02-21T14:30", "visibility": "user"}
@@ -727,9 +761,7 @@ mod tests {
             tz: TEST_TZ,
             publisher: publisher.clone(),
         };
-        let mut agent = test_agent();
-
-        run_forced_observe(&mem, &mut agent, &publisher).await;
+        execute_forced_observation(&mem, &tokio_util::sync::CancellationToken::new()).await;
 
         let notice = wait::next_event("the published notice", &mut notices).await;
         assert_eq!(notice.message, "Summarized 2 older messages.");
@@ -750,7 +782,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_forced_reflect_failure_reports_plain_message_with_cause_in_details() {
+    async fn forced_reflect_failure_reports_plain_message_with_cause_in_details() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path());
         tokio::fs::create_dir_all(layout.memory_dir())
@@ -758,13 +790,19 @@ mod tests {
             .unwrap();
         seed_observation_log(&layout).await;
 
-        let mw = merge_writer(&layout);
         let handle = spawn_broker();
         let mut errors = subscribe_errors(&handle).await;
-        let publisher = handle.publisher();
-        let mut agent = test_agent();
+        let mem = MemorySubsystems {
+            observer: Arc::new(always_failing_observer()),
+            merge_writer: merge_writer(&layout),
+            layout: layout.clone(),
+            tz: TEST_TZ,
+            publisher: handle.publisher(),
+        };
 
-        run_forced_reflect(&mw, &layout, &mut agent, &publisher).await;
+        assert!(
+            !execute_forced_reflection(&mem, &tokio_util::sync::CancellationToken::new()).await
+        );
 
         let error = wait::next_event("the published error", &mut errors).await;
         assert_eq!(
@@ -778,7 +816,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_forced_reflect_success_notice_reads_as_plain_language() {
+    async fn forced_reflect_success_notice_reads_as_plain_language() {
         const COMPRESSED_RESPONSE: &str = r#"{"observations": [{"content": "compressed", "timestamp": "2026-02-21T14:30", "visibility": "user"}]}"#;
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path());
@@ -795,13 +833,23 @@ mod tests {
             )),
             ReflectorConfig::default(),
         );
-        let mw = MemoryMergeWriter::new(reflector, layout.clone(), search_index, None, None);
         let handle = spawn_broker();
         let mut notices = subscribe_notices(&handle).await;
-        let publisher = handle.publisher();
-        let mut agent = test_agent();
+        let mem = MemorySubsystems {
+            observer: Arc::new(always_failing_observer()),
+            merge_writer: Arc::new(MemoryMergeWriter::new(
+                reflector,
+                layout.clone(),
+                search_index,
+                None,
+                None,
+            )),
+            layout: layout.clone(),
+            tz: TEST_TZ,
+            publisher: handle.publisher(),
+        };
 
-        run_forced_reflect(&mw, &layout, &mut agent, &publisher).await;
+        assert!(execute_forced_reflection(&mem, &tokio_util::sync::CancellationToken::new()).await);
 
         let notice = wait::next_event("the published notice", &mut notices).await;
         assert_eq!(

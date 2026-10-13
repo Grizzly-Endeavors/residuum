@@ -237,20 +237,14 @@ pub async fn persist_and_maybe_observe(
     )
     .await;
     if apply_observe_action(action, observe_deadline, rt.observer.cooldown_secs()) {
-        let mem = MemorySubsystems {
-            observer: Arc::clone(&rt.observer),
-            merge_writer: Arc::clone(&rt.merge_writer),
-            layout: rt.layout.clone(),
-            tz: rt.tz,
-            publisher: rt.publisher.clone(),
-        };
+        let mem = MemorySubsystems::from_runtime(rt);
         // Fire-and-forget: the background worker (see
         // `crate::gateway::post_turn`) runs the cycle and reports its
         // `Agent`-touching tail back over `post_turn_result_rx`, which the
         // main loop applies — this call must not block the turn that
         // triggered it from returning, or the whole point of backgrounding
         // this is lost.
-        rt.post_turn_observe.trigger(mem);
+        rt.memory_worker.trigger(mem);
     }
 }
 
