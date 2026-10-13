@@ -2,6 +2,9 @@
 //!
 //! Running `cargo test` produces `.ts` files in `web/src/lib/generated/`.
 //! These files are committed to git so the frontend can import them directly.
+//! `RESIDUUM_TS_EXPORT_DIR` writes them somewhere else instead, which is how
+//! `scripts/check-generated-types.sh` compares a fresh export without touching
+//! the checkout.
 
 #[expect(
     clippy::tests_outside_test_module,
@@ -58,11 +61,12 @@ mod ts_export {
         reason = "exports all protocol types sequentially into TypeScript"
     )]
     fn export_protocol_types() {
-        let out_dir = "web/src/lib/generated";
-        let cfg = ts_rs::Config::new().with_out_dir(out_dir);
+        let out_dir = std::env::var("RESIDUUM_TS_EXPORT_DIR")
+            .unwrap_or_else(|_| "web/src/lib/generated".to_owned());
+        let cfg = ts_rs::Config::new().with_out_dir(&out_dir);
 
         // Ensure the output directory exists
-        std::fs::create_dir_all(out_dir).unwrap();
+        std::fs::create_dir_all(&out_dir).unwrap();
 
         // Export each type — dependencies are exported transitively
         ClientMessage::export_all(&cfg).unwrap();
@@ -251,23 +255,33 @@ mod ts_export {
 
         // Verify the generated files exist
         assert!(
-            std::path::Path::new("web/src/lib/generated/ClientMessage.ts").exists(),
+            std::path::Path::new(&out_dir)
+                .join("ClientMessage.ts")
+                .exists(),
             "ClientMessage.ts should be generated"
         );
         assert!(
-            std::path::Path::new("web/src/lib/generated/ServerMessage.ts").exists(),
+            std::path::Path::new(&out_dir)
+                .join("ServerMessage.ts")
+                .exists(),
             "ServerMessage.ts should be generated"
         );
         assert!(
-            std::path::Path::new("web/src/lib/generated/ImageAttachment.ts").exists(),
+            std::path::Path::new(&out_dir)
+                .join("ImageAttachment.ts")
+                .exists(),
             "ImageAttachment.ts should be generated (renamed from ImageData)"
         );
         assert!(
-            std::path::Path::new("web/src/lib/generated/TeamsSetupJob.ts").exists(),
+            std::path::Path::new(&out_dir)
+                .join("TeamsSetupJob.ts")
+                .exists(),
             "TeamsSetupJob.ts should be generated"
         );
         assert!(
-            std::path::Path::new("web/src/lib/generated/TeamsSetupPrereqs.ts").exists(),
+            std::path::Path::new(&out_dir)
+                .join("TeamsSetupPrereqs.ts")
+                .exists(),
             "TeamsSetupPrereqs.ts should be generated"
         );
     }

@@ -155,8 +155,8 @@ jsonschema = { version = "0.58.6", default-features = false }
 # change behavior. The strictness here is a substitute for the discipline
 # a human developer would bring naturally.
 #
-# Human contributors: the pre-commit hooks enforce everything, so you'll
-# know immediately if something needs fixing.
+# Human contributors: the git hooks enforce everything (pre-commit and pre-push),
+# so you'll know immediately if something needs fixing.
 
 [lints.rust]
 # deny rather than forbid so sqlite-vec FFI registration can use a targeted

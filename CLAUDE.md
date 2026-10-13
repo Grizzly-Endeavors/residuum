@@ -16,13 +16,14 @@ Superseded documents live in [`docs/archive/`](./docs/archive/); they record his
 
 ## Build & Quality Gates
 
-### Pre-Commit Hooks
+### Git Hooks
 
-Pre-commit hooks enforce quality gates:
-- **pre-commit**: auto-formats with `cargo fmt --all` (re-staging only the paths already staged), runs `cargo clippy --all-targets --all-features -- -D warnings`, runs the tests for the modules touched by the commit, and runs `cargo deny check`. When the commit touches Rust it also runs `scripts/check-generated-types.sh`, which regenerates the web app's TypeScript protocol types from the Rust types and fails on any difference from the staged files. When any file under `web/` is staged (the app, its mock server, its configuration) it also runs the web formatter, ESLint and the style lint, `svelte-check`, and the web unit and component tests (Vitest). When any `scripts/ci-failures*` file is staged it runs the `just ci-failures` log parser's fixtures (`scripts/ci-failures-test.sh`). Finally it blocks two things outright in the staged diff: a `dbg!()` call, and an `#[allow(...)]` attribute (use `#[expect(lint, reason = "...")]` instead so stale suppressions warn).
+The git hooks in `.githooks/` (installed with `.githooks/install.sh` or `just hooks`) enforce the quality gates in two stages: the fast checks on every commit, the slow ones once per push.
+- **pre-commit**: formats what is staged, re-staging only the paths already staged: `cargo fmt --all` when Rust is staged, Prettier on the staged web files. It refuses a formatter change to a file that also has unstaged edits, so the author stages the whole file or stashes the rest. When a manifest (`*.toml`, `Cargo.lock`) is staged it also runs `cargo deny check`. It blocks three things outright in the staged diff: a `dbg!()` call, an `#[allow(...)]` attribute (use `#[expect(lint, reason = "...")]` instead so stale suppressions warn), and growth of `src/testing/wall_clock_backlog.rs`. When any `scripts/ci-failures*` file is staged it runs the `just ci-failures` log parser's fixtures (`scripts/ci-failures-test.sh`).
+- **pre-push**: checks each pushed commit as it would be merged with the current `main`. It fetches `origin/main`. A commit is checked in place only when it is the checkout's HEAD, already contains `origin/main`, and the working tree has no uncommitted or untracked changes; any other commit, and any branch that is behind `main`, is checked in a temporary worktree, merged with `main` when the branch is behind it (sharing this checkout's `web/node_modules`), and a merge conflict fails the push until `main` is merged into the branch. Every check builds into `target/pre-push`, which is separate from the checkout's own `target/`; sccache shares the dependency builds. When the pushed commits change what the Rust checks run on (the paths `.github/workflows/rust-pr.yml` triggers on: `src/`, `tests/`, `assets/`, the Cargo, clippy, rustfmt and deny configuration, `build.rs`, the generated web types and the scripts and workflows those checks use), it runs `cargo clippy --all-targets --all-features -- -D warnings`, the whole test suite (`cargo test --quiet --no-fail-fast`, which includes the source scans, `testing::source_scan`) and `scripts/check-generated-types.sh`, which regenerates the web app's TypeScript protocol types into a scratch directory and fails on any difference from the index. The suite's type export also goes to a scratch directory, so a push never rewrites `web/src/lib/generated`. When they change `web/`, the Rust checks rebuild `web/dist` first, and the hook runs ESLint and the style lint, `svelte-check`, and the web unit and component tests (Vitest). Every check runs even after one fails, and a summary at the end lists what failed. A push that only deletes a branch, or changes neither Rust nor `web/`, runs no checks.
 - **commit-msg**: advisory checks on the subject line — fails only on a subject under 10 characters, and warns on over-72-character subjects, a trailing period, or a missing conventional prefix.
 
-Bypass is **FORBIDDEN**.
+Bypassing a hook with `--no-verify` is **FORBIDDEN**, on `git push` as on `git commit`.
 
 ### Local Tasks
 
@@ -41,7 +42,7 @@ To run on real Windows locally (tests, clippy with the native toolchain, and des
 
 ### Rust Toolchain
 
-The Rust version is pinned in `rust-toolchain.toml` so the pre-commit hook, CI, and release builds all use the same compiler and clippy. Bumping it is its own PR, together with fixes for any new lints.
+The Rust version is pinned in `rust-toolchain.toml` so the git hooks, CI, and release builds all use the same compiler and clippy. Bumping it is its own PR, together with fixes for any new lints.
 
 ### Lint Rules
 
@@ -55,7 +56,7 @@ The lint set is kept in parity with the `rust-toolkit` reference project. `print
 
 The root `clippy.toml` exempts `unwrap_used`, `expect_used`, `panic`, and `dbg_macro` for code inside `#[cfg(test)]` modules and `#[test]`-attributed functions, so test code may freely use unwrap/expect/panic/dbg for readability with no suppression header needed. Adding an `#[expect(clippy::unwrap_used, ...)]` (or `expect_used`/`panic`/`dbg_macro`) to a test file is an error, not belt-and-braces — the lint is already exempt there, so the expectation never fires and becomes an unfulfilled-expectation hard error under `-D warnings`. `clippy::tests_outside_test_module` is the one exception: it is not controllable from `clippy.toml` and stays denied project-wide, so integration tests under `tests/` (which live outside a `#[cfg(test)]` module) still need an explicit `#[expect(clippy::tests_outside_test_module, reason = "...")]`. Plain helper functions at the top level of a `tests/*.rs` file (not wrapped in `#[cfg(test)]` and not themselves `#[test]`-attributed) are also not covered by the `clippy.toml` exemption and still need their own suppression if they use unwrap/expect/panic/dbg.
 
-DO NOT, under any circumstance, change this config without explicit approval from the user.
+Changing a lint, a lint level, or a clippy or deny setting needs explicit approval from the user. Editing a comment in these files to keep it accurate does not.
 
 ### Testing
 
@@ -119,7 +120,7 @@ The failure this section exists to prevent is a guard built around a failure nob
 - A comment justifying a guard records what an agent believed when it wrote it; it is not an authority. If it names no observed failure, it is a ghost: replace it with visibility and intervention rather than preserving it.
 - A gap is missing visibility or intervention, not behavior you would have designed differently. If a behavior is visible and the user can stop or undo it, how it behaves is a product decision: leave it, and raise it only when it carries genuine risk or cost.
 - Document product behavior in `docs/systems-usage/` as a plain description of how the system works. Only the user decides what is intentional; agents describe what is. Skip "by design", "intentional", and "do not change": the doc records current behavior, not a case for keeping it.
-- This governs product behavior, not code correctness. Lints, pre-commit hooks, and `deny` rules guard against an observed, recurring failure (agents taking shortcuts) and stay as the floor.
+- This governs product behavior, not code correctness. Lints, git hooks, and `deny` rules guard against an observed, recurring failure (agents taking shortcuts) and stay as the floor.
 
 ## Error Handling & Observability
 
@@ -174,7 +175,7 @@ Single-branch model: all work lands on `main`.
 ### Day-to-Day Work
 
 1. **Create a feature branch from `main`** with a descriptive name (e.g., `feat/add-telegram-retry`, `fix/memory-search-ranking`)
-2. **Commit frequently** — pre-commit hooks enforce fmt, clippy, and tests. Commit especially often during large multi-phase tasks.
+2. **Commit frequently** — the pre-commit hook formats and audits what is staged; clippy, the tests, the generated-types check and the web checks run once per push. Commit especially often during large multi-phase tasks.
 3. **Wrapup** Check for anything unfinished, ensure documents and guides are updated, create migration guides for breaking changes.
 4. **Push the branch** and merge into `main`
 

@@ -10,7 +10,7 @@
 # belt-and-braces: the lint is already exempt, so the expectation never fires
 # and becomes an unfulfilled-expectation hard error under `-D warnings`.
 #
-# These four match grizzly-gate exactly, so the pre-commit hook and CI never disagree.
+# These four match grizzly-gate exactly, so the pre-push hook and CI never disagree.
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
