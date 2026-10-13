@@ -69,7 +69,7 @@ types: _web-dist
 types-check: _web-dist
     scripts/check-generated-types.sh
 
-# Clippy with warnings denied, exactly as the pre-commit hook runs it
+# Clippy with warnings denied, exactly as the pre-push hook runs it
 [group('rust')]
 clippy: _web-dist
     cargo clippy --all-targets --all-features -- -D warnings

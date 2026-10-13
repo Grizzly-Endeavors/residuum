@@ -18,7 +18,7 @@ Thanks for your interest in contributing. This document covers the workflow and 
    cargo build
    cargo test --quiet
    ```
-5. Install the git hooks — they enforce formatting, linting, and tests on every commit:
+5. Install the git hooks — they format and check every commit, and run clippy, the tests, and the web checks on every push:
    ```bash
    .githooks/install.sh
    ```
@@ -32,16 +32,16 @@ All changes go through pull requests.
 1. Create a feature branch from `main` with a descriptive name
 2. Make your changes and commit frequently
 3. Push your branch and open a PR against `main`
-4. The pre-commit hook is the first quality gate: formatting, clippy, tests, dependency audit, and the web checks all run locally on every commit. CI then runs the full Rust checks on PRs that change Rust code and the full web checks on PRs that change `web/` (see [Quality Gates](#quality-gates)). CI runs on self-hosted runners, so PRs from forks don't run it; a maintainer re-runs the checks locally before merging a contributor's PR.
+4. The git hooks are the first quality gate: formatting, the generated-types check, the dependency audit, and the source scans run on every commit; clippy, the whole test suite, and the web checks run on every push, against your branch merged with the current `main`. CI then runs the full Rust checks on PRs that change Rust code and the full web checks on PRs that change `web/` (see [Quality Gates](#quality-gates)). CI runs on self-hosted runners, so PRs from forks don't run it; a maintainer re-runs the checks locally before merging a contributor's PR.
 5. Cross-platform checks (clippy for aarch64 Linux, Windows, and macOS, plus tests on Windows) are opt-in; see below
 
 ### Rust Toolchain
 
-The Rust version is pinned in `rust-toolchain.toml`, and rustup installs exactly that version for every build: your machine, CI, and releases. Everyone lints with the same clippy, so code that passes the pre-commit hook passes CI. Bumping the version is its own PR: change the pin, fix whatever new lints the release brings, and commit.
+The Rust version is pinned in `rust-toolchain.toml`, and rustup installs exactly that version for every build: your machine, CI, and releases. Everyone lints with the same clippy, so code that passes the git hooks passes CI. Bumping the version is its own PR: change the pin, fix whatever new lints the release brings, and commit.
 
 ### Cross-Platform Checks
 
-The pre-commit hook only builds for your own platform. `.github/workflows/cross-compile.yml` runs `cargo clippy -- -D warnings` for the other release targets, so code behind another platform's `cfg` is held to the same lints as your own build, and runs the full test suite on a Windows runner, where `cfg(windows)` code actually executes. It runs when:
+The git hooks only build for your own platform. `.github/workflows/cross-compile.yml` runs `cargo clippy -- -D warnings` for the other release targets, so code behind another platform's `cfg` is held to the same lints as your own build, and runs the full test suite on a Windows runner, where `cfg(windows)` code actually executes. It runs when:
 
 - the PR carries the `cross-compile` label (adding the label starts a run, and every later push re-runs it)
 - the PR changes `Cargo.toml`, `Cargo.lock`, `build.rs`, or `rust-toolchain.toml` (automatic)
@@ -67,16 +67,23 @@ Use prefixed branch names:
 
 ### Quality Gates
 
-Pre-commit hooks run automatically:
+The git hooks split the checks between commit and push, so a commit takes seconds and the slow checks run once per push.
+
+On every commit (pre-commit), on what is staged:
 - `cargo fmt` — formatting (auto-applied and staged)
-- `cargo clippy` — pedantic linting with strict denials
-- `cargo test` — tests for the modules touched by the commit
+- Prettier on the staged web files (auto-applied and staged)
+- `testing::source_scan` — the source scans (see [Waiting in tests](#waiting-in-tests))
+- `scripts/check-generated-types.sh` — the web app's TypeScript protocol types match the Rust types
 - `cargo deny check` — dependency audit
-- When any file under `web/` is staged: Prettier, ESLint and the style lint (Stylelint), `svelte-check` (warnings fail it), and the web unit and component tests (Vitest)
+- No `dbg!()` or `#[allow(...)]` in the staged diff, and no growth of the wall-clock backlog
 
-Do not bypass hooks. If a hook fails, fix the issue before committing.
+On every push (pre-push), against the pushed branch merged with the current `main` (the hook fetches `origin/main` and, when the branch is behind it, builds the merge in a temporary worktree; a conflict fails the push until you merge `main` into your branch):
+- When the pushed commits change Rust, a manifest, `Cargo.lock`, or `assets/`: `cargo clippy` (pedantic linting with strict denials) and the whole test suite
+- When they change `web/`: ESLint and the style lint (Stylelint), `svelte-check` (warnings fail it), and the web unit and component tests (Vitest)
 
-CI repeats these checks and adds four. Its Rust half runs on every pull request that changes Rust code or what the build embeds (`src/`, `tests/`, `assets/`, the Cargo and lint configuration, the generated web types), its web half on every pull request that changes `web/`, and both on release tags. The Rust half runs the whole test suite, not only the touched modules', then runs it again as two concurrent copies under CPU load (`just stress`, see Testing), and the Pebble tests (`just pebble`), which issue certificates from the Let's Encrypt test CA in Docker. It runs the whole web end-to-end, accessibility and visual suite against the mock, in the Playwright container's browser, so the runners need no Chromium of their own (`just web-e2e` runs it locally; `just web-e2e-fast` leaves out the visual comparisons and runs in your own Chromium; see [web/CONTRIBUTING.md](web/CONTRIBUTING.md#testing)). It regenerates the web's TypeScript protocol types from the Rust types and fails when `web/src/lib/generated/` differs from what is committed, so after changing an exported Rust type run `just types` and commit the result (`just types-check` runs the same check as CI). It also reports web test coverage in the job summary, with no threshold.
+Every push check runs even after one fails, and the hook ends with a summary of what failed. Do not bypass the hooks: `--no-verify` is not allowed on `git commit` or `git push`. If a hook fails, fix the issue and try again.
+
+CI repeats these checks and adds four. Its Rust half runs on every pull request that changes Rust code or what the build embeds (`src/`, `tests/`, `assets/`, the Cargo and lint configuration, the generated web types), its web half on every pull request that changes `web/`, and both on release tags. The Rust half runs the whole test suite, then runs it again as two concurrent copies under CPU load (`just stress`, see Testing), and the Pebble tests (`just pebble`), which issue certificates from the Let's Encrypt test CA in Docker. It runs the whole web end-to-end, accessibility and visual suite against the mock, in the Playwright container's browser, so the runners need no Chromium of their own (`just web-e2e` runs it locally; `just web-e2e-fast` leaves out the visual comparisons and runs in your own Chromium; see [web/CONTRIBUTING.md](web/CONTRIBUTING.md#testing)). It regenerates the web's TypeScript protocol types from the Rust types and fails when `web/src/lib/generated/` differs from what is committed, so after changing an exported Rust type run `just types` and commit the result (`just types-check` runs the same check as CI). It also reports web test coverage in the job summary, with no threshold.
 
 ### Style
 

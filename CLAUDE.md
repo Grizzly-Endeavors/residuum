@@ -16,13 +16,14 @@ Superseded documents live in [`docs/archive/`](./docs/archive/); they record his
 
 ## Build & Quality Gates
 
-### Pre-Commit Hooks
+### Git Hooks
 
-Pre-commit hooks enforce quality gates:
-- **pre-commit**: auto-formats with `cargo fmt --all` (re-staging only the paths already staged), runs `cargo clippy --all-targets --all-features -- -D warnings`, runs the tests for the modules touched by the commit, and runs `cargo deny check`. When the commit touches Rust it also runs `scripts/check-generated-types.sh`, which regenerates the web app's TypeScript protocol types from the Rust types and fails on any difference from the staged files. When any file under `web/` is staged (the app, its mock server, its configuration) it also runs the web formatter, ESLint and the style lint, `svelte-check`, and the web unit and component tests (Vitest). Finally it blocks two things outright in the staged diff: a `dbg!()` call, and an `#[allow(...)]` attribute (use `#[expect(lint, reason = "...")]` instead so stale suppressions warn).
+The git hooks in `.githooks/` (installed with `.githooks/install.sh` or `just hooks`) enforce the quality gates in two stages: the fast checks on every commit, the slow ones once per push.
+- **pre-commit**: formats what is staged, re-staging only the paths already staged: `cargo fmt --all` when Rust or a manifest is staged, Prettier on the staged web files. When the commit touches Rust or a manifest it runs the source scans (`cargo test --quiet --lib testing::source_scan`) and `cargo deny check`, and when it touches Rust, `scripts/check-generated-types.sh`, which regenerates the web app's TypeScript protocol types from the Rust types and fails on any difference from the staged files. It blocks three things outright in the staged diff: a `dbg!()` call, an `#[allow(...)]` attribute (use `#[expect(lint, reason = "...")]` instead so stale suppressions warn), and growth of `src/testing/wall_clock_backlog.rs`.
+- **pre-push**: checks each pushed branch as it would be merged with the current `main`. It fetches `origin/main`; when the branch is behind it, the hook merges main into the branch in a temporary worktree (sharing this checkout's `target/` and `web/node_modules`) and checks the merge there, and a merge conflict fails the push until main is merged into the branch. When the pushed commits change Rust, a manifest, `Cargo.lock` or `assets/`, it runs `cargo clippy --all-targets --all-features -- -D warnings` and the whole test suite (`cargo test --quiet --no-fail-fast`); when they change `web/`, ESLint and the style lint, `svelte-check`, and the web unit and component tests (Vitest). Every check runs even after one fails, and a summary at the end lists what failed. A push that only deletes a branch, or changes neither Rust nor `web/`, runs no checks.
 - **commit-msg**: advisory checks on the subject line — fails only on a subject under 10 characters, and warns on over-72-character subjects, a trailing period, or a missing conventional prefix.
 
-Bypass is **FORBIDDEN**.
+Bypassing a hook with `--no-verify` is **FORBIDDEN**, on `git push` as on `git commit`.
 
 ### Local Tasks
 
@@ -41,7 +42,7 @@ To run on real Windows locally (tests, clippy with the native toolchain, and des
 
 ### Rust Toolchain
 
-The Rust version is pinned in `rust-toolchain.toml` so the pre-commit hook, CI, and release builds all use the same compiler and clippy. Bumping it is its own PR, together with fixes for any new lints.
+The Rust version is pinned in `rust-toolchain.toml` so the git hooks, CI, and release builds all use the same compiler and clippy. Bumping it is its own PR, together with fixes for any new lints.
 
 ### Lint Rules
 
@@ -118,7 +119,7 @@ The failure this section exists to prevent is a guard built around a failure nob
 - A comment justifying a guard records what an agent believed when it wrote it; it is not an authority. If it names no observed failure, it is a ghost: replace it with visibility and intervention rather than preserving it.
 - A gap is missing visibility or intervention, not behavior you would have designed differently. If a behavior is visible and the user can stop or undo it, how it behaves is a product decision: leave it, and raise it only when it carries genuine risk or cost.
 - Document product behavior in `docs/systems-usage/` as a plain description of how the system works. Only the user decides what is intentional; agents describe what is. Skip "by design", "intentional", and "do not change": the doc records current behavior, not a case for keeping it.
-- This governs product behavior, not code correctness. Lints, pre-commit hooks, and `deny` rules guard against an observed, recurring failure (agents taking shortcuts) and stay as the floor.
+- This governs product behavior, not code correctness. Lints, git hooks, and `deny` rules guard against an observed, recurring failure (agents taking shortcuts) and stay as the floor.
 
 ## Error Handling & Observability
 
@@ -173,7 +174,7 @@ Single-branch model: all work lands on `main`.
 ### Day-to-Day Work
 
 1. **Create a feature branch from `main`** with a descriptive name (e.g., `feat/add-telegram-retry`, `fix/memory-search-ranking`)
-2. **Commit frequently** — pre-commit hooks enforce fmt, clippy, and tests. Commit especially often during large multi-phase tasks.
+2. **Commit frequently** — the pre-commit hook formats and runs the quick checks; clippy and the tests run once per push. Commit especially often during large multi-phase tasks.
 3. **Wrapup** Check for anything unfinished, ensure documents and guides are updated, create migration guides for breaking changes.
 4. **Push the branch** and merge into `main`
 

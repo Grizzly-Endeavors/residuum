@@ -3,8 +3,7 @@ name: Rust PR Checks
 # The Rust checks (format, clippy, the whole test suite, the Pebble tests,
 # generated types, and the dependency audit) on every pull request that
 # changes Rust code or how it is built, so a failing or flaky test shows up on
-# the pull request that caused it rather than at release. The pre-commit hook
-# runs only the touched modules' tests.
+# the pull request that caused it rather than at release.
 on:
   pull_request:
     paths:
