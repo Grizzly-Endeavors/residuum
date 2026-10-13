@@ -97,21 +97,8 @@ test.describe("chat", { tag: "@visual" }, () => {
     await expect(reply.locator("time").first()).toHaveCSS("opacity", "1");
     // The time and Copy sit in the conversation's margin, outside the reply's own box, and no
     // element holds both. The shot is the rectangle round the reply and its details.
-    const parts = [
-      reply,
-      reply.getByRole("button", { name: "Copy reply" }),
-      reply.locator("time").first(),
-    ];
-    const boxes = await Promise.all(parts.map((part) => part.boundingBox()));
-    const laidOut = boxes.filter((box) => box !== null);
-    expect(laidOut, "the reply, Copy and the time must all be laid out").toHaveLength(parts.length);
-    const left = Math.floor(Math.min(...laidOut.map((box) => box.x)));
-    const top = Math.floor(Math.min(...laidOut.map((box) => box.y)));
-    const right = Math.ceil(Math.max(...laidOut.map((box) => box.x + box.width)));
-    const bottom = Math.ceil(Math.max(...laidOut.map((box) => box.y + box.height)));
     await expectClipScreenshot(
-      page,
-      { x: left, y: top, width: right - left, height: bottom - top },
+      [reply, reply.getByRole("button", { name: "Copy reply" }), reply.locator("time").first()],
       "message-details",
     );
   });
