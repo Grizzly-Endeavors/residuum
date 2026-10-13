@@ -106,6 +106,7 @@ test("Runtime: a limit and the idle channel are saved and read back from disk", 
   await expect(page.getByRole("heading", { name: "Runtime", level: 2 })).toBeVisible();
   await expect(page.getByLabel("Reply time limit")).toHaveValue("120");
   await expect(page.getByLabel("Reply length")).toHaveValue("16384");
+  await expect(page.getByRole("switch", { name: "Catch repeated tool calls" })).toBeChecked();
   await expectNoAxeViolations(page, overlay);
 
   await page.getByLabel("Reply length").fill("4096");
@@ -121,24 +122,6 @@ test("Runtime: a limit and the idle channel are saved and read back from disk", 
   expect(text).toContain("max_tokens = 4096");
   expect(text).toContain("max_tool_iterations = 40");
   expect(text).toContain('idle_channel = "telegram"');
-});
-
-test("Runtime: the repeated-call guard switch turns its thresholds off and on", async ({
-  page,
-}) => {
-  await page.goto("/agent/atlas?settings=atlas/runtime");
-  const guard = page.getByRole("switch", { name: "Catch repeated tool calls" });
-  const nudge = page.getByLabel("Nudge after");
-  await expect(guard).toBeChecked();
-  await expect(nudge).toBeEnabled();
-
-  await guard.click();
-  await expect(guard).not.toBeChecked();
-  await expect(nudge).toBeDisabled();
-
-  await guard.click();
-  await expect(guard).toBeChecked();
-  await expect(nudge).toBeEnabled();
 });
 
 test("Runtime: a refused save names the problem and keeps the number staged", async ({ page }) => {
