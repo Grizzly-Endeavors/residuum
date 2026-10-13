@@ -1,14 +1,16 @@
 name: Web PR Checks
 
-# The web checks, end-to-end and visual suites included, on every pull request
-# that changes the web app or how it is tested, so a stale baseline or a broken
-# spec shows up on the pull request that caused it rather than at release.
+# The web checks on every pull request that changes the web app or how it is
+# tested, so a broken spec shows up on the pull request that caused it rather
+# than at release. The visual comparisons run beside them and never fail the
+# pull request; their result is one comment, updated in place.
 on:
   pull_request:
     paths:
       - "web/**"
       - "scripts/with-playwright-container.sh"
       - "scripts/web-initial-route-size.sh"
+      - "scripts/visual-report.mjs"
       - ".github/workflows/quality-checks.yml"
       - ".github/workflows/web-pr.yml"
 
@@ -26,3 +28,53 @@ jobs:
       web: true
       rust: false
       visual: true
+
+  # Posts the result of the visual comparisons (quality-checks.yml, `web-visual`)
+  # as one comment on the pull request. The comment carries a hidden marker, so
+  # a later run finds it and edits it instead of adding another. A run whose
+  # shots all match edits an existing comment to say so and posts nothing when
+  # there is none: a pull request that changes no look has no reason to carry a
+  # comment. Posting is best effort and never fails the pull request's checks.
+  # A superseded run is cancelled and posts nothing; the run that replaces it
+  # reports.
+  visual-report:
+    name: Visual Report
+    needs: quality
+    if: ${{ !cancelled() && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: lab-runners-light
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Post the visual report
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          STATUS: ${{ needs.quality.outputs.visual_status }}
+          BODY: ${{ needs.quality.outputs.visual_body }}
+        run: |
+          marker='<!-- residuum-visual-report -->'
+          if [ -z "$STATUS" ]; then
+            if [ "$QUALITY_RESULT" = "success" ]; then
+              echo 'The visual comparisons did not run; nothing to report.'
+              exit 0
+            fi
+            BODY="$marker"$'\n\n'"### Web visual comparisons"$'\n\n'"The visual comparisons produced no result. See [the workflow run]($RUN_URL)."$'\n'
+          fi
+
+          existing=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"$marker\"))) | .id" | head -n 1)
+
+          if [ -n "$existing" ]; then
+            gh api --method PATCH "repos/$REPO/issues/comments/$existing" -f body="$BODY" > /dev/null
+            echo "Updated comment $existing."
+          elif [ "$STATUS" = "match" ]; then
+            echo 'Every shot matches and there is no comment to update; nothing to post.'
+          else
+            gh api --method POST "repos/$REPO/issues/$PR/comments" -f body="$BODY" > /dev/null
+            echo 'Posted a new comment.'
+          fi

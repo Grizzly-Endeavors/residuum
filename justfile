@@ -182,12 +182,12 @@ web-coverage *args: _web-deps
 web-e2e-fast *args: _web-e2e-browsers
     cd web && npm run e2e:fast -- {{ args }}
 
-# The whole end-to-end suite: the fast specs on this machine, the visual comparisons in the Playwright container (needs Docker). Pull requests that change web/ run it in CI too
+# The whole end-to-end suite: the fast specs on this machine, the visual comparisons in the Playwright container (needs Docker). CI runs the fast specs in its Web End-to-End jobs and the visual comparisons in a job of their own that never fails a pull request
 [group('web')]
 web-e2e *args: _web-e2e-browsers
     scripts/with-playwright-container.sh npm --prefix web run e2e -- {{ args }}
 
-# Refresh the visual baselines in the Playwright container (needs Docker). Review the changed images under web/e2e/__screenshots__ before committing them
+# Refresh the visual baselines in the Playwright container (needs Docker); `just web-e2e-update -g "<part of a shot name>"` refreshes only the matching shots. Review the changed images under web/e2e/__screenshots__ before committing them
 [group('web')]
 web-e2e-update *args: _web-deps
     scripts/with-playwright-container.sh npm --prefix web run e2e:visual -- --update-snapshots=all {{ args }}
