@@ -21,9 +21,7 @@
 // events move toward the end (a move away from the end, reader input, the
 // glide's `scrollend` or the scroller's next move of its own ends it), and the
 // browser moving a reader at the very bottom up to keep the position in range
-// as the content or the view changes size. While a finger is on the feed, or a
-// mouse button on its scrollbar, the scroller holds its own moves until the
-// press ends: moving the position under a drag cuts the drag short.
+// as the content or the view changes size.
 //
 // "The end" means the end of the content, not the end of the scrolling area.
 // A feed can reserve room below its last line (a persistent buffer, and a
@@ -156,17 +154,6 @@ export class FeedScroller {
    * End). Its scroll events move toward the end and aren't the reader's.
    */
   private gliding = false;
-  /**
-   * A finger is on the feed, or a mouse button is down on its scrollbar.
-   * Moving the position under a press would cut the reader's drag short
-   * (Chromium stops a touch drag at the first programmatic scroll), so the
-   * scroller holds its own moves until the press ends.
-   */
-  private pressing = false;
-  /** The move the scroller held off while the reader was pressing. */
-  private deferred: "pin" | "clear" | null = null;
-  /** The window the press is watched on for the button coming up. */
-  private pressView: Window | null = null;
   /** The feed was hidden when the scroller last looked: it reports no size, and no position worth judging. */
   private hidden = false;
   /**
@@ -291,10 +278,6 @@ export class FeedScroller {
     } else if (event.type === "keydown") {
       if (isEndKey(event)) this.followFromEnd();
       else if (this.keyScrollsUp(event as KeyboardEvent)) this.leave();
-    } else if (event.type === "touchstart") {
-      this.press();
-    } else if (this.onScrollbar(event as PointerEvent)) {
-      this.press((event as PointerEvent).view);
     }
   };
 
@@ -318,62 +301,10 @@ export class FeedScroller {
     return el !== null && el.scrollTop > 0 && !innerAreaScrollsFirst(target, el);
   }
 
-  /** A mouse or pen press on the feed's scrollbar, outside its client area. */
-  private onScrollbar(event: PointerEvent): boolean {
-    const el = this.el;
-    if (
-      !el ||
-      event.button !== 0 ||
-      (event.pointerType !== "mouse" && event.pointerType !== "pen")
-    ) {
-      return false;
-    }
-    const left = el.getBoundingClientRect().left + el.clientLeft;
-    return event.clientX < left || event.clientX >= left + el.clientWidth;
-  }
-
   /** The reader scrolled up: stop following at once, however near the end they still are. */
   private leave(): void {
     this.following = false;
     this.refreshPill();
-  }
-
-  private press(view: Window | null = null): void {
-    this.pressing = true;
-    if (view !== null && this.pressView === null) {
-      this.pressView = view;
-      view.addEventListener("pointerup", this.onRelease);
-      view.addEventListener("pointercancel", this.onRelease);
-      view.addEventListener("blur", this.onRelease);
-    }
-  }
-
-  private readonly onRelease = (event: Event): void => {
-    // A finger lifted while another stays down leaves the press on.
-    if ("touches" in event && (event as TouchEvent).touches.length > 0) return;
-    this.endPress();
-  };
-
-  /** The press is over: do what the scroller held off, if the reader still follows. */
-  private endPress(): void {
-    this.stopWatchingPress();
-    if (!this.pressing) return;
-    this.pressing = false;
-    const deferred = this.deferred;
-    this.deferred = null;
-    this.takeInScroll();
-    if (!this.following) return;
-    if (deferred === "pin") this.pinToBottom();
-    else if (deferred === "clear") this.keepLastLineClear();
-  }
-
-  private stopWatchingPress(): void {
-    const view = this.pressView;
-    if (view === null) return;
-    this.pressView = null;
-    view.removeEventListener("pointerup", this.onRelease);
-    view.removeEventListener("pointercancel", this.onRelease);
-    view.removeEventListener("blur", this.onRelease);
   }
 
   /** A glide that runs to its end, or is cut short, is over. */
@@ -439,8 +370,6 @@ export class FeedScroller {
     for (const type of READER_INPUT_EVENTS) {
       el.addEventListener(type, this.onReaderInput, { passive: true });
     }
-    el.addEventListener("touchend", this.onRelease, { passive: true });
-    el.addEventListener("touchcancel", this.onRelease, { passive: true });
     // Capture: before the control's own click handler changes what is shown.
     el.addEventListener("click", this.onPress, true);
     this.hidden = isHidden(el);
@@ -453,13 +382,8 @@ export class FeedScroller {
       el.removeEventListener("scroll", this.onScroll);
       el.removeEventListener("scrollend", this.onScrollEnd);
       for (const type of READER_INPUT_EVENTS) el.removeEventListener(type, this.onReaderInput);
-      el.removeEventListener("touchend", this.onRelease);
-      el.removeEventListener("touchcancel", this.onRelease);
       el.removeEventListener("click", this.onPress, true);
       this.letGoOfPlace();
-      this.stopWatchingPress();
-      this.pressing = false;
-      this.deferred = null;
       this.gliding = false;
       if (this.el === el) {
         this.el = null;
@@ -482,7 +406,7 @@ export class FeedScroller {
   contentChanged(force = false, arrived = false): void {
     if (force) {
       this.following = true;
-      this.pinToBottom(true);
+      this.pinToBottom();
       return;
     }
     this.takeInScroll();
@@ -552,17 +476,10 @@ export class FeedScroller {
     this.unseen = false;
   }
 
-  /**
-   * Put the reader at the true bottom, the reserved room included. A press
-   * on the feed holds it until the press ends, unless it is `force`d.
-   */
-  private pinToBottom(force = false): void {
+  /** Put the reader at the true bottom, the reserved room included. */
+  private pinToBottom(): void {
     const el = this.el;
     if (!el || isHidden(el)) return;
-    if (this.pressing && !force) {
-      this.deferred = "pin";
-      return;
-    }
     // Instant, not smooth: a smooth scroll still in flight when more content
     // lands stops short of the new bottom.
     this.write(el.scrollHeight);
@@ -618,12 +535,7 @@ export class FeedScroller {
     const el = this.el;
     if (!el) return;
     const reach = this.reach();
-    if (reach <= 0) return;
-    if (this.pressing) {
-      this.deferred ??= "clear";
-      return;
-    }
-    this.write(el.scrollTop + reach);
+    if (reach > 0) this.write(el.scrollTop + reach);
   }
 
   /** The pill, from whether the reader follows and how far from the end they are. */

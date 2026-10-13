@@ -461,22 +461,7 @@ describe("FeedScroller", () => {
     });
   });
 
-  describe("a finger on the feed", () => {
-    it("isn't moved under while it presses, and the reader is caught up once it lifts", () => {
-      const { feed, observer, scroller } = attached();
-      feed.fire("touchstart");
-      // A piece of the reply lands while the reader's finger rests on the feed.
-      feed.geometry.scrollHeight = 2025;
-      observer.notify();
-      scroller.contentChanged();
-      expect(feed.scrollTo).not.toHaveBeenCalled();
-
-      // A tap: the finger lifts without having moved the feed.
-      feed.fire("touchend", { touches: [] });
-      expect(feed.scrollTo).toHaveBeenCalledWith({ top: 2025, behavior: "instant" });
-      expect(scroller.isFollowing).toBe(true);
-    });
-
+  describe("a flick", () => {
     it("counts the momentum after a flick as the reader's", () => {
       const { feed, observer, scroller } = attached();
       feed.fire("touchstart");
@@ -509,15 +494,6 @@ describe("FeedScroller", () => {
       feed.geometry.scrollHeight = 2025;
       observer.notify();
       expect(feed.geometry.scrollTop).toBe(2025);
-    });
-
-    it("stays down while another finger is still on the feed", () => {
-      const { feed, observer } = attached();
-      feed.fire("touchstart");
-      feed.fire("touchend", { touches: [{}] });
-      feed.geometry.scrollHeight = 2025;
-      observer.notify();
-      expect(feed.scrollTo).not.toHaveBeenCalled();
     });
   });
 
