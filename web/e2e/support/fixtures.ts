@@ -227,7 +227,11 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
       let pageAt = 0;
       /** Run the page's timers due by `ms`, in order and each at its time, and stop its clock there. */
       const pageClockTo = async (ms: number): Promise<void> => {
-        if (ms < pageAt) return;
+        if (ms < pageAt) {
+          throw new Error(
+            `the page's clock is at ${pageAt} ms and can't move back to ${ms} ms; the mock's time and the page's have come apart`,
+          );
+        }
         await context.clock.runFor(ms - pageAt);
         pageAt = ms;
         pageClock.fixedAt = ms;

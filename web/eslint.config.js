@@ -7,6 +7,14 @@ import svelteParser from "svelte-eslint-parser";
 import prettier from "eslint-config-prettier";
 import globals from "globals";
 
+// Shared by both end-to-end blocks below: flat config replaces a rule's
+// options instead of merging them, so each block needs the whole entry.
+const NO_WAIT_FOR_TIMEOUT = {
+  property: "waitForTimeout",
+  message:
+    "Wait for the condition the next step depends on (a web-first assertion, expect.poll, or a helper in e2e/support), not for time to pass.",
+};
+
 export default tseslint.config(
   // ── Global ignores ──────────────────────────────────────────────────
   {
@@ -107,14 +115,7 @@ export default tseslint.config(
   {
     files: ["e2e/**/*.ts"],
     rules: {
-      "no-restricted-properties": [
-        "error",
-        {
-          property: "waitForTimeout",
-          message:
-            "Wait for the condition the next step depends on (a web-first assertion, expect.poll, or a helper in e2e/support), not for time to pass.",
-        },
-      ],
+      "no-restricted-properties": ["error", NO_WAIT_FOR_TIMEOUT],
       "no-restricted-syntax": [
         "error",
         {
@@ -135,11 +136,7 @@ export default tseslint.config(
     rules: {
       "no-restricted-properties": [
         "error",
-        {
-          property: "waitForTimeout",
-          message:
-            "Wait for the condition the next step depends on (a web-first assertion, expect.poll, or a helper in e2e/support), not for time to pass.",
-        },
+        NO_WAIT_FOR_TIMEOUT,
         {
           property: "clock",
           message:
@@ -170,7 +167,8 @@ export default tseslint.config(
       "no-restricted-syntax": [
         "error",
         {
-          selector: "Property[key.name='shouldAdvanceTime'], Property[key.value='shouldAdvanceTime']",
+          selector:
+            "Property[key.name='shouldAdvanceTime'], Property[key.value='shouldAdvanceTime']",
           message:
             "Don't let real time advance fake timers. Use plain `vi.useFakeTimers()` and step the clock with `vi.advanceTimersByTimeAsync`, or wait with `waitFor` from src/test/wait.ts.",
         },
