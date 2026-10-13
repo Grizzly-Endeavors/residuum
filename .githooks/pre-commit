@@ -4,7 +4,7 @@
 # files, audits the dependencies when a manifest changes, and blocks a few
 # things outright from entering the history.
 #
-# The slow checks (clippy, the whole test suite, the source scans, the
+# The slow checks (clippy, the whole test suite with its source scans, the
 # generated-types check, and the web lint, type check and tests) run once per
 # push in pre-push. They recompile the crate or the web app, which costs minutes
 # on every commit and pushes authors to commit less often or to route around the
@@ -23,17 +23,6 @@ fail() {
     echo -e "${RED}$1${NC}" >&2
     exit 1
 }
-
-# In a linked worktree git exports GIT_DIR and GIT_INDEX_FILE to this hook, and
-# a tool that runs git in some other repository inherits them and acts on this
-# one: cargo deny's advisory database update ran `git reset --hard FETCH_HEAD`
-# against the worktree's repository and checked it out into the database's
-# directory. The hook's own git commands find the repository from the working
-# directory, so GIT_DIR goes. GIT_INDEX_FILE stays for them, because
-# `git commit <paths>` stages into a temporary index, and every other tool runs
-# without it.
-unset GIT_DIR GIT_WORK_TREE
-cargo() { env -u GIT_INDEX_FILE cargo "$@"; }
 
 # Only the paths that were actually staged. Captured before formatting, because
 # cargo fmt rewrites the whole tree and we need to know what to put back.
@@ -55,6 +44,28 @@ done)"
 # The CI log parser behind `just ci-failures`, its script and its fixtures.
 STAGED_CI_FAILURES="$(git diff --cached --name-only --diff-filter=ACDMR -- 'scripts/ci-failures*')"
 
+# Git hands hooks its repository variables. In a linked worktree they point at
+# the worktree, and cargo-deny's advisory-db refresh inherits them: its
+# `git reset --hard FETCH_HEAD` ran against the worktree, not the advisory-db
+# clone, and moved the committing agent's branch mid-commit. The hook keeps the
+# values for its own git calls and runs every other process without them.
+GIT_HOOK_ENV=()
+for git_var in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR; do
+    if [ -n "${!git_var+set}" ]; then
+        GIT_HOOK_ENV+=("$git_var=${!git_var}")
+        unset "$git_var"
+    fi
+done
+
+# Runs a command with git's repository variables restored.
+with_git_env() {
+    env ${GIT_HOOK_ENV[@]+"${GIT_HOOK_ENV[@]}"} "$@"
+}
+
+if [ -z "$STAGED_RUST" ] && [ -z "$STAGED_MANIFEST" ] && [ -z "$STAGED_WEB_FORMAT" ] && [ -z "$STAGED_CI_FAILURES" ]; then
+    exit 0
+fi
+
 # Re-stage a formatter's edits to files that were already staged.
 #
 # `git add -u` is the obvious thing here and it is wrong: cargo fmt rewrites
@@ -65,7 +76,7 @@ restage() {
     [ -n "$1" ] || return 0
     while IFS= read -r file; do
         # A deleted file has nothing for a formatter to rewrite.
-        [ -n "$file" ] && [ -e "$file" ] && git add -- "$file"
+        [ -n "$file" ] && [ -e "$file" ] && with_git_env git add -- "$file"
     done <<<"$1"
 }
 
@@ -105,7 +116,7 @@ fi
 
 # Content gates on the staged diff. These catch the two things clippy cannot:
 # a dbg! that survives a rebase, and a suppression style that never goes stale.
-DIFF="$(git diff --cached --diff-filter=ACM -- '*.rs')"
+DIFF="$(with_git_env git diff --cached --diff-filter=ACM -- '*.rs')"
 
 if grep -qE '^\+.*\bdbg!\(' <<<"$DIFF"; then
     echo -e "${RED}ERROR: Found dbg!() in staged changes.${NC}" >&2
@@ -125,7 +136,7 @@ fi
 # wait instead. The commit that creates the file is the one that sets it.
 BACKLOG=src/testing/wall_clock_backlog.rs
 BACKLOG_GROWTH=""
-git cat-file -e "HEAD:$BACKLOG" 2>/dev/null && BACKLOG_GROWTH="$(git diff --cached -U0 -- "$BACKLOG" | awk '
+with_git_env git cat-file -e "HEAD:$BACKLOG" 2>/dev/null && BACKLOG_GROWTH="$(with_git_env git diff --cached -U0 -- "$BACKLOG" | awk '
     /^-[^-]/ && match($0, /"[^"]+\.rs"/) {
         path = substr($0, RSTART, RLENGTH)
         count = $0; sub(/.*"[^"]+\.rs", */, "", count); sub(/[^0-9].*/, "", count)
@@ -149,4 +160,4 @@ if [ -n "$BACKLOG_GROWTH" ]; then
     exit 1
 fi
 
-echo -e "${GREEN}Pre-commit checks passed. Clippy, the tests, the source scans, the generated types and the web checks run on push.${NC}"
+echo -e "${GREEN}Pre-commit checks passed. Clippy, the tests (with the source scans), the generated types and the web checks run on push.${NC}"
