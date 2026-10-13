@@ -287,6 +287,26 @@ test.describe("old URLs redirect to where they lead now", () => {
   }
 });
 
+test("an address the app doesn't have shows Not Found inside the shell, with the way back", async ({
+  page,
+  isMobile,
+}) => {
+  await page.goto("/agent/atlas/old-notes");
+  await expect(page.getByRole("heading", { name: "Page not found", level: 1 })).toBeVisible();
+  await expect(page.getByText("/agent/atlas/old-notes", { exact: true })).toBeVisible();
+  expect(address(page)).toBe("/agent/atlas/old-notes");
+  await expect(page).toHaveTitle("Page not found · Residuum");
+  // The shell's own navigation stays in reach.
+  await expect(
+    page.getByRole("navigation", { name: isMobile ? "Main" : "Places and agents" }),
+  ).toBeVisible();
+  await expectNoAxeViolations(page);
+
+  await page.getByRole("button", { name: "Go to Home" }).click();
+  await expect(page.getByRole("heading", { name: "Home", level: 1 })).toBeVisible();
+  expect(address(page)).toBe("/home");
+});
+
 test("a redirect replaces the old URL in the history", async ({ page }) => {
   await page.goto("/home");
   await page.goto("/agent/atlas/scheduled");

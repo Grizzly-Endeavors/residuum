@@ -258,6 +258,32 @@ async fn a_relay_without_the_endpoint_is_reported_and_retried() {
 }
 
 #[tokio::test]
+async fn a_token_the_relay_refuses_is_reported_as_refused() {
+    let wrong_token = FakeRelayConfig {
+        token: "rst_someone_else".to_string(),
+        ..FakeRelayConfig::default()
+    };
+    let forbidden = FakeRelayConfig {
+        v2: V2Mode::Respond(403),
+        ..FakeRelayConfig::default()
+    };
+    for config in [wrong_token, forbidden] {
+        let relay = FakeRelay::start(config).await;
+        let (h, _outputs) = handler(None);
+        let mut running = start(&relay, &h);
+        wait::watch_until(
+            "the tunnel to report the refusal",
+            &mut running.status,
+            |s| *s == TunnelStatus::Refused,
+        )
+        .await;
+        assert_eq!(relay.v2_connections(), 0);
+        assert_eq!(h.unsupported.load(Ordering::SeqCst), 0);
+        stop(running).await;
+    }
+}
+
+#[tokio::test]
 async fn a_relay_url_the_client_cannot_register_at_never_connects() {
     let relay = FakeRelay::start(FakeRelayConfig::default()).await;
     let (h, _outputs) = handler(None);

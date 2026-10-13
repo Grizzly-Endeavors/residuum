@@ -6,6 +6,9 @@ import type { Place } from "./routes";
 
 export const APP_NAME = "Residuum";
 
+/** What the Not Found place is called, in its header and the tab. */
+export const NOT_FOUND_TITLE = "Page not found";
+
 export interface TabTitleInput {
   /** The agent or place the page is on, or null on Home. */
   subject: string | null;
@@ -53,6 +56,8 @@ export function placeSubject(place: Place, agentName: (agent: string) => string)
       return "Workbench";
     case "shared-files":
       return "Shared files";
+    case "not-found":
+      return NOT_FOUND_TITLE;
     case "chat":
     case "activity":
     case "schedule":

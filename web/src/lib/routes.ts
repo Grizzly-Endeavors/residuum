@@ -14,8 +14,9 @@
 //                                                           the context panel
 //   ?settings=<agent | _all>[/<section>]                    the Settings modal
 //
-// Paths that older versions used redirect to these. Nothing here touches the
-// browser: the router applies what this module reads and formats.
+// Paths that older versions used redirect to these, and any other path is the
+// Not Found place, which keeps the address as it was typed. Nothing here
+// touches the browser: the router applies what this module reads and formats.
 
 import { isAgentSlug } from "./agent-name";
 import {
@@ -44,7 +45,9 @@ export type Place =
   | { kind: "inbox"; agent: string | null; tab: InboxTab; item: InboxItemRef | null }
   | { kind: AgentPlaceKind; agent: string }
   | { kind: "workbench"; artifact: string | null }
-  | { kind: "shared-files" };
+  | { kind: "shared-files" }
+  /** An address that leads nowhere in the app. `path` is the address's path as it arrived, still encoded. */
+  | { kind: "not-found"; path: string };
 
 export type AgentPlace = Extract<Place, { kind: AgentPlaceKind }>;
 
@@ -331,8 +334,8 @@ function parsePath(segments: string[], query: URLSearchParams): PathResult | nul
 /**
  * Read a URL into a location. Old paths are read as the place they redirect to;
  * the ones that resolve under the last-used agent wait (`needsLastUsed`) until
- * it is known. A panel that can't show on its place is dropped, and an unknown
- * path is Home.
+ * it is known. A panel that can't show on its place is dropped, and a path the
+ * app doesn't have, or can't read, is the Not Found place at that path.
  */
 export function parseUrl(pathname: string, search: string, context: ParseContext): ParsedUrl {
   const query = new URLSearchParams(search);
@@ -344,7 +347,9 @@ export function parseUrl(pathname: string, search: string, context: ParseContext
     if (segment === null) readable = false;
     else segments.push(segment);
   }
-  let path: PathResult = (readable ? parsePath(segments, query) : null) ?? { place: HOME };
+  let path: PathResult = (readable ? parsePath(segments, query) : null) ?? {
+    place: { kind: "not-found", path: pathname },
+  };
 
   if (path.underLastUsed !== undefined) {
     if (context.lastUsed === null) {
@@ -476,6 +481,8 @@ function formatPlace(place: Place): { path: string; params: string[] } {
     }
     case "shared-files":
       return { path: "/team/files", params: [] };
+    case "not-found":
+      return { path: place.path, params: [] };
     case "chat":
       return { path: `/agent/${encodeURIComponent(place.agent)}`, params: [] };
     case "activity":

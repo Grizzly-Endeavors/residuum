@@ -23,6 +23,7 @@ use serde_json::json;
 
 use super::remote::{is_navigation, passes_cross_site_rule, remote_context};
 use super::{DevicePairing, Surface};
+use crate::gateway::browser_landing::{self, Landing};
 use crate::workbench::forward::ArtifactsOrigin;
 
 /// The pairing page's path on the UI host.
@@ -150,7 +151,7 @@ fn unauthorized(gate: &GateState, req: &Request) -> Response {
     if is_navigation(req.method(), req.headers()) {
         return match gate.surface {
             Surface::Ui => Redirect::to(PAIRING_PAGE_PATH).into_response(),
-            Surface::Workbench => workbench_navigation_redirect(gate, req.uri().path()),
+            Surface::Workbench => workbench_navigation_redirect(gate, req),
         };
     }
     tracing::debug!(
@@ -173,23 +174,33 @@ fn unauthorized(gate: &GateState, req: &Request) -> Response {
 
 /// An artifact opened directly on the workbench host goes to the same artifact
 /// in the Residuum app, which opens it through the handoff once the browser is
-/// paired. Without a known app address there is nowhere to send it.
-fn workbench_navigation_redirect(gate: &GateState, path: &str) -> Response {
-    let Some(ui_origin) = gate.pairing.origin_of(Surface::Ui) else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            "Open this artifact from the Workbench in Residuum.",
-        )
-            .into_response();
-    };
-    let artifact = path
+/// paired. A frame can't be sent there, and without a known app address there
+/// is nowhere to send a tab, so both get the fallback page.
+fn workbench_navigation_redirect(gate: &GateState, req: &Request) -> Response {
+    let ui_origin = gate.pairing.origin_of(Surface::Ui);
+    let artifact = req
+        .uri()
+        .path()
         .trim_start_matches('/')
         .split('/')
         .next()
         .filter(|name| !name.is_empty() && crate::workbench::is_valid_artifact_name(name));
     let target = match artifact {
-        Some(name) => format!("{ui_origin}/team/workbench/{name}"),
-        None => format!("{ui_origin}/team/workbench"),
+        Some(name) => format!("/team/workbench/{name}"),
+        None => "/team/workbench".to_string(),
     };
-    Redirect::to(&target).into_response()
+    if let Some(ui_origin) = &ui_origin
+        && browser_landing::is_top_level_navigation(req.method(), req.headers())
+    {
+        return browser_landing::redirect_to_app_origin(ui_origin, &target);
+    }
+    let link = ui_origin.map(|origin| format!("{origin}{target}"));
+    browser_landing::fallback_page(
+        StatusCode::UNAUTHORIZED,
+        &Landing::new(
+            "Open this from Residuum",
+            "This artifact opens from the Workbench in Residuum, once this browser is paired with it.",
+        )
+        .with_app_link(link.as_deref(), "Open the Workbench"),
+    )
 }

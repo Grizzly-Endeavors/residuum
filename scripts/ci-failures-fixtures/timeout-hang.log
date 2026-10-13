@@ -1,0 +1,13 @@
+2026-10-10T18:21:24.3271548Z ##[group]Run cargo test --quiet
+2026-10-10T18:21:24.3288112Z shell: /usr/bin/bash -e {0}
+2026-10-10T18:21:24.3288512Z ##[endgroup]
+2026-10-10T18:30:17.7946590Z running 4267 tests
+2026-10-10T18:30:50.7868383Z gateway::post_turn::tests::observe_worker_keeps_messages_that_arrive_during_a_cycle --- FAILED
+2026-10-10T18:30:50.9283963Z gateway::post_turn::tests::forced_observe_lock_waits_for_the_background_cycle --- FAILED
+2026-10-10T18:30:52.0188959Z gateway::post_turn::tests::observe_worker_runs_off_loop_and_coalesces_into_one_follow_up --- FAILED
+2026-10-10T18:31:07.7640566Z hub::host::tests::main_conversation::a_background_turn_is_announced_with_its_visibility_live_and_in_history --- FAILED
+2026-10-10T18:31:20.4775752Z ...................................................test background::runtime::tests::a_run_waiting_on_the_concurrency_permit_shows_as_queued has been running for over 60 seconds
+2026-10-10T18:31:25.3583915Z background::runtime::tests::a_run_waiting_on_the_concurrency_permit_shows_as_queued --- FAILED
+2026-10-10T18:32:19.9664020Z error: test failed, to rerun pass `--lib`
+2026-10-10T18:32:21.0171787Z ##[error]Process completed with exit code 101.
+2026-10-10T18:35:32.0599822Z Post job cleanup.

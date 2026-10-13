@@ -23,6 +23,12 @@ test.describe("shell", { tag: "@visual" }, () => {
     await shellScreenshot(page, "shell-chat");
   });
 
+  test("at an address the app doesn't have", async ({ page }) => {
+    await page.goto("/agent/atlas/old-notes");
+    await expect(page.getByRole("heading", { name: "Page not found", level: 1 })).toBeVisible();
+    await shellScreenshot(page, "shell-not-found");
+  });
+
   test("with the hub out of reach", async ({ page, mock }) => {
     await page.goto("/agent/atlas/activity");
     await expect(page.getByRole("heading", { name: /^Running now/ })).toBeVisible();

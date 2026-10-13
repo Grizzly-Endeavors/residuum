@@ -6,6 +6,7 @@
   import { fileSourceFor } from "../places/files/file-source";
   import Home from "../places/home/Home.svelte";
   import Inbox from "../places/inbox/Inbox.svelte";
+  import NotFound from "../places/not-found/NotFound.svelte";
   import Schedule from "../places/schedule/Schedule.svelte";
   import Workbench from "../places/workbench/Workbench.svelte";
   import PlaceHeader from "./PlaceHeader.svelte";
@@ -13,7 +14,7 @@
   import type { ShellActions } from "./shell-actions";
 
   // The main region's place: Home, Inbox, an agent's Chat, Activity, Schedule
-  // or Files, the Workbench, or Shared files.
+  // or Files, the Workbench, Shared files, or Not Found.
 
   let { actions }: { actions: ShellActions } = $props();
 
@@ -48,4 +49,6 @@
   {/key}
 {:else if place.kind === "workbench"}
   <Workbench artifact={place.artifact} />
+{:else if place.kind === "not-found"}
+  <NotFound path={place.path} />
 {/if}
