@@ -28,8 +28,10 @@ STAGED_MANIFEST="$(git diff --cached --name-only --diff-filter=ACM -- '*.toml' '
 # config files, the lockfile. A deletion counts too, since the file may still be
 # imported.
 STAGED_WEB="$(git diff --cached --name-only --diff-filter=ACDMR -- 'web/')"
+# The CI log parser behind `just ci-failures`, its script and its fixtures.
+STAGED_CI_FAILURES="$(git diff --cached --name-only --diff-filter=ACDMR -- 'scripts/ci-failures*')"
 
-if [ -z "$STAGED_RUST" ] && [ -z "$STAGED_MANIFEST" ] && [ -z "$STAGED_WEB" ]; then
+if [ -z "$STAGED_RUST" ] && [ -z "$STAGED_MANIFEST" ] && [ -z "$STAGED_WEB" ] && [ -z "$STAGED_CI_FAILURES" ]; then
     exit 0
 fi
 
@@ -106,6 +108,11 @@ if [ -n "$STAGED_WEB" ]; then
 
     echo "Testing web..."
     (cd web && npm test) || fail "ERROR: web unit tests failed."
+fi
+
+if [ -n "$STAGED_CI_FAILURES" ]; then
+    echo "Checking the CI log parser..."
+    scripts/ci-failures-test.sh || fail "ERROR: the ci-failures log parser no longer matches a fixture. The fixture named above is the one that differs."
 fi
 
 # Content gates on the staged diff. These catch the two things clippy cannot:
