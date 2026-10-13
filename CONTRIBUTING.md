@@ -72,13 +72,12 @@ The git hooks split the checks between commit and push: a commit runs the quick 
 On every commit (pre-commit), on what is staged:
 - `cargo fmt` — formatting (auto-applied and staged)
 - Prettier on the staged web files (auto-applied and staged)
-- `cargo deny check` — dependency audit, when Rust or a manifest is staged
+- `cargo deny check` — dependency audit, when a manifest (`*.toml`, `Cargo.lock`) is staged
 - `scripts/ci-failures-test.sh` — the `just ci-failures` log parser against its fixtures, when a `scripts/ci-failures*` file is staged
 - No `dbg!()` or `#[allow(...)]` in the staged diff, and no growth of the wall-clock backlog
 
 On every push (pre-push), against the pushed branch merged with the current `main` (the hook fetches `origin/main` and, when the branch is behind it, builds the merge in a temporary worktree; a conflict fails the push until you merge `main` into your branch):
-- When the pushed commits change Rust, a manifest, `Cargo.lock`, or `assets/`: `cargo clippy` (pedantic linting with strict denials), the whole test suite, which includes the source scans (`testing::source_scan`, see [Waiting in tests](#waiting-in-tests))
-- When they change Rust, a manifest, `Cargo.lock`, `assets/`, or the generated web types in `web/src/lib/generated/`: `scripts/check-generated-types.sh`, which checks that the web app's TypeScript protocol types match the Rust types
+- When the pushed commits change what the Rust checks run on (the paths `.github/workflows/rust-pr.yml` triggers on, such as `src/`, `tests/`, `assets/`, the Cargo and lint configuration, and the generated web types in `web/src/lib/generated/`): `cargo clippy` (pedantic linting with strict denials), the whole test suite, which includes the source scans (`testing::source_scan`, see [Waiting in tests](#waiting-in-tests)), and `scripts/check-generated-types.sh`, which checks that the web app's TypeScript protocol types match the Rust types
 - When they change `web/`: ESLint and the style lint (Stylelint), `svelte-check` (warnings fail it), and the web unit and component tests (Vitest)
 
 Every push check runs even after one fails, and the hook ends with a summary of what failed. Do not bypass the hooks: `--no-verify` is not allowed on `git commit` or `git push`. If a hook fails, fix the issue and try again.
