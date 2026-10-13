@@ -20,7 +20,7 @@ The device gate (`pairing::device_gate`) sits in front of the main gateway route
 
 The pre-auth routes on the UI host are the pairing page (`GET /pair`), the app's static files it loads (`/assets/...`, `/icons/...`, `/favicon.svg`, `/manifest.webmanifest`) and the pairing API: `GET /api/hub/pairing/state` and `POST /api/hub/pairing/requests`, `.../requests/poll`, `.../redeem` and `.../recovery`. On the workbench host they are `GET /_handoff` and `POST /api/hub/pairing/handoff`. Nothing else answers before pairing, including `/sw.js`, `/mcp-catalog.json` and webhooks.
 
-On the workbench host an unpaired navigation to an artifact is redirected to the same artifact in the Residuum app (`{ui origin}/team/workbench/{artifact}`), which opens it through the handoff once the browser is paired. The artifacts listener hands `/api` requests to the main router in-process, and the main router's gate skips a request the workbench listener already gated.
+On the workbench host an unpaired navigation to an artifact is redirected to the same artifact in the Residuum app (`{ui origin}/team/workbench/{artifact}`), which opens it through the handoff once the browser is paired. A frame, or any navigation while the UI origin isn't known, gets `401` with the shared fallback page (see [Browser landings](hub-http.md#browser-landings)) saying the artifact opens from the Workbench, linking there when it can. When the artifacts listener couldn't start, the workbench host sends a tab to the Workbench in the app (which shows why) and answers anything else `503` with the reason. The artifacts listener hands `/api` requests to the main router in-process, and the main router's gate skips a request the workbench listener already gated.
 
 ## The credential
 

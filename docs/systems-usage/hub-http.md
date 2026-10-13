@@ -136,7 +136,22 @@ Resolution answers before the agent's router sees the request:
 | Unknown agent | `404 { "error": "no agent named '<name>'" }` |
 | Agent not `running` (on a live route) | `409 { "error": "<name> is <state>", "state": "<state>" }` |
 
-`POST /webhook/{agent}/{name}` is handled by that agent's `/webhook/{name}` route under the same rules.
+`POST /webhook/{agent}/{name}` is handled by that agent's `/webhook/{name}` route under the same rules. Any other method answers `405` with `Allow: POST` and `{ "error" }`, and `/webhook` or `/webhook/{agent}` with no webhook name answers `404` with `{ "error" }` giving the address's shape, without asking the agent. A browser opening any `/webhook` address is redirected instead (see [Browser landings](#browser-landings)).
+
+### Browser landings
+
+People open some of these addresses in a browser tab: a file link from a chat, an inbox attachment, a webhook address copied from Settings. When such an address can't serve what was asked, a browser opening it in a tab (`Sec-Fetch-Dest: document`, or no fetch metadata and an `Accept` asking for HTML) is redirected (`303`, `Cache-Control: no-store`) to the place in the web app that shows what happened, with a `notice` code the app turns into a toast (`src/gateway/browser_landing.rs`; the words are in `web/src/lib/landing-notices.ts`, so a link can't put its own text in front of the user). A script's `fetch` or an image or frame load keeps its JSON error.
+
+| Address | What happened | A tab goes to |
+|---------|---------------|---------------|
+| `/api/agents/{name}/files/{id}` | The token link expired (an hour after it was sent, or the agent restarted), or its file is gone | `/agent/{name}?notice=file-link-expired`; a fetch gets `404 { "error" }` |
+| `/api/agents/{name}/files/workspace?path=...` | The file is missing, unreadable, blocked from links or outside the workspace | `/agent/{name}/files?panel=file:<path>`, where the file panel shows what became of it; a fetch gets `{ "error" }` with `404`, `403` or `500` |
+| `/api/agents/{name}/inbox/{id}/attachments/{index}` | The item or its attachment is gone | `/inbox?item={name}:{id}&notice=inbox-attachment-missing`; a fetch gets `404 { "error" }` |
+| `/webhook`, `/webhook/{agent}`, `/webhook/{agent}/{name}` | Any `GET` from a tab | `/agent/{agent}?settings={agent}/connections&notice=webhook-address` (the agent's webhooks), or `/home?notice=webhook-address` when the address names no valid agent |
+| Any `/api/agents/{name}/...` | The agent isn't running | `/agent/{name}?notice=agent-stopped`, whose page shows its state and Start |
+| Any `/api/agents/{name}/...` | There's no such agent | `/agent/{name}` (the app says there's no agent by that name), or `/home` for a name that can't be an agent's |
+
+The redirects name app paths on the same host. The artifacts listener, which serves `/api` from this router, points them at the web app's origin instead (see [workbench.md](workbench.md#the-artifacts-listener)). Where a host has no app to hand off to, a navigation gets one shared page instead (`browser_landing::fallback_page`): the wordmark, a title, plain words, and an Open link when the app's address is known, styled from the app's own design tokens (read from `web/src/styles/tokens.css` at build time). Another origin can't load the app's bundled fonts, so it falls back to the system UI font. The artifacts listener, the workbench host's device gate and the Residuum Cloud instance host use it.
 
 ### Sessions started by artifacts
 

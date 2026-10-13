@@ -9,6 +9,7 @@
 // The router also publishes the bound agent, the agent whose connection the
 // app keeps open (see `viewed-agent.ts`).
 
+import { landingNotices } from "./landing-notices";
 import { notifications } from "./notifications.svelte";
 import { readLastAgent, rememberLastAgent } from "./paths";
 import {
@@ -558,8 +559,14 @@ class Router {
     if (await this.guard.ask(losses)) await this.traverse(-1);
   }
 
+  /** The address bar, with the notices a link the backend redirected here carries. */
   private readUrl(): ParsedUrl {
-    return parseUrl(window.location.pathname, window.location.search, { lastUsed: this.lastUsed });
+    const { search } = window.location;
+    const parsed = parseUrl(window.location.pathname, search, { lastUsed: this.lastUsed });
+    return {
+      ...parsed,
+      notices: [...parsed.notices, ...landingNotices(search, parsed.location)],
+    };
   }
 
   /**

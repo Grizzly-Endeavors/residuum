@@ -183,6 +183,7 @@ web/
 │       ├── agent-lifecycle.ts    # Which of Start, Stop and Restart apply to an agent in a state
 │       ├── routes.ts             # URL <-> location: places, the panel and settings parameters, redirects from URLs the app no longer uses, corrections
 │       ├── router.svelte.ts      # Current location; push/replace, closing by going back, overlay entries, the unsaved-edit guard
+│       ├── landing-notices.ts    # The words for the notice codes the backend adds when it redirects a link it couldn't serve into the app
 │       ├── history-entry.ts      # The marks the router keeps in history.state
 │       ├── navigation-guard.ts   # Checks views register for unsaved work, and how the user is asked
 │       ├── settings-sections.ts  # Settings section registry: ids, scopes, labels, groups, the section names of earlier settings URLs, config keys
@@ -322,6 +323,8 @@ Any place takes two more parameters:
 
 - `panel=session:<agent>:<runId>`, `panel=new-session:<agent>`, `panel=file:<path>` or `panel=size` is the context panel. A session shows on the viewed agent's places (for that agent) and on the Workbench, a new session on the viewed agent's places (for that agent), a file on agent places and Shared files, and the conversation size on agent places. Anywhere else the router removes it.
 - `settings=<agent | _all>[/<section>]` is the Settings modal. `_all` is the install-wide scope. Without a section, the frame opens the scope's default section, or on phones its section list. Section ids are in `lib/settings-sections.ts`.
+
+**Links the backend sends here.** When a browser opens an address the backend can't serve (an expired file link, a missing inbox attachment or workbench artifact, a webhook address, a link to a stopped agent), the backend redirects it into the app with `notice=<code>` (see Browser landings in `docs/systems-usage/hub-http.md`). The router turns each code into a notice toast, also kept in Recent notifications, with the words in `lib/landing-notices.ts`, and drops the parameter when it writes the canonical address, so the toast shows once and not again on Back or reload. An unknown code is ignored, since only a hand-written link carries one. The codes are `artifact-missing` (with `artifact=<name>` when the name could be an artifact's), `artifact-file-missing`, `file-link-expired`, `agent-stopped`, `inbox-attachment-missing` and `webhook-address`; a new one is added to `AppNotice` in `src/gateway/browser_landing.rs` and to `lib/landing-notices.ts` together.
 
 URLs the app no longer uses redirect by replace: `/team`, `/agent/:name/sessions/:runId`, `/agent/:name/workspace`, `/agent/:name/scheduled`, `/agent/:name/settings[/:section]`, `/team/settings[/:section]`, `/workbench[/…]`, and the unprefixed `/settings`, `/scheduled`, `/sessions/:runId` and `/notification/<id>`, which resolve under the last-used agent once the agent list is known. The section names of those settings URLs map to a scope and section (`lib/settings-sections.ts`). A URL the router can't read, an agent or artifact that doesn't exist, and a panel a place can't show are corrected by replace, with a toast where the user should know.
 
