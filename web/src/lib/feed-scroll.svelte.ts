@@ -152,8 +152,16 @@ export class FeedScroller {
    * first would undo their move, as a streamed reply arriving every few
    * frames made it do. A position that differs from the one the scroller last
    * saw or set is someone else's move, judged before the scroller acts.
+   *
+   * The page calls it too, just before it changes the feed's items, so that
+   * a move is judged against the content it was made over. Seen on a phone
+   * as the chat opened: the browser moved the scroll position back 4px as
+   * the page settled around the feed, and an older episode was prepended
+   * before that move's event arrived. Judged against the episode, the
+   * browser's 4px read as the reader leaving the end by the episode's whole
+   * height, and the feed stayed there.
    */
-  private catchUpWithScroll(): void {
+  catchUpWithScroll(): void {
     const top = this.el?.scrollTop;
     if (top === undefined || this.seenTop === null || Math.abs(top - this.seenTop) <= 1) return;
     this.seenTop = top;
