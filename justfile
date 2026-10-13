@@ -187,7 +187,7 @@ web-e2e-fast *args: _web-e2e-browsers
 web-e2e *args: _web-e2e-browsers
     scripts/with-playwright-container.sh npm --prefix web run e2e -- {{ args }}
 
-# Refresh the visual baselines in the Playwright container (needs Docker); `just web-e2e-update -g "<part of a shot name>"` refreshes only the matching shots. Review the changed images under web/e2e/__screenshots__ before committing them
+# Refresh the visual baselines in the Playwright container (needs Docker); `just web-e2e-update -g "<part of a test title>"` refreshes only the matching shots. Review the changed images under web/e2e/__screenshots__ before committing them
 [group('web')]
 web-e2e-update *args: _web-deps
     scripts/with-playwright-container.sh npm --prefix web run e2e:visual -- --update-snapshots=all {{ args }}
