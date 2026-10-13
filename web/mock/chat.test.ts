@@ -286,7 +286,8 @@ describe("chat turns", () => {
 
   it("answers a message starting with 'markdown' with the showcase, and keeps the cycle's place", () => {
     chat.send(message("markdown please", "m1"));
-    vi.advanceTimersByTime(TURN_MS);
+    // The showcase streams longer than any canned reply; "again" waits for it otherwise.
+    vi.advanceTimersByTime(END_MS + streamMs(markdownShowcase));
     chat.send(message("again", "m2"));
     vi.advanceTimersByTime(TURN_MS);
     const replies = frames.flatMap((f) => (f.type === "response" ? [f.content] : []));

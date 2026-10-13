@@ -93,7 +93,7 @@ export default defineConfig(({ command }) => ({
         test: {
           name: "unit",
           environment: "node",
-          include: ["src/**/*.test.ts", "build/**/*.test.ts", "mock/**/*.test.ts"],
+          include: ["src/**/*.test.ts", "build/**/*.test.ts", "mock/**/*.test.ts", "scripts/**/*.test.ts"],
           exclude: componentTests,
         },
       },

@@ -59,7 +59,15 @@ id: string,
 /**
  * Address of the session to stop.
  */
-address: string, } | { "type": "watch_workspace", 
+address: string, } | { "type": "send_queued_now", 
+/**
+ * The waiting message's id.
+ */
+id: string, } | { "type": "withdraw_queued", 
+/**
+ * The waiting message's id.
+ */
+id: string, } | { "type": "watch_workspace", 
 /**
  * Workspace-relative paths, matched by whole segments.
  */

@@ -233,8 +233,7 @@ async fn a_web_message_sent_during_a_telegram_turn_joins_it_and_the_web_sees_it_
     )
     .await;
     // The socket answers a ping only after the frames before it, so the pong
-    // shows the message was handled, and the barrier shows it has reached the
-    // agent's bus subscribers before the held call goes on.
+    // shows the message was handled.
     send(&mut ws, json!({ "type": "ping" })).await;
     loop {
         let frame = next_frame(&mut ws).await;
@@ -243,7 +242,14 @@ async fn a_web_message_sent_during_a_telegram_turn_joins_it_and_the_web_sees_it_
         }
         frames.push(frame);
     }
-    wait::bus_barrier(&agent_bus(&hub, "scout")).await;
+    // The turn announces the message as waiting before it can read it; the
+    // held call goes on only after that, so the frames come in one order.
+    while !frames
+        .iter()
+        .any(|frame| str_at(frame, "type") == "message_queued")
+    {
+        frames.push(next_frame(&mut ws).await);
+    }
     hub.gate("scout").open_all();
     frames.extend(frames_until_turn_ends(&mut ws, Some("tg-2")).await);
 
@@ -252,6 +258,7 @@ async fn a_web_message_sent_during_a_telegram_turn_joins_it_and_the_web_sees_it_
         [
             "user_message",
             "turn_started",
+            "message_queued",
             "broadcast_response",
             "tool_call",
             "tool_result",

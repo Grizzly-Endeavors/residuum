@@ -308,6 +308,8 @@ fn shape(events: &[MainConversationEvent]) -> Vec<String> {
             MainConversationEvent::TurnStarted { .. } => "turn_started".to_string(),
             MainConversationEvent::TurnEnded { .. } => "turn_ended".to_string(),
             MainConversationEvent::UserMessage { id, .. } => format!("user_message:{id}"),
+            MainConversationEvent::MessageQueued { id, .. } => format!("message_queued:{id}"),
+            MainConversationEvent::MessageWithdrawn { id } => format!("message_withdrawn:{id}"),
             MainConversationEvent::ToolCall { call, .. } => format!("tool_call:{call}"),
             MainConversationEvent::ToolResult(_) => "tool_result".to_string(),
             MainConversationEvent::TextDelta { call, text, .. } => format!("text:{call}:{text}"),
@@ -401,6 +403,8 @@ async fn a_turns_events_name_the_turn_they_belong_to() {
             MainConversationEvent::TurnStarted { .. }
             | MainConversationEvent::TurnEnded { .. }
             | MainConversationEvent::UserMessage { .. }
+            | MainConversationEvent::MessageQueued { .. }
+            | MainConversationEvent::MessageWithdrawn { .. }
             | MainConversationEvent::TextDelta { .. }
             | MainConversationEvent::ThinkingDelta { .. }
             | MainConversationEvent::StreamRestart { .. }

@@ -182,7 +182,7 @@ impl SourceTag {
 /// Each observation is self-describing: it carries when it was created,
 /// which episode transcript it came from, and whether it originated from
 /// a user-visible or background turn.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Observation {
     /// When this observation was created.
     #[serde(with = "crate::time::minute_format")]

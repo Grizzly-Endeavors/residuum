@@ -99,9 +99,14 @@
 
   const scroller = new FeedScroller({ covered: () => dockHeight });
 
+  // Attaching measures the reader's place, which reads the dock's height. Only
+  // the elements may re-attach the scroller: a dock resize that re-ran this
+  // would drop a held place and restart the resize baselines.
   $effect(() => {
-    if (!scrollEl || !innerEl) return;
-    return scroller.attach(scrollEl, innerEl);
+    const area = scrollEl;
+    const column = innerEl;
+    if (!area || !column) return;
+    return untrack(() => scroller.attach(area, column));
   });
 
   $effect(() => {
@@ -230,6 +235,19 @@
   });
 
   // ── Following ──────────────────────────────────────────────────────
+
+  // Before the items change the content, a scroll position the scroller
+  // hasn't taken in yet is judged against the content it was made over: its
+  // event comes a frame later, measured against whatever has landed by then.
+  $effect.pre(() => {
+    void items.length;
+    void items[0];
+    void items.at(-1);
+    void live;
+    untrack(() => {
+      scroller.catchUpWithScroll();
+    });
+  });
 
   let lastTailId: number | undefined;
   let lastLength = 0;
@@ -449,10 +467,12 @@
     line-height: var(--line-height-ui);
   }
 
+  /* A container, so a message can tell whether the margin beside the column has room for its details. */
   .feed-scroll {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
+    container: feed / inline-size;
     /* loadOlder() alone moves the scroll position across a prepend. */
     overflow-anchor: none;
 

@@ -42,11 +42,22 @@ function requestUrl(input: RequestInfo | URL): string {
   return input.url;
 }
 
-/** Flush the fetch microtasks a component started, and any 0ms timers. */
+/**
+ * Flush the fetch microtasks a component started, and any 0ms timers.
+ *
+ * A mocked `fetch` answers at once, but reading the `Response` body takes a
+ * number of microtask turns that depends on the undici bundled with Node: a
+ * fixed count of turns that covers one Node misses on another. A macrotask
+ * runs only once the microtask queue is empty, so waiting for one lets every
+ * chain the component started finish, however deep. Under fake timers,
+ * `advanceTimersByTimeAsync` yields to the real event loop the same way.
+ */
 export async function settle(): Promise<void> {
   await act(async () => {
     if (vi.isFakeTimers()) {
       await vi.advanceTimersByTimeAsync(0);
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 0));
     }
   });
 }

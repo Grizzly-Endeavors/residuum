@@ -47,21 +47,38 @@ export interface ConnectTarget {
 
 const RELAY_ADDRESS = /^(wss?):\/\/([^/?#\s]+)/i;
 
-/** Where the relay's sign-in page for a gateway is, from the relay URL the tunnel would dial. Null when that URL isn't a `ws://` or `wss://` address. */
-export function connectTarget(relayUrl: string, gatewayPort: string): ConnectTarget | null {
+/** The relay's web origin and host, from the relay URL the tunnel would dial. Null when that URL isn't a `ws://` or `wss://` address. */
+function relayWeb(relayUrl: string): { origin: string; host: string } | null {
   const found = RELAY_ADDRESS.exec(relayUrl.trim() === "" ? DEFAULT_RELAY_URL : relayUrl.trim());
   if (found === null) return null;
   const [, scheme = "", host = ""] = found;
-  const port = gatewayPort.trim() === "" ? DEFAULT_GATEWAY_PORT : gatewayPort.trim();
-  const origin = `${scheme.toLowerCase() === "wss" ? "https" : "http"}://${host}`;
-  return { url: `${origin}/connect?port=${encodeURIComponent(port)}`, host };
+  return { origin: `${scheme.toLowerCase() === "wss" ? "https" : "http"}://${host}`, host };
 }
 
-/** What the section shows for a tunnel status. A saved token that is switched on counts as connecting: the tunnel is being started, or retrying. */
-export type CloudPhase = "connected" | "connecting" | "disconnected" | "none";
+/** Where the relay's sign-in page for a gateway is, from the relay URL the tunnel would dial. Null when that URL isn't a `ws://` or `wss://` address. */
+export function connectTarget(relayUrl: string, gatewayPort: string): ConnectTarget | null {
+  const relay = relayWeb(relayUrl);
+  if (relay === null) return null;
+  const port = gatewayPort.trim() === "" ? DEFAULT_GATEWAY_PORT : gatewayPort.trim();
+  return { url: `${relay.origin}/connect?port=${encodeURIComponent(port)}`, host: relay.host };
+}
+
+/** The relay's account dashboard, where the user manages their instances, from the relay URL the tunnel would dial. Null when that URL isn't a `ws://` or `wss://` address. */
+export function accountTarget(relayUrl: string): ConnectTarget | null {
+  const relay = relayWeb(relayUrl);
+  return relay === null ? null : { url: `${relay.origin}/dashboard`, host: relay.host };
+}
+
+/**
+ * What the section shows for a tunnel status. A saved token that is switched
+ * on counts as connecting: the tunnel is being started, or retrying. Refused
+ * is a switched-on token the relay turned away.
+ */
+export type CloudPhase = "connected" | "connecting" | "refused" | "disconnected" | "none";
 
 export function phaseOf(status: CloudStatusResponse): CloudPhase {
   if (status.status === "connected") return "connected";
+  if (status.status === "refused" && status.has_token && status.enabled) return "refused";
   if (status.status === "connecting" || (status.has_token && status.enabled)) return "connecting";
   return status.has_token ? "disconnected" : "none";
 }

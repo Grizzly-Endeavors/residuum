@@ -1,0 +1,170 @@
+{
+  "config": {
+    "argv": [
+      "node",
+      "/repo/web/node_modules/.bin/playwright",
+      "test",
+      "--config",
+      "/repo/web/scripts/fixtures/visual-report/capture/playwright.config.mjs",
+      "--project=visual-desktop",
+      "--workers=1",
+      "--grep",
+      "the open menu"
+    ],
+    "configFile": "/repo/web/scripts/fixtures/visual-report/capture/playwright.config.mjs",
+    "rootDir": "/repo/web/scripts/fixtures/visual-report/capture/tests",
+    "failOnFlakyTests": false,
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "/capture-scratch/results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "visual-desktop",
+        "name": "visual-desktop",
+        "testDir": "/repo/web/scripts/fixtures/visual-report/capture/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "json",
+        {
+          "outputFile": "/capture-scratch/report.json"
+        }
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.63.0",
+    "workers": 1,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "visual.spec.mjs",
+      "file": "visual.spec.mjs",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "gallery",
+          "file": "visual.spec.mjs",
+          "line": 49,
+          "column": 6,
+          "specs": [
+            {
+              "title": "the open menu",
+              "ok": false,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "visual-desktop",
+                  "projectName": "visual-desktop",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 1272,
+                      "error": {
+                        "message": "Error: A snapshot doesn't exist at /capture-scratch/snapshots/gallery-menu-visual-desktop-linux.png, writing actual.",
+                        "stack": "Error: A snapshot doesn't exist at /capture-scratch/snapshots/gallery-menu-visual-desktop-linux.png, writing actual.\n    at /repo/web/scripts/fixtures/visual-report/capture/tests/visual.spec.mjs:53:5",
+                        "location": {
+                          "file": "/repo/web/scripts/fixtures/visual-report/capture/tests/visual.spec.mjs",
+                          "column": 5,
+                          "line": 53
+                        },
+                        "snippet": "  51 |     test.skip(MODE === \"base\", \"no baseline is written for this shot\");\n  52 |     await page.setContent(box(\"green\"));\n> 53 |     await expect(page.locator(\"#t\")).toHaveScreenshot(\"gallery-menu.png\");\n     |     ^\n  54 |   });\n  55 | });\n  56 |"
+                      },
+                      "errors": [
+                        {
+                          "location": {
+                            "file": "/repo/web/scripts/fixtures/visual-report/capture/tests/visual.spec.mjs",
+                            "column": 5,
+                            "line": 53
+                          },
+                          "message": "Error: A snapshot doesn't exist at /capture-scratch/snapshots/gallery-menu-visual-desktop-linux.png, writing actual.\n\n  51 |     test.skip(MODE === \"base\", \"no baseline is written for this shot\");\n  52 |     await page.setContent(box(\"green\"));\n> 53 |     await expect(page.locator(\"#t\")).toHaveScreenshot(\"gallery-menu.png\");\n     |     ^\n  54 |   });\n  55 | });\n  56 |\n    at /repo/web/scripts/fixtures/visual-report/capture/tests/visual.spec.mjs:53:5"
+                        }
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-13T19:46:39.143Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "gallery-menu-expected.png",
+                          "contentType": "image/png",
+                          "path": "/capture-scratch/snapshots/gallery-menu-visual-desktop-linux.png"
+                        },
+                        {
+                          "name": "gallery-menu-actual.png",
+                          "contentType": "image/png",
+                          "path": "/capture-scratch/results/visual-gallery-the-open-menu-visual-desktop/gallery-menu-actual.png"
+                        },
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "/capture-scratch/results/visual-gallery-the-open-menu-visual-desktop/error-context.md"
+                        }
+                      ],
+                      "errorLocation": {
+                        "file": "/repo/web/scripts/fixtures/visual-report/capture/tests/visual.spec.mjs",
+                        "column": 5,
+                        "line": 53
+                      }
+                    }
+                  ],
+                  "status": "unexpected"
+                }
+              ],
+              "id": "a9e8504622c1797aedfc-12c5e6f91d1b5c8b8d6a",
+              "file": "visual.spec.mjs",
+              "line": 50,
+              "column": 3
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-10-13T19:46:37.818Z",
+    "duration": 3258.14,
+    "expected": 0,
+    "skipped": 0,
+    "unexpected": 1,
+    "flaky": 0
+  }
+}

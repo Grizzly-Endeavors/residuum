@@ -373,7 +373,7 @@ mod memory_integration {
             "should trigger reflection"
         );
 
-        let compressed = reflector.reflect(&layout).await.unwrap();
+        let compressed = reflector.compress(&layout, &updated_log).await.unwrap();
         // reflector_response has 2 observation strings → 2 observations
         assert_eq!(
             compressed.observations.len(),

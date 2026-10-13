@@ -1,0 +1,5 @@
+rust	rust|gateway::post_turn::tests::observe_worker_keeps_messages_that_arrive_during_a_cycle	gateway::post_turn::tests::observe_worker_keeps_messages_that_arrive_during_a_cycle		1		
+rust	rust|gateway::post_turn::tests::forced_observe_lock_waits_for_the_background_cycle	gateway::post_turn::tests::forced_observe_lock_waits_for_the_background_cycle		1		
+rust	rust|gateway::post_turn::tests::observe_worker_runs_off_loop_and_coalesces_into_one_follow_up	gateway::post_turn::tests::observe_worker_runs_off_loop_and_coalesces_into_one_follow_up		1		
+rust	rust|hub::host::tests::main_conversation::a_background_turn_is_announced_with_its_visibility_live_and_in_history	hub::host::tests::main_conversation::a_background_turn_is_announced_with_its_visibility_live_and_in_history		1		
+rust	rust|background::runtime::tests::a_run_waiting_on_the_concurrency_permit_shows_as_queued	background::runtime::tests::a_run_waiting_on_the_concurrency_permit_shows_as_queued		1		libtest: still running after 60 seconds

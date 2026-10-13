@@ -1,5 +1,5 @@
 import { act } from "@testing-library/svelte";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, settle } from "../test/component";
 import { htmlSnippet } from "../test/snippets";
 import type { FeedItem } from "../lib/types";
@@ -314,6 +314,51 @@ describe("Jump to latest", () => {
   });
 });
 
+describe("following", () => {
+  it("keeps the reader at the end when the browser moved them just before older items landed", async () => {
+    const recent: FeedItem[] = [
+      { id: 10, kind: "user", content: "Recent question" },
+      { id: 11, kind: "assistant", content: "Recent answer" },
+    ];
+    const older: FeedItem[] = [
+      { id: 1, kind: "user", content: "Older question" },
+      { id: 2, kind: "assistant", content: "Older answer" },
+    ];
+    const { rerender } = render(Feed, {
+      agent: "atlas",
+      items: recent,
+      label: "Conversation with atlas",
+    });
+    const region = screen.getByRole("region", { name: "Conversation with atlas" });
+    const geometry = { clientHeight: 500, scrollTop: 1500 };
+    // Each item adds 430px once it is in the page: 2000px with the recent two.
+    Object.defineProperty(region, "scrollHeight", {
+      get: () => 1140 + 430 * region.querySelectorAll("[data-feed-item]").length,
+    });
+    Object.defineProperty(region, "clientHeight", { get: () => geometry.clientHeight });
+    Object.defineProperty(region, "scrollTop", { get: () => geometry.scrollTop });
+    region.scrollTo = ((options: { top: number }) => {
+      geometry.scrollTop = options.top;
+    }) as typeof region.scrollTo;
+    await settle();
+    scrollReader(region, geometry, 1500);
+    await settle();
+
+    // Seen on a 320px phone as the chat opened: the page settled around the
+    // feed, so the browser moved the position back 4px to keep it in range,
+    // and an older episode was prepended before that move's scroll event.
+    geometry.clientHeight = 504;
+    geometry.scrollTop = 1496;
+    await rerender({ items: [...older, ...recent] });
+    await settle();
+    region.dispatchEvent(new Event("scroll"));
+    await settle();
+
+    expect(screen.queryByRole("button", { name: /Jump to latest/ })).toBeNull();
+    expect(geometry.scrollTop).toBe(2860);
+  });
+});
+
 describe("a dock over the foot of the feed", () => {
   it("floats beside the scrolling region, outside it, and tells the feed it is docked", () => {
     const { container } = render(Feed, {
@@ -338,5 +383,92 @@ describe("a dock over the foot of the feed", () => {
     });
     expect(container.querySelector(".feed")).not.toHaveAttribute("data-docked");
     expect(container.querySelector(".feed-dock")).toBeNull();
+  });
+});
+
+/** A ResizeObserver that reports a resize only when the test says so, so a dock can be resized on cue. */
+class CuedObserver {
+  readonly targets: Element[] = [];
+  constructor(readonly callback: ResizeObserverCallback) {}
+  observe(target: Element): void {
+    this.targets.push(target);
+  }
+  unobserve(): void {}
+  disconnect(): void {}
+}
+
+describe("the scroller under a dock that changes size", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("keeps a reader near the end following as the composer grows, without re-attaching the scroller", async () => {
+    const observers: CuedObserver[] = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class extends CuedObserver {
+        constructor(callback: ResizeObserverCallback) {
+          super(callback);
+          observers.push(this);
+        }
+      },
+    );
+    // jsdom lays nothing out, so the region and the dock get their sizes here.
+    // The region is 50px above the end from the start, which is where the
+    // scroller reads the dock's height while it attaches.
+    const geometry = { scrollHeight: 2000, clientHeight: 500, scrollTop: 1450 };
+    const composer = { height: 0 };
+    const isRegion = (el: Element): boolean => el.classList.contains("feed-scroll");
+    vi.spyOn(Element.prototype, "scrollHeight", "get").mockImplementation(function (this: Element) {
+      return isRegion(this) ? geometry.scrollHeight : 0;
+    });
+    vi.spyOn(Element.prototype, "clientHeight", "get").mockImplementation(function (this: Element) {
+      return isRegion(this) ? geometry.clientHeight : 0;
+    });
+    vi.spyOn(Element.prototype, "scrollTop", "get").mockImplementation(function (this: Element) {
+      return isRegion(this) ? geometry.scrollTop : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      return this.classList.contains("feed-dock") ? composer.height : 0;
+    });
+
+    const { container } = render(Feed, {
+      agent: "atlas",
+      items: [reply],
+      label: "Conversation with atlas",
+      dock: htmlSnippet('<form aria-label="Composer"></form>'),
+    });
+    const region = screen.getByRole("region", { name: "Conversation with atlas" });
+    const scrolled = vi.fn((options: ScrollToOptions) => {
+      const top = typeof options.top === "number" ? options.top : 0;
+      geometry.scrollTop = Math.min(top, geometry.scrollHeight - geometry.clientHeight);
+    });
+    region.scrollTo = scrolled as unknown as typeof region.scrollTo;
+    const dock = container.querySelector(".feed-dock");
+    if (!dock) throw new Error("the dock didn't render");
+    const resizeDock = async (height: number): Promise<void> => {
+      composer.height = height;
+      for (const observer of observers) {
+        if (observer.targets.includes(dock)) {
+          observer.callback([], observer as unknown as ResizeObserver);
+        }
+      }
+      await settle();
+    };
+
+    // The composer comes up under a reader at the end, which keeps them there.
+    await resizeDock(60);
+    expect(geometry.scrollTop).toBe(1500);
+
+    // The reader scrolls 50px above the end, within the 120px that still counts as following.
+    scrollReader(region, geometry, 1450);
+    await settle();
+    expect(screen.queryByRole("button", { name: /Jump to latest/ })).toBeNull();
+
+    // The composer grows by 100px. The scroller stays attached: it isn't measured afresh.
+    await resizeDock(160);
+    expect(screen.queryByRole("button", { name: /Jump to latest/ })).toBeNull();
   });
 });

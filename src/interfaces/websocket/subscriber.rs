@@ -6,7 +6,7 @@ use crate::bus::{
     Subscriber, TurnUsageEvent, WorkbenchEvent, WorkspaceEvent, topics,
 };
 use crate::gateway::file_server::FileRegistry;
-use crate::gateway::protocol::{ServerMessage, SnapshotFrame, TurnInProgress};
+use crate::gateway::protocol::{QueuedMessage, ServerMessage, SnapshotFrame, TurnInProgress};
 use crate::gateway::turn_journal::{JournaledEvent, TurnJournal, TurnRecord};
 use tokio::sync::mpsc;
 
@@ -15,6 +15,10 @@ use crate::workspace::watch::{
 };
 
 /// The frame for one event of the main agent's conversation.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per conversation event, each a field-for-field move into its frame"
+)]
 pub(crate) fn main_conversation_frame(event: MainConversationEvent) -> ServerMessage {
     match event {
         MainConversationEvent::TurnStarted { turn_id, origin } => ServerMessage::TurnStarted {
@@ -39,6 +43,22 @@ pub(crate) fn main_conversation_frame(event: MainConversationEvent) -> ServerMes
             sender,
             endpoint,
         },
+        MainConversationEvent::MessageQueued {
+            id,
+            content,
+            images,
+            sender,
+            endpoint,
+        } => ServerMessage::MessageQueued {
+            message: QueuedMessage {
+                id,
+                content,
+                images,
+                sender,
+                endpoint,
+            },
+        },
+        MainConversationEvent::MessageWithdrawn { id } => ServerMessage::MessageWithdrawn { id },
         MainConversationEvent::ToolCall { call, event } => ServerMessage::ToolCall {
             reply_to: event.correlation_id,
             call,
@@ -318,6 +338,7 @@ impl WsSubscribers {
         self.covered_through = snapshot.through;
         ServerMessage::TurnSnapshot {
             turn: snapshot.turn.map(turn_in_progress),
+            queued: snapshot.queued,
         }
     }
 
@@ -494,7 +515,7 @@ mod tests {
         // Frames relayed before the request may come first; the snapshot
         // covers them, and only what came after it follows.
         let turn = loop {
-            if let ServerMessage::TurnSnapshot { turn } = subs.recv().await.unwrap() {
+            if let ServerMessage::TurnSnapshot { turn, .. } = subs.recv().await.unwrap() {
                 break turn.unwrap();
             }
         };
@@ -521,7 +542,7 @@ mod tests {
         subs.resync_requests().send(()).unwrap();
         assert!(matches!(
             subs.recv().await.unwrap(),
-            ServerMessage::TurnSnapshot { turn: None }
+            ServerMessage::TurnSnapshot { turn: None, .. }
         ));
     }
 

@@ -927,6 +927,27 @@ pub enum MainConversationEvent {
         /// Endpoint it arrived on.
         endpoint: String,
     },
+    /// A person's message reached the agent while a turn ran, and waits for
+    /// the agent to read it: at the turn's next checkpoint, or as the turn
+    /// after it. Its `UserMessage` says when the agent read it, and
+    /// `MessageWithdrawn` that it was taken back first.
+    MessageQueued {
+        /// The message's id: the id its sender gave it.
+        id: String,
+        /// The message text.
+        content: String,
+        /// Images attached to it.
+        images: Vec<ImageData>,
+        /// The person who sent it, for interfaces that identify one.
+        sender: Option<MessageSender>,
+        /// Endpoint it arrived on.
+        endpoint: String,
+    },
+    /// A waiting message was taken back before the agent read it.
+    MessageWithdrawn {
+        /// The message's id.
+        id: String,
+    },
     /// The agent invoked a tool.
     ToolCall {
         /// Index of the model call that requested it.
@@ -1013,6 +1034,22 @@ impl MainConversationEvent {
             sender: message.origin.sender.clone(),
             endpoint: message.origin.endpoint.clone(),
         })
+    }
+
+    /// The event announcing `message` waiting for the agent, or `None` when no
+    /// person sent it.
+    #[must_use]
+    pub fn message_queued(message: &MessageEvent) -> Option<Self> {
+        message
+            .origin
+            .is_from_person()
+            .then(|| Self::MessageQueued {
+                id: message.id.clone(),
+                content: message.content.clone(),
+                images: message.images.clone(),
+                sender: message.origin.sender.clone(),
+                endpoint: message.origin.endpoint.clone(),
+            })
     }
 }
 

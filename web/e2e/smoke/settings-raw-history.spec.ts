@@ -160,4 +160,11 @@ test.describe("History", () => {
     await expect(page.getByRole("radio", { name: "Workspace" })).toBeChecked();
     await expect(page.getByRole("list", { name: "Workspace checkpoints" })).toBeVisible();
   });
+
+  test("the install-wide config's checkpoint lists the files it changed", async ({ page }) => {
+    await page.goto("/home?settings=_all/history");
+    await page.getByRole("radio", { name: "Install-wide config" }).click();
+    await page.getByRole("button", { name: /^config patch/ }).click();
+    await expect(page.getByRole("list", { name: "Files this checkpoint changed" })).toBeVisible();
+  });
 });

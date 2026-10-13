@@ -35,6 +35,7 @@ use tracing::{debug, warn};
 use super::proxy::{InstanceProxy, InstanceTargets, text_response};
 use super::tls::CertResolver;
 use super::types::{HostKind, Hostnames, normalize_host};
+use crate::gateway::browser_landing::{self, Landing};
 use crate::pairing::remote::RemoteTransport;
 
 /// How long the TLS handshake may take, from the first byte to completion.
@@ -225,6 +226,15 @@ impl Engine {
         Ok(config)
     }
 
+    /// The web app's origin on Residuum Cloud, once Cloud has assigned the
+    /// hostnames.
+    fn ui_origin(&self) -> Option<String> {
+        self.hostnames
+            .borrow()
+            .as_ref()
+            .map(|names| format!("https://{}", names.ui))
+    }
+
     /// Route one request by its host.
     async fn handle(&self, mut req: Request<Body>, peer_ip: &str) -> Response<Body> {
         for name in INTERNAL_HEADERS {
@@ -232,7 +242,7 @@ impl Engine {
         }
 
         let Some(host) = request_host(&mut req) else {
-            return misdirected();
+            return misdirected(&req, self.ui_origin().as_deref());
         };
         let kind = self
             .hostnames
@@ -258,13 +268,14 @@ impl Engine {
                         InstanceTargets {
                             a2a_port: self.a2a_port,
                             teams_ports: &teams_ports,
+                            ui_origin: self.ui_origin(),
                         },
                     )
                     .await
             }
             None => {
                 debug!(host = %host, peer_ip, "refused a request for a host this instance doesn't serve");
-                misdirected()
+                misdirected(&req, self.ui_origin().as_deref())
             }
         }
     }
@@ -309,9 +320,17 @@ async fn call_router(
     }
 }
 
-fn misdirected() -> Response<Body> {
-    text_response(
-        StatusCode::MISDIRECTED_REQUEST,
-        "This address isn't served by this Residuum instance.",
-    )
+/// The answer for a host this instance doesn't serve. A browser gets the
+/// fallback page, linking to this instance's Residuum when its address is
+/// known.
+fn misdirected(req: &Request<Body>, ui_origin: Option<&str>) -> Response<Body> {
+    const MESSAGE: &str = "This address isn't served by this Residuum instance.";
+    if browser_landing::is_navigation(req.method(), req.headers()) {
+        return browser_landing::fallback_page(
+            StatusCode::MISDIRECTED_REQUEST,
+            &Landing::new("Address not served here", MESSAGE)
+                .with_app_link(ui_origin, "Open Residuum"),
+        );
+    }
+    text_response(StatusCode::MISDIRECTED_REQUEST, MESSAGE)
 }

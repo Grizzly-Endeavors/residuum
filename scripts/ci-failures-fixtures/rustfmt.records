@@ -1,0 +1,1 @@
+fmt	fmt|src/lib.rs	rustfmt: src/lib.rs	src/lib.rs	1		not formatted; cargo fmt --all rewrites it

@@ -159,12 +159,14 @@ test.describe("tooltips", { tag: "@dev" }, () => {
 });
 
 test.describe("toasts", { tag: "@dev" }, () => {
-  test("toasts show, errors stay until dismissed, and an action runs once", async ({ page }) => {
-    await page.clock.install();
+  test("toasts show, errors stay until dismissed, and an action runs once", async ({
+    page,
+    mock,
+  }) => {
     await openGallery(page);
-    // Hold the toasts' own dismiss timers, which on a loaded runner ran out
-    // during the accessibility scan and took the Undo toast before its click.
-    await page.clock.pauseAt(Date.now() + 1_000);
+    // Manual time holds the toasts' own dismiss timers, which on a loaded runner
+    // ran out during the accessibility scan and took the Undo toast before its click.
+    await mock.manualTime();
     const section = page.getByRole("region", { name: "Toasts and recent notifications" });
     await section.getByRole("button", { name: "Error" }).click();
     await section.getByRole("button", { name: "With Undo" }).click();
@@ -177,12 +179,14 @@ test.describe("toasts", { tag: "@dev" }, () => {
     await expect(page.getByText("Removed the Brave Search key.")).toBeHidden();
     await expect(page.getByText("Put the Brave Search key back.")).toBeVisible();
 
-    // The scan waits on the page's timers, so it runs with the clock going.
     await section.getByRole("button", { name: "With Undo" }).click();
     await expect(others).toBeVisible();
-    await page.clock.resume();
     await expectNoAxeViolations(page);
 
+    // A toast with an action goes after ten seconds; an error stays until it is dismissed.
+    await mock.advance(10_000);
+    await expect(others).toBeHidden();
+    await expect(errors).toBeVisible();
     await errors.getByRole("button", { name: "Dismiss notification" }).click();
     await expect(page.getByText("Couldn't save the settings.")).toBeHidden();
   });

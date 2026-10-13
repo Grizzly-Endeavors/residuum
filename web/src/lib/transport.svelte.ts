@@ -1,6 +1,7 @@
 // ── WebSocket transport layer (Svelte 5 runes) ──────────────────────
 
 import type { ClientMessage, ServerMessage, ConnectionStatus } from "./types";
+import { FIRST_RECONNECT_MS } from "./reconnect";
 
 export interface TransportOptions {
   /** The socket URL, read on every (re)connect so it can follow the bound agent. */
@@ -51,7 +52,7 @@ export class WsTransport<S = ServerMessage, C extends { type: string } = ClientM
   }
 
   private ws: WebSocket | null = null;
-  private reconnectDelay = 1000;
+  private reconnectDelay = FIRST_RECONNECT_MS;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -66,7 +67,7 @@ export class WsTransport<S = ServerMessage, C extends { type: string } = ClientM
       if (this.ws !== socket) return;
       this.status = "connected";
       this.lost = false;
-      this.reconnectDelay = 1000;
+      this.reconnectDelay = FIRST_RECONNECT_MS;
       this.onConnected?.();
       this.startPing();
       this.flushPending();
@@ -127,7 +128,7 @@ export class WsTransport<S = ServerMessage, C extends { type: string } = ClientM
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    this.reconnectDelay = 1000;
+    this.reconnectDelay = FIRST_RECONNECT_MS;
     this.connect();
   }
 
@@ -139,7 +140,7 @@ export class WsTransport<S = ServerMessage, C extends { type: string } = ClientM
   reset(): void {
     this.disconnect();
     this.pending = [];
-    this.reconnectDelay = 1000;
+    this.reconnectDelay = FIRST_RECONNECT_MS;
   }
 
   /**

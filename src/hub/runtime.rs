@@ -10,11 +10,13 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use axum::http::request::Parts;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
 use crate::config::{Config, HubConfig};
+use crate::gateway::browser_landing::{self, Landing};
 use crate::gateway::last_known_good;
 use crate::gateway::types::{GatewayExit, ReloadReceiver, ReloadSignal, TermSignal};
 use crate::inference::EmbeddingProvider;
@@ -195,7 +197,8 @@ impl RemoteWiring {
         let notices = Arc::clone(host);
         Self {
             ui_router: app.clone(),
-            workbench_router: workbench_router.unwrap_or_else(workbench_unavailable_router),
+            workbench_router: workbench_router
+                .unwrap_or_else(|| workbench_unavailable_router(services.pairing.clone())),
             pairing: services.pairing.clone(),
             slot: services.remote_access.clone(),
             notify: Arc::new(move |message| notices.notice(NoticeLevel::Warn, message, None)),
@@ -204,13 +207,32 @@ impl RemoteWiring {
 }
 
 /// Stands in for the workbench router when its listener couldn't start.
-fn workbench_unavailable_router() -> axum::Router {
-    axum::Router::new().fallback(|| async {
-        (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+fn workbench_unavailable_router(pairing: crate::pairing::DevicePairing) -> axum::Router {
+    axum::Router::new().fallback(move |request: Parts| {
+        let ui_origin = pairing.origin_of(crate::pairing::Surface::Ui);
+        std::future::ready(workbench_unavailable(&request, ui_origin))
+    })
+}
+
+/// A tab goes to the Workbench in the app, which shows why artifacts aren't
+/// available; anything else is told here.
+fn workbench_unavailable(request: &Parts, ui_origin: Option<String>) -> axum::response::Response {
+    if let Some(origin) = &ui_origin
+        && browser_landing::is_top_level_navigation(&request.method, &request.headers)
+    {
+        return browser_landing::redirect_to_app_origin(origin, "/team/workbench");
+    }
+    let link = ui_origin.map(|origin| format!("{origin}/team/workbench"));
+    browser_landing::page_or_text(
+        &request.method,
+        &request.headers,
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        &Landing::new(
+            "Workbench unavailable",
             "Workbench artifacts aren't available on this Residuum instance right now. Check Residuum's logs for why its artifacts listener couldn't start.",
         )
-    })
+        .with_app_link(link.as_deref(), "Open the Workbench"),
+    )
 }
 
 /// The handles a relay tunnel is started with.
@@ -1200,6 +1222,20 @@ mod tests {
             .await;
         }
 
+        /// The boot id of whatever hub answers on `port`, if one does.
+        async fn boot_id_on(&self, port: u16) -> Option<String> {
+            let page: serde_json::Value = self
+                .http
+                .get(format!("http://127.0.0.1:{port}/api/hub/events?limit=1"))
+                .send()
+                .await
+                .ok()?
+                .json()
+                .await
+                .ok()?;
+            page.pointer("/boot_id")?.as_str().map(str::to_string)
+        }
+
         /// The hub's team event log over HTTP: its boot id and every entry,
         /// oldest first.
         async fn team_events(&self) -> (String, Vec<serde_json::Value>) {
@@ -1409,8 +1445,8 @@ mod tests {
         let hub = RunningHub::start().await;
         hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", Some(200))
             .await;
-        let new_port_reservation = reserve_port();
-        let new_port = new_port_reservation.port();
+        let (boot_id, _) = hub.team_events().await;
+        let new_port = crate::util::test_ports::unprobed_port_after(hub.gateway_port);
 
         std::fs::write(
             hub.hub_config_path(),
@@ -1420,17 +1456,21 @@ mod tests {
             ),
         )
         .unwrap();
-        // The config watcher picks this up and rebinds the gateway on
-        // `new_port` asynchronously; drop the reservation now, as close to
-        // that rebind as this test can get.
-        drop(new_port_reservation);
 
         hub.eventually_status(new_port, "/api/agents/scout/status", Some(200))
             .await;
         hub.eventually_status(new_port, "/api/agents/atlas/status", Some(200))
             .await;
-        hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", None)
-            .await;
+        // Another test process may bind the old port once this hub lets go of
+        // it, so the check is that this hub no longer answers there, not that
+        // nothing does.
+        crate::testing::wait::until(
+            format!("this hub to stop answering on port {}", hub.gateway_port),
+            || async {
+                (hub.boot_id_on(hub.gateway_port).await.as_ref() != Some(&boot_id)).then_some(())
+            },
+        )
+        .await;
         let mut hub = hub;
         hub.gateway_port = new_port;
         hub.shut_down().await;

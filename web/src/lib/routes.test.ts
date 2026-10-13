@@ -73,23 +73,36 @@ describe("places", () => {
 
 describe("unknown routes", () => {
   it.each([
-    ["/nowhere", "/home"],
-    ["/home/extra", "/home"],
-    ["/inbox/extra", "/home"],
-    ["/agent", "/home"],
-    ["/agent/Bad_Name", "/home"],
-    ["/agent/scout/nowhere", "/home"],
-    ["/agent/scout/files/extra", "/home"],
-    ["/team/nowhere", "/home"],
-    ["/team/files/extra", "/home"],
-    ["/%E0%A4%A", "/home"],
-  ])("corrects %s to %s", (from, to) => {
-    expect(where(from)).toBe(to);
+    "/nowhere",
+    "/home/extra",
+    "/inbox/extra",
+    "/agent",
+    "/agent/Bad_Name",
+    "/agent/scout/nowhere",
+    "/agent/scout/files/extra",
+    "/team/nowhere",
+    "/team/files/extra",
+    "/team/workbench/a/b",
+    "/notes.txt",
+    "/%E0%A4%A",
+  ])("shows %s as Not Found and keeps its address", (path) => {
+    const { location, notices } = read(path);
+    expect(location.place).toEqual({ kind: "not-found", path });
+    expect(location.panel).toBeNull();
+    expect(notices).toEqual([]);
+    expect(formatLocation(location)).toBe(path);
+  });
+
+  it("keeps the Settings modal over Not Found, and drops a panel it can't show", () => {
+    expect(where("/nowhere?settings=_all/cloud&panel=size")).toBe("/nowhere?settings=_all/cloud");
+  });
+
+  it("is not an agent's place", () => {
+    expect(viewedAgentOf({ kind: "not-found", path: "/agent/x/y" })).toBeNull();
   });
 
   it("corrects a malformed artifact name to the list", () => {
     expect(where("/team/workbench/Bad_Name")).toBe("/team/workbench");
-    expect(where("/team/workbench/a/b")).toBe("/home");
   });
 
   it("accepts the artifact-name rule's limits", () => {

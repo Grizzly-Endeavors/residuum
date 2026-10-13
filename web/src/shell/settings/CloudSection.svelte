@@ -3,9 +3,12 @@
   import {
     CloudConnection,
     DEFAULT_RELAY_URL,
+    accountTarget,
     connectTarget,
     phaseOf,
   } from "../../lib/cloud.svelte";
+  import { handoffProblem, takeCloudHandoff } from "../../lib/cloud-handoff";
+  import { Icon } from "../../lib/icons";
   import {
     Badge,
     Banner,
@@ -14,6 +17,7 @@
     SecretField,
     Skeleton,
     TextField,
+    VisuallyHidden,
   } from "../../lib/ui";
   import DevicesGroup from "./DevicesGroup.svelte";
   import RemoteAccessGroup from "./RemoteAccessGroup.svelte";
@@ -31,6 +35,10 @@
   const cloud = new CloudConnection();
   onMount(() => cloud.follow());
 
+  // A tab the sign-in callback handed here. A sign-in that was saved needs no
+  // word of its own: the status shows the tunnel connecting, then the result.
+  let handoffError = $state(handoffProblem(takeCloudHandoff()));
+
   const status = $derived(cloud.status);
   const phase = $derived(status === null ? null : phaseOf(status));
   const viaTunnel = $derived(status?.viewed_via_tunnel === true);
@@ -43,6 +51,8 @@
   const relayUnsaved = $derived(scope.config.cloud_relay_url !== baseline.cloud_relay_url);
   // The sign-in page sends the browser back to the gateway's port as it is now, so the saved one; the relay is the one being typed.
   const signIn = $derived(connectTarget(scope.config.cloud_relay_url, baseline.gateway_port));
+  // The account the saved token belongs to is on the saved relay.
+  const account = $derived(accountTarget(baseline.cloud_relay_url));
 
   let tokenOpen = $state(false);
   let token = $state("");
@@ -54,6 +64,7 @@
 
   function openSignIn(): void {
     if (signIn === null) return;
+    handoffError = null;
     window.open(signIn.url, "_blank", "noopener");
     cloud.expectChange();
   }
@@ -82,6 +93,8 @@
     <Badge tone="positive" dot>Connected</Badge>
   {:else if phase === "connecting"}
     <Badge tone="accent" dot>Connecting…</Badge>
+  {:else if phase === "refused"}
+    <Badge tone="danger" dot>Sign-in not accepted</Badge>
   {:else if phase === "disconnected"}
     <Badge dot>Disconnected</Badge>
   {:else if phase === "none"}
@@ -104,6 +117,17 @@
         {/snippet}
       </Banner>
     {/if}
+    {#if handoffError !== null}
+      <Banner tone="error">
+        {handoffError}
+        {#snippet actions()}
+          {#if signIn !== null}
+            <Button size="sm" icon="external-link" onclick={openSignIn}>Try connecting again</Button
+            >
+          {/if}
+        {/snippet}
+      </Banner>
+    {/if}
     {#if status === null}
       {#if cloud.loadError === ""}
         <Skeleton lines={2} label="Loading the Cloud status" />
@@ -113,10 +137,22 @@
         {#if status.user_id !== null}Connected as <strong>{status.user_id}</strong>.{/if}
         Your agents can be reached through your Residuum Cloud address.
       </p>
+      {#if account !== null}
+        <a class="cloud-account" href={account.url} target="_blank" rel="noopener noreferrer">
+          Manage your account and instances
+          <Icon name="external-link" size={13} />
+          <VisuallyHidden>(opens in a new tab)</VisuallyHidden>
+        </a>
+      {/if}
     {:else if phase === "connecting"}
       <p class="cloud-line">
         Connecting to Residuum Cloud. This usually takes a few seconds, and Residuum keeps trying if
         it can't get through.
+      </p>
+    {:else if phase === "refused"}
+      <p class="cloud-line">
+        Residuum Cloud no longer accepts this install's sign-in, so it can't connect. Sign in again
+        to reconnect.
       </p>
     {:else if phase === "disconnected"}
       <p class="cloud-line">
@@ -145,6 +181,23 @@
             {phase === "connected" ? "Disconnect" : "Cancel"}
           </Button>
         </div>
+      {/if}
+    {:else if phase === "refused"}
+      <div class="cloud-actions">
+        <Button
+          variant="primary"
+          icon="external-link"
+          disabled={signIn === null}
+          onclick={openSignIn}
+        >
+          Sign in again
+        </Button>
+        <Button loading={cloud.busy === "disconnect"} onclick={() => void cloud.disconnect()}>
+          Disconnect
+        </Button>
+      </div>
+      {#if signIn !== null}
+        <p class="cloud-hint">Opens {signIn.host} in a new tab.</p>
       {/if}
     {:else if phase === "disconnected"}
       {#if removing}
@@ -248,6 +301,14 @@
   .cloud-line :global(strong) {
     color: var(--color-text);
     font-weight: var(--font-weight-medium);
+  }
+
+  .cloud-account {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-6);
+    align-self: flex-start;
+    font-size: var(--font-size-sm);
   }
 
   .cloud-hint {

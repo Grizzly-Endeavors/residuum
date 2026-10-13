@@ -673,6 +673,7 @@ describe("a snapshot of the turn in flight", () => {
     const start = Date.parse("2026-10-09T08:00:00Z") + ahead;
     return {
       type: "turn_snapshot",
+      queued: [],
       turn: {
         reply_to: "t1",
         started_at: new Date(start).toISOString(),
@@ -758,7 +759,7 @@ describe("a snapshot of the turn in flight", () => {
     expect(store.isProcessing).toBe(false);
   });
 
-  it("keeps a message the page sent that the agent hasn't taken in yet, and a note", () => {
+  it("keeps a message the page sent that the agent hasn't taken in yet waiting, and a note", () => {
     const { store } = setup();
     store.handleMessage(echo("t1", "Find the report"));
     store.handleMessage(started("t1"));
@@ -769,13 +770,14 @@ describe("a snapshot of the turn in flight", () => {
     expect(store.feed.map((item) => ("content" in item ? item.content : item.kind))).toEqual([
       "Find the report",
       "On it",
-      "And the slides",
       "Commands: /help",
     ]);
+    expect(store.waiting.map((message) => message.content)).toEqual(["And the slides"]);
 
-    // The agent takes it in later: shown once.
+    // The agent takes it in later: shown once, where it was taken in.
     store.handleMessage(echo("web-2", "And the slides", { turn_id: "t1" }));
     expect(store.feed.filter((item) => item.kind === "user")).toHaveLength(2);
+    expect(store.waiting).toEqual([]);
   });
 
   it("stamps messages with when they were sent, and announces nothing again", () => {
@@ -806,7 +808,7 @@ describe("a snapshot of the turn in flight", () => {
     store.handleMessage(started("t1"));
     store.handleMessage(delta("Half"));
     const before = kinds(store.feed);
-    store.handleMessage({ type: "turn_snapshot", turn: null });
+    store.handleMessage({ type: "turn_snapshot", turn: null, queued: [] });
     expect(kinds(store.feed)).toEqual(before);
     expect(store.activeTurnId).toBe("t1");
   });

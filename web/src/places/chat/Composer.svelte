@@ -198,6 +198,12 @@
     return () => form.removeEventListener("keydown", onformkeydown);
   };
 
+  /** Put a message that couldn't go back in the box, ahead of anything typed since. */
+  export function restore(message: string): void {
+    text = text.trim() === "" ? message : `${message}\n\n${text}`;
+    field?.focus();
+  }
+
   // ── Images ─────────────────────────────────────────────────────────
 
   /** Attach the images among `files`, such as ones dropped on the chat; names any it can't. */
@@ -257,7 +263,7 @@
   );
 </script>
 
-<form class="composer" {onsubmit} {onfocusout} {@attach watchKeys}>
+<form class="composer" aria-labelledby={labelId} {onsubmit} {onfocusout} {@attach watchKeys}>
   {#if showMenu}
     <SlashMenu
       id={menuId}

@@ -81,6 +81,21 @@ pub enum ClientMessage {
         /// Address of the session to stop.
         address: String,
     },
+    /// Have a message still waiting for the main agent sent now: the running
+    /// turn stops, and the message starts the next one instead of being folded
+    /// into it. Answered with `QueuedMessageUnavailable` when the message is
+    /// no longer waiting.
+    SendQueuedNow {
+        /// The waiting message's id.
+        id: String,
+    },
+    /// Take back a message still waiting for the main agent, so it is never
+    /// read. Answered with `MessageWithdrawn` (to every connection) or, when
+    /// the message is no longer waiting, `QueuedMessageUnavailable`.
+    WithdrawQueued {
+        /// The waiting message's id.
+        id: String,
+    },
     /// Replace this connection's watched workspace prefixes. `[]` stops
     /// watching; `""` watches the whole workspace. An invalid prefix is
     /// answered with an `Error` frame and leaves the set unchanged.
@@ -88,6 +103,26 @@ pub enum ClientMessage {
         /// Workspace-relative paths, matched by whole segments.
         prefixes: Vec<String>,
     },
+}
+
+/// A person's message waiting for the main agent to read it, carried by
+/// `MessageQueued` and a `TurnSnapshot`'s `queued`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct QueuedMessage {
+    /// The message's id: the id its sender gave it.
+    pub id: String,
+    /// The message text.
+    pub content: String,
+    /// Images attached to the message.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageData>,
+    /// The person who sent it, for interfaces that identify one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub sender: Option<MessageSender>,
+    /// Endpoint the message arrived on.
+    pub endpoint: String,
 }
 
 /// One run of an agent session, as listed in the web UI's Activity place
@@ -627,6 +662,28 @@ pub enum ServerMessage {
     TurnSnapshot {
         /// The turn, or `null` when none is running.
         turn: Option<TurnInProgress>,
+        /// People's messages waiting for the agent to read them, oldest first.
+        queued: Vec<QueuedMessage>,
+    },
+    /// A person's message reached the main agent while a turn ran, and waits
+    /// for it: until the turn's next checkpoint, or to start the turn after
+    /// it. Its `user_message` frame says when the agent read it;
+    /// `message_withdrawn` that it was taken back first.
+    MessageQueued {
+        /// The waiting message.
+        message: QueuedMessage,
+    },
+    /// A waiting message was taken back before the agent read it.
+    MessageWithdrawn {
+        /// The message's id.
+        id: String,
+    },
+    /// A `send_queued_now` or `withdraw_queued` named a message that is no
+    /// longer waiting: the agent already read it, or it was taken back.
+    /// Sent to the asking connection only.
+    QueuedMessageUnavailable {
+        /// The message's id.
+        id: String,
     },
     /// The gateway is reloading its configuration.
     Reloading,

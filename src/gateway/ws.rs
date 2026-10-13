@@ -336,6 +336,12 @@ async fn handle_client_message(
                 tracing::warn!("failed to dispatch stop request: channel closed or full");
             }
         }
+        ClientMessage::SendQueuedNow { id } => {
+            send_queued_now(state, id, local_tx);
+        }
+        ClientMessage::WithdrawQueued { id } => {
+            withdraw_queued(state, id, local_tx).await;
+        }
         ClientMessage::SessionSendMessage {
             id,
             address,
@@ -449,6 +455,69 @@ async fn send_frame(
     ws_tx.send(WsMessage::text(json)).await.is_ok()
 }
 
+/// Send a waiting message now: it is held out of the running turn, which is
+/// stopped, so the message starts the next one. Whichever turn is running is
+/// stopped, since a message left waiting after its own turn ended waits for
+/// the turn now running. A message no longer waiting is answered to this
+/// connection only.
+fn send_queued_now(
+    state: &GatewayState,
+    id: String,
+    local_tx: &mpsc::UnboundedSender<ServerMessage>,
+) {
+    if !state.queued.send_now(&id) {
+        tracing::info!(msg_id = %id, "send now asked for a message no longer waiting");
+        local_tx
+            .send(ServerMessage::QueuedMessageUnavailable { id })
+            .ok();
+        return;
+    }
+    tracing::info!(msg_id = %id, "sending a waiting message now: stopping the running turn");
+    if state
+        .stop_tx
+        .try_send(crate::gateway::types::StopRequest {
+            reply_to: None,
+            result_tx: None,
+        })
+        .is_err()
+    {
+        // The message still starts the next turn, ahead of anything else
+        // waiting; only the stop that would have brought that turn sooner is lost.
+        tracing::warn!(msg_id = %id, "failed to dispatch the stop for a message to send now: channel closed or full");
+    }
+}
+
+/// Take back a waiting message, so the agent never reads it. Every
+/// connection hears it was withdrawn; a message no longer waiting is answered
+/// to this connection only.
+async fn withdraw_queued(
+    state: &GatewayState,
+    id: String,
+    local_tx: &mpsc::UnboundedSender<ServerMessage>,
+) {
+    if !state.queued.withdraw(&id) {
+        tracing::info!(msg_id = %id, "withdraw asked for a message no longer waiting");
+        local_tx
+            .send(ServerMessage::QueuedMessageUnavailable { id })
+            .ok();
+        return;
+    }
+    tracing::info!(msg_id = %id, "withdrew a waiting message");
+    if let Err(e) = state
+        .publisher
+        .publish(
+            crate::bus::topics::MainConversation,
+            crate::bus::MainConversationEvent::MessageWithdrawn { id: id.clone() },
+        )
+        .await
+    {
+        // It is withdrawn either way; only other pages keep showing it as
+        // waiting, until their next snapshot or reload.
+        tracing::warn!(error = %e, msg_id = %id, "failed to announce a withdrawn message");
+        local_tx.send(ServerMessage::MessageWithdrawn { id }).ok();
+    }
+}
+
 /// `msg` as a connection gets it: a connection that isn't verbose gets no
 /// tool frames, neither on their own nor inside a `turn_snapshot`.
 fn shown_frame(mut msg: ServerMessage, verbose: bool) -> Option<ServerMessage> {
@@ -458,7 +527,10 @@ fn shown_frame(mut msg: ServerMessage, verbose: bool) -> Option<ServerMessage> {
     if is_verbose_only(&msg) {
         return None;
     }
-    if let ServerMessage::TurnSnapshot { turn: Some(turn) } = &mut msg {
+    if let ServerMessage::TurnSnapshot {
+        turn: Some(turn), ..
+    } = &mut msg
+    {
         turn.frames.retain(|entry| !is_verbose_only(&entry.frame));
     }
     Some(msg)
@@ -807,7 +879,15 @@ mod tests {
     /// WebSocket stack. Mirrors the helper in `gateway/web/inbox.rs`'s own
     /// test module.
     fn make_test_gateway_state(workspace_dir: &std::path::Path) -> GatewayState {
-        let (core, _receivers) = crate::gateway::types::GatewayCore::new(
+        make_test_gateway_state_with_receivers(workspace_dir).0
+    }
+
+    /// [`make_test_gateway_state`], with the receivers the event loop would
+    /// read the state's channels from.
+    fn make_test_gateway_state_with_receivers(
+        workspace_dir: &std::path::Path,
+    ) -> (GatewayState, crate::gateway::types::CoreReceivers) {
+        let (core, receivers) = crate::gateway::types::GatewayCore::new(
             workspace_dir.to_path_buf(),
             workspace_dir.to_path_buf(),
         );
@@ -824,8 +904,9 @@ mod tests {
                 crate::agent::hop::HopLimits { soft: 8, hard: 32 },
             ));
 
-        GatewayState {
+        let state = GatewayState {
             turn_journal: crate::gateway::turn_journal::TurnJournal::default(),
+            queued: std::sync::Arc::default(),
             reload_tx: core.reload_tx,
             command_tx: core.command_tx,
             stop_tx: core.stop_tx,
@@ -858,13 +939,99 @@ mod tests {
                 tokio::sync::broadcast::channel(4).0,
                 crate::hub::agent_watch::AgentChangeFeed::new(),
             ),
-        }
+        };
+        (state, receivers)
     }
 
     async fn next_server_message(
         local_rx: &mut mpsc::UnboundedReceiver<ServerMessage>,
     ) -> ServerMessage {
         wait::next("a message to be sent", local_rx).await
+    }
+
+    /// Handle one client message on a connection with no watches, returning
+    /// what was sent back to that connection alone.
+    async fn handle_on_connection(
+        msg: ClientMessage,
+        state: &GatewayState,
+    ) -> mpsc::UnboundedReceiver<ServerMessage> {
+        let (local_tx, local_rx) = mpsc::unbounded_channel();
+        let verbose = AtomicBool::new(false);
+        let (watch_tx, _watch_rx) = tokio::sync::watch::channel(WatchSet::default());
+        let keep_going = handle_client_message(
+            msg,
+            state,
+            &ConnectionChannels {
+                local: &local_tx,
+                verbose: &verbose,
+                watch_set: &watch_tx,
+                resync: &mpsc::unbounded_channel().0,
+            },
+        )
+        .await;
+        assert!(keep_going);
+        local_rx
+    }
+
+    #[tokio::test]
+    async fn withdrawing_a_waiting_message_tells_every_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_test_gateway_state(dir.path());
+        let mut main: crate::bus::Subscriber<crate::bus::MainConversationEvent> = state
+            .bus_handle
+            .subscribe(crate::bus::topics::MainConversation)
+            .await
+            .unwrap();
+        state.queued.enqueue("m1");
+
+        let mut local =
+            handle_on_connection(ClientMessage::WithdrawQueued { id: "m1".into() }, &state).await;
+
+        let event = main.recv().await.unwrap().unwrap();
+        assert!(
+            matches!(&event, crate::bus::MainConversationEvent::MessageWithdrawn { id } if id == "m1"),
+            "expected the withdrawal on the main conversation, got {event:?}"
+        );
+        assert!(
+            local.try_recv().is_err(),
+            "nothing for this connection alone"
+        );
+        assert!(!state.queued.send_now("m1"), "it no longer waits");
+    }
+
+    #[tokio::test]
+    async fn acting_on_a_message_no_longer_waiting_says_so_to_that_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_test_gateway_state(dir.path());
+        for msg in [
+            ClientMessage::WithdrawQueued { id: "read".into() },
+            ClientMessage::SendQueuedNow { id: "read".into() },
+        ] {
+            let mut local = handle_on_connection(msg, &state).await;
+            let reply = next_server_message(&mut local).await;
+            assert!(
+                matches!(&reply, ServerMessage::QueuedMessageUnavailable { id } if id == "read"),
+                "expected QueuedMessageUnavailable, got {reply:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn sending_a_waiting_message_now_stops_whichever_turn_is_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, mut receivers) = make_test_gateway_state_with_receivers(dir.path());
+        state.queued.enqueue("m1");
+
+        let mut local =
+            handle_on_connection(ClientMessage::SendQueuedNow { id: "m1".into() }, &state).await;
+
+        let stop = receivers.stop.try_recv().expect("a stop request");
+        assert_eq!(stop.reply_to, None);
+        assert!(state.queued.is_send_now("m1"));
+        assert!(
+            local.try_recv().is_err(),
+            "nothing for this connection alone"
+        );
     }
 
     #[tokio::test]

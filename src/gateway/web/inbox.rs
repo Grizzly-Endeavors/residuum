@@ -3,10 +3,11 @@
 //! artifacts.
 
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 
+use crate::gateway::browser_landing::{self, AppNotice, Fallback};
 use crate::gateway::types::GatewayState;
 use crate::inbox::{InboxAttachment, InboxItem};
 use crate::workspace::layout::WorkspaceLayout;
@@ -200,41 +201,22 @@ async fn confine(
 /// an item is archived keeps working afterward. Never trusts the item's stored
 /// attachment path as a literal filesystem path — see `confine`.
 pub(super) async fn api_inbox_attachment(
+    method: Method,
+    request_headers: HeaderMap,
     Path((id, index)): Path<(String, usize)>,
     State(state): State<AgentFilesState>,
 ) -> Response {
-    let layout = WorkspaceLayout::new(&state.workspace_dir);
-
-    let active_json = layout.user_inbox_dir().join(format!("{id}.json"));
-    let (item, attachments_root) = if let Ok(item) = crate::inbox::load_item(&active_json).await {
-        (item, layout.user_inbox_attachments_dir())
-    } else {
-        let archived_json = layout.user_inbox_archive_dir().join(format!("{id}.json"));
-        let Ok(item) = crate::inbox::load_item(&archived_json).await else {
-            return StatusCode::NOT_FOUND.into_response();
-        };
-        (item, layout.user_inbox_archive_attachments_dir())
+    let Some((resolved, file_name)) = find_inbox_attachment(&state, &id, index).await else {
+        tracing::debug!(id = %id, index, "inbox attachment requested that no longer exists");
+        return missing_attachment(&state, &id, &method, &request_headers);
     };
-
-    let Some(stored) = item.attachments.get(index) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let Some(file_name) = stored.file_name() else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-
-    let Some(resolved) = confine(&attachments_root, &id, file_name).await else {
-        tracing::warn!(id = %id, index, "rejected inbox attachment request outside item directory");
-        return StatusCode::NOT_FOUND.into_response();
-    };
-
     let Ok(bytes) = tokio::fs::read(&resolved).await else {
-        return StatusCode::NOT_FOUND.into_response();
+        tracing::warn!(id = %id, index, path = %resolved.display(), "inbox attachment not readable");
+        return missing_attachment(&state, &id, &method, &request_headers);
     };
 
     let mime_type = crate::interfaces::attachment::detect_mime_type(&resolved);
     let safe_filename: String = file_name
-        .to_string_lossy()
         .chars()
         .filter(|c| *c != '"' && *c != '\\')
         .collect();
@@ -249,6 +231,66 @@ pub(super) async fn api_inbox_attachment(
         headers.insert(axum::http::header::CONTENT_DISPOSITION, v);
     }
     response
+}
+
+/// The answer for an attachment that is gone: a browser that opened the link
+/// goes to the item in the Inbox, which says so; anything else gets a JSON
+/// error.
+fn missing_attachment(
+    state: &AgentFilesState,
+    id: &str,
+    method: &Method,
+    headers: &HeaderMap,
+) -> Response {
+    const MESSAGE: &str =
+        "This attachment is no longer available. It may have been removed from its inbox item.";
+    if browser_landing::is_top_level_navigation(method, headers) {
+        let item = format!("{}:{id}", state.agent_name);
+        return browser_landing::app_redirect(
+            &browser_landing::app_path(
+                "/inbox",
+                &[
+                    ("item", &item),
+                    ("notice", AppNotice::InboxAttachmentMissing.code()),
+                ],
+            ),
+            Fallback {
+                title: "Attachment unavailable",
+                message: MESSAGE,
+            },
+        );
+    }
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({ "error": MESSAGE })),
+    )
+        .into_response()
+}
+
+/// The file of attachment `index` of inbox item `id` (active or archived),
+/// confined to the item's attachment directory, and its file name.
+async fn find_inbox_attachment(
+    state: &AgentFilesState,
+    id: &str,
+    index: usize,
+) -> Option<(std::path::PathBuf, String)> {
+    let layout = WorkspaceLayout::new(&state.workspace_dir);
+
+    let active_json = layout.user_inbox_dir().join(format!("{id}.json"));
+    let (item, attachments_root) = if let Ok(item) = crate::inbox::load_item(&active_json).await {
+        (item, layout.user_inbox_attachments_dir())
+    } else {
+        let archived_json = layout.user_inbox_archive_dir().join(format!("{id}.json"));
+        let item = crate::inbox::load_item(&archived_json).await.ok()?;
+        (item, layout.user_inbox_archive_attachments_dir())
+    };
+
+    let file_name = item.attachments.get(index)?.file_name()?.to_owned();
+    let Some(resolved) = confine(&attachments_root, id, &file_name).await else {
+        tracing::warn!(id = %id, index, "rejected inbox attachment request outside item directory");
+        return None;
+    };
+    Some((resolved, file_name.to_string_lossy().into_owned()))
 }
 
 /// Build the agent-inbox API router (`POST /api/agents/{name}/agent-inbox`).
@@ -367,6 +409,7 @@ mod tests {
 
         GatewayState {
             turn_journal: crate::gateway::turn_journal::TurnJournal::default(),
+            queued: std::sync::Arc::default(),
             reload_tx: core.reload_tx,
             command_tx: core.command_tx,
             stop_tx: core.stop_tx,
@@ -535,7 +578,13 @@ mod tests {
         .await;
 
         let state = make_state(dir.path().to_path_buf());
-        let response = api_inbox_attachment(Path(("item1".to_string(), 0)), State(state)).await;
+        let response = api_inbox_attachment(
+            Method::GET,
+            HeaderMap::new(),
+            Path(("item1".to_string(), 0)),
+            State(state),
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::OK);
     }
@@ -576,7 +625,13 @@ mod tests {
         write_active_item(&layout, "item1", vec![]).await;
 
         let state = make_state(dir.path().to_path_buf());
-        let response = api_inbox_attachment(Path(("item1".to_string(), 0)), State(state)).await;
+        let response = api_inbox_attachment(
+            Method::GET,
+            HeaderMap::new(),
+            Path(("item1".to_string(), 0)),
+            State(state),
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
@@ -585,10 +640,51 @@ mod tests {
     async fn api_inbox_attachment_unknown_item_404s() {
         let dir = tempfile::tempdir().unwrap();
         let state = make_state(dir.path().to_path_buf());
-        let response =
-            api_inbox_attachment(Path(("does-not-exist".to_string(), 0)), State(state)).await;
+        let response = api_inbox_attachment(
+            Method::GET,
+            HeaderMap::new(),
+            Path(("does-not-exist".to_string(), 0)),
+            State(state),
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("no longer available")),
+            "a fetch is told why, in the API's error shape: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tab_opening_a_missing_attachment_goes_to_its_inbox_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_state(dir.path().to_path_buf());
+        let mut headers = HeaderMap::new();
+        headers.insert("sec-fetch-dest", "document".parse().unwrap());
+        headers.insert("sec-fetch-mode", "navigate".parse().unwrap());
+        let response = api_inbox_attachment(
+            Method::GET,
+            headers,
+            Path(("item1".to_string(), 2)),
+            State(state),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::SEE_OTHER, "redirected");
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::LOCATION)
+                .unwrap(),
+            "/inbox?item=test-agent%3Aitem1&notice=inbox-attachment-missing",
+            "to the item, with the notice"
+        );
     }
 
     #[tokio::test]
@@ -611,7 +707,13 @@ mod tests {
         .await;
 
         let state = make_state(dir.path().to_path_buf());
-        let response = api_inbox_attachment(Path(("item1".to_string(), 0)), State(state)).await;
+        let response = api_inbox_attachment(
+            Method::GET,
+            HeaderMap::new(),
+            Path(("item1".to_string(), 0)),
+            State(state),
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
@@ -644,7 +746,13 @@ mod tests {
         .await;
 
         let state = make_state(dir.path().to_path_buf());
-        let response = api_inbox_attachment(Path(("item1".to_string(), 0)), State(state)).await;
+        let response = api_inbox_attachment(
+            Method::GET,
+            HeaderMap::new(),
+            Path(("item1".to_string(), 0)),
+            State(state),
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
@@ -679,7 +787,13 @@ mod tests {
             .unwrap();
 
         let state = make_state(dir.path().to_path_buf());
-        let response = api_inbox_attachment(Path(("item1".to_string(), 0)), State(state)).await;
+        let response = api_inbox_attachment(
+            Method::GET,
+            HeaderMap::new(),
+            Path(("item1".to_string(), 0)),
+            State(state),
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::OK);
     }

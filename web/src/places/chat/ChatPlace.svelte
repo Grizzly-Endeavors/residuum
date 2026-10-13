@@ -9,8 +9,12 @@
   import { carriesFiles } from "../../lib/file-drop";
   import { hub } from "../../lib/hub.svelte";
   import { Icon } from "../../lib/icons";
+  import { startSession } from "../../lib/api";
+  import { forkIntoSession } from "../../lib/chat-actions";
+  import { userErrorMessage } from "../../lib/errors";
   import { notifications } from "../../lib/notifications.svelte";
-  import type { ImageAttachment } from "../../lib/types";
+  import { openSessionByAddress } from "../../lib/session-address";
+  import type { ImageAttachment, WaitingMessage } from "../../lib/types";
   import { Button, EmptyState, Skeleton } from "../../lib/ui";
   import { ws } from "../../lib/ws.svelte";
   import Feed from "../../feed/Feed.svelte";
@@ -20,12 +24,15 @@
   import Composer from "./Composer.svelte";
   import PostTurnStatus from "./PostTurnStatus.svelte";
   import StateCard from "./StateCard.svelte";
+  import WaitingMessages from "./WaitingMessages.svelte";
 
   // An agent's Chat: its header, the conversation, and the composer floating
   // over the foot of the conversation, whose scrolling area runs behind it
   // to the bottom of the place. The agent is the bound one, so the
   // conversation is the coordinator's feed. While the agent isn't running,
   // its state card takes the composer's place at the end of the conversation.
+  // Messages the agent hasn't read yet wait at the end of the conversation,
+  // where each can be sent now or sent to a multitask session instead.
   // Images dropped anywhere on the place are attached to the message.
 
   let { agent, actions }: { agent: string; actions: ShellActions } = $props();
@@ -87,6 +94,50 @@
     }
     void actionRegistry.run(line.action, line.text);
     return true;
+  }
+
+  // ── Messages the agent hasn't read yet ─────────────────────────────
+
+  // Multitask takes the message back from the agent first, so only one of the
+  // two ever works on it. A message the agent read meanwhile stays in the
+  // chat; one taken back whose session couldn't start goes back in the box.
+  async function multitask(message: WaitingMessage): Promise<void> {
+    const name = hub.shownName(agent);
+    if (message.images !== undefined && message.images.length > 0) {
+      notifications.surface(
+        "notice",
+        `A multitask session can't take pictures. Send this now, or let ${name} read it.`,
+      );
+      return;
+    }
+    let withdrawn: boolean;
+    try {
+      withdrawn = await ws.withdrawWaiting(message.id);
+    } catch (err) {
+      notifications.surface(
+        "error",
+        userErrorMessage(err, { action: "Couldn't move the message to a multitask session." }),
+      );
+      return;
+    }
+    if (!withdrawn) {
+      notifications.surface("notice", `${name} already read that message, so it stays here.`);
+      return;
+    }
+    const started = await forkIntoSession(
+      {
+        surface: (kind, text, action) => {
+          notifications.surface(kind, text, undefined, action);
+        },
+        startSession,
+        openSession: (owner, address) => {
+          void openSessionByAddress(owner, address, null);
+        },
+      },
+      agent,
+      message.content,
+    );
+    if (!started) composer?.restore(message.content);
   }
 
   // ── Dropping images ────────────────────────────────────────────────
@@ -194,6 +245,15 @@
         {/if}
       {/if}
       {#if running}
+        <WaitingMessages
+          messages={store.waiting}
+          agentName={hub.shownName(agent)}
+          offline={ws.transport.status !== "connected"}
+          onsendnow={(message) => {
+            ws.sendWaitingNow(message.id);
+          }}
+          onmultitask={(message) => void multitask(message)}
+        />
         <PostTurnStatus memory={store.memoryWorking} review={store.subconsciousWorking} />
       {:else if summary && shownState !== null && shownState !== "running"}
         <div bind:this={cardEl}>

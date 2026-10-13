@@ -1,6 +1,6 @@
 import type { Locator, Page, WebSocketRoute } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
-import { sendFromComposer } from "../support/composer";
+import { FIRST_RECONNECT_MS, reconnectingLine, sendFromComposer } from "../support/composer";
 import { expect, test } from "../support/fixtures";
 
 /**
@@ -271,7 +271,7 @@ test("messages wait while the connection is down, and say so", async ({ page, mo
     open.push(socket);
   });
   await openChat(page);
-  await expect(page.getByRole("status").filter({ hasText: "Reconnecting" })).toHaveCount(0);
+  await expect(reconnectingLine(page)).toHaveCount(0);
   await mock.manualTime();
 
   online = false;
@@ -283,8 +283,10 @@ test("messages wait while the connection is down, and say so", async ({ page, mo
     page.getByText("Reconnecting — 1 message will send once back online."),
   ).toBeVisible();
 
+  // The page tries again once its backoff has run out on the mock's time, and connects.
   online = true;
-  await expect(page.getByText(/^Reconnecting/)).toHaveCount(0);
+  await mock.advance(FIRST_RECONNECT_MS);
+  await expect(reconnectingLine(page)).toHaveCount(0);
   // The queued message reaches the mock on reconnect, and its turn's start shows; then time runs on.
   const feed = page.getByRole("region", { name: "Conversation with atlas" });
   await expect(feed.getByText("Working")).toBeVisible();
@@ -310,6 +312,7 @@ test.describe("the conversation size", () => {
     const panel = await sizePanel(page, isMobile);
     await expect(panel).toContainText("About 14,000 words go to the model each time atlas replies");
     await expect(panel).toContainText("37 times");
+    await expect(panel.getByText("Tools used", { exact: true })).toBeVisible();
     await panel.getByRole("button", { name: "Token counts" }).click();
     await expect(panel.getByText("412,880")).toBeVisible();
     await expectNoAxeViolations(page, isMobile ? { within: OVERLAYS } : {});

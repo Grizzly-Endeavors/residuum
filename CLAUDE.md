@@ -12,21 +12,21 @@
 
 Superseded documents live in [`docs/archive/`](./docs/archive/); they record history and do not describe current behavior.
 
-**Web interface:** The Residuum web UI lives in `residuum/web/` (Svelte 5 SPA). See `web/CLAUDE.md` for details. **Do not confuse with `relay/web/`**, the marketing landing page — it lives in a separate repository, not this one.
+**Web interface:** The Residuum web UI lives in `residuum/web/` (Svelte 5 SPA). See `web/CLAUDE.md` for details. **Do not confuse with `relay/web/`**, the agent-residuum.com site (marketing pages, Cloud sign-in and the account dashboard) — it lives in a separate repository, not this one.
 
 ## Build & Quality Gates
 
 ### Pre-Commit Hooks
 
 Pre-commit hooks enforce quality gates:
-- **pre-commit**: auto-formats with `cargo fmt --all` (re-staging only the paths already staged), runs `cargo clippy --all-targets --all-features -- -D warnings`, runs the tests for the modules touched by the commit, and runs `cargo deny check`. When the commit touches Rust it also runs `scripts/check-generated-types.sh`, which regenerates the web app's TypeScript protocol types from the Rust types and fails on any difference from the staged files. When any file under `web/` is staged (the app, its mock server, its configuration) it also runs the web formatter, ESLint and the style lint, `svelte-check`, and the web unit and component tests (Vitest). Finally it blocks two things outright in the staged diff: a `dbg!()` call, and an `#[allow(...)]` attribute (use `#[expect(lint, reason = "...")]` instead so stale suppressions warn).
+- **pre-commit**: auto-formats with `cargo fmt --all` (re-staging only the paths already staged), runs `cargo clippy --all-targets --all-features -- -D warnings`, runs the tests for the modules touched by the commit, and runs `cargo deny check`. When the commit touches Rust it also runs `scripts/check-generated-types.sh`, which regenerates the web app's TypeScript protocol types from the Rust types and fails on any difference from the staged files. When any file under `web/` is staged (the app, its mock server, its configuration) it also runs the web formatter, ESLint and the style lint, `svelte-check`, and the web unit and component tests (Vitest). When any `scripts/ci-failures*` file is staged it runs the `just ci-failures` log parser's fixtures (`scripts/ci-failures-test.sh`). Finally it blocks two things outright in the staged diff: a `dbg!()` call, and an `#[allow(...)]` attribute (use `#[expect(lint, reason = "...")]` instead so stale suppressions warn).
 - **commit-msg**: advisory checks on the subject line — fails only on a subject under 10 characters, and warns on over-72-character subjects, a trailing period, or a missing conventional prefix.
 
 Bypass is **FORBIDDEN**.
 
 ### Local Tasks
 
-The `justfile` wraps the commands above; `just` lists the recipes. `just check` runs everything CI runs except the web end-to-end suite (web checks, then fmt, clippy, tests, and `cargo deny`), `just test <filter>` runs `cargo test --quiet <filter>`, `just web-mock` runs the web UI against the mock API, and `just web-e2e` runs the web end-to-end, accessibility and visual suite (the visual comparisons render in the Playwright container, so it needs Docker; `just web-e2e-fast` leaves them out). Every cargo recipe builds `web/dist` first when it is missing, because `build.rs` refuses to compile without it.
+The `justfile` wraps the commands above; `just` lists the recipes. `just check` runs everything CI runs except the web end-to-end suite (web checks, then fmt, clippy, tests, and `cargo deny`; a failing check does not stop the others, and the failures are listed at the end), `just test <filter>` runs `cargo test --quiet --no-fail-fast <filter>`, `just web-mock` runs the web UI against the mock API, and `just web-e2e` runs the web end-to-end, accessibility and visual suite (the visual comparisons render in the Playwright container, so it needs Docker; `just web-e2e-fast` leaves them out). In CI the visual comparisons run in a job of their own that never fails a pull request or a release, and report changed shots in one pull request comment. Every cargo recipe builds `web/dist` first when it is missing, because `build.rs` refuses to compile without it.
 
 ### Cross-Platform Targets
 
@@ -63,7 +63,8 @@ Testing is a first-class operation — NEVER skip test implementation.
 - Always run `cargo test --quiet` — never plain `cargo test`. The `--quiet` flag suppresses per-test noise and only shows failures and the summary.
 - Unit tests: `#[cfg(test)] mod tests` at file bottom
 - Integration tests: `tests/` directory
-- A test waits on the event it checks, never on elapsed time. A flaky test is fixed by making it wait on an event the code exposes (adding the signal to the code when there is none), never by widening a timeout, adding a sleep, or rerunning past it. `just stress <filter>` runs tests as two concurrent copies under CPU load, which is how they run when several agents share a machine; a test you add or fix must pass it. CI runs the whole suite that way in the Stress step of the Rust tests, and a red Stress step blocks the merge: fix the wait, never rerun past it. Tests wait through `crate::testing` (waits under one hang guard, gates, a paused-clock helper); `CONTRIBUTING.md`, "Waiting in tests", says which fits where, and a source-scan test enforces it.
+- A test waits on the event it checks, never on elapsed time. A flaky test is fixed by making it wait on an event the code exposes (adding the signal to the code when there is none), never by widening a timeout, adding a sleep, or rerunning past it. `just stress <filter>` runs tests as two concurrent copies under CPU load, which is how they run when several agents share a machine; a test you add or fix must pass it. CI runs the whole suite that way in the Stress step of the Rust tests. A test under the Stress step's "failed under load only" list waits on time: fix the wait, never rerun past it. A test under its "also failed in the Tests step" list is an ordinary failure. Tests wait through `crate::testing` (waits under one hang guard, gates, a paused-clock helper); `CONTRIBUTING.md`, "Waiting in tests", says which fits where, and a source-scan test enforces it.
+- After a red CI run, run `just ci-failures` (or `just ci-failures <pr-number|branch>`) and fix every listed failure before pushing again, except one marked `likely flake` (not `touched`, but `seen elsewhere`). That one may be a flake or a breakage other branches share: check whether `main` fails the same way, and file or add to an `investigate` issue rather than chasing it in this PR. The Stress rule above still applies to a red Stress step. Every other failure, `touched` or not, is this change's to fix until you show otherwise.
 
 ## Code Style
 

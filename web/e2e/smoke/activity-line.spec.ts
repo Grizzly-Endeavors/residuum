@@ -1,6 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import { expectNoAxeViolations } from "../support/axe";
-import { sendFromComposer } from "../support/composer";
+import { FIRST_RECONNECT_MS, reconnectingLine, sendFromComposer } from "../support/composer";
 import { expect, test } from "../support/fixtures";
 
 /**
@@ -66,6 +66,10 @@ test.describe("a live turn", () => {
       feed.getByRole("button", { name: /^Read(ing)? team\/wiki\/index\.md/ }),
     ).toBeVisible();
     await expect(feed.getByText("Looking through recent notes first.")).toBeVisible();
+    // The hub has heard the agent is busy: the header's mark is working. The head
+    // shows the turn's elapsed time in whole seconds, so 1.3s reads as 1s.
+    await expect(page.getByRole("main").locator("[data-working]").first()).toBeAttached();
+    await expect(feed.locator("[data-turn-head]").getByText("1s", { exact: true })).toBeVisible();
     await expectNoAxeViolations(page);
 
     await mock.post("/api/mock/turn-hold", { data: { held: false } });
@@ -76,6 +80,7 @@ test.describe("a live turn", () => {
     await expect(line).toBeVisible();
     await expect(line).toHaveAttribute("aria-expanded", "false");
     await expect(feed.getByText("Working")).toHaveCount(0);
+    await expect(page.getByRole("main").locator("[data-working]")).toHaveCount(0);
     // The turn did work worth timing, so its close says how long: from 0 to
     // the move that reached 61.3s.
     await expect(feed.getByText("Worked for 1m 01s", { exact: true })).toBeVisible();
@@ -152,6 +157,7 @@ test("a turn from history opens to its steps, and a step to its details", async 
   const details = page.locator(`#${(await step.getAttribute("aria-controls")) ?? ""}`);
   await expect(details).toContainText("$ residuum memory stats");
   await expect(details).toContainText("Context window: 12,847 / 200,000 tokens (6.4%)");
+  await expect(details).toContainText(/Last observer run: \S/);
   await expectNoAxeViolations(page);
 
   await line.click();
@@ -220,8 +226,11 @@ test.describe("connecting while a turn runs", () => {
     await expect(feed.getByText("Working")).toBeVisible();
 
     // The connection drops at 600ms, and the reads finish at 900ms and 1.2s while it is down.
-    // The page reconnects about a second of real time later, and asks for the turn in flight.
     await mock.advance(1_300);
+    // The page tries again a second after it saw the drop, and asks for the turn in flight.
+    await expect(reconnectingLine(page)).toBeVisible();
+    await mock.advance(FIRST_RECONNECT_MS);
+    await expect(reconnectingLine(page)).toHaveCount(0);
     await expect(
       feed.getByRole("button", { name: /^Read(ing)? team\/wiki\/index\.md/ }),
     ).toBeVisible();

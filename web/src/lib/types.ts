@@ -318,7 +318,8 @@ export interface UpdateStatusResponse {
   unverified_update: UnverifiedUpdateResponse | null;
 }
 
-export type CloudTunnelStatus = "disconnected" | "connecting" | "connected";
+/** The tunnel as the hub reports it. `refused`: the relay turned the saved token away. */
+export type CloudTunnelStatus = "disconnected" | "connecting" | "refused" | "connected";
 
 export interface CloudStatusResponse {
   status: CloudTunnelStatus;
@@ -575,6 +576,30 @@ export interface UserFeedItem extends FeedItemBase {
   turn?: TurnRef;
   /** The message's id, for one that arrived live: a turn snapshot names the messages it holds by it. */
   messageId?: string;
+}
+
+/**
+ * A person's message waiting for the agent to read it: sent while a turn ran,
+ * it goes to the agent at the turn's next checkpoint, or starts the turn
+ * after it. It joins the conversation once the agent reads it.
+ */
+export interface WaitingMessage {
+  /** The message's id, which its `user_message` frame names once the agent reads it. */
+  id: string;
+  content: string;
+  images?: ImageAttachment[];
+  sender?: MessageSender;
+  /** Where it arrived: `ws` for the web, or a chat interface. */
+  endpoint: string;
+  /**
+   * The connection, counted from the page's first, it went out on (the next
+   * one, for a message held while the page was offline). A snapshot on a
+   * later connection that doesn't list it means the agent read it, or it was
+   * taken back, while the page was away.
+   */
+  connection: number;
+  /** What was asked of it and not answered yet: sending it now, or taking it back. */
+  asked?: "send-now" | "withdraw";
 }
 
 export interface AssistantFeedItem extends FeedItemBase {

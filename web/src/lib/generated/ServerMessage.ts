@@ -4,6 +4,7 @@ import type { ImageAttachment } from "./ImageAttachment";
 import type { MessageSender } from "./MessageSender";
 import type { OutboundA2aTaskSummary } from "./OutboundA2aTaskSummary";
 import type { PostTurnActivityKind } from "./PostTurnActivityKind";
+import type { QueuedMessage } from "./QueuedMessage";
 import type { SessionCommandErrorCode } from "./SessionCommandErrorCode";
 import type { SessionDeliveryOutcome } from "./SessionDeliveryOutcome";
 import type { SessionRunStatus } from "./SessionRunStatus";
@@ -244,7 +245,23 @@ details: string | null, } | { "type": "pong" } | { "type": "turn_snapshot",
 /**
  * The turn, or `null` when none is running.
  */
-turn: TurnInProgress | null, } | { "type": "reloading" } | { "type": "notice", 
+turn: TurnInProgress | null, 
+/**
+ * People's messages waiting for the agent to read them, oldest first.
+ */
+queued: Array<QueuedMessage>, } | { "type": "message_queued", 
+/**
+ * The waiting message.
+ */
+message: QueuedMessage, } | { "type": "message_withdrawn", 
+/**
+ * The message's id.
+ */
+id: string, } | { "type": "queued_message_unavailable", 
+/**
+ * The message's id.
+ */
+id: string, } | { "type": "reloading" } | { "type": "notice", 
 /**
  * Human-readable result message.
  */

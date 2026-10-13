@@ -141,6 +141,9 @@ pub(crate) struct GatewayCore {
     pub hub_dir: std::path::PathBuf,
     pub bus_handle: BusHandle,
     pub publisher: Publisher,
+    /// People's messages waiting for the main agent to read them, which the
+    /// web UI can withdraw or have sent now.
+    pub queued: Arc<crate::gateway::queued_messages::QueuedMessages>,
 }
 
 /// Receiver halves consumed by the event loop.
@@ -171,6 +174,7 @@ impl GatewayCore {
             hub_dir,
             bus_handle,
             publisher,
+            queued: Arc::default(),
         };
         let receivers = CoreReceivers {
             reload: reload_rx,
@@ -216,6 +220,9 @@ pub(crate) struct GatewayState {
     /// The main conversation's turn in flight, which every connection
     /// follows the conversation through and can ask to be shown.
     pub turn_journal: crate::gateway::turn_journal::TurnJournal,
+    /// People's messages waiting for the main agent, for `withdraw_queued`
+    /// and `send_queued_now`.
+    pub queued: Arc<crate::gateway::queued_messages::QueuedMessages>,
     /// Workspace layout, for the Schedule place's reads of HEARTBEAT.yml,
     /// `pulse_state.json`, and its in-place edits to HEARTBEAT.yml.
     pub layout: WorkspaceLayout,
@@ -258,9 +265,10 @@ pub(crate) struct AgentRuntime {
     /// `crate::gateway::post_turn`) and the main loop's own turn-count
     /// fallback can both reach it without racing.
     pub learning_state: Arc<std::sync::Mutex<crate::subconscious::LearningState>>,
-    /// Background worker for the automatic observe cycle (including the
-    /// idle transition's) — see `crate::gateway::post_turn`.
-    pub post_turn_observe: Arc<crate::gateway::post_turn::ObserveWorker>,
+    /// Background worker for the memory cycle: automatic observation
+    /// (including the idle transition's) and the `/observe` and `/reflect`
+    /// commands — see `crate::gateway::post_turn`.
+    pub memory_worker: Arc<crate::gateway::post_turn::MemoryWorker>,
     /// Background worker for the end-of-turn subconscious evaluation.
     pub post_turn_subconscious: Arc<crate::gateway::post_turn::SubconsciousWorker>,
     /// Results from both post-turn workers above, applied on the main loop
@@ -271,6 +279,11 @@ pub(crate) struct AgentRuntime {
     /// checkpoint drain (see `process_leftover_interrupts`). The event loop
     /// runs them as turns before it waits on anything else.
     pub deferred_inbound: std::collections::VecDeque<crate::bus::MessageEvent>,
+    /// People's messages waiting for the agent to read them: on a turn's
+    /// interrupt channel or in `deferred_inbound`. Asked before either hands
+    /// one on, so a withdrawn message is dropped and one to send now is held
+    /// for the next turn.
+    pub queued: Arc<crate::gateway::queued_messages::QueuedMessages>,
     pub hybrid_searcher: Arc<HybridSearcher>,
     pub session_runtime: Arc<SessionRuntime>,
     pub session_registry: Arc<SessionRegistry>,

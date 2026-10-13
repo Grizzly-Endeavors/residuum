@@ -52,16 +52,14 @@ export function needsRunningAgent(ctx: ChatActionContext): string | undefined {
 
 /**
  * Fork the agent's conversation into a session that works on `task` while
- * the conversation carries on. Its replies stay in the session.
+ * the conversation carries on. Its replies stay in the session. Says which
+ * session it started, or why it couldn't; resolves to whether it started one.
  */
-async function forkIntoSession(ctx: ChatActionContext, agent: string, task: string): Promise<void> {
-  if (task === "") {
-    ctx.surface(
-      "notice",
-      'Add the task after /multitask, like "/multitask compare the three quotes".',
-    );
-    return;
-  }
+export async function forkIntoSession(
+  ctx: Pick<ChatActionContext, "surface" | "startSession" | "openSession">,
+  agent: string,
+  task: string,
+): Promise<boolean> {
   try {
     const address = await ctx.startSession(agent, { prompt: task, fork: true });
     ctx.surface("system", `Forked into ${address}. Its replies show there, not in this chat.`, {
@@ -70,8 +68,10 @@ async function forkIntoSession(ctx: ChatActionContext, agent: string, task: stri
         ctx.openSession(agent, address);
       },
     });
+    return true;
   } catch (err) {
     ctx.surface("error", userErrorMessage(err, { action: "Couldn't fork the conversation." }));
+    return false;
   }
 }
 
@@ -168,7 +168,15 @@ export function chatActions(ctx: ChatActionContext): AppAction[] {
       takesText: true,
       disabled: offline,
       run: (text) => {
-        if (ctx.agent !== null) void forkIntoSession(ctx, ctx.agent, text?.trim() ?? "");
+        const task = text?.trim() ?? "";
+        if (task === "") {
+          ctx.surface(
+            "notice",
+            'Add the task after /multitask, like "/multitask compare the three quotes".',
+          );
+          return;
+        }
+        if (ctx.agent !== null) void forkIntoSession(ctx, ctx.agent, task);
       },
     },
     {

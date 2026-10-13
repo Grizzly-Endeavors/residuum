@@ -1,9 +1,10 @@
-//! Post-turn background work: the automatic observer/reflector cycle and the
-//! end-of-turn subconscious evaluation, run off the event loop so a turn's
-//! LLM-calling housekeeping never blocks the next inbound message, a
-//! shutdown signal, or a stop request from being handled.
+//! Background memory and post-turn work: the observer/reflector cycle (the
+//! automatic one and the `/observe` and `/reflect` commands) and the
+//! end-of-turn subconscious evaluation, run off the event loop so their LLM
+//! calls never block the next inbound message, a shutdown signal, or a stop
+//! request from being handled.
 //!
-//! Each kind (observe, subconscious) runs through its own worker: at most
+//! Each kind (memory, subconscious) runs through its own worker: at most
 //! one cycle in flight at a time, and any trigger that arrives while one is
 //! running collapses into exactly one follow-up run rather than stacking —
 //! see [`Coalescer`]. The slow part (the LLM call, plus any file persistence
@@ -44,7 +45,7 @@ use crate::subconscious::{
 };
 
 /// What idle transition step to run once a background observe cycle
-/// triggered by [`ObserveWorker::trigger_for_idle`] finishes, carried back
+/// triggered by [`MemoryWorker::trigger_for_idle`] finishes, carried back
 /// on [`PostTurnResult::IdleObservationReady`].
 pub(crate) struct IdleContinuation {
     pub timeout_mins: u64,
@@ -54,11 +55,14 @@ pub(crate) struct IdleContinuation {
 
 /// What the main loop needs to apply from a finished background cycle.
 pub(crate) enum PostTurnResult {
-    /// An automatic (non-idle) observe cycle produced a merge — reload the
-    /// agent's observations/recent-context views.
+    /// A (non-idle) memory cycle produced a merge — rotate the agent's
+    /// history and reload its observations/recent-context views.
     ObservationReady,
+    /// A `/reflect` rewrote the observation log and nothing was merged —
+    /// reload the agent's observations only.
+    ReflectionReady,
     /// The idle-triggered observe cycle finished; `reload_needed` says
-    /// whether it actually produced a merge (an idle transition still runs
+    /// whether it changed memory (an idle transition still runs
     /// its continuation either way — clearing messages, switching the
     /// interface, injecting the continuity note — since those don't depend
     /// on whether there was anything to observe).
@@ -176,16 +180,36 @@ async fn publish_activity(publisher: Option<&Publisher>, kind: PostTurnActivityK
     }
 }
 
-/// Background worker for the automatic observer/reflector cycle.
-pub(crate) struct ObserveWorker {
-    coalescer: Coalescer,
-    /// Held for the whole of every observation cycle — this worker's and a
-    /// manually forced one's (see [`Self::lock_cycle`]) — so two cycles never
-    /// load, observe, and remove the same recent messages twice.
-    cycle_lock: tokio::sync::Mutex<()>,
+/// How a queued observation runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ObserveMode {
+    /// A threshold crossing or idle transition: backs off after a failure
+    /// and stays quiet unless a failure streak starts or clears.
+    Automatic,
+    /// `/observe`: always attempts and tells the user how it went.
+    Forced,
+}
+
+/// What the next memory cycle runs, accumulated across every trigger that
+/// coalesces into it.
+#[derive(Default)]
+struct QueuedMemoryWork {
     /// The snapshot the next cycle should run with — always the most recent
     /// trigger's, overwritten on every call regardless of coalescing.
-    latest_mem: Mutex<Option<MemorySubsystems>>,
+    mem: Option<MemorySubsystems>,
+    /// A forced observation outranks an automatic one queued with it.
+    observe: Option<ObserveMode>,
+    /// Whether `/reflect` asked for a reflection.
+    reflect: bool,
+}
+
+/// Background worker for the main agent's memory cycle: automatic
+/// observation, and the `/observe` and `/reflect` commands. Sharing one
+/// worker means no two of them ever load, observe, and remove the same
+/// recent messages twice, or show the busy indicator over each other.
+pub(crate) struct MemoryWorker {
+    coalescer: Coalescer,
+    queued: Mutex<QueuedMemoryWork>,
     /// Set only by [`Self::trigger_for_idle`] and never cleared by a plain
     /// [`Self::trigger`] — an idle transition queued behind a plain trigger
     /// must still run its continuation once a cycle finally completes.
@@ -193,22 +217,22 @@ pub(crate) struct ObserveWorker {
     result_tx: mpsc::UnboundedSender<PostTurnResult>,
 }
 
-impl ObserveWorker {
+impl MemoryWorker {
     #[must_use]
     pub(crate) fn new(result_tx: mpsc::UnboundedSender<PostTurnResult>) -> Arc<Self> {
         Arc::new(Self {
             coalescer: Coalescer::new(),
-            cycle_lock: tokio::sync::Mutex::new(()),
-            latest_mem: Mutex::new(None),
+            queued: Mutex::new(QueuedMemoryWork::default()),
             idle_continuation: Mutex::new(None),
             result_tx,
         })
     }
 
-    /// Trigger a plain (non-idle) observation cycle.
+    /// Trigger a plain (non-idle) automatic observation cycle.
     pub(crate) fn trigger(self: &Arc<Self>, mem: MemorySubsystems) {
-        *lock(&self.latest_mem) = Some(mem);
-        self.spawn_or_coalesce();
+        self.queue(mem, |work| {
+            work.observe.get_or_insert(ObserveMode::Automatic);
+        });
     }
 
     /// Trigger an observation cycle that, once it finishes, should also run
@@ -218,27 +242,35 @@ impl ObserveWorker {
         mem: MemorySubsystems,
         continuation: IdleContinuation,
     ) {
-        *lock(&self.latest_mem) = Some(mem);
         *lock(&self.idle_continuation) = Some(continuation);
-        self.spawn_or_coalesce();
+        self.trigger(mem);
     }
 
-    /// Wait for any in-flight background cycle to finish and hold off new
-    /// ones while the guard lives — for a manually forced observe, which
-    /// runs on the main loop and must not observe the same messages as a
-    /// concurrent background cycle.
-    pub(crate) async fn lock_cycle(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.cycle_lock.lock().await
+    /// Queue `/observe`: an observation that ignores the automatic backoff
+    /// and reports its outcome. Waits behind a cycle already running.
+    pub(crate) fn force_observe(self: &Arc<Self>, mem: MemorySubsystems) {
+        self.queue(mem, |work| work.observe = Some(ObserveMode::Forced));
     }
 
-    fn spawn_or_coalesce(self: &Arc<Self>) {
+    /// Queue `/reflect`: compress the observation log regardless of its
+    /// size, and report the outcome. Waits behind a cycle already running.
+    pub(crate) fn force_reflect(self: &Arc<Self>, mem: MemorySubsystems) {
+        self.queue(mem, |work| work.reflect = true);
+    }
+
+    fn queue(self: &Arc<Self>, mem: MemorySubsystems, add: impl FnOnce(&mut QueuedMemoryWork)) {
+        {
+            let mut queued = lock(&self.queued);
+            queued.mem = Some(mem);
+            add(&mut queued);
+        }
         let this = Arc::clone(self);
         self.coalescer
             .trigger(|| crate::util::spawn_in_span(async move { this.run_loop().await }));
     }
 
     async fn run_loop(&self) {
-        let publisher = lock(&self.latest_mem).as_ref().map(|m| m.publisher.clone());
+        let publisher = lock(&self.queued).mem.as_ref().map(|m| m.publisher.clone());
         publish_activity(publisher.as_ref(), PostTurnActivityKind::Memory, true).await;
         loop {
             self.run_one_cycle().await;
@@ -250,36 +282,51 @@ impl ObserveWorker {
     }
 
     async fn run_one_cycle(&self) {
-        let _cycle = self.cycle_lock.lock().await;
-        let Some(mem) = lock(&self.latest_mem).take() else {
-            // Both trigger paths set this before spawning or marking a
+        let (mem, observe, reflect) = {
+            let mut queued = lock(&self.queued);
+            // Every trigger sets this before spawning or marking a
             // follow-up, and only a cycle takes it, so a run loop always
             // finds one.
-            return;
+            let Some(mem) = queued.mem.take() else {
+                return;
+            };
+            (
+                mem,
+                queued.observe.take(),
+                std::mem::take(&mut queued.reflect),
+            )
         };
-        let reload_needed = memory::execute_observation(&mem, &self.coalescer.shutdown).await;
+        let shutdown = &self.coalescer.shutdown;
+        let observed = match observe {
+            Some(ObserveMode::Automatic) => memory::execute_observation(&mem, shutdown).await,
+            Some(ObserveMode::Forced) => memory::execute_forced_observation(&mem, shutdown).await,
+            None => false,
+        };
+        let reflected = reflect && memory::execute_forced_reflection(&mem, shutdown).await;
         let continuation = lock(&self.idle_continuation).take();
         let result = if let Some(continuation) = continuation {
             PostTurnResult::IdleObservationReady {
-                reload_needed,
+                reload_needed: observed || reflected,
                 continuation,
             }
-        } else if reload_needed {
+        } else if observed {
             PostTurnResult::ObservationReady
+        } else if reflected {
+            PostTurnResult::ReflectionReady
         } else {
             return;
         };
         if self.result_tx.send(result).is_err() {
             tracing::debug!(
-                "post-turn result channel closed, dropping observation result (shutting down)"
+                "post-turn result channel closed, dropping memory cycle result (shutting down)"
             );
         }
     }
 
-    /// Cancel an observation still waiting on its extraction call, give one
-    /// already merging up to `grace` to finish, and ignore later triggers.
+    /// Cancel a cycle still waiting on its model call, give one already
+    /// merging up to `grace` to finish, and ignore later triggers.
     pub(crate) async fn shutdown(&self, grace: Duration) {
-        self.coalescer.shutdown(grace, "observe").await;
+        self.coalescer.shutdown(grace, "memory").await;
     }
 }
 
@@ -661,7 +708,7 @@ mod tests {
         mem: MemorySubsystems,
         /// Holds each extraction call until the test releases it.
         gate: Gate,
-        worker: Arc<ObserveWorker>,
+        worker: Arc<MemoryWorker>,
         results: mpsc::UnboundedReceiver<PostTurnResult>,
         activity: Subscriber<PostTurnActivityEvent>,
     }
@@ -706,7 +753,7 @@ mod tests {
             layout,
             mem,
             gate,
-            worker: ObserveWorker::new(result_tx),
+            worker: MemoryWorker::new(result_tx),
             results,
             activity,
         }
@@ -780,7 +827,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn observe_worker_runs_off_loop_and_coalesces_into_one_follow_up() {
+    async fn memory_worker_runs_off_loop_and_coalesces_into_one_follow_up() {
         let mut h = observe_harness().await;
         append_message(&h.layout, "first turn").await;
 
@@ -818,7 +865,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn observe_worker_keeps_messages_that_arrive_during_a_cycle() {
+    async fn memory_worker_keeps_messages_that_arrive_during_a_cycle() {
         let mut h = observe_harness().await;
         append_message(&h.layout, "observed").await;
         h.worker.trigger(h.mem.clone());
@@ -890,27 +937,101 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forced_observe_lock_waits_for_the_background_cycle() {
-        let h = observe_harness().await;
+    async fn forced_observe_runs_in_the_background_despite_backoff() {
+        let mut h = observe_harness().await;
         append_message(&h.layout, "hello").await;
+        h.mem.observer.automatic_failure_tracker().record_failure();
+
+        // Returns at once: the extraction waits at the gate in the worker,
+        // off the caller's path, even though automatic cycles are backing off.
+        h.worker.force_observe(h.mem.clone());
+        h.gate.until_held(1).await;
+        memory_activity_reaches(&mut h.activity, true).await;
+
+        h.gate.release(1);
+        let result = wait::next("the forced observation result", &mut h.results).await;
+        assert!(matches!(result, PostTurnResult::ObservationReady));
+        assert!(
+            load_recent_messages(&h.layout.recent_messages_json())
+                .await
+                .unwrap()
+                .is_empty(),
+            "the forced observation removed what it observed"
+        );
+    }
+
+    #[tokio::test]
+    async fn forced_observe_queues_behind_a_running_cycle() {
+        let mut h = observe_harness().await;
+        append_message(&h.layout, "first turn").await;
         h.worker.trigger(h.mem.clone());
         h.gate.until_held(1).await;
 
-        // The background cycle holds the lock while its extraction waits at the
-        // gate, so the forced observe's lock is still pending when first polled.
-        tokio::select! {
-            biased;
-            _guard = h.worker.lock_cycle() => {
-                panic!("a forced observe must wait while a background cycle is extracting");
-            }
-            () = std::future::ready(()) => {}
+        append_message(&h.layout, "second turn").await;
+        h.worker.force_observe(h.mem.clone());
+        assert_eq!(
+            h.gate.arrived(),
+            1,
+            "the forced observation waits for the running cycle"
+        );
+
+        h.gate.open_all();
+        for _ in 0..2 {
+            let result = wait::next("an observation result", &mut h.results).await;
+            assert!(matches!(result, PostTurnResult::ObservationReady));
         }
-        h.gate.release(1);
-        let _guard = wait::guarded(
-            "the lock to free once the background cycle finishes",
-            h.worker.lock_cycle(),
+        memory_activity_reaches(&mut h.activity, false).await;
+        assert_eq!(h.gate.arrived(), 2, "one cycle, then the forced one");
+    }
+
+    #[tokio::test]
+    async fn forced_reflect_runs_in_the_background_and_reloads_observations() {
+        let mut h = observe_harness().await;
+        let reflector_gate = Gate::closed("reflector");
+        let search_index = Arc::new(
+            crate::memory::search::MemoryIndex::open_or_create(&h.layout.search_index_dir())
+                .unwrap(),
+        );
+        let mem = MemorySubsystems {
+            merge_writer: Arc::new(crate::memory::merge_writer::MemoryMergeWriter::new(
+                crate::memory::reflector::Reflector::new(
+                    Box::new(GatedProvider::new(
+                        &reflector_gate,
+                        r#"{"observations": [{"content": "compressed", "timestamp": "2026-02-21T14:30", "visibility": "user"}]}"#,
+                    )),
+                    crate::memory::reflector::ReflectorConfig::default(),
+                ),
+                h.layout.clone(),
+                search_index,
+                None,
+                None,
+            )),
+            ..h.mem.clone()
+        };
+        crate::memory::log_store::append_observations(
+            &h.layout.observations_json(),
+            vec![crate::memory::types::Observation {
+                timestamp: chrono::Utc::now().naive_utc(),
+                source_episodes: Some("ep-001".to_string()),
+                visibility: Visibility::User,
+                content: "something worth keeping".to_string(),
+                source: crate::memory::types::SourceTag::main(),
+            }],
         )
-        .await;
+        .await
+        .unwrap();
+
+        h.worker.force_reflect(mem);
+        reflector_gate.until_held(1).await;
+        memory_activity_reaches(&mut h.activity, true).await;
+
+        reflector_gate.release(1);
+        let result = wait::next("the forced reflection result", &mut h.results).await;
+        assert!(
+            matches!(result, PostTurnResult::ReflectionReady),
+            "a reflection alone reloads observations without rotating history"
+        );
+        assert_eq!(h.gate.arrived(), 0, "a reflection runs no observation");
     }
 
     fn scratch_with_note(note: &str) -> TurnScratch {
