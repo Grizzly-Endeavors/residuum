@@ -199,25 +199,32 @@ web-e2e-webkit *args: _web-deps
 
 # --- checks ------------------------------------------------------------------
 
-# CI's web job except the end-to-end suite, which has its own recipes (web-e2e-fast, web-e2e); web-size builds, then prints the initial route's size
-[group('check')]
-web-check: web-fmt-check web-lint web-typecheck web-test web-size
+web_checks := "web-fmt-check web-lint web-typecheck web-test web-size"
+rust_checks := "rust-fmt-check clippy test types-check deny"
 
-# Everything CI's rust job runs
+# CI's web job except the end-to-end suite, which has its own recipes (web-e2e-fast, web-e2e); web-size builds, then prints the initial route's size. Runs every check and lists the failures.
 [group('check')]
-rust-check: rust-fmt-check clippy test types-check deny
+web-check: _web-deps
+    {{ just_executable() }} _run-parts {{ web_checks }}
 
-# Everything CI runs except the web end-to-end suite (web-e2e-fast, web-e2e); web goes first because the Rust build embeds web/dist
+# Everything CI's rust job runs. Runs every check and lists the failures.
 [group('check')]
-check: web-check rust-check
+rust-check: _web-dist
+    {{ just_executable() }} _run-parts {{ rust_checks }}
+
+# Everything CI runs except the web end-to-end suite (web-e2e-fast, web-e2e); web goes first because the Rust build embeds web/dist. Runs every check and lists the failures.
+[group('check')]
+check: _web-deps
+    {{ just_executable() }} _run-parts {{ web_checks }} {{ rust_checks }}
 
 # Format Rust and web sources
 [group('check')]
 fmt: rust-fmt web-fmt
 
-# Check Rust and web formatting without rewriting
+# Check Rust and web formatting without rewriting; runs both and lists the failures
 [group('check')]
-fmt-check: rust-fmt-check web-fmt-check
+fmt-check:
+    {{ just_executable() }} _run-parts rust-fmt-check web-fmt-check
 
 # --- misc --------------------------------------------------------------------
 
@@ -257,3 +264,22 @@ _web-dist: _web-deps
         echo "web/dist is older than $newer: rebuilding"
     fi
     npm run build
+
+# Runs each named recipe in its own `just` process, so its prerequisites still run. A failing recipe does not stop the rest; the failures are listed at the end and the exit status is non-zero if any failed.
+[private]
+_run-parts +parts:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    parts=({{ parts }})
+    failed=()
+    for part in "${parts[@]}"; do
+        echo "==> $part"
+        if ! {{ just_executable() }} "$part"; then
+            failed+=("$part")
+        fi
+    done
+    if [ "${#failed[@]}" -gt 0 ]; then
+        echo "${#failed[@]} of ${#parts[@]} checks failed: ${failed[*]}" >&2
+        exit 1
+    fi
+    echo "all ${#parts[@]} checks passed"

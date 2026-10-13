@@ -23,7 +23,7 @@ Thanks for your interest in contributing. This document covers the workflow and 
    .githooks/install.sh
    ```
 
-If you have [`just`](https://github.com/casey/just) installed, `just setup` installs the web dependencies (step 3) and the git hooks (step 5) in one go, and `just` on its own lists everything else: `just check` runs everything CI runs except the web end-to-end suite, `just test memory::` runs one module's tests, and `just web-mock` starts the web UI against a mock API with no backend. Every recipe wraps a command documented here, so `just` is optional.
+If you have [`just`](https://github.com/casey/just) installed, `just setup` installs the web dependencies (step 3) and the git hooks (step 5) in one go, and `just` on its own lists everything else: `just check` runs everything CI runs except the web end-to-end suite and lists every failing check in one run, `just test memory::` runs one module's tests, and `just web-mock` starts the web UI against a mock API with no backend. Every recipe wraps a command documented here, so `just` is optional.
 
 ## Branch & PR Workflow
 
