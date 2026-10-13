@@ -99,9 +99,14 @@
 
   const scroller = new FeedScroller({ covered: () => dockHeight });
 
+  // Attaching measures the reader's place, which reads the dock's height. Only
+  // the elements may re-attach the scroller: a dock resize that re-ran this
+  // would drop a held place and restart the resize baselines.
   $effect(() => {
-    if (!scrollEl || !innerEl) return;
-    return scroller.attach(scrollEl, innerEl);
+    const area = scrollEl;
+    const column = innerEl;
+    if (!area || !column) return;
+    return untrack(() => scroller.attach(area, column));
   });
 
   $effect(() => {
