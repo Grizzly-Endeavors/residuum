@@ -1,0 +1,7 @@
+2026-09-25T14:31:14.4422423Z ##[group]Run cargo clippy --all-targets --all-features --target x86_64-pc-windows-gnu -- -D warnings
+2026-09-25T14:34:39.5029293Z error: this function's return value is unnecessary
+2026-09-25T14:34:39.5030291Z    --> src/checkpoints/backend.rs:519:1
+2026-09-25T14:34:46.4420807Z error: could not compile `residuum` (lib) due to 1 previous error
+2026-09-25T14:35:11.2525072Z error: could not compile `residuum` (lib test) due to 1 previous error
+2026-09-25T14:35:11.5496625Z ##[error]Process completed with exit code 101.
+2026-09-25T14:35:11.6059926Z Post job cleanup.
