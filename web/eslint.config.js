@@ -126,6 +126,28 @@ export default tseslint.config(
       ],
     },
   },
+  // The page's clock is the fixtures' (`e2e/support/fixtures.ts`), which keep
+  // it with the mock's time. A spec that drives it itself puts the page and
+  // the mock at different times.
+  {
+    files: ["e2e/**/*.ts"],
+    ignores: ["e2e/support/fixtures.ts"],
+    rules: {
+      "no-restricted-properties": [
+        "error",
+        {
+          property: "waitForTimeout",
+          message:
+            "Wait for the condition the next step depends on (a web-first assertion, expect.poll, or a helper in e2e/support), not for time to pass.",
+        },
+        {
+          property: "clock",
+          message:
+            "Hold or move the page's time with mock.manualTime() and mock.advance(), which keep it with the mock's (see web/CONTRIBUTING.md, \"Waiting\").",
+        },
+      ],
+    },
+  },
 
   // ── Unit and component tests wait on conditions ─────────────────────
   // A wait that ends on elapsed time passes on a quiet machine and fails on a

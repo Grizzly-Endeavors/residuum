@@ -4,10 +4,14 @@
  * On top of Playwright's fixtures it:
  * - resets the mock before every test, so no test sees what another left behind,
  * - keeps the page on loopback, so a font or script on the internet can't change a run,
- * - freezes the page's clock at the mock's clock when a project asks for it,
- *   and in manual time keeps it with the mock's simulated time (see `MockControls`),
+ * - installs Playwright's clock on every page before its scripts run, so the
+ *   page's `Date` and timers are the test's to hold: frozen at the mock's clock
+ *   when a project asks for it, and in manual time moving only with the mock's
+ *   simulated time (see `MockControls`); animation frames stay the browser's
+ *   own, since they are drawing, not time,
  * - makes `page.goto` and `page.reload` wait until the app is usable (`waitForApp`
- *   in `app.ts`), so a spec's first action never lands on a half-built page,
+ *   in `app.ts`), on every page the test opens, so a spec's first action never
+ *   lands on a half-built page,
  * - skips, with the reason, what can't run here: visual specs outside the
  *   Playwright container, and the WebKit project on a machine that can't start WebKit.
  *
@@ -44,17 +48,23 @@ export interface MockControls {
    * stays on screen for as long as the spec looks at it. Call it before
    * starting what you want to watch. The fixture's reset turns it off again.
    *
-   * The page's clock (`Date`) stops at the mock's time too, and moves only
-   * with it, so what the page times itself, such as "Worked for 2s", follows
-   * simulated time. Its timers keep running, so a reconnect still happens.
+   * The page's clock stops at the mock's time too, and moves only with it:
+   * `Date`, and every `setTimeout` and `setInterval` the page sets, so what
+   * the page times itself ("Worked for 2s", a toast's dismissal, the socket's
+   * reconnect backoff) waits for the spec to move time past it. Animation
+   * frames keep running, so the page still draws what reaches it.
    */
   manualTime: () => Promise<void>;
   /**
    * Move manual time forward by `ms`: every timer due by then runs, in order.
-   * The page's clock moves to the end of the span first, so the page reads
-   * every frame the move sends at that time: a turn that starts at 0 and ends
-   * within `advance(1_500)` took 1.5s. Before moving time again, wait for what
-   * this move shows, so its frames are read at this move's time.
+   * The page's clock moves through the span first, running the page's own
+   * timers due in it, each at its time, and stops at the end of the span, so
+   * the page reads every frame the mock's move sends at that time: a turn
+   * that starts at 0 and ends within `advance(1_500)` took 1.5s. Before moving
+   * time again, wait for what this move shows, so its frames are read at this
+   * move's time, and for the page to have set any timer the next move should
+   * run (the socket sets its reconnect when it sees the close, which the
+   * composer's "Reconnecting" shows).
    */
   advance: (ms: number) => Promise<TimeProgress>;
   /**
@@ -65,7 +75,7 @@ export interface MockControls {
    * runs, and the steps end when no timer is left, so the bound is the turn's
    * timers, not a wall-clock guess. A timer can close the moment it opens, so
    * for a window that a later timer ends, `advance` to a time inside it. The
-   * page's clock is set to each timer's time before it runs, but the page may
+   * page's clock runs to each timer's time before it runs, but the page may
    * read its frames after the next step, so assert durations after `advance`.
    */
   stepUntil: (expectation: (timeout: number) => Promise<unknown>) => Promise<void>;
@@ -140,6 +150,35 @@ function waitForAppAfterLoads(page: Page, baseURL: string | undefined): void {
   };
 }
 
+/** The part of Playwright's in-page clock the harness reads: the browser's own functions, saved before the clock replaced them. */
+interface InstalledClock {
+  builtins: Pick<Window, "requestAnimationFrame" | "cancelAnimationFrame">;
+}
+
+/**
+ * An init script that gives the page the browser's own animation frames back
+ * from Playwright's clock, which fakes them as timers. Frames are drawing, not
+ * time: the app flushes streamed text and keeps the feed's scroll place in
+ * them, which has to go on while manual time stands still, or the page would
+ * show nothing a move sent until the next move. Init scripts run in no set
+ * order, so it holds whichever runs first: the property ignores the clock's
+ * assignment, and reads the clock's saved original if the clock got there first.
+ */
+function keepBrowserFrames(): void {
+  const clock = (globalThis as { __pwClock?: InstalledClock }).__pwClock;
+  const frames = {
+    requestAnimationFrame: clock?.builtins.requestAnimationFrame ?? window.requestAnimationFrame,
+    cancelAnimationFrame: clock?.builtins.cancelAnimationFrame ?? window.cancelAnimationFrame,
+  };
+  for (const [name, native] of Object.entries(frames)) {
+    Object.defineProperty(window, name, {
+      configurable: true,
+      get: () => native,
+      set: () => undefined,
+    });
+  }
+}
+
 const USE_CONTAINER_HINT = "or run `just web-e2e-webkit` to use the Playwright container";
 
 /** Why WebKit can't start on this machine, in one line, or `null` when it can. Probed once per worker. */
@@ -183,20 +222,33 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
         if (path === "/api/mock/reset") hubReach.lost = false;
         return (await response.json()) as unknown;
       };
-      // In manual time, what the mock last said its clock reads; the page's clock follows it.
+      // In manual time, what the mock last said its clock reads, and where the page's clock stands.
       let reading: TimeReading | undefined;
-      const pageClockAt = async (ms: number): Promise<void> => {
-        await context.clock.setFixedTime(ms);
+      let pageAt = 0;
+      /** Run the page's timers due by `ms`, in order and each at its time, and stop its clock there. */
+      const pageClockTo = async (ms: number): Promise<void> => {
+        if (ms < pageAt) return;
+        await context.clock.runFor(ms - pageAt);
+        pageAt = ms;
         pageClock.fixedAt = ms;
       };
       const controls: MockControls = {
         post,
         manualTime: async () => {
           reading = (await post("/api/mock/time", { data: { mode: "manual" } })) as TimeReading;
-          await pageClockAt(Date.parse(reading.now));
+          const now = Date.parse(reading.now);
+          // Pausing jumps the page's clock forward from its time to the one given,
+          // firing what falls due on the way. With `Date` held at `now` first, the
+          // pause jumps nowhere, so no timer fires early.
+          await context.clock.setFixedTime(now);
+          await context.clock.pauseAt(now);
+          // `Date` moves again, now only as `pageClockTo` runs the page's timers.
+          await context.clock.setSystemTime(now);
+          pageAt = now;
+          pageClock.fixedAt = now;
         },
         advance: async (ms) => {
-          if (reading !== undefined) await pageClockAt(Date.parse(reading.now) + ms);
+          if (reading !== undefined) await pageClockTo(Date.parse(reading.now) + ms);
           const moved = (await post("/api/mock/time/advance", { data: { ms } })) as TimeProgress &
             TimeReading;
           reading = moved;
@@ -208,7 +260,7 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
               await expectation(STEP_SETTLE_MS);
               return;
             } catch (notYet) {
-              if (reading?.next != null) await pageClockAt(Date.parse(reading.next));
+              if (reading?.next != null) await pageClockTo(Date.parse(reading.next));
               const stepped = (await post("/api/mock/time/step")) as TimeProgress & TimeReading;
               reading = stepped;
               // No timer left to run: the expectation's own failure says what never showed.
@@ -251,10 +303,18 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
     { auto: true },
   ],
 
-  context: async ({ context, frozenClock }, use) => {
+  context: async ({ context, frozenClock, baseURL }, use) => {
+    // Every page, the test's own and any it opens, such as a second tab.
+    context.on("page", (page) => {
+      waitForAppAfterLoads(page, baseURL);
+    });
     await context.route(leavesLoopback, (route) => route.abort("blockedbyclient"));
     pageClock.fixedAt = frozenClock ? FIXED_START_MS : null;
+    // Installed before any page opens, so every timer a page sets, from its
+    // first script on, is the clock's, and manual time holds them all.
     if (frozenClock) await context.clock.setFixedTime(FIXED_START_MS);
+    else await context.clock.install();
+    await context.addInitScript(keepBrowserFrames);
     // With the network off the hub can't be reached, so a page that loads then is ready showing the banner (see `hubReach`).
     const setOffline = context.setOffline.bind(context);
     context.setOffline = async (offline) => {
@@ -262,11 +322,6 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
       await setOffline(offline);
     };
     await use(context);
-  },
-
-  page: async ({ page, baseURL }, use) => {
-    waitForAppAfterLoads(page, baseURL);
-    await use(page);
   },
 });
 

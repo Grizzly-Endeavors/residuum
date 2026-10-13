@@ -8,7 +8,24 @@
  */
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
+import axe from "axe-core";
 import { settleAnimations } from "./app";
+
+/**
+ * axe-core as the builder injects it, but timed by the browser's own timers.
+ * axe waits on `setTimeout` between its rules, and the page's `setTimeout` is
+ * the test clock's (see `fixtures.ts`), which in manual time stands still until
+ * the spec moves it, so a scan would never end. The page's own code keeps the
+ * test clock's timers. Every frame and page has the clock, so a missing one is
+ * a harness fault, reported as such.
+ */
+const AXE_ON_BROWSER_TIMERS = `(function (setTimeout, clearTimeout) {
+${axe.source}
+}).apply(globalThis, (() => {
+  const clock = globalThis.__pwClock;
+  if (clock === undefined) throw new Error("the accessibility scan expects Playwright's clock on every page, and this frame has none");
+  return [clock.builtins.setTimeout, clock.builtins.clearTimeout];
+})());`;
 
 type Violation = Awaited<ReturnType<AxeBuilder["analyze"]>>["violations"][number];
 
@@ -44,7 +61,7 @@ export async function expectNoAxeViolations(
 ): Promise<void> {
   const { within } = options;
   await settleAnimations(page);
-  const builder = new AxeBuilder({ page });
+  const builder = new AxeBuilder({ page, axeSource: AXE_ON_BROWSER_TIMERS });
   if (within !== undefined) builder.include(within);
   const results = await builder.analyze();
 
