@@ -35,6 +35,11 @@ async function connectedPages(page: Page): Promise<number> {
   return answer.pages;
 }
 
+/** How far the feed's scroll position is above the bottom of its range. */
+async function gapToBottom(feed: Locator): Promise<number> {
+  return feed.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);
+}
+
 async function scrollToTop(feed: Locator): Promise<void> {
   await feed.evaluate((el) => {
     el.scrollTop = 0;
@@ -133,6 +138,98 @@ test("Jump to latest sits above the composer, says when a reply landed below, an
   await mock.post("/api/mock/turn-hold", { data: { held: true } });
   await send(page, "Back to the routing doc.");
   await expect(feed.getByText("Back to the routing doc.", { exact: true })).toBeInViewport();
+});
+
+test("scrolling back up while the Jump to latest glide is under way brings the pill back", async ({
+  mock,
+  page,
+}) => {
+  await page.goto("/agent/atlas");
+  const feed = conversation(page);
+  await expect(feed.getByText(GREETING)).toBeInViewport();
+  await scrollToTop(feed);
+  const jump = page.getByRole("button", { name: "Jump to latest" });
+  await expect(jump).toBeVisible();
+
+  // Press the pill, and once the glide has started, move back to the top with no wheel,
+  // touch, key or pointer event in the feed, as find in page or a screen reader does.
+  await feed.evaluate(
+    (el) =>
+      new Promise<void>((resolve) => {
+        const onScroll = (): void => {
+          if (el.scrollTop <= 0) return;
+          el.removeEventListener("scroll", onScroll);
+          el.scrollTop = 0;
+          resolve();
+        };
+        el.addEventListener("scroll", onScroll);
+        document.querySelector<HTMLButtonElement>(".feed-pill-jump")?.click();
+      }),
+  );
+
+  await expect(jump).toBeVisible();
+  // A reply landing now leaves the reader where they went.
+  await mock.post("/api/mock/teammate-message?agent=atlas");
+  await expect(page.getByRole("button", { name: "New reply, jump to latest" })).toBeVisible();
+  await expect(feed.getByText(GREETING)).not.toBeInViewport();
+});
+
+test("a reader who starts scrolling up while a reply streams isn't pulled back down", async ({
+  browserName,
+  isMobile,
+  mock,
+  page,
+}) => {
+  test.skip(
+    isMobile && browserName !== "chromium",
+    "A touch drag is sent over CDP, which only Chromium has.",
+  );
+  // 100px is well inside the distance a reader coming back down counts as at the end.
+  const distance = 100;
+  await page.goto("/agent/atlas");
+  const feed = conversation(page);
+  await expect(feed.getByText(GREETING)).toBeVisible();
+  await expect.poll(() => gapToBottom(feed)).toBeLessThan(2);
+  await mock.manualTime();
+  await send(page, "markdown please");
+  await expect(feed.getByText("Working")).toBeVisible();
+  // The reply has started streaming, and the reader is following it.
+  const before = await feed.evaluate((el) => el.scrollHeight);
+  await mock.advance(1_000);
+  await expect.poll(() => feed.evaluate((el) => el.scrollHeight)).toBeGreaterThan(before + 100);
+  await expect.poll(() => gapToBottom(feed)).toBeLessThan(2);
+
+  // A short drag up, a finger on a phone and the wheel on a desktop, with a piece of the
+  // reply landing between each move and the next.
+  const area = await feed.boundingBox();
+  if (!area) throw new Error("the conversation isn't laid out");
+  const x = Math.round(area.x + area.width / 2);
+  const y = Math.round(area.y + area.height / 3);
+  const steps = 25;
+  if (isMobile) {
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    for (let step = 1; step <= steps; step++) {
+      const touchPoints = [{ x, y: y + (step * distance) / steps }];
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints });
+      await mock.advance(45);
+    }
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  } else {
+    await page.mouse.move(x, y);
+    for (let step = 1; step <= steps; step++) {
+      await page.mouse.wheel(0, -distance / steps);
+      await mock.advance(45);
+    }
+  }
+  for (let piece = 0; piece < 10; piece++) await mock.advance(45);
+  expect(await gapToBottom(feed)).toBeGreaterThan(distance / 2);
+
+  // The rest of the reply lands below them, and the pill says so.
+  await mock.advance(60_000);
+  await expect(feed.getByText("Working")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Jump to latest|New reply/ })).toBeVisible();
+  expect(await gapToBottom(feed)).toBeGreaterThan(distance / 2);
 });
 
 test("the keyboard scrolls a conversation that overflows, and follows it again at the end", async ({
