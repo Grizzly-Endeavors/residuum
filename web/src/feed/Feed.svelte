@@ -12,8 +12,8 @@
 
   // A conversation in the reading column: the main chat, or a session's
   // transcript, with each turn's output grouped (`turns.ts`). It follows new
-  // content while the reader is at the bottom, offers Jump to latest once
-  // they scroll up (and says when something new has landed below them), and
+  // content until the reader scrolls up, offers Jump to latest once they are
+  // away from the end (and says when something new has landed below them), and
   // with `history` loads older parts as they near the top, keeping what they
   // were reading in place. Opening or closing something in it leaves the
   // control that was pressed where it was.
@@ -99,9 +99,9 @@
 
   const scroller = new FeedScroller({ covered: () => dockHeight });
 
-  // Attaching measures the reader's place, which reads the dock's height. Only
-  // the elements may re-attach the scroller: a dock resize that re-ran this
-  // would drop a held place and restart the resize baselines.
+  // Only the elements may re-attach the scroller: re-attaching drops a held
+  // place and restarts the resize baselines, so nothing read while attaching
+  // (the dock's height among it) is tracked.
   $effect(() => {
     const area = scrollEl;
     const column = innerEl;
@@ -197,7 +197,7 @@
       if (!added) return;
       await tick();
       if (anchor && !scroller.isFollowing) {
-        el.scrollTo({ top: el.scrollTop + offsetIn(el, anchor) - before, behavior: "instant" });
+        scroller.moveTo(el.scrollTop + offsetIn(el, anchor) - before);
       }
     } finally {
       prepending = false;
@@ -238,14 +238,15 @@
 
   // Before the items change the content, a scroll position the scroller
   // hasn't taken in yet is judged against the content it was made over: its
-  // event comes a frame later, measured against whatever has landed by then.
+  // event comes a frame later, after whatever has landed by then.
   $effect.pre(() => {
+    // What the change effect below reacts to, so that each of these is
+    // followed by its `contentChanged` in the same task.
     void items.length;
-    void items[0];
-    void items.at(-1);
+    void items.at(-1)?.id;
     void live;
     untrack(() => {
-      scroller.catchUpWithScroll();
+      scroller.takeInPendingScroll();
     });
   });
 
@@ -254,7 +255,7 @@
   let lastLive = false;
   let lastGeneration = 0;
 
-  // A reader at the bottom stays there as the feed grows, at the tail or by
+  // A reader who follows stays at the bottom as the feed grows, at the tail or by
   // a prepend at the head. Their own message, and the first items, always
   // scroll to the bottom. A new item at the tail of a feed whose reader is
   // elsewhere is told to the pill.
@@ -344,7 +345,7 @@
     if (!el) return false;
     const match = itemElements().filter((item) => contentKey(item) === anchor.key)[anchor.nth];
     if (!match) return false;
-    el.scrollTo({ top: el.scrollTop + offsetIn(el, match) - anchor.offset, behavior: "instant" });
+    scroller.moveTo(el.scrollTop + offsetIn(el, match) - anchor.offset);
     return true;
   }
 

@@ -2,6 +2,7 @@ import { act } from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, settle } from "../test/component";
 import { htmlSnippet } from "../test/snippets";
+import { FeedScroller } from "../lib/feed-scroll.svelte";
 import type { FeedItem } from "../lib/types";
 import type { FeedHistory } from "./feed-history";
 import Feed from "./Feed.svelte";
@@ -402,7 +403,7 @@ describe("the scroller under a dock that changes size", () => {
     vi.restoreAllMocks();
   });
 
-  it("keeps a reader near the end following as the composer grows, without re-attaching the scroller", async () => {
+  it("shows no pill to a reader near the end as the composer grows, and never re-attaches the scroller", async () => {
     const observers: CuedObserver[] = [];
     vi.stubGlobal(
       "ResizeObserver",
@@ -434,6 +435,8 @@ describe("the scroller under a dock that changes size", () => {
       return this.classList.contains("feed-dock") ? composer.height : 0;
     });
 
+    const attach = vi.spyOn(FeedScroller.prototype, "attach");
+
     const { container } = render(Feed, {
       agent: "atlas",
       items: [reply],
@@ -462,7 +465,7 @@ describe("the scroller under a dock that changes size", () => {
     await resizeDock(60);
     expect(geometry.scrollTop).toBe(1500);
 
-    // The reader scrolls 50px above the end, within the 120px that still counts as following.
+    // The reader scrolls 50px above the end: they stop following, near enough the end that no pill shows.
     scrollReader(region, geometry, 1450);
     await settle();
     expect(screen.queryByRole("button", { name: /Jump to latest/ })).toBeNull();
@@ -470,5 +473,6 @@ describe("the scroller under a dock that changes size", () => {
     // The composer grows by 100px. The scroller stays attached: it isn't measured afresh.
     await resizeDock(160);
     expect(screen.queryByRole("button", { name: /Jump to latest/ })).toBeNull();
+    expect(attach).toHaveBeenCalledOnce();
   });
 });
