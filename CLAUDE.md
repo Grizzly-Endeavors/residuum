@@ -56,7 +56,7 @@ The lint set is kept in parity with the `rust-toolkit` reference project. `print
 
 The root `clippy.toml` exempts `unwrap_used`, `expect_used`, `panic`, and `dbg_macro` for code inside `#[cfg(test)]` modules and `#[test]`-attributed functions, so test code may freely use unwrap/expect/panic/dbg for readability with no suppression header needed. Adding an `#[expect(clippy::unwrap_used, ...)]` (or `expect_used`/`panic`/`dbg_macro`) to a test file is an error, not belt-and-braces — the lint is already exempt there, so the expectation never fires and becomes an unfulfilled-expectation hard error under `-D warnings`. `clippy::tests_outside_test_module` is the one exception: it is not controllable from `clippy.toml` and stays denied project-wide, so integration tests under `tests/` (which live outside a `#[cfg(test)]` module) still need an explicit `#[expect(clippy::tests_outside_test_module, reason = "...")]`. Plain helper functions at the top level of a `tests/*.rs` file (not wrapped in `#[cfg(test)]` and not themselves `#[test]`-attributed) are also not covered by the `clippy.toml` exemption and still need their own suppression if they use unwrap/expect/panic/dbg.
 
-DO NOT, under any circumstance, change this config without explicit approval from the user.
+Changing a lint, a lint level, or a clippy or deny setting needs explicit approval from the user. Editing a comment in these files to keep it accurate does not.
 
 ### Testing
 
