@@ -449,6 +449,30 @@ describe("FeedScroller", () => {
       expect(scroller.unseen).toBe(true);
     });
 
+    it("doesn't take the browser's move while the page changes the items for the reader's", () => {
+      const { feed, scroller } = attached();
+      scroller.takeInPendingScroll();
+      // As the items change, the browser moves the position up 36px at a layout
+      // in between, and then an older episode is in.
+      feed.geometry.scrollTop = 1464;
+      feed.geometry.scrollHeight = 2800;
+      scroller.contentChanged();
+      expect(scroller.isFollowing).toBe(true);
+      expect(feed.geometry.scrollTop).toBe(2800);
+      expect(scroller.scrolledUp).toBe(false);
+    });
+
+    it("takes a move found after a frame has passed for the reader's again", () => {
+      const { feed, observer, scroller } = attached();
+      scroller.takeInPendingScroll();
+      // The items didn't change in a way the page reports; a frame goes by.
+      observer.notify();
+      feed.geometry.scrollTop = 1300;
+      scroller.contentChanged();
+      expect(scroller.isFollowing).toBe(false);
+      expect(feed.geometry.scrollTop).toBe(1300);
+    });
+
     it("doesn't take the browser keeping a reader at the bottom in range for them leaving", () => {
       const { feed, observer, scroller } = attached();
       // The view grows by 30px: the browser moves the position up to keep it in range.

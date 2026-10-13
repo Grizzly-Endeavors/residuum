@@ -16,12 +16,13 @@
 // records each position it sets. A scroll event that finds the position
 // somewhere else was moved by the reader: by hand, by momentum after a flick,
 // by the scrollbar, or with no input event in the feed at all (find in page, a
-// screen reader, the page's own `scrollIntoView`). Two moves aren't the
+// screen reader, the page's own `scrollIntoView`). Three moves aren't the
 // reader's: a glide toward the end that the scroller or End started, whose
 // events move toward the end (a move away from the end, reader input, the
-// glide's `scrollend` or the scroller's next move of its own ends it), and the
+// glide's `scrollend` or the scroller's next move of its own ends it); the
 // browser moving a reader at the very bottom up to keep the position in range
-// as the content or the view changes size.
+// as the content or the view changes size; and a move the browser makes while
+// the page changes the feed's items (`takeInUpdate`).
 //
 // "The end" means the end of the content, not the end of the scrolling area.
 // A feed can reserve room below its last line (a persistent buffer, and a
@@ -154,6 +155,12 @@ export class FeedScroller {
    * End). Its scroll events move toward the end and aren't the reader's.
    */
   private gliding = false;
+  /**
+   * The page has said its items are about to change (`takeInPendingScroll`),
+   * and the `contentChanged` of that change hasn't come yet. Both come in one
+   * task, with no frame between them for the reader to scroll in.
+   */
+  private updating = false;
   /** The feed was hidden when the scroller last looked: it reports no size, and no position worth judging. */
   private hidden = false;
   /**
@@ -190,6 +197,7 @@ export class FeedScroller {
   }
 
   private readonly onScroll = (): void => {
+    this.updating = false;
     this.takeInScroll();
   };
 
@@ -242,6 +250,21 @@ export class FeedScroller {
    */
   takeInPendingScroll(): void {
     this.takeInScroll();
+    this.updating = true;
+  }
+
+  /**
+   * Where the browser moved the position while the page changed the items
+   * isn't the reader's move. Seen in WebKit on every chat open: an older
+   * episode replaced the feed's loading row, and the position went up 36px,
+   * as far as the content without either allowed, before the episode was laid
+   * out. Against the episode, that move looked like the reader leaving the
+   * bottom, and the chat opened 850px short of its newest message.
+   */
+  private takeInUpdate(): void {
+    const el = this.el;
+    this.updating = false;
+    if (el && !isHidden(el) && !this.hidden) this.knownTop = el.scrollTop;
   }
 
   /** Scroll at once to `top`, as the scroller's own move, and record where it left the position. */
@@ -329,6 +352,7 @@ export class FeedScroller {
       return;
     }
     const shown = this.hidden;
+    this.updating = false;
     this.takeInScroll();
     const end = this.contentEnd();
     const viewport = el.clientHeight;
@@ -404,6 +428,7 @@ export class FeedScroller {
    * told about (`unseen`).
    */
   contentChanged(force = false, arrived = false): void {
+    if (this.updating) this.takeInUpdate();
     if (force) {
       this.following = true;
       this.pinToBottom();
