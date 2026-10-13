@@ -1,0 +1,2 @@
+lint	lint|web/src/lib/probe.css|color-named	web/src/lib/probe.css color-named	web/src/lib/probe.css	2		2:10  Use a color token instead of a named color.
+lint	lint|web/src/lib/a.ts|@typescript-eslint/no-unused-vars	web/src/lib/a.ts @typescript-eslint/no-unused-vars	web/src/lib/a.ts	1		1:7  'unused' is assigned a value but never used.

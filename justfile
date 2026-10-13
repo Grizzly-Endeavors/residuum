@@ -224,6 +224,11 @@ fmt-check: rust-fmt-check web-fmt-check
 ci-failures *args:
     scripts/ci-failures.sh {{ args }}
 
+# Checks the CI log parser behind ci-failures against its fixtures
+[group('check')]
+ci-failures-test:
+    scripts/ci-failures-test.sh
+
 # --- misc --------------------------------------------------------------------
 
 # Lines-of-code summary (needs cloc); extra args go to cloc
