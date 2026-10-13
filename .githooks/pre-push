@@ -3,10 +3,12 @@
 # Pre-push gate: the slow checks, once per push, on the branch as it would be
 # merged with the current main.
 #
-# Rust changes in the pushed range run clippy and the whole test suite; web
-# changes run ESLint and the style lint, svelte-check and the web tests. Every
-# check runs even after one fails, so a push reports all of its problems at
-# once instead of one per attempt, and a summary at the end lists what failed.
+# Rust changes in the pushed range run clippy, the whole test suite and the
+# source scans. The generated-types check runs when Rust or the generated web
+# types change. Web changes run ESLint and the style lint, svelte-check and the
+# web tests. Every check runs even after one fails, so a push reports all of its
+# problems at once instead of one per attempt, and a summary at the end lists
+# what failed.
 #
 # Bypassing this hook with --no-verify is forbidden, for a push as for a
 # commit. If it fails, fix the underlying issue — a hook you route around is a
@@ -60,6 +62,7 @@ git rev-parse --verify --quiet "$MAIN_REF" >/dev/null && MAIN_KNOWN=1
 # neither, every check runs.
 TOUCHES_RUST=0
 TOUCHES_WEB=0
+TOUCHES_GENERATED=0
 classify_range() {
     local local_sha="$1" remote_sha="$2" base=""
     if [ "$remote_sha" != "$ZERO_SHA" ] && git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
@@ -70,6 +73,7 @@ classify_range() {
     if [ -z "$base" ]; then
         TOUCHES_RUST=1
         TOUCHES_WEB=1
+        TOUCHES_GENERATED=1
         return
     fi
     local changed
@@ -77,6 +81,7 @@ classify_range() {
     # assets/ is embedded in the binary, so it can break the build and tests.
     grep -qE '\.rs$|\.toml$|(^|/)Cargo\.lock$|^assets/' <<<"$changed" && TOUCHES_RUST=1
     grep -q '^web/' <<<"$changed" && TOUCHES_WEB=1
+    grep -q '^web/src/lib/generated/' <<<"$changed" && TOUCHES_GENERATED=1
 }
 
 # Every check runs and its result is recorded; nothing exits early.
@@ -153,6 +158,23 @@ prepare_worktree() {
     fi
 }
 
+# Test code must wait on events, not the clock: the scan fails on any wait that
+# is not in the wall-clock backlog.
+source_scan_check() {
+    cargo_in "$1" test --quiet --lib testing::source_scan && return 0
+    echo -e "${RED}ERROR: a source scan failed. A test that waits on elapsed time should wait on the event instead (CONTRIBUTING.md, \"Waiting in tests\").${NC}" >&2
+    return 1
+}
+
+# The web app's protocol types are generated from the Rust types. The check
+# regenerates them and compares the result with the index, so a push that
+# changes Rust has to carry the regenerated files.
+generated_types_check() {
+    (cd "$1" && CARGO_TARGET_DIR="$SHARED_TARGET_DIR" scripts/check-generated-types.sh) && return 0
+    echo -e "${RED}ERROR: web/src/lib/generated is out of date with the Rust types. Run 'just types', stage the result, and commit again.${NC}" >&2
+    return 1
+}
+
 run_rust_checks() {
     local dir="$1"
     (
@@ -173,11 +195,15 @@ run_rust_checks() {
         fi
     ) || {
         FAILED+=("${CHECK_SCOPE}web build for the Rust checks")
-        echo -e "${RED}FAILED: building web/dist, which the Rust build needs. Skipping clippy and the tests.${NC}" >&2
+        echo -e "${RED}FAILED: building web/dist, which the Rust build needs. Skipping the Rust checks.${NC}" >&2
         return
     }
-    run_check "clippy" cargo_in "$dir" clippy --all-targets --all-features -- -D warnings
-    run_check "cargo test" cargo_in "$dir" test --quiet --no-fail-fast
+    if [ "$TOUCHES_RUST" = 1 ]; then
+        run_check "clippy" cargo_in "$dir" clippy --all-targets --all-features -- -D warnings
+        run_check "cargo test" cargo_in "$dir" test --quiet --no-fail-fast
+        run_check "source scans" source_scan_check "$dir"
+    fi
+    run_check "generated types" generated_types_check "$dir"
 }
 
 cargo_in() {
@@ -213,6 +239,7 @@ for line in "${PUSHED_REFS[@]}"; do
 
     TOUCHES_RUST=0
     TOUCHES_WEB=0
+    TOUCHES_GENERATED=0
     classify_range "$local_sha" "$remote_sha"
     [ "$TOUCHES_RUST" = 1 ] || [ "$TOUCHES_WEB" = 1 ] || continue
     CHECKED_ANY=1
@@ -243,7 +270,9 @@ for line in "${PUSHED_REFS[@]}"; do
         dir="$TEMP_TREE"
     fi
 
-    [ "$TOUCHES_RUST" = 1 ] && run_rust_checks "$dir"
+    if [ "$TOUCHES_RUST" = 1 ] || [ "$TOUCHES_GENERATED" = 1 ]; then
+        run_rust_checks "$dir"
+    fi
     [ "$TOUCHES_WEB" = 1 ] && run_web_checks "$dir"
     cleanup
 done

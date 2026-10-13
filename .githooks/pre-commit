@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 #
 # Pre-commit gate: the fast checks, on what is staged. It formats the staged
-# files, keeps the generated types and the dependency audit in step with the
-# commit, and blocks a few things outright from entering the history.
+# files, audits the dependencies when a manifest changes, and blocks a few
+# things outright from entering the history.
 #
-# The slow checks (clippy, the whole test suite, the web lint, type check and
-# tests) run once per push in pre-push. They cost minutes, and paying that on
-# every commit pushes authors to commit less often or to route around the hook.
+# The slow checks (clippy, the whole test suite, the source scans, the
+# generated-types check, and the web lint, type check and tests) run once per
+# push in pre-push. They recompile the crate or the web app, which costs minutes
+# on every commit and pushes authors to commit less often or to route around the
+# hook.
 #
 # Bypassing this hook with --no-verify is forbidden. If it fails, fix the
 # underlying issue — a hook you route around is a hook that isn't there.
@@ -71,22 +73,6 @@ if [ -n "$STAGED_RUST" ] || [ -n "$STAGED_MANIFEST" ]; then
     echo "Formatting..."
     cargo fmt --all || fail "ERROR: cargo fmt failed."
     restage "$STAGED_RUST"
-
-    # The source scans read the whole crate, so a commit to any module can
-    # break them. They are the one test kept here: a wait on elapsed time is
-    # cheap to fix while the commit that adds it is still being written.
-    echo "Scanning sources..."
-    cargo test --quiet --lib testing::source_scan \
-        || fail "ERROR: a source scan failed. A test that waits on elapsed time should wait on the event instead (CONTRIBUTING.md, \"Waiting in tests\")."
-
-    # The web app's protocol types are generated from the Rust types, so a
-    # commit that changes Rust has to carry the regenerated files. The script
-    # compares what the Rust types generate now with the index.
-    if [ -n "$STAGED_RUST" ]; then
-        echo "Checking generated types..."
-        scripts/check-generated-types.sh \
-            || fail "ERROR: web/src/lib/generated is out of date with the Rust types. Run 'just types', stage the result, and commit again."
-    fi
 
     if command -v cargo-deny >/dev/null 2>&1; then
         echo "Auditing dependencies..."
@@ -163,4 +149,4 @@ if [ -n "$BACKLOG_GROWTH" ]; then
     exit 1
 fi
 
-echo -e "${GREEN}Pre-commit checks passed. Clippy, the tests and the web checks run on push.${NC}"
+echo -e "${GREEN}Pre-commit checks passed. Clippy, the tests, the source scans, the generated types and the web checks run on push.${NC}"
