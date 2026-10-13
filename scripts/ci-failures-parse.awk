@@ -1,18 +1,18 @@
 # Turns one failed CI job's log into failure records for scripts/ci-failures.sh.
 #
 # Input is a job log as `gh api repos/<repo>/actions/jobs/<id>/logs` prints it: one
-# line per log line with a leading timestamp. The "job<TAB>step<TAB>" columns of
-# `gh run view --log-failed` are accepted as well. ANSI colour codes are removed
-# first, so the rules see the plain text the tools print.
+# line per log line with a leading timestamp. ANSI colour codes are removed first,
+# so the rules see the plain text the tools print.
 #
 # Output has one line per record, with fields separated by US (\037): kind, key,
 # title, files, count, projects, messages. Messages are separated by RS (\036).
 # The kinds are playwright, vitest, rust, lint, clippy, fmt, and unparsed.
 #
-# A step runs from one "##[group]Run" or "##[group]Post" line to the next. Only a
-# step that failed, meaning it has an "##[error]" line, contributes records, so
-# warnings from passing steps are not reported. A failed step that yields no record
-# prints its last lines as one unparsed record, titled with the step's name.
+# A step runs from one "##[group]Run" line, or one "Post job cleanup." line, to the
+# next. Only a step that failed, meaning it has an "##[error]" line, contributes
+# records, so warnings from passing steps are not reported. A failed step that
+# yields no record prints its last lines as one unparsed record, titled with the
+# step's name.
 
 BEGIN {
     FS = "\n"
@@ -33,6 +33,7 @@ BEGIN {
     vtleft = 0
     esl_file = ""
     cl_pending = 0
+    HANG = "libtest: still running after 60 seconds"
 }
 
 function trim(s) {
@@ -77,6 +78,7 @@ function getrec(kind, key, title, files,    i) {
 function rustrec(name,    i) {
     i = getrec("rust", "rust|" name, name, "")
     rcount[i] = 1
+    if (isnew && ((cur SUBSEP name) in hung)) addmsg(i, HANG)
     return i
 }
 
@@ -122,12 +124,12 @@ function printrec(i) {
     line = $0
     sub(/\r$/, "", line)
     gsub(/\033\[[0-9;]*[A-Za-z]/, "", line)
-    sub(/^([^\t]*\t[^\t]*\t)?(\357\273\277)?[0-9][0-9T:.-]*Z ?/, "", line)
+    sub(/^(\357\273\277)?[0-9][0-9T:.-]*Z ?/, "", line)
     nl++
     L[nl] = line
 }
 
-line ~ /^##\[group\](Run|Post) / {
+line ~ /^##\[group\]Run / || line ~ /^Post job cleanup\.$/ {
     cur = ++nsteps
     step_title[cur] = line
     sub(/^##\[group\]/, "", step_title[cur])
@@ -172,12 +174,16 @@ line ~ /^test .* \.\.\. FAILED$/ {
     rustrec(t)
     next
 }
+# The note can follow quiet-mode progress dots on the same line, and it comes before
+# the test's own FAILED line, so a test that is noted here is remembered until its
+# record is made.
 line ~ /has been running for over/ {
     t = line
-    sub(/^test /, "", t)
+    sub(/^.*test /, "", t)
     sub(/ has been running.*$/, "", t)
+    hung[cur SUBSEP t] = 1
     i = findrec("rust|" t)
-    if (i > 0) addmsg(i, "libtest: still running after 60 seconds")
+    if (i > 0) addmsg(i, HANG)
     next
 }
 line ~ /panicked at / {
@@ -329,10 +335,12 @@ esl_file != "" && line ~ /^ +[0-9]+:[0-9]+ +(error|✖) / {
     next
 }
 
-# Cargo and clippy: "error[code]: message", then "  --> file:line:col".
-line ~ /^(error|warning)(\[[A-Za-z0-9_]+\])?: / && line !~ /could not compile|test failed|tests failed|aborting due to|didn.t exit/ {
+# Cargo and clippy: "error[code]: message", then "  --> file:line:col". Only errors:
+# CI runs clippy with -D warnings, so every lint prints as an error, and a rustc
+# warning in a failed step must not stand in for that step's real failure.
+line ~ /^error(\[[A-Za-z0-9_]+\])?: / && line !~ /could not compile|test failed|tests failed|aborting due to|didn.t exit/ {
     cmsg = line
-    sub(/^(error|warning)(\[[A-Za-z0-9_]+\])?: /, "", cmsg)
+    sub(/^error(\[[A-Za-z0-9_]+\])?: /, "", cmsg)
     cl_pending = 1
     next
 }
@@ -349,11 +357,11 @@ cl_pending == 1 {
     }
 }
 
-# cargo fmt --check: "Diff in <file> at line N:".
+# cargo fmt --check: "Diff in <file>:<line>:", then the diff.
 line ~ /^Diff in / {
     f = line
     sub(/^Diff in /, "", f)
-    sub(/ at line [0-9]+:?$/, "", f)
+    sub(/:[0-9]+:$/, "", f)
     sub(/^\/home\/runner\/_work\/[^\/]+\/[^\/]+\//, "", f)
     i = getrec("fmt", "fmt|" f, "rustfmt: " f, f)
     if (isnew) addmsg(i, "not formatted; cargo fmt --all rewrites it")

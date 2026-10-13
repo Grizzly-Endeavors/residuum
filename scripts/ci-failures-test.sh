@@ -14,6 +14,7 @@ for log in "$dir"/ci-failures-fixtures/*.log; do
     expected="${log%.log}.records"
     awk -f "$parser" "$log" | tr '\037\036' '\t|' > "$actual"
     if ! diff -u "$expected" "$actual"; then
+        echo "ci-failures parser: $(basename "$log") does not match $(basename "$expected")" >&2
         status=1
     fi
 done

@@ -1,6 +1,6 @@
 2026-10-12T14:00:20.1000000Z ##[group]Run npm --prefix web run test:unit
 2026-10-12T14:00:26.2000000Z 
-2026-10-12T14:00:26.2000000Z [1m[30m[46m RUN [49m[39m[22m [36mv5.0.3 [39m[90m/home/bearf/Projects/project-residuum/residuum/.claude/worktrees/agent-a9f03a8ce8b58c92b/web[39m
+2026-10-12T14:00:26.2000000Z [1m[30m[46m RUN [49m[39m[22m [36mv5.0.3 [39m[90m/home/runner/_work/residuum/residuum/web[39m
 2026-10-12T14:00:26.2000000Z 
 2026-10-12T14:00:26.2000000Z  [31m❯[39m [30m[42m unit [49m[39m src/zz-ci-failures-import.test.ts [2m([22m[2m0 test[22m[2m)[22m
 2026-10-12T14:00:26.2000000Z  [31m❯[39m [30m[42m unit [49m[39m src/zz-ci-failures-probe.test.ts [2m([22m[2m1 test[22m[2m | [22m[31m1 failed[39m[2m)[22m[32m 73[2mms[22m[39m
@@ -10,7 +10,7 @@
 2026-10-12T14:00:26.2000000Z [31m⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Suites 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
 2026-10-12T14:00:26.2000000Z 
 2026-10-12T14:00:26.2000000Z [41m[1m FAIL [22m[49m [30m[42m unit [49m[39m src/zz-ci-failures-import.test.ts[2m [ src/zz-ci-failures-import.test.ts ][22m
-2026-10-12T14:00:26.2000000Z [31m[1mError[22m: Cannot find module './zz-does-not-exist' imported from /home/bearf/Projects/project-residuum/residuum/.claude/worktrees/agent-a9f03a8ce8b58c92b/web/src/zz-ci-failures-import.test.ts[39m
+2026-10-12T14:00:26.2000000Z [31m[1mError[22m: Cannot find module './zz-does-not-exist' imported from /home/runner/_work/residuum/residuum/web/src/zz-ci-failures-import.test.ts[39m
 2026-10-12T14:00:26.2000000Z [36m [2m❯[22m src/zz-ci-failures-import.test.ts:[2m2:1[22m[39m
 2026-10-12T14:00:26.2000000Z     [90m  1|[39m import { it, expect } from "vitest";
 2026-10-12T14:00:26.2000000Z     [90m  2|[39m import "./zz-does-not-exist";
