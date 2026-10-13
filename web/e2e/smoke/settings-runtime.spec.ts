@@ -123,6 +123,24 @@ test("Runtime: a limit and the idle channel are saved and read back from disk", 
   expect(text).toContain('idle_channel = "telegram"');
 });
 
+test("Runtime: the repeated-call guard switch turns its thresholds off and on", async ({
+  page,
+}) => {
+  await page.goto("/agent/atlas?settings=atlas/runtime");
+  const guard = page.getByRole("switch", { name: "Catch repeated tool calls" });
+  const nudge = page.getByLabel("Nudge after");
+  await expect(guard).toBeChecked();
+  await expect(nudge).toBeEnabled();
+
+  await guard.click();
+  await expect(guard).not.toBeChecked();
+  await expect(nudge).toBeDisabled();
+
+  await guard.click();
+  await expect(guard).toBeChecked();
+  await expect(nudge).toBeEnabled();
+});
+
 test("Runtime: a refused save names the problem and keeps the number staged", async ({ page }) => {
   await page.goto("/agent/atlas?settings=atlas/runtime");
   await page.getByLabel("Tool calls per turn").fill("0");
