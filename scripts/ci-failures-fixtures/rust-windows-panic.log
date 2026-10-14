@@ -1,0 +1,19 @@
+2026-10-12T20:02:00.0000000Z ##[group]Run cargo test --quiet
+2026-10-12T20:02:01.0000000Z shell: C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail {0}
+2026-10-12T20:02:01.0000000Z ##[endgroup]
+2026-10-12T20:02:09.0000000Z running 2 tests
+2026-10-12T20:02:10.0000000Z test hub::host::tests::main_conversation::a_web_message_sent ... FAILED
+2026-10-12T20:02:10.0000000Z test hub::other::tests::fine ... ok
+2026-10-12T20:02:11.0000000Z
+2026-10-12T20:02:11.0000000Z failures:
+2026-10-12T20:02:11.0000000Z
+2026-10-12T20:02:11.0000000Z ---- hub::host::tests::main_conversation::a_web_message_sent stdout ----
+2026-10-12T20:02:11.0000000Z thread 'hub::host::tests::main_conversation::a_web_message_sent' (4242) panicked at src\hub\host\tests\main_conversation.rs:88:9:
+2026-10-12T20:02:11.0000000Z assertion `left == right` failed: the web message appears between the tool result and the reply
+2026-10-12T20:02:11.0000000Z
+2026-10-12T20:02:11.0000000Z failures:
+2026-10-12T20:02:11.0000000Z     hub::host::tests::main_conversation::a_web_message_sent
+2026-10-12T20:02:11.0000000Z
+2026-10-12T20:02:11.0000000Z test result: FAILED. 1 passed; 1 failed
+2026-10-12T20:02:12.0000000Z ##[error]Process completed with exit code 101.
+2026-10-12T20:02:12.0000000Z ##[group]Post job cleanup.
