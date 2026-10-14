@@ -803,6 +803,7 @@ async fn build_runtime(
         stop_rx: receivers.stop,
         agent_stop_rx: channels.agent_stop_rx,
         pulse_scheduler: PulseScheduler::with_state_path(&pulse_state_path),
+        pulse_scripts_stop: tokio_util::sync::CancellationToken::new(),
         config_dir: core.config_dir.clone(),
         hub_dir: core.hub_dir.clone(),
         last_user_message_instant: None,
@@ -1098,6 +1099,9 @@ async fn graceful_shutdown(rt: &mut AgentRuntime) {
     rt.post_turn_subconscious
         .shutdown(POST_TURN_SHUTDOWN_TIMEOUT)
         .await;
+    // Before the sessions drain: a pulse script finishing during that wait
+    // would otherwise start a new session in an agent that is stopping.
+    rt.pulse_scripts_stop.cancel();
     // Stop live sessions first, while the bus and its subscribers (notify
     // router included) are still running, so their results are recorded and
     // delivered rather than left for startup recovery on the next boot.

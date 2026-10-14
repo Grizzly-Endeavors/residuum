@@ -32,6 +32,22 @@ pulses:
         prompt: "Run 'curl -s -o /dev/null -w \"%{http_code}\" https://example.com' and report if the status code is not 200."
 ```
 
+When a command alone can tell whether anything is wrong, give the task a `script` instead of asking the session to run the command. With `script_only: true` no session runs at all: empty output means nothing to report, and anything the script prints is filed to the inbox as-is (ending it with `HEARTBEAT_URGENT` also pushes it). The same check then costs nothing while the site is up:
+```yaml
+pulses:
+  - name: server_health
+    schedule: "30m"
+    active_hours: "08:00-22:00"
+    tasks:
+      - name: check_server
+        script_only: true
+        script: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' https://example.com)
+          [ "$code" = 200 ] || printf 'example.com returned %s\nHEARTBEAT_URGENT\n' "$code"
+```
+
+Scripts run from the workspace through `sh -c` (`cmd` on Windows), with the same `PATH` and privileges as your `exec` tool, and are stopped after 60 seconds unless the task sets `script_timeout_secs`. Without `script_only`, the script's output is added to the task's prompt and the session reasons over it. A failing script is always reported to the user. See the heartbeats reference in the `residuum-system` skill for the details.
+
 Example for git repository monitoring:
 ```yaml
 pulses:

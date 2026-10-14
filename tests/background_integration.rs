@@ -102,10 +102,11 @@ mod background_integration {
             tasks: vec![PulseTask {
                 name: "check_health".to_string(),
                 prompt: "Check system health.".to_string(),
+                ..PulseTask::default()
             }],
         };
 
-        let spawn_event = build_pulse_execution(&pulse, None, None);
+        let spawn_event = build_pulse_execution(&pulse, None, None, &[]);
         assert_eq!(spawn_event.skill, None);
         assert_eq!(spawn_event.source_label, "pulse:status_check");
         assert!(spawn_event.prompt.contains("status_check"));

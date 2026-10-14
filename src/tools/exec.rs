@@ -1,16 +1,13 @@
 //! Shell command execution tool for the agent.
 
 use std::fmt::Write as _;
-use std::io;
 use std::path::PathBuf;
-use std::process::{ExitStatus, Output, Stdio};
+use std::process::Output;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::Value;
-use tokio::io::AsyncReadExt;
-use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
 use super::{SharedToolsPath, Tool, ToolError, ToolResult, publish_notice};
@@ -20,7 +17,7 @@ use crate::agent_keys::{
 use crate::bus::Publisher;
 use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger};
 use crate::inference::ToolDefinition;
-use crate::util::process::{ProcessTreeGuard, kill_process_tree};
+use crate::util::process::{Capture, RunOutcome, run_with_timeout_and_cancel, shell_command};
 
 /// Maximum output size from a command (100KB).
 const MAX_OUTPUT_BYTES: usize = 100 * 1024;
@@ -384,23 +381,24 @@ impl Tool for ExecTool {
         let mut cmd = shell_command(command);
         cmd.current_dir(&self.workspace_root);
 
-        // Prepend configured tool dirs to the child's PATH (read live so config
-        // reloads apply). Leaves PATH inherited when no override is configured.
-        if let Some(handle) = &self.tools_path
-            && let Some(path) = handle.read().await.as_ref()
-        {
-            cmd.env("PATH", path);
+        if let Some(handle) = &self.tools_path {
+            super::apply_tools_path(&mut cmd, handle).await;
         }
         for (var, value) in &key_env {
             cmd.env(var, value);
         }
 
-        let (outcome, output) =
-            match run_with_timeout_and_cancel(cmd, Duration::from_secs(timeout_secs), cancel).await
-            {
-                Ok(pair) => pair,
-                Err(e) => return Ok(ToolResult::error(format!("failed to execute command: {e}"))),
-            };
+        let (outcome, output) = match run_with_timeout_and_cancel(
+            cmd,
+            Duration::from_secs(timeout_secs),
+            cancel,
+            (Capture::All, Capture::All),
+        )
+        .await
+        {
+            Ok(pair) => pair,
+            Err(e) => return Ok(ToolResult::error(format!("failed to execute command: {e}"))),
+        };
 
         Ok(match outcome {
             RunOutcome::Finished => match &store_target {
@@ -427,148 +425,6 @@ impl Tool for ExecTool {
             }
         })
     }
-}
-
-/// Build the platform shell invocation for `command`.
-fn shell_command(command: &str) -> Command {
-    #[cfg(unix)]
-    {
-        let mut c = Command::new("sh");
-        c.arg("-c").arg(command);
-        // Puts the shell (pid == pgid) in its own process group instead of
-        // inheriting residuum's, so killing the group on a timeout or a
-        // stop (see `kill_process_tree`) only ever reaches this command's
-        // own tree, never residuum's process group.
-        c.process_group(0);
-        c
-    }
-    // Passed raw because cmd.exe doesn't parse the backslash-escaped quotes
-    // that normal argument quoting produces. `/S` strips only the outer pair
-    // of quotes, so the command runs exactly as written, including one that
-    // starts with a quoted path.
-    #[cfg(windows)]
-    {
-        let mut c = Command::new("cmd");
-        c.args(["/S", "/C"]).raw_arg(format!("\"{command}\""));
-        c
-    }
-}
-
-/// How a spawned command's run ended.
-enum RunOutcome {
-    /// The command exited on its own before the timeout or a stop.
-    Finished,
-    /// `timeout_secs` elapsed; the process tree was killed.
-    TimedOut,
-    /// The turn was stopped while the command was running; the process
-    /// tree was killed.
-    Cancelled,
-}
-
-/// How the race in [`run_with_timeout_and_cancel`] resolved, before the
-/// process tree has necessarily been killed or reaped yet.
-enum Wait {
-    Exited(ExitStatus),
-    TimedOut,
-    Cancelled,
-}
-
-/// Spawn `cmd`, race it against `timeout` and `cancel`, and return whatever
-/// output it produced along with how the run ended.
-///
-/// On a timeout or a stop, [`kill_process_tree`] kills the whole process
-/// tree rather than only the immediate shell, and whatever stdout/stderr the
-/// command had already produced is still returned — the pipes reach EOF
-/// once every process holding their write end has exited, which the kill
-/// guarantees, so draining them afterward always yields whatever was
-/// captured before the command ended, partial or not.
-async fn run_with_timeout_and_cancel(
-    mut cmd: Command,
-    timeout: Duration,
-    cancel: &CancellationToken,
-) -> io::Result<(RunOutcome, Output)> {
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    cmd.kill_on_drop(true);
-
-    let mut child = cmd.spawn()?;
-    let pid = child.id();
-    // Guards the window between spawn and the point below where the
-    // process tree has already been killed or the child already reaped —
-    // covers the case where this future itself is dropped (not cancelled
-    // through the `select!` below), e.g. the caller's turn future being
-    // dropped while this is still suspended awaiting the child.
-    let mut tree_guard = ProcessTreeGuard::new(pid);
-    let stdout_pipe = child
-        .stdout
-        .take()
-        .ok_or_else(|| io::Error::other("spawned command's stdout was not piped"))?;
-    let stderr_pipe = child
-        .stderr
-        .take()
-        .ok_or_else(|| io::Error::other("spawned command's stderr was not piped"))?;
-
-    // Drained on their own tasks, running concurrently with the wait below
-    // for as long as it takes — a command that writes more than the OS
-    // pipe buffer holds would otherwise block on that write forever, since
-    // nothing would be reading until after `child.wait()` resolves.
-    let stdout_task = spawn_pipe_reader(stdout_pipe);
-    let stderr_task = spawn_pipe_reader(stderr_pipe);
-
-    let wait = tokio::select! {
-        biased;
-        () = cancel.cancelled() => Wait::Cancelled,
-        () = tokio::time::sleep(timeout) => Wait::TimedOut,
-        status = child.wait() => Wait::Exited(status?),
-    };
-
-    let (outcome, status) = match wait {
-        Wait::Exited(status) => {
-            // The child already exited on its own; nothing left to kill.
-            tree_guard.disarm();
-            (RunOutcome::Finished, status)
-        }
-        Wait::TimedOut => {
-            kill_process_tree(pid).await;
-            tree_guard.disarm();
-            (RunOutcome::TimedOut, child.wait().await?)
-        }
-        Wait::Cancelled => {
-            kill_process_tree(pid).await;
-            tree_guard.disarm();
-            (RunOutcome::Cancelled, child.wait().await?)
-        }
-    };
-
-    Ok((
-        outcome,
-        Output {
-            status,
-            stdout: join_pipe_reader(stdout_task).await?,
-            stderr: join_pipe_reader(stderr_task).await?,
-        },
-    ))
-}
-
-/// Spawn a task that reads a child's pipe to EOF into its own buffer.
-fn spawn_pipe_reader<R>(mut pipe: R) -> tokio::task::JoinHandle<io::Result<Vec<u8>>>
-where
-    R: tokio::io::AsyncRead + Unpin + Send + 'static,
-{
-    crate::util::spawn_in_span(async move {
-        let mut buf = Vec::new();
-        pipe.read_to_end(&mut buf).await?;
-        Ok(buf)
-    })
-}
-
-/// Await a [`spawn_pipe_reader`] task, surfacing a task panic as an I/O
-/// error the same way a read failure would be.
-async fn join_pipe_reader(
-    task: tokio::task::JoinHandle<io::Result<Vec<u8>>>,
-) -> io::Result<Vec<u8>> {
-    task.await
-        .map_err(|e| io::Error::other(format!("pipe reader task failed: {e}")))?
 }
 
 fn parse_key_names(arguments: &Value) -> Result<Vec<String>, ToolError> {
