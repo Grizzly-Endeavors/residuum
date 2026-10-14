@@ -234,6 +234,12 @@
       border-radius: var(--corner-md);
     }
 
+    /* An image from another server, shown as a link to it: a quieter "Image" leads its alt text or URL. */
+    .prose-remote-image-kind {
+      color: var(--color-text-2);
+      font-weight: var(--font-weight-medium);
+    }
+
     /* A table keeps its words whole: a column never narrows below its longest word, and a table wider than the message scrolls in its group. */
     .prose-table {
       max-width: 100%;

