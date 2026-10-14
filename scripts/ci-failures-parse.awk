@@ -236,8 +236,10 @@ line ~ /^Failures \(count out of / {
     copies = copies + 0
     next
 }
+# The script's closing "error:" line can be printed between the heading and the
+# counts, because its stderr and the summary on stdout are interleaved in the log.
+# The summary therefore runs to the end of the step, and this line is not part of it.
 in_stress && line ~ /^error:/ {
-    in_stress = 0
     next
 }
 in_stress && line ~ /^Failed under load only/ {

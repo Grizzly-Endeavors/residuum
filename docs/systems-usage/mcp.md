@@ -41,7 +41,13 @@ Both paths perform the MCP handshake via `rmcp`'s `ServiceExt::serve`; a spawn/d
 
 ## `${agent-key:<name>}` references
 
-Stdio `env` values and HTTP `headers` values may contain `${agent-key:<name>}` anywhere in the value. `McpRegistry::connect` resolves them against the agent key store before spawning or dialing, so the value reaches the server without ever appearing in `mcp.json`. An unknown key, or an unterminated reference, fails that server's connection with an error naming the problem; an entry with no references never touches the store. References resolve only against the agent key store, never the system secret store. See [Agent keys](agent-keys.md).
+Stdio `env` values and HTTP `headers` values may contain `${agent-key:<name>}` anywhere in the value. `McpRegistry::connect` resolves them against the agent key store before spawning or dialing, so the value reaches the server without ever appearing in `mcp.json`. An unknown key, or an unterminated reference, fails that server's connection with an error naming the problem; an entry with no references never touches the store. `${agent-key:...}` references resolve only against the agent key store; a whole-value `secret:<name>` (below) is how an entry reads the hub's secret store. See [Agent keys](agent-keys.md).
+
+## `secret:<name>` references
+
+A stdio `env` value or an HTTP `headers` value that is exactly `secret:<name>` resolves against the hub's secret store (`crate::config::secrets::SecretStore` in the hub config directory, the same store that holds provider keys and chat-app tokens). `McpRegistry::resolve_secrets`, called from `McpRegistry::connect`, swaps each such value for the stored secret before spawning or dialing, so the key never appears in `mcp.json`. The reference must be the whole value: `Bearer secret:token` is passed through as written. A name the store doesn't hold fails that server's connection with an error naming the server, the variable or header, and the missing secret; a store that can't be loaded fails it the same way. An entry with no `secret:` value never loads the store, and any other value, including a key written in plain text, reaches the server unchanged.
+
+The setup wizard writes tool server keys this way. When a catalog server asks for a key, the wizard stores what was typed on Save as the secret `mcp_<server>_<variable>` (the variable name in lower case, so Tavily's `TAVILY_API_KEY` becomes `mcp_tavily_tavily_api_key`) through `POST /api/hub/secrets`, and writes `secret:mcp_tavily_tavily_api_key` into the server's `env`. The wizard's `localStorage` draft never holds these keys: a server restored from a draft shows that its key needs entering again, and the Save step lists every provider and tool server that would be saved without a key.
 
 ## `${VAR}` / `${VAR:-default}` expansion
 
