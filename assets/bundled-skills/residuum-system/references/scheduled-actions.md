@@ -28,13 +28,13 @@ Scheduled actions are one-off future tasks persisted in `scheduled_actions.json`
 
 - **`run_at`**: Local time without offset (e.g. `2026-03-01T09:00:00`). Interpreted in the configured workspace timezone. All displayed times are also in local time — no UTC conversion needed.
 - **`agent_name`**: Routing control. `null` → session with no skill, `"<skill>"` → session with that skill as its role. `"main"` is rejected.
-- **`model_tier`**: `"small"`, `"medium"`, or `"large"`. Defaults to medium.
+- **`model_tier`**: a tier (`"small"`, `"medium"`, `"large"`) or an explicit model id in `provider/model` form, the format `providers.toml` uses (`anthropic/claude-haiku-4-5`, or `<providers entry>/<model>`). Defaults to medium. An explicit model runs that one model with no failover, and the tier's temperature/thinking overrides don't apply. A value that is neither, or names a provider that isn't configured, is rejected with an error naming it.
 
 Results are filed to the inbox by the notification router, and pushed to every configured notification channel as well when the summary contains `HEARTBEAT_URGENT`.
 
 ## Execution
 
-Actions are checked on a 30-second tick. When `run_at` has passed:
+Actions are checked on a 30-second tick. Each tick first checks every pending action's model: one whose `model_tier` can't run (not a tier or `provider/model` id, or a provider `providers.toml` doesn't have) is held — kept, not run even when due — and the owner gets one notice naming it and why (again only if the reason changes). It runs on the first tick after its model works, or can be cancelled. When `run_at` has passed:
 
 1. A spawn request for a `scheduled` session is published with the action's prompt and routing.
 2. The action is removed from `scheduled_actions.json` only once that publish has actually succeeded — never before. A failed publish leaves the action exactly as it was, to be picked up again on the next tick, rather than losing it.
@@ -46,7 +46,7 @@ Actions are checked on a 30-second tick. When `run_at` has passed:
 
 ## Schedule Place
 
-The web UI's Schedule place (under each agent in the rail, `/agent/<agent>/schedule`) lists every pending action — its name in words, when it's due, its skill, and whether it's running now — with Cancel for each, backed by `GET /api/agents/<agent>/scheduled/actions` and `DELETE /api/agents/<agent>/scheduled/actions/{id}`.
+The web UI's Schedule place (under each agent in the rail, `/agent/<agent>/schedule`) lists every pending action — its name in words, when it's due, its skill, its model when it names one, why it's held when its model can't run, and whether it's running now — with Cancel for each, backed by `GET /api/agents/<agent>/scheduled/actions` and `DELETE /api/agents/<agent>/scheduled/actions/{id}`.
 
 ## Gotchas
 
@@ -54,5 +54,5 @@ The web UI's Schedule place (under each agent in the rail, `/agent/<agent>/sched
 - The 30-second tick means fire-time precision is at best ~30 seconds.
 - IDs are generated as `action-{8 hex chars}`.
 - If the agent is offline when an action comes due, it fires on the next startup when the tick evaluates it.
-- A stored action left over from before `agent: "main"` was removed is dropped at startup load, logged as an error naming it, and raised once as an owner-facing notice (a web UI toast) naming every dropped action and linking to `migrating-to-agent-sessions.md`. Unlike heartbeat pulses, this only ever happens once at startup — actions aren't re-validated on a running tick.
+- A stored action left over from before `agent: "main"` was removed is dropped at startup load, logged as an error naming it, and raised once as an owner-facing notice (a web UI toast) naming every dropped action and linking to `migrating-to-agent-sessions.md`. This only ever happens once at startup; the model check above is the only one a running tick repeats.
 - Fork/spawn failures (e.g. naming a skill that doesn't exist) are deduped per action name: warned and noticed once, not on every retry of an unchanged failure.

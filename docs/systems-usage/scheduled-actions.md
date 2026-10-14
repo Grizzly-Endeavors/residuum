@@ -6,7 +6,7 @@ Scheduled actions are one-off future tasks. They fire once at a specified time a
 
 1. Agent (or user via agent) creates an action with `schedule_action`
 2. Action persisted to `scheduled_actions.json` (atomic write: temp file + rename)
-3. Gateway checks for due actions on a **30-second tick**
+3. Gateway checks for due actions on a **30-second tick**. Each tick also checks every pending action's model: an action whose `model_tier` is neither a tier nor a `provider/model` id, or names a provider `providers.toml` doesn't have (for example after the provider was removed), is held: it stays in the store and doesn't run, even once due, and the owner gets one notice naming it, its id, and why. The Schedule place shows the reason on the action. It runs on the first tick after its model works again, or the owner cancels it. The notice fires again only if the reason changes.
 4. When `run_at` has passed, the gateway publishes a spawn request for a `scheduled` session; the action is removed from persistence only once that publish has actually succeeded, never before. If the publish fails, the action stays exactly as it was and is picked up again on the next tick — it is never silently lost to a failure at this step.
 5. Results delivered by the notification router according to the disposition the agent declared
 
@@ -22,7 +22,7 @@ If the gateway was offline when an action was due, it fires on next startup.
 | `prompt` | string | yes | The prompt to execute when the action fires |
 | `run_at` | string | yes | Local time without offset (e.g. `2026-03-01T09:00:00`). Interpreted in configured workspace timezone. Displayed times are also local. Must be in the future. |
 | `agent_name` | string | no | `"<skill>"` = session forked with that skill as its role. Omitted = plain session with no skill. `"main"` is rejected. |
-| `model_tier` | string enum | no | `"small"`, `"medium"`, `"large"`. |
+| `model_tier` | string | no | A tier (`"small"`, `"medium"`, `"large"`) or an explicit `provider/model` id; see [Models](background-tasks.md#models). Default: `"medium"`. A value that is neither, or names a provider that isn't configured, is an `InvalidArguments` error and nothing is scheduled. |
 
 ### `list_actions`
 
@@ -42,7 +42,7 @@ See [notifications.md](notifications.md) for the full routing model.
 
 ## Schedule Place
 
-The web UI's Schedule place (under each agent in the rail, at `/agent/<name>/schedule`; see [heartbeats.md](heartbeats.md#schedule-place)) lists every pending action — its name in words, when it's due in Home's words, its skill, and whether it's running now — with Cancel for each, backed by `GET /api/agents/{name}/scheduled/actions` and `DELETE /api/agents/{name}/scheduled/actions/{id}`.
+The web UI's Schedule place (under each agent in the rail, at `/agent/<name>/schedule`; see [heartbeats.md](heartbeats.md#schedule-place)) lists every pending action — its name in words, when it's due in Home's words, its skill, its model when it names one, why it's held when its model can't run, and whether it's running now — with Cancel for each, backed by `GET /api/agents/{name}/scheduled/actions` and `DELETE /api/agents/{name}/scheduled/actions/{id}`.
 
 ## Persistence
 
@@ -50,6 +50,6 @@ The web UI's Schedule place (under each agent in the rail, at `/agent/<name>/sch
 - `ActionStore` handles concurrent access
 - IDs generated as `action-{8 hex chars}`
 - Managed exclusively via tools — the agent should not edit `scheduled_actions.json` directly
-- A stored action left over from before `agent: "main"` was removed is dropped at startup load — never silently reinterpreted as a plain session — logged as an error naming the action, and also raised as an owner-facing notice (a web UI toast) naming every dropped action and linking to [`migrating-to-agent-sessions.md`](../guides/migrating-to-agent-sessions.md). This only happens once, right after the store loads at startup, since actions (unlike heartbeat pulses) aren't re-validated on a running tick.
+- A stored action left over from before `agent: "main"` was removed is dropped at startup load — never silently reinterpreted as a plain session — logged as an error naming the action, and also raised as an owner-facing notice (a web UI toast) naming every dropped action and linking to [`migrating-to-agent-sessions.md`](../guides/migrating-to-agent-sessions.md). This only happens once, right after the store loads at startup; the only check a running tick repeats is the model check above.
 - A `scheduled_actions.json` that exists but isn't valid JSON is never overwritten: it's moved aside to `scheduled_actions.json.corrupt-<unix-timestamp>` in the same directory, preserving its original bytes, and the store starts empty at the normal path. The owner is notified naming the moved-aside file. This also only happens once, at startup load.
 - Fork/spawn failures for an action (e.g. naming a skill that doesn't exist) are deduped per action name: warn-logged and noticed once, not on every retry of an unchanged failure — a repeat with the same error is logged at `debug!` instead, and a fresh notice fires only if the error changes or after a later recovery and re-failure.

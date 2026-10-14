@@ -24,7 +24,8 @@ pulses:
     enabled: true
     schedule: 30m            # Duration: "30s", "5m", "2h", "1d"
     active_hours: "09:00-17:00"  # Optional — HH:MM-HH:MM window
-    agent: ~                 # null → session with no skill (Small tier)
+    agent: ~                 # null → session with no skill
+    model_tier: small        # Optional — small (default), medium, large, or a provider/model id
     tasks:
       - name: check_inbox
         prompt: "Check inbox for new items and summarize anything unread."
@@ -70,10 +71,12 @@ Multi-day intervals work the same way — `"7d"` for a weekly pulse, e.g.
 
 The `agent` field controls how the pulse executes:
 
-| Value | Execution | Model Tier |
-|-------|-----------|------------|
-| `~` (null) | Session with no skill | Small |
-| `"<skill-name>"` | Session with that skill (agent or team) | The pulse's `model_tier` (default: small) |
+| Value | Execution |
+|-------|-----------|
+| `~` (null) | Session with no skill |
+| `"<skill-name>"` | Session with that skill (agent or team) |
+
+Either way the session runs on the pulse's `model_tier`: a tier (`small`, the default, `medium`, `large`) or one explicit model in `provider/model` form, the format `providers.toml` uses. An explicit model runs with no failover chain. A `model_tier` that is neither fails that pulse's load; one naming a provider `providers.toml` doesn't have skips the pulse, reported as a HEARTBEAT.yml problem, until the provider exists.
 
 `agent: "main"` is removed: every session fork already carries the main agent's identity and a memory snapshot, so there is no separate "run on main" mode. A pulse still using `agent: "main"`, or setting `include_identity` (also removed), fails to load with an error naming the pulse. Rejection is also raised as an owner-facing notice (a web UI toast) naming every currently rejected pulse, the field to remove, and a link to `migrating-to-agent-sessions.md` — fired once when a pulse first becomes rejected, and again if the rejected set changes, not on every tick.
 
