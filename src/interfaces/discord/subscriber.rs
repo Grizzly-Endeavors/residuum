@@ -42,6 +42,10 @@ impl ChatOutbound for DiscordOutbound {
         "discord"
     }
 
+    fn delivers_intermediate(&self) -> bool {
+        self.state.deliver_intermediate
+    }
+
     fn unknown_conversation_reason(&self) -> &'static str {
         "that is not a Discord channel ID"
     }

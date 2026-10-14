@@ -33,6 +33,10 @@ impl ChatOutbound for Arc<TeamsRuntime> {
         "teams"
     }
 
+    fn delivers_intermediate(&self) -> bool {
+        self.cfg.deliver_intermediate
+    }
+
     fn unknown_conversation_reason(&self) -> &'static str {
         "the bot no longer knows that conversation"
     }
