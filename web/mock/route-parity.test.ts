@@ -235,6 +235,7 @@ const SAMPLES: Record<RequestFunction, Sample[]> = {
         a.undoCheckpoint(agentForRepo(repo), "abc", repo),
   ),
   fetchCloudStatus: [(a) => a.fetchCloudStatus()],
+  startCloudSignIn: [(a) => a.startCloudSignIn("", "7700")],
   disconnectCloud: [(a) => a.disconnectCloud()],
   fetchUpdateStatus: [(a) => a.fetchUpdateStatus()],
   triggerUpdateCheck: [(a) => a.triggerUpdateCheck()],

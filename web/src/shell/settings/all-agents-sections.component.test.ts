@@ -434,12 +434,21 @@ describe("Residuum Cloud", () => {
   let statusReadable = true;
   let disconnectAnswer: Response | null = null;
   let stored: { name: string; value: string }[] = [];
+  /** What each sign-in asked the hub for (`POST /api/hub/cloud/connect`). */
+  let signIns: { relay_url: string; port: string }[] = [];
+  let signInAnswer: Response | null = null;
+
+  /** The relay address the hub answers the nth sign-in with. */
+  const signInPage = (port: string, n: number): string =>
+    `https://relay.test/connect?port=${port}&state=state-${n}`;
 
   beforeEach(async () => {
     status = cloudStatus();
     statusReadable = true;
     disconnectAnswer = null;
     stored = [];
+    signIns = [];
+    signInAnswer = null;
     serve('timezone = "UTC"\n\n[gateway]\nport = 7701\n', (url, init) => {
       const method = init?.method ?? "GET";
       if (url === "/api/hub/cloud/status") {
@@ -453,6 +462,13 @@ describe("Residuum Cloud", () => {
           ui_origin: null,
           remote: false,
         });
+      }
+      if (url === "/api/hub/cloud/connect" && method === "POST") {
+        if (signInAnswer !== null) return signInAnswer;
+        const body = typeof init?.body === "string" ? init.body : "{}";
+        const asked = JSON.parse(body) as { relay_url: string; port: string };
+        signIns.push(asked);
+        return jsonResponse({ url: signInPage(asked.port, signIns.length) });
       }
       if (url === "/api/hub/cloud/disconnect" && method === "POST") {
         if (disconnectAnswer !== null) return disconnectAnswer;
@@ -486,21 +502,38 @@ describe("Residuum Cloud", () => {
     expect(screen.getByText(/Opens agent-residuum.com in a new tab/)).toBeInTheDocument();
 
     await fireEvent.click(await button("Connect to Residuum Cloud"));
-    expect(opened).toHaveBeenLastCalledWith(
-      "https://agent-residuum.com/connect?port=7701",
-      "_blank",
-      "noopener",
-    );
+    await waitFor(() => {
+      expect(opened).toHaveBeenLastCalledWith(signInPage("7701", 1), "_blank", "noopener");
+    });
 
     await type(screen.getByLabelText("Relay URL"), "ws://127.0.0.1:8080/tunnel/v2/register");
     expect(screen.getByText(/Opens 127.0.0.1:8080 in a new tab/)).toBeInTheDocument();
     expect(screen.getByText(/Save your relay change first/)).toBeInTheDocument();
     await fireEvent.click(await button("Connect to Residuum Cloud"));
-    expect(opened).toHaveBeenLastCalledWith(
-      "http://127.0.0.1:8080/connect?port=7701",
-      "_blank",
-      "noopener",
+    await waitFor(() => {
+      expect(opened).toHaveBeenLastCalledWith(signInPage("7701", 2), "_blank", "noopener");
+    });
+    expect(signIns).toEqual([
+      { relay_url: "", port: "7701" },
+      { relay_url: "ws://127.0.0.1:8080/tunnel/v2/register", port: "7701" },
+    ]);
+  });
+
+  it("says why when the hub can't start a sign-in, and opens nothing", async () => {
+    const opened = vi.spyOn(window, "open").mockReturnValue(null);
+    signInAnswer = new Response(
+      JSON.stringify({ error: "The gateway port isn't a port number." }),
+      { status: 400, headers: { "Content-Type": "application/json" } },
     );
+    await view();
+
+    await fireEvent.click(await button("Connect to Residuum Cloud"));
+    expect(
+      await screen.findByText(
+        "Couldn't start signing in to Residuum Cloud. The gateway port isn't a port number.",
+      ),
+    ).toBeInTheDocument();
+    expect(opened).not.toHaveBeenCalled();
   });
 
   it("has nowhere to sign in while the relay address isn't a ws address", async () => {
@@ -666,6 +699,10 @@ describe("Residuum Cloud", () => {
     it.each([
       ["missing-token", /sent you back without signing this install in\. Try connecting again\./],
       ["save-failed", /couldn't save the sign-in on this machine\. Try connecting again/],
+      [
+        "not-started-here",
+        /didn't come from this app, or it expired, so Residuum didn't use it\. Try connecting again\./,
+      ],
     ])("says what a %s hand-off means and offers to connect again", async (outcome, words) => {
       const opened = vi.spyOn(window, "open").mockReturnValue(null);
       captureCloudHandoff(`?settings=_all/cloud&cloud=${outcome}`);
@@ -673,14 +710,12 @@ describe("Residuum Cloud", () => {
 
       const alert = await screen.findByRole("alert");
       expect(alert).toHaveTextContent(words);
-      expect(alert).not.toHaveTextContent(/error|token parameter|failed to/i);
+      expect(alert).not.toHaveTextContent(/error|token parameter|failed to|state/i);
 
       await fireEvent.click(await button("Try connecting again"));
-      expect(opened).toHaveBeenLastCalledWith(
-        "https://agent-residuum.com/connect?port=7701",
-        "_blank",
-        "noopener",
-      );
+      await waitFor(() => {
+        expect(opened).toHaveBeenLastCalledWith(signInPage("7701", 1), "_blank", "noopener");
+      });
       await waitFor(() => {
         expect(screen.queryByRole("alert")).not.toBeInTheDocument();
       });
@@ -706,11 +741,9 @@ describe("Residuum Cloud", () => {
     expect(screen.getByText("Sign-in not accepted")).toBeInTheDocument();
     expect(screen.getByText(/Opens agent-residuum.com in a new tab/)).toBeInTheDocument();
     await fireEvent.click(await button("Sign in again"));
-    expect(opened).toHaveBeenLastCalledWith(
-      "https://agent-residuum.com/connect?port=7701",
-      "_blank",
-      "noopener",
-    );
+    await waitFor(() => {
+      expect(opened).toHaveBeenLastCalledWith(signInPage("7701", 1), "_blank", "noopener");
+    });
 
     await fireEvent.click(await button("Disconnect"));
     expect(await screen.findByText("Disconnected")).toBeInTheDocument();

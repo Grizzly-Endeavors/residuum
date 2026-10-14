@@ -1183,6 +1183,19 @@ export async function fetchCloudStatus(): Promise<CloudStatusResponse> {
   return apiFetch<CloudStatusResponse>(hubPath("/cloud/status"));
 }
 
+/**
+ * Start a sign-in to Residuum Cloud: the hub answers with the relay's sign-in
+ * address, carrying the `state` its callback will accept the token with.
+ */
+export async function startCloudSignIn(relayUrl: string, port: string): Promise<string> {
+  const { url } = await apiFetch<{ url: string }>(hubPath("/cloud/connect"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ relay_url: relayUrl, port }),
+  });
+  return url;
+}
+
 export async function disconnectCloud(): Promise<void> {
   await apiFetchText(hubPath("/cloud/disconnect"), { method: "POST" });
 }

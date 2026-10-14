@@ -37,7 +37,7 @@ The hub serves everything the backend offers from one router over its `AgentDire
 | `GET`/`POST /api/hub/secrets`, `DELETE /api/hub/secrets/{name}` | Secret names and writes. |
 | `GET`/`POST /api/hub/agent-keys`, `DELETE /api/hub/agent-keys/{name}` | Agent keys (see [agent-keys.md](agent-keys.md)). |
 | `GET`/`POST /api/hub/a2a/keys`, `DELETE /api/hub/a2a/keys/{name}` | A2A caller keys (see [a2a.md](a2a.md)). |
-| `GET /api/hub/cloud/status`, `POST /api/hub/cloud/disconnect` | The relay tunnel (see [cloud-tunnel.md](cloud-tunnel.md)). |
+| `GET /api/hub/cloud/status`, `POST /api/hub/cloud/connect`, `POST /api/hub/cloud/disconnect` | The relay tunnel and signing in to it (see [cloud-tunnel.md](cloud-tunnel.md)). |
 | `GET /api/hub/pairing/state`, `POST /api/hub/pairing/requests`, `.../requests/poll`, `.../redeem`, `.../recovery`, `.../handoff` | How a browser becomes a paired device. The only API an unpaired remote browser can reach (`handoff` on the workbench host only). See [remote-access.md](remote-access.md). |
 | `GET /api/hub/devices`, `DELETE /api/hub/devices/{id}`, `POST /api/hub/devices/pending/{id}/approve` and `/deny`, `POST /api/hub/devices/recovery-codes`, `POST /api/hub/devices/workbench-handoff`, `POST /api/hub/remote-access/pair-link` | Paired browsers, waiting requests, recovery codes, and the first device's pairing link (local requests only). See [remote-access.md](remote-access.md). |
 | `GET /api/hub/update/status`, `POST /api/hub/update/check`, `/apply`, `/restart` | Self-update (see [self-update.md](self-update.md)). |

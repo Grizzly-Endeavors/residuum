@@ -7,7 +7,7 @@
 // while the tunnel is connecting or the user has started something that will
 // change it. The actions act at once: they don't go through the staged form.
 
-import { ApiError, disconnectCloud, fetchCloudStatus, storeSecret } from "./api";
+import { ApiError, disconnectCloud, fetchCloudStatus, startCloudSignIn, storeSecret } from "./api";
 import { configCoordinator, HUB_CONFIG_FILE } from "./config-coordinator";
 import { userErrorMessage } from "./errors";
 import type { CloudStatusResponse, ValidateResponse } from "./types";
@@ -39,9 +39,20 @@ export function teamsMessagingEndpoint(source: EndpointSource, agent: string): s
   return `${withoutTrailingSlash(instanceOrigin)}/teams/${agent}`;
 }
 
-/** The relay's sign-in page for a gateway, and the host it is on. */
-export interface ConnectTarget {
+/** A page on the relay, and the host it is on. */
+export interface RelayPage {
   url: string;
+  host: string;
+}
+
+/**
+ * Where a sign-in goes: the relay URL and gateway port the hub builds the
+ * relay's sign-in address from (`POST /api/hub/cloud/connect`), and the
+ * relay's host, to name in the section.
+ */
+export interface SignInTarget {
+  relayUrl: string;
+  port: string;
   host: string;
 }
 
@@ -55,16 +66,16 @@ function relayWeb(relayUrl: string): { origin: string; host: string } | null {
   return { origin: `${scheme.toLowerCase() === "wss" ? "https" : "http"}://${host}`, host };
 }
 
-/** Where the relay's sign-in page for a gateway is, from the relay URL the tunnel would dial. Null when that URL isn't a `ws://` or `wss://` address. */
-export function connectTarget(relayUrl: string, gatewayPort: string): ConnectTarget | null {
+/** Where a gateway signs in, from the relay URL the tunnel would dial. Null when that URL isn't a `ws://` or `wss://` address. */
+export function signInTarget(relayUrl: string, gatewayPort: string): SignInTarget | null {
   const relay = relayWeb(relayUrl);
   if (relay === null) return null;
   const port = gatewayPort.trim() === "" ? DEFAULT_GATEWAY_PORT : gatewayPort.trim();
-  return { url: `${relay.origin}/connect?port=${encodeURIComponent(port)}`, host: relay.host };
+  return { relayUrl: relayUrl.trim(), port, host: relay.host };
 }
 
 /** The relay's account dashboard, where the user manages their instances, from the relay URL the tunnel would dial. Null when that URL isn't a `ws://` or `wss://` address. */
-export function accountTarget(relayUrl: string): ConnectTarget | null {
+export function accountTarget(relayUrl: string): RelayPage | null {
   const relay = relayWeb(relayUrl);
   return relay === null ? null : { url: `${relay.origin}/dashboard`, host: relay.host };
 }
@@ -90,9 +101,10 @@ class Refused extends Error {
   }
 }
 
-type CloudAction = "disconnect" | "reconnect" | "token";
+type CloudAction = "sign-in" | "disconnect" | "reconnect" | "token";
 
 const ACTION_FAILED: Readonly<Record<CloudAction, string>> = {
+  "sign-in": "Couldn't start signing in to Residuum Cloud.",
   disconnect: "Couldn't disconnect from Residuum Cloud.",
   reconnect: "Couldn't reconnect to Residuum Cloud.",
   token: "Couldn't connect with that token.",
@@ -158,6 +170,17 @@ export class CloudConnection {
       phase: this.status === null ? null : phaseOf(this.status),
       until: Date.now() + EXPECT_WINDOW_MS,
     };
+  }
+
+  /**
+   * Open the relay's sign-in page in a new tab. The hub hands out the page's
+   * address, with the `state` that ties the sign-in to this install.
+   */
+  async signIn(target: SignInTarget): Promise<void> {
+    await this.act("sign-in", async () => {
+      const url = await startCloudSignIn(target.relayUrl, target.port);
+      window.open(url, "_blank", "noopener");
+    });
   }
 
   /** Switch the tunnel off, keeping the account. Also cancels a connection that is still starting. */

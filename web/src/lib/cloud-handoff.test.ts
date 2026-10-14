@@ -6,6 +6,7 @@ describe("handoffOf", () => {
     expect(handoffOf("?settings=_all/cloud&cloud=connecting")).toBe("connecting");
     expect(handoffOf("?settings=_all/cloud&cloud=missing-token")).toBe("missing-token");
     expect(handoffOf("?cloud=save-failed&settings=_all/cloud")).toBe("save-failed");
+    expect(handoffOf("?settings=_all/cloud&cloud=not-started-here")).toBe("not-started-here");
   });
 
   it("reads nothing from an address without one, or with one it doesn't know", () => {
@@ -33,6 +34,9 @@ describe("handoffProblem", () => {
   it("says what to do next for each failure, and nothing for a sign-in that is connecting", () => {
     expect(handoffProblem("missing-token")).toMatch(/Try connecting again\.$/);
     expect(handoffProblem("save-failed")).toMatch(/^You signed in, but .*Try connecting again/);
+    expect(handoffProblem("not-started-here")).toMatch(
+      /^This sign-in link didn't come from this app.*Try connecting again\.$/,
+    );
     expect(handoffProblem("connecting")).toBeNull();
     expect(handoffProblem(null)).toBeNull();
   });
