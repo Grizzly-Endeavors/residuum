@@ -238,7 +238,8 @@ pub struct MessageSender {
 }
 
 /// The agent behind a message one agent sent another.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct AgentSender {
     /// Sender's address (`"main"` or a session address, or `agent:<name>` /
     /// `agent:<name>/<session>` for a teammate).

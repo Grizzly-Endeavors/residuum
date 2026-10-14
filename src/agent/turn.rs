@@ -354,8 +354,9 @@ impl EventContext<'_> {
         .await;
     }
 
-    /// Announce a person's message joining this main-agent turn mid-turn. Not
-    /// for one agent's message to another, and not for a session's turn.
+    /// Announce a person's or a teammate's message joining this main-agent
+    /// turn mid-turn (see [`MainConversationEvent::user_message`]). Not for a
+    /// session's turn.
     async fn publish_user_message(&self, message: &MessageEvent) {
         let EventTarget::Endpoint { correlation_id, .. } = self.target else {
             return;
@@ -1159,8 +1160,9 @@ async fn check_interrupts_and_stop(
 /// continues to the end of the buffered batch even after a stop is seen, so
 /// any interrupts queued just before it are still folded into history.
 ///
-/// A person's message is announced to the main conversation at the moment it
-/// is folded in, so a client sees it at the position the model does.
+/// A person's or a teammate's message is announced to the main conversation
+/// at the moment it is folded in, so a client sees it at the position the
+/// model does.
 async fn drain_interrupts(
     interrupt_rx: &mut dyn InterruptSource,
     recent_messages: &mut RecentMessages,

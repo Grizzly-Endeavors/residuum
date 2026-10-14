@@ -287,11 +287,75 @@ describe("when live messages were sent", () => {
   });
 });
 
+const SCOUT = { address: "agent:scout", category: "teammate" };
+
+/** A teammate's message as the agent reads it, header first. */
+function teammateText(body: string): string {
+  return (
+    "[Message from teammate agent:scout, not the user. Your response in this turn is not " +
+    `shown to them; to reply, call message_agent with to="agent:scout".]\n${body}`
+  );
+}
+
+/** A teammate's message as the backend announces it: the text the agent reads, and its sender. */
+function fromTeammate(id: string, body: string, turnId = id): ServerMessage {
+  return {
+    type: "user_message",
+    id,
+    turn_id: turnId,
+    content: teammateText(body),
+    agent_sender: SCOUT,
+    endpoint: "background",
+  };
+}
+
+describe("a teammate's message", () => {
+  it("shows as the teammate's card, opening the turn it starts", () => {
+    const { store } = setup();
+    store.handleMessage(fromTeammate("bg-1", "Can you look over the wiki index?"));
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "bg-1",
+      origin: { endpoint: "background", visibility: "background" },
+    });
+
+    expect(store.feed).toMatchObject([
+      {
+        kind: "agent-message",
+        from: "agent:scout",
+        category: "teammate",
+        content: "Can you look over the wiki index?",
+        runId: null,
+        messageId: "bg-1",
+        turnId: "bg-1",
+      },
+    ]);
+    expect(store.feed[0]).not.toHaveProperty("midTurn");
+    expect(store.feed[0]?.timestamp).toBeDefined();
+  });
+
+  it("joins the turn that reads it partway", () => {
+    const { store } = setup();
+    store.handleMessage(echo("web-1", "Draft the post"));
+    store.handleMessage(started("web-1"));
+    store.handleMessage(fromTeammate("bg-2", "Use the March numbers", "web-1"));
+
+    expect(store.feed.at(-1)).toMatchObject({
+      kind: "agent-message",
+      from: "agent:scout",
+      content: "Use the March numbers",
+      turnId: "web-1",
+      midTurn: true,
+    });
+  });
+});
+
 describe("a turn no person started", () => {
   it("shows the reply of a teammate's message once, whole, and ends the turn", () => {
-    // What the backend sends: no frame for the message itself, the reply in pieces and then
-    // whole, to nowhere (an empty endpoint).
+    // What the backend sends: the message, then the reply in pieces and then whole, to nowhere
+    // (an empty endpoint).
     const { store, frame } = setup();
+    store.handleMessage(fromTeammate("bg-1", "Have a look?"));
     store.handleMessage({
       type: "turn_started",
       reply_to: "bg-1",
@@ -310,9 +374,10 @@ describe("a turn no person started", () => {
     frame();
 
     expect(store.feed).toMatchObject([
+      { kind: "agent-message", content: "Have a look?", turnId: "bg-1" },
       { kind: "assistant", content: "scout asked me to look.", turnId: "bg-1", streaming: false },
     ]);
-    expect(store.feed[0]).not.toHaveProperty("deliveredTo");
+    expect(store.feed[1]).not.toHaveProperty("deliveredTo");
     expect(store.activeTurnId).toBeNull();
     expect(store.isProcessing).toBe(false);
   });
@@ -583,6 +648,101 @@ describe("reasoning streaming in", () => {
     ]);
   });
 });
+describe("catching up on history after a teammate's message it saw live", () => {
+  const recordedMessage = (more: Partial<RecentMessage>): RecentMessage => ({
+    role: "user",
+    content: "",
+    timestamp: "2026-01-01T10:00",
+    visibility: "user",
+    ...more,
+  });
+  const earlier = [
+    recordedMessage({ content: "Earlier question" }),
+    recordedMessage({ role: "assistant", content: "Earlier answer" }),
+  ];
+  const nonDividers = (store: FeedStore): string[] =>
+    kinds(store.feed).filter((kind) => kind !== "divider");
+
+  it("doesn't show the card twice when it opened the turn", () => {
+    const { store } = setup();
+    store.loadHistory({ kind: "recent", messages: earlier, next_cursor: null });
+    store.handleMessage(fromTeammate("bg-1", "Look at the wiki"));
+    store.handleMessage({
+      type: "turn_started",
+      reply_to: "bg-1",
+      origin: { endpoint: "background", visibility: "background" },
+    });
+    store.handleMessage({
+      type: "response",
+      reply_to: "bg-1",
+      call: 0,
+      endpoint: "",
+      content: "On it.",
+    });
+    store.handleMessage({ type: "turn_ended", reply_to: "bg-1" });
+    const shown = nonDividers(store);
+    expect(shown).toEqual(["user", "assistant", "agent-message", "assistant"]);
+
+    const recorded = [
+      ...earlier,
+      recordedMessage({
+        content: teammateText("Look at the wiki"),
+        visibility: "background",
+        agent_sender: SCOUT,
+        turn_id: "bg-1",
+      }),
+      recordedMessage({
+        role: "assistant",
+        content: "On it.",
+        visibility: "background",
+        turn_id: "bg-1",
+      }),
+    ];
+    expect(store.reconcileRecent({ kind: "recent", messages: recorded, next_cursor: null })).toBe(
+      true,
+    );
+    expect(nonDividers(store)).toEqual(shown);
+  });
+
+  it("doesn't show the card twice when it joined a turn partway", () => {
+    const { store } = setup();
+    store.loadHistory({ kind: "recent", messages: earlier, next_cursor: null });
+    store.pushUserMessage("Draft the post", undefined, "web-1");
+    store.handleMessage(started("web-1"));
+    store.handleMessage(fromTeammate("bg-2", "Look at the wiki", "web-1"));
+    store.handleMessage({
+      type: "response",
+      reply_to: "web-1",
+      call: 0,
+      endpoint: "ws",
+      content: "Drafted, with the wiki in mind.",
+    });
+    store.handleMessage({ type: "turn_ended", reply_to: "web-1" });
+    const shown = nonDividers(store);
+    expect(shown).toEqual(["user", "assistant", "user", "agent-message", "assistant"]);
+
+    const recorded = [
+      ...earlier,
+      recordedMessage({ content: "Draft the post", turn_id: "web-1" }),
+      recordedMessage({
+        content: teammateText("Look at the wiki"),
+        visibility: "background",
+        agent_sender: SCOUT,
+        turn_id: "web-1",
+      }),
+      recordedMessage({
+        role: "assistant",
+        content: "Drafted, with the wiki in mind.",
+        turn_id: "web-1",
+      }),
+    ];
+    expect(store.reconcileRecent({ kind: "recent", messages: recorded, next_cursor: null })).toBe(
+      true,
+    );
+    expect(nonDividers(store)).toEqual(shown);
+  });
+});
+
 describe("catching up on history after a turn with reasoning", () => {
   it("doesn't show the reasoning and tool calls of a turn it saw live a second time", () => {
     const { store } = setup();
@@ -757,6 +917,24 @@ describe("a snapshot of the turn in flight", () => {
     store.handleMessage({ type: "turn_ended", reply_to: "t1" });
     expect(kinds(store.feed)).toEqual(["user", "assistant"]);
     expect(store.isProcessing).toBe(false);
+  });
+
+  it("shows the teammate's message that opened the turn, once", () => {
+    const { store } = setup();
+    const turn = [fromTeammate("t1", "Look at the wiki index"), started("t1"), delta("On it")];
+    // A page opened partway through the turn.
+    store.handleMessage(snapshot(turn));
+    expect(kinds(store.feed)).toEqual(["agent-message", "assistant"]);
+    expect(store.feed[0]).toMatchObject({
+      from: "agent:scout",
+      content: "Look at the wiki index",
+      turnId: "t1",
+    });
+
+    // A page that saw it live and then reconnected.
+    store.markReconnectGap();
+    store.handleMessage(snapshot(turn));
+    expect(kinds(store.feed)).toEqual(["agent-message", "assistant"]);
   });
 
   it("keeps a message the page sent that the agent hasn't taken in yet waiting, and a note", () => {

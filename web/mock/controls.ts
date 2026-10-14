@@ -41,11 +41,11 @@ function missedRelay({ res, state }: RouteContext): void {
 /**
  * A teammate (`?from=`, scout by default) messages an agent (`?agent=atlas`):
  * the message lands in its main conversation and the agent answers it in a
- * turn that no person started. Every connected page is sent that turn's
- * frames (and, as the backend does, none for the message itself), history
- * records both under the turn's id, and the hub reports the reply unread
- * until the web UI opens that agent's socket. All of it has happened by the
- * time the request is answered.
+ * turn that no person started. Every connected page is sent the message, as
+ * a `user_message` frame naming the teammate, then that turn's frames;
+ * history records both under the turn's id, and the hub reports the reply
+ * unread until the web UI opens that agent's socket. All of it has happened by
+ * the time the request is answered.
  */
 function teammateMessage({ res, hub, query }: RouteContext): void {
   const agent = hub.agents.get(query.get("agent") ?? "");
@@ -58,17 +58,19 @@ function teammateMessage({ res, hub, query }: RouteContext): void {
   const reply = `${from} asked me to check the wiki index. On it.`;
   const address = `agent:${from}`;
   const turnId = `bg-${String(hub.env.nextId())}`;
+  // The header and the structured sender the backend gives a teammate's message.
+  const content =
+    `[Message from teammate ${address}, not the user. Your response in this turn is ` +
+    `not shown to them; to reply, call message_agent with to="${address}".]\n` +
+    "Can you look over the wiki index when you get a chance?";
+  const agentSender = { address, category: "teammate" };
   agent.state.extraRecent.push(
     {
       role: "user",
-      // The header and the structured sender the backend records for a teammate.
-      content:
-        `[Message from teammate ${address}, not the user. Your response in this turn is ` +
-        `not shown to them; to reply, call message_agent with to="${address}".]\n` +
-        "Can you look over the wiki index when you get a chance?",
+      content,
       timestamp: now,
       visibility: "background",
-      agent_sender: { address, category: "teammate" },
+      agent_sender: agentSender,
       turn_id: turnId,
     },
     {
@@ -80,6 +82,14 @@ function teammateMessage({ res, hub, query }: RouteContext): void {
       turn_id: turnId,
     },
   );
+  agent.state.broadcast({
+    type: "user_message",
+    id: turnId,
+    turn_id: turnId,
+    content,
+    agent_sender: agentSender,
+    endpoint: "background",
+  });
   for (const frame of backgroundTurnFrames(turnId, reply)) agent.state.broadcast(frame);
   hub.teamEvents.agentReplied(agent);
   hub.overview.changed(agent);

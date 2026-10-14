@@ -10,6 +10,7 @@ export type { PostTurnActivityKind } from "./PostTurnActivityKind";
 export type { ReloadOutcome } from "./ReloadOutcome";
 export type { ReloadedFiles } from "./ReloadedFiles";
 export type { MessageSender } from "./MessageSender";
+export type { AgentSender } from "./AgentSender";
 export type { TurnOrigin } from "./TurnOrigin";
 export type { Visibility } from "./Visibility";
 export type { ImageAttachment } from "./ImageAttachment";

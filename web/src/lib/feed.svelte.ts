@@ -5,6 +5,7 @@ import { failedAnnouncement, repliedAnnouncement, workingAnnouncement } from "./
 import { LiveStreams, MessageIds, nextAnimationFrame, type FrameScheduler } from "./feed-stream";
 import { dayLabel } from "./day-label";
 import { nextFeedId } from "./feed-id";
+import { namedAgentMessage } from "./relay";
 import {
   appendToolCall,
   applyToolResult,
@@ -107,7 +108,11 @@ function redrawnBySnapshot(item: FeedItem, echoed: readonly string[]): boolean {
   if (item.kind === "assistant" || item.kind === "thinking" || item.kind === "tool-group") {
     return true;
   }
-  return item.kind === "user" && item.messageId !== undefined && echoed.includes(item.messageId);
+  return (
+    (item.kind === "user" || item.kind === "agent-message") &&
+    item.messageId !== undefined &&
+    echoed.includes(item.messageId)
+  );
 }
 
 /**
@@ -827,10 +832,11 @@ export class FeedStore {
   }
 
   /**
-   * A person's message entering the main conversation, from any channel. One
-   * this page sent is already shown. One that arrives while its turn runs
-   * joins it; any other starts the turn that follows, which `turn_started`
-   * then announces.
+   * A person's or a teammate's message entering the main conversation, from
+   * any channel. One this page sent is already shown. One that arrives while
+   * its turn runs joins it; any other starts the turn that follows, which
+   * `turn_started` then announces. A teammate's shows as the card history
+   * gives it.
    */
   private receiveUserMessage(msg: UserMessageFrame): void {
     // The agent read a waiting message: it joins the feed here, where the agent read it.
@@ -843,6 +849,22 @@ export class FeedStore {
     if (!joins) {
       this.maybePushDayDivider(timestamp);
       this.turnStart ??= this.feed.length;
+    }
+    if (msg.agent_sender !== undefined) {
+      const { from, category, body } = namedAgentMessage(msg.agent_sender, msg.content);
+      this.feed.push({
+        id: nextFeedId(),
+        kind: "agent-message",
+        from,
+        category,
+        content: body,
+        runId: null,
+        timestamp,
+        messageId: msg.id,
+        turnId: msg.turn_id,
+        ...(joins ? { midTurn: true } : {}),
+      });
+      return;
     }
     this.feed.push({
       id: nextFeedId(),

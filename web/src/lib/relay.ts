@@ -7,7 +7,7 @@
 // for history written before the field existed, and only where a person
 // couldn't have typed it. Keep these patterns in step with that function.
 
-import type { RecentMessage } from "./types";
+import type { AgentSender, RecentMessage } from "./types";
 
 /** A message from another agent, as recognized from its header. */
 export interface ParsedAgentMessage {
@@ -43,16 +43,19 @@ export function historyAgentMessage(
   mode: "main" | "session",
 ): ParsedAgentMessage | null {
   if (msg.role !== "user") return null;
-  const parsed = parseAgentMessage(msg.content);
-  if (msg.agent_sender) {
-    return {
-      from: msg.agent_sender.address,
-      category: msg.agent_sender.category,
-      body: parsed ? parsed.body : msg.content,
-    };
-  }
+  if (msg.agent_sender) return namedAgentMessage(msg.agent_sender, msg.content);
   const typedByPerson = mode === "main" ? msg.visibility !== "background" : msg.sender != null;
-  return typedByPerson ? null : parsed;
+  return typedByPerson ? null : parseAgentMessage(msg.content);
+}
+
+/**
+ * A message the backend says `sender` sent (its `agent_sender` field, in
+ * history or on a live `user_message` frame), with the header taken off its
+ * text.
+ */
+export function namedAgentMessage(sender: AgentSender, content: string): ParsedAgentMessage {
+  const parsed = parseAgentMessage(content);
+  return { from: sender.address, category: sender.category, body: parsed ? parsed.body : content };
 }
 
 /**
