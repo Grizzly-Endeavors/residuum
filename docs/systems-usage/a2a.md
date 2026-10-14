@@ -31,6 +31,8 @@ visibility = "public"    # "public" or "private"
 
 Changing any `[a2a]` value, or the gateway `bind` it shares, restarts the A2A listener on reload — the config API's reload path, `residuum a2a` commands, and manual edits to `hub/config.toml` or the agent's `config.toml` (picked up by the running gateway) all take effect the same way.
 
+If the A2A listener can't bind its port, because another program holds it or the system doesn't allow it, the hub publishes a `notice` naming the port and the reason, both at start and after a reload. The listener doesn't retry; it runs again only after the port or the config changes.
+
 ## Public URL
 
 Each agent has its own address, which its Agent Card advertises as its interface URLs:
