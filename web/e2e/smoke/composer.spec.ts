@@ -74,7 +74,9 @@ test.describe("the / menu", () => {
     await box(page).click();
     await page.keyboard.type("/home/bear/logs/app.log has the error");
     await sendFromComposer(box(page));
-    await expect(conversation.getByText("/home/bear/logs/app.log has the error")).toBeVisible();
+    await expect(
+      conversation.getByText("/home/bear/logs/app.log has the error", { exact: true }),
+    ).toBeVisible();
     await expect(box(page)).toHaveValue("");
 
     // Stop reply names an action, which can't run while atlas isn't replying.
