@@ -308,6 +308,14 @@ impl WorkspaceLayout {
         self.root.join("scheduled_actions.json")
     }
 
+    /// Path to `file_links.json` -- the token links to files outside the
+    /// workspace the agent sent, each with its expiry, so a link outlives a
+    /// restart of the agent and is served while the agent is stopped.
+    #[must_use]
+    pub fn file_links_json(&self) -> PathBuf {
+        self.root.join("file_links.json")
+    }
+
     /// All directories that should exist in a bootstrapped workspace.
     #[must_use]
     pub fn required_dirs(&self) -> Vec<PathBuf> {
@@ -481,6 +489,11 @@ mod tests {
             layout.scheduled_actions_json(),
             PathBuf::from("/tmp/ws/scheduled_actions.json"),
             "scheduled_actions_json path"
+        );
+        assert_eq!(
+            layout.file_links_json(),
+            PathBuf::from("/tmp/ws/file_links.json"),
+            "file_links_json path"
         );
         assert_eq!(
             layout.resume_points_json(),
