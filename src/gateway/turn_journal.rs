@@ -349,6 +349,7 @@ mod tests {
             content: "hi".into(),
             images: vec![],
             sender: None,
+            agent_sender: None,
             endpoint: "web".into(),
         });
         journal.observe(&started("m1"));
@@ -491,6 +492,7 @@ mod tests {
             content: format!("say {id}"),
             images: vec![],
             sender: None,
+            agent_sender: None,
             endpoint: "ws".into(),
         }
     }
@@ -526,6 +528,41 @@ mod tests {
         );
         journal.observe(&read("c", "c"));
         assert!(waiting(&journal).is_empty());
+    }
+
+    #[test]
+    fn a_teammates_opening_message_is_kept_with_its_sender() {
+        let journal = TurnJournal::default();
+        let teammate = crate::inference::AgentSender {
+            address: "agent:atlas".into(),
+            category: "teammate".into(),
+        };
+        journal.observe(&MainConversationEvent::UserMessage {
+            id: "bg-1".into(),
+            turn_id: "bg-1".into(),
+            content: "status?".into(),
+            images: vec![],
+            sender: None,
+            agent_sender: Some(teammate.clone()),
+            endpoint: "background".into(),
+        });
+        journal.observe(&started("bg-1"));
+
+        let snapshot = journal.snapshot();
+        assert_eq!(texts(&snapshot), ["user:status?", "started:bg-1"]);
+        let opening = snapshot.turn.as_ref().map(|t| &t.entries[0].event);
+        assert!(
+            matches!(
+                opening,
+                Some(MainConversationEvent::UserMessage { agent_sender: Some(sender), .. })
+                    if *sender == teammate
+            ),
+            "{opening:?}"
+        );
+        assert!(
+            snapshot.queued.is_empty(),
+            "a teammate's message never waits"
+        );
     }
 
     #[test]

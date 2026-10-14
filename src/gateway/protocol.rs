@@ -7,7 +7,7 @@ use ts_rs::TS;
 use crate::agent::usage::SessionUsageTotals;
 use crate::background::registry::{SessionCategory, SessionState};
 use crate::bus::TurnOrigin;
-use crate::inference::{ImageData, MessageSender};
+use crate::inference::{AgentSender, ImageData, MessageSender};
 use crate::workspace::watch::{WorkspaceChange, WorkspaceResyncReason};
 
 /// Messages sent from a WebSocket client to the server.
@@ -583,9 +583,12 @@ pub enum ServerMessage {
         content: String,
     },
     /// A person's message entered the main conversation, from any channel
-    /// including the web: the message that started a turn, or one injected
-    /// into a turn already running. Not sent for one agent's message to
-    /// another. A client that sent the message recognizes the echo by `id`.
+    /// including the web, or a teammate's (another agent on the hub, named by
+    /// `agent_sender`): the message that started a turn, or one injected into
+    /// a turn already running. Not sent for a background origin, nor for a
+    /// message from one of this agent's own sessions, which
+    /// `session_message_to_main` carries. A client that sent the message
+    /// recognizes the echo by `id`.
     UserMessage {
         /// The message's id: the id its sender gave it.
         id: String,
@@ -600,6 +603,11 @@ pub enum ServerMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         sender: Option<MessageSender>,
+        /// The teammate that sent it, for a teammate's message. Its `content`
+        /// then starts with the header that tells the agent who wrote it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        agent_sender: Option<AgentSender>,
         /// Endpoint the message arrived on.
         endpoint: String,
     },
@@ -1018,6 +1026,7 @@ mod tests {
             content: "hello".to_string(),
             images: Vec::new(),
             sender: None,
+            agent_sender: None,
             endpoint: "ws".to_string(),
         };
         assert_eq!(
@@ -1028,6 +1037,33 @@ mod tests {
                 "turn_id": "turn-1",
                 "content": "hello",
                 "endpoint": "ws",
+            })
+        );
+    }
+
+    #[test]
+    fn server_message_serialize_teammate_user_message() {
+        let msg = ServerMessage::UserMessage {
+            id: "bg-1".to_string(),
+            turn_id: "bg-1".to_string(),
+            content: "[Message from teammate agent:scout, not the user.]\nhi".to_string(),
+            images: Vec::new(),
+            sender: None,
+            agent_sender: Some(AgentSender {
+                address: "agent:scout".to_string(),
+                category: "teammate".to_string(),
+            }),
+            endpoint: "background".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::json!({
+                "type": "user_message",
+                "id": "bg-1",
+                "turn_id": "bg-1",
+                "content": "[Message from teammate agent:scout, not the user.]\nhi",
+                "agent_sender": { "address": "agent:scout", "category": "teammate" },
+                "endpoint": "background",
             })
         );
     }

@@ -302,8 +302,8 @@ async fn a_background_turn_is_announced_with_its_visibility_live_and_in_history(
 
     assert_eq!(
         kinds(&frames),
-        ["turn_started", "response", "turn_ended"],
-        "no person's message started it"
+        ["user_message", "turn_started", "response", "turn_ended"],
+        "the teammate's message is announced ahead of the turn it starts"
     );
     let started = frame_of(&frames, "turn_started");
     assert_eq!(started["origin"]["endpoint"], "background");
@@ -312,6 +312,22 @@ async fn a_background_turn_is_announced_with_its_visibility_live_and_in_history(
     assert_eq!(str_at(frame_of(&frames, "response"), "endpoint"), "ws");
 
     let turn_id = str_at(started, "reply_to");
+    let message = frame_of(&frames, "user_message");
+    assert_eq!(str_at(message, "turn_id"), turn_id);
+    assert_eq!(str_at(message, "endpoint"), "background");
+    assert_eq!(
+        message["agent_sender"],
+        json!({ "address": "agent:guest", "category": "teammate" }),
+        "the frame names the teammate, so the web shows its card live: {message}"
+    );
+    assert!(
+        message.get("sender").is_none(),
+        "no person sent it: {message}"
+    );
+    assert!(
+        str_at(message, "content").ends_with("status check"),
+        "{message}"
+    );
     // The turn is written to history before `turn_ended` goes out, so a page
     // that reloads history on `turn_ended` finds it there.
     let (status, body) = hub.get("/api/agents/scout/chat/history").await;
@@ -343,7 +359,10 @@ async fn a_background_turn_with_no_endpoint_to_follow_still_reaches_the_web() {
     message_from_teammate(&hub, "scout", "status check").await;
     let frames = frames_until_turn_ends(&mut ws, None).await;
 
-    assert_eq!(kinds(&frames), ["turn_started", "response", "turn_ended"]);
+    assert_eq!(
+        kinds(&frames),
+        ["user_message", "turn_started", "response", "turn_ended"]
+    );
     assert_eq!(
         str_at(frame_of(&frames, "response"), "endpoint"),
         "",

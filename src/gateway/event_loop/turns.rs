@@ -606,7 +606,7 @@ async fn publish_main_conversation(publisher: &Publisher, event: MainConversatio
     }
 }
 
-/// Announce a turn: its opening person's message and its start to the main
+/// Announce a turn: its opening person's or teammate's message and its start to the main
 /// conversation, whatever endpoint it is delivered to, and
 /// `TurnLifecycleEvent::Started` to the output endpoint when that is a chat
 /// interface (see [`chat_interface_endpoint`]).

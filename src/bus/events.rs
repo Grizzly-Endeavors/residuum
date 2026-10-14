@@ -908,9 +908,11 @@ pub enum MainConversationEvent {
         /// The turn.
         turn_id: String,
     },
-    /// A person's message entered the conversation: as the message that
-    /// started a turn, or injected into a turn already running. Never sent
-    /// for one agent's message to another.
+    /// A person's or a teammate's message entered the conversation: as the
+    /// message that started a turn, or injected into a turn already running.
+    /// Not sent for a background origin, nor for a message one of this
+    /// agent's own sessions sent it, which that session's stream shows
+    /// instead (`SessionEventKind::MessageToMain`).
     UserMessage {
         /// The message's id: the id its sender gave it, so a client that sent
         /// it can recognize the echo.
@@ -923,6 +925,9 @@ pub enum MainConversationEvent {
         images: Vec<ImageData>,
         /// The person who sent it, for interfaces that identify one.
         sender: Option<MessageSender>,
+        /// The teammate (another agent on the hub) that sent it, for a
+        /// teammate's message.
+        agent_sender: Option<crate::inference::AgentSender>,
         /// Endpoint it arrived on.
         endpoint: String,
     },
@@ -1021,16 +1026,18 @@ pub enum MainConversationEvent {
 
 impl MainConversationEvent {
     /// The event announcing `message` entering the conversation in turn
-    /// `turn_id`, or `None` when no person sent it (a background origin, or
-    /// one agent's message to another).
+    /// `turn_id`, or `None` when neither a person nor a teammate sent it (a
+    /// background origin, or a message from one of this agent's own sessions).
     #[must_use]
     pub fn user_message(message: &MessageEvent, turn_id: &str) -> Option<Self> {
-        message.origin.is_from_person().then(|| Self::UserMessage {
+        let teammate = message.origin.teammate_sender();
+        (message.origin.is_from_person() || teammate.is_some()).then(|| Self::UserMessage {
             id: message.id.clone(),
             turn_id: turn_id.to_owned(),
             content: message.content.clone(),
             images: message.images.clone(),
             sender: message.origin.sender.clone(),
+            agent_sender: teammate.cloned(),
             endpoint: message.origin.endpoint.clone(),
         })
     }
