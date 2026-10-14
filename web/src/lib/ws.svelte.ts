@@ -315,7 +315,9 @@ class WsCoordinator {
    * ended while it was on its way: the read may have come before history
    * recorded that turn, and applying it would take the turn off the feed.
    * A read that follows the page hearing the turn end holds it, since history
-   * records a turn before its end goes out.
+   * records a turn before its end goes out. It needs no cap: each further read
+   * needs another turn to end during the one before, and main turns run one
+   * at a time.
    */
   private async fetchRecentHistory(agent: string, store: FeedStore): Promise<RecentHistorySegment> {
     let ended;

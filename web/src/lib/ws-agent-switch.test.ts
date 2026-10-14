@@ -17,26 +17,47 @@ function history(text: string): Record<string, unknown> {
 
 const USER_ORIGIN = { endpoint: "ws", visibility: "user" };
 
+/** A finished turn as history records it: its id, the user's message, the reply. */
+type RecordedTurn = [turnId: string, question: string, answer: string];
+
 /**
- * Scout's history once a turn is recorded: the earlier message, unless it was
- * compressed into the episode `cursor`, then the finished turn.
+ * Scout's history once `turns` are recorded: the earlier message, unless it
+ * was compressed into the episode `cursor`, then the finished turns.
  */
-function recordedTurn(
-  cursor: string | null,
-  turnId: string,
-  question: string,
-  answer: string,
-): Record<string, unknown> {
-  const at = { timestamp: "2026-09-29T12:01:00Z", project_context: "", turn_id: turnId };
+function recordedTurns(cursor: string | null, turns: RecordedTurn[]): Record<string, unknown> {
   return {
     kind: "recent",
     messages: [
       ...(cursor === null ? (history("hello from scout").messages as unknown[]) : []),
-      { role: "user", content: question, ...at },
-      { role: "assistant", content: answer, ...at },
+      ...turns.flatMap(([turnId, question, answer]) => {
+        const at = { timestamp: "2026-09-29T12:01:00Z", project_context: "", turn_id: turnId };
+        return [
+          { role: "user", content: question, ...at },
+          { role: "assistant", content: answer, ...at },
+        ];
+      }),
     ],
     next_cursor: cursor,
   };
+}
+
+/** Run a whole turn on `socket` for the message `question`, recording it in history before it ends. */
+function runTurn(
+  server: FakeServer,
+  socket: FakeWebSocket,
+  question: string,
+  answer: string,
+  recorded: RecordedTurn[],
+): RecordedTurn[] {
+  ws.sendChat(question);
+  const turnId = sentMessageId(socket);
+  socket.simulateMessage({ type: "turn_started", reply_to: turnId, origin: USER_ORIGIN });
+  socket.simulateMessage({ type: "response", reply_to: turnId, endpoint: "ws", content: answer });
+  const turns: RecordedTurn[] = [...recorded, [turnId, question, answer]];
+  // History records the turn before its end reaches the page.
+  server.setHistory("scout", recordedTurns(null, turns));
+  socket.simulateMessage({ type: "turn_ended", reply_to: turnId });
+  return turns;
 }
 
 /** The id of the last message the page sent on `socket`, which names the turn it starts. */
@@ -84,8 +105,10 @@ function installServer(): FakeServer {
       if (input.includes("/chat/history")) {
         // The history as it stood when asked, however long the answer takes.
         const segment = histories.get(agent) ?? history(`hello from ${agent}`);
-        await held.get(agent);
+        // Taken before waiting, so a hold set after this one holds the next request.
+        const hold = held.get(agent);
         held.delete(agent);
+        await hold;
         return json(segment);
       }
       if (input.includes("/usage")) {
@@ -335,17 +358,29 @@ describe("a turn that ends while the history is on its way stays in the feed", (
     const socket = FakeWebSocket.last;
     socket.simulateOpen();
     await flush();
-    ws.sendChat("sent early");
-    const turnId = sentMessageId(socket);
-    socket.simulateMessage({ type: "turn_started", reply_to: turnId, origin: USER_ORIGIN });
-    socket.simulateMessage({ type: "response", reply_to: turnId, endpoint: "ws", content: "done" });
-    // History records the turn before its end reaches the page.
-    server.setHistory("scout", recordedTurn(null, turnId, "sent early", "done"));
-    socket.simulateMessage({ type: "turn_ended", reply_to: turnId });
+    runTurn(server, socket, "sent early", "done", []);
     held.release();
     await flush();
 
     expect(feedText()).toEqual(["hello from scout", "sent early", "done"]);
+  });
+
+  it("when another turn ends while the history is read again", async () => {
+    const server = installServer();
+    const firstRead = server.hold("scout");
+    setViewedAgent("scout");
+    const socket = FakeWebSocket.last;
+    socket.simulateOpen();
+    await flush();
+    const recorded = runTurn(server, socket, "first", "one", []);
+    const secondRead = server.hold("scout");
+    firstRead.release();
+    await flush();
+    runTurn(server, socket, "second", "two", recorded);
+    secondRead.release();
+    await flush();
+
+    expect(feedText()).toEqual(["hello from scout", "first", "one", "second", "two"]);
   });
 
   it("on reconnecting after history was compressed into a new episode", async () => {
@@ -367,7 +402,7 @@ describe("a turn that ends while the history is on its way stays in the feed", (
     second.simulateOpen();
     await flush();
     second.simulateMessage({ type: "response", reply_to: turnId, endpoint: "ws", content: "done" });
-    server.setHistory("scout", recordedTurn("ep-004", turnId, "tidy the wiki", "done"));
+    server.setHistory("scout", recordedTurns("ep-004", [[turnId, "tidy the wiki", "done"]]));
     second.simulateMessage({ type: "turn_ended", reply_to: turnId });
     held.release();
     await flush();

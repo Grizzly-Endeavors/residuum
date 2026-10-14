@@ -760,9 +760,11 @@ export class FeedStore {
   }
 
   /**
-   * The agent stopped with a turn in flight. What the turn showed stays, but
-   * no more of it will arrive, and history never records it. Messages still
-   * waiting go into history as the agent stops, and show from there.
+   * The agent stopped with a turn in flight. What the turn showed stays as it
+   * is, and no more of it will arrive. History records the turn as the agent
+   * stops it, and shows it from there after a reload, unless the agent was
+   * force-aborted or crashed. Messages still waiting go into history as the
+   * agent stops, and show from there.
    */
   abandonLiveTurn(): void {
     if (this.activeTurnId !== null) this.closeTurn(this.activeTurnId, "interrupted");
