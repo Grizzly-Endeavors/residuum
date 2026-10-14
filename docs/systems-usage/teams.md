@@ -59,6 +59,7 @@ The buffer for that conversation is emptied when it is delivered, so each messag
 - A group chat or channel's reply comes from that conversation's own session and always goes back to that same conversation (a channel reply lands in the same thread). It never falls back to the owner's DM: if Teams refuses the post, the output is dropped, the error is logged naming the session and conversation, and main gets a notice so the owner can be told if it matters.
 - `send_message` with a `conversation` from `list_conversations` posts into that DM, group chat, or channel (a channel post starts a new thread), from whichever agent (main or a session) calls it. If Teams refuses main's own send (or the conversation is unknown), the owner sees a notice in the web UI and main gets a `[Delivery Failed]` message; a session's send is subject to the same never-falls-back rule as its own replies above.
 - Other proactive output from main with no originating Teams message — `send_message` without a conversation, results routed through `idle_channel = "teams"`, background turns whose last user message came from Teams — goes to the owner's DM.
+- Text the agent writes before a tool call ("checking the calendar first") is not posted to Microsoft Teams by default: each turn sends only its final reply, the typing indicator shows the turn is still running in the meantime, and the web UI shows that text as it always does. Set `[teams] deliver_intermediate = true` (Settings → Connections → Microsoft Teams → **Post updates while working**) to post each piece of it as its own message as soon as it's written. The setting covers the main agent's turns and every conversation session's turns alike.
 - When a main-agent turn started from Teams fails, the plain-language error goes back where its reply would have. System notices and other errors are never sent to Teams; they appear in the web UI.
 - The web UI follows the main agent's turns from Teams as they happen: the owner's message, the agent's text and tool calls in order, the reply and the end of the turn, each marked as having come from Teams. A web message sent while such a turn runs joins it, the same as a Teams message would. See [The Main Conversation Stream](turn-control.md#the-main-conversation-stream).
 - If a turn is already running when another Teams message arrives, the new message joins that turn (main's own turn for the owner's DM, or a session's turn for its own conversation) and the answer goes to the conversation that started it.
@@ -80,6 +81,7 @@ tenant_id = "your-directory-tenant-id"
 app_password = "secret:teams"                     # client secret; or a "${ENV_VAR}" reference, or a literal
 respond_to_others = false
 context_messages = 20
+deliver_intermediate = false
 port = 7701
 ```
 

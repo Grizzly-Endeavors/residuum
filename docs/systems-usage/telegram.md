@@ -53,6 +53,7 @@ The buffer for that group is emptied when it is delivered, so each message reach
 - A group's reply comes from that group's own session and always goes back to that same group. It never falls back to the owner's chat: if Telegram refuses the post (the bot was removed, or can't write there), the output is dropped, the error is logged naming the session and chat, and main gets a notice so the owner can be told if it matters.
 - `send_message` with a `conversation` from `list_conversations` posts into that private chat or group, from whichever agent (main or a session) calls it. If Telegram refuses main's own send (or the conversation is unknown), the owner sees a notice in the web UI and main gets a `[Delivery Failed]` message; a session's send is subject to the same never-falls-back rule as its own replies above.
 - Other proactive output from main — `send_message` without a conversation, results routed through `idle_channel = "telegram"`, background turns — goes to the owner's chat. Until an owner exists it is dropped with a warning in the log.
+- Text the agent writes before a tool call ("checking the calendar first") is not posted to Telegram by default: each turn sends only its final reply, the typing indicator shows the turn is still running in the meantime, and the web UI shows that text as it always does. Set `[telegram] deliver_intermediate = true` (Settings → Connections → Telegram → **Post updates while working**) to post each piece of it as its own message as soon as it's written. The setting covers the main agent's turns and every conversation session's turns alike.
 - When a main-agent turn started from Telegram fails, the plain-language error goes back where its reply would have. System notices and other errors are never sent to Telegram; they appear in the web UI.
 - The web UI follows the main agent's turns from Telegram as they happen: the owner's message, the agent's text and tool calls in order, the reply and the end of the turn, each marked as having come from Telegram. A web message sent while such a turn runs joins it, the same as a Telegram message would. See [The Main Conversation Stream](turn-control.md#the-main-conversation-stream).
 
@@ -69,6 +70,7 @@ Telegram gives bots no way to list their chats, so `list_conversations` shows wh
 token = "secret:telegram"   # or a "${ENV_VAR}" reference, or a literal
 respond_to_others = false
 context_messages = 20
+deliver_intermediate = false
 ```
 
 Changing any `[telegram]` value restarts the Telegram adapter on reload.
