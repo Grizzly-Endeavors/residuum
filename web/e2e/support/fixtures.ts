@@ -226,6 +226,19 @@ async function probeWebkit(): Promise<string | null> {
   }
 }
 
+/** The page function the init script reports each Content-Security-Policy violation to. */
+const CSP_VIOLATION_BINDING = "__e2eReportCspViolation";
+
+/** Runs in every page: hands each violation of the page's policy to the test. */
+function reportCspViolations(binding: string): void {
+  document.addEventListener("securitypolicyviolation", (event) => {
+    const report = (
+      window as unknown as Record<string, ((text: string) => Promise<void>) | undefined>
+    )[binding];
+    void report?.(`${event.effectiveDirective} ${event.blockedURI} on ${event.documentURI}`);
+  });
+}
+
 export const test = base.extend<E2EFixtures & E2EOptions>({
   frozenClock: [false, { option: true }],
   requiresContainer: [false, { option: true }],
@@ -352,6 +365,14 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
     if (frozenClock) await context.clock.setFixedTime(FIXED_START_MS);
     else await context.clock.install();
     await context.addInitScript(keepBrowserFrames);
+    // The mock sends the hub's Content-Security-Policy with the app's HTML
+    // (`mock/app-shell-policy.ts`), so anything the app loads that the policy
+    // refuses would be missing for real users too: the test fails with it.
+    const violations: string[] = [];
+    await context.exposeBinding(CSP_VIOLATION_BINDING, (_source, report: string) => {
+      violations.push(report);
+    });
+    await context.addInitScript(reportCspViolations, CSP_VIOLATION_BINDING);
     // With the network off the hub can't be reached, so a page that loads then is ready showing the banner (see `hubReach`).
     const setOffline = context.setOffline.bind(context);
     context.setOffline = async (offline) => {
@@ -361,6 +382,11 @@ export const test = base.extend<E2EFixtures & E2EOptions>({
     await use(context);
     // A page whose throttle failed fails the test here, not silently at full speed.
     await Promise.all(throttles);
+    if (violations.length > 0) {
+      throw new Error(
+        `The app shell's Content-Security-Policy (web/app-shell-csp.txt) refused: ${violations.join("; ")}`,
+      );
+    }
   },
 });
 

