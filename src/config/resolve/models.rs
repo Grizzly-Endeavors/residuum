@@ -497,6 +497,42 @@ main = "local/qwen3"
         assert_eq!(main[0].image_input, ImageInput::TextOnly);
     }
 
+    /// Apply the patch the web Settings sends for a model's image setting.
+    fn patched(toml: &str, models: serde_json::Value) -> String {
+        let diff = serde_json::json!({ "providers": { "zai": { "models": models } } });
+        crate::config::patch::apply_patch(toml, diff.as_object().unwrap(), "providers.toml")
+            .unwrap()
+    }
+
+    #[test]
+    fn model_input_round_trips_through_a_settings_patch() {
+        for original in [
+            "[providers.zai]\ntype = \"openai\"\n\n[models]\nmain = \"zai/glm-5.3\"\n",
+            "[providers]\nzai = { type = \"openai\" }\n\n[models]\nmain = \"zai/glm-5.3\"\n",
+        ] {
+            let declared = patched(
+                original,
+                serde_json::json!({ "glm-5.3": { "input": ["text"] } }),
+            );
+            assert_eq!(
+                chain_with_models(&declared)[0].image_input,
+                ImageInput::TextOnly,
+                "declared text-only from:\n{original}\nas:\n{declared}"
+            );
+
+            let cleared = patched(&declared, serde_json::json!({ "glm-5.3": null }));
+            assert_eq!(
+                chain_with_models(&cleared)[0].image_input,
+                ImageInput::Undeclared,
+                "cleared again as:\n{cleared}"
+            );
+            assert!(
+                !cleared.contains("models.") && !cleared.contains("models ="),
+                "clearing the last model leaves no empty models table:\n{cleared}"
+            );
+        }
+    }
+
     #[test]
     fn model_input_rejects_an_unknown_kind() {
         let err = toml::from_str::<super::super::super::deserialize::ProvidersFile>(

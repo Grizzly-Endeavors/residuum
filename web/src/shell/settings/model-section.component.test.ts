@@ -208,6 +208,30 @@ describe("Model", () => {
     expect(screen.getByRole("button", { name: "Remove old" })).toBeTruthy();
   });
 
+  it("sets whether each model a provider serves can view images", async () => {
+    const scope = await loaded({
+      providers:
+        '[providers.zai]\ntype = "openai"\n[providers.zai.models."glm-5v"]\ninput = ["text", "image"]\n[models]\nmain = ["zai/glm-5.3", "anthropic/claude-a"]\n',
+    });
+    render(ModelSection, { scope, section: "model" });
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Edit zai" }));
+    const images = screen.getByRole("group", { name: "Images each model can view" });
+    const served = [...images.querySelectorAll("select")];
+    expect(served).toHaveLength(2);
+    const [main, vision] = served as [HTMLSelectElement, HTMLSelectElement];
+    expect(main.value).toBe("");
+    expect(vision.value).toBe("image");
+
+    await user.selectOptions(main, "text");
+    await user.selectOptions(vision, "");
+    await save(scope);
+    expect(patches("providers")).toEqual([
+      { providers: { zai: { models: { "glm-5.3": { input: ["text"] }, "glm-5v": null } } } },
+    ]);
+  });
+
   it("refuses a provider name a model can't name, or one already taken", async () => {
     await loaded({ providers: '[providers.work]\ntype = "openai"\n' });
     render(ModelSection, { scope: settingsModel.agent(agent), section: "model" });
