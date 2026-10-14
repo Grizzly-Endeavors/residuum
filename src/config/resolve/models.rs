@@ -498,8 +498,8 @@ main = "local/qwen3"
     }
 
     /// Apply the patch the web Settings sends for a model's image setting.
-    fn patched(toml: &str, models: serde_json::Value) -> String {
-        let diff = serde_json::json!({ "providers": { "zai": { "models": models } } });
+    fn patched(toml: &str, models: &serde_json::Value) -> String {
+        let diff = serde_json::json!({ "providers": { "zai": { "models": models.clone() } } });
         crate::config::patch::apply_patch(toml, diff.as_object().unwrap(), "providers.toml")
             .unwrap()
     }
@@ -512,7 +512,7 @@ main = "local/qwen3"
         ] {
             let declared = patched(
                 original,
-                serde_json::json!({ "glm-5.3": { "input": ["text"] } }),
+                &serde_json::json!({ "glm-5.3": { "input": ["text"] } }),
             );
             assert_eq!(
                 chain_with_models(&declared)[0].image_input,
@@ -520,7 +520,7 @@ main = "local/qwen3"
                 "declared text-only from:\n{original}\nas:\n{declared}"
             );
 
-            let cleared = patched(&declared, serde_json::json!({ "glm-5.3": null }));
+            let cleared = patched(&declared, &serde_json::json!({ "glm-5.3": null }));
             assert_eq!(
                 chain_with_models(&cleared)[0].image_input,
                 ImageInput::Undeclared,
