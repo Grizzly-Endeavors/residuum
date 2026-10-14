@@ -517,8 +517,8 @@ async fn spawn_agent_tasks(
         conversations: parts.endpoint_registry.conversations().clone(),
     };
 
-    let file_registry = crate::gateway::file_server::FileRegistry::new(cfg.agent_name.clone())
-        .with_workspace_root(parts.layout.root().to_path_buf());
+    let file_registry =
+        crate::gateway::file_server::FileRegistry::for_agent(cfg.agent_name.clone(), &parts.layout);
     file_registry.spawn_cleanup_task();
     let webhooks = crate::interfaces::webhook::WebhookTable::from_config(&cfg.webhooks);
     let ChangeFeeds {
