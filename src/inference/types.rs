@@ -518,6 +518,11 @@ pub struct InferenceResponse {
     pub stop_reason: Option<StopReason>,
     /// Images left out of the request because the model can't take them.
     pub images_omitted: Option<super::ImagesOmitted>,
+    /// How many replayed reasoning blocks the provider dropped from the
+    /// request instead of reading them, because the conversation before them
+    /// changed (Anthropic's `thinking_dropped` input transformation). The
+    /// model answered without that reasoning.
+    pub thinking_dropped: usize,
 }
 
 impl InferenceResponse {
@@ -531,6 +536,7 @@ impl InferenceResponse {
             thinking: Vec::new(),
             stop_reason: None,
             images_omitted: None,
+            thinking_dropped: 0,
         }
     }
 
