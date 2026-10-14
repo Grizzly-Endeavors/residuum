@@ -19,6 +19,7 @@ pub(super) fn cloud_routes(hub: &HubHttpState) -> Router {
         reload_tx: hub.reload_tx.clone(),
         tunnel_status_rx: hub.tunnel_status_rx.clone(),
         secret_lock: Arc::clone(&hub.secret_lock),
+        checkpoints: Arc::clone(&hub.checkpoints),
     };
     Router::new()
         .route("/api/hub/cloud/status", get(web::cloud::api_cloud_status))

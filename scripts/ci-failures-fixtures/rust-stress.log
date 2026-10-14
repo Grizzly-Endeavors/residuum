@@ -1,0 +1,21 @@
+2026-10-14T04:19:48.7246976Z ##[group]Run scripts/stress-tests.sh
+2026-10-14T04:19:48.7247186Z ^[[36;1mscripts/stress-tests.sh^[[0m
+2026-10-14T04:19:48.7254056Z shell: /usr/bin/bash -e {0}
+2026-10-14T04:19:48.7254264Z env:
+2026-10-14T04:19:48.7254475Z   STRESS_TESTS_LOG: /home/runner/_work/_temp/tests.log
+2026-10-14T04:19:48.7254681Z ##[endgroup]
+2026-10-14T04:19:49.0136478Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
+2026-10-14T04:19:49.0151374Z warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+2026-10-14T04:19:49.0151971Z note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+2026-10-14T04:19:49.0515309Z Stress: 15 test binaries, 2 copies at once, 20 CPU burners, 1 round(s), on 20 CPUs.
+2026-10-14T04:19:49.0521948Z Load before: 16.60 28.61 21.09
+2026-10-14T04:20:48.6646573Z Round 1 done. Load: 39.18 33.33 23.21. inotify instances in use mid-run: 0 of 128.
+2026-10-14T04:20:48.6717805Z 
+2026-10-14T04:20:48.6719261Z Failures (count out of 2 runs of each test):
+2026-10-14T04:20:48.6723857Z Failed under load only, so a test waiting on time (fix the wait; CONTRIBUTING.md, "Waiting in tests"):
+2026-10-14T04:20:48.6727191Z 1 gateway::startup::memory::tests::deleted_episode_prunes_its_vector_rows_on_resync
+2026-10-14T04:20:48.6727697Z error: tests failed under load. Logs are in target/stress/; the summary says which failures waited on time and which also failed in the Tests step.
+2026-10-14T04:20:48.6728042Z 
+2026-10-14T04:20:48.6728045Z 
+2026-10-14T04:20:48.6744043Z ##[error]Process completed with exit code 1.
+2026-10-14T04:20:48.6804368Z ##[group]Run cargo test --quiet --lib -- --ignored --test-threads=1 pebble system_tests
