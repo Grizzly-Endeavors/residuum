@@ -16,7 +16,7 @@ pub(super) async fn publish(publisher: Option<&Publisher>, message: String) {
     if let Err(e) = publisher
         .publish(
             topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-            NoticeEvent { message },
+            NoticeEvent::new(message),
         )
         .await
     {

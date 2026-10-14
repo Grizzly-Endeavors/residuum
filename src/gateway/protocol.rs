@@ -6,7 +6,7 @@ use ts_rs::TS;
 
 use crate::agent::usage::SessionUsageTotals;
 use crate::background::registry::{SessionCategory, SessionState};
-use crate::bus::TurnOrigin;
+use crate::bus::{ReloadOutcome, TurnOrigin};
 use crate::inference::{ImageData, MessageSender};
 use crate::workspace::watch::{WorkspaceChange, WorkspaceResyncReason};
 
@@ -687,10 +687,16 @@ pub enum ServerMessage {
     },
     /// The gateway is reloading its configuration.
     Reloading,
-    /// Result of a manual memory operation (observe or reflect).
+    /// A notice for the user: the result of a manual memory operation, a
+    /// settings reload's outcome, or any other operational report.
     Notice {
-        /// Human-readable result message.
+        /// Human-readable message, as the agent wrote it.
         message: String,
+        /// What a settings reload came to, when this notice reports one. The
+        /// web words the toast from it and keeps `message` as the detail.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        reload: Option<ReloadOutcome>,
     },
     /// Multi-line command output that should render inline in the chat
     /// stream rather than as a transient toast.
@@ -1195,6 +1201,7 @@ mod tests {
     fn server_message_serialize_notice() {
         let msg = ServerMessage::Notice {
             message: "observed successfully".to_string(),
+            reload: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"notice\""), "should have type tag");
@@ -1202,6 +1209,32 @@ mod tests {
             json.contains("\"message\":\"observed successfully\""),
             "should have message field"
         );
+        assert!(
+            !json.contains("reload"),
+            "a plain notice carries no reload field"
+        );
+    }
+
+    #[test]
+    fn server_message_serialize_reload_notice() {
+        for (outcome, word) in [
+            (ReloadOutcome::Reloaded, "reloaded"),
+            (ReloadOutcome::Unchanged, "unchanged"),
+            (ReloadOutcome::Failed, "failed"),
+        ] {
+            let msg = ServerMessage::Notice {
+                message: "configuration reloaded: models".to_string(),
+                reload: Some(outcome),
+            };
+            assert_eq!(
+                serde_json::to_value(&msg).unwrap(),
+                serde_json::json!({
+                    "type": "notice",
+                    "message": "configuration reloaded: models",
+                    "reload": word,
+                })
+            );
+        }
     }
 
     #[test]

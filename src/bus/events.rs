@@ -652,6 +652,42 @@ impl SpawnRequestEvent {
 pub struct NoticeEvent {
     /// Human-readable notice message.
     pub message: String,
+    /// What a settings reload came to, when this notice reports one. The web
+    /// words the toast from it and keeps `message` as the detail.
+    pub reload: Option<ReloadOutcome>,
+}
+
+impl NoticeEvent {
+    /// A notice that reports nothing structured: its text is all there is.
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            reload: None,
+        }
+    }
+
+    /// A notice reporting how a settings reload went.
+    #[must_use]
+    pub fn reload(outcome: ReloadOutcome, message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            reload: Some(outcome),
+        }
+    }
+}
+
+/// What an attempt to reload settings files came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ReloadOutcome {
+    /// The files loaded and something in them changed, which is now in effect.
+    Reloaded,
+    /// The files loaded and matched what was already running.
+    Unchanged,
+    /// The files couldn't be loaded; the settings already running stay in effect.
+    Failed,
 }
 
 /// Which background post-turn cycle (see `crate::gateway::post_turn`) an

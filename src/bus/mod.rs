@@ -21,10 +21,10 @@ pub use events::{
     ConversationTarget, ConversationTypingEvent, ErrorEvent, EventTrigger, HEARTBEAT_OK,
     HEARTBEAT_URGENT, InlineOutputEvent, IntermediateEvent, MainConversationEvent, MessageEvent,
     NoticeEvent, NotificationEvent, OutboundA2aTaskEvent, PostTurnActivityEvent,
-    PostTurnActivityKind, PulseOverlap, ResponseEvent, ResultDisposition, SessionEvent,
-    SessionEventKind, SessionResponseEvent, SpawnRequestEvent, ToolCallEvent, ToolResultEvent,
-    TurnLifecycleEvent, TurnOrigin, TurnUsageEvent, UserInboxAddedEvent, WorkbenchEvent,
-    WorkspaceEvent, ends_with_sentinel,
+    PostTurnActivityKind, PulseOverlap, ReloadOutcome, ResponseEvent, ResultDisposition,
+    SessionEvent, SessionEventKind, SessionResponseEvent, SpawnRequestEvent, ToolCallEvent,
+    ToolResultEvent, TurnLifecycleEvent, TurnOrigin, TurnUsageEvent, UserInboxAddedEvent,
+    WorkbenchEvent, WorkspaceEvent, ends_with_sentinel,
 };
 pub use handle::{Publisher, Subscriber};
 pub use registry::{EndpointEntry, EndpointRegistry};

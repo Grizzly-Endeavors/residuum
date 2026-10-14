@@ -2295,15 +2295,34 @@ async fn the_hub_socket_opens_with_a_snapshot_then_forwards_events() {
 
     h.directory
         .events
-        .send(HubEvent::Notice {
-            level: crate::hub::types::NoticeLevel::Warn,
-            message: "watch out".to_string(),
-            agent: Some("scout".to_string()),
-        })
+        .send(HubEvent::notice(
+            crate::hub::types::NoticeLevel::Warn,
+            "watch out".to_string(),
+            Some("scout".to_string()),
+        ))
         .unwrap();
     assert_eq!(
         next_frame(&mut socket).await,
         json!({ "type": "notice", "level": "warn", "message": "watch out", "agent": "scout" })
+    );
+
+    h.directory
+        .events
+        .send(HubEvent::Notice {
+            level: crate::hub::types::NoticeLevel::Warn,
+            message: "gateway rebind failed (0.0.0.0:7700): in use".to_string(),
+            agent: None,
+            kind: Some(crate::hub::types::HubNoticeKind::GatewayRebindFailed),
+        })
+        .unwrap();
+    assert_eq!(
+        next_frame(&mut socket).await,
+        json!({
+            "type": "notice",
+            "level": "warn",
+            "message": "gateway rebind failed (0.0.0.0:7700): in use",
+            "kind": "gateway_rebind_failed",
+        })
     );
 }
 

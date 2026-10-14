@@ -118,7 +118,7 @@ impl FailoverProvider {
             .publisher
             .publish(
                 topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-                NoticeEvent { message },
+                NoticeEvent::new(message),
             )
             .await
         {

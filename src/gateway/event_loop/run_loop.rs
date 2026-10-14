@@ -919,9 +919,7 @@ async fn reload_agent_card_note(rt: &mut AgentRuntime) -> Option<String> {
             crate::bus::topics::Notification(crate::bus::NotifyName::from(
                 crate::bus::SYSTEM_CHANNEL,
             )),
-            crate::bus::NoticeEvent {
-                message: message.clone(),
-            },
+            crate::bus::NoticeEvent::new(message.clone()),
         )
         .await
     {
@@ -973,9 +971,10 @@ async fn handle_workspace_reload(rt: &mut AgentRuntime) {
             crate::bus::topics::Notification(crate::bus::NotifyName::from(
                 crate::bus::SYSTEM_CHANNEL,
             )),
-            crate::bus::NoticeEvent {
-                message: "workspace configuration reloaded".to_string(),
-            },
+            crate::bus::NoticeEvent::reload(
+                crate::bus::ReloadOutcome::Reloaded,
+                "workspace configuration reloaded",
+            ),
         )
         .await
     {

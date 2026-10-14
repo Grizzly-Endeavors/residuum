@@ -373,6 +373,7 @@ async fn handle_client_message(
                     Ok(_filename) => {
                         tx.send(ServerMessage::Notice {
                             message: "Added a note to the inbox.".to_string(),
+                            reload: None,
                         })
                         .ok();
                     }
@@ -1098,7 +1099,7 @@ mod tests {
 
         let msg = next_server_message(&mut local_rx).await;
         assert!(
-            matches!(&msg, ServerMessage::Notice { message } if message == "Added a note to the inbox."),
+            matches!(&msg, ServerMessage::Notice { message, .. } if message == "Added a note to the inbox."),
             "expected a plain-language Notice, got {msg:?}"
         );
     }

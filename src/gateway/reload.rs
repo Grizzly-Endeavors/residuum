@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use tokio::time::Duration;
 
-use super::helpers::publish_notice;
+use super::helpers::{publish_notice, publish_reload_notice};
 use crate::background::spawn_context::SpawnContext;
+use crate::bus::ReloadOutcome;
 use crate::config::Config;
 use crate::gateway::{last_known_good, startup};
 use crate::inference::CompletionOptions;
@@ -303,7 +304,7 @@ pub(super) async fn handle_root_reload(rt: &mut AgentRuntime) -> IdleAction {
         Err(err) => {
             tracing::warn!(error = %err, "config reload failed, keeping current config");
             let message = format!("config reload failed (keeping current config): {err}");
-            publish_notice(&rt.publisher, message.clone()).await;
+            publish_reload_notice(&rt.publisher, ReloadOutcome::Failed, message.clone()).await;
             if deliver_to_agent {
                 rt.agent.inject_system_message(message);
             }
@@ -325,7 +326,7 @@ pub(super) async fn handle_root_reload(rt: &mut AgentRuntime) -> IdleAction {
         // previous save predates a since-reverted edit.
         last_known_good::save(&rt.config_dir);
         let message = "configuration reloaded: no changes detected".to_string();
-        publish_notice(&rt.publisher, message.clone()).await;
+        publish_reload_notice(&rt.publisher, ReloadOutcome::Unchanged, message.clone()).await;
         if deliver_to_agent {
             rt.agent.inject_system_message(message);
         }
@@ -363,7 +364,7 @@ pub(super) async fn handle_root_reload(rt: &mut AgentRuntime) -> IdleAction {
     last_known_good::save(&rt.config_dir);
 
     let message = format!("configuration reloaded: {summary}");
-    publish_notice(&rt.publisher, message.clone()).await;
+    publish_reload_notice(&rt.publisher, ReloadOutcome::Reloaded, message.clone()).await;
     if deliver_to_agent {
         rt.agent.inject_system_message(message);
     }
@@ -411,7 +412,7 @@ pub(super) async fn handle_hub_reload(rt: &mut AgentRuntime) {
         Err(err) => {
             tracing::warn!(error = %err, "hub config reload failed, keeping current hub config");
             let message = format!("hub config reload failed (keeping current hub config): {err}");
-            publish_notice(&rt.publisher, message.clone()).await;
+            publish_reload_notice(&rt.publisher, ReloadOutcome::Failed, message.clone()).await;
             if deliver_to_agent {
                 rt.agent.inject_system_message(message);
             }
@@ -435,7 +436,7 @@ pub(super) async fn handle_hub_reload(rt: &mut AgentRuntime) {
 
     if !diff.changed {
         let message = "hub configuration reloaded: no changes detected".to_string();
-        publish_notice(&rt.publisher, message.clone()).await;
+        publish_reload_notice(&rt.publisher, ReloadOutcome::Unchanged, message.clone()).await;
         if deliver_to_agent {
             rt.agent.inject_system_message(message);
         }
@@ -464,7 +465,7 @@ pub(super) async fn handle_hub_reload(rt: &mut AgentRuntime) {
     rt.hub_cfg = new_hub;
 
     let message = format!("hub configuration reloaded: {summary}");
-    publish_notice(&rt.publisher, message.clone()).await;
+    publish_reload_notice(&rt.publisher, ReloadOutcome::Reloaded, message.clone()).await;
     if deliver_to_agent {
         rt.agent.inject_system_message(message);
     }
