@@ -57,10 +57,13 @@ export function handlingOf(
   const url = new URL(request.url);
   if (url.origin !== origin || HUB_SEGMENTS.has(firstSegment(url.pathname))) return "pass";
   if (request.mode === "navigate") {
-    // A path with a dot names a file. The hub serves it, or answers a page
-    // load of a file it doesn't have with the shell and a 404, so the app's
-    // Not Found page shows there too.
-    return url.pathname === SHELL_URL || !url.pathname.includes(".") ? "navigate" : "pass";
+    if (url.pathname === SHELL_URL) return "navigate";
+    // A path with a dot names a file. One the worker holds is answered from the
+    // cache like any request for it. Any other goes to the network first with
+    // the shell as the offline fallback: the hub serves the file if it has it,
+    // or answers a page load of a file it doesn't have with the shell and a
+    // 404, so the app's Not Found page shows there, offline too.
+    return url.pathname.includes(".") && precached.has(url.pathname) ? "cache-first" : "navigate";
   }
   return isHashedAsset(url.pathname) || precached.has(url.pathname) ? "cache-first" : "pass";
 }
