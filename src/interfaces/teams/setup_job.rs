@@ -596,6 +596,15 @@ impl TeamsSetupJobManager {
             }
         }
 
+        for failure in &failed {
+            tracing::warn!(
+                agent = %agent,
+                item = %failure.item,
+                error = %failure.message,
+                "teams setup cleanup could not remove an item"
+            );
+        }
+
         CleanupResult { removed, failed }
     }
 

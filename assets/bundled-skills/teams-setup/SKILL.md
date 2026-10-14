@@ -65,7 +65,7 @@ Because agent tool execution via `exec` runs synchronously and waits for command
 ## 4. Scaffold the Project
 
 1. Check if `[teams]` is already configured in `config/config.toml`.
-   If it is, warn the user: provisioning a new bot will replace the current Teams bot configuration in Residuum. (The existing bot registration will remain in their tenant until manually deleted).
+   If it is, tell the user that setup reuses the bot registration saved in `<agent>/teams-app/env/.env.residuum` (its name and endpoint are updated), or creates a new bot if there is none. To get a brand-new bot instead, run `residuum teams cleanup --agent <agent_name> --project-files` before scaffolding.
 
 2. Scaffold the ATK project using the built-in subcommand:
    ```bash
@@ -91,6 +91,7 @@ If provision fails:
    - [Microsoft Entra Admin Center](https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade) (Bot App Registration)
    - [Teams Developer Portal](https://dev.teams.microsoft.com/bots) (Bot Framework Registration)
 3. You can retry provision in the same `<project_dir>` directory (ATK reuses existing IDs from `.env.residuum`).
+4. If provision fails with `M365TenantIdNotMatchError`, the project was provisioned in a different tenant than the signed-in account. Either sign in with the original account, or run `residuum teams cleanup --agent <agent_name> --project-files` and go back to step 4 to create a new bot in the current tenant.
 
 ## 6. Import Credentials and Configuration
 

@@ -139,6 +139,8 @@ The cleanup endpoint (`POST /api/teams-setup/cleanup` or `residuum teams cleanup
 - `cli: true` / `--cli`: Removes `<hub>/tools/m365agentstoolkit/`.
 - `sign_out: true` / `--sign-out`: Runs `atk auth logout m365` to clear credentials.
 
+The Settings setup wizard calls it with `project_files: true` from three places: "Delete Teams project files" on the first step when Teams is already configured (so the next run creates a new bot), "Clean up" on a failed or cancelled step, and "Clean up temporary files" on the finished step. When the endpoint reports an item it could not remove, or the request fails, the wizard shows an error with the details instead of a confirmation.
+
 ### CLI Commands
 
 The `residuum teams` subcommands provide terminal access to toolkit management and automation:
