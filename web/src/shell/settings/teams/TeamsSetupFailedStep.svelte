@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Icon } from "../../../lib/icons";
   import { Banner, Disclosure, VisuallyHidden } from "../../../lib/ui";
+  import TeamsCleanupError from "./TeamsCleanupError.svelte";
   import type { TeamsSetupState } from "./teams-setup-state.svelte";
 
   interface Props {
@@ -26,6 +27,14 @@
     <p class="failed-phase-note">
       Failed during phase: <strong>{state.job.error.phase}</strong>
     </p>
+  {/if}
+
+  <TeamsCleanupError {state} />
+
+  {#if state.cleanupSuccess}
+    <Banner tone="info" icon="check">
+      Teams project files deleted. Choose Start over to set up a new bot.
+    </Banner>
   {/if}
 
   {#if state.job?.error?.detail !== null && state.job?.error?.detail !== undefined}

@@ -486,7 +486,7 @@ impl AnthropicClient {
                 warn!(
                     status = %status,
                     response_body = %body,
-                    request_body = %request_json,
+                    request_body = %crate::inference::http::without_inline_media(&request_json),
                     "anthropic API error — full request/response for diagnosis"
                 );
             }

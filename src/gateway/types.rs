@@ -450,12 +450,7 @@ mod tests {
 
         let result = core
             .publisher
-            .publish(
-                system_topic(),
-                crate::bus::NoticeEvent {
-                    message: "test".to_string(),
-                },
-            )
+            .publish(system_topic(), crate::bus::NoticeEvent::new("test"))
             .await;
         assert!(result.is_ok(), "bus publish should succeed before reload");
 
@@ -485,12 +480,7 @@ mod tests {
         // Channels still work after the reload signal
         let result_after = core
             .publisher
-            .publish(
-                system_topic(),
-                crate::bus::NoticeEvent {
-                    message: "after reload".to_string(),
-                },
-            )
+            .publish(system_topic(), crate::bus::NoticeEvent::new("after reload"))
             .await;
         assert!(
             result_after.is_ok(),

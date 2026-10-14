@@ -174,3 +174,34 @@ export function thinkingChoices(current: string): { value: string; label: string
     ? [...THINKING_LEVELS]
     : [...THINKING_LEVELS, { value: current, label: current }];
 }
+
+/** The roles whose model reads the conversation, so images can reach it. The search index doesn't. */
+const CONVERSATION_ROLES: readonly Exclude<ModelRoleKey, "embedding">[] = [
+  "main",
+  "default",
+  "observer",
+  "reflector",
+  "pulse",
+  "subconscious",
+  "bgSmall",
+  "bgMedium",
+  "bgLarge",
+];
+
+/**
+ * The models a provider serves: those a role or failover list names through
+ * it, then any others with their own settings under it, each once.
+ */
+export function providerModelNames(
+  entry: SettingsProviderEntry,
+  models: SettingsModelAssignments,
+): string[] {
+  const named = CONVERSATION_ROLES.flatMap((role) => [
+    models[role],
+    ...(models.fallbacks[role] ?? []),
+  ])
+    .map(splitModel)
+    .filter((value) => value.provider === entry.name && value.model !== "")
+    .map((value) => value.model);
+  return [...new Set([...named, ...entry.models.map((model) => model.name)])];
+}

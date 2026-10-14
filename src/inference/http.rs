@@ -170,10 +170,86 @@ pub async fn read_error_body(response: reqwest::Response) -> String {
     }
 }
 
+/// Shortest inline media payload [`without_inline_media`] replaces. Shorter
+/// strings are left alone: a base64-looking word in a message is kept.
+const INLINE_MEDIA_MIN_LEN: usize = 256;
+
+/// A request body as JSON text for a diagnostic log, with every inline media
+/// payload (a base64 image, or a `data:` URL holding one) replaced by its
+/// size: a failed request with images would otherwise write megabytes of
+/// base64 into the log each time it is refused. Text that isn't JSON comes
+/// back unchanged.
+pub(crate) fn without_inline_media(request_json: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(request_json) else {
+        return request_json.to_string();
+    };
+    replace_inline_media(&mut value);
+    value.to_string()
+}
+
+fn replace_inline_media(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) if is_inline_media(text) => {
+            *text = format!("[{} bytes of inline media omitted]", text.len());
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(replace_inline_media),
+        serde_json::Value::Object(fields) => fields.values_mut().for_each(replace_inline_media),
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => {}
+    }
+}
+
+fn is_inline_media(text: &str) -> bool {
+    if text.len() < INLINE_MEDIA_MIN_LEN {
+        return false;
+    }
+    let payload = match text.strip_prefix("data:") {
+        Some(url) => match url.split_once(";base64,") {
+            Some((_, data)) => data,
+            None => return false,
+        },
+        None => text,
+    };
+    payload
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'\n' | b'\r'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::inference::test_support::{ScriptedServer, Step};
+
+    #[test]
+    fn logged_requests_leave_out_inline_media() {
+        let image = "iVBORw0KGgo".repeat(100);
+        let request = serde_json::json!({
+            "model": "glm-5.3",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this?"},
+                    {"type": "image_url", "image_url": {"url": format!("data:image/png;base64,{image}")}},
+                ],
+            }, {
+                "role": "user",
+                "content": [{"type": "image", "source": {"type": "base64", "data": image}}],
+            }],
+        })
+        .to_string();
+
+        let logged = without_inline_media(&request);
+
+        assert!(
+            !logged.contains(&image),
+            "no image payload is logged: {logged}"
+        );
+        assert!(logged.contains("what is this?"), "text is kept: {logged}");
+        assert!(logged.contains("bytes of inline media omitted"), "{logged}");
+        assert_eq!(without_inline_media("not json"), "not json");
+    }
 
     #[test]
     fn insecure_url_detection_remote() {

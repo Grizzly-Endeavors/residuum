@@ -416,6 +416,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = Arc::new(DiscordState {
             respond_to_others: false,
+            deliver_intermediate: false,
             store: ChatStateStore::load(dir.path().join("discord_state.json"))
                 .await
                 .unwrap()

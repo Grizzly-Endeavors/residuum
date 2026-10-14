@@ -1,12 +1,12 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { waitFor } from "../src/test/wait";
 import {
+  advanceMockTime,
   startMockServer,
   type Frame,
   type MockServerHarness,
   type TestSocket,
 } from "./test-support";
-import { sleep } from "./util";
 
 interface Step {
   method: string;
@@ -81,6 +81,7 @@ describe("a deterministic mock", () => {
   const others: MockServerHarness[] = [];
 
   afterEach(async () => {
+    vi.useRealTimers();
     await mock?.close();
     mock = null;
     await Promise.all(others.splice(0).map((other) => other.close()));
@@ -137,7 +138,9 @@ describe("a deterministic mock", () => {
         }>
       )[0]?.next_fire_at ?? "";
     const before = await now();
-    await sleep(30);
+    // The wall clock moves an hour on; a clock that followed it would move too.
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
+    vi.setSystemTime(Date.now() + 3_600_000);
     expect(await now()).toBe(before);
 
     const advanced = await fetch(`${server.baseUrl}/api/mock/clock/advance`, {
@@ -241,9 +244,9 @@ describe("a deterministic mock", () => {
     await reset(server);
     const hub = await server.openSocket("/api/hub/ws");
     await hub.nextOfType("agents_snapshot");
-    // The turn would have ended, and reported scout idle, by now.
-    await sleep(500);
-    expect(hub.frames.map((frame) => frame.type)).toEqual([
+    // The turn would have ended, and reported scout idle, within this span.
+    expect(await hub.quietFrames(() => advanceMockTime(server.hub.env, 60_000))).toEqual([]);
+    expect(hub.frames.map((frame) => frame.type).filter((type) => type !== "pong")).toEqual([
       "hub_boot",
       "system_one_status",
       "agents_snapshot",

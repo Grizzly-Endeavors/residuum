@@ -109,7 +109,7 @@ class WsCoordinator {
         if (!this.liveUpdatesOffShown) notifications.surface("error", msg.message);
         this.liveUpdatesOffShown = true;
       } else if (msg.type === "notice") {
-        const notice = noticeFrameNotice(msg.message);
+        const notice = noticeFrameNotice(msg);
         if (notice !== null) notifications.surface(notice.kind, notice.message, notice.details);
       } else if (msg.type === "reloading") {
         const notice = reloadingNotice();

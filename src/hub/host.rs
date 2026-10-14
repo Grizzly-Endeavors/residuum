@@ -45,8 +45,8 @@ use super::services::HubServices;
 use super::team_embedding::EmbeddingSource;
 use super::types::{
     A2aVisibility, Actor, AgentActivity, AgentErrorKind, AgentLastError, AgentPatch, AgentState,
-    AgentSummary, CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError,
-    NoticeLevel, RestoreAgentRequest,
+    AgentSummary, CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, HubNoticeKind,
+    LifecycleError, NoticeLevel, RestoreAgentRequest,
 };
 use crate::workspace::team_files::TeamWriter;
 
@@ -428,10 +428,17 @@ impl AgentHost {
 
     /// Publish a hub notice for the user.
     pub fn notice(&self, level: NoticeLevel, message: String, agent: Option<String>) {
+        self.publish(HubEvent::notice(level, message, agent));
+    }
+
+    /// Publish a hub notice the web words itself from `kind`, keeping
+    /// `message` as the detail behind it.
+    pub fn notice_of_kind(&self, level: NoticeLevel, kind: HubNoticeKind, message: String) {
         self.publish(HubEvent::Notice {
             level,
             message,
-            agent,
+            agent: None,
+            kind: Some(kind),
         });
     }
 

@@ -79,7 +79,7 @@ describe("the Teams setup wizard mock routes", () => {
       replace_existing: false,
     });
     expect(res.status).toBe(400);
-    expect((res.body as { error: string }).error).toContain("replac");
+    expect((res.body as { error: string }).error).toContain("already configured");
   });
 
   it("validates required form fields and length bounds", async () => {
