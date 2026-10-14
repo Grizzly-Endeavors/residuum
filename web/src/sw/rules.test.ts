@@ -87,10 +87,20 @@ describe("what the worker answers", () => {
     expect(handling("/home", { origin: "http://localhost:5180", mode: "navigate" })).toBe("pass");
   });
 
-  it("leaves a file the app doesn't hold to the network", () => {
+  it("leaves a request for a file the app doesn't hold to the network", () => {
     expect(handling("/mcp-catalog.json")).toBe("pass");
     expect(handling("/manifest.webmanifest")).toBe("pass");
-    expect(handling("/mcp-catalog.json", { mode: "navigate" })).toBe("pass");
+  });
+
+  it("answers a page load of a file the app holds from the cache", () => {
+    expect(handling("/favicon.svg", { mode: "navigate" })).toBe("cache-first");
+    expect(handling("/icons/icon-192.png", { mode: "navigate" })).toBe("cache-first");
+  });
+
+  it("loads any other dotted path from the network first, so offline it falls back to the shell", () => {
+    for (const path of ["/foo.json", "/mcp-catalog.json", "/manifest.webmanifest", "/notes.txt"]) {
+      expect(handling(path, { mode: "navigate" }), path).toBe("navigate");
+    }
   });
 });
 

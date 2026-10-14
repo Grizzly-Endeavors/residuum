@@ -1387,12 +1387,7 @@ if [ "$cmd" = "auth" ] && [ "$sub" = "list" ]; then
 fi
 if [ "$cmd" = "auth" ] && [ "$sub" = "login" ]; then
     python3 -c '
-import http.server, socket
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.bind(("127.0.0.1", 0))
-port = s.getsockname()[1]
-s.close()
-print(f"Log in to your Microsoft 365 account - opening default web browser at https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=123&redirect_uri=http%3A%2F%2Flocalhost%3A{port}%2F", flush=True)
+import http.server
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -1402,7 +1397,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-server = http.server.HTTPServer(("127.0.0.1", port), Handler)
+server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+port = server.server_address[1]
+print(f"Log in to your Microsoft 365 account - opening default web browser at https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=123&redirect_uri=http%3A%2F%2Flocalhost%3A{port}%2F", flush=True)
 server.handle_request()
 '
     exit 0
