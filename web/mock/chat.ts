@@ -15,6 +15,7 @@ import {
 } from "./chat-scenarios";
 import {
   cannedResponses,
+  imageShowcase,
   markdownShowcase,
   sampleEpisodes,
   sampleRecentMessages,
@@ -175,9 +176,17 @@ export interface ChatSimulator {
  * Each turn reports its usage, and adds it to the conversation's totals. A
  * message starting with "remember" is followed by two seconds of memory work.
  * Other prefixes run the scripted turns of `chat-scenarios.ts`.
- * A message starting with "markdown" is answered with `markdownShowcase`
- * instead of the next canned reply, which keeps its place.
+ * A message starting with "markdown" is answered with `markdownShowcase`,
+ * and one starting with "images" with `imageShowcase`, instead of the next
+ * canned reply, which keeps its place.
  */
+/** The showcase reply a message asks for by its first word, if it asks for one. */
+function showcaseFor(lower: string): string | undefined {
+  if (lower.startsWith("markdown")) return markdownShowcase;
+  if (lower.startsWith("images")) return imageShowcase;
+  return undefined;
+}
+
 export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulator {
   const { state } = agent;
   const { env } = hub;
@@ -379,11 +388,9 @@ export function createChatSimulator(hub: MockHub, agent: MockAgent): ChatSimulat
           : `   1\t# ${path}\n   2\t(the page as it is today)`,
       isError: i === 1 && lower.startsWith("fail"),
     }));
-    const showcase = lower.startsWith("markdown");
-    const response = showcase
-      ? markdownShowcase
-      : (cannedResponses[responseIndex % cannedResponses.length] ?? "");
-    if (!showcase) responseIndex++;
+    const showcase = showcaseFor(lower);
+    const response = showcase ?? cannedResponses[responseIndex % cannedResponses.length] ?? "";
+    if (showcase === undefined) responseIndex++;
 
     const turn: TurnInFlight = { content, source, cancels: [] };
     inFlight.set(replyTo, turn);

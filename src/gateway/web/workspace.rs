@@ -965,6 +965,7 @@ pub(super) async fn api_workspace_raw_read(
     if let Ok(v) = HeaderValue::from_str(&version) {
         response_headers.insert(header::ETAG, v);
     }
+    crate::gateway::file_server::mark_agent_file(response_headers, &mime_type);
 
     Ok(response)
 }
@@ -2280,6 +2281,35 @@ mod tests {
             .to_str()
             .unwrap();
         assert_eq!(content_type, "image/png");
+    }
+
+    #[tokio::test]
+    async fn raw_read_of_a_page_is_sandboxed_away_from_the_hubs_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::write(ws_dir.join("page.html"), "<script></script>")
+            .await
+            .unwrap();
+        let state = make_state(ws_dir);
+
+        let response = api_workspace_raw_read(
+            Query(FileQuery {
+                path: "page.html".to_string(),
+            }),
+            State(state),
+        )
+        .await
+        .unwrap();
+        let headers = response.headers();
+        assert_eq!(
+            headers.get(header::CONTENT_SECURITY_POLICY).unwrap(),
+            "sandbox allow-scripts allow-popups allow-downloads"
+        );
+        assert_eq!(
+            headers.get(header::X_CONTENT_TYPE_OPTIONS).unwrap(),
+            "nosniff"
+        );
     }
 
     #[tokio::test]
