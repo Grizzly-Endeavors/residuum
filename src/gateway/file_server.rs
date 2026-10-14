@@ -37,8 +37,8 @@ const AGENT_FILE_CSP: &str = "sandbox allow-scripts allow-popups allow-downloads
 /// Mark a response that carries a file an agent wrote: `nosniff`, so the
 /// browser reads it only as the type it is sent with, and, for every type but
 /// a PDF, [`AGENT_FILE_CSP`]. Chromium's PDF viewer refuses to show a PDF in a
-/// sandboxed document, and a PDF's own scripts never run with the hub's
-/// origin, so a PDF is left to open as it always has.
+/// sandboxed document, so a PDF opens unsandboxed and relies on the browser's
+/// PDF viewer to keep the file's own scripts away from the hub's origin.
 pub(crate) fn mark_agent_file(headers: &mut HeaderMap, mime_type: &str) {
     use axum::http::{HeaderValue, header};
 
