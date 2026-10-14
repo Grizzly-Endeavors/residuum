@@ -8,6 +8,7 @@ import {
   render,
   screen,
   settle,
+  stubPointer,
   stubWebSocket,
 } from "../../test/component";
 import Composer from "./Composer.svelte";
@@ -60,12 +61,7 @@ let coarsePointer = false;
 
 beforeEach(() => {
   coarsePointer = false;
-  vi.stubGlobal("matchMedia", (media: string) => ({
-    matches: coarsePointer && media === "(pointer: coarse)",
-    media,
-    addEventListener: () => {},
-    removeEventListener: () => {},
-  }));
+  stubPointer(() => coarsePointer);
   stubWebSocket();
   Element.prototype.scrollIntoView = vi.fn();
   // The model control's file read; its own tests are in ModelControl's.

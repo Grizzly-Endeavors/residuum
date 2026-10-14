@@ -90,6 +90,8 @@
     min-height: 0;
     padding: var(--space-16) var(--space-18);
     overflow-y: auto;
+    /* The message box sits under the scrolling body rather than over it, so a hairline parts the two. */
+    border-bottom: 1px solid var(--color-line-soft);
   }
 
   .new-session-about {

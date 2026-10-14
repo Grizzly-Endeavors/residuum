@@ -4,7 +4,7 @@
 
 import type { AppAction } from "./action-registry.svelte";
 
-export const SESSION_GROUP = "Session";
+const SESSION_GROUP = "Session";
 
 export interface SessionActionContext {
   agent: string;

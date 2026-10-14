@@ -196,7 +196,7 @@ describe("the session's message box on a touch screen", () => {
     expect(box).toHaveFocus();
   });
 
-  it("leaves Enter sending where there is a keyboard", async () => {
+  it("asks for no Enter key hint where there is a keyboard", async () => {
     await show(summary());
     expect(screen.getByRole("combobox", { name: "Message this session" })).not.toHaveAttribute(
       "enterkeyhint",

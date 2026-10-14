@@ -106,14 +106,37 @@ test("the message box floats over the transcript, and its / menu stops the run",
 }) => {
   await page.goto(`/agent/atlas/activity?panel=session:atlas:run-live-research`);
   const panel = sessionPanel(page, isMobile, RESEARCH);
-  await expect(panel.getByText("Starting with what's already in the wiki.")).toBeVisible();
+  const newest = panel.getByText("Starting with what's already in the wiki.");
+  await expect(newest).toBeVisible();
 
-  // The transcript's scrolling area runs to the panel's foot, behind the box.
-  const transcript = await panel.getByRole("region", { name: "Transcript" }).boundingBox();
-  const composer = await panel.locator("form.composer").boundingBox();
-  if (!transcript || !composer) throw new Error("the transcript or the box isn't laid out");
-  expect(composer.y).toBeGreaterThan(transcript.y);
-  expect(composer.y + composer.height).toBeLessThanOrEqual(transcript.y + transcript.height);
+  // The transcript's scrolling area runs to the panel's foot, behind the box,
+  // and at its end the newest line rests above the box, not under it. All of
+  // it is read in one frame, so a panel still sliding in (a phone's sheet)
+  // or a feed still settling is read as one layout, and polled until settled.
+  const region = panel.getByRole("region", { name: "Transcript" });
+  const form = await panel.locator("form.composer").elementHandle();
+  const line = await newest.elementHandle();
+  await expect
+    .poll(() =>
+      region.evaluate(
+        (area, [composer, last]) => {
+          const box = composer.getBoundingClientRect();
+          const scroller = area.getBoundingClientRect();
+          const newestLine = last.getBoundingClientRect();
+          if (box.top <= scroller.top || box.bottom > scroller.bottom + 0.5) {
+            return "the box isn't over the transcript";
+          }
+          if (area.scrollHeight - area.scrollTop - area.clientHeight >= 2) {
+            return "not at the end";
+          }
+          if (newestLine.bottom > box.top + 0.5) return "the newest line is under the box";
+          return "clear";
+        },
+        [form, line] as const,
+      ),
+    )
+    .toBe("clear");
+  await expect(newest).toBeInViewport();
 
   const box = messageBox(panel);
   await box.click();
