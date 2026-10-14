@@ -40,9 +40,13 @@ CHECKOUT_HEAD="$(git rev-parse HEAD)"
 # directory, and the temporary worktree's `git -C` must not be pinned to this
 # one, so the hook runs without them (the reasoning is in .githooks/pre-commit).
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
-# Every check that builds uses this target directory, not the checkout's own
-# target/, so a push never replaces the artifacts a cargo run in the checkout
-# depends on. sccache shares the dependency builds between the two.
+# The target directory every check that builds uses, set per pushed commit
+# below. A commit checked in place builds into the checkout's own target
+# directory (CARGO_TARGET_DIR when set, else target/), so the push reuses the
+# crate artifacts the checkout's cargo runs already left there. A commit checked
+# in a temporary worktree builds into target/pre-push, which keeps the merged or
+# detached tree from replacing the artifacts a cargo run in the checkout depends
+# on; sccache shares the dependency builds between the two.
 PRE_PUSH_TARGET_DIR="$REPO_ROOT/target/pre-push"
 
 # Git passes one line per pushed ref on stdin. Read them all up front: the
@@ -299,6 +303,7 @@ for line in ${PUSHED_REFS[@]+"${PUSHED_REFS[@]}"}; do
     # a file the author forgot to add compiles here and fails everywhere else.
     if [ "$merge" = 0 ] && [ "$local_sha" = "$CHECKOUT_HEAD" ] && [ -z "$(git status --porcelain --untracked-files=normal)" ]; then
         dir="$REPO_ROOT"
+        PRE_PUSH_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
         echo -e "${BOLD}Checking $local_ref in place.${NC}"
     else
         if [ "$merge" = 1 ]; then
@@ -321,6 +326,7 @@ for line in ${PUSHED_REFS[@]+"${PUSHED_REFS[@]}"}; do
             continue
         fi
         dir="$TEMP_TREE"
+        PRE_PUSH_TARGET_DIR="$REPO_ROOT/target/pre-push"
     fi
 
     if [ "$TOUCHES_RUST" = 1 ]; then
