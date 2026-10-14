@@ -25,14 +25,15 @@ import { availableParallelism } from "node:os";
  * Where automatically chosen blocks come from: the dev servers' somewhere in
  * the first range, the preview servers' in the second, so the two never
  * overlap. Both sit below Linux's ephemeral ports (32768 and up), which
- * outgoing connections take at random.
+ * outgoing connections take at random, and clear of 20000-30000, which the
+ * Rust tests' port allocator owns (`src/util/test_ports.rs`).
  */
 interface PortRange {
   from: number;
   to: number;
 }
-const AUTO_DEV_RANGE: PortRange = { from: 10_000, to: 20_000 };
-const AUTO_PREVIEW_RANGE: PortRange = { from: 20_000, to: 30_000 };
+const AUTO_DEV_RANGE: PortRange = { from: 10_000, to: 15_000 };
+const AUTO_PREVIEW_RANGE: PortRange = { from: 15_000, to: 20_000 };
 
 /** The artifacts listener sits this far above its server's port. */
 const ARTIFACTS_PORT_OFFSET = 7;
