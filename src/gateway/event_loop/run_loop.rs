@@ -517,8 +517,8 @@ async fn spawn_agent_tasks(
         conversations: parts.endpoint_registry.conversations().clone(),
     };
 
-    let file_registry = crate::gateway::file_server::FileRegistry::new(cfg.agent_name.clone())
-        .with_workspace_root(parts.layout.root().to_path_buf());
+    let file_registry =
+        crate::gateway::file_server::FileRegistry::for_agent(cfg.agent_name.clone(), &parts.layout);
     file_registry.spawn_cleanup_task();
     let webhooks = crate::interfaces::webhook::WebhookTable::from_config(&cfg.webhooks);
     let ChangeFeeds {
@@ -558,6 +558,7 @@ async fn spawn_agent_tasks(
                 tracker: Arc::clone(&parts.a2a_tracker),
             },
             tunnel_status_rx: services.tunnel_status_rx.clone(),
+            model_catalog: Arc::clone(&parts.spawn_context.model_catalog),
         },
     );
     let (a2a_deps, sessions_ready_tx) = a2a_serving_deps(core, parts, services);
@@ -803,6 +804,7 @@ async fn build_runtime(
         stop_rx: receivers.stop,
         agent_stop_rx: channels.agent_stop_rx,
         pulse_scheduler: PulseScheduler::with_state_path(&pulse_state_path),
+        pulse_scripts_stop: tokio_util::sync::CancellationToken::new(),
         config_dir: core.config_dir.clone(),
         hub_dir: core.hub_dir.clone(),
         last_user_message_instant: None,
@@ -829,10 +831,32 @@ async fn build_runtime(
     })
 }
 
+/// How one workspace file's reload went: a plain-language note, and whether
+/// it failed. `handle_workspace_reload` joins the notes into its one notice.
+struct WorkspaceReloadNote {
+    failed: bool,
+    note: String,
+}
+
+impl WorkspaceReloadNote {
+    fn ok(note: impl Into<String>) -> Self {
+        Self {
+            failed: false,
+            note: note.into(),
+        }
+    }
+
+    fn failed(note: impl Into<String>) -> Self {
+        Self {
+            failed: true,
+            note: note.into(),
+        }
+    }
+}
+
 /// Reload MCP servers from `mcp.json`, returning a plain-language outcome
-/// note — for the agent's own transcript when this reload was triggered by
-/// its own write (see `handle_workspace_reload`).
-async fn reload_mcp_servers_note(rt: &mut AgentRuntime) -> String {
+/// note (see `handle_workspace_reload`).
+async fn reload_mcp_servers_note(rt: &mut AgentRuntime) -> WorkspaceReloadNote {
     match crate::workspace::config::load_mcp_servers(&rt.layout.mcp_json()) {
         Ok(servers) => {
             let report = rt
@@ -846,14 +870,16 @@ async fn reload_mcp_servers_note(rt: &mut AgentRuntime) -> String {
                 stopped = report.stopped,
                 "MCP servers reconciled"
             );
-            format!(
+            WorkspaceReloadNote::ok(format!(
                 "mcp.json reloaded ({} started, {} stopped)",
                 report.started, report.stopped
-            )
+            ))
         }
         Err(e) => {
             tracing::warn!(error = %e, "failed to reload mcp.json, keeping current servers");
-            format!("mcp.json failed to reload, keeping current servers: {e}")
+            WorkspaceReloadNote::failed(format!(
+                "mcp.json failed to reload, keeping current servers: {e}"
+            ))
         }
     }
 }
@@ -862,7 +888,7 @@ async fn reload_mcp_servers_note(rt: &mut AgentRuntime) -> String {
 /// plain-language outcome note. Parses the new file before touching
 /// anything running: a parse failure must leave the current subscribers in
 /// place rather than aborting them and spawning nothing.
-async fn reload_channels_note(rt: &mut AgentRuntime) -> String {
+async fn reload_channels_note(rt: &mut AgentRuntime) -> WorkspaceReloadNote {
     match crate::workspace::config::load_channel_configs(&rt.layout.channels_toml()) {
         Ok(configs) => {
             for h in rt.notify_handles.drain(..) {
@@ -879,24 +905,21 @@ async fn reload_channels_note(rt: &mut AgentRuntime) -> String {
             rt.notify_handles = new_handles;
             rt.endpoint_registry.refresh(&rt.cfg, &configs);
             rt.channel_configs = configs;
-            "channels.toml reloaded".to_string()
+            WorkspaceReloadNote::ok("channels.toml reloaded")
         }
         Err(e) => {
-            let message = format!(
-                "Couldn't reload your notification channels ({e}). Your existing channels are still running; fix channels.toml and reload again."
-            );
             tracing::warn!(error = %e, "failed to reload channels.toml, keeping current channels");
-            crate::gateway::helpers::publish_notice(&rt.publisher, message.clone()).await;
-            message
+            WorkspaceReloadNote::failed(format!(
+                "Couldn't reload your notification channels ({e}). Your existing channels are still running; fix channels.toml and reload again."
+            ))
         }
     }
 }
 
 /// Reload the agent card, if A2A is enabled, returning a failure note (the
-/// listener keeps serving the last good card either way, but the operator —
-/// and, when this reload was agent-triggered, the agent — still need to
-/// know).
-async fn reload_agent_card_note(rt: &mut AgentRuntime) -> Option<String> {
+/// listener keeps serving the last good card either way, but the user and,
+/// when this reload was agent-triggered, the agent still need to know).
+fn reload_agent_card_note(rt: &AgentRuntime) -> Option<WorkspaceReloadNote> {
     let a2a = rt.a2a.as_ref()?;
     let relay_base = a2a.relay_base();
     let card_runtime = crate::a2a::CardRuntime::from_config(
@@ -911,23 +934,10 @@ async fn reload_agent_card_note(rt: &mut AgentRuntime) -> Option<String> {
     else {
         return None;
     };
-    let message = format!("agent-card.json failed to reload, still serving the previous card: {e}");
     tracing::warn!(error = %e, "failed to reload agent-card.json, keeping the last good card");
-    if let Err(publish_err) = rt
-        .publisher
-        .publish(
-            crate::bus::topics::Notification(crate::bus::NotifyName::from(
-                crate::bus::SYSTEM_CHANNEL,
-            )),
-            crate::bus::NoticeEvent {
-                message: message.clone(),
-            },
-        )
-        .await
-    {
-        tracing::warn!(error = %publish_err, "failed to publish agent card reload notice");
-    }
-    Some(message)
+    Some(WorkspaceReloadNote::failed(format!(
+        "agent-card.json failed to reload, still serving the previous card: {e}"
+    )))
 }
 
 /// Handle a workspace config reload (mcp.json or channels.toml changed).
@@ -937,13 +947,12 @@ async fn handle_workspace_reload(rt: &mut AgentRuntime) {
     // Consumed once, up front: whether this specific reload is the one the
     // agent's own `write_file`/`edit_file` call to mcp.json/channels.toml/
     // a2a.json caused — see `ConfigWriteWatch`. Collects a plain-language
-    // line per subsystem below (mirroring the wording already logged or
-    // published as a user notice) so, if `true`, one summary reaches the
-    // agent's own transcript too.
+    // line per subsystem below into one notice for the user, which, if
+    // `true`, reaches the agent's own transcript too.
     let deliver_to_agent = rt
         .config_reload_tracker
         .take_if_matches(crate::tools::config_reload_tracker::ConfigReloadKind::Workspace);
-    let mut agent_notes: Vec<String> = vec![
+    let mut notes = vec![
         reload_mcp_servers_note(rt).await,
         reload_channels_note(rt).await,
     ];
@@ -956,15 +965,25 @@ async fn handle_workspace_reload(rt: &mut AgentRuntime) {
         .reload_from_file(&rt.layout.a2a_agents_json(), &rt.agent_keys)
         .await;
 
-    if let Some(note) = reload_agent_card_note(rt).await {
-        agent_notes.push(note);
+    if let Some(note) = reload_agent_card_note(rt) {
+        notes.push(note);
     }
 
+    let outcome = if notes.iter().any(|note| note.failed) {
+        crate::bus::ReloadOutcome::Failed
+    } else {
+        crate::bus::ReloadOutcome::Reloaded
+    };
+    let message = format!(
+        "workspace configuration reloaded: {}",
+        notes
+            .iter()
+            .map(|note| note.note.as_str())
+            .collect::<Vec<_>>()
+            .join("; ")
+    );
     if deliver_to_agent {
-        rt.agent.inject_system_message(format!(
-            "workspace configuration reloaded: {}",
-            agent_notes.join("; ")
-        ));
+        rt.agent.inject_system_message(message.clone());
     }
 
     if let Err(e) = rt
@@ -973,9 +992,7 @@ async fn handle_workspace_reload(rt: &mut AgentRuntime) {
             crate::bus::topics::Notification(crate::bus::NotifyName::from(
                 crate::bus::SYSTEM_CHANNEL,
             )),
-            crate::bus::NoticeEvent {
-                message: "workspace configuration reloaded".to_string(),
-            },
+            crate::bus::NoticeEvent::reload(outcome, crate::bus::ReloadedFiles::Workspace, message),
         )
         .await
     {
@@ -1021,7 +1038,8 @@ async fn wait_for_deadline(deadline: Option<tokio::time::Instant>) {
 
 /// Fork sessions for every due scheduled action.
 async fn check_and_run_due_actions(rt: &mut AgentRuntime) {
-    actions::spawn_due_actions(&rt.action_store, &rt.publisher).await;
+    let models = rt.spawn_context.model_catalog.read().await;
+    actions::spawn_due_actions(&rt.action_store, &rt.publisher, &models).await;
 }
 
 /// Maximum time to wait for live sessions to stop and finish recording their
@@ -1083,6 +1101,9 @@ async fn graceful_shutdown(rt: &mut AgentRuntime) {
     rt.post_turn_subconscious
         .shutdown(POST_TURN_SHUTDOWN_TIMEOUT)
         .await;
+    // Before the sessions drain: a pulse script finishing during that wait
+    // would otherwise start a new session in an agent that is stopping.
+    rt.pulse_scripts_stop.cancel();
     // Stop live sessions first, while the bus and its subscribers (notify
     // router included) are still running, so their results are recorded and
     // delivered rather than left for startup recovery on the next boot.

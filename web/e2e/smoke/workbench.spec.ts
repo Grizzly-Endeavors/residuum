@@ -71,7 +71,8 @@ test("Open opens the page on the artifacts origin in a new tab", async ({ page }
   await expect.poll(() => address(page)).toBe("/team/workbench");
 });
 
-test("Copy link copies the page's address", async ({ page }) => {
+test("Copy link copies the page's address", async ({ page, browserName }) => {
+  test.skip(browserName === "webkit", "WebKit grants no clipboard permission to a test.");
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.goto("/team/workbench/tip-splitter");
   await row(page, "Tip Splitter").getByRole("button", { name: "Copy link" }).click();

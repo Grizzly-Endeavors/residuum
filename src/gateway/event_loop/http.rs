@@ -35,6 +35,8 @@ pub struct ExtraApiStates {
     pub a2a_agents: web::a2a::A2aAgentsStatusState,
     /// The relay tunnel's status, for the A2A status route's relay address.
     pub tunnel_status_rx: tokio::sync::watch::Receiver<crate::tunnel::TunnelStatus>,
+    /// The live model catalog, for the sessions API to check a start's model.
+    pub model_catalog: crate::config::SharedModelCatalog,
 }
 
 /// The agent-scoped routers [`build_gateway_app`] merges in, built once by
@@ -42,7 +44,6 @@ pub struct ExtraApiStates {
 /// line-count lint.
 struct FeatureRouters {
     webhook: axum::Router,
-    file: axum::Router,
     sessions: axum::Router,
     scheduled: axum::Router,
     agent_inbox: axum::Router,
@@ -55,8 +56,6 @@ struct FeatureRouters {
 /// `/ws` router. Split out purely to keep that function's line count under
 /// the lint threshold — each router here is independent and self-contained.
 fn build_feature_routers(state: &GatewayState, extra: ExtraApiStates) -> FeatureRouters {
-    use axum::routing::get;
-
     // Always mounted: the table is swapped on reload, so webhooks added later
     // work without rebinding the server. Unknown names get a 404. The hub
     // serves it at `/webhook/{agent}/{name}`.
@@ -71,17 +70,6 @@ fn build_feature_routers(state: &GatewayState, extra: ExtraApiStates) -> Feature
             tz: state.tz,
         });
 
-    let file = axum::Router::new()
-        .route(
-            "/api/files/{id}",
-            get(crate::gateway::file_server::serve_file),
-        )
-        .route(
-            "/api/files/workspace",
-            get(crate::gateway::file_server::serve_workspace_file),
-        )
-        .with_state(state.file_registry.clone());
-
     let sessions = web::sessions::sessions_api_router(web::sessions::SessionsApiState {
         registry: Arc::clone(&state.session_registry),
         store: Arc::clone(&state.session_store),
@@ -89,6 +77,7 @@ fn build_feature_routers(state: &GatewayState, extra: ExtraApiStates) -> Feature
         messenger: Arc::clone(&state.agent_messenger),
         publisher: state.publisher.clone(),
         skill_state: Arc::clone(&state.skill_state),
+        models: Arc::clone(&extra.model_catalog),
         main_conversation: state.layout.recent_messages_json(),
     });
 
@@ -102,7 +91,6 @@ fn build_feature_routers(state: &GatewayState, extra: ExtraApiStates) -> Feature
 
     FeatureRouters {
         webhook,
-        file,
         sessions,
         scheduled,
         agent_inbox: web::inbox::agent_inbox_api_router(state.clone()),
@@ -113,13 +101,15 @@ fn build_feature_routers(state: &GatewayState, extra: ExtraApiStates) -> Feature
 }
 
 /// Build one running agent's router, rooted at `/`: its WebSocket, webhooks,
-/// files, sessions, scheduled work, inbox, memory search, model completion,
+/// sessions, scheduled work, inbox, memory search, model completion,
 /// A2A settings, and status. The chat history, usage, user inbox, and A2A
 /// settings routes are the same file routes a stopped agent gets from
 /// `hub::AgentDirectory::agent_file_router`, here on the agent's own open
-/// state. It carries no hub-level route, no repair route (see
-/// `hub::http::agent_repair_router`), no static assets and no request guards;
-/// the hub router serves it under `/api/agents/{name}/` and applies those.
+/// state. The file links, workspace and token, are among them, served from
+/// the agent's live file registry. It carries no hub-level
+/// route, no repair route (see `hub::http::agent_repair_router`), no static
+/// assets and no request guards; the hub router serves it under
+/// `/api/agents/{name}/` and applies those.
 pub fn build_gateway_app(
     state: GatewayState,
     config_api_state: web::ConfigApiState,
@@ -129,13 +119,13 @@ pub fn build_gateway_app(
 
     let state_tunnel_status_rx = extra.tunnel_status_rx.clone();
     let live_updates = state.workspace_watch_health.clone();
+    let file_registry = state.file_registry.clone();
     let routers = build_feature_routers(&state, extra);
 
     axum::Router::new()
         .route("/ws", get(ws_handler))
         .with_state(state)
         .merge(routers.webhook)
-        .merge(routers.file)
         .merge(routers.sessions)
         .merge(routers.scheduled)
         .merge(routers.agent_inbox)
@@ -146,8 +136,9 @@ pub fn build_gateway_app(
             config: config_api_state.clone(),
             tunnel_status_rx: state_tunnel_status_rx,
         }))
-        .merge(web::agent_files_api_router(web::AgentFilesState::from(
+        .merge(web::agent_files_api_router(web::AgentFilesState::running(
             &config_api_state,
+            file_registry,
         )))
         .merge(web::agent_status_api_router(web::AgentStatusState {
             config: config_api_state,

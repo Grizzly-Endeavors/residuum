@@ -2,7 +2,7 @@
 
 use tokio_util::sync::CancellationToken;
 
-use crate::bus::{EndpointName, Publisher};
+use crate::bus::Publisher;
 use crate::inference::{CompletionOptions, InferenceProvider, Message};
 use crate::interfaces::types::MessageOrigin;
 use crate::mcp::SharedMcpRegistry;
@@ -13,7 +13,7 @@ use super::context::{MemoryContext, PromptContext, StatusLine};
 use super::hop::HopCounter;
 use super::interrupt;
 use super::recent_messages::RecentMessages;
-use super::turn::{EventContext, EventTarget, TurnResources, execute_turn};
+use super::turn::{EventContext, EventTarget, TurnOutput, TurnResources, execute_turn};
 use super::usage::{MainUsageSink, SessionUsageTotals};
 
 /// Configuration for creating a new `Agent`.
@@ -204,12 +204,14 @@ impl Agent {
         tz: chrono_tz::Tz,
         action_store: std::sync::Arc<tokio::sync::Mutex<crate::actions::store::ActionStore>>,
         action_notify: std::sync::Arc<tokio::sync::Notify>,
+        models: crate::config::SharedModelCatalog,
         layout: &crate::workspace::layout::WorkspaceLayout,
     ) {
         self.tz = tz;
         self.tools.reload_timezone_tools(
             action_store,
             action_notify,
+            models,
             layout.user_inbox_dir(),
             layout.user_inbox_attachments_dir(),
             tz,
@@ -354,7 +356,7 @@ impl Agent {
     /// Returns a vec containing the final text-only response. Intermediate texts
     /// emitted alongside tool calls are published to the bus as they are
     /// produced (the main conversation, and the topic of the chat interface
-    /// `output_endpoint` names, if it is one) but not included in the return
+    /// `output_endpoint` names at that moment, if it is one) but not included in the return
     /// value. `correlation_id` names the turn in
     /// everything it publishes.
     ///
@@ -366,11 +368,11 @@ impl Agent {
         reason = "publisher and topic params added during bus migration"
     )]
     #[tracing::instrument(skip_all)]
-    pub async fn process_message(
+    pub async fn process_message<'o>(
         &mut self,
         user_input: &str,
         publisher: &Publisher,
-        output_endpoint: Option<&EndpointName>,
+        output_endpoint: impl Into<TurnOutput<'o>>,
         correlation_id: &str,
         origin: Option<&MessageOrigin>,
         prompt_ctx: &PromptContext<'_>,
@@ -428,7 +430,7 @@ impl Agent {
             publisher,
             reply_audience: self.reply_audience.as_deref(),
             target: EventTarget::Endpoint {
-                output_endpoint,
+                output_endpoint: output_endpoint.into(),
                 correlation_id,
             },
             session_conversation: None,
@@ -622,6 +624,8 @@ mod tests {
                 }),
                 thinking: Vec::new(),
                 stop_reason: None,
+                images_omitted: None,
+                thinking_dropped: 0,
             },
             InferenceResponse {
                 content: "second".to_string(),
@@ -634,6 +638,8 @@ mod tests {
                 }),
                 thinking: Vec::new(),
                 stop_reason: None,
+                images_omitted: None,
+                thinking_dropped: 0,
             },
         ]);
 

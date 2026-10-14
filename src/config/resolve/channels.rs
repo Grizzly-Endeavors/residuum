@@ -14,6 +14,7 @@ use super::super::types::{
     DiscordConfig, IdleConfig, TeamsConfig, TelegramConfig, WebhookEntry, WebhookFormat,
     WebhookRouting,
 };
+use crate::interfaces::types::WEB_UI_ENDPOINT;
 
 /// Resolve a bot token from the raw TOML value, with `${ENV_VAR}` / `secret:name`
 /// expansion. There are no agent-scoped env var overrides (such as
@@ -43,6 +44,9 @@ pub(super) fn resolve_discord_config(
             context_messages: section
                 .and_then(|s| s.context_messages)
                 .unwrap_or(DEFAULT_DISCORD_CONTEXT_MESSAGES),
+            deliver_intermediate: section
+                .and_then(|s| s.deliver_intermediate)
+                .unwrap_or(false),
         }),
         (Some(_), None) => {
             tracing::warn!(
@@ -72,6 +76,9 @@ pub(super) fn resolve_telegram_config(
             context_messages: section
                 .and_then(|s| s.context_messages)
                 .unwrap_or(DEFAULT_TELEGRAM_CONTEXT_MESSAGES),
+            deliver_intermediate: section
+                .and_then(|s| s.deliver_intermediate)
+                .unwrap_or(false),
         }),
         (Some(_), None) => {
             tracing::warn!(
@@ -133,6 +140,7 @@ pub(super) fn resolve_teams_config(
         context_messages: section
             .context_messages
             .unwrap_or(DEFAULT_TEAMS_CONTEXT_MESSAGES),
+        deliver_intermediate: section.deliver_intermediate.unwrap_or(false),
         port: section.port.unwrap_or(DEFAULT_TEAMS_PORT),
     })
 }
@@ -224,9 +232,11 @@ fn resolve_webhook_entry(
 /// Resolve idle configuration from TOML section, validating the idle channel
 /// against configured interfaces.
 ///
-/// An `idle_channel` naming an unknown or unconfigured interface falls back
-/// to no idle channel (idle switching stays disabled) with a notice, rather
-/// than failing the whole config over one bad setting.
+/// An unset `idle_channel` resolves to the web UI (`ws`), so the runtime
+/// always has a concrete endpoint for agent-started turns once the owner is
+/// idle. One naming an unknown or unconfigured interface also resolves to the
+/// web UI, with a notice, rather than failing the whole config over one bad
+/// setting.
 pub(super) fn resolve_idle_config(
     file: Option<&AgentConfigFile>,
     telegram: Option<&TelegramConfig>,
@@ -238,32 +248,36 @@ pub(super) fn resolve_idle_config(
     let timeout_minutes = section
         .and_then(|s| s.timeout_minutes)
         .unwrap_or(DEFAULT_IDLE_TIMEOUT_MINUTES);
-    // The web UI's endpoint ID is `ws`; `websocket` is the name users see and write.
-    let idle_channel =
-        section
-            .and_then(|s| s.idle_channel.as_deref())
-            .map(|channel| match channel {
-                "websocket" => "ws".to_string(),
-                other => other.to_string(),
-            });
 
-    let idle_channel = idle_channel.and_then(|channel| {
-        let problem = match channel.as_str() {
-            "telegram" if telegram.is_some() => return Some(channel),
-            "discord" if discord.is_some() => return Some(channel),
-            "teams" if teams.is_some() => return Some(channel),
-            "ws" => return Some(channel),
-            "telegram" | "discord" | "teams" => {
-                format!("idle_channel \"{channel}\" configured but [{channel}] section is missing")
-            }
-            other => format!("idle_channel \"{other}\" is not a recognized interface"),
-        };
-        tracing::warn!(channel, "invalid idle_channel, idle switching disabled");
-        notices.push(format!(
-            "{problem}. Idle switching is disabled until you fix idle_channel and reload."
-        ));
-        None
-    });
+    let resolved = match section.and_then(|s| s.idle_channel.as_deref()) {
+        // The web UI's endpoint ID is `ws`; `websocket` is the name users see and write.
+        None | Some("websocket" | WEB_UI_ENDPOINT) => Ok(WEB_UI_ENDPOINT),
+        Some(channel @ "telegram") if telegram.is_some() => Ok(channel),
+        Some(channel @ "discord") if discord.is_some() => Ok(channel),
+        Some(channel @ "teams") if teams.is_some() => Ok(channel),
+        Some(channel @ ("telegram" | "discord" | "teams")) => Err((
+            channel,
+            format!("idle_channel \"{channel}\" configured but [{channel}] section is missing"),
+        )),
+        Some(other) => Err((
+            other,
+            format!("idle_channel \"{other}\" is not a recognized interface"),
+        )),
+    };
+
+    let idle_channel = match resolved {
+        Ok(channel) => channel.to_string(),
+        Err((channel, problem)) => {
+            tracing::warn!(
+                channel,
+                "invalid idle_channel, idle updates go to the web app"
+            );
+            notices.push(format!(
+                "{problem}. While you're away, updates go to the web app until you fix idle_channel and reload."
+            ));
+            WEB_UI_ENDPOINT.to_string()
+        }
+    };
 
     IdleConfig {
         timeout: std::time::Duration::from_secs(timeout_minutes * 60),

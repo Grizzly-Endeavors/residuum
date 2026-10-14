@@ -9,6 +9,7 @@ use tokio::sync::{Mutex, Notify};
 
 use crate::actions::store::ActionStore;
 use crate::actions::types::ScheduledAction;
+use crate::config::{ModelSelector, SharedModelCatalog};
 use crate::inference::ToolDefinition;
 
 use super::{Tool, ToolError, ToolResult};
@@ -20,13 +21,25 @@ pub struct ScheduleActionTool {
     store: Arc<Mutex<ActionStore>>,
     notify: Arc<Notify>,
     tz: chrono_tz::Tz,
+    /// The live catalog an explicit `model_tier` is checked against.
+    models: SharedModelCatalog,
 }
 
 impl ScheduleActionTool {
     /// Create a new `ScheduleActionTool`.
     #[must_use]
-    pub fn new(store: Arc<Mutex<ActionStore>>, notify: Arc<Notify>, tz: chrono_tz::Tz) -> Self {
-        Self { store, notify, tz }
+    pub fn new(
+        store: Arc<Mutex<ActionStore>>,
+        notify: Arc<Notify>,
+        tz: chrono_tz::Tz,
+        models: SharedModelCatalog,
+    ) -> Self {
+        Self {
+            store,
+            notify,
+            tz,
+            models,
+        }
     }
 }
 
@@ -61,8 +74,7 @@ impl Tool for ScheduleActionTool {
                     },
                     "model_tier": {
                         "type": "string",
-                        "enum": ["small", "medium", "large"],
-                        "description": "Model tier override for sub-agent actions. Defaults to medium."
+                        "description": "The model the action's session runs on: a tier (\"small\", \"medium\", or \"large\") or an explicit model id in provider/model form, such as \"anthropic/claude-haiku-4-5\" (the format providers.toml uses). An explicit model runs that one model with no failover. Defaults to \"medium\"."
                     }
                 },
                 "required": ["name", "prompt", "run_at"]
@@ -100,10 +112,20 @@ impl Tool for ScheduleActionTool {
             ));
         }
 
-        let model_tier = arguments
-            .get("model_tier")
-            .and_then(Value::as_str)
-            .map(String::from);
+        let model_tier = match arguments.get("model_tier").and_then(Value::as_str) {
+            Some(raw) => {
+                let model = raw
+                    .parse::<ModelSelector>()
+                    .map_err(ToolError::InvalidArguments)?;
+                self.models
+                    .read()
+                    .await
+                    .check(&model)
+                    .map_err(ToolError::InvalidArguments)?;
+                Some(model.to_string())
+            }
+            None => None,
+        };
 
         let id = ScheduledAction::generate_id();
         let action = ScheduledAction {
@@ -157,7 +179,8 @@ impl Tool for ListActionsTool {
         ToolDefinition {
             name: self.name().to_string(),
             description:
-                "List all pending scheduled actions with their IDs, names, and fire times."
+                "List all pending scheduled actions with their IDs, names, fire times, and \
+                 models, and say which are held because their model can't run."
                     .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -186,11 +209,18 @@ impl Tool for ListActionsTool {
                 Some(skill) => format!(" [skill: {skill}]"),
                 None => String::new(),
             };
+            let model_label = match action.model_tier.as_deref() {
+                Some(model) => format!(" [model: {model}]"),
+                None => String::new(),
+            };
+            let held_label = match store.model_problem(&action.id) {
+                Some(reason) => format!(" — held, not running: {reason}"),
+                None => String::new(),
+            };
             lines.push(format!(
-                "  {name} ({id}) — fires: {run_at}{agent}",
+                "  {name} ({id}) — fires: {run_at}{agent_label}{model_label}{held_label}",
                 name = action.name,
                 id = action.id,
-                agent = agent_label,
             ));
         }
 
@@ -382,7 +412,12 @@ mod tests {
             dir.path().join("test-past.json"),
         )));
         let notify = Arc::new(Notify::new());
-        let tool = ScheduleActionTool::new(store, notify, chrono_tz::UTC);
+        let tool = ScheduleActionTool::new(
+            store,
+            notify,
+            chrono_tz::UTC,
+            crate::config::ModelCatalog::default().into_shared(),
+        );
         let result = tool
             .execute(serde_json::json!({
                 "name": "past",
@@ -402,7 +437,12 @@ mod tests {
             dir.path().join("test-main.json"),
         )));
         let notify = Arc::new(Notify::new());
-        let tool = ScheduleActionTool::new(store, notify, chrono_tz::UTC);
+        let tool = ScheduleActionTool::new(
+            store,
+            notify,
+            chrono_tz::UTC,
+            crate::config::ModelCatalog::default().into_shared(),
+        );
         let result = tool
             .execute(serde_json::json!({
                 "name": "wake main",
@@ -426,7 +466,12 @@ mod tests {
             dir.path().join("test-main-case.json"),
         )));
         let notify = Arc::new(Notify::new());
-        let tool = ScheduleActionTool::new(store, notify, chrono_tz::UTC);
+        let tool = ScheduleActionTool::new(
+            store,
+            notify,
+            chrono_tz::UTC,
+            crate::config::ModelCatalog::default().into_shared(),
+        );
         let result = tool
             .execute(serde_json::json!({
                 "name": "wake main",
@@ -436,6 +481,102 @@ mod tests {
             }))
             .await;
         assert!(result.is_err(), "agent_name: MAIN should also be rejected");
+    }
+
+    async fn schedule_with_model(
+        model_tier: &str,
+    ) -> (Result<ToolResult, ToolError>, Vec<ScheduledAction>) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(ActionStore::new_empty(
+            dir.path().join("test-model.json"),
+        )));
+        let tool = ScheduleActionTool::new(
+            Arc::clone(&store),
+            Arc::new(Notify::new()),
+            chrono_tz::UTC,
+            crate::config::ModelCatalog::default().into_shared(),
+        );
+        let result = tool
+            .execute(serde_json::json!({
+                "name": "with a model",
+                "prompt": "do the thing",
+                "run_at": "2099-01-01T00:00:00",
+                "model_tier": model_tier
+            }))
+            .await;
+        let stored = store.lock().await.list().to_vec();
+        (result, stored)
+    }
+
+    #[tokio::test]
+    async fn schedule_action_stores_a_tier_or_explicit_model() {
+        for model in ["large", "anthropic/claude-haiku-4-5"] {
+            let (result, stored) = schedule_with_model(model).await;
+            assert!(!result.unwrap().is_error);
+            assert_eq!(stored.first().unwrap().model_tier.as_deref(), Some(model));
+        }
+    }
+
+    #[tokio::test]
+    async fn schedule_action_rejects_a_bad_model_naming_it() {
+        let (result, stored) = schedule_with_model("lagre").await;
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("'lagre'"), "{err}");
+        assert!(stored.is_empty(), "nothing is scheduled on a bad model");
+
+        let (unknown, unknown_stored) = schedule_with_model("nowhere/some-model").await;
+        let unknown_err = unknown.unwrap_err().to_string();
+        assert!(
+            unknown_err.contains("nowhere/some-model")
+                && unknown_err.contains("not a known provider"),
+            "{unknown_err}"
+        );
+        assert!(
+            unknown_stored.is_empty(),
+            "nothing is scheduled on an unknown provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_actions_shows_the_model_and_a_held_action_with_its_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(ActionStore::new_empty(
+            dir.path().join("test-list-held.json"),
+        )));
+        {
+            let mut locked = store.lock().await;
+            locked.add(ScheduledAction {
+                id: "action-held0001".to_string(),
+                name: "local summary".to_string(),
+                prompt: "summarize".to_string(),
+                run_at: Utc::now() - chrono::Duration::minutes(5),
+                agent: None,
+                model_tier: Some("lcoal/qwen3:8b".to_string()),
+                created_at: Utc::now(),
+            });
+            let _fresh = locked.record_model_problems(std::collections::HashMap::from([(
+                "action-held0001".to_string(),
+                "'lcoal' is not a known provider".to_string(),
+            )]));
+        }
+
+        let result = ListActionsTool::new(store, chrono_tz::UTC)
+            .execute(serde_json::json!({}))
+            .await
+            .unwrap();
+
+        assert!(
+            result.output.contains("[model: lcoal/qwen3:8b]"),
+            "{}",
+            result.output
+        );
+        assert!(
+            result
+                .output
+                .contains("held, not running: 'lcoal' is not a known provider"),
+            "{}",
+            result.output
+        );
     }
 
     #[tokio::test]
@@ -505,7 +646,12 @@ mod tests {
         )));
         let notify = Arc::new(Notify::new());
         let tz = chrono_tz::Tz::America__New_York;
-        let tool = ScheduleActionTool::new(store, notify, tz);
+        let tool = ScheduleActionTool::new(
+            store,
+            notify,
+            tz,
+            crate::config::ModelCatalog::default().into_shared(),
+        );
 
         // Schedule an action 1 hour from now so it's in the future
         let future = Utc::now() + chrono::Duration::hours(1);

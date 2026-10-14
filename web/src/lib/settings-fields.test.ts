@@ -96,15 +96,18 @@ describe("every field of every form is in the key-path map", () => {
       apiKey: "secret:k",
       url: "http://a",
       keepAlive: "5m",
+      models: [],
     };
     const fields = Object.keys(provider).filter(
       (f) => f !== "name",
     ) as (keyof SettingsProviderEntry)[];
-    expect(fields).toHaveLength(4);
+    expect(fields).toHaveLength(5);
     for (const field of fields) {
+      const changed =
+        field === "models" ? [{ name: "glm-5.3", images: "text" as const }] : "changed";
       const patch = diffProviders(
         [provider],
-        [{ ...provider, [field]: "changed" }],
+        [{ ...provider, [field]: changed }],
         defaultModels(),
         defaultModels(),
       );
@@ -113,7 +116,8 @@ describe("every field of every form is in the key-path map", () => {
         name: "acme",
         field: field as Exclude<typeof field, "name">,
       };
-      expect(leafPath(patch)).toEqual([...keyPathOf(ref)]);
+      const inside = field === "models" ? ["glm-5.3", "input"] : [];
+      expect(leafPath(patch)).toEqual([...keyPathOf(ref), ...inside]);
     }
   });
 
@@ -206,6 +210,11 @@ describe("placing a key path on a field", () => {
       kind: "provider",
       name: "acme",
       field: "apiKey",
+    });
+    expect(locateField("agent", "providers", 'providers.acme.models."glm-5.3".input')).toEqual({
+      kind: "provider",
+      name: "acme",
+      field: "models",
     });
     expect(locateField("agent", "config", "webhooks.alerts.content_fields")).toEqual({
       kind: "webhook",

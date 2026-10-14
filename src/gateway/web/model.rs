@@ -599,6 +599,8 @@ mod tests {
             usage: Some(usage),
             thinking: Vec::new(),
             stop_reason: None,
+            images_omitted: None,
+            thinking_dropped: 0,
         }
     }
 
@@ -725,6 +727,7 @@ mod tests {
             api_key: None,
             keep_alive: None,
             session_affinity: None,
+            image_input: crate::config::ImageInput::Undeclared,
         }
     }
 

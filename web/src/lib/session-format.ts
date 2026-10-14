@@ -202,3 +202,19 @@ export function outboundDuration(task: OutboundA2aTaskSummary, now: number): str
   const start = Date.parse(task.started_at);
   return Number.isNaN(start) ? "" : formatDuration(now - start);
 }
+
+/** Whether a model selector names one of the background tiers rather than one model. */
+export function isTier(model: string): model is "small" | "medium" | "large" {
+  return model === "small" || model === "medium" || model === "large";
+}
+
+/**
+ * The model a run ran on, for its Details: "anthropic/claude-haiku-4-5, from
+ * the small tier", or the model alone when it was named explicitly. `null`
+ * for a run recorded before runs kept their model.
+ */
+export function runModel(run: Pick<SessionSummary, "model" | "resolved_model">): string | null {
+  const tier = run.model !== null && isTier(run.model) ? run.model : null;
+  if (run.resolved_model === null) return tier === null ? run.model : `The ${tier} tier`;
+  return tier === null ? run.resolved_model : `${run.resolved_model}, from the ${tier} tier`;
+}

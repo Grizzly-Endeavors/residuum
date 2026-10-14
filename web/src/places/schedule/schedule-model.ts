@@ -3,6 +3,7 @@
 // times read the way Home's do.
 
 import type { IconName } from "../../lib/icons";
+import { isTier } from "../../lib/session-format";
 import { relativeTime } from "../../lib/time";
 import type {
   ActionInfo,
@@ -37,6 +38,16 @@ export function pulseNext(pulse: PulseInfo, state: StatusDotState, now: number):
   if (!pulse.enabled) return "Paused";
   if (pulse.next_fire_at === null) return "No next run";
   return runWhen({ kind: "pulse", name: pulse.name, at: pulse.next_fire_at }, state, now);
+}
+
+/**
+ * The model a pulse or action names, as its row says it: "Model: small tier"
+ * or "Model: anthropic/claude-haiku-4-5". `null` when it names none and runs
+ * its default tier.
+ */
+export function modelLine(model: string | null): string | null {
+  if (model === null) return null;
+  return isTier(model) ? `Model: ${model} tier` : `Model: ${model}`;
 }
 
 /** What the place says in place of the schedule while the agent isn't running. */

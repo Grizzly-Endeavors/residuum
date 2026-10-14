@@ -12,6 +12,7 @@ function pulse(name: string, overrides: Partial<PulseInfo> = {}): PulseInfo {
     schedule: "2h",
     active_hours: null,
     agent: null,
+    model_tier: null,
     next_fire_at: "2026-03-14T14:00:00Z",
     last_outcome: null,
     current_run: null,
@@ -27,6 +28,7 @@ function action(id: string, name: string): ActionInfo {
     run_at: "2026-03-14T18:00:00Z",
     agent: null,
     model_tier: null,
+    problem: null,
     current_run: null,
   };
 }

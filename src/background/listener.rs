@@ -154,7 +154,7 @@ async fn handle_spawn_failure(
     if let Err(e) = publisher
         .publish(
             topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-            NoticeEvent { message: notice },
+            NoticeEvent::new(notice),
         )
         .await
     {
@@ -176,7 +176,7 @@ async fn notify_owner_start_failed(
     if let Err(e) = publisher
         .publish(
             topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-            NoticeEvent { message: notice },
+            NoticeEvent::new(notice),
         )
         .await
     {
@@ -390,9 +390,9 @@ async fn fork_and_spawn(
     let skill = event.skill.as_ref().map(|s| s.as_ref().to_string());
     let category = SessionCategory::from_trigger(&event.source);
 
-    let resources = build_spawn_resources(
+    let spawned = build_spawn_resources(
         ctx,
-        &event.model_tier,
+        &event.model,
         skill.as_deref(),
         crate::background::spawn_context::NewSessionContext {
             own_address: event.address.clone(),
@@ -415,7 +415,8 @@ async fn fork_and_spawn(
         subagent_config: SubAgentConfig {
             prompt: event.prompt,
             context: event.context,
-            model_tier: event.model_tier,
+            model: event.model,
+            resolved_model: Some(spawned.resolved_model.clone()),
             hop_count: event.hop_count,
             sender: event.sender,
             inbound: event.inbound,
@@ -428,9 +429,10 @@ async fn fork_and_spawn(
 
     let log_address = request.address.clone();
     let log_source_label = request.source_label.clone();
-    ctx.session_runtime.spawn(request, Some(resources));
+    ctx.session_runtime.spawn(request, Some(spawned.resources));
     tracing::info!(
         skill = skill.as_deref().unwrap_or("none"),
+        model = %spawned.resolved_model,
         address = %log_address,
         source = %log_source_label,
         "forked session"
@@ -443,7 +445,7 @@ mod tests {
     use super::*;
     use crate::background::registry::SessionInfo;
     use crate::bus::ConversationTarget;
-    use crate::config::BackgroundModelTier;
+    use crate::config::ModelSelector;
     use crate::inference::MessageSender;
     use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOrigin};
     use crate::testing::wait;
@@ -482,7 +484,7 @@ mod tests {
             prompt: inbound.content.clone(),
             context: inbound.context.clone(),
             source: EventTrigger::Conversation,
-            model_tier: BackgroundModelTier::Medium,
+            model: ModelSelector::MEDIUM,
             spawner: None,
             depth: 1,
             hop_count: 0,
@@ -510,7 +512,8 @@ mod tests {
             depth: 1,
             purpose: "chat".to_string(),
             agent_skill: None,
-            model_tier: BackgroundModelTier::Medium,
+            model: ModelSelector::MEDIUM,
+            resolved_model: None,
             conversation_target: Some(ConversationTarget {
                 endpoint: "discord".to_string(),
                 conversation_id: "chan-1".to_string(),

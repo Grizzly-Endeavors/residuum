@@ -32,7 +32,8 @@ export interface RegistrationLike extends EventTarget {
 /** The parts of `navigator.serviceWorker` the page uses. */
 export interface ContainerLike extends EventTarget {
   readonly controller: unknown;
-  register: (url: string) => Promise<RegistrationLike>;
+  /** Resolves to no registration when the browser blocks service workers, as Playwright's `serviceWorkers: "block"` does. */
+  register: (url: string) => Promise<RegistrationLike | undefined>;
 }
 
 /** What the page lends the worker's bookkeeping: its lifecycle, and reloading it. */
@@ -176,6 +177,8 @@ export class AppUpdate {
     if (this.#container === null) return false;
     try {
       const registration = await this.#container.register(WORKER_URL);
+      // A blocked worker is not a failure: there is nothing to watch for updates.
+      if (registration === undefined) return false;
       this.#registration = registration;
       registration.addEventListener("updatefound", () => {
         this.#watchInstall(registration.installing);

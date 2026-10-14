@@ -20,7 +20,9 @@
 import { parse as parseToml } from "smol-toml";
 import type {
   McpServerEntry,
+  ModelImageInput,
   SettingsProviderEntry,
+  SettingsProviderModel,
   SettingsModelAssignments,
   ModelRoleKey,
   RoleOverrides,
@@ -98,14 +100,17 @@ export interface ConfigFields {
   discord_token: string;
   discord_respond_to_others: boolean;
   discord_context_messages: string;
+  discord_deliver_intermediate: boolean;
   telegram_token: string;
   telegram_respond_to_others: boolean;
   telegram_context_messages: string;
+  telegram_deliver_intermediate: boolean;
   teams_app_id: string;
   teams_tenant_id: string;
   teams_app_password: string;
   teams_respond_to_others: boolean;
   teams_context_messages: string;
+  teams_deliver_intermediate: boolean;
   teams_port: string;
   a2a_enabled: boolean;
   a2a_port: string;
@@ -201,14 +206,17 @@ export function defaultConfigFields(): ConfigFields {
     discord_token: "",
     discord_respond_to_others: false,
     discord_context_messages: "",
+    discord_deliver_intermediate: false,
     telegram_token: "",
     telegram_respond_to_others: false,
     telegram_context_messages: "",
+    telegram_deliver_intermediate: false,
     teams_app_id: "",
     teams_tenant_id: "",
     teams_app_password: "",
     teams_respond_to_others: false,
     teams_context_messages: "",
+    teams_deliver_intermediate: false,
     teams_port: "",
     a2a_enabled: true,
     a2a_port: "",
@@ -398,6 +406,7 @@ export function parseConfigToml(raw: string, hubRaw = ""): ConfigFields {
     fields.discord_token = str(discord.token);
     fields.discord_respond_to_others = bool(discord.respond_to_others, false);
     fields.discord_context_messages = str(discord.context_messages);
+    fields.discord_deliver_intermediate = bool(discord.deliver_intermediate, false);
   }
 
   const telegram = doc.telegram as Record<string, unknown> | undefined;
@@ -405,6 +414,7 @@ export function parseConfigToml(raw: string, hubRaw = ""): ConfigFields {
     fields.telegram_token = str(telegram.token);
     fields.telegram_respond_to_others = bool(telegram.respond_to_others, false);
     fields.telegram_context_messages = str(telegram.context_messages);
+    fields.telegram_deliver_intermediate = bool(telegram.deliver_intermediate, false);
   }
 
   const teams = doc.teams as Record<string, unknown> | undefined;
@@ -414,6 +424,7 @@ export function parseConfigToml(raw: string, hubRaw = ""): ConfigFields {
     fields.teams_app_password = str(teams.app_password);
     fields.teams_respond_to_others = bool(teams.respond_to_others, false);
     fields.teams_context_messages = str(teams.context_messages);
+    fields.teams_deliver_intermediate = bool(teams.deliver_intermediate, false);
     fields.teams_port = str(teams.port);
   }
 
@@ -552,6 +563,18 @@ export function defaultModels(): SettingsModelAssignments {
   };
 }
 
+/** A provider's `models` table: each model's settings, by the model's name. */
+function parseProviderModels(raw: unknown): SettingsProviderModel[] {
+  if (!isTable(raw)) return [];
+  return Object.entries(raw).map(([name, model]) => ({ name, images: imagesOf(model) }));
+}
+
+/** A model's image setting, from the `input` list in its table. */
+function imagesOf(model: unknown): ModelImageInput {
+  if (!isTable(model) || !Array.isArray(model.input)) return "";
+  return stringList(model.input).includes("image") ? "image" : "text";
+}
+
 export function parseProvidersToml(raw: string): ProvidersFormState {
   const result: ProvidersFormState = { providers: [], models: defaultModels() };
   if (!raw.trim()) return result;
@@ -572,6 +595,7 @@ export function parseProvidersToml(raw: string): ProvidersFormState {
         apiKey: str(entry.api_key),
         url: str(entry.url),
         keepAlive: str(entry.keep_alive),
+        models: parseProviderModels(entry.models),
       });
     }
   }
@@ -919,6 +943,12 @@ export const CONFIG_FIELD_MAP: readonly FieldSpec[] = [
     kind: "numberDefault",
     default: "20",
   },
+  {
+    key: "discord_deliver_intermediate",
+    path: ["discord", "deliver_intermediate"],
+    kind: "bool",
+    default: false,
+  },
 
   { key: "telegram_token", path: ["telegram", "token"], kind: "string" },
   {
@@ -932,6 +962,12 @@ export const CONFIG_FIELD_MAP: readonly FieldSpec[] = [
     path: ["telegram", "context_messages"],
     kind: "numberDefault",
     default: "20",
+  },
+  {
+    key: "telegram_deliver_intermediate",
+    path: ["telegram", "deliver_intermediate"],
+    kind: "bool",
+    default: false,
   },
 
   { key: "teams_app_id", path: ["teams", "app_id"], kind: "string" },
@@ -948,6 +984,12 @@ export const CONFIG_FIELD_MAP: readonly FieldSpec[] = [
     path: ["teams", "context_messages"],
     kind: "numberDefault",
     default: "20",
+  },
+  {
+    key: "teams_deliver_intermediate",
+    path: ["teams", "deliver_intermediate"],
+    kind: "bool",
+    default: false,
   },
   { key: "teams_port", path: ["teams", "port"], kind: "numberDefault", default: "7701" },
 
@@ -1258,11 +1300,44 @@ function diffModels(
   }
 }
 
+/** The `input` list a model's image setting writes. */
+function inputList(images: ModelImageInput): string[] | null {
+  if (images === "image") return ["text", "image"];
+  if (images === "text") return ["text"];
+  return null;
+}
+
+/** A provider's models as the patch value of its `models` table: a model with no setting has no entry. */
+function providerModelsJson(models: readonly SettingsProviderModel[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const model of models) {
+    const input = inputList(model.images);
+    if (input !== null) out[model.name] = { input };
+  }
+  return out;
+}
+
+/** What changed among a provider's models; a model whose setting was cleared is removed. */
+function diffProviderModels(
+  base: readonly SettingsProviderModel[],
+  current: readonly SettingsProviderModel[],
+): Record<string, unknown> {
+  const before = providerModelsJson(base);
+  const after = providerModelsJson(current);
+  const out: Record<string, unknown> = {};
+  for (const name of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (!jsonEqual(before[name], after[name])) out[name] = after[name] ?? null;
+  }
+  return out;
+}
+
 function providerToJson(p: SettingsProviderEntry): Record<string, unknown> {
   const out: Record<string, unknown> = { type: p.type };
   if (p.apiKey) out.api_key = p.apiKey;
   if (p.url) out.url = p.url;
   if (p.keepAlive) out.keep_alive = p.keepAlive;
+  const models = providerModelsJson(p.models);
+  if (Object.keys(models).length > 0) out.models = models;
   return out;
 }
 
@@ -1284,6 +1359,9 @@ function diffProviderFields(
   const keepAliveBefore = base.keepAlive || null;
   const keepAliveAfter = current.keepAlive || null;
   if (keepAliveBefore !== keepAliveAfter) out.keep_alive = keepAliveAfter;
+
+  const models = diffProviderModels(base.models, current.models);
+  if (Object.keys(models).length > 0) out.models = models;
 
   return out;
 }

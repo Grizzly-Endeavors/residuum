@@ -2,7 +2,7 @@
 
 A Windows 11 VM on a Linux host for running residuum on real Windows: the test suite, clippy with the native toolchain, and anything that needs a desktop, such as toast notifications. The scripts live in `scripts/windows-vm/`. They drive plain QEMU (no libvirt) with KVM, UEFI Secure Boot, and an emulated TPM 2.0, and reach the guest over SSH on a localhost port.
 
-For quick cross-platform signal without a VM, the opt-in CI checks (the `cross-compile` label; see CONTRIBUTING.md) run clippy for each target and the test suite on a Windows runner. Use this harness when you need to iterate locally or see what a user would see on screen.
+For quick cross-platform signal without a VM, CI runs clippy for the Windows gnu target on every Rust PR, and the opt-in checks (the `cross-compile` label; see CONTRIBUTING.md) add clippy for the other targets and the test suite on a Windows runner. Use this harness when you need to iterate locally or see what a user would see on screen.
 
 ## Prerequisites
 

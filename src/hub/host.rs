@@ -45,8 +45,8 @@ use super::services::HubServices;
 use super::team_embedding::EmbeddingSource;
 use super::types::{
     A2aVisibility, Actor, AgentActivity, AgentErrorKind, AgentLastError, AgentPatch, AgentState,
-    AgentSummary, CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError,
-    NoticeLevel, RestoreAgentRequest,
+    AgentSummary, CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, HubNoticeKind,
+    LifecycleError, NoticeLevel, RestoreAgentRequest,
 };
 use crate::workspace::team_files::TeamWriter;
 
@@ -428,10 +428,17 @@ impl AgentHost {
 
     /// Publish a hub notice for the user.
     pub fn notice(&self, level: NoticeLevel, message: String, agent: Option<String>) {
+        self.publish(HubEvent::notice(level, message, agent));
+    }
+
+    /// Publish a hub notice the web words itself from `kind`, keeping
+    /// `message` as the detail behind it.
+    pub fn notice_of_kind(&self, level: NoticeLevel, kind: HubNoticeKind, message: String) {
         self.publish(HubEvent::Notice {
             level,
             message,
-            agent,
+            agent: None,
+            kind: Some(kind),
         });
     }
 
@@ -1758,21 +1765,27 @@ impl AgentHost {
         Ok(crate::gateway::web::agent_repair_api_router(state))
     }
 
-    /// The agent's chat history, usage, user inbox, and A2A settings routes,
-    /// over its files on disk. Unlike [`Self::repair_router_for`] it opens no
-    /// checkpoint repository: the one write that takes a checkpoint opens them
-    /// when it runs, so these routes answer even when the repositories
-    /// can't be opened.
+    /// The agent's chat history, usage, user inbox, A2A settings, and file
+    /// link routes, over its files on disk (the token links from the ones it
+    /// saved in its `file_links.json`). Unlike
+    /// [`Self::repair_router_for`] it opens no checkpoint repository: the one
+    /// write that takes a checkpoint opens them when it runs, so these routes
+    /// answer even when the repositories can't be opened.
     fn file_router_for(&self, slot: &AgentSlot) -> Router {
         let reload_tx = slot
             .lock()
             .running
             .as_ref()
             .map(|running| running.control.reload_tx.clone());
+        let layout = WorkspaceLayout::new(&slot.dir);
         crate::gateway::web::agent_files_api_router(crate::gateway::web::AgentFilesState {
             agent_name: slot.name.clone(),
             workspace_dir: slot.dir.clone(),
-            memory_dir: Some(WorkspaceLayout::new(&slot.dir).memory_dir()),
+            memory_dir: Some(layout.memory_dir()),
+            file_registry: crate::gateway::file_server::FileRegistry::for_agent(
+                slot.name.clone(),
+                &layout,
+            ),
             reload_tx,
             checkpoints: crate::gateway::web::CheckpointAccess::lazy(
                 self.checkpoint_opener(&slot.name, &slot.dir),

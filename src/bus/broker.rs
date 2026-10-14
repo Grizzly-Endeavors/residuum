@@ -514,9 +514,7 @@ mod tests {
 
         pub_.publish(
             topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-            NoticeEvent {
-                message: "config reloaded".into(),
-            },
+            NoticeEvent::new("config reloaded"),
         )
         .await
         .unwrap();

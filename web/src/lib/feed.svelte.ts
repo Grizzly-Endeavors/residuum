@@ -5,6 +5,7 @@ import { failedAnnouncement, repliedAnnouncement, workingAnnouncement } from "./
 import { LiveStreams, MessageIds, nextAnimationFrame, type FrameScheduler } from "./feed-stream";
 import { dayLabel } from "./day-label";
 import { nextFeedId } from "./feed-id";
+import { namedAgentMessage } from "./relay";
 import {
   appendToolCall,
   applyToolResult,
@@ -107,7 +108,11 @@ function redrawnBySnapshot(item: FeedItem, echoed: readonly string[]): boolean {
   if (item.kind === "assistant" || item.kind === "thinking" || item.kind === "tool-group") {
     return true;
   }
-  return item.kind === "user" && item.messageId !== undefined && echoed.includes(item.messageId);
+  return (
+    (item.kind === "user" || item.kind === "agent-message") &&
+    item.messageId !== undefined &&
+    echoed.includes(item.messageId)
+  );
 }
 
 /**
@@ -245,6 +250,18 @@ export class FeedStore {
    * live-only until the turn ends and history records them.
    */
   private turnStart: number | null = null;
+  /** How many turns have ended live, read through `turnsEndedLive`. */
+  private endedLiveTurns = 0;
+
+  /**
+   * How many turns have ended live. History records a turn before its end
+   * reaches the page, and once it has ended a reload keeps nothing of it, so a
+   * Recent segment read before this count last moved can lack a turn the feed
+   * shows: applying it would take that turn off the feed.
+   */
+  get turnsEndedLive(): number {
+    return this.endedLiveTurns;
+  }
 
   /**
    * What a screen reader is told about the agent's work: that a turn started,
@@ -323,6 +340,7 @@ export class FeedStore {
         this.activeTurnId = null;
         this.turnStart = null;
         this.liveBaseline = null;
+        this.endedLiveTurns++;
         break;
 
       case "turn_usage":
@@ -747,9 +765,11 @@ export class FeedStore {
   }
 
   /**
-   * The agent stopped with a turn in flight. What the turn showed stays, but
-   * no more of it will arrive, and history never records it. Messages still
-   * waiting go into history as the agent stops, and show from there.
+   * The agent stopped with a turn in flight. What the turn showed stays as it
+   * is, and no more of it will arrive. History records the turn as the agent
+   * stops it, and shows it from there after a reload, unless the agent was
+   * force-aborted or crashed. Messages still waiting go into history as the
+   * agent stops, and show from there.
    */
   abandonLiveTurn(): void {
     if (this.activeTurnId !== null) this.closeTurn(this.activeTurnId, "interrupted");
@@ -812,10 +832,11 @@ export class FeedStore {
   }
 
   /**
-   * A person's message entering the main conversation, from any channel. One
-   * this page sent is already shown. One that arrives while its turn runs
-   * joins it; any other starts the turn that follows, which `turn_started`
-   * then announces.
+   * A person's or a teammate's message entering the main conversation, from
+   * any channel. One this page sent is already shown. One that arrives while
+   * its turn runs joins it; any other starts the turn that follows, which
+   * `turn_started` then announces. A teammate's shows as the card history
+   * gives it.
    */
   private receiveUserMessage(msg: UserMessageFrame): void {
     // The agent read a waiting message: it joins the feed here, where the agent read it.
@@ -828,6 +849,22 @@ export class FeedStore {
     if (!joins) {
       this.maybePushDayDivider(timestamp);
       this.turnStart ??= this.feed.length;
+    }
+    if (msg.agent_sender !== undefined) {
+      const { from, category, body } = namedAgentMessage(msg.agent_sender, msg.content);
+      this.feed.push({
+        id: nextFeedId(),
+        kind: "agent-message",
+        from,
+        category,
+        content: body,
+        runId: null,
+        timestamp,
+        messageId: msg.id,
+        turnId: msg.turn_id,
+        ...(joins ? { midTurn: true } : {}),
+      });
+      return;
     }
     this.feed.push({
       id: nextFeedId(),

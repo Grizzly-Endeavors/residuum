@@ -34,6 +34,7 @@ pub(crate) fn main_conversation_frame(event: MainConversationEvent) -> ServerMes
             content,
             images,
             sender,
+            agent_sender,
             endpoint,
         } => ServerMessage::UserMessage {
             id,
@@ -41,6 +42,7 @@ pub(crate) fn main_conversation_frame(event: MainConversationEvent) -> ServerMes
             content,
             images,
             sender,
+            agent_sender,
             endpoint,
         },
         MainConversationEvent::MessageQueued {
@@ -372,7 +374,11 @@ impl WsSubscribers {
                     _ => return None,
                 },
                 event = self.notice.recv() => match event {
-                    Ok(Some(NoticeEvent { message })) => Some(ServerMessage::Notice { message }),
+                    Ok(Some(NoticeEvent { message, reload })) => Some(ServerMessage::Notice {
+                        message,
+                        reload: reload.map(|report| report.outcome),
+                        reload_of: reload.map(|report| report.of),
+                    }),
                     _ => return None,
                 },
                 event = self.inline_output.recv() => match event {
@@ -446,7 +452,7 @@ mod tests {
     use chrono::NaiveDate;
 
     use super::*;
-    use crate::bus::{ToolCallEvent, ToolResultEvent};
+    use crate::bus::{ReloadOutcome, ReloadedFiles, ToolCallEvent, ToolResultEvent};
     use crate::workspace::watch::{WorkspaceChange, WorkspaceChangeKind};
 
     fn ts() -> chrono::NaiveDateTime {
@@ -546,6 +552,68 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn a_teammates_message_reaches_the_socket_with_its_sender_live_and_in_a_snapshot() {
+        let (handle, mut subs) = subscribed().await;
+        let teammate = crate::inference::AgentSender {
+            address: "agent:atlas".into(),
+            category: "teammate".into(),
+        };
+        publish_main(
+            &handle,
+            MainConversationEvent::UserMessage {
+                id: "bg-1".into(),
+                turn_id: "bg-1".into(),
+                content: "[Message from teammate agent:atlas, not the user.]\nstatus?".into(),
+                images: Vec::new(),
+                sender: None,
+                agent_sender: Some(teammate.clone()),
+                endpoint: "background".into(),
+            },
+        )
+        .await;
+        publish_main(
+            &handle,
+            MainConversationEvent::TurnStarted {
+                turn_id: "bg-1".into(),
+                origin: origin("background"),
+            },
+        )
+        .await;
+
+        let live = subs.recv().await.unwrap();
+        assert!(
+            matches!(
+                &live,
+                ServerMessage::UserMessage { id, agent_sender: Some(sender), .. }
+                    if id == "bg-1" && *sender == teammate
+            ),
+            "the message goes out live with its sender, got {live:?}"
+        );
+        assert!(matches!(
+            subs.recv().await.unwrap(),
+            ServerMessage::TurnStarted { .. }
+        ));
+
+        // A page that opens now is shown it too.
+        subs.resync_requests().send(()).unwrap();
+        let ServerMessage::TurnSnapshot {
+            turn: Some(turn), ..
+        } = subs.recv().await.unwrap()
+        else {
+            panic!("expected a snapshot of the running turn");
+        };
+        let opening = turn.frames.first().map(|f| &f.frame);
+        assert!(
+            matches!(
+                opening,
+                Some(ServerMessage::UserMessage { id, agent_sender: Some(sender), .. })
+                    if id == "bg-1" && *sender == teammate
+            ),
+            "the snapshot opens with the teammate's message and its sender, got {opening:?}"
+        );
+    }
+
     async fn publish_main(handle: &crate::bus::BusHandle, event: MainConversationEvent) {
         handle
             .publisher()
@@ -572,6 +640,7 @@ mod tests {
                 content: "what time is it".into(),
                 images: Vec::new(),
                 sender: None,
+                agent_sender: None,
                 endpoint: "telegram".into(),
             },
             MainConversationEvent::TurnStarted {
@@ -835,9 +904,7 @@ mod tests {
             .publisher()
             .publish(
                 topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL)),
-                NoticeEvent {
-                    message: "reloading".into(),
-                },
+                NoticeEvent::new("Reflecting on the week's notes."),
             )
             .await
             .unwrap();
@@ -845,9 +912,41 @@ mod tests {
         let msg = subs.recv().await.unwrap();
         assert!(matches!(
             msg,
-            ServerMessage::Notice { message }
-                if message == "reloading"
+            ServerMessage::Notice { message, reload: None, reload_of: None }
+                if message == "Reflecting on the week's notes."
         ));
+    }
+
+    #[tokio::test]
+    async fn reload_notice_keeps_its_outcome() {
+        let (handle, mut subs) = subscribed().await;
+
+        for (outcome, of) in [
+            (ReloadOutcome::Reloaded, ReloadedFiles::AgentConfig),
+            (ReloadOutcome::Unchanged, ReloadedFiles::HubConfig),
+            (ReloadOutcome::Failed, ReloadedFiles::Workspace),
+        ] {
+            handle
+                .publisher()
+                .publish(
+                    topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL)),
+                    NoticeEvent::reload(outcome, of, "configuration reloaded: models"),
+                )
+                .await
+                .unwrap();
+
+            let msg = subs.recv().await.unwrap();
+            assert!(
+                matches!(
+                    &msg,
+                    ServerMessage::Notice { message, reload: Some(got), reload_of: Some(got_of) }
+                        if message == "configuration reloaded: models"
+                            && *got == outcome
+                            && *got_of == of
+                ),
+                "{outcome:?} of {of:?} reached the socket as {msg:?}"
+            );
+        }
     }
 
     #[tokio::test]

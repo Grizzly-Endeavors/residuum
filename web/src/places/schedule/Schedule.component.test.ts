@@ -38,6 +38,7 @@ function pulse(name: string, overrides: Partial<PulseInfo> = {}): PulseInfo {
     schedule: "2h",
     active_hours: null,
     agent: null,
+    model_tier: null,
     next_fire_at: soon(34),
     last_outcome: null,
     current_run: null,
@@ -52,6 +53,7 @@ const digest: ActionInfo = {
   run_at: soon(20),
   agent: "researcher",
   model_tier: null,
+  problem: null,
   current_run: null,
 };
 
@@ -102,7 +104,12 @@ describe("Schedule", () => {
           },
           last_outcome: { status: "failed", at: soon(-60), error: "the model timed out" },
         }),
-        pulse("nightly_review", { enabled: false, next_fire_at: null, agent: "researcher" }),
+        pulse("nightly_review", {
+          enabled: false,
+          next_fire_at: null,
+          agent: "researcher",
+          model_tier: "large",
+        }),
         pulse("legacy_identity", {
           enabled: false,
           schedule: null,
@@ -110,12 +117,28 @@ describe("Schedule", () => {
           problems: ["pulse 'legacy_identity' sets include_identity, which has been removed"],
         }),
       ],
-      [digest],
+      [
+        digest,
+        {
+          ...digest,
+          id: "act-2",
+          name: "local_summary",
+          run_at: soon(90),
+          agent: null,
+          model_tier: "lcoal/qwen3:8b",
+          problem: "model 'lcoal/qwen3:8b' can't be used: 'lcoal' is not a known provider",
+        },
+      ],
     );
     render(Schedule, { agent: "atlas" });
     await screen.findByRole("heading", { name: "Pulses" });
 
     expect(screen.getByRole("heading", { name: "Pulses" })).toBeTruthy();
+    expect(screen.getByText("Model: large tier")).toBeTruthy();
+    expect(screen.getByText("Model: lcoal/qwen3:8b")).toBeTruthy();
+    expect(
+      screen.getByText("model 'lcoal/qwen3:8b' can't be used: 'lcoal' is not a known provider"),
+    ).toBeTruthy();
     expect(screen.getByText("Every 2 hours, between 08:00 and 22:00")).toBeTruthy();
     expect(screen.getByText("Started while the run from 12m ago was still going")).toBeTruthy();
     expect(screen.getByText("Last run failed 1h ago: the model timed out")).toBeTruthy();

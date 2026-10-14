@@ -95,7 +95,7 @@ const SUMMARIES: Readonly<Record<string, (args: Args) => (ArgLine | null)[]>> = 
       [
         ["At", "run_at"],
         ["Skill", "agent_name"],
-        ["Tier", "model_tier"],
+        ["Model", "model_tier"],
       ],
       a,
     ),

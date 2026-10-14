@@ -211,7 +211,7 @@ async fn route_webhook_content(
                 prompt: content,
                 context: None,
                 source: trigger,
-                model_tier: crate::config::BackgroundModelTier::Medium,
+                model: crate::config::ModelSelector::MEDIUM,
                 spawner: None,
                 depth: crate::background::registry::MAIN_DEPTH + 1,
                 hop_count: 0,

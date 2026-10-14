@@ -24,7 +24,8 @@ pulses:
     enabled: true
     schedule: 30m            # Duration: "30s", "5m", "2h", "1d"
     active_hours: "09:00-17:00"  # Optional — HH:MM-HH:MM window
-    agent: ~                 # null → session with no skill (Small tier)
+    agent: ~                 # null → session with no skill
+    model_tier: small        # Optional — small (default), medium, large, or a provider/model id
     tasks:
       - name: check_inbox
         prompt: "Check inbox for new items and summarize anything unread."
@@ -46,6 +47,38 @@ Set `context_from: <pulse_name>` on a pulse to have that named pulse's most rece
 - If the named pulse doesn't exist, has never fired, or has never produced a non-`HEARTBEAT_OK` result, nothing is injected — the prompt says so explicitly instead of silently omitting the section.
 - Single-hop only: no chain resolution — only the named pulse's own stored output is used, even if that pulse itself sets `context_from`.
 - Persisted alongside `last_run` in `pulse_state.json`, survives restarts, and is pruned when the source pulse is removed from HEARTBEAT.yml.
+
+## Task Scripts
+
+A task can set `script`, a shell command run when the pulse fires, before the session starts. Use it for the mechanical part of a check (fetch, diff, compute) so the model only reasons over what the script found — or, with `script_only: true`, so no model runs at all.
+
+```yaml
+pulses:
+  - name: feed_watch
+    schedule: 1h
+    tasks:
+      - name: new_posts
+        script: "python3 scripts/new_posts.py"
+        prompt: "Summarize any new posts below. If there are none, respond with HEARTBEAT_OK."
+
+  - name: disk_space
+    schedule: 30m
+    tasks:
+      - name: root_volume
+        script: "df -h / | awk 'NR==2 && $5+0 > 90 {print \"Root volume at \" $5; print \"HEARTBEAT_URGENT\"}'"
+        script_only: true      # no session; output is the result
+        script_timeout_secs: 10  # default 60
+        # script_max_output_kb: 64  (default)
+```
+
+- Scripts run in task order through the platform shell (`sh -c`, or `cmd /S /C` on Windows) from the workspace root, with the same `PATH` as your `exec` tool and with your own privileges — anything your `exec` tool can do, a pulse script can do. Agent keys are not passed in as environment variables; agent-key values in the output are redacted.
+- Without `script_only`, the script's stdout is appended to its task's section of the session prompt (a task with a `script` doesn't need a `prompt`).
+- With `script_only: true` on every task, no session runs. Empty output (or output ending in `HEARTBEAT_OK`) is silent; anything else is filed to the inbox as printed, and pushed to every notification channel when it ends with `HEARTBEAT_URGENT`. `agent`, `model_tier`, `context_from` and task prompts have no effect on such a pulse; setting them still loads the pulse but raises a warning (a diagnostic, or a reload note listing settings with no effect). It shows no last or current run in the Schedule place.
+- Stdout past `script_max_output_kb` (default 64 KiB) is cut, with a line saying so.
+- The time limit (default 60 s) covers background processes the script leaves holding its output; at the limit the whole process tree is killed.
+- A non-zero exit, a timeout, or a script that can't be run is always reported: in a pulse with a session, the owner gets an inbox item (the reason, command, exit code and the last 2 KiB of stderr) and an owner notice, and the session still runs, told the script failed; in a `script_only` pulse, the result is a failed run, filed to the inbox with the reason and stderr tail, plus the usual failed-pulse notice.
+- Stopping the agent kills running scripts and delivers nothing for that fire.
+- Load problems (the pulse doesn't run, and you get a diagnostic or reload note): `script_only` without `script`, an empty `script`, a `0` timeout or output limit, a task with neither `prompt` nor `script`, or a pulse mixing `script_only` tasks with session tasks — put those in separate pulses.
 
 ## Schedule Parsing
 
@@ -70,16 +103,18 @@ Multi-day intervals work the same way — `"7d"` for a weekly pulse, e.g.
 
 The `agent` field controls how the pulse executes:
 
-| Value | Execution | Model Tier |
-|-------|-----------|------------|
-| `~` (null) | Session with no skill | Small |
-| `"<skill-name>"` | Session with that skill (agent or team) | The pulse's `model_tier` (default: small) |
+| Value | Execution |
+|-------|-----------|
+| `~` (null) | Session with no skill |
+| `"<skill-name>"` | Session with that skill (agent or team) |
+
+Either way the session runs on the pulse's `model_tier`: a tier (`small`, the default, `medium`, `large`) or one explicit model in `provider/model` form, the format `providers.toml` uses. An explicit model runs with no failover chain. A `model_tier` that is neither fails that pulse's load; one naming a provider `providers.toml` doesn't have skips the pulse, reported as a HEARTBEAT.yml problem, until the provider exists.
 
 `agent: "main"` is removed: every session fork already carries the main agent's identity and a memory snapshot, so there is no separate "run on main" mode. A pulse still using `agent: "main"`, or setting `include_identity` (also removed), fails to load with an error naming the pulse. Rejection is also raised as an owner-facing notice (a web UI toast) naming every currently rejected pulse, the field to remove, and a link to `migrating-to-agent-sessions.md` — fired once when a pulse first becomes rejected, and again if the rejected set changes, not on every tick.
 
 ## Diagnostics
 
-Editing `HEARTBEAT.yml` via `write_file`/`edit_file`, the Files editor, or `POST /api/agents/<agent>/workspace/validate` reports invalid YAML, a non-list `pulses` key, a pulse entry that fails to deserialize on its own, a removed option, or a duplicate pulse name as a diagnostic alongside the save — one per problem, so one bad pulse doesn't hide problems in the others — and the write always goes through rather than being rejected.
+Editing `HEARTBEAT.yml` via `write_file`/`edit_file`, the Files editor, or `POST /api/agents/<agent>/workspace/validate` reports invalid YAML, a non-list `pulses` key, a pulse entry that fails to deserialize on its own, a removed option, tasks whose script options don't fit together, or a duplicate pulse name as a diagnostic alongside the save — one per problem, so one bad pulse doesn't hide problems in the others — and the write always goes through rather than being rejected.
 
 ## Behavior
 
@@ -89,7 +124,7 @@ Editing `HEARTBEAT.yml` via `write_file`/`edit_file`, the Files editor, or `POST
 - Last-run timestamps are persisted to `pulse_state.json`, so pulses resume their schedule across restarts.
 - Disabled pulses (`enabled: false`) are skipped entirely.
 - A pulse that comes due while its own previous run is still going starts anyway — never skipped, blocked, or cancelled — but is flagged as overlapping: visible on the pulse in the web UI's Schedule place and on the run itself, and logged at `info!` with the pulse name, the previous run's id, and how long it had been going. No separate notice for this; the UI flag is the signal.
-- Each task in `tasks` is an object with `name` (string) and `prompt` (string). Task prompts are joined into the session's prompt.
+- Each task in `tasks` is an object with `name` (string) and `prompt` (string), and may also run a `script` (see "Task Scripts" below). Task prompts are joined into the session's prompt.
 - Pulse sessions include a `"HEARTBEAT_OK"` instruction: the agent should respond with just that phrase if there is nothing to report. These results are silently discarded before reaching the notification router.
 - Every pulse run is framed as **autonomous** in its prompt: no user is present, so it must not wait on a question, and it must not create/modify pulses itself. A pulse that concludes a new pulse is warranted should say so via the user inbox, not edit `HEARTBEAT.yml`.
 - A failed pulse run's inbox item names the failure reason directly (never just a blank body), and also publishes its own owner-facing notice separate from the inbox item.

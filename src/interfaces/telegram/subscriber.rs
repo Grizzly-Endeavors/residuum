@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use teloxide::Bot;
-use teloxide::RequestError;
-use teloxide::requests::Requester;
-use teloxide::types::{ChatAction, ChatId};
+use teloxide_core::Bot;
+use teloxide_core::RequestError;
+use teloxide_core::requests::Requester;
+use teloxide_core::types::{ChatAction, ChatId};
 
 use crate::interfaces::attachment::FileAttachment;
 use crate::interfaces::chunking::chunk_text;
@@ -44,6 +44,10 @@ impl ChatOutbound for TelegramOutbound {
 
     fn name(&self) -> &'static str {
         "telegram"
+    }
+
+    fn delivers_intermediate(&self) -> bool {
+        self.state.deliver_intermediate
     }
 
     fn display_name(&self) -> &'static str {
@@ -139,8 +143,8 @@ async fn send_file(
     attachment: &FileAttachment,
     caption: &str,
 ) -> Result<(), RequestError> {
-    use teloxide::payloads::{SendAudioSetters, SendDocumentSetters, SendPhotoSetters};
-    use teloxide::types::InputFile;
+    use teloxide_core::payloads::{SendAudioSetters, SendDocumentSetters, SendPhotoSetters};
+    use teloxide_core::types::InputFile;
 
     let file = InputFile::file(&attachment.path);
     // Telegram's caption limit counts characters, not bytes.

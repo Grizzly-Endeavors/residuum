@@ -97,6 +97,15 @@ pub struct RunRecord {
     /// was still live. See [`PulseOverlap`].
     #[serde(default)]
     pub overlap: Option<PulseOverlap>,
+    /// The model the run was asked to use (a tier or an explicit
+    /// `provider/model` id). `None` for a record written before this field
+    /// existed.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// The `provider/model` id the run started on. `None` for a record
+    /// written before this field existed.
+    #[serde(default)]
+    pub resolved_model: Option<String>,
 }
 
 impl RunRecord {
@@ -123,6 +132,8 @@ impl RunRecord {
             outcome_error: None,
             outcome_error_details: None,
             overlap: info.overlap.clone(),
+            model: Some(info.model.to_string()),
+            resolved_model: info.resolved_model.clone(),
         }
     }
 }
@@ -171,6 +182,10 @@ struct RunRecordHeader {
     outcome_error_details: Option<String>,
     #[serde(default)]
     overlap: Option<PulseOverlap>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    resolved_model: Option<String>,
 }
 
 impl From<RunRecordHeader> for RunRecord {
@@ -195,6 +210,8 @@ impl From<RunRecordHeader> for RunRecord {
             outcome_error: header.outcome_error,
             outcome_error_details: header.outcome_error_details,
             overlap: header.overlap,
+            model: header.model,
+            resolved_model: header.resolved_model,
         }
     }
 }
@@ -936,7 +953,8 @@ mod tests {
             depth: 1,
             purpose: "research the thing".to_string(),
             agent_skill: None,
-            model_tier: crate::config::BackgroundModelTier::Medium,
+            model: crate::config::ModelSelector::MEDIUM,
+            resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),

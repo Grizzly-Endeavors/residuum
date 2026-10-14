@@ -9,16 +9,20 @@
 //! - [`clock`]: moving a paused clock, for code with no real I/O.
 //! - [`gate`]: holding a call open until the test lets it through.
 //! - [`model`]: a model server and provider that answer through a gate.
+//! - [`script`]: writing a fake tool the test then runs, so its exec never
+//!   fails with "Text file busy" when another test forks.
 //!
 //! `source_scan` holds the tests that keep it that way: test code may not
 //! call `sleep`, `timeout` or wiremock's `set_delay` outside this module, and
 //! the waits that predate the rule are counted in `wall_clock_backlog`, where
-//! the counts only go down. `CONTRIBUTING.md` ("Waiting in tests") describes
-//! which wait fits which situation.
+//! the counts only go down. Test code may not make a file executable itself
+//! either; it writes scripts through [`script`]. `CONTRIBUTING.md` ("Waiting
+//! in tests") describes which wait fits which situation.
 
 pub(crate) mod clock;
 pub(crate) mod gate;
 pub(crate) mod model;
+pub(crate) mod script;
 mod source_scan;
 pub(crate) mod wait;
 mod wall_clock_backlog;

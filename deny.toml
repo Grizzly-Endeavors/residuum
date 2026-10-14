@@ -23,6 +23,8 @@ ignore = [
     "RUSTSEC-2026-0098", # rustls-webpki name-constraints (URI) — same transitive TLS-stack surface as 0049; only the 0.102.8 copy is still affected. Drops when serenity moves off rustls 0.22.
     "RUSTSEC-2026-0099", # rustls-webpki name-constraints (wildcards) — same transitive TLS-stack surface as 0049; only the 0.102.8 copy is still affected. Drops when serenity moves off rustls 0.22.
     "RUSTSEC-2026-0104", # rustls-webpki reachable panic in CRL parsing — transitive via serenity/rustls 0.22; residuum does not use CRLs. Drops with the rest of the 0.22 stack.
+    "RUSTSEC-2026-0346", # rustls Debug impls print client session values — the rustls 0.22 copy via serenity/tokio-tungstenite; neither crate Debug-prints session values, and rustls has no patched 0.22.x. The 0.23 copy is on 0.23.46. Drops when serenity moves off rustls 0.22.
+    "RUSTSEC-2026-0349", # rustls ServerHello can downgrade later connections to classical key exchange — the same rustls 0.22 copy, used only for the Discord gateway connection, which stays encrypted; no patched 0.22.x. The 0.23 copy is on 0.23.46. Drops when serenity moves off rustls 0.22.
     "RUSTSEC-2026-0189", # rmcp DNS rebinding — affects the Streamable HTTP *server* transport; residuum only uses rmcp's client transports (transport-streamable-http-client-reqwest, transport-child-process), so it is not exposed. Drops on rmcp 2.x (major bump).
 ]
 

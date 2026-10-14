@@ -168,6 +168,9 @@ pub struct DiscordConfig {
     pub respond_to_others: bool,
     /// How many earlier unmentioned server messages to hand the agent on @mention.
     pub context_messages: usize,
+    /// Whether text the agent writes before a tool call goes to the chat as
+    /// its own message. Off: the chat gets only each turn's final reply.
+    pub deliver_intermediate: bool,
 }
 
 impl std::fmt::Debug for DiscordConfig {
@@ -176,6 +179,7 @@ impl std::fmt::Debug for DiscordConfig {
             .field("token", &"[redacted]")
             .field("respond_to_others", &self.respond_to_others)
             .field("context_messages", &self.context_messages)
+            .field("deliver_intermediate", &self.deliver_intermediate)
             .finish()
     }
 }
@@ -189,6 +193,9 @@ pub struct TelegramConfig {
     pub respond_to_others: bool,
     /// How many earlier unmentioned group messages to hand the agent when addressed.
     pub context_messages: usize,
+    /// Whether text the agent writes before a tool call goes to the chat as
+    /// its own message. Off: the chat gets only each turn's final reply.
+    pub deliver_intermediate: bool,
 }
 
 impl std::fmt::Debug for TelegramConfig {
@@ -197,6 +204,7 @@ impl std::fmt::Debug for TelegramConfig {
             .field("token", &"[redacted]")
             .field("respond_to_others", &self.respond_to_others)
             .field("context_messages", &self.context_messages)
+            .field("deliver_intermediate", &self.deliver_intermediate)
             .finish()
     }
 }
@@ -214,6 +222,9 @@ pub struct TeamsConfig {
     pub respond_to_others: bool,
     /// How many earlier group chat / channel messages to hand the agent on @mention.
     pub context_messages: usize,
+    /// Whether text the agent writes before a tool call goes to the chat as
+    /// its own message. Off: the chat gets only each turn's final reply.
+    pub deliver_intermediate: bool,
     /// Port for the dedicated messaging listener (bound on the gateway's address).
     ///
     /// Kept separate from the gateway port so a public tunnel pointed at it
@@ -229,6 +240,7 @@ impl std::fmt::Debug for TeamsConfig {
             .field("tenant_id", &self.tenant_id)
             .field("respond_to_others", &self.respond_to_others)
             .field("context_messages", &self.context_messages)
+            .field("deliver_intermediate", &self.deliver_intermediate)
             .field("port", &self.port)
             .finish()
     }
@@ -519,15 +531,16 @@ impl AutoModeConfig {
 pub struct IdleConfig {
     /// Inactivity timeout. `Duration::ZERO` means disabled.
     pub timeout: Duration,
-    /// Interface to switch to when idle. `None` = keep current. (Phase 2)
-    pub idle_channel: Option<String>,
+    /// Endpoint that agent-started main turns go to once the owner is idle:
+    /// `ws` (the web UI) unless the config names a chat interface.
+    pub idle_channel: String,
 }
 
 impl Default for IdleConfig {
     fn default() -> Self {
         Self {
             timeout: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_MINUTES * 60),
-            idle_channel: None,
+            idle_channel: crate::interfaces::types::WEB_UI_ENDPOINT.to_string(),
         }
     }
 }
@@ -727,6 +740,86 @@ impl std::str::FromStr for BackgroundModelTier {
                 "invalid model tier '{other}': must be small, medium, or large"
             )),
         }
+    }
+}
+
+/// Which model a background session runs on: one of the `[background.models]`
+/// tiers, or one explicit `provider/model` id.
+///
+/// Written and stored as a plain string: `small`, `medium`, or `large` names
+/// a tier, and anything of the form `provider/model` (the format
+/// `providers.toml`'s `[models]` uses, where `provider` is a `[providers]`
+/// entry or a provider type) names a model. A tier resolves to its failover
+/// chain; an explicit model runs that one model with no failover.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelSelector {
+    /// A configured background tier.
+    Tier(BackgroundModelTier),
+    /// An explicit `provider/model` id.
+    Explicit(String),
+}
+
+impl ModelSelector {
+    /// The `small` tier.
+    pub const SMALL: Self = Self::Tier(BackgroundModelTier::Small);
+    /// The `medium` tier.
+    pub const MEDIUM: Self = Self::Tier(BackgroundModelTier::Medium);
+    /// The `large` tier.
+    pub const LARGE: Self = Self::Tier(BackgroundModelTier::Large);
+}
+
+impl Default for ModelSelector {
+    fn default() -> Self {
+        Self::MEDIUM
+    }
+}
+
+impl From<BackgroundModelTier> for ModelSelector {
+    fn from(tier: BackgroundModelTier) -> Self {
+        Self::Tier(tier)
+    }
+}
+
+impl fmt::Display for ModelSelector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Tier(tier) => tier.fmt(f),
+            Self::Explicit(id) => f.write_str(id),
+        }
+    }
+}
+
+impl std::str::FromStr for ModelSelector {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Ok(tier) = s.parse::<BackgroundModelTier>() {
+            return Ok(Self::Tier(tier));
+        }
+        let looks_like_model_id = s.split_once('/').is_some_and(|(provider, model)| {
+            !provider.is_empty() && !model.is_empty() && !s.contains(char::is_whitespace)
+        });
+        if looks_like_model_id {
+            Ok(Self::Explicit(s.to_string()))
+        } else {
+            Err(format!(
+                "invalid model '{s}': use a tier (small, medium, or large) or a model id in \
+                 provider/model form, such as anthropic/claude-haiku-4-5"
+            ))
+        }
+    }
+}
+
+impl Serialize for ModelSelector {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for ModelSelector {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        raw.parse().map_err(serde::de::Error::custom)
     }
 }
 
@@ -953,6 +1046,9 @@ pub struct Config {
     pub tracing: TracingConfig,
     /// Per-role overrides for temperature and thinking.
     pub role_overrides: HashMap<String, RoleOverrides>,
+    /// The providers an explicit `provider/model` id (a pulse's or scheduled
+    /// action's `model_tier`, `subagent_spawn`'s `model`) resolves against.
+    pub model_catalog: super::model_catalog::ModelCatalog,
     /// Directory this config was loaded from (`<agent>/config`).
     pub config_dir: PathBuf,
     /// User-facing notices describing what was skipped or degraded while
@@ -1004,6 +1100,7 @@ impl fmt::Debug for Config {
             .field("web_search", &self.web_search)
             .field("tracing", &self.tracing)
             .field("role_overrides", &self.role_overrides)
+            .field("model_catalog", &self.model_catalog)
             .field("config_dir", &self.config_dir)
             .field("load_notices", &self.load_notices)
             .finish()
@@ -1013,6 +1110,51 @@ impl fmt::Debug for Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_selector_parses_tiers() {
+        assert_eq!("small".parse(), Ok(ModelSelector::SMALL));
+        assert_eq!("medium".parse(), Ok(ModelSelector::MEDIUM));
+        assert_eq!("large".parse(), Ok(ModelSelector::LARGE));
+    }
+
+    #[test]
+    fn model_selector_parses_explicit_ids() {
+        assert_eq!(
+            "anthropic/claude-haiku-4-5".parse(),
+            Ok(ModelSelector::Explicit(
+                "anthropic/claude-haiku-4-5".to_string()
+            ))
+        );
+        assert_eq!(
+            "router/meta-llama/llama-3".parse(),
+            Ok(ModelSelector::Explicit(
+                "router/meta-llama/llama-3".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn model_selector_rejects_anything_else_naming_the_value() {
+        for bad in ["smal", "SMALL", "", "/model", "provider/", "a b/c"] {
+            let err = bad.parse::<ModelSelector>().unwrap_err();
+            assert!(err.contains(&format!("'{bad}'")), "{err}");
+        }
+    }
+
+    #[test]
+    fn model_selector_round_trips_as_a_plain_string() {
+        for selector in [
+            ModelSelector::LARGE,
+            ModelSelector::Explicit("local/qwen3:8b".to_string()),
+        ] {
+            let json = serde_json::to_string(&selector).unwrap();
+            assert_eq!(json, format!("\"{selector}\""));
+            let back: ModelSelector = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, selector);
+        }
+        assert!(serde_json::from_str::<ModelSelector>("\"huge\"").is_err());
+    }
 
     #[test]
     fn effective_path_empty_dirs_is_none() {
@@ -1140,54 +1282,29 @@ mod tests {
         }
     }
 
-    #[test]
-    fn resolve_tier_tests() {
+    fn dummy_spec(tier: &str) -> ProviderSpec {
         use super::super::provider::{ModelSpec, ProviderKind};
 
-        let p_small = ProviderSpec {
-            name: "dummy-small".to_string(),
+        ProviderSpec {
+            name: format!("dummy-{tier}"),
             model: ModelSpec {
                 kind: ProviderKind::OpenAi,
-                model: "small-model".to_string(),
+                model: format!("{tier}-model"),
             },
             provider_url: "http://dummy".to_string(),
             api_key: None,
             keep_alive: None,
             session_affinity: None,
-        };
-        let p_medium = ProviderSpec {
-            name: "dummy-medium".to_string(),
-            model: ModelSpec {
-                kind: ProviderKind::OpenAi,
-                model: "medium-model".to_string(),
-            },
-            provider_url: "http://dummy".to_string(),
-            api_key: None,
-            keep_alive: None,
-            session_affinity: None,
-        };
-        let p_large = ProviderSpec {
-            name: "dummy-large".to_string(),
-            model: ModelSpec {
-                kind: ProviderKind::OpenAi,
-                model: "large-model".to_string(),
-            },
-            provider_url: "http://dummy".to_string(),
-            api_key: None,
-            keep_alive: None,
-            session_affinity: None,
-        };
-        let p_main = ProviderSpec {
-            name: "dummy-main".to_string(),
-            model: ModelSpec {
-                kind: ProviderKind::OpenAi,
-                model: "main-model".to_string(),
-            },
-            provider_url: "http://dummy".to_string(),
-            api_key: None,
-            keep_alive: None,
-            session_affinity: None,
-        };
+            image_input: crate::config::ImageInput::Undeclared,
+        }
+    }
+
+    #[test]
+    fn resolve_tier_tests() {
+        let p_small = dummy_spec("small");
+        let p_medium = dummy_spec("medium");
+        let p_large = dummy_spec("large");
+        let p_main = dummy_spec("main");
 
         let main_slice = std::slice::from_ref(&p_main);
 
@@ -1266,6 +1383,7 @@ mod tests {
             api_key: None,
             keep_alive: None,
             session_affinity: None,
+            image_input: crate::config::ImageInput::Undeclared,
         };
         let p_medium = ProviderSpec {
             name: "dummy-medium".to_string(),
@@ -1277,6 +1395,7 @@ mod tests {
             api_key: None,
             keep_alive: None,
             session_affinity: None,
+            image_input: crate::config::ImageInput::Undeclared,
         };
         let p_main = ProviderSpec {
             name: "dummy-main".to_string(),
@@ -1288,6 +1407,7 @@ mod tests {
             api_key: None,
             keep_alive: None,
             session_affinity: None,
+            image_input: crate::config::ImageInput::Undeclared,
         };
 
         let main_slice = std::slice::from_ref(&p_main);

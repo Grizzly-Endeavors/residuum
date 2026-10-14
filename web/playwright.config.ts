@@ -162,7 +162,7 @@ export default defineConfig<E2EOptions>({
       grepInvert: eitherTag,
     },
     {
-      // Local only: the release workflow doesn't run it. It uses this machine's WebKit, or the
+      // Local only: no CI workflow runs it. It uses this machine's WebKit, or the
       // container's when the container wrapper runs it, and skips itself when neither starts.
       name: "webkit-phone",
       use: { ...webkitPhone, ...inContainer },

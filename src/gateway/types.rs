@@ -356,6 +356,10 @@ pub(crate) struct AgentRuntime {
     /// the way a user stop does.
     pub agent_stop_rx: mpsc::Receiver<()>,
     pub pulse_scheduler: PulseScheduler,
+    /// Stops every pulse task script still running when the agent stops:
+    /// each one's process tree is killed and its fire delivers nothing (see
+    /// `crate::pulse::script::run_pulse_scripts`).
+    pub pulse_scripts_stop: tokio_util::sync::CancellationToken,
     /// Path to the agent's own `config/` directory (for backup/rollback during reload).
     pub config_dir: std::path::PathBuf,
     /// Path to the hub's directory (`~/.residuum/hub`).
@@ -414,6 +418,7 @@ impl Drop for AgentRuntime {
     /// rest.
     fn drop(&mut self) {
         self.a2a_tracker.shutdown();
+        self.pulse_scripts_stop.cancel();
         for handle in self
             .notify_handles
             .drain(..)
@@ -450,12 +455,7 @@ mod tests {
 
         let result = core
             .publisher
-            .publish(
-                system_topic(),
-                crate::bus::NoticeEvent {
-                    message: "test".to_string(),
-                },
-            )
+            .publish(system_topic(), crate::bus::NoticeEvent::new("test"))
             .await;
         assert!(result.is_ok(), "bus publish should succeed before reload");
 
@@ -485,12 +485,7 @@ mod tests {
         // Channels still work after the reload signal
         let result_after = core
             .publisher
-            .publish(
-                system_topic(),
-                crate::bus::NoticeEvent {
-                    message: "after reload".to_string(),
-                },
-            )
+            .publish(system_topic(), crate::bus::NoticeEvent::new("after reload"))
             .await;
         assert!(
             result_after.is_ok(),

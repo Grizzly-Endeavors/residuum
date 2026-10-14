@@ -3,11 +3,11 @@
   import { SvelteSet } from "svelte/reactivity";
   import { PROVIDER_KEYS } from "../../components/setup/providers";
   import { notifyStagedRemoval } from "../../lib/form-undo";
-  import { envKeyOf, providerTypeLabel } from "../../lib/model-roles";
+  import { envKeyOf, providerModelNames, providerTypeLabel } from "../../lib/model-roles";
   import { envReferenceName, isSecretReference } from "../../lib/secrets";
   import type { FieldRef } from "../../lib/settings-fields";
   import type { AgentScopeModel } from "../../lib/settings-model.svelte";
-  import type { SettingsProviderEntry } from "../../lib/types";
+  import type { ModelImageInput, SettingsProviderEntry } from "../../lib/types";
   import {
     Button,
     EmptyState,
@@ -33,7 +33,13 @@
     label: providerTypeLabel(type),
   }));
 
-  type ProviderField = "type" | "apiKey" | "url" | "keepAlive";
+  type ProviderField = "type" | "apiKey" | "url" | "keepAlive" | "models";
+
+  const IMAGE_CHOICES: readonly Choice<ModelImageInput>[] = [
+    { value: "", label: "Not set: send them" },
+    { value: "image", label: "Can view images" },
+    { value: "text", label: "Text only: leave them out" },
+  ];
 
   /** Open providers, by name, so they stay open when a save gives the form new objects. */
   const open = new SvelteSet<string>();
@@ -44,6 +50,7 @@
     apiKey: "",
     url: "",
     keepAlive: "",
+    models: [],
   });
 
   let adding = $state(false);
@@ -92,6 +99,17 @@
     return parts.join(", ");
   }
 
+  function imagesOf(entry: SettingsProviderEntry, model: string): ModelImageInput {
+    return entry.models.find((candidate) => candidate.name === model)?.images ?? "";
+  }
+
+  function setImages(entry: SettingsProviderEntry, model: string, images: string): void {
+    const value = IMAGE_CHOICES.find((choice) => choice.value === images)?.value ?? "";
+    const existing = entry.models.find((candidate) => candidate.name === model);
+    if (existing) existing.images = value;
+    else entry.models.push({ name: model, images: value });
+  }
+
   function remove(entry: SettingsProviderEntry): void {
     const providers = scope.providers;
     const at = providers.indexOf(entry);
@@ -128,6 +146,7 @@
       name: draft.name.trim(),
       url: draft.url.trim(),
       keepAlive: "",
+      models: [],
     });
     void stopAdding();
   }
@@ -218,6 +237,33 @@
                     error={fieldError(scope, ref("keepAlive"))}
                     bind:value={entry.keepAlive}
                   />
+                </div>
+              {/if}
+              {#if providerModelNames(entry, scope.models).length > 0}
+                {@const served = providerModelNames(entry, scope.models)}
+                {@const modelsProblem = fieldError(scope, ref("models"))}
+                <div
+                  class="provider-models"
+                  role="group"
+                  aria-labelledby="provider-models-{entry.name}"
+                  data-field={fieldMark(ref("models"))}
+                >
+                  <p class="provider-models-title" id="provider-models-{entry.name}">
+                    Images each model can view
+                  </p>
+                  <p class="provider-models-hint">
+                    A text-only model gets a short note in place of each image. Not set, images are
+                    sent, and a model that turns them down is sent none until Residuum restarts.
+                  </p>
+                  {#each served as model (model)}
+                    <SelectField
+                      label={model}
+                      options={IMAGE_CHOICES}
+                      value={imagesOf(entry, model)}
+                      onchange={(event) => setImages(entry, model, event.currentTarget.value)}
+                    />
+                  {/each}
+                  {#if modelsProblem}<p class="provider-problem">{modelsProblem}</p>{/if}
                 </div>
               {/if}
             </div>
@@ -324,6 +370,23 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-16);
+  }
+
+  .provider-models {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-12);
+  }
+
+  .provider-models-title {
+    color: var(--color-text);
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-medium);
+  }
+
+  .provider-models-hint {
+    color: var(--color-text-2);
+    font-size: var(--font-size-xs);
   }
 
   .provider-add {

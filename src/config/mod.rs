@@ -12,6 +12,7 @@ pub(crate) mod deserialize;
 mod hub_load;
 mod hub_types;
 mod load;
+mod model_catalog;
 pub(crate) mod patch;
 pub mod paths;
 mod provider;
@@ -36,14 +37,16 @@ pub(crate) use constants::{
 pub use hub_types::{
     HubA2aConfig, HubBackgroundConfig, HubConfig, HubPushConfig, SystemOneConfig, SystemOneProvider,
 };
+pub use model_catalog::{ModelCatalog, SharedModelCatalog};
 pub use paths::{HubPaths, default_hub_dir, discover_agents, residuum_root, validate_agent_name};
-pub use provider::{ModelSpec, ProviderKind, ProviderSpec};
+pub use provider::{ImageInput, ModelSpec, ProviderKind, ProviderSpec};
 pub use secrets::SecretStore;
 pub use types::{
     A2aConfig, A2aVisibility, AgentAbilitiesConfig, AutoModeConfig, BackgroundConfig,
     BackgroundModelTier, BackgroundModelsConfig, CloudConfig, Config, DiscordConfig, GatewayConfig,
-    IdleConfig, LearningConfig, LogLevel, MemoryConfig, OtelEndpoint, ProviderNativeSearchConfig,
-    RemoteAccessSettings, RepeatCallGuardConfig, RoleOverrides, SearchConfig, SkillsConfig,
-    StandaloneBackendConfig, SubconsciousSettings, TeamsConfig, TelegramConfig, ToolsConfig,
-    TracingConfig, WebSearchConfig, WebhookEntry, WebhookFormat, WebhookRouting,
+    IdleConfig, LearningConfig, LogLevel, MemoryConfig, ModelSelector, OtelEndpoint,
+    ProviderNativeSearchConfig, RemoteAccessSettings, RepeatCallGuardConfig, RoleOverrides,
+    SearchConfig, SkillsConfig, StandaloneBackendConfig, SubconsciousSettings, TeamsConfig,
+    TelegramConfig, ToolsConfig, TracingConfig, WebSearchConfig, WebhookEntry, WebhookFormat,
+    WebhookRouting,
 };

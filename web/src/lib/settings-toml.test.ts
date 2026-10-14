@@ -15,7 +15,15 @@ import {
 import type { McpServerEntry, SettingsProviderEntry } from "./types";
 
 function provider(overrides: Partial<SettingsProviderEntry> = {}): SettingsProviderEntry {
-  return { name: "", type: "anthropic", apiKey: "", url: "", keepAlive: "", ...overrides };
+  return {
+    name: "",
+    type: "anthropic",
+    apiKey: "",
+    url: "",
+    keepAlive: "",
+    models: [],
+    ...overrides,
+  };
 }
 
 function mcpServer(overrides: Partial<McpServerEntry> = {}): McpServerEntry {
@@ -250,6 +258,61 @@ describe("diffProviders", () => {
     ];
     expect(diffProviders(baseline, current, models, models)).toEqual({
       providers: { openai: { api_key: "sk-2" } },
+    });
+  });
+
+  it("reads each model's image setting from its input list", () => {
+    const { providers } = parseProvidersToml(
+      [
+        "[providers.zai]",
+        'type = "openai"',
+        '[providers.zai.models."glm-5.3"]',
+        'input = ["text"]',
+        '[providers.zai.models."glm-5v"]',
+        'input = ["image", "text"]',
+        '[providers.zai.models."glm-bare"]',
+      ].join("\n"),
+    );
+    expect(providers[0]?.models).toEqual([
+      { name: "glm-5.3", images: "text" },
+      { name: "glm-5v", images: "image" },
+      { name: "glm-bare", images: "" },
+    ]);
+  });
+
+  it("writes a changed image setting as the model's input list, and clears an unset one", () => {
+    const models = defaultModels();
+    const baseline = [
+      provider({ name: "zai", type: "openai", models: [{ name: "glm-5v", images: "image" }] }),
+    ];
+    const current = [
+      provider({
+        name: "zai",
+        type: "openai",
+        models: [
+          { name: "glm-5v", images: "" },
+          { name: "glm-5.3", images: "text" },
+        ],
+      }),
+    ];
+    expect(diffProviders(baseline, current, models, models)).toEqual({
+      providers: { zai: { models: { "glm-5v": null, "glm-5.3": { input: ["text"] } } } },
+    });
+    expect(diffProviders(current, current, models, models)).toEqual({});
+  });
+
+  it("writes a new provider's model settings with it", () => {
+    const models = defaultModels();
+    const added = provider({
+      name: "zai",
+      type: "openai",
+      models: [
+        { name: "glm-5v", images: "image" },
+        { name: "glm-other", images: "" },
+      ],
+    });
+    expect(diffProviders([], [added], models, models)).toEqual({
+      providers: { zai: { type: "openai", models: { "glm-5v": { input: ["text", "image"] } } } },
     });
   });
 

@@ -13,6 +13,8 @@ mod system_one;
 mod tracing_config;
 mod web_search;
 
+pub(super) use models::session_affinity_key;
+
 pub(crate) use hub::from_file_and_env as resolve_hub_config;
 
 use std::path::Path;
@@ -24,6 +26,7 @@ use super::Config;
 use super::HubConfig;
 use super::constants::{DEFAULT_MAX_TOKENS, DEFAULT_PULSE_ENABLED, DEFAULT_TIMEOUT_SECS};
 use super::deserialize::{AgentConfigFile, ProvidersFile};
+use super::model_catalog::ModelCatalog;
 use super::secrets::SecretStore;
 
 /// Load the secret store, degrading to an empty one (with a notice) if it
@@ -156,6 +159,7 @@ pub(crate) fn from_file_and_env(
         pulse: resolved_models.pulse,
         subconscious: resolved_models.subconscious,
         embedding: resolved_models.embedding,
+        model_catalog: ModelCatalog::new(providers_map, &secrets, &workspace_dir),
         workspace_dir,
         timeout_secs,
         max_tokens,
@@ -1289,6 +1293,20 @@ candidate_multiplier = 8
         assert_eq!(cfg.telegram.map(|t| t.respond_to_others), Some(true));
     }
 
+    #[test]
+    fn chat_bots_post_only_the_final_reply_by_default() {
+        let cfg = chat_bots_config("");
+        assert_eq!(cfg.discord.map(|d| d.deliver_intermediate), Some(false));
+        assert_eq!(cfg.telegram.map(|t| t.deliver_intermediate), Some(false));
+    }
+
+    #[test]
+    fn chat_bots_post_intermediate_text_when_enabled() {
+        let cfg = chat_bots_config("deliver_intermediate = true\n");
+        assert_eq!(cfg.discord.map(|d| d.deliver_intermediate), Some(true));
+        assert_eq!(cfg.telegram.map(|t| t.deliver_intermediate), Some(true));
+    }
+
     // ── Teams config ───────────────────────────────────────────────────────
 
     #[test]
@@ -1309,6 +1327,7 @@ app_password = "client-secret"
         assert_eq!(teams.tenant_id, "tenant-guid");
         assert_eq!(teams.app_password, "client-secret");
         assert!(!teams.respond_to_others, "owner-only by default");
+        assert!(!teams.deliver_intermediate, "final reply only by default");
         assert_eq!(teams.context_messages, DEFAULT_TEAMS_CONTEXT_MESSAGES);
         assert_eq!(teams.port, DEFAULT_TEAMS_PORT);
     }
@@ -1322,6 +1341,7 @@ tenant_id = "tenant"
 app_password = "secret"
 respond_to_others = true
 context_messages = 5
+deliver_intermediate = true
 port = 8801
 "#;
         let cfg = resolve_test(
@@ -1332,6 +1352,7 @@ port = 8801
         let teams = cfg.teams.unwrap();
         assert!(teams.respond_to_others);
         assert_eq!(teams.context_messages, 5);
+        assert!(teams.deliver_intermediate);
         assert_eq!(teams.port, 8801);
     }
 
@@ -1391,7 +1412,48 @@ app_password = "s"
             "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
         )
         .unwrap();
-        assert_eq!(cfg.idle.idle_channel.as_deref(), Some("teams"));
+        assert_eq!(cfg.idle.idle_channel, "teams");
+    }
+
+    #[test]
+    fn idle_channel_unset_or_named_for_the_web_resolves_to_the_web_ui() {
+        let providers = "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n";
+        for toml in [
+            "",
+            "[idle]\ntimeout_minutes = 10\n",
+            "[idle]\nidle_channel = \"websocket\"\n",
+            "[idle]\nidle_channel = \"ws\"\n",
+        ] {
+            let cfg = resolve_test(toml, providers).unwrap();
+            assert_eq!(cfg.idle.idle_channel, "ws", "config: {toml:?}");
+        }
+    }
+
+    #[test]
+    fn invalid_idle_channel_resolves_to_the_web_ui_with_notice() {
+        // Counts notices, so the env-override tests must not add extras.
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let providers = "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n";
+        for (named, toml) in [
+            ("telegram", "[idle]\nidle_channel = \"telegram\"\n"),
+            (
+                "carrier-pigeon",
+                "[idle]\nidle_channel = \"carrier-pigeon\"\n",
+            ),
+        ] {
+            let cfg = resolve_test(toml, providers).unwrap();
+            assert_eq!(cfg.idle.idle_channel, "ws", "config: {toml:?}");
+            assert_eq!(cfg.load_notices.len(), 1, "{:?}", cfg.load_notices);
+            let notice = cfg.load_notices.first().unwrap();
+            assert!(
+                notice.contains(named),
+                "notice should name {named}: {notice}"
+            );
+            assert!(
+                notice.contains("web app"),
+                "notice should say where updates go: {notice}"
+            );
+        }
     }
 
     // ── A2A config: enabled/port/public_url are hub-owned, visibility is agent-owned ──

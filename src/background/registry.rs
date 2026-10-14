@@ -19,7 +19,7 @@ use ts_rs::TS;
 
 use crate::agent::interrupt::Interrupt;
 use crate::bus::{ConversationTarget, EventTrigger, PulseOverlap, SessionAddress, SkillName};
-use crate::config::BackgroundModelTier;
+use crate::config::ModelSelector;
 
 /// Capacity of a session's interrupt channel: agent messages delivered to it
 /// (mid-turn, or to wake it while idle). Sized like the main agent's own
@@ -257,9 +257,12 @@ pub struct SessionInfo {
     pub purpose: String,
     /// Skill the session runs with, if any.
     pub agent_skill: Option<SkillName>,
-    /// Model tier this run executes at, carried onto a resume so a later run
-    /// doesn't silently fall back to the default tier.
-    pub model_tier: BackgroundModelTier,
+    /// The model tier or explicit model this run executes on, carried onto a
+    /// resume so a later run doesn't silently fall back to the default tier.
+    pub model: ModelSelector,
+    /// The `provider/model` id this run started on (see
+    /// [`crate::background::types::SubAgentConfig::resolved_model`]).
+    pub resolved_model: Option<String>,
     /// The conversation this session's turn output replies to, for an
     /// `external` session started by a conversation message. `None` for
     /// `scheduled`/`spawned` sessions and webhook-triggered `external` ones,
@@ -304,9 +307,10 @@ pub struct ResumePoint {
     /// Skill the original run executed with, if any, carried over so the
     /// resumed run keeps the same role.
     pub agent_skill: Option<SkillName>,
-    /// Model tier the original run executed at, carried over so the resumed
-    /// run doesn't default back to `Medium`.
-    pub model_tier: BackgroundModelTier,
+    /// The model tier or explicit model the original run executed on,
+    /// carried over so the resumed run doesn't default back to `medium`.
+    #[serde(alias = "model_tier")]
+    pub model: ModelSelector,
     /// The agent that spawned the original run, if any, carried over so the
     /// resumed run keeps the same spawner rather than losing it.
     pub spawner: Option<SessionAddress>,
@@ -886,7 +890,8 @@ mod tests {
             depth: 1,
             purpose: "research the thing".to_string(),
             agent_skill: None,
-            model_tier: BackgroundModelTier::Medium,
+            model: ModelSelector::MEDIUM,
+            resolved_model: None,
             conversation_target: None,
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
@@ -1522,6 +1527,16 @@ mod tests {
         .unwrap();
     }
 
+    #[test]
+    fn a_resume_point_saved_with_a_model_tier_key_still_loads() {
+        let mut saved = serde_json::to_value(sample_resume_point("run-old")).unwrap();
+        let map = saved.as_object_mut().unwrap();
+        map.remove("model");
+        map.insert("model_tier".to_string(), serde_json::json!("large"));
+        let point: ResumePoint = serde_json::from_value(saved).unwrap();
+        assert_eq!(point.model, ModelSelector::LARGE);
+    }
+
     fn sample_resume_point(run_id: &str) -> ResumePoint {
         ResumePoint {
             previous_run_id: run_id.to_string(),
@@ -1529,7 +1544,7 @@ mod tests {
             trigger: EventTrigger::Agent,
             source_label: "agent:researcher".to_string(),
             agent_skill: Some(SkillName::from("researcher")),
-            model_tier: BackgroundModelTier::Large,
+            model: ModelSelector::LARGE,
             spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
             depth: 1,
             conversation_target: None,

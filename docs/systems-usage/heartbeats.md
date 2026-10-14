@@ -1,6 +1,6 @@
 # Heartbeats
 
-Heartbeats are ambient scheduled checks the agent performs in the background. The gateway handles all scheduling; the LLM is only invoked when a pulse is due.
+Heartbeats are ambient scheduled checks the agent performs in the background. The gateway handles all scheduling; the LLM is only invoked when a pulse is due, and not at all for a pulse whose tasks are all `script_only` (see "Task Scripts" below).
 
 ## Built-in Pulses
 
@@ -26,7 +26,8 @@ pulses:
     enabled: true
     schedule: "30m"
     active_hours: "08:00-18:00"
-    agent: ~                        # null = plain session, small tier
+    agent: ~                        # null = plain session
+    model_tier: anthropic/claude-haiku-4-5   # a tier, or one explicit provider/model
     tasks:
       - name: check_inbox
         prompt: "Check my email for urgent messages. Report anything requiring action."
@@ -49,21 +50,35 @@ pulses:
 | `schedule` | string | yes | Duration: `"30s"`, `"5m"`, `"2h"`, `"1d"`, `"7d"` — any number plus `s`/`m`/`h`/`d` |
 | `active_hours` | string | no | `"HH:MM-HH:MM"` in configured timezone. Supports overnight windows (e.g. `"22:00-06:00"`). |
 | `agent` | string or null | no | See agent routing table below. |
+| `model_tier` | string | no | The session's model: a tier (`small`, `medium`, `large`) or an explicit `provider/model` id, the format `providers.toml` uses. Default: `small`. See [Models](background-tasks.md#models). A value that is neither fails this pulse's load; an id whose provider isn't configured skips the pulse until it is. |
 | `context_from` | string | no | Name of another pulse. Injects that pulse's most recent delivered output into this pulse's prompt at fire time. See "Output Chaining (`context_from`)" below. |
-| `tasks` | array of objects | yes | Each task has `name` (string) and `prompt` (string). |
+| `tasks` | array of objects | yes | Each task has a `name` (string) and a `prompt` (string), and may run a `script`. See "Task Fields" below. |
+
+### Task Fields
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `name` | string | yes | Identifies the task in the session's prompt and in reports. |
+| `prompt` | string | unless the task has a `script` | What the session does for this task. Unused by a `script_only` task. |
+| `script` | string | no | A shell command run when the pulse fires, before the session starts. Its stdout is appended to this task's prompt. See "Task Scripts" below. |
+| `script_only` | boolean | no | Default `false`. Deliver the script's stdout as the pulse's result and run no session. Needs `script`. |
+| `script_timeout_secs` | integer | no | Default `60`. How long the script may run before its whole process tree is killed. |
+| `script_max_output_kb` | integer | no | Default `64`. How much of the script's stdout is kept, in KiB. |
 
 ### Agent Routing
 
-| Value | Execution | Model Tier |
-|-------|-----------|------------|
-| `~` (null / omitted) | Session with no skill | Small |
-| `"<skill-name>"` | Session with that skill activated as its role | The pulse's `model_tier` (default: small) |
+| Value | Execution |
+|-------|-----------|
+| `~` (null / omitted) | Session with no skill |
+| `"<skill-name>"` | Session with that skill activated as its role |
+
+Either way the session runs on the pulse's `model_tier` (default: small).
 
 `agent: "main"` is removed: every session fork already carries the main agent's identity and a snapshot of its memory, so there is no separate "run on main" mode. A pulse still using `agent: "main"`, or setting `include_identity` (also removed), fails to load with an error naming the pulse — it is never silently reinterpreted as something else. This is logged (`residuum logs --level error`) and also raised as an owner-facing notice (a toast in the web UI, via the bus's system notification channel) naming every currently rejected pulse, the field to remove, and a link to [`migrating-to-agent-sessions.md`](../guides/migrating-to-agent-sessions.md). The notice fires once when a pulse first becomes rejected and again if the rejected set changes on a later edit — not on every scheduler tick, even though HEARTBEAT.yml re-validates on each one (see "Scheduling Behavior" below).
 
 ### HEARTBEAT_OK Convention
 
-A pulse's session prompt includes an instruction: if nothing actionable was found, return the exact string `HEARTBEAT_OK`. Results containing this string are silently discarded before reaching the notification router.
+A pulse's session prompt includes an instruction: if nothing actionable was found, return the exact string `HEARTBEAT_OK`. Results ending with this string are silently discarded before reaching the notification router.
 
 ### Output Chaining (`context_from`)
 
@@ -90,18 +105,50 @@ pulses:
 - This is single-hop only: only the named pulse's own stored output is used, even if that pulse itself sets `context_from` — there is no chain resolution or cycle handling.
 - Each pulse's last delivered output is persisted alongside `last_run` in `pulse_state.json` and survives restarts. It is pruned when the pulse is removed from HEARTBEAT.yml, the same as `last_run`.
 
+### Task Scripts
+
+A task's `script` does the mechanical part of a check (fetch a page, diff a file, compute disk usage) so the model only reasons over what it found, or so no model runs at all. When the pulse fires, its scripts run one after another in task order, off the agent's event loop, before anything else happens for that fire.
+
+```yaml
+pulses:
+  - name: feed_watch
+    schedule: "1h"
+    tasks:
+      - name: new_posts
+        script: "python3 scripts/new_posts.py"
+        prompt: "Summarize any new posts below. If there are none, respond with HEARTBEAT_OK."
+
+  - name: disk_space
+    schedule: "30m"
+    tasks:
+      - name: root_volume
+        script: "df -h / | awk 'NR==2 && $5+0 > 90 {print \"Root volume at \" $5; print \"HEARTBEAT_URGENT\"}'"
+        script_only: true
+        script_timeout_secs: 10
+```
+
+- **Where and how it runs.** Each script runs (logged at `info` as it starts) through the platform shell (`sh -c` on Linux and macOS, `cmd /S /C` on Windows) from the agent's workspace root, with the same `PATH` as the agent's `exec` tool (the configured tool directories first). It runs with the agent's own privileges, exactly as a command the agent runs with `exec` does, so it can do anything the agent's `exec` tool can. Agent keys are not exposed to it as environment variables, and any agent-key value in its output is redacted before the output goes anywhere.
+- **With a session** (`script_only` unset). The script's stdout is appended to its task's section of the session's prompt, after the task's `prompt`; a script that printed nothing is noted as such. The session then runs as usual and decides `HEARTBEAT_OK`, a normal report, or `HEARTBEAT_URGENT`.
+- **Without a session** (`script_only: true` on every task). No model runs. When every script printed nothing, or its output ends with `HEARTBEAT_OK`, the fire is silent, the same as a session answering `HEARTBEAT_OK`. Otherwise the output is the pulse's result, filed to the inbox as printed (one task's output on its own; several tasks' output each under the task's name), and it is pushed to every notification channel as well when it ends with `HEARTBEAT_URGENT`. The result counts as the pulse's delivered output for `context_from`. `agent`, `model_tier`, `context_from` and the tasks' `prompt` have no effect on such a pulse; a pulse that sets any of them still runs, and the setting is reported the way a load problem is (a warning diagnostic when the file is edited, a log line and an owner notice listing it under settings with no effect).
+- **Output limit.** Stdout past `script_max_output_kb` is read and discarded, and the kept output ends with a line saying it was cut (`[output cut: the script printed more than 64 KiB; only the first 64 KiB is shown]`).
+- **Time limit.** The limit covers the whole run, including any process the script started in the background that still holds its output open: when the limit passes, the whole process tree is killed and whatever the script printed is kept. (On Windows, a background process `taskkill` can no longer find once the script's shell has exited may survive the kill; the run still ends at the limit.)
+- **Failures.** A script that exits with a non-zero code, runs past `script_timeout_secs`, or can't be run is never silent. It is logged at `warn` with the pulse, the task, the reason, and the last part of stderr (its last 2 KiB, where the final error usually is). In a pulse with a session, the owner gets an inbox item saying which task's script failed and how, followed by the command, the exit code or time limit, and the last part of its error output, and an owner notice in the web UI naming the pulse, the task and the reason, the same two surfaces a failed pulse run gets; the session still runs, and its prompt says the script failed, shows whatever it printed, and the last part of its error output. In a `script_only` pulse, the result is a failed run: its inbox item carries what the script printed and the last part of its error output (with several tasks, also each failed task's name and reason, and the other tasks' output), and the owner gets the usual failed-pulse notice naming the pulse and the reason (see "Result Routing" below).
+- **Stopping.** Stopping or restarting the agent kills any script still running, and a fire whose scripts finish once the agent has begun stopping delivers nothing: no result, no failure report, no session.
+- **Validation.** A task with `script_only` but no `script`, an empty `script`, a `script_timeout_secs` or `script_max_output_kb` of `0`, a task with neither `prompt` nor `script`, or a pulse that mixes `script_only` tasks with tasks that run a session is a load problem: the pulse doesn't run, and the problem is reported like any other HEARTBEAT.yml problem (a diagnostic when the file is edited, a log line and an owner notice when it loads).
+- **Schedule place.** A `script_only` pulse runs no session, so the Schedule place shows no last run or current run for it; its results and failures reach the inbox and notices as described above.
+
 ### Autonomous Framing
 
 Every pulse-triggered session run is framed in its prompt as autonomous: no user is present to answer a question, so the run must not pause waiting on one. Pulse prompts also explicitly forbid the run from creating or modifying pulses — a pulse that could edit other pulses risks a runaway self-scheduling loop with no user in the loop to notice. If a pulse run concludes that a new or different pulse is warranted, the correct move is to say so via the user inbox, not to write `HEARTBEAT.yml` itself.
 
 ## Diagnostics
 
-Editing `HEARTBEAT.yml` through the agent's `write_file`/`edit_file` tools, the Files editor, or `POST /api/agents/{name}/workspace/validate` reports the same problems `load_heartbeat` would reject or drop, one diagnostic per problem: a whole-document YAML syntax error (with the parser's line/column), a non-list top-level `pulses` key, a pulse entry that fails to deserialize on its own (e.g. a `schedule` given as something other than a string), a pulse using a removed option (`agent: "main"`, `include_identity`), or a duplicate pulse name. One bad pulse doesn't hide problems in the others — each gets its own diagnostic naming that pulse. The save always goes through — a diagnostic names the problem instead of the write being rejected, so a mistake is visible immediately rather than only showing up as a scheduler warning after the fact.
+Editing `HEARTBEAT.yml` through the agent's `write_file`/`edit_file` tools, the Files editor, or `POST /api/agents/{name}/workspace/validate` reports the same problems `load_heartbeat` would reject or drop, one diagnostic per problem: a whole-document YAML syntax error (with the parser's line/column), a non-list top-level `pulses` key, a pulse entry that fails to deserialize on its own (e.g. a `schedule` given as something other than a string), a pulse using a removed option (`agent: "main"`, `include_identity`), a pulse whose tasks don't fit together (see "Task Scripts" above), or a duplicate pulse name. One bad pulse doesn't hide problems in the others — each gets its own diagnostic naming that pulse. The save always goes through — a diagnostic names the problem instead of the write being rejected, so a mistake is visible immediately rather than only showing up as a scheduler warning after the fact.
 
 ## Scheduling Behavior
 
 - The scheduler runs on a **60-second tick**, so precision is at best ~1 minute
-- HEARTBEAT.yml is **hot-reloaded** on every tick — changes take effect without restarting the gateway. The file is parsed generically first, then each pulse entry is deserialized on its own: a pulse with a bad field (e.g. `schedule` given as something other than a string) is dropped individually and reported as a per-pulse problem, while every other pulse in the file still loads. It's also fully re-validated on every tick — a pulse rejected for using a removed option (see "Agent Routing" above), a duplicate pulse name (dropped, keeping the first definition), an unparseable `schedule`/`active_hours` string (that pulse is skipped), or a pulse entry that fails to deserialize — but each is only logged and notified about when the problem set actually changes, not on every tick of an unchanged, still-broken file, otherwise a single bad pulse would log and toast once a minute for as long as it stays broken. A removed-option problem is logged at `error!` and links [`migrating-to-agent-sessions.md`](../guides/migrating-to-agent-sessions.md); every other kind of problem is logged at `warn!` and links this doc instead, since none of them have anything to do with the migration.
+- HEARTBEAT.yml is **hot-reloaded** on every tick — changes take effect without restarting the gateway. The file is parsed generically first, then each pulse entry is deserialized on its own: a pulse with a bad field (e.g. `schedule` given as something other than a string) is dropped individually and reported as a per-pulse problem, while every other pulse in the file still loads. It's also fully re-validated on every tick — a pulse rejected for using a removed option (see "Agent Routing" above), a duplicate pulse name (dropped, keeping the first definition), an unparseable `schedule`/`active_hours` string (that pulse is skipped), an explicit `model_tier` whose provider `providers.toml` doesn't have (that pulse is skipped until the model resolves, which a config reload that adds the provider makes happen on the next tick), or a pulse entry that fails to deserialize (including a `model_tier` that is neither a tier nor a `provider/model` id) — but each is only logged and notified about when the problem set actually changes, not on every tick of an unchanged, still-broken file, otherwise a single bad pulse would log and toast once a minute for as long as it stays broken. A removed-option problem is logged at `error!` and links [`migrating-to-agent-sessions.md`](../guides/migrating-to-agent-sessions.md); every other kind of problem is logged at `warn!` and links this doc instead, since none of them have anything to do with the migration.
 - A whole-document YAML syntax error (the file itself doesn't parse, as opposed to one bad pulse entry within an otherwise valid document) keeps the last pulse set that loaded successfully running, rather than firing nothing until the file is fixed. The owner is notified with the parse error, once per distinct error rather than every tick, the same dedup rule as any other HEARTBEAT.yml problem.
 - Last-run timestamps are persisted to `pulse_state.json` in the workspace, so pulses resume their schedule across gateway restarts. Missing or corrupt state files are treated as empty state (logged at warn level).
 - A pulse with no recorded run (a new install, or a pulse just added to HEARTBEAT.yml) does not run on its first tick. The scheduler records it as seen at that moment, persists that time, and runs it one `schedule` later. A pulse outside its `active_hours` is not recorded until a tick evaluates it inside the window.
@@ -110,7 +157,7 @@ Editing `HEARTBEAT.yml` through the agent's `write_file`/`edit_file` tools, the 
 
 ## Schedule Place
 
-The web UI's Schedule place (under each agent in the rail, at `/agent/<name>/schedule`) lists every pulse by its name in words, as Home does (`inbox_check` reads "Inbox check"): how often it runs and its active hours, its skill, when it runs next in Home's words ("in 34m", "Today at 9:00 AM", "Due now"; "Paused", "No next run", or "Won't run until fixed" otherwise), how its last run went and when (with the error for a failure), whether it is running now (and, for a run that overlaps the one before it, when that one started), and any HEARTBEAT.yml loading problems naming it. When no enabled pulse has a next run, a notice says the agent's pulses are turned off in its settings or its settings can't be read, and opens its Schedule settings.
+The web UI's Schedule place (under each agent in the rail, at `/agent/<name>/schedule`) lists every pulse by its name in words, as Home does (`inbox_check` reads "Inbox check"): how often it runs and its active hours, its skill, its model when it names one, when it runs next in Home's words ("in 34m", "Today at 9:00 AM", "Due now"; "Paused", "No next run", or "Won't run until fixed" otherwise), how its last run went and when (with the error for a failure), whether it is running now (and, for a run that overlaps the one before it, when that one started), and any HEARTBEAT.yml loading problems naming it. When no enabled pulse has a next run, a notice says the agent's pulses are turned off in its settings or its settings can't be read, and opens its Schedule settings.
 
 Each pulse has a switch. Turning it off or on flips the `enabled` value for that one pulse in HEARTBEAT.yml in place — the rest of the file, including comments and formatting, is left byte-for-byte untouched. The switch moves at once and moves back, with an error notice, if the change fails; a pulse that failed to load has no switch to flip. The same place lists pending scheduled actions (see [scheduled-actions.md](scheduled-actions.md)) with Cancel for each.
 
@@ -124,6 +171,6 @@ Backed by `GET /api/agents/{name}/scheduled/pulses`, `PUT /api/agents/{name}/sch
 
 ## Result Routing
 
-Pulse results flow through the pub/sub bus to the notification router, which delivers each result according to the disposition the session declared. A summary containing `HEARTBEAT_OK` is discarded; one containing `HEARTBEAT_URGENT` is pushed to every configured notification channel as well as filed to the inbox; anything else goes to the inbox alone.
+Pulse results flow through the pub/sub bus to the notification router, which delivers each result according to the disposition the session declared (or, for a `script_only` pulse, the disposition its scripts' output declares; see "Task Scripts" above). A summary ending with `HEARTBEAT_OK` is discarded; one ending with `HEARTBEAT_URGENT` is pushed to every configured notification channel as well as filed to the inbox; anything else goes to the inbox alone.
 
 See [notifications.md](notifications.md) for the full routing model.

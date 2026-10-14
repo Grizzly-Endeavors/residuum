@@ -3,6 +3,7 @@ import type { ActionInfo, PulseInfo } from "../../lib/types";
 import {
   actionWhen,
   lastRun,
+  modelLine,
   notRunningTitle,
   overlapNote,
   pulseCadence,
@@ -22,6 +23,7 @@ function pulse(overrides: Partial<PulseInfo> = {}): PulseInfo {
     schedule: "2h",
     active_hours: null,
     agent: null,
+    model_tier: null,
     next_fire_at: iso(34 * MINUTE),
     last_outcome: null,
     current_run: null,
@@ -131,6 +133,7 @@ describe("the rest of the place's words", () => {
       run_at: iso(10 * MINUTE),
       agent: null,
       model_tier: null,
+      problem: null,
       current_run: null,
     };
     expect(actionWhen(action, "running", NOW)).toBe("in 10m");
@@ -141,5 +144,16 @@ describe("the rest of the place's words", () => {
     expect(notRunningTitle("drifter", "stopped")).toBe("drifter is stopped");
     expect(notRunningTitle("brittle", "failed")).toBe("brittle can't start");
     expect(notRunningTitle("drifter", "starting")).toBe("drifter is starting");
+  });
+});
+
+describe("modelLine", () => {
+  it("names a tier as a tier and an explicit model as itself", () => {
+    expect(modelLine("small")).toBe("Model: small tier");
+    expect(modelLine("anthropic/claude-haiku-4-5")).toBe("Model: anthropic/claude-haiku-4-5");
+  });
+
+  it("says nothing for a pulse or action that runs its default tier", () => {
+    expect(modelLine(null)).toBeNull();
   });
 });

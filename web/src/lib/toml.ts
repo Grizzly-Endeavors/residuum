@@ -5,6 +5,7 @@
 
 import type { SetupWizardState } from "./types";
 import { DEFAULT_MODELS } from "./models";
+import { mcpSecretName } from "./setup-keys";
 
 function escapeTomlString(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -122,7 +123,10 @@ export function generateProvidersToml(state: SetupWizardState): string {
   return lines.join("\n");
 }
 
-/** Generate mcp.json content (Claude Code format). */
+/**
+ * Generate mcp.json content (Claude Code format). A tool server key stored as
+ * a secret is written as its `secret:<name>` reference instead of the key.
+ */
 export function generateMcpJson(state: SetupWizardState): string {
   const servers: Record<
     string,
@@ -134,7 +138,12 @@ export function generateMcpJson(state: SetupWizardState): string {
       command: srv.command,
     };
     if (srv.args.length > 0) entry.args = srv.args;
-    if (Object.keys(srv.env).length > 0) entry.env = srv.env;
+    const env = { ...srv.env };
+    for (const key of srv.secretEnvKeys ?? []) {
+      const ref = state.secretRefs[mcpSecretName(srv.name, key)];
+      if (ref !== undefined) env[key] = ref;
+    }
+    if (Object.keys(env).length > 0) entry.env = env;
     servers[srv.name] = entry;
   }
 

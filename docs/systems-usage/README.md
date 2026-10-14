@@ -24,6 +24,7 @@ Every agent's file tools and the web file API see the team layer under a `team/`
 | `memory/REFLECTOR.md` | Low | Reflector compression prompt. Same — agent self-improves. |
 | `scheduled_actions.json` | Managed via tools | Never edited directly. Created/removed by `schedule_action` / `cancel_action`. |
 | `pulse_state.json` | Managed by gateway | Pulse last-run timestamps and run counts. Persisted across restarts. Never edited directly. |
+| `file_links.json` | Managed by gateway | The token links to files outside the workspace the agent sent on the web UI, each with its file's path and its expiry an hour after sending, so the links survive a restart and open while the agent is stopped. Expired entries are dropped every ten minutes. Never edited directly. See [Notifications](notifications.md). |
 | `teams_state.json` | Managed by the Teams interface | Teams owner and conversation references for proactive messages. Edit only to reset the owner (see [Microsoft Teams](teams.md)). |
 | `discord_state.json` | Managed by the Discord interface | Discord owner and the conversations the bot has seen. Edit only to reset the owner (see [Discord](discord.md)). |
 | `telegram_state.json` | Managed by the Telegram interface | Telegram owner and the chats the bot has seen. Edit only to reset the owner (see [Telegram](telegram.md)). |
@@ -81,7 +82,7 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 | [Agent Keys](agent-keys.md) | Credentials the agent passes to commands and MCP servers without seeing their values | `agent_keys_list`, `agent_key_delete`, `exec` (`keys`, `store_output_as`) | `residuum agent-keys`, `~/.residuum/hub/agent-keys.toml.enc` |
 | [MCP](mcp.md) | External tool servers (stdio + HTTP), reconciled against desired state | *(automatic — surfaced as regular tools)* | `config/mcp.json` |
 | [Notifications](notifications.md) | Result routing from background tasks, and Web Push to the user's devices | `list_endpoints`, `list_conversations`, `switch_endpoint`, `send_message` | `config/channels.toml` |
-| [Idle](idle.md) | Deactivates skills, switches notification channel, and injects a continuity message after user inactivity | *(automatic — no tools)* | `[idle]` in `config.toml` |
+| [Idle](idle.md) | Deactivates skills, sends agent-started turns to the web UI (or the chat `idle_channel` names), and injects a continuity message after user inactivity | *(automatic — no tools)* | `[idle]` in `config.toml` |
 | [Background Tasks](background-tasks.md) | Sub-agents and scripts | `subagent_spawn`, `list_agents`, `stop_agent`, `message_agent` | `[background]` in `config.toml` (per-agent) and `hub/config.toml` (shared budget, hop limits), role skills in `skills/` or `team/skills/` |
 | [Subconscious](subconscious.md) | Instruction-drift classifier that steers the agent | *(automatic — no tools)* | `[subconscious]` in `config.toml`, `SUBCONSCIOUS.md` |
 | [Turn Control](turn-control.md) | Stop the running main-agent turn from any interface | *(no tools — a protocol/command control, not a tool)* | *(none)* |

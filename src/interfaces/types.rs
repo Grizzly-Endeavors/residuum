@@ -101,6 +101,15 @@ impl MessageOrigin {
     pub fn is_from_person(&self) -> bool {
         self.endpoint != BACKGROUND_ENDPOINT && self.agent_sender.is_none()
     }
+
+    /// The teammate (another agent on the hub) that sent this, or `None` for
+    /// anything else, this agent's own sessions included.
+    #[must_use]
+    pub fn teammate_sender(&self) -> Option<&AgentSender> {
+        self.agent_sender.as_deref().filter(|sender| {
+            sender.category == crate::background::registry::TEAMMATE_SENDER_CATEGORY
+        })
+    }
 }
 
 #[cfg(test)]

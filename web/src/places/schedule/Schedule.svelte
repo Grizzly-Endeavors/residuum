@@ -16,6 +16,7 @@
   import {
     actionWhen,
     lastRun,
+    modelLine,
     notRunningTitle,
     overlapNote,
     pulseCadence,
@@ -147,6 +148,7 @@
               {#each scheduled.pulses as pulse (pulse.name)}
                 {@const title = runTitle(pulse.name)}
                 {@const cadence = pulseCadence(pulse)}
+                {@const model = modelLine(pulse.model_tier)}
                 <li class="row" data-problem={pulse.problems.length > 0 || undefined}>
                   <span class="row-icon"><Icon name={pulseIcon(pulse)} size={15} /></span>
                   <div class="row-text">
@@ -154,10 +156,11 @@
                       {title}
                       {#if pulse.current_run}{@render running(pulse.current_run)}{/if}
                     </p>
-                    {#if cadence || pulse.agent}
+                    {#if cadence || pulse.agent || model}
                       <p class="row-sub">
                         {#if cadence}<span>{cadence}</span>{/if}
                         {#if pulse.agent}<span>Skill: {pulse.agent}</span>{/if}
+                        {#if model}<span>{model}</span>{/if}
                       </p>
                     {/if}
                     {#if pulse.last_outcome}
@@ -200,14 +203,23 @@
             <ul class="rows">
               {#each scheduled.actions as action (action.id)}
                 {@const title = runTitle(action.name)}
-                <li class="row">
-                  <span class="row-icon"><Icon name="clock" size={15} /></span>
+                {@const model = modelLine(action.model_tier)}
+                <li class="row" data-problem={action.problem !== null || undefined}>
+                  <span class="row-icon"
+                    ><Icon name={action.problem ? "warning" : "clock"} size={15} /></span
+                  >
                   <div class="row-text">
                     <p class="row-title">
                       {title}
                       {#if action.current_run}{@render running(action.current_run)}{/if}
                     </p>
-                    {#if action.agent}<p class="row-sub">Skill: {action.agent}</p>{/if}
+                    {#if action.agent || model}
+                      <p class="row-sub">
+                        {#if action.agent}<span>Skill: {action.agent}</span>{/if}
+                        {#if model}<span>{model}</span>{/if}
+                      </p>
+                    {/if}
+                    {#if action.problem}<p class="problem">{action.problem}</p>{/if}
                   </div>
                   <div class="row-end">
                     <time class="when" datetime={action.run_at}

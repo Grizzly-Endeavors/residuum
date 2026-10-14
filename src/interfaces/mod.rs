@@ -216,7 +216,7 @@ async fn start_multitask(
         };
     let event = crate::background::owner_session::OwnerSessionStart {
         prompt: task,
-        model_tier: crate::config::BackgroundModelTier::Medium,
+        model: crate::config::ModelSelector::MEDIUM,
         fork_of: Some(history),
         conversation: conversation.map(|ctx| crate::bus::ConversationTarget {
             endpoint: interface.to_string(),
@@ -445,7 +445,7 @@ mod tests {
         SessionCategory, SessionInfo, SessionRegistry, SessionState,
     };
     use crate::bus::{EventTrigger, MessageEvent, SessionAddress, Subscriber};
-    use crate::config::BackgroundModelTier;
+    use crate::config::ModelSelector;
     use crate::gateway::types::StopRequest;
     use tokio_util::sync::CancellationToken;
 
@@ -461,7 +461,8 @@ mod tests {
             depth: 1,
             purpose: "chat-1".to_string(),
             agent_skill: None,
-            model_tier: BackgroundModelTier::Medium,
+            model: ModelSelector::MEDIUM,
+            resolved_model: None,
             conversation_target: None,
             started_at: chrono::Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),

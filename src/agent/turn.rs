@@ -39,6 +39,71 @@ pub trait ReplyAudience: Send + Sync {
     fn reply_published(&self);
 }
 
+/// The endpoint a main-agent turn delivers to, which can change while the
+/// turn runs: an agent-started turn follows the owner to the interface they
+/// write from mid-turn. The turn reads it each time it publishes.
+#[derive(Debug, Default)]
+pub struct LiveOutputEndpoint(std::sync::Mutex<Option<EndpointName>>);
+
+impl LiveOutputEndpoint {
+    /// Start out delivering to `endpoint` (`None`: nowhere but the web UI's
+    /// main conversation).
+    #[must_use]
+    pub fn new(endpoint: Option<EndpointName>) -> Self {
+        Self(std::sync::Mutex::new(endpoint))
+    }
+
+    /// Where the turn delivers now.
+    #[must_use]
+    pub fn get(&self) -> Option<EndpointName> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Deliver the rest of the turn to `endpoint`. Returns where it went before.
+    pub fn replace(&self, endpoint: EndpointName) -> Option<EndpointName> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(endpoint)
+    }
+}
+
+/// Where a main-agent turn's output goes: an endpoint fixed for the whole
+/// turn, or one the gateway may move while the turn runs.
+#[derive(Debug, Clone, Copy)]
+pub enum TurnOutput<'a> {
+    /// The same endpoint for the whole turn (`None`: no endpoint).
+    Fixed(Option<&'a EndpointName>),
+    /// Read at each publish.
+    Live(&'a LiveOutputEndpoint),
+}
+
+impl TurnOutput<'_> {
+    /// Where the turn delivers at this moment.
+    #[must_use]
+    pub fn current(&self) -> Option<EndpointName> {
+        match self {
+            Self::Fixed(endpoint) => endpoint.cloned(),
+            Self::Live(live) => live.get(),
+        }
+    }
+}
+
+impl<'a> From<Option<&'a EndpointName>> for TurnOutput<'a> {
+    fn from(endpoint: Option<&'a EndpointName>) -> Self {
+        Self::Fixed(endpoint)
+    }
+}
+
+impl<'a> From<&'a LiveOutputEndpoint> for TurnOutput<'a> {
+    fn from(live: &'a LiveOutputEndpoint) -> Self {
+        Self::Live(live)
+    }
+}
+
 /// Context for publishing streaming events during a turn.
 pub(crate) struct EventContext<'a> {
     pub publisher: &'a Publisher,
@@ -71,9 +136,10 @@ pub(crate) enum EventTarget<'a> {
     /// The main agent: the main conversation, and for a turn delivered to a
     /// chat interface that interface's endpoint topic, correlated to the
     /// message that started the turn. The endpoint may be absent (e.g. a
-    /// background turn with nowhere to show its output).
+    /// background turn with nowhere to show its output), and an
+    /// agent-started turn's can move mid-turn (see [`TurnOutput`]).
     Endpoint {
-        output_endpoint: Option<&'a EndpointName>,
+        output_endpoint: TurnOutput<'a>,
         correlation_id: &'a str,
     },
     /// An agent session: the sessions topic, tagged with the session's
@@ -179,7 +245,8 @@ impl EventContext<'_> {
                     content: content.to_owned(),
                 })
                 .await;
-                if let Some(ep) = chat_interface_endpoint(output_endpoint)
+                let output_endpoint = output_endpoint.current();
+                if let Some(ep) = chat_interface_endpoint(output_endpoint.as_ref())
                     && let Err(e) = self
                         .publisher
                         .publish(
@@ -234,14 +301,12 @@ impl EventContext<'_> {
     async fn publish_reply(&self, call: Option<u32>, content: &str) {
         let endpoint = match self.target {
             EventTarget::Endpoint {
-                output_endpoint: Some(ep),
-                ..
-            } => ep.to_string(),
-            EventTarget::Endpoint {
-                output_endpoint: None,
-                ..
-            }
-            | EventTarget::Session { .. } => String::new(),
+                output_endpoint, ..
+            } => output_endpoint
+                .current()
+                .map(|ep| ep.to_string())
+                .unwrap_or_default(),
+            EventTarget::Session { .. } => String::new(),
         };
         let for_endpoint = !endpoint.is_empty();
         self.publish_main(|turn_id| MainConversationEvent::Response {
@@ -289,8 +354,9 @@ impl EventContext<'_> {
         .await;
     }
 
-    /// Announce a person's message joining this main-agent turn mid-turn. Not
-    /// for one agent's message to another, and not for a session's turn.
+    /// Announce a person's or a teammate's message joining this main-agent
+    /// turn mid-turn (see [`MainConversationEvent::user_message`]). Not for a
+    /// session's turn.
     async fn publish_user_message(&self, message: &MessageEvent) {
         let EventTarget::Endpoint { correlation_id, .. } = self.target else {
             return;
@@ -423,7 +489,7 @@ async fn handle_output_truncated(
         .publisher
         .publish(
             topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-            NoticeEvent { message: notice },
+            NoticeEvent::new(notice),
         )
         .await
     {
@@ -435,6 +501,106 @@ async fn handle_output_truncated(
          incomplete. Continue from where it left off if that's still useful, or start fresh."
     ));
     push_and_record(recent_messages, resources.transcript_sink, note).await;
+}
+
+/// Tell the user, once per turn, that images this turn brought in (the
+/// triggering message, an interrupt, a tool result) were left out because
+/// the model can't take them. Images from earlier turns are left out of every
+/// request too, quietly: the user heard about them when they arrived.
+/// `noticed` records that this turn already has.
+async fn notice_images_omitted(
+    response: &InferenceResponse,
+    turn_messages: &[Message],
+    events: &EventContext<'_>,
+    noticed: &mut bool,
+) {
+    let Some(omitted) = &response.images_omitted else {
+        return;
+    };
+    let new_images: usize = turn_messages
+        .iter()
+        .map(|message| message.images.len())
+        .sum();
+    if new_images == 0 {
+        tracing::debug!(
+            model = %omitted.model,
+            images = omitted.count,
+            "left earlier turns' images out of a request to a model that can't take them"
+        );
+        return;
+    }
+    if std::mem::replace(noticed, true) {
+        return;
+    }
+    tracing::warn!(
+        model = %omitted.model,
+        images = new_images,
+        learned = omitted.learned,
+        "left this turn's images out of a request to a model that can't take them"
+    );
+    if let Err(e) = events
+        .publisher
+        .publish(
+            topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+            NoticeEvent::new(images_omitted_notice(omitted, new_images)),
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "failed to publish images-omitted notice");
+    }
+}
+
+/// The notice for reasoning the provider dropped from a request.
+const THINKING_DROPPED_NOTICE: &str =
+    "Some of the model's earlier reasoning couldn't be reused, so it continued without it.";
+
+/// Tell the user, once per turn, that the provider dropped some of the
+/// model's earlier reasoning from a request instead of reading it, because
+/// what came before that reasoning changed since it was written. The turn
+/// carries on; the model just answers without that reasoning. Every later
+/// request in the exchange resends the same blocks and has them dropped
+/// again, so only the first report of a turn is raised. `noticed` records
+/// that this turn already has.
+async fn notice_thinking_dropped(
+    response: &InferenceResponse,
+    events: &EventContext<'_>,
+    noticed: &mut bool,
+) {
+    if response.thinking_dropped == 0 || std::mem::replace(noticed, true) {
+        return;
+    }
+    tracing::warn!(
+        blocks = response.thinking_dropped,
+        "the provider dropped replayed reasoning because what preceded it in the request changed; the model continued without it"
+    );
+    if let Err(e) = events
+        .publisher
+        .publish(
+            topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+            NoticeEvent::new(THINKING_DROPPED_NOTICE),
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "failed to publish dropped-reasoning notice");
+    }
+}
+
+/// The plain-language notice for images a request left out.
+fn images_omitted_notice(omitted: &crate::inference::ImagesOmitted, count: usize) -> String {
+    let count = match count {
+        1 => "1 image was".to_string(),
+        n => format!("{n} images were"),
+    };
+    let notice = format!("This model can't see images, so {count} left out of the request.");
+    if !omitted.learned {
+        return notice;
+    }
+    format!(
+        "{notice} Its provider turned images down, so they're left out until Residuum \
+         restarts. To skip that failed first try, mark {} as text only under its provider in \
+         Settings → Model.",
+        omitted.model
+    )
 }
 
 /// Push a message onto the turn's history and, when a sink is configured,
@@ -682,6 +848,8 @@ pub(crate) async fn execute_turn(
     // progress. Never exposed to the agent — see `docs/systems-usage/turn-control.md`.
     let mut turn_usage = TurnUsage::default();
     let mut repeat_guard = RepeatCallGuard::new();
+    let mut images_noticed = false;
+    let mut thinking_drop_noticed = false;
 
     let mut iteration: usize = 0;
     loop {
@@ -735,6 +903,14 @@ pub(crate) async fn execute_turn(
                 }
             };
         settle_response(&mut response, events, call).await;
+        notice_images_omitted(
+            &response,
+            recent_messages.messages_since(turn_start),
+            events,
+            &mut images_noticed,
+        )
+        .await;
+        notice_thinking_dropped(&response, events, &mut thinking_drop_noticed).await;
 
         if response.was_truncated() {
             handle_output_truncated(&response, resources, events, recent_messages).await;
@@ -984,8 +1160,9 @@ async fn check_interrupts_and_stop(
 /// continues to the end of the buffered batch even after a stop is seen, so
 /// any interrupts queued just before it are still folded into history.
 ///
-/// A person's message is announced to the main conversation at the moment it
-/// is folded in, so a client sees it at the position the model does.
+/// A person's or a teammate's message is announced to the main conversation
+/// at the moment it is folded in, so a client sees it at the position the
+/// model does.
 async fn drain_interrupts(
     interrupt_rx: &mut dyn InterruptSource,
     recent_messages: &mut RecentMessages,
@@ -1544,7 +1721,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: Some(&audience),
             target: EventTarget::Endpoint {
-                output_endpoint: Some(&ws),
+                output_endpoint: TurnOutput::Fixed(Some(&ws)),
                 correlation_id: "t1",
             },
             session_conversation: None,
@@ -1556,7 +1733,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: Some(&audience),
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "t2",
             },
             session_conversation: None,
@@ -1585,7 +1762,7 @@ mod tests {
             publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "turn-1",
             },
             session_conversation: None,
@@ -1821,7 +1998,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: Some(&ep),
+                output_endpoint: TurnOutput::Fixed(Some(&ep)),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -1852,7 +2029,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: Some(&ep),
+                output_endpoint: TurnOutput::Fixed(Some(&ep)),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -1887,7 +2064,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -1940,7 +2117,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2030,7 +2207,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2139,7 +2316,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2253,7 +2430,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2327,7 +2504,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2673,7 +2850,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: Some(&ep),
+                output_endpoint: TurnOutput::Fixed(Some(&ep)),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2710,7 +2887,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2780,7 +2957,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: Some(&ep),
+                output_endpoint: TurnOutput::Fixed(Some(&ep)),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2827,7 +3004,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: Some(&ep),
+                output_endpoint: TurnOutput::Fixed(Some(&ep)),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2858,7 +3035,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: Some(&ep),
+                output_endpoint: TurnOutput::Fixed(Some(&ep)),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2888,7 +3065,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: Some(&ep),
+                output_endpoint: TurnOutput::Fixed(Some(&ep)),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2961,7 +3138,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: Some(&ep),
+                output_endpoint: TurnOutput::Fixed(Some(&ep)),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -3091,7 +3268,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: Some(&ep),
+                output_endpoint: TurnOutput::Fixed(Some(&ep)),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -3183,7 +3360,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -3268,7 +3445,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -3356,7 +3533,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -3443,7 +3620,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -3536,7 +3713,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -3577,5 +3754,261 @@ mod tests {
             5,
             "the 6th identical call must never actually run"
         );
+    }
+
+    /// Answers every call as if images were left out of the request (nine,
+    /// counted over the whole history): a tool call first, then text. From
+    /// the fourth call on, the model's text-only verdict is a learned one.
+    struct ImagesOmittedProvider {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl InferenceProvider for ImagesOmittedProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[crate::inference::ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, crate::inference::InferenceError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let mut response = if call == 0 {
+                InferenceResponse::new(String::new(), vec![counting_tool_call("c1")])
+            } else {
+                InferenceResponse::new("done".to_string(), vec![])
+            };
+            response.images_omitted = Some(crate::inference::ImagesOmitted {
+                model: "glm-5.3".to_string(),
+                count: 9,
+                learned: call >= 3,
+            });
+            Ok(response)
+        }
+
+        fn model_name(&self) -> &'static str {
+            "glm-5.3"
+        }
+    }
+
+    fn png() -> crate::inference::ImageData {
+        crate::inference::ImageData {
+            media_type: "image/png".to_string(),
+            data: "iVBORw0KGgo=".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn only_images_a_turn_brings_in_are_noticed_once_per_turn() {
+        let provider = ImagesOmittedProvider {
+            calls: AtomicUsize::new(0),
+        };
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(CountingTool {
+            calls: Arc::new(AtomicUsize::new(0)),
+        }));
+        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let identity = IdentityFiles::default();
+        let options = CompletionOptions::default();
+        let stop_token = CancellationToken::new();
+        let hop_counter = HopCounter::new(0);
+        let resources = TurnResources {
+            provider: &provider,
+            tools: &tools,
+            mcp_registry: &mcp_registry,
+            identity: &identity,
+            options: &options,
+            max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            stop_token: &stop_token,
+            transcript_sink: None,
+            usage_sink: None,
+            hop_counter: &hop_counter,
+        };
+
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let mut notices: crate::bus::Subscriber<crate::bus::NoticeEvent> = bus_handle
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let events = EventContext {
+            publisher: &publisher,
+            reply_audience: None,
+            target: EventTarget::Endpoint {
+                output_endpoint: TurnOutput::Fixed(None),
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+        let (_interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel::<Interrupt>();
+        let mut recent = RecentMessages::new();
+
+        // A turn with one new image and two model requests, a turn with only
+        // that old image in history, and a turn with two new images.
+        let turns = [
+            Message::user_with_images("look at this", vec![png()]),
+            Message::user("and again"),
+            Message::user_with_images("two more", vec![png(), png()]),
+        ];
+        for (n, turn) in turns.into_iter().enumerate() {
+            recent.push(turn);
+            execute_turn(
+                &resources,
+                &MemoryContext {
+                    observations: None,
+                    recent_context: None,
+                },
+                &PromptContext::default(),
+                &mut recent,
+                &events,
+                None,
+                &mut interrupt_rx,
+                None,
+            )
+            .await
+            .unwrap();
+            let message = format!("end of turn {n}");
+            let end = topics::Notification(NotifyName::from(SYSTEM_CHANNEL));
+            publisher
+                .publish(end, NoticeEvent::new(message))
+                .await
+                .unwrap();
+        }
+
+        let mut next = async || wait::next_event("a notice", &mut notices).await.message;
+        assert_eq!(
+            next().await,
+            "This model can't see images, so 1 image was left out of the request.",
+            "the turn's own image is counted, not the history's"
+        );
+        assert_eq!(next().await, "end of turn 0", "one notice for two requests");
+        assert_eq!(
+            next().await,
+            "end of turn 1",
+            "an image from an earlier turn is left out quietly"
+        );
+        let third = next().await;
+        assert!(
+            third.starts_with("This model can't see images, so 2 images were left out"),
+            "{third}"
+        );
+        assert!(
+            third.contains("mark glm-5.3 as text only"),
+            "a learned verdict suggests declaring it: {third}"
+        );
+        assert_eq!(next().await, "end of turn 2");
+    }
+
+    /// Answers every call as if the provider dropped a replayed thinking
+    /// block: a tool call first, then text.
+    struct ThinkingDroppedProvider {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl InferenceProvider for ThinkingDroppedProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[crate::inference::ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, crate::inference::InferenceError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let mut response = if call.is_multiple_of(2) {
+                InferenceResponse::new(String::new(), vec![counting_tool_call("c1")])
+            } else {
+                InferenceResponse::new("done".to_string(), vec![])
+            };
+            response.thinking_dropped = 1;
+            Ok(response)
+        }
+
+        fn model_name(&self) -> &'static str {
+            "claude-opus-5-5"
+        }
+    }
+
+    #[tokio::test]
+    async fn dropped_reasoning_is_noticed_once_per_turn() {
+        let provider = ThinkingDroppedProvider {
+            calls: AtomicUsize::new(0),
+        };
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(CountingTool {
+            calls: Arc::new(AtomicUsize::new(0)),
+        }));
+        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let identity = IdentityFiles::default();
+        let options = CompletionOptions::default();
+        let stop_token = CancellationToken::new();
+        let hop_counter = HopCounter::new(0);
+        let resources = TurnResources {
+            provider: &provider,
+            tools: &tools,
+            mcp_registry: &mcp_registry,
+            identity: &identity,
+            options: &options,
+            max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            stop_token: &stop_token,
+            transcript_sink: None,
+            usage_sink: None,
+            hop_counter: &hop_counter,
+        };
+
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let mut notices: crate::bus::Subscriber<crate::bus::NoticeEvent> = bus_handle
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let events = EventContext {
+            publisher: &publisher,
+            reply_audience: None,
+            target: EventTarget::Endpoint {
+                output_endpoint: TurnOutput::Fixed(None),
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+        let (_interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel::<Interrupt>();
+        let mut recent = RecentMessages::new();
+
+        // Two turns of two model requests each, every request reporting a
+        // dropped block.
+        for n in 0..2 {
+            recent.push(Message::user("go"));
+            execute_turn(
+                &resources,
+                &MemoryContext {
+                    observations: None,
+                    recent_context: None,
+                },
+                &PromptContext::default(),
+                &mut recent,
+                &events,
+                None,
+                &mut interrupt_rx,
+                None,
+            )
+            .await
+            .unwrap();
+            let message = format!("end of turn {n}");
+            let end = topics::Notification(NotifyName::from(SYSTEM_CHANNEL));
+            publisher
+                .publish(end, NoticeEvent::new(message))
+                .await
+                .unwrap();
+        }
+
+        let mut next = async || wait::next_event("a notice", &mut notices).await.message;
+        assert_eq!(next().await, THINKING_DROPPED_NOTICE);
+        assert_eq!(next().await, "end of turn 0", "one notice for two requests");
+        assert_eq!(
+            next().await,
+            THINKING_DROPPED_NOTICE,
+            "the next turn tells the user again"
+        );
+        assert_eq!(next().await, "end of turn 1");
     }
 }

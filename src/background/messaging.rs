@@ -34,7 +34,7 @@ use crate::bus::{
     AgentMessageEvent, MessageEvent, Publisher, SessionAddress, SessionEventKind, SkillName,
     SpawnRequestEvent, topics,
 };
-use crate::config::BackgroundModelTier;
+use crate::config::ModelSelector;
 use crate::hub::team::TeamLink;
 use crate::inference::{ImageData, Message};
 
@@ -654,8 +654,8 @@ impl PendingInput {
 pub(crate) struct ConversationSpawn {
     /// Human-readable source label (e.g. `"discord:#builds"`).
     pub(crate) source_label: String,
-    /// Model tier to run the session at.
-    pub(crate) model_tier: BackgroundModelTier,
+    /// The model tier or explicit model to run the session on.
+    pub(crate) model: ModelSelector,
     /// Skill to activate for the new session, if any. `None` for every
     /// caller today — no router currently maps a conversation to a skill.
     pub(crate) skill: Option<SkillName>,
@@ -707,7 +707,7 @@ async fn publish_conversation_spawn(
         prompt: inbound.content,
         context: inbound.context,
         source: crate::bus::EventTrigger::Conversation,
-        model_tier: spawn.model_tier,
+        model: spawn.model,
         spawner: None,
         depth: crate::background::registry::MAIN_DEPTH + 1,
         hop_count: 0,
@@ -750,7 +750,7 @@ async fn publish_conversation_resume(
         prompt: inbound.content.clone(),
         context: Some(context),
         source: point.trigger.clone(),
-        model_tier: point.model_tier,
+        model: point.model.clone(),
         spawner: point.spawner.clone(),
         depth: point.depth,
         hop_count: 0,
@@ -1120,7 +1120,7 @@ async fn publish_resume(
         prompt,
         context: Some(pointer_note(point)),
         source: point.trigger.clone(),
-        model_tier: point.model_tier,
+        model: point.model.clone(),
         // A resume keeps the session's original spawner and depth, rather
         // than resetting it to depth 1 with no spawner — which would let a
         // resumed session evade the nesting cap.
@@ -1196,17 +1196,14 @@ mod tests {
         (messenger, registry, bus_handle)
     }
 
-    fn sample_resume_point(
-        run_id: &str,
-        model_tier: crate::config::BackgroundModelTier,
-    ) -> ResumePoint {
+    fn sample_resume_point(run_id: &str, model: crate::config::ModelSelector) -> ResumePoint {
         ResumePoint {
             previous_run_id: run_id.to_string(),
             previous_episode_id: Some("ep-42".to_string()),
             trigger: EventTrigger::Agent,
             source_label: "agent:researcher".to_string(),
             agent_skill: Some(SkillName::from("researcher")),
-            model_tier,
+            model,
             spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
             depth: 1,
             conversation_target: None,
@@ -1229,7 +1226,8 @@ mod tests {
             depth: 1,
             purpose: "research".to_string(),
             agent_skill: None,
-            model_tier: crate::config::BackgroundModelTier::Medium,
+            model: crate::config::ModelSelector::MEDIUM,
+            resolved_model: None,
             conversation_target: None,
             started_at: chrono::Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
@@ -1388,7 +1386,7 @@ mod tests {
         registry
             .record_resume_point(
                 &info.address,
-                sample_resume_point("run-old", crate::config::BackgroundModelTier::Large),
+                sample_resume_point("run-old", crate::config::ModelSelector::LARGE),
             )
             .await;
 
@@ -1449,7 +1447,7 @@ mod tests {
         registry
             .record_resume_point(
                 &info.address,
-                sample_resume_point("run-old", crate::config::BackgroundModelTier::Large),
+                sample_resume_point("run-old", crate::config::ModelSelector::LARGE),
             )
             .await;
 
@@ -1488,7 +1486,7 @@ mod tests {
         .await;
         assert_eq!(event.address, address);
         assert!(event.prompt.contains("any updates?"));
-        assert_eq!(event.model_tier, crate::config::BackgroundModelTier::Large);
+        assert_eq!(event.model, crate::config::ModelSelector::LARGE);
     }
 
     #[tokio::test]
@@ -1560,7 +1558,7 @@ mod tests {
         registry
             .record_resume_point(
                 &address,
-                sample_resume_point("run-old", crate::config::BackgroundModelTier::Large),
+                sample_resume_point("run-old", crate::config::ModelSelector::LARGE),
             )
             .await;
 
@@ -1590,7 +1588,7 @@ mod tests {
         registry
             .record_resume_point(
                 &address,
-                sample_resume_point("run-old", crate::config::BackgroundModelTier::Large),
+                sample_resume_point("run-old", crate::config::ModelSelector::LARGE),
             )
             .await;
 
@@ -1611,8 +1609,8 @@ mod tests {
         assert_eq!(event.skill.as_ref().map(AsRef::as_ref), Some("researcher"));
         assert!(event.prompt.contains("any updates?"));
         assert_eq!(
-            event.model_tier,
-            crate::config::BackgroundModelTier::Large,
+            event.model,
+            crate::config::ModelSelector::LARGE,
             "a resumed run must carry the previous run's model tier, not default to Medium"
         );
         assert_eq!(
@@ -1649,7 +1647,7 @@ mod tests {
                     trigger: EventTrigger::Agent,
                     source_label: "agent:researcher".to_string(),
                     agent_skill: None,
-                    model_tier: crate::config::BackgroundModelTier::Small,
+                    model: crate::config::ModelSelector::SMALL,
                     spawner: None,
                     depth: 1,
                     conversation_target: None,
@@ -1682,7 +1680,7 @@ mod tests {
             bus_handle.subscribe(topics::Background).await.unwrap();
 
         let address = SessionAddress::from("spawned-researcher-0004");
-        let point = sample_resume_point("run-old", crate::config::BackgroundModelTier::Small);
+        let point = sample_resume_point("run-old", crate::config::ModelSelector::SMALL);
         registry.record_resume_point(&address, point.clone()).await;
 
         let messages = vec![
@@ -1744,7 +1742,7 @@ mod tests {
     fn conversation_spawn() -> ConversationSpawn {
         ConversationSpawn {
             source_label: "discord:#builds".to_string(),
-            model_tier: crate::config::BackgroundModelTier::Medium,
+            model: crate::config::ModelSelector::MEDIUM,
             skill: None,
         }
     }
@@ -1756,7 +1754,7 @@ mod tests {
             bus_handle.subscribe(topics::Background).await.unwrap();
 
         let address = SessionAddress::from("external-discord-0004");
-        let point = sample_resume_point("run-old", crate::config::BackgroundModelTier::Small);
+        let point = sample_resume_point("run-old", crate::config::ModelSelector::SMALL);
         registry.record_resume_point(&address, point.clone()).await;
 
         let pending = vec![
@@ -1849,7 +1847,7 @@ mod tests {
             bus_handle.subscribe(topics::Background).await.unwrap();
 
         let address = SessionAddress::from("external-discord-0002");
-        let mut point = sample_resume_point("run-old", crate::config::BackgroundModelTier::Large);
+        let mut point = sample_resume_point("run-old", crate::config::ModelSelector::LARGE);
         point.conversation_target = Some(crate::bus::ConversationTarget {
             endpoint: "discord".to_string(),
             conversation_id: "chan-1".to_string(),
@@ -1870,8 +1868,8 @@ mod tests {
         assert_eq!(event.address, address);
         assert!(event.prompt.contains("still there?"));
         assert_eq!(
-            event.model_tier,
-            crate::config::BackgroundModelTier::Large,
+            event.model,
+            crate::config::ModelSelector::LARGE,
             "a resumed conversation session must keep its previous model tier"
         );
         let target = event
@@ -1895,7 +1893,7 @@ mod tests {
         registry
             .record_resume_point(
                 &info.address,
-                sample_resume_point("run-old", crate::config::BackgroundModelTier::Large),
+                sample_resume_point("run-old", crate::config::ModelSelector::LARGE),
             )
             .await;
 

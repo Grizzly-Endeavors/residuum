@@ -219,6 +219,11 @@ async fn prepare_session_skill_state(
 /// read — a session without the instructions that define its job is not worth
 /// running, so the spawn fails instead.
 #[tracing::instrument(skip_all)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "a flat field-for-field hand-off from SubAgentBuildConfig into the session's \
+              tool deps and resources; splitting it only moves the field list elsewhere"
+)]
 pub async fn build_subagent_resources(
     provider: Box<dyn InferenceProvider>,
     main_skill_state: &SharedSkillState,
@@ -264,6 +269,7 @@ pub async fn build_subagent_resources(
         a2a_tracker,
         checkpoints,
         lifecycle,
+        model_catalog,
     } = config;
 
     let (skill_state, skills_index) =
@@ -307,6 +313,7 @@ pub async fn build_subagent_resources(
         a2a_tracker,
         checkpoints,
         lifecycle,
+        model_catalog,
     });
 
     Ok(SubAgentResources {

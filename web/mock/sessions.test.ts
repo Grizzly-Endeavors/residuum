@@ -138,7 +138,10 @@ describe("sessions endpoints", () => {
       const model = await post(harness, "/api/sessions", { prompt: "hi", model: "huge" });
       expect(model).toEqual({
         status: 400,
-        body: { error: "invalid model tier 'huge': must be small, medium, or large" },
+        body: {
+          error:
+            "invalid model 'huge': use a tier (small, medium, or large) or a model id in provider/model form, such as anthropic/claude-haiku-4-5",
+        },
       });
       const fork = await post(
         harness,
@@ -169,6 +172,14 @@ describe("sessions endpoints", () => {
           purpose: "plan the garden",
         },
       });
+    });
+
+    it("starts a session on an explicit provider/model, as the backend does", async () => {
+      const { status } = await post(harness, "/api/sessions", {
+        prompt: "plan the garden",
+        model: "anthropic/claude-haiku-4-5",
+      });
+      expect(status).toBe(202);
     });
 
     it("forks the main conversation for /multitask", async () => {

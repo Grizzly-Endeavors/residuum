@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { accountTarget, phaseOf, signInTarget, teamsMessagingEndpoint } from "./cloud.svelte";
+import {
+  accountDashboardUrl,
+  accountTarget,
+  phaseOf,
+  signInTarget,
+  teamsMessagingEndpoint,
+} from "./cloud.svelte";
 import type { CloudStatusResponse } from "./types";
 
 function status(overrides: Partial<CloudStatusResponse> = {}): CloudStatusResponse {
@@ -49,6 +55,24 @@ describe("accountTarget", () => {
 
   it("has nowhere to go for an address that isn't a ws or wss one", () => {
     expect(accountTarget("https://relay.example.com")).toBeNull();
+  });
+});
+
+describe("accountDashboardUrl", () => {
+  it("is the dashboard on the relay's web origin", () => {
+    expect(accountDashboardUrl("https://agent-residuum.com")).toBe(
+      "https://agent-residuum.com/dashboard",
+    );
+    expect(accountDashboardUrl("http://127.0.0.1:8080")).toBe("http://127.0.0.1:8080/dashboard");
+  });
+
+  it("has nowhere to go without an origin, or for one that isn't a plain http origin", () => {
+    expect(accountDashboardUrl(null)).toBeNull();
+    expect(accountDashboardUrl(undefined)).toBeNull();
+    expect(accountDashboardUrl("")).toBeNull();
+    expect(accountDashboardUrl("javascript:alert(1)")).toBeNull();
+    expect(accountDashboardUrl("https://relay.example.com/path")).toBeNull();
+    expect(accountDashboardUrl("https://relay.example.com?x=1")).toBeNull();
   });
 });
 

@@ -86,3 +86,17 @@ export function stubWebSocket(): void {
   }
   vi.stubGlobal("WebSocket", SilentWebSocket);
 }
+
+/**
+ * Give jsdom, which has no `matchMedia`, a pointer: a mouse, or a touch
+ * screen (`(pointer: coarse)`) while `touch` says so. Every other media
+ * query doesn't match.
+ */
+export function stubPointer(touch: () => boolean = () => false): void {
+  vi.stubGlobal("matchMedia", (media: string) => ({
+    matches: touch() && media === "(pointer: coarse)",
+    media,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }));
+}

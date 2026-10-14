@@ -13,6 +13,15 @@
 #          session fork already carries the main agent's identity and a
 #          memory snapshot.
 #   model_tier: optional — "small" (default) | "medium" | "large"
+#   tasks: each has a name and a prompt. A task can also set
+#          script: a shell command run from the workspace, with the
+#                  agent's own privileges, before the session starts; its
+#                  output is added to the task's prompt
+#          script_only: true — no session; the script's output is the
+#                  result (empty output = nothing to report, ending with
+#                  HEARTBEAT_URGENT pushes it)
+#          script_timeout_secs: optional, default 60
+#          script_max_output_kb: optional, default 64
 
 # ── Built-in pulses ─────────────────────────────────────────────
 # On by default. Comment out to disable; edit freely to tune.

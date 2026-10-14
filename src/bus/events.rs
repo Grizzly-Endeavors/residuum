@@ -7,7 +7,7 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
 use crate::bus::types::{SessionAddress, SkillName};
-use crate::config::BackgroundModelTier;
+use crate::config::ModelSelector;
 use crate::inference::{ImageData, Message, MessageSender};
 use crate::interfaces::attachment::FileAttachment;
 use crate::interfaces::types::MessageOrigin;
@@ -552,8 +552,8 @@ pub struct SpawnRequestEvent {
     pub context: Option<String>,
     /// What triggered this spawn request.
     pub source: EventTrigger,
-    /// Model tier to run the session at.
-    pub model_tier: BackgroundModelTier,
+    /// The model tier or explicit model to run the session on.
+    pub model: ModelSelector,
     /// The agent that requested this spawn: `Some(address)` for a `spawned`
     /// session an agent started (main or another session), `None` for one the
     /// owner started and for `scheduled`, `external`, and `artifact`
@@ -652,6 +652,65 @@ impl SpawnRequestEvent {
 pub struct NoticeEvent {
     /// Human-readable notice message.
     pub message: String,
+    /// What a settings reload came to, and which files it read, when this
+    /// notice reports one. The web words the toast from it and keeps
+    /// `message` as the detail.
+    pub reload: Option<ReloadReport>,
+}
+
+/// A settings reload's outcome and the files it read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReloadReport {
+    pub outcome: ReloadOutcome,
+    pub of: ReloadedFiles,
+}
+
+impl NoticeEvent {
+    /// A notice that reports nothing structured: its text is all there is.
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            reload: None,
+        }
+    }
+
+    /// A notice reporting how a reload of the files `of` went.
+    #[must_use]
+    pub fn reload(outcome: ReloadOutcome, of: ReloadedFiles, message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            reload: Some(ReloadReport { outcome, of }),
+        }
+    }
+}
+
+/// What an attempt to reload settings files came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ReloadOutcome {
+    /// The files loaded and something in them changed, which is now in effect.
+    Reloaded,
+    /// The files loaded and matched what was already running.
+    Unchanged,
+    /// The files couldn't be loaded; the settings already running stay in effect.
+    Failed,
+}
+
+/// Which files an agent's reload read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ReloadedFiles {
+    /// The agent's own `config.toml` and `providers.toml`.
+    AgentConfig,
+    /// `hub/config.toml`, which the agent reloads after the hub has; the hub
+    /// reports its own reload on the hub socket.
+    HubConfig,
+    /// The agent's workspace files: `mcp.json`, `channels.toml`,
+    /// `agent-card.json`, `a2a.json`, and the team's `AGENTS.md` and `USER.md`.
+    Workspace,
 }
 
 /// Which background post-turn cycle (see `crate::gateway::post_turn`) an
@@ -908,9 +967,11 @@ pub enum MainConversationEvent {
         /// The turn.
         turn_id: String,
     },
-    /// A person's message entered the conversation: as the message that
-    /// started a turn, or injected into a turn already running. Never sent
-    /// for one agent's message to another.
+    /// A person's or a teammate's message entered the conversation: as the
+    /// message that started a turn, or injected into a turn already running.
+    /// Not sent for a background origin, nor for a message one of this
+    /// agent's own sessions sent it, which that session's stream shows
+    /// instead (`SessionEventKind::MessageToMain`).
     UserMessage {
         /// The message's id: the id its sender gave it, so a client that sent
         /// it can recognize the echo.
@@ -923,6 +984,9 @@ pub enum MainConversationEvent {
         images: Vec<ImageData>,
         /// The person who sent it, for interfaces that identify one.
         sender: Option<MessageSender>,
+        /// The teammate (another agent on the hub) that sent it, for a
+        /// teammate's message.
+        agent_sender: Option<crate::inference::AgentSender>,
         /// Endpoint it arrived on.
         endpoint: String,
     },
@@ -1021,16 +1085,18 @@ pub enum MainConversationEvent {
 
 impl MainConversationEvent {
     /// The event announcing `message` entering the conversation in turn
-    /// `turn_id`, or `None` when no person sent it (a background origin, or
-    /// one agent's message to another).
+    /// `turn_id`, or `None` when neither a person nor a teammate sent it (a
+    /// background origin, or a message from one of this agent's own sessions).
     #[must_use]
     pub fn user_message(message: &MessageEvent, turn_id: &str) -> Option<Self> {
-        message.origin.is_from_person().then(|| Self::UserMessage {
+        let teammate = message.origin.teammate_sender();
+        (message.origin.is_from_person() || teammate.is_some()).then(|| Self::UserMessage {
             id: message.id.clone(),
             turn_id: turn_id.to_owned(),
             content: message.content.clone(),
             images: message.images.clone(),
             sender: message.origin.sender.clone(),
+            agent_sender: teammate.cloned(),
             endpoint: message.origin.endpoint.clone(),
         })
     }

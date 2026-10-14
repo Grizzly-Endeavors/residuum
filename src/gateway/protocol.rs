@@ -6,8 +6,8 @@ use ts_rs::TS;
 
 use crate::agent::usage::SessionUsageTotals;
 use crate::background::registry::{SessionCategory, SessionState};
-use crate::bus::TurnOrigin;
-use crate::inference::{ImageData, MessageSender};
+use crate::bus::{ReloadOutcome, ReloadedFiles, TurnOrigin};
+use crate::inference::{AgentSender, ImageData, MessageSender};
 use crate::workspace::watch::{WorkspaceChange, WorkspaceResyncReason};
 
 /// Messages sent from a WebSocket client to the server.
@@ -177,6 +177,16 @@ pub struct SessionSummary {
     /// Set when this run is a pulse fire that started while its previous run
     /// was still live. `None` for every other trigger.
     pub overlap: Option<crate::bus::PulseOverlap>,
+    /// The model the run was asked to use: a tier (`small`, `medium`,
+    /// `large`) or an explicit `provider/model` id. `None` for a record
+    /// written before this field existed.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// The `provider/model` id the run started on: the first model of the
+    /// tier's failover chain, or the explicit model. `None` for a record
+    /// written before this field existed.
+    #[serde(default)]
+    pub resolved_model: Option<String>,
 }
 
 /// `GET /api/agents/{name}/sessions` response: live sessions plus one page of completed
@@ -308,6 +318,9 @@ pub struct PulseInfo {
     pub schedule: Option<String>,
     pub active_hours: Option<String>,
     pub agent: Option<String>,
+    /// The pulse's `model_tier` as written: a tier or an explicit
+    /// `provider/model` id. `None` runs the `small` tier.
+    pub model_tier: Option<String>,
     /// When the pulse next fires, from `pulse::next_run`: the schedule since
     /// `pulse_state.json`'s last run, moved into `active_hours`. `None` for a
     /// disabled pulse, one whose schedule or active hours can't be read or
@@ -332,7 +345,13 @@ pub struct ActionInfo {
     #[ts(type = "string")]
     pub run_at: DateTime<Utc>,
     pub agent: Option<String>,
+    /// The action's `model_tier` as stored: a tier or an explicit
+    /// `provider/model` id. `None` runs the `medium` tier.
     pub model_tier: Option<String>,
+    /// Why the action is held instead of running, when its model can't run
+    /// (an unreadable value, or a provider `providers.toml` doesn't have).
+    /// Plain language, ready to show as-is.
+    pub problem: Option<String>,
     pub current_run: Option<ScheduledCurrentRun>,
 }
 
@@ -583,9 +602,12 @@ pub enum ServerMessage {
         content: String,
     },
     /// A person's message entered the main conversation, from any channel
-    /// including the web: the message that started a turn, or one injected
-    /// into a turn already running. Not sent for one agent's message to
-    /// another. A client that sent the message recognizes the echo by `id`.
+    /// including the web, or a teammate's (another agent on the hub, named by
+    /// `agent_sender`): the message that started a turn, or one injected into
+    /// a turn already running. Not sent for a background origin, nor for a
+    /// message from one of this agent's own sessions, which
+    /// `session_message_to_main` carries. A client that sent the message
+    /// recognizes the echo by `id`.
     UserMessage {
         /// The message's id: the id its sender gave it.
         id: String,
@@ -600,6 +622,11 @@ pub enum ServerMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         sender: Option<MessageSender>,
+        /// The teammate that sent it, for a teammate's message. Its `content`
+        /// then starts with the header that tells the agent who wrote it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        agent_sender: Option<AgentSender>,
         /// Endpoint the message arrived on.
         endpoint: String,
     },
@@ -687,10 +714,20 @@ pub enum ServerMessage {
     },
     /// The gateway is reloading its configuration.
     Reloading,
-    /// Result of a manual memory operation (observe or reflect).
+    /// A notice for the user: the result of a manual memory operation, a
+    /// settings reload's outcome, or any other operational report.
     Notice {
-        /// Human-readable result message.
+        /// Human-readable message, as the agent wrote it.
         message: String,
+        /// What a settings reload came to, when this notice reports one. The
+        /// web words the toast from it and keeps `message` as the detail.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        reload: Option<ReloadOutcome>,
+        /// Which files the reload read, beside `reload`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        reload_of: Option<ReloadedFiles>,
     },
     /// Multi-line command output that should render inline in the chat
     /// stream rather than as a transient toast.
@@ -1018,6 +1055,7 @@ mod tests {
             content: "hello".to_string(),
             images: Vec::new(),
             sender: None,
+            agent_sender: None,
             endpoint: "ws".to_string(),
         };
         assert_eq!(
@@ -1028,6 +1066,33 @@ mod tests {
                 "turn_id": "turn-1",
                 "content": "hello",
                 "endpoint": "ws",
+            })
+        );
+    }
+
+    #[test]
+    fn server_message_serialize_teammate_user_message() {
+        let msg = ServerMessage::UserMessage {
+            id: "bg-1".to_string(),
+            turn_id: "bg-1".to_string(),
+            content: "[Message from teammate agent:scout, not the user.]\nhi".to_string(),
+            images: Vec::new(),
+            sender: None,
+            agent_sender: Some(AgentSender {
+                address: "agent:scout".to_string(),
+                category: "teammate".to_string(),
+            }),
+            endpoint: "background".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::json!({
+                "type": "user_message",
+                "id": "bg-1",
+                "turn_id": "bg-1",
+                "content": "[Message from teammate agent:scout, not the user.]\nhi",
+                "agent_sender": { "address": "agent:scout", "category": "teammate" },
+                "endpoint": "background",
             })
         );
     }
@@ -1195,6 +1260,8 @@ mod tests {
     fn server_message_serialize_notice() {
         let msg = ServerMessage::Notice {
             message: "observed successfully".to_string(),
+            reload: None,
+            reload_of: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"notice\""), "should have type tag");
@@ -1202,6 +1269,34 @@ mod tests {
             json.contains("\"message\":\"observed successfully\""),
             "should have message field"
         );
+        assert!(
+            !json.contains("reload"),
+            "a plain notice carries no reload field"
+        );
+    }
+
+    #[test]
+    fn server_message_serialize_reload_notice() {
+        for (outcome, word) in [
+            (ReloadOutcome::Reloaded, "reloaded"),
+            (ReloadOutcome::Unchanged, "unchanged"),
+            (ReloadOutcome::Failed, "failed"),
+        ] {
+            let msg = ServerMessage::Notice {
+                message: "configuration reloaded: models".to_string(),
+                reload: Some(outcome),
+                reload_of: Some(ReloadedFiles::AgentConfig),
+            };
+            assert_eq!(
+                serde_json::to_value(&msg).unwrap(),
+                serde_json::json!({
+                    "type": "notice",
+                    "message": "configuration reloaded: models",
+                    "reload": word,
+                    "reload_of": "agent_config",
+                })
+            );
+        }
     }
 
     #[test]

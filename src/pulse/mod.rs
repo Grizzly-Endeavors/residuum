@@ -3,10 +3,13 @@
 //! The pulse system runs scheduled checks on a configurable interval. Each
 //! pulse fires a `scheduled` session (see `crate::background`) — its result
 //! flows through that session's normal completion pipeline into memory, the
-//! same as any other session run.
+//! same as any other session run. A task can run a script first, whose
+//! output joins its prompt or, for a `script_only` pulse, is the result
+//! with no session at all (see `script`).
 
 pub mod edit;
 pub mod executor;
 pub mod next_run;
 pub mod scheduler;
+pub mod script;
 pub mod types;

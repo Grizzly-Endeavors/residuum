@@ -7,6 +7,7 @@ import {
   render,
   screen,
   settle,
+  stubPointer,
   stubWebSocket,
 } from "../../test/component";
 import { snapshot } from "../../test/hub-frames";
@@ -64,6 +65,8 @@ function liveRun(runId: string): SessionSummary {
     error: null,
     error_details: null,
     overlap: null,
+    model: null,
+    resolved_model: null,
   };
 }
 
@@ -73,13 +76,8 @@ let shell: ShellActions;
 beforeEach(() => {
   vi.stubGlobal("IntersectionObserver", NoObserver);
   vi.stubGlobal("ResizeObserver", NoObserver);
-  // The composer's model control is a popover, not the phone's sheet.
-  vi.stubGlobal("matchMedia", (media: string) => ({
-    matches: false,
-    media,
-    addEventListener: () => {},
-    removeEventListener: () => {},
-  }));
+  // A mouse, and the composer's model control is a popover, not the phone's sheet.
+  stubPointer();
   stubWebSocket();
   mockFetch(() => jsonResponse({}, 404));
   hub.handleFrame(

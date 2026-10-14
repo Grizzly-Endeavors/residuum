@@ -197,6 +197,11 @@ async function closeHelpMenu(page: Page, isMobile: boolean): Promise<void> {
 }
 
 test.describe("Install app", () => {
+  test.skip(
+    ({ browserName }) => browserName === "webkit",
+    "The WebKit project is an iPhone, which has no install prompt: there Install app opens the Add to Home Screen steps from the start, as the iPhone specs below check.",
+  );
+
   test.beforeEach(async ({ page }) => {
     await page.goto("/home");
     await expect(page.getByRole("heading", { name: "Home", level: 1 })).toBeVisible();

@@ -11,7 +11,7 @@ use std::path::Path;
 use anyhow::Context;
 
 use crate::bus::{ConversationTarget, EventTrigger, SpawnRequestEvent};
-use crate::config::BackgroundModelTier;
+use crate::config::ModelSelector;
 use crate::inference::Message;
 use crate::memory::recent_messages::load_recent_messages;
 
@@ -21,7 +21,8 @@ use super::registry::{MAIN_DEPTH, generate_address};
 pub(crate) struct OwnerSessionStart {
     /// The task, the session's first message.
     pub prompt: String,
-    pub model_tier: BackgroundModelTier,
+    /// The model tier or explicit model the session runs on.
+    pub model: ModelSelector,
     /// Main's saved conversation, for a fork of it (`None` for a clean
     /// session). Empty when main's conversation has all been observed into
     /// memory, which the fork receives the same way main does.
@@ -59,7 +60,7 @@ impl OwnerSessionStart {
             prompt: self.prompt,
             context: Some(context.to_string()),
             source: EventTrigger::Agent,
-            model_tier: self.model_tier,
+            model: self.model,
             spawner: None,
             depth: MAIN_DEPTH + 1,
             hop_count: 0,
@@ -104,7 +105,7 @@ mod tests {
     fn start(fork_of: Option<Vec<Message>>) -> OwnerSessionStart {
         OwnerSessionStart {
             prompt: "look into the cabin booking".to_string(),
-            model_tier: BackgroundModelTier::Large,
+            model: ModelSelector::LARGE,
             fork_of,
             conversation: None,
         }
@@ -122,7 +123,7 @@ mod tests {
         assert_eq!(event.spawner, None, "nothing relays its results to main");
         assert_eq!(event.depth, 1);
         assert_eq!(event.hop_count, 0);
-        assert_eq!(event.model_tier, BackgroundModelTier::Large);
+        assert_eq!(event.model, ModelSelector::LARGE);
         assert_eq!(event.prompt, "look into the cabin booking");
         assert!(event.carried_history.is_empty());
     }

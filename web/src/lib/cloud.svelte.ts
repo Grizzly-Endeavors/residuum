@@ -80,6 +80,16 @@ export function accountTarget(relayUrl: string): RelayPage | null {
   return relay === null ? null : { url: `${relay.origin}/dashboard`, host: relay.host };
 }
 
+const WEB_ORIGIN = /^https?:\/\/[^/?#\s]+$/i;
+
+/** The account dashboard on the relay's web origin, as the hub reports it. Null when the origin isn't a plain http or https origin, so nothing is linked to a value that isn't one. */
+export function accountDashboardUrl(relayOrigin: string | null | undefined): string | null {
+  if (relayOrigin === null || relayOrigin === undefined || !WEB_ORIGIN.test(relayOrigin)) {
+    return null;
+  }
+  return `${relayOrigin}/dashboard`;
+}
+
 /**
  * What the section shows for a tunnel status. A saved token that is switched
  * on counts as connecting: the tunnel is being started, or retrying. Refused

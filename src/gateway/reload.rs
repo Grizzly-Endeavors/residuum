@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use tokio::time::Duration;
 
-use super::helpers::publish_notice;
+use super::helpers::{publish_notice, publish_reload_notice};
 use crate::background::spawn_context::SpawnContext;
+use crate::bus::{ReloadOutcome, ReloadedFiles};
 use crate::config::Config;
 use crate::gateway::{last_known_good, startup};
 use crate::inference::CompletionOptions;
@@ -303,7 +304,13 @@ pub(super) async fn handle_root_reload(rt: &mut AgentRuntime) -> IdleAction {
         Err(err) => {
             tracing::warn!(error = %err, "config reload failed, keeping current config");
             let message = format!("config reload failed (keeping current config): {err}");
-            publish_notice(&rt.publisher, message.clone()).await;
+            publish_reload_notice(
+                &rt.publisher,
+                ReloadOutcome::Failed,
+                ReloadedFiles::AgentConfig,
+                message.clone(),
+            )
+            .await;
             if deliver_to_agent {
                 rt.agent.inject_system_message(message);
             }
@@ -325,7 +332,13 @@ pub(super) async fn handle_root_reload(rt: &mut AgentRuntime) -> IdleAction {
         // previous save predates a since-reverted edit.
         last_known_good::save(&rt.config_dir);
         let message = "configuration reloaded: no changes detected".to_string();
-        publish_notice(&rt.publisher, message.clone()).await;
+        publish_reload_notice(
+            &rt.publisher,
+            ReloadOutcome::Unchanged,
+            ReloadedFiles::AgentConfig,
+            message.clone(),
+        )
+        .await;
         if deliver_to_agent {
             rt.agent.inject_system_message(message);
         }
@@ -363,7 +376,13 @@ pub(super) async fn handle_root_reload(rt: &mut AgentRuntime) -> IdleAction {
     last_known_good::save(&rt.config_dir);
 
     let message = format!("configuration reloaded: {summary}");
-    publish_notice(&rt.publisher, message.clone()).await;
+    publish_reload_notice(
+        &rt.publisher,
+        ReloadOutcome::Reloaded,
+        ReloadedFiles::AgentConfig,
+        message.clone(),
+    )
+    .await;
     if deliver_to_agent {
         rt.agent.inject_system_message(message);
     }
@@ -411,7 +430,13 @@ pub(super) async fn handle_hub_reload(rt: &mut AgentRuntime) {
         Err(err) => {
             tracing::warn!(error = %err, "hub config reload failed, keeping current hub config");
             let message = format!("hub config reload failed (keeping current hub config): {err}");
-            publish_notice(&rt.publisher, message.clone()).await;
+            publish_reload_notice(
+                &rt.publisher,
+                ReloadOutcome::Failed,
+                ReloadedFiles::HubConfig,
+                message.clone(),
+            )
+            .await;
             if deliver_to_agent {
                 rt.agent.inject_system_message(message);
             }
@@ -435,7 +460,13 @@ pub(super) async fn handle_hub_reload(rt: &mut AgentRuntime) {
 
     if !diff.changed {
         let message = "hub configuration reloaded: no changes detected".to_string();
-        publish_notice(&rt.publisher, message.clone()).await;
+        publish_reload_notice(
+            &rt.publisher,
+            ReloadOutcome::Unchanged,
+            ReloadedFiles::HubConfig,
+            message.clone(),
+        )
+        .await;
         if deliver_to_agent {
             rt.agent.inject_system_message(message);
         }
@@ -464,7 +495,13 @@ pub(super) async fn handle_hub_reload(rt: &mut AgentRuntime) {
     rt.hub_cfg = new_hub;
 
     let message = format!("hub configuration reloaded: {summary}");
-    publish_notice(&rt.publisher, message.clone()).await;
+    publish_reload_notice(
+        &rt.publisher,
+        ReloadOutcome::Reloaded,
+        ReloadedFiles::HubConfig,
+        message.clone(),
+    )
+    .await;
     if deliver_to_agent {
         rt.agent.inject_system_message(message);
     }
@@ -487,6 +524,7 @@ async fn apply_timezone(rt: &mut AgentRuntime, new_cfg: &Config) {
         new_cfg.timezone,
         Arc::clone(&rt.action_store),
         Arc::clone(&rt.action_notify),
+        Arc::clone(&rt.spawn_context.model_catalog),
         &rt.layout,
     );
     if new_cfg.discord.is_some() {
@@ -550,6 +588,7 @@ async fn rebuild_cheap_components(rt: &mut AgentRuntime, new_cfg: &Config) {
     rt.http_client = http_client.clone();
 
     reload_providers(rt, new_cfg, http_client.clone()).await;
+    reload_model_catalog(rt, new_cfg).await;
     rt.spawn_context = build_spawn_context(rt, new_cfg, http_client.clone());
     // Pushes to the model-call HTTP endpoint's watch receiver, so `POST
     // /api/agents/{name}/model/complete` resolves providers from this reload without the
@@ -604,6 +643,9 @@ fn build_spawn_context(
     Arc::new(SpawnContext {
         background_config: new_cfg.background.clone(),
         main_provider_specs: new_cfg.main.clone(),
+        // The same live catalog as before the reload, which the tools hold
+        // too; `reload_model_catalog` has already replaced its contents.
+        model_catalog: Arc::clone(&rt.spawn_context.model_catalog),
         http_client,
         max_tokens: new_cfg.max_tokens,
         retry_config: new_cfg.retry.clone(),
@@ -825,6 +867,14 @@ async fn reload_skills(rt: &mut AgentRuntime) {
     }
 }
 
+/// Replace the live model catalog's contents from the new config, so
+/// sessions, `subagent_spawn`, `schedule_action`, and the pulse and action
+/// checks resolve explicit models against the reloaded `providers.toml`.
+async fn reload_model_catalog(rt: &AgentRuntime, new_cfg: &Config) {
+    *rt.spawn_context.model_catalog.write().await = new_cfg.model_catalog.clone();
+    tracing::debug!("model catalog updated from new config");
+}
+
 /// Update the shared tools-`PATH` handle from the new config.
 ///
 /// The `exec` tool and the MCP stdio spawner read this handle at spawn time, so
@@ -1041,6 +1091,7 @@ mod tests {
             web_search: crate::config::WebSearchConfig::default(),
             tracing: crate::config::TracingConfig::default(),
             role_overrides: std::collections::HashMap::new(),
+            model_catalog: crate::config::ModelCatalog::default(),
             config_dir: std::path::PathBuf::from("/tmp/config"),
             load_notices: vec![],
         }
@@ -1145,6 +1196,7 @@ mod tests {
             token: "new-token".to_string(),
             respond_to_others: false,
             context_messages: 20,
+            deliver_intermediate: false,
         });
 
         let diff = diff_config(&old, &new);
@@ -1159,6 +1211,7 @@ mod tests {
             token: "existing-token".to_string(),
             respond_to_others: false,
             context_messages: 20,
+            deliver_intermediate: false,
         });
         let mut new = old.clone();
         new.discord = None;
@@ -1174,12 +1227,14 @@ mod tests {
             token: "old-tg-token".to_string(),
             respond_to_others: false,
             context_messages: 20,
+            deliver_intermediate: false,
         });
         let mut new = old.clone();
         new.telegram = Some(TelegramConfig {
             token: "new-tg-token".to_string(),
             respond_to_others: false,
             context_messages: 20,
+            deliver_intermediate: false,
         });
 
         let diff = diff_config(&old, &new);
@@ -1194,6 +1249,7 @@ mod tests {
             tenant_id: "tenant".to_string(),
             respond_to_others: false,
             context_messages: 20,
+            deliver_intermediate: false,
             port: 7701,
         }
     }
@@ -1269,7 +1325,7 @@ mod tests {
     fn diff_config_detects_idle_channel_change() {
         let old = test_config();
         let mut new = old.clone();
-        new.idle.idle_channel = Some("telegram".to_string());
+        new.idle.idle_channel = "telegram".to_string();
 
         let diff = diff_config(&old, &new);
         assert!(diff.idle_changed);
@@ -1446,6 +1502,7 @@ mod tests {
             api_key: Some(api_key.to_string()),
             keep_alive: None,
             session_affinity: None,
+            image_input: crate::config::ImageInput::Undeclared,
         }
     }
 

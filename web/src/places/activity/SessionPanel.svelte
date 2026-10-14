@@ -9,10 +9,12 @@
     isStoppableState,
     runIcon,
     runKind,
+    runModel,
     runStatus,
     sessionArtifact,
     startedByOwner,
   } from "../../lib/session-format";
+  import { sessionActions } from "../../lib/session-actions";
   import type { SessionRun } from "../../lib/session-run.svelte";
   import { Banner, Button, Disclosure, Skeleton } from "../../lib/ui";
   import PanelHeader from "../../shell/panel/PanelHeader.svelte";
@@ -20,8 +22,9 @@
   import SessionMessageBox from "./SessionMessageBox.svelte";
 
   // A session run in the context panel: what it is and how it's doing, its
-  // transcript with live output, Stop, and a message box that reaches the
-  // run, or starts the session again once it has finished. The run's state
+  // transcript with live output, Stop, and, floating over the transcript's
+  // foot, a message box that reaches the run, or starts the session again
+  // once it has finished, with the session's own actions under `/`. The run's state
   // lives in `run`, which the panel host keeps while the frame redraws.
 
   let { run }: { run: SessionRun } = $props();
@@ -35,8 +38,19 @@
   );
   const finished = $derived(summary?.state === "completed");
   const artifact = $derived(summary ? sessionArtifact(summary) : null);
+  const model = $derived(summary ? runModel(summary) : null);
   const spawner = $derived(
     summary?.spawner != null && summary.spawner !== "main" ? summary.spawner : null,
+  );
+
+  const actions = $derived(
+    sessionActions({
+      agent: run.agent,
+      agentReady,
+      stoppable: summary !== null && isStoppableState(summary.state),
+      stopping: run.stopping,
+      stop: () => void run.stop(),
+    }),
   );
 
   let now = $state(Date.now());
@@ -73,6 +87,19 @@
   {/snippet}
 </PanelHeader>
 
+{#snippet messageBox()}
+  <SessionMessageBox
+    bind:value={run.draft}
+    label="Message this session"
+    placeholder={finished ? "Message it to start it again…" : "Message this session…"}
+    sendLabel="Send to this session"
+    sending={run.sending}
+    blocked={agentReady ? null : `Start ${run.agent} first.`}
+    {actions}
+    onsend={() => void run.send()}
+  />
+{/snippet}
+
 <div class="session-panel">
   {#if summary}
     <div class="session-about">
@@ -105,6 +132,10 @@
               {summary.source_label}
             {/if}
           </dd>
+          {#if model}
+            <dt>Model</dt>
+            <dd>{model}</dd>
+          {/if}
           {#if summary.depth > 1}
             <dt>Depth</dt>
             <dd>{summary.depth} levels below the conversation</dd>
@@ -173,6 +204,7 @@
     live={working}
     liveTurnId={run.activeTurnId}
     observed={run.observed.get}
+    dock={messageBox}
   >
     {#snippet empty()}
       <p class="session-empty">No messages in this run yet.</p>
@@ -186,20 +218,13 @@
       {/if}
     {/snippet}
   </Feed>
-
-  <SessionMessageBox
-    bind:value={run.draft}
-    label="Message this session"
-    placeholder={finished ? "Message it to start it again…" : "Message this session…"}
-    sendLabel="Send to this session"
-    sending={run.sending}
-    blocked={agentReady ? null : `Start ${run.agent} first.`}
-    onsend={() => void run.send()}
-  />
 </div>
 
 <style>
   .session-panel {
+    /* The message box floats over the transcript's foot on the panel's own surface. */
+    --feed-surface: var(--color-stone-1);
+
     display: flex;
     flex: 1;
     flex-direction: column;

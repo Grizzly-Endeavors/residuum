@@ -27,6 +27,7 @@ mod proactivity_integration {
             tasks: vec![PulseTask {
                 name: "check_inbox".to_string(),
                 prompt: "Check email.".to_string(),
+                ..PulseTask::default()
             }],
         }
     }
@@ -36,7 +37,7 @@ mod proactivity_integration {
     #[test]
     fn build_pulse_execution_no_agent_has_no_skill() {
         let pulse = sample_pulse();
-        let spawn_event = build_pulse_execution(&pulse, None, None);
+        let spawn_event = build_pulse_execution(&pulse, None, None, &[]);
         assert_eq!(spawn_event.skill, None);
         assert_eq!(spawn_event.source_label, "pulse:email_check");
         assert!(matches!(spawn_event.source, EventTrigger::Pulse));
@@ -45,7 +46,7 @@ mod proactivity_integration {
     #[test]
     fn build_pulse_execution_prompt_contains_pulse_name_and_heartbeat_ok() {
         let pulse = sample_pulse();
-        let spawn_event = build_pulse_execution(&pulse, None, None);
+        let spawn_event = build_pulse_execution(&pulse, None, None, &[]);
         assert!(
             spawn_event.prompt.contains("email_check"),
             "prompt should contain pulse name"
@@ -78,7 +79,7 @@ mod proactivity_integration {
             tasks: vec![],
         };
 
-        let spawn_event = build_pulse_execution(&pulse, None, None);
+        let spawn_event = build_pulse_execution(&pulse, None, None, &[]);
         assert_eq!(spawn_event.source_label, "pulse:empty_test");
         assert!(
             spawn_event.prompt.contains("HEARTBEAT_OK"),
@@ -90,7 +91,7 @@ mod proactivity_integration {
     fn build_pulse_execution_agent_name_activates_skill() {
         let mut pulse = sample_pulse();
         pulse.agent = Some("memory-agent".to_string());
-        let spawn_event = build_pulse_execution(&pulse, None, None);
+        let spawn_event = build_pulse_execution(&pulse, None, None, &[]);
         assert_eq!(
             spawn_event.skill.as_ref().map(AsRef::as_ref),
             Some("memory-agent")
@@ -134,11 +135,19 @@ mod proactivity_integration {
 
         let mut scheduler = PulseScheduler::new();
         let now = chrono::Utc::now().naive_utc();
-        let first = scheduler.due_pulses(now, &heartbeat_path);
+        let first = scheduler.due_pulses(
+            now,
+            &heartbeat_path,
+            &residuum::config::ModelCatalog::default(),
+        );
         assert!(first.is_empty(), "pulse should not fire on the first tick");
 
         let later = now + chrono::Duration::hours(1);
-        let due = scheduler.due_pulses(later, &heartbeat_path);
+        let due = scheduler.due_pulses(
+            later,
+            &heartbeat_path,
+            &residuum::config::ModelCatalog::default(),
+        );
         assert_eq!(due.len(), 1, "pulse should fire one schedule duration on");
     }
 
@@ -155,14 +164,26 @@ mod proactivity_integration {
         let mut scheduler = PulseScheduler::new();
         let now = chrono::Utc::now().naive_utc();
 
-        let first = scheduler.due_pulses(now, &heartbeat_path);
+        let first = scheduler.due_pulses(
+            now,
+            &heartbeat_path,
+            &residuum::config::ModelCatalog::default(),
+        );
         assert!(first.is_empty(), "first call only records the pulse");
 
         let fire_time = now + chrono::Duration::hours(2);
-        let fired = scheduler.due_pulses(fire_time, &heartbeat_path);
+        let fired = scheduler.due_pulses(
+            fire_time,
+            &heartbeat_path,
+            &residuum::config::ModelCatalog::default(),
+        );
         assert_eq!(fired.len(), 1, "should fire after the schedule duration");
 
-        let second = scheduler.due_pulses(fire_time, &heartbeat_path);
+        let second = scheduler.due_pulses(
+            fire_time,
+            &heartbeat_path,
+            &residuum::config::ModelCatalog::default(),
+        );
         assert!(second.is_empty(), "same-time call should not refire");
     }
 

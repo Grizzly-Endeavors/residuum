@@ -19,7 +19,7 @@ Most values that are missing or invalid fall into one of two buckets:
 **Skip-with-notice — an independent, optional feature degrades on its own:**
 - A webhook entry (`[webhooks.<name>]`) with an invalid `routing`/`format` string, or an empty `content_fields` entry: that one webhook is dropped, the rest still load.
 - `[teams]` present but missing `app_id`, `tenant_id`, or the app password: Teams is disabled, everything else starts normally.
-- `idle.idle_channel` naming an unknown or unconfigured interface: idle switching stays disabled (falls back to no idle channel) rather than failing the config.
+- `idle.idle_channel` naming an unknown or unconfigured interface: it resolves to the web UI, the same as leaving it unset, rather than failing the config.
 - `[a2a]` `visibility` set to anything other than `"public"`/`"private"`: falls back to the default visibility.
 - The secret store (`secrets.toml.enc`) missing its key file, or failing to decrypt or parse: degrades to an empty store, so only entries that actually reference `secret:<name>` are affected (they resolve as if the secret were simply absent) — everything else in `config.toml`/`providers.toml` never touches the store and loads normally.
 
@@ -31,7 +31,7 @@ Every skip pushes a human-readable notice (`Config.load_notices`) naming what wa
 
 ## Reload
 
-A change to the agent's `config.toml`/`providers.toml`, or to `hub/config.toml`, picked up by the file watcher reloads that config in place: it loads the new files, diffs them against the running config, and rebuilds only the subsystems that actually changed. The hub and the agent reload independently (see [Config Files](config.md#reload)). A load failure — the new files don't parse or resolve — leaves the running config and files on disk untouched, and publishes a notice naming the error. A load that succeeds but changes nothing publishes a "no changes detected" notice. `channels.toml` (external notification channels) reloads on its own path alongside `mcp.json`; see [Notifications](notifications.md#channelstoml) for its parse-first behavior.
+A change to the agent's `config.toml`/`providers.toml`, or to `hub/config.toml`, picked up by the file watcher reloads that config in place: it loads the new files, diffs them against the running config, and rebuilds only the subsystems that actually changed. The hub and the agent reload independently (see [Config Files](config.md#reload)). A load failure — the new files don't parse or resolve — leaves the running config and files on disk untouched, and publishes a notice naming the error. An agent's reload that succeeds but changes nothing publishes a "no changes detected" notice; the hub reports its own reloads, this case included, in a `hub_config_reloaded` event (see [Hub](hub.md#hub-config-reloads)). `channels.toml` (external notification channels) reloads on its own path alongside `mcp.json`; see [Notifications](notifications.md#channelstoml) for its parse-first behavior.
 
 ## Last-known-good fallback
 

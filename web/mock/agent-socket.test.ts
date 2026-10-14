@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parseClientMessage } from "./agent-socket";
 import {
+  advanceMockTime,
   startMockServer,
   type Frame,
   type MockServerHarness,
@@ -132,6 +133,8 @@ describe("agent socket", () => {
       expect(await socket.nextOfType("notice", 3000)).toEqual({
         type: "notice",
         message: "Configuration reloaded successfully.",
+        reload: "reloaded",
+        reload_of: "agent_config",
       });
     });
 
@@ -265,7 +268,7 @@ describe("agent socket", () => {
       await socket.nextOfType("turn_started");
       socket.send({ type: "cancel", reply_to: "m1" });
       expect(await socket.nextOfType("turn_ended")).toEqual({ type: "turn_ended", reply_to: "m1" });
-      const rest = await socket.quietFrames(1800);
+      const rest = await socket.quietFrames(() => advanceMockTime(harness.hub.env, 1800));
       expect(rest.map((f) => f.type)).not.toContain("response");
       expect(harness.hub.agents.get("atlas")?.busySince).toBeNull();
     });

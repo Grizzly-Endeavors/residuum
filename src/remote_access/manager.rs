@@ -84,6 +84,8 @@ pub(crate) struct RemoteAccessInputs {
     pub(crate) pairing: DevicePairing,
     pub(crate) tunnel_status: Arc<watch::Sender<TunnelStatus>>,
     pub(crate) status: Arc<watch::Sender<RemoteAccessStatus>>,
+    /// The web origin of the relay `[cloud] relay_url` names, for the status.
+    pub(crate) relay_origin: Option<String>,
     pub(crate) notify: Notifier,
     /// The keys of joined siblings, shared with the A2A listener.
     pub(crate) siblings: Arc<SiblingKeys>,
@@ -150,6 +152,7 @@ impl RemoteAccess {
             pairing,
             tunnel_status,
             status,
+            relay_origin,
             notify,
             siblings,
             discovery,
@@ -202,6 +205,9 @@ impl RemoteAccess {
             discovery,
             join_task: Mutex::new(None),
         });
+        inner
+            .status
+            .send_modify(|current| current.relay_origin = relay_origin);
         inner.load_stored();
         Ok(Self { inner })
     }

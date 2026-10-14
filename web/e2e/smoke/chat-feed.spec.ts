@@ -406,6 +406,21 @@ test("Open session is offered for a session's message, not a teammate's", async 
   await expect(page).toHaveURL(/panel=session:atlas:/);
 });
 
+test("a teammate's message shows as it arrives, without a reload", async ({ page, mock }) => {
+  await page.goto("/agent/atlas");
+  const feed = conversation(page);
+  await expect(feed.getByText(GREETING)).toBeVisible();
+  await expect.poll(() => connectedPages(page)).toBe(1);
+
+  await mock.post("/api/mock/teammate-message", { params: { agent: "atlas" } });
+
+  const teammate = feed.getByRole("article", { name: "Teammate: scout" });
+  await expect(teammate).toHaveCount(1);
+  await expect(teammate).toContainText("Can you look over the wiki index");
+  await expect(teammate).not.toContainText("Message from teammate");
+  await expect(feed.getByText("scout asked me to check the wiki index. On it.")).toBeVisible();
+});
+
 test("a code block's Copy button copies it", async ({ page, context, browserName }) => {
   test.skip(browserName === "webkit", "WebKit grants no clipboard permission to a test.");
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);

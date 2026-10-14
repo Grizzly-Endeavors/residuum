@@ -394,6 +394,73 @@ fn wall_clock_waits(sources: &[SourceFile]) -> BTreeMap<String, Vec<(usize, Stri
     found
 }
 
+/// Files that may grant execute permission in test code: the helper that does
+/// it safely, and this file, whose rule tests hold sample lines.
+const EXEC_GRANT_HELPERS: &[&str] = &["src/testing/script.rs", "src/testing/source_scan.rs"];
+
+/// Test code that sets an execute-bit mode on something that is not a script
+/// the test then runs, as `(file, count, why)`. A directory needs its execute
+/// bit to be entered, so making one read-only and restoring it is not writing
+/// a program.
+const EXEC_MODE_ALLOWED: &[(&str, usize, &str)] = &[
+    (
+        "src/update.rs",
+        2,
+        "makes a directory read-only (0o555) and restores it (0o755)",
+    ),
+    (
+        "src/checkpoints/engine.rs",
+        2,
+        "makes an object directory unwritable (0o500) and restores it (0o700)",
+    ),
+    (
+        "src/gateway/web/agent_keys.rs",
+        2,
+        "makes an object directory unwritable (0o500) and restores it (0o700) in a drop guard",
+    ),
+];
+
+/// A test making a file executable on its own: a `chmod`, or a mode literal
+/// with an execute bit passed to `from_mode`, `set_mode` or `.mode(`. The file
+/// is then written in this process, and executing it races with any other
+/// test thread that forks while the write descriptor is open.
+fn exec_grant() -> Regex {
+    Regex::new(r#""chmod"|\b(?:from_mode|set_mode|mode)\(\s*0o([0-7_]+)"#).unwrap()
+}
+
+/// How many execute-granting calls `code` holds.
+fn exec_grants_on(pattern: &Regex, code: &str) -> usize {
+    pattern
+        .captures_iter(code)
+        .filter(|call| {
+            call.get(1).is_none_or(|digits| {
+                let digits: String = digits.as_str().chars().filter(|c| *c != '_').collect();
+                u32::from_str_radix(&digits, 8).is_ok_and(|mode| mode & 0o111 != 0)
+            })
+        })
+        .count()
+}
+
+/// Each file's execute grants in test code, as `(line, code)`.
+fn exec_grants(sources: &[SourceFile]) -> BTreeMap<String, Vec<(usize, String)>> {
+    let pattern = exec_grant();
+    let mut found: BTreeMap<String, Vec<(usize, String)>> = BTreeMap::new();
+    for file in sources {
+        if EXEC_GRANT_HELPERS.contains(&file.path.as_str()) {
+            continue;
+        }
+        for (number, code) in file.code_lines(true) {
+            for _ in 0..exec_grants_on(&pattern, code) {
+                found
+                    .entry(file.path.clone())
+                    .or_default()
+                    .push((number, code.trim().to_string()));
+            }
+        }
+    }
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,6 +634,75 @@ mod tests {
             problems.is_empty(),
             "test code waits on elapsed time. Wait on the event instead, with crate::testing::wait (channels, watches, polled conditions under one hang guard), crate::testing::gate (hold a call open until the test releases it) or crate::testing::clock (a paused clock, for code with no real I/O); CONTRIBUTING.md, \"Waiting in tests\", says which fits where.\n{problems}"
         );
+    }
+
+    /// A test that writes a script and executes it fails with "Text file
+    /// busy" when another test thread forks while the write descriptor is
+    /// open. `crate::testing::script::write_executable` writes through a child
+    /// shell instead, so test code makes nothing executable by itself.
+    #[test]
+    fn test_code_makes_scripts_executable_through_the_helper() {
+        let found = exec_grants(&crate_sources());
+        let mut problems = String::new();
+        for (path, grants) in &found {
+            let allowed = EXEC_MODE_ALLOWED
+                .iter()
+                .find(|(allowed_path, _, _)| allowed_path == path)
+                .map_or(0, |(_, count, _)| *count);
+            if grants.len() != allowed {
+                for (number, code) in grants {
+                    writeln!(problems, "{path}:{number}: {code}").unwrap();
+                }
+            }
+        }
+        for (path, count, _) in EXEC_MODE_ALLOWED {
+            let found_count = found.get(*path).map_or(0, Vec::len);
+            if found_count != *count {
+                writeln!(
+                    problems,
+                    "{path} has {found_count} execute grants where {count} are listed in EXEC_MODE_ALLOWED in src/testing/source_scan.rs: correct its entry"
+                )
+                .unwrap();
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "test code makes a file executable itself. Write the script with crate::testing::script::write_executable, which never holds a write descriptor that a forked child could inherit (\"Text file busy\"); a test that only needs some program to run links to a system binary (/bin/sh, /bin/echo). A directory restored to a mode with its execute bit goes in EXEC_MODE_ALLOWED in src/testing/source_scan.rs, with why. CONTRIBUTING.md, \"Waiting in tests\", has the details.\n{problems}"
+        );
+    }
+
+    #[test]
+    fn the_executable_rule_matches_execute_grants_and_nothing_else() {
+        let pattern = exec_grant();
+        for grant in [
+            "std::fs::set_permissions(&path, Permissions::from_mode(0o755)).unwrap();",
+            "perms.set_mode(0o700);",
+            "options.mode(0o755).open(&path)",
+            "Command::new(\"chmod\").arg(\"+x\")",
+            "Permissions::from_mode(0o1_00)",
+        ] {
+            assert_eq!(
+                exec_grants_on(&pattern, grant),
+                1,
+                "{grant:?} grants execute"
+            );
+        }
+        for other in [
+            "std::fs::Permissions::from_mode(0o600)",
+            "Permissions::from_mode(0o644)",
+            "perms.set_mode(0o400);",
+            "options.mode(0o600);",
+            "assert_eq!(mode & 0o777, 0o600);",
+            "metadata.permissions().mode() & 0o111 != 0",
+            "entry.mode().is_tree()",
+            "Permissions::from_mode(mode)",
+        ] {
+            assert_eq!(
+                exec_grants_on(&pattern, other),
+                0,
+                "{other:?} grants nothing"
+            );
+        }
     }
 
     #[test]

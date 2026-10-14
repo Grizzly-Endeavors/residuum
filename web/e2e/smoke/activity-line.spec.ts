@@ -248,9 +248,9 @@ test("a session's transcript shows its live line too", async ({ page, isMobile, 
   await expect(panel.getByText("Starting with what's already in the wiki.")).toBeVisible();
 
   await mock.manualTime();
-  const box = panel.getByRole("textbox", { name: "Message this session" });
+  const box = panel.getByRole("combobox", { name: "Message this session" });
   await box.fill("Weigh safety over speed");
-  await box.press("Enter");
+  await sendFromComposer(box, "Send to this session");
   // The turn's start shows once the mock has set its timers, so the advances below reach them.
   await expect(panel.getByText("Working", { exact: true })).toBeVisible();
   // The search is sent at 500ms.

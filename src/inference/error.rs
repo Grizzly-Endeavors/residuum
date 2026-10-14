@@ -35,7 +35,9 @@ impl InferenceError {
     ///
     /// - Request/Timeout/Stalled/StreamInterrupted: transient network failures
     /// - Parse: permanent -- malformed response won't improve
-    /// - Api: retryable only when the message indicates rate-limiting or overload
+    /// - Api: by its HTTP status when the message names one (a timeout, a
+    ///   rate limit, Groq's capacity refusal or a server error); otherwise when
+    ///   the message indicates rate-limiting, overload or a server-side failure
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         match self {
@@ -45,14 +47,14 @@ impl InferenceError {
             Self::Parse(_) => false,
             Self::Api(msg) => {
                 let lower = msg.to_lowercase();
+                if let Some(status) = http_status(&lower) {
+                    // 498 is Groq's "Flex Tier Capacity Exceeded", a transient refusal.
+                    return matches!(status, 408 | 429 | 498) || status >= 500;
+                }
                 lower.contains("rate")
                     || lower.contains("limit")
                     || lower.contains("overload")
                     || lower.contains("capacity")
-                    || lower.contains("429")
-                    || lower.contains("500")
-                    || lower.contains("502")
-                    || lower.contains("503")
                     || has_server_error_type(&lower)
             }
         }
@@ -87,6 +89,79 @@ impl InferenceError {
     pub(crate) fn cause_phrase(&self) -> &'static str {
         self.category().cause_phrase()
     }
+
+    /// Whether the provider turned the request down because it carried
+    /// image content the model can't take. Matches only the rejections
+    /// listed in [`IMAGE_INPUT_REJECTIONS`]; any other error, a `400`
+    /// included, is not one.
+    #[must_use]
+    pub(crate) fn rejects_image_input(&self) -> bool {
+        let Self::Api(msg) = self else {
+            return false;
+        };
+        let lower = msg.to_lowercase();
+        IMAGE_INPUT_REJECTIONS
+            .iter()
+            .any(|rejection| lower.contains(rejection))
+    }
+}
+
+/// Lowercased error text a provider returns when a request carries image
+/// content its model can't take. Each entry is a rejection a real provider
+/// returned, named beside it; add a shape only once it has been seen.
+const IMAGE_INPUT_REJECTIONS: &[&str] = &[
+    // Z.ai's OpenAI-compatible API serving the text-only glm-5.3, reported
+    // in issue #463: `messages.content.type is invalid`.
+    "messages.content.type is invalid",
+    // OpenAI Chat Completions with a model that has no vision: `Invalid
+    // content type. image_url is only supported by certain models.`
+    "image_url is only supported by certain models",
+    // DeepSeek's API, whose content parts are text only: `Failed to
+    // deserialize the JSON body into the target type: messages[1]: unknown
+    // variant `image_url`, expected `text``.
+    "unknown variant `image_url`",
+];
+
+/// Lowercased text of `OpenAI`'s refusal of a Chat Completions request that
+/// has both function tools and a `reasoning_effort` other than `none`, which
+/// GPT-5.4 and later models answer with: `Function tools with
+/// reasoning_effort are not supported for gpt-5.6-sol in
+/// /v1/chat/completions. To use function tools, use /v1/responses or set
+/// reasoning_effort to 'none'.` Thinking with tools on those models needs
+/// the Responses API (<https://developers.openai.com/api/docs/guides/migrate-to-responses>).
+const TOOLS_WITH_REASONING_EFFORT_REJECTION: &str =
+    "function tools with reasoning_effort are not supported";
+
+/// The HTTP status a lowercased provider error names, read only where the
+/// clients put it: at the very start (`"429 too many requests: ..."`,
+/// Gemini's `"503 unavailable: ..."`) or right after `"error "`
+/// (`"anthropic api error 500 ..."`). Digits elsewhere, such as the column
+/// number in a `DeepSeek` error's `"... at line 1 column 15003"`, are not a status.
+fn http_status(lower: &str) -> Option<u16> {
+    let after_error = lower
+        .find("error ")
+        .and_then(|at| lower.get(at + "error ".len()..));
+    [Some(lower), after_error]
+        .into_iter()
+        .flatten()
+        .find_map(leading_status)
+}
+
+/// A three-digit status at the start of `text`, followed by anything but
+/// another digit.
+fn leading_status(text: &str) -> Option<u16> {
+    let digits = text.get(..3)?;
+    let ends = text
+        .chars()
+        .nth(3)
+        .is_none_or(|next| !next.is_ascii_digit());
+    if !ends || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits
+        .parse()
+        .ok()
+        .filter(|status| (100..600).contains(status))
 }
 
 /// Whether a lowercased provider error names a server-side failure by its
@@ -99,13 +174,13 @@ fn has_server_error_type(lower: &str) -> bool {
 }
 
 /// A plain-language bucket for an [`InferenceError`], independent of which
-/// provider produced it. Providers today collapse their own status code and
+/// provider produced it. Providers collapse their own status code and
 /// error body into `InferenceError::Api`'s single string (see
-/// `src/inference/providers/`), so classification matches on that string —
-/// the same substring-matching approach `InferenceError::is_retryable`
-/// already uses for the same reason.
+/// `src/inference/providers/`), so classification reads the status where the
+/// clients put it (see [`http_status`]) and matches the rest of that string.
 enum FailureCategory {
     AuthFailed,
+    ToolsWithThinkingUnsupported,
     RateLimited,
     ContextTooLong,
     ModelNotFound,
@@ -124,9 +199,10 @@ impl FailureCategory {
     /// "unclassified").
     fn from_api_message(msg: &str) -> Self {
         let lower = msg.to_lowercase();
-        let has_status = |codes: &[&str]| codes.iter().any(|c| lower.contains(c));
+        let status = http_status(&lower);
+        let has_status = |codes: &[u16]| status.is_some_and(|status| codes.contains(&status));
 
-        if has_status(&["401", "403"])
+        if has_status(&[401, 403])
             || lower.contains("invalid api key")
             || lower.contains("invalid x-api-key")
             || lower.contains("authentication_error")
@@ -134,7 +210,9 @@ impl FailureCategory {
             || lower.contains("incorrect api key")
         {
             Self::AuthFailed
-        } else if has_status(&["429"])
+        } else if lower.contains(TOOLS_WITH_REASONING_EFFORT_REJECTION) {
+            Self::ToolsWithThinkingUnsupported
+        } else if has_status(&[429])
             || lower.contains("rate_limit")
             || lower.contains("rate limit")
             || lower.contains("quota")
@@ -153,7 +231,7 @@ impl FailureCategory {
             || (lower.contains("model") && lower.contains("not found"))
         {
             Self::ModelNotFound
-        } else if has_status(&["500", "502", "503", "504"])
+        } else if has_status(&[500, 502, 503, 504])
             || has_server_error_type(&lower)
             || lower.contains("overloaded_error")
             || lower.contains("overload")
@@ -172,6 +250,7 @@ impl FailureCategory {
     fn cause_phrase(&self) -> &'static str {
         match self {
             Self::AuthFailed => "an authentication failure",
+            Self::ToolsWithThinkingUnsupported => "the model not taking tools with thinking on",
             Self::RateLimited => "rate limiting",
             Self::ContextTooLong => "the conversation exceeding the model's context limit",
             Self::ModelNotFound => "the configured model being unavailable",
@@ -190,6 +269,10 @@ impl FailureCategory {
         match self {
             Self::AuthFailed => "Residuum couldn't authenticate with the AI provider. Check \
                 that the API key in Settings → Model is correct and hasn't expired."
+                .to_string(),
+            Self::ToolsWithThinkingUnsupported => "This model can't use tools while thinking \
+                is on, through the API Residuum uses for it. Turn thinking off for this model in \
+                Settings → Model, or choose another model."
                 .to_string(),
             Self::RateLimited => "The AI provider is rate-limiting requests right now. Wait a \
                 moment and try again, or check your usage limits with the provider."
@@ -390,5 +473,118 @@ mod tests {
             .is_retryable(),
             "a rejected request is not retryable"
         );
+    }
+
+    #[test]
+    fn digits_inside_the_body_are_not_a_status() {
+        let err = InferenceError::Api(
+            "400 Bad Request: Failed to deserialize the JSON body into the target type: \
+             messages[1]: unknown variant `image_url`, expected `text` at line 1 column 15003"
+                .to_string(),
+        );
+        assert!(
+            !err.is_retryable(),
+            "a 400 whose column number holds 500 is not a server error"
+        );
+        assert_eq!(err.cause_phrase(), "an error talking to the AI provider");
+
+        let quota = InferenceError::Api("400 Bad Request: token 4290 is invalid".to_string());
+        assert!(
+            !quota.is_retryable(),
+            "429 inside a number is not a rate limit"
+        );
+    }
+
+    #[test]
+    fn the_status_decides_where_the_message_names_one() {
+        for (message, retryable) in [
+            ("429 Too Many Requests: slow down", true),
+            ("503 Service Unavailable: try later", true),
+            ("529 <unknown status code>: overloaded", true),
+            ("408 Request Timeout: took too long", true),
+            (
+                "498 <unknown status code>: Flex Tier Capacity Exceeded",
+                true,
+            ),
+            ("anthropic api error 500 Internal Server Error: oops", true),
+            ("Error 429: too many requests", true),
+            ("400 Bad Request: the limit on tools is 128", false),
+            ("401 Unauthorized: invalid api key", false),
+            (
+                "anthropic api error 404 Not Found (not_found_error): model",
+                false,
+            ),
+        ] {
+            assert_eq!(
+                InferenceError::Api(message.to_string()).is_retryable(),
+                retryable,
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn image_input_rejections_are_recognised() {
+        for body in [
+            r#"400 Bad Request: {"error":{"code":"1214","message":"messages.content.type is invalid"}}"#,
+            r#"400 Bad Request: {"error":{"message":"Invalid content type. image_url is only supported by certain models.","type":"invalid_request_error"}}"#,
+            "400 Bad Request: Failed to deserialize the JSON body into the target type: \
+             messages[1]: unknown variant `image_url`, expected `text` at line 1 column 312",
+        ] {
+            assert!(
+                InferenceError::Api(body.to_string()).rejects_image_input(),
+                "should recognise an image rejection: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_errors_are_not_image_rejections() {
+        for err in [
+            InferenceError::Api(
+                r#"400 Bad Request: {"error":{"message":"Invalid value for 'temperature'"}}"#
+                    .to_string(),
+            ),
+            InferenceError::Api("400 Bad Request: prompt is too long".to_string()),
+            InferenceError::Parse("messages.content.type is invalid".to_string()),
+            InferenceError::Timeout(30),
+        ] {
+            assert!(
+                !err.rejects_image_input(),
+                "should not be taken for an image rejection: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn tools_refused_with_thinking_on_say_to_turn_thinking_off() {
+        let err = InferenceError::Api(
+            "400 Bad Request: Function tools with reasoning_effort are not supported for gpt-5.6-sol in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'."
+                .to_string(),
+        );
+        assert!(!err.is_retryable(), "the same request fails the same way");
+        let message = err.user_message();
+        assert!(
+            message.contains("can't use tools while thinking is on")
+                && message.contains("Turn thinking off"),
+            "the user is told why and what to change: {message}"
+        );
+        assert!(
+            !message.contains("reasoning_effort") && !message.contains("/v1/"),
+            "no API internals reach the user: {message}"
+        );
+        assert_eq!(
+            err.cause_phrase(),
+            "the model not taking tools with thinking on"
+        );
+    }
+
+    #[test]
+    fn other_reasoning_effort_errors_are_not_taken_for_the_tools_refusal() {
+        let err = InferenceError::Api(
+            "400 Bad Request: Unsupported value: 'reasoning_effort' does not support 'low' with this model."
+                .to_string(),
+        );
+        assert_eq!(err.cause_phrase(), "an error talking to the AI provider");
     }
 }
