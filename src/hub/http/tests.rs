@@ -1512,7 +1512,7 @@ async fn routes_that_describe_the_live_agent_still_need_it_running() {
             (Method::GET, "a2a/card"),
             (Method::GET, "a2a/outbound"),
             (Method::GET, "memory/search"),
-            (Method::GET, "files/workspace"),
+            (Method::GET, "files/abc"),
         ] {
             let uri = format!("/api/agents/{name}/{route}");
             let refused = h
@@ -1718,10 +1718,6 @@ async fn a_link_to_a_stopped_or_missing_agent_opened_in_a_tab_goes_to_the_app() 
             "/api/agents/quiet/files/abc",
             "/agent/quiet?notice=agent-stopped",
         ),
-        (
-            "/api/agents/quiet/files/workspace?path=a.md",
-            "/agent/quiet?notice=agent-stopped",
-        ),
         ("/api/agents/ghost/files/abc", "/agent/ghost"),
     ] {
         let (status, headers, _) = h.send(tab(uri)).await;
@@ -1731,6 +1727,91 @@ async fn a_link_to_a_stopped_or_missing_agent_opened_in_a_tab_goes_to_the_app() 
     // A script still gets the contract errors.
     h.get_expect("/api/agents/quiet/files/abc", StatusCode::CONFLICT)
         .await;
+}
+
+#[tokio::test]
+async fn a_workspace_file_link_is_served_while_the_agent_is_stopped_or_failed() {
+    let h = Harness::new();
+    h.add_failed_agent();
+    // The workspace is the agent's directory. The secret sits beside it, so
+    // a link that climbs out of the workspace would reach it.
+    tokio::fs::write(h.root.path().join("secret.txt"), "the secret contents")
+        .await
+        .unwrap();
+    for name in EVERY_STATE {
+        let notes = h.agent_dir(name).join("notes");
+        tokio::fs::create_dir_all(&notes).await.unwrap();
+        tokio::fs::write(notes.join("plan.md"), format!("plan of {name}"))
+            .await
+            .unwrap();
+    }
+    let opens = || h.directory.checkpoint_opens.load(Ordering::SeqCst);
+
+    for name in EVERY_STATE {
+        let link = format!("/api/agents/{name}/files/workspace?path=notes%2Fplan.md");
+        let (_, body) = h.request_ok(Method::GET, &link, "").await;
+        assert_eq!(body, format!("plan of {name}").into_bytes(), "{link}");
+
+        let climbing = format!("/api/agents/{name}/files/workspace?path=..%2Fsecret.txt");
+        let (status, refused) = h
+            .send_body(Request::get(&climbing).body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{climbing}");
+        assert!(
+            !String::from_utf8_lossy(&refused).contains("the secret contents"),
+            "{climbing}"
+        );
+
+        let missing = format!("/api/agents/{name}/files/workspace?path=notes%2Fgone.md");
+        h.get_expect(&missing, StatusCode::NOT_FOUND).await;
+    }
+    assert_eq!(
+        opens(),
+        0,
+        "serving a workspace file never opens the repositories"
+    );
+}
+
+#[tokio::test]
+async fn a_workspace_file_link_opened_in_a_tab_on_a_stopped_agent_shows_the_file() {
+    let h = Harness::new();
+    let notes = h.agent_dir("quiet").join("notes");
+    tokio::fs::create_dir_all(&notes).await.unwrap();
+    tokio::fs::write(notes.join("plan.md"), "the plan")
+        .await
+        .unwrap();
+
+    let (served_status, served_headers, served_body) = h
+        .send(tab(
+            "/api/agents/quiet/files/workspace?path=notes%2Fplan.md",
+        ))
+        .await;
+    assert_eq!(served_status, StatusCode::OK);
+    assert_eq!(served_body, b"the plan");
+    assert_eq!(served_headers["content-type"], "text/markdown");
+
+    let (missing_status, missing_headers, _) = h
+        .send(tab(
+            "/api/agents/quiet/files/workspace?path=notes%2Fgone.md",
+        ))
+        .await;
+    assert_eq!(missing_status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        missing_headers["location"],
+        "/agent/quiet/files?panel=file%3Anotes%2Fgone.md"
+    );
+}
+
+#[tokio::test]
+async fn a_workspace_file_link_for_an_unknown_agent_is_not_found() {
+    let h = Harness::new();
+    let refused = h
+        .get_expect(
+            "/api/agents/ghost/files/workspace?path=notes%2Fplan.md",
+            StatusCode::NOT_FOUND,
+        )
+        .await;
+    assert_eq!(refused["error"], "no agent named 'ghost'", "{refused}");
 }
 
 // ---- artifact sessions ---------------------------------------------------
