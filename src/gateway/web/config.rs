@@ -250,20 +250,51 @@ impl std::fmt::Display for HubConfigPatchError {
     }
 }
 
-/// Merge a JSON `diff` into `hub_dir/config.toml`: the one path every change
-/// to that file takes. The diff is applied to the parsed document, so comments
-/// and keys the diff doesn't name survive. The patched text must pass
-/// `validate`, the file as it stood is checkpointed under `summary` so History
-/// can restore it, and the new text replaces the file atomically. Returns the
-/// checkpoint's id, `None` when it couldn't be recorded. Reloading the hub is
-/// the caller's call.
-pub(crate) async fn patch_hub_config(
+/// A JSON diff applied to `hub/config.toml` and validated, but not yet written.
+///
+/// A caller that must checkpoint the file before some related write, such as
+/// a secret, takes the checkpoint with [`Self::checkpoint`] and only then
+/// calls [`Self::write`]. The checkpoint holds the file as it stood, not as
+/// the patch leaves it.
+pub(crate) struct PreparedHubConfigPatch {
+    path: std::path::PathBuf,
+    text: String,
+}
+
+impl PreparedHubConfigPatch {
+    /// Checkpoint `config.toml` as it stands, named `summary` in History.
+    /// Returns the checkpoint's id, `None` when it couldn't be recorded. The
+    /// write still proceeds in that case.
+    pub(crate) async fn checkpoint(
+        &self,
+        checkpoints: &crate::checkpoints::CheckpointEngine,
+        summary: &str,
+    ) -> Option<String> {
+        checkpoints
+            .checkpoint_config_id_before_write(crate::checkpoints::CheckpointContext::system(
+                crate::checkpoints::CheckpointTrigger::PreConfigWrite,
+                summary,
+            ))
+            .await
+    }
+
+    /// Replace `config.toml` with the patched text, atomically.
+    pub(crate) async fn write(&self) -> Result<(), HubConfigPatchError> {
+        crate::util::fs::atomic_write(&self.path, &self.text)
+            .await
+            .map_err(|e| HubConfigPatchError::Io(format!("failed to write hub config.toml: {e}")))
+    }
+}
+
+/// Apply a JSON `diff` to `hub_dir/config.toml`, the one path every change to
+/// that file takes. The diff is applied to the parsed document, so comments and
+/// keys the diff doesn't name survive. The patched text must pass `validate`.
+/// Nothing is written here; see [`PreparedHubConfigPatch`].
+pub(crate) async fn prepare_hub_config_patch(
     hub_dir: &std::path::Path,
-    checkpoints: &crate::checkpoints::CheckpointEngine,
     diff: &serde_json::Value,
-    summary: &str,
     validate: impl FnOnce(&str) -> Result<(), String>,
-) -> Result<Option<String>, HubConfigPatchError> {
+) -> Result<PreparedHubConfigPatch, HubConfigPatchError> {
     let Some(diff_map) = diff.as_object() else {
         return Err(HubConfigPatchError::Rejected(
             "hub config patch must be a JSON object".to_string(),
@@ -285,29 +316,25 @@ pub(crate) async fn patch_hub_config(
         .map_err(HubConfigPatchError::Rejected)?;
     validate(&patched).map_err(HubConfigPatchError::Rejected)?;
 
-    let checkpoint_id = checkpoints
-        .checkpoint_config_id_before_write(crate::checkpoints::CheckpointContext::system(
-            crate::checkpoints::CheckpointTrigger::PreConfigWrite,
-            summary,
-        ))
-        .await;
-    crate::util::fs::atomic_write(&config_path, &patched)
-        .await
-        .map_err(|e| HubConfigPatchError::Io(format!("failed to write hub config.toml: {e}")))?;
-
-    Ok(checkpoint_id)
+    Ok(PreparedHubConfigPatch {
+        path: config_path,
+        text: patched,
+    })
 }
 
-/// The API error for a hub config patch that didn't land, logged at the
-/// level its kind of failure calls for.
-fn hub_patch_failed(error: HubConfigPatchError) -> (StatusCode, Json<ValidateResponse>) {
+/// The API error for a hub config patch that didn't land, logged with the
+/// file's path at the level its kind of failure calls for.
+fn hub_patch_failed(
+    error: HubConfigPatchError,
+    config_path: &std::path::Path,
+) -> (StatusCode, Json<ValidateResponse>) {
     let (status, msg) = match error {
         HubConfigPatchError::Rejected(msg) => {
-            tracing::warn!(error = %msg, "hub config.toml patch rejected");
+            tracing::warn!(error = %msg, path = %config_path.display(), "hub config.toml patch rejected");
             (StatusCode::BAD_REQUEST, msg)
         }
         HubConfigPatchError::Io(msg) => {
-            tracing::error!(error = %msg, "hub config.toml patch couldn't be saved");
+            tracing::error!(error = %msg, path = %config_path.display(), "hub config.toml patch couldn't be saved");
             (StatusCode::INTERNAL_SERVER_ERROR, msg)
         }
     };
@@ -327,15 +354,20 @@ pub(super) async fn api_hub_config_patch(
     State(state): State<HubApiState>,
     Json(diff): Json<serde_json::Value>,
 ) -> Result<Json<PatchSavedResponse>, (StatusCode, Json<ValidateResponse>)> {
-    let checkpoint_id = patch_hub_config(
-        &state.hub_dir,
-        &state.checkpoints,
-        &diff,
-        "patch hub config.toml",
-        |text| crate::config::HubConfig::validate_toml(text, &state.hub_dir),
-    )
+    let config_path = state.hub_dir.join("config.toml");
+    let prepared = prepare_hub_config_patch(&state.hub_dir, &diff, |text| {
+        crate::config::HubConfig::validate_toml(text, &state.hub_dir)
+    })
     .await
-    .map_err(hub_patch_failed)?;
+    .map_err(|e| hub_patch_failed(e, &config_path))?;
+
+    let checkpoint_id = prepared
+        .checkpoint(&state.checkpoints, "patch hub config.toml")
+        .await;
+    prepared
+        .write()
+        .await
+        .map_err(|e| hub_patch_failed(e, &config_path))?;
 
     state.reload_tx.send(super::super::ReloadSignal::Hub).ok();
 
