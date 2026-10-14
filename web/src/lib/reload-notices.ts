@@ -79,41 +79,41 @@ export interface NoticeFrame {
   reload_of?: ReloadedFiles;
 }
 
-/** The plain words for each outcome of a reload of one set of files. */
-const RELOAD_WORDS: Record<ReloadedFiles, Record<ReloadOutcome, string>> = {
-  agent_config: {
-    reloaded: "Settings reloaded.",
-    unchanged: "Settings reloaded. Nothing had changed.",
-    failed: "Residuum couldn't apply the new settings and is still using the old ones.",
-  },
-  hub_config: {
-    reloaded: "This agent took up the new settings for all agents.",
-    unchanged: "This agent's settings for all agents hadn't changed.",
-    failed:
-      "This agent couldn't apply the new settings for all agents and is still using the old ones.",
-  },
-  workspace: {
-    reloaded: "Agent files reloaded.",
-    unchanged: "Agent files reloaded. Nothing had changed.",
-    failed: "Residuum couldn't reload the agent's files and is still using the old ones.",
-  },
+/** The error toast for a failed reload of each set of files. */
+const FAILED_WORDS: Record<ReloadedFiles, string> = {
+  agent_config: "Residuum couldn't apply the new settings and is still using the old ones.",
+  hub_config:
+    "This agent couldn't apply the new settings for all agents and is still using the old ones.",
+  workspace:
+    "Some of the agent's files couldn't be reloaded. Those parts keep their previous settings.",
 };
 
 /**
  * The toast for an agent socket `notice` frame, or `null` for a success
- * report nobody needs: one a quiet request covers, or the agent's own reload
- * of the hub's config, which the hub socket already reported. A reload report
- * is put in plain words with the agent's own behind the detail; a failed one
- * always shows; any other notice is shown as it came.
+ * report nobody needs: the agent config reload a quiet request covers, or the
+ * agent's own reload of the hub's config, which the hub socket already
+ * reported. A reload report is put in plain words with the agent's own
+ * behind the detail; a failed one always shows; any other notice is shown as
+ * it came.
  */
 export function noticeFrameNotice(frame: NoticeFrame): ReloadNotice | null {
-  const { message, reload } = frame;
-  if (reload === undefined) return { kind: "notice", message };
-  const files = frame.reload_of ?? "agent_config";
-  const words = RELOAD_WORDS[files][reload];
-  if (reload === "failed") return { kind: "error", message: words, details: message };
-  if (files === "hub_config" || quietReloads.quiet) return null;
-  return { kind: "notice", message: words, details: message };
+  const { message, reload, reload_of: files } = frame;
+  if (reload === undefined || files === undefined) return { kind: "notice", message };
+  if (reload === "failed") return { kind: "error", message: FAILED_WORDS[files], details: message };
+  switch (files) {
+    case "hub_config":
+      return null;
+    case "workspace":
+      return { kind: "notice", message: "Agent files reloaded.", details: message };
+    case "agent_config":
+      if (quietReloads.quiet) return null;
+      return {
+        kind: "notice",
+        message:
+          reload === "unchanged" ? "Settings reloaded. Nothing had changed." : "Settings reloaded.",
+        details: message,
+      };
+  }
 }
 
 /** The hub socket's `hub_config_reloaded` frame. */

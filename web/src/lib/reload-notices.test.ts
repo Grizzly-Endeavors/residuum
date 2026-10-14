@@ -59,9 +59,13 @@ describe("a reload nobody asked to keep quiet", () => {
   });
 
   it("goes by the outcome, not by what the text says", () => {
-    expect(noticeFrameNotice({ message: "anything at all", reload: "reloaded" })).toMatchObject({
-      message: "Settings reloaded.",
-    });
+    expect(
+      noticeFrameNotice({
+        message: "anything at all",
+        reload: "reloaded",
+        reload_of: "agent_config",
+      }),
+    ).toMatchObject({ message: "Settings reloaded." });
     // Text that reads like a reload report but carries no outcome is any other notice.
     expect(noticeFrameNotice({ message: REPORT })).toEqual({ kind: "notice", message: REPORT });
   });
@@ -70,6 +74,19 @@ describe("a reload nobody asked to keep quiet", () => {
     expect(
       noticeFrameNotice({ message: WORKSPACE_REPORT, reload: "reloaded", reload_of: "workspace" }),
     ).toEqual({ kind: "notice", message: "Agent files reloaded.", details: WORKSPACE_REPORT });
+  });
+
+  it("raises an error when part of the workspace couldn't reload, keeping the agent's account behind the detail", () => {
+    const report =
+      "workspace configuration reloaded: mcp.json failed to reload, keeping current servers: bad json; channels.toml reloaded";
+    expect(
+      noticeFrameNotice({ message: report, reload: "failed", reload_of: "workspace" }),
+    ).toEqual({
+      kind: "error",
+      message:
+        "Some of the agent's files couldn't be reloaded. Those parts keep their previous settings.",
+      details: report,
+    });
   });
 
   it("leaves the agent's reload of the hub's settings to the hub's own report", () => {
@@ -134,6 +151,13 @@ describe("a reload a control asked for quietly", () => {
       message: "Residuum couldn't apply the new settings and is still using the old ones.",
       details: FAILED,
     });
+  });
+
+  it("never hides a workspace reload, which the quiet request didn't ask for", () => {
+    quietReloads.expect();
+    expect(
+      noticeFrameNotice({ message: WORKSPACE_REPORT, reload: "reloaded", reload_of: "workspace" }),
+    ).toMatchObject({ message: "Agent files reloaded." });
   });
 
   it("never hides another notice", () => {

@@ -153,7 +153,36 @@ async fn a_workspace_reload_says_it_reloaded_the_workspace_files() {
 
     hub.host.team_files_changed();
     assert_eq!(
-        reload_report_of(&mut ws, |m| m == "workspace configuration reloaded").await,
+        reload_report_of(&mut ws, |m| m
+            .starts_with("workspace configuration reloaded: mcp.json reloaded"))
+        .await,
         report("reloaded", "workspace")
+    );
+}
+
+#[tokio::test]
+async fn a_workspace_reload_that_cannot_read_a_file_reports_a_failure_naming_it() {
+    let hub = Fixture::new(&["scout"], "").await;
+    hub.host.start("scout").await.unwrap();
+    let (mut ws, _) =
+        tokio_tungstenite::connect_async(format!("ws://{}/api/agents/scout/ws", hub.addr))
+            .await
+            .unwrap();
+    // As above: the socket hears the agent's notices before the reload below.
+    ask_for_reload(&mut ws).await;
+    reload_report_of(&mut ws, |m| {
+        m == "configuration reloaded: no changes detected"
+    })
+    .await;
+
+    let mcp_json = WorkspaceLayout::new(hub.root.path().join("scout")).mcp_json();
+    std::fs::write(&mcp_json, "not json {").unwrap();
+    hub.host.team_files_changed();
+    assert_eq!(
+        reload_report_of(&mut ws, |m| m.starts_with(
+            "workspace configuration reloaded: mcp.json failed to reload"
+        ))
+        .await,
+        report("failed", "workspace")
     );
 }
