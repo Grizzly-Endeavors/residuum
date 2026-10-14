@@ -14,6 +14,9 @@
 //!   content-hash `ETag` and gets a bodyless 304 when nothing changed.
 //! - Scripts, styles, JSON, SVG and the manifest are compressed when the client
 //!   accepts it. HTML and images are not.
+//! - HTML documents carry [`APP_SHELL_CSP`], which keeps the app from loading
+//!   images, media, plug-ins or frames from anywhere but the hub, and from
+//!   posting a form anywhere else.
 
 use axum::Router;
 use axum::body::Body;
@@ -39,6 +42,18 @@ const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
 /// `no-cache` lets a browser keep the file but makes it check before each use.
 /// With an `ETag` that check is a 304; without one it is a full fetch.
 const REVALIDATE_CACHE_CONTROL: &str = "no-cache";
+
+/// The app shell's Content-Security-Policy. The app shows agents' replies, and
+/// a reply can be steered by what its model read into naming a URL on someone
+/// else's server that carries the conversation in it. The web app renders such
+/// an image as a link (`web/src/lib/markdown.ts`); this policy is the browser's
+/// own refusal if anything gets past that. Images and media load only from the
+/// hub, where the agents' files are, or from `data:` and `blob:` URIs the app
+/// builds itself. The app embeds no plug-ins or frames: workbench artifacts
+/// open in their own tab, on their own origin. Scripts, styles, fonts and
+/// connections are left to the browser's defaults.
+const APP_SHELL_CSP: &str = "img-src 'self' data: blob:; media-src 'self' blob:; \
+    object-src 'none'; frame-src 'none'; form-action 'self'";
 
 /// Brotli quality and gzip level for compressing on the fly. The encoder's
 /// default brotli quality (11) takes about 0.7 s per request on the 566 kB
@@ -157,6 +172,13 @@ fn serve_embedded(path: &str, method: &Method, request_headers: &HeaderMap) -> O
             *resp.headers_mut() = headers;
             return Some(resp);
         }
+    }
+
+    if is_html(mime.essence_str()) {
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(APP_SHELL_CSP),
+        );
     }
 
     set_header(&mut headers, header::CONTENT_TYPE, mime.as_ref());
@@ -476,6 +498,72 @@ mod tests {
                 );
                 assert_eq!(body_of(resp).await, index_body, "{path} is the app shell");
             }
+        }
+    }
+
+    /// The directives of a Content-Security-Policy, by name, as the browser reads them.
+    fn csp_directives(policy: &str) -> std::collections::HashMap<&str, Vec<&str>> {
+        policy
+            .split(';')
+            .filter_map(|directive| {
+                let mut words = directive.split_whitespace();
+                Some((words.next()?, words.collect()))
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn the_app_shell_loads_images_media_and_frames_only_from_the_hub() {
+        let page_load = [("sec-fetch-dest", "document")];
+        for (path, asker) in [
+            ("/", &[][..]),
+            ("/index.html", &[][..]),
+            ("/agent/atlas/files", &[][..]),
+            ("/old/page.html", &page_load[..]),
+        ] {
+            let resp = get(path, asker).await;
+            assert_eq!(
+                header_of(&resp, "content-type"),
+                Some("text/html"),
+                "{path}"
+            );
+            let policy = header_of(&resp, "content-security-policy")
+                .unwrap_or_else(|| panic!("{path} has no content-security-policy"));
+            let directives = csp_directives(policy);
+            for (name, sources) in [
+                ("img-src", vec!["'self'", "data:", "blob:"]),
+                ("media-src", vec!["'self'", "blob:"]),
+                ("object-src", vec!["'none'"]),
+                ("frame-src", vec!["'none'"]),
+                ("form-action", vec!["'self'"]),
+            ] {
+                assert_eq!(
+                    directives.get(name),
+                    Some(&sources),
+                    "{path}: {name} in {policy}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn files_other_than_html_carry_no_content_security_policy() {
+        for path in [
+            hashed_asset(".js"),
+            "/manifest.webmanifest".to_string(),
+            "/favicon.svg".to_string(),
+        ] {
+            let path = if path.starts_with('/') {
+                path
+            } else {
+                format!("/{path}")
+            };
+            let resp = get(&path, &[]).await;
+            assert_eq!(resp.status(), StatusCode::OK, "{path}");
+            assert!(
+                resp.headers().get("content-security-policy").is_none(),
+                "{path}"
+            );
         }
     }
 
