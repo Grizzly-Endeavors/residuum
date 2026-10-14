@@ -35,6 +35,8 @@ pub struct ExtraApiStates {
     pub a2a_agents: web::a2a::A2aAgentsStatusState,
     /// The relay tunnel's status, for the A2A status route's relay address.
     pub tunnel_status_rx: tokio::sync::watch::Receiver<crate::tunnel::TunnelStatus>,
+    /// The live model catalog, for the sessions API to check a start's model.
+    pub model_catalog: crate::config::SharedModelCatalog,
 }
 
 /// The agent-scoped routers [`build_gateway_app`] merges in, built once by
@@ -75,6 +77,7 @@ fn build_feature_routers(state: &GatewayState, extra: ExtraApiStates) -> Feature
         messenger: Arc::clone(&state.agent_messenger),
         publisher: state.publisher.clone(),
         skill_state: Arc::clone(&state.skill_state),
+        models: Arc::clone(&extra.model_catalog),
         main_conversation: state.layout.recent_messages_json(),
     });
 

@@ -19,12 +19,17 @@ export interface MockPulse {
   schedule: string | null;
   activeHours: string | null;
   agent: string | null;
+  /** The pulse's `model_tier`, when it names one. */
+  modelTier?: string;
   lastRunAt: string | null;
   problems: string[];
 }
 
-/** An action as the action store holds it: the listing without its live run. */
-export type MockAction = Omit<ActionInfo, "current_run">;
+/**
+ * An action as the action store holds it: the listing without its live run,
+ * and with no `problem` unless one is set.
+ */
+export type MockAction = Omit<ActionInfo, "current_run" | "problem"> & { problem?: string };
 
 /**
  * The pulses and scheduled actions of an agent that has run. Runs come from
@@ -48,6 +53,7 @@ export function createScheduled(clock: MockClock): MockScheduled {
         schedule: "2h",
         activeHours: "08:00-22:00",
         agent: null,
+        modelTier: "small",
         lastRunAt: clock.isoAgo(HOUR_MS),
         problems: [],
       },
@@ -83,7 +89,7 @@ export function createScheduled(clock: MockClock): MockScheduled {
         name: "review_open_prs",
         run_at: clock.isoIn(26 * HOUR_MS),
         agent: "researcher",
-        model_tier: "fast",
+        model_tier: "anthropic/claude-haiku-4-5",
       },
     ],
   };
@@ -190,6 +196,7 @@ function pulseInfo(state: MockState, pulse: MockPulse): PulseInfo {
     schedule: pulse.schedule,
     active_hours: pulse.activeHours,
     agent: pulse.agent,
+    model_tier: pulse.modelTier ?? null,
     next_fire_at: nextFireAt(pulse, state.env.clock),
     last_outcome: lastOutcome(state, source),
     current_run: currentRun(state, source),
@@ -272,6 +279,7 @@ export const scheduledRoutes: readonly Route[] = [
         state.scheduled.actions.map(
           (action): ActionInfo => ({
             ...action,
+            problem: action.problem ?? null,
             current_run: currentRun(state, `action:${action.name}`),
           }),
         ),

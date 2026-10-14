@@ -14,7 +14,9 @@ use crate::background::registry::{SessionCategory, SessionRegistry};
 use crate::background::runtime::SessionRuntime;
 use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
 use crate::config::ProviderSpec;
-use crate::config::{BackgroundConfig, BackgroundModelTier};
+use crate::config::{
+    BackgroundConfig, BackgroundModelTier, ModelCatalog, ModelSelector, SharedModelCatalog,
+};
 use crate::inference::retry::RetryConfig;
 use crate::inference::{
     CompletionOptions, SharedHttpClient, build_provider_chain_with_shared_notices,
@@ -62,6 +64,10 @@ impl BackgroundTierActiveIndex {
 pub(crate) struct SpawnContext {
     pub(crate) background_config: BackgroundConfig,
     pub(crate) main_provider_specs: Vec<ProviderSpec>,
+    /// The live catalog an explicit model id resolves against at spawn time,
+    /// shared with the tools that validate one, so a provider added to
+    /// `providers.toml` works without a restart.
+    pub(crate) model_catalog: SharedModelCatalog,
     pub(crate) http_client: SharedHttpClient,
     pub(crate) max_tokens: u32,
     pub(crate) retry_config: RetryConfig,
@@ -172,41 +178,88 @@ pub(crate) struct NewSessionContext {
     pub(crate) conversation_target: Option<crate::bus::ConversationTarget>,
 }
 
-/// Build isolated `SubAgentResources` for a new session run at a given tier.
-///
-/// Resolves the model tier to a concrete provider spec, constructs the provider,
-/// and builds fresh isolated state. When `skill` is set, that skill is activated
-/// on the session's own skill state so its body becomes the session's role
-/// instructions. Also snapshots the global observation log and recent-context
-/// narrative at fork time, per the design's "Fork contents": a session never
-/// sees merges that happen after it forked.
-///
-/// `session.own_address` and `session.own_depth` are this new session's own
-/// address and depth, threaded into its `subagent_spawn` tool so any session
-/// it spawns in turn records the right spawner and depth (see "Nesting" in
-/// the design). `session.own_address` and `session.category` are also
-/// carried into `SubAgentBuildConfig` so the fork's `message_agent` tool can
-/// name itself as the sender of any message it sends. `session.trigger` and
-/// `session.conversation_target` are carried the same way into the session's
-/// `SubagentToolDeps`, so a tool running in this session can tell what
-/// started it and, for a conversation-triggered session, which endpoint and
-/// conversation it replies to.
-///
-/// # Errors
-/// Returns an error if provider construction fails (e.g. missing API key), the
-/// identity files cannot be read, or `skill` names a skill that does not resolve.
 /// Log a warning for each fallback provider dropped from a background
 /// tier's chain — visible in diagnostics without stopping the spawn, since
 /// the tier's primary (or another fallback) still built successfully.
-fn log_dropped_fallbacks(tier: BackgroundModelTier, dropped: &[crate::inference::DroppedFallback]) {
+fn log_dropped_fallbacks(model: &ModelSelector, dropped: &[crate::inference::DroppedFallback]) {
     for fallback in dropped {
         tracing::warn!(
-            tier = ?tier,
+            model = %model,
             provider = %fallback.name,
             error = %fallback.error,
             "dropped an unbuildable fallback provider for this background tier"
         );
     }
+}
+
+/// A session's provider chain, resolved from its [`ModelSelector`].
+struct SessionModelChain {
+    specs: Vec<ProviderSpec>,
+    /// Names the chain in failover notices.
+    label: String,
+    /// The chain's failover-transition counter.
+    active_index: Arc<AtomicUsize>,
+    /// The `role_overrides` key whose temperature/thinking apply, if any.
+    overrides_key: Option<&'static str>,
+}
+
+impl SessionModelChain {
+    /// `provider/model` id of the chain's first model, the one a run starts on.
+    fn first_model_id(&self) -> String {
+        self.specs
+            .first()
+            .map(|spec| format!("{}/{}", spec.name, spec.model.model))
+            .unwrap_or_default()
+    }
+}
+
+/// Resolve `model` to the provider chain a session runs on.
+///
+/// A tier resolves through `tiers` (falling back to the next tier up, then
+/// `main`) and keeps its shared failover counter and its `bg_<tier>`
+/// overrides. An explicit model resolves against `catalog` to that one model:
+/// no failover chain, and no `role_overrides` entry, so the global
+/// temperature/thinking apply.
+///
+/// # Errors
+/// Returns an error naming the model if an explicit id doesn't resolve.
+fn resolve_model_chain(
+    tiers: &crate::config::BackgroundModelsConfig,
+    main: &[ProviderSpec],
+    tier_index: &BackgroundTierActiveIndex,
+    catalog: &ModelCatalog,
+    model: &ModelSelector,
+) -> Result<SessionModelChain, anyhow::Error> {
+    match model {
+        ModelSelector::Tier(tier) => Ok(SessionModelChain {
+            specs: tiers.resolve_tier(tier, main),
+            label: format!("background sessions ({tier} tier)"),
+            active_index: tier_index.for_tier(*tier),
+            overrides_key: Some(match tier {
+                BackgroundModelTier::Small => "bg_small",
+                BackgroundModelTier::Medium => "bg_medium",
+                BackgroundModelTier::Large => "bg_large",
+            }),
+        }),
+        ModelSelector::Explicit(id) => {
+            let spec = catalog
+                .resolve(id)
+                .map_err(|e| anyhow::anyhow!("model '{id}' can't be used: {e}"))?;
+            Ok(SessionModelChain {
+                specs: vec![spec],
+                label: format!("background session ({id})"),
+                active_index: Arc::new(AtomicUsize::new(0)),
+                overrides_key: None,
+            })
+        }
+    }
+}
+
+/// A forked session's resources, plus the model it starts on.
+pub(crate) struct SpawnResources {
+    pub(crate) resources: SubAgentResources,
+    /// `provider/model` id of the first model in the session's chain.
+    pub(crate) resolved_model: String,
 }
 
 /// Load identity fresh per fork and snapshot memory at fork time.
@@ -246,13 +299,37 @@ async fn load_fork_identity_and_memory(
     Ok((identity, observations, recent_context))
 }
 
-#[tracing::instrument(skip_all, fields(tier = ?tier, skill = skill.unwrap_or("none")))]
+/// Build isolated `SubAgentResources` for a new session run on `model`.
+///
+/// Resolves the model (see [`resolve_model_chain`]), constructs the provider,
+/// and builds fresh isolated state. When `skill` is set, that skill is activated
+/// on the session's own skill state so its body becomes the session's role
+/// instructions. Also snapshots the global observation log and recent-context
+/// narrative at fork time, per the design's "Fork contents": a session never
+/// sees merges that happen after it forked.
+///
+/// `session.own_address` and `session.own_depth` are this new session's own
+/// address and depth, threaded into its `subagent_spawn` tool so any session
+/// it spawns in turn records the right spawner and depth (see "Nesting" in
+/// the design). `session.own_address` and `session.category` are also
+/// carried into `SubAgentBuildConfig` so the fork's `message_agent` tool can
+/// name itself as the sender of any message it sends. `session.trigger` and
+/// `session.conversation_target` are carried the same way into the session's
+/// `SubagentToolDeps`, so a tool running in this session can tell what
+/// started it and, for a conversation-triggered session, which endpoint and
+/// conversation it replies to.
+///
+/// # Errors
+/// Returns an error if an explicit model doesn't resolve, provider
+/// construction fails (e.g. missing API key), the identity files cannot be
+/// read, or `skill` names a skill that does not resolve.
+#[tracing::instrument(skip_all, fields(model = %model, skill = skill.unwrap_or("none")))]
 pub(crate) async fn build_spawn_resources(
     ctx: &SpawnContext,
-    tier: &BackgroundModelTier,
+    model: &ModelSelector,
     skill: Option<&str>,
     session: NewSessionContext,
-) -> Result<SubAgentResources, anyhow::Error> {
+) -> Result<SpawnResources, anyhow::Error> {
     let NewSessionContext {
         own_address,
         own_depth,
@@ -261,30 +338,31 @@ pub(crate) async fn build_spawn_resources(
         trigger,
         conversation_target,
     } = session;
-    let specs = ctx
-        .background_config
-        .models
-        .resolve_tier(tier, &ctx.main_provider_specs);
+    let chain = resolve_model_chain(
+        &ctx.background_config.models,
+        &ctx.main_provider_specs,
+        &ctx.bg_tier_active_index,
+        &*ctx.model_catalog.read().await,
+        model,
+    )?;
+    let resolved_model = chain.first_model_id();
 
     let (provider, dropped) = build_provider_chain_with_shared_notices(
-        &specs,
+        &chain.specs,
         ctx.max_tokens,
         ctx.http_client.clone(),
         ctx.retry_config.clone(),
         ctx.publisher.clone(),
-        format!("background sessions ({tier} tier)"),
-        ctx.bg_tier_active_index.for_tier(*tier),
+        chain.label,
+        chain.active_index,
     )
-    .with_context(|| format!("failed to build provider chain for tier {tier:?}"))?;
-    log_dropped_fallbacks(*tier, &dropped);
+    .with_context(|| format!("failed to build provider chain for model {model}"))?;
+    log_dropped_fallbacks(model, &dropped);
 
-    // Apply per-tier overrides over global options
-    let tier_key = match tier {
-        BackgroundModelTier::Small => "bg_small",
-        BackgroundModelTier::Medium => "bg_medium",
-        BackgroundModelTier::Large => "bg_large",
-    };
-    let ov = ctx.role_overrides.get(tier_key);
+    // Apply the tier's overrides over global options
+    let ov = chain
+        .overrides_key
+        .and_then(|key| ctx.role_overrides.get(key));
     let options = CompletionOptions {
         max_tokens: Some(ctx.max_tokens),
         temperature: ov.and_then(|o| o.temperature).or(ctx.options.temperature),
@@ -336,6 +414,7 @@ pub(crate) async fn build_spawn_resources(
         a2a_tracker: Arc::clone(&ctx.a2a_tracker),
         checkpoints: Arc::clone(&ctx.checkpoints),
         lifecycle: ctx.lifecycle.clone(),
+        model_catalog: Arc::clone(&ctx.model_catalog),
     };
 
     let mut resources = build_subagent_resources(
@@ -348,7 +427,10 @@ pub(crate) async fn build_spawn_resources(
     if let Some(auto_mode) = &ctx.auto_mode {
         resources.tools.set_auto_mode(Arc::clone(auto_mode));
     }
-    Ok(resources)
+    Ok(SpawnResources {
+        resources,
+        resolved_model,
+    })
 }
 
 #[cfg(test)]
@@ -374,6 +456,66 @@ mod tests {
         // Different tiers never share a counter.
         assert_eq!(medium.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(large.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    fn spec(provider: &str, model: &str) -> ProviderSpec {
+        crate::config::ModelCatalog::default()
+            .resolve(&format!("{provider}/{model}"))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_tier_runs_its_failover_chain_with_its_overrides() {
+        let tiers = crate::config::BackgroundModelsConfig {
+            small: Some(vec![
+                spec("anthropic", "claude-haiku-4-5"),
+                spec("openai", "gpt-4o-mini"),
+            ]),
+            medium: None,
+            large: None,
+        };
+        let chain = resolve_model_chain(
+            &tiers,
+            &[spec("anthropic", "claude-sonnet-4-6")],
+            &BackgroundTierActiveIndex::default(),
+            &ModelCatalog::default(),
+            &ModelSelector::SMALL,
+        )
+        .unwrap();
+        assert_eq!(chain.specs.len(), 2, "the tier keeps its failover chain");
+        assert_eq!(chain.overrides_key, Some("bg_small"));
+    }
+
+    #[test]
+    fn an_explicit_model_runs_that_one_model_with_no_overrides() {
+        let chain = resolve_model_chain(
+            &crate::config::BackgroundModelsConfig::default(),
+            &[spec("anthropic", "claude-sonnet-4-6")],
+            &BackgroundTierActiveIndex::default(),
+            &ModelCatalog::default(),
+            &ModelSelector::Explicit("openai/gpt-4o".to_string()),
+        )
+        .unwrap();
+        let [only] = chain.specs.as_slice() else {
+            panic!("an explicit model has no failover chain: {:?}", chain.specs);
+        };
+        assert_eq!(only.model.model, "gpt-4o");
+        assert_eq!(chain.overrides_key, None);
+    }
+
+    #[test]
+    fn an_explicit_model_naming_no_provider_fails_the_spawn_naming_it() {
+        let Err(err) = resolve_model_chain(
+            &crate::config::BackgroundModelsConfig::default(),
+            &[spec("anthropic", "claude-sonnet-4-6")],
+            &BackgroundTierActiveIndex::default(),
+            &ModelCatalog::default(),
+            &ModelSelector::Explicit("nowhere/x".to_string()),
+        ) else {
+            panic!("an unknown provider must not resolve");
+        };
+        let message = err.to_string();
+        assert!(message.contains("nowhere/x"), "{message}");
     }
 
     #[tokio::test]

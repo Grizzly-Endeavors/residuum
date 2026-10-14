@@ -25,9 +25,13 @@ pub struct PulseDef {
     /// activated. `"main"` is rejected at load — see [`validate_pulse`].
     #[serde(default)]
     pub agent: Option<String>,
-    /// Model tier for the session. Defaults to `small`.
+    /// The session's model: a tier (`small`, `medium`, `large`) or an
+    /// explicit `provider/model` id. Defaults to `small`. A value that is
+    /// neither fails this pulse's load; an explicit id whose provider isn't
+    /// configured is reported by `PulseScheduler::due_pulses`, which skips
+    /// the pulse until it resolves.
     #[serde(default)]
-    pub model_tier: Option<String>,
+    pub model_tier: Option<crate::config::ModelSelector>,
     /// Name of another pulse whose most recent delivered output (a
     /// completed run that isn't `HEARTBEAT_OK`; a failed run doesn't count)
     /// should be injected into this pulse's prompt at fire time. Single-hop
@@ -1276,6 +1280,46 @@ pulses:
         assert_eq!(problems.first().unwrap().name, "bad_pulse");
         assert_eq!(problems.first().unwrap().kind, ProblemKind::Malformed);
         assert!(last_error.is_none(), "the document itself parses fine");
+    }
+
+    #[test]
+    fn load_heartbeat_reads_a_tier_or_explicit_model_and_rejects_anything_else() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("HEARTBEAT.yml");
+        std::fs::write(
+            &path,
+            "pulses:\n  - name: tiered\n    schedule: \"1h\"\n    model_tier: large\n    tasks: []\n  \
+             - name: explicit\n    schedule: \"1h\"\n    model_tier: local/qwen3:8b\n    tasks: []\n  \
+             - name: typo\n    schedule: \"1h\"\n    model_tier: lagre\n    tasks: []\n",
+        )
+        .unwrap();
+        let mut last_error = None;
+        let mut problems = Vec::new();
+        let cfg = load_heartbeat(&path, &mut last_error, &mut problems, &[]).unwrap();
+
+        let models: Vec<_> = cfg
+            .pulses
+            .iter()
+            .map(|p| (p.name.as_str(), p.model_tier.clone()))
+            .collect();
+        assert_eq!(
+            models,
+            vec![
+                ("tiered", Some(crate::config::ModelSelector::LARGE)),
+                (
+                    "explicit",
+                    Some(crate::config::ModelSelector::Explicit(
+                        "local/qwen3:8b".to_string()
+                    ))
+                ),
+            ],
+            "a bad model_tier drops only that pulse"
+        );
+        let [problem] = problems.as_slice() else {
+            panic!("expected one problem, got {problems:?}");
+        };
+        assert_eq!(problem.name, "typo");
+        assert!(problem.message.contains("'lagre'"), "{}", problem.message);
     }
 
     #[test]

@@ -240,6 +240,7 @@ mod tests {
             web_search: WebSearchConfig::default(),
             tracing: crate::config::TracingConfig::default(),
             role_overrides: HashMap::new(),
+            model_catalog: crate::config::ModelCatalog::default(),
             config_dir: PathBuf::from("/tmp"),
             load_notices: vec![],
         }

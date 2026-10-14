@@ -26,7 +26,8 @@ pulses:
     enabled: true
     schedule: "30m"
     active_hours: "08:00-18:00"
-    agent: ~                        # null = plain session, small tier
+    agent: ~                        # null = plain session
+    model_tier: anthropic/claude-haiku-4-5   # a tier, or one explicit provider/model
     tasks:
       - name: check_inbox
         prompt: "Check my email for urgent messages. Report anything requiring action."
@@ -49,6 +50,7 @@ pulses:
 | `schedule` | string | yes | Duration: `"30s"`, `"5m"`, `"2h"`, `"1d"`, `"7d"` — any number plus `s`/`m`/`h`/`d` |
 | `active_hours` | string | no | `"HH:MM-HH:MM"` in configured timezone. Supports overnight windows (e.g. `"22:00-06:00"`). |
 | `agent` | string or null | no | See agent routing table below. |
+| `model_tier` | string | no | The session's model: a tier (`small`, `medium`, `large`) or an explicit `provider/model` id, the format `providers.toml` uses. Default: `small`. See [Models](background-tasks.md#models). A value that is neither fails this pulse's load; an id whose provider isn't configured skips the pulse until it is. |
 | `context_from` | string | no | Name of another pulse. Injects that pulse's most recent delivered output into this pulse's prompt at fire time. See "Output Chaining (`context_from`)" below. |
 | `tasks` | array of objects | yes | Each task has a `name` (string) and a `prompt` (string), and may run a `script`. See "Task Fields" below. |
 
@@ -65,10 +67,12 @@ pulses:
 
 ### Agent Routing
 
-| Value | Execution | Model Tier |
-|-------|-----------|------------|
-| `~` (null / omitted) | Session with no skill | Small |
-| `"<skill-name>"` | Session with that skill activated as its role | The pulse's `model_tier` (default: small) |
+| Value | Execution |
+|-------|-----------|
+| `~` (null / omitted) | Session with no skill |
+| `"<skill-name>"` | Session with that skill activated as its role |
+
+Either way the session runs on the pulse's `model_tier` (default: small).
 
 `agent: "main"` is removed: every session fork already carries the main agent's identity and a snapshot of its memory, so there is no separate "run on main" mode. A pulse still using `agent: "main"`, or setting `include_identity` (also removed), fails to load with an error naming the pulse — it is never silently reinterpreted as something else. This is logged (`residuum logs --level error`) and also raised as an owner-facing notice (a toast in the web UI, via the bus's system notification channel) naming every currently rejected pulse, the field to remove, and a link to [`migrating-to-agent-sessions.md`](../guides/migrating-to-agent-sessions.md). The notice fires once when a pulse first becomes rejected and again if the rejected set changes on a later edit — not on every scheduler tick, even though HEARTBEAT.yml re-validates on each one (see "Scheduling Behavior" below).
 
@@ -144,7 +148,7 @@ Editing `HEARTBEAT.yml` through the agent's `write_file`/`edit_file` tools, the 
 ## Scheduling Behavior
 
 - The scheduler runs on a **60-second tick**, so precision is at best ~1 minute
-- HEARTBEAT.yml is **hot-reloaded** on every tick — changes take effect without restarting the gateway. The file is parsed generically first, then each pulse entry is deserialized on its own: a pulse with a bad field (e.g. `schedule` given as something other than a string) is dropped individually and reported as a per-pulse problem, while every other pulse in the file still loads. It's also fully re-validated on every tick — a pulse rejected for using a removed option (see "Agent Routing" above), a duplicate pulse name (dropped, keeping the first definition), an unparseable `schedule`/`active_hours` string (that pulse is skipped), or a pulse entry that fails to deserialize — but each is only logged and notified about when the problem set actually changes, not on every tick of an unchanged, still-broken file, otherwise a single bad pulse would log and toast once a minute for as long as it stays broken. A removed-option problem is logged at `error!` and links [`migrating-to-agent-sessions.md`](../guides/migrating-to-agent-sessions.md); every other kind of problem is logged at `warn!` and links this doc instead, since none of them have anything to do with the migration.
+- HEARTBEAT.yml is **hot-reloaded** on every tick — changes take effect without restarting the gateway. The file is parsed generically first, then each pulse entry is deserialized on its own: a pulse with a bad field (e.g. `schedule` given as something other than a string) is dropped individually and reported as a per-pulse problem, while every other pulse in the file still loads. It's also fully re-validated on every tick — a pulse rejected for using a removed option (see "Agent Routing" above), a duplicate pulse name (dropped, keeping the first definition), an unparseable `schedule`/`active_hours` string (that pulse is skipped), an explicit `model_tier` whose provider `providers.toml` doesn't have (that pulse is skipped until the model resolves, which a config reload that adds the provider makes happen on the next tick), or a pulse entry that fails to deserialize (including a `model_tier` that is neither a tier nor a `provider/model` id) — but each is only logged and notified about when the problem set actually changes, not on every tick of an unchanged, still-broken file, otherwise a single bad pulse would log and toast once a minute for as long as it stays broken. A removed-option problem is logged at `error!` and links [`migrating-to-agent-sessions.md`](../guides/migrating-to-agent-sessions.md); every other kind of problem is logged at `warn!` and links this doc instead, since none of them have anything to do with the migration.
 - A whole-document YAML syntax error (the file itself doesn't parse, as opposed to one bad pulse entry within an otherwise valid document) keeps the last pulse set that loaded successfully running, rather than firing nothing until the file is fixed. The owner is notified with the parse error, once per distinct error rather than every tick, the same dedup rule as any other HEARTBEAT.yml problem.
 - Last-run timestamps are persisted to `pulse_state.json` in the workspace, so pulses resume their schedule across gateway restarts. Missing or corrupt state files are treated as empty state (logged at warn level).
 - A pulse with no recorded run (a new install, or a pulse just added to HEARTBEAT.yml) does not run on its first tick. The scheduler records it as seen at that moment, persists that time, and runs it one `schedule` later. A pulse outside its `active_hours` is not recorded until a tick evaluates it inside the window.
@@ -153,7 +157,7 @@ Editing `HEARTBEAT.yml` through the agent's `write_file`/`edit_file` tools, the 
 
 ## Schedule Place
 
-The web UI's Schedule place (under each agent in the rail, at `/agent/<name>/schedule`) lists every pulse by its name in words, as Home does (`inbox_check` reads "Inbox check"): how often it runs and its active hours, its skill, when it runs next in Home's words ("in 34m", "Today at 9:00 AM", "Due now"; "Paused", "No next run", or "Won't run until fixed" otherwise), how its last run went and when (with the error for a failure), whether it is running now (and, for a run that overlaps the one before it, when that one started), and any HEARTBEAT.yml loading problems naming it. When no enabled pulse has a next run, a notice says the agent's pulses are turned off in its settings or its settings can't be read, and opens its Schedule settings.
+The web UI's Schedule place (under each agent in the rail, at `/agent/<name>/schedule`) lists every pulse by its name in words, as Home does (`inbox_check` reads "Inbox check"): how often it runs and its active hours, its skill, its model when it names one, when it runs next in Home's words ("in 34m", "Today at 9:00 AM", "Due now"; "Paused", "No next run", or "Won't run until fixed" otherwise), how its last run went and when (with the error for a failure), whether it is running now (and, for a run that overlaps the one before it, when that one started), and any HEARTBEAT.yml loading problems naming it. When no enabled pulse has a next run, a notice says the agent's pulses are turned off in its settings or its settings can't be read, and opens its Schedule settings.
 
 Each pulse has a switch. Turning it off or on flips the `enabled` value for that one pulse in HEARTBEAT.yml in place — the rest of the file, including comments and formatting, is left byte-for-byte untouched. The switch moves at once and moves back, with an error notice, if the change fails; a pulse that failed to load has no switch to flip. The same place lists pending scheduled actions (see [scheduled-actions.md](scheduled-actions.md)) with Cancel for each.
 

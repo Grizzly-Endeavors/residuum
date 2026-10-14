@@ -255,9 +255,11 @@ pub async fn handle_pulse_tick(rt: &mut AgentRuntime) {
         .take_if_matches(crate::tools::config_reload_tracker::ConfigReloadKind::Heartbeat);
 
     let now = time::now_local(rt.tz);
-    let due = rt
-        .pulse_scheduler
-        .due_pulses(now, &rt.layout.heartbeat_yml());
+    let due = {
+        let models = rt.spawn_context.model_catalog.read().await;
+        rt.pulse_scheduler
+            .due_pulses(now, &rt.layout.heartbeat_yml(), &models)
+    };
     if deliver_to_agent {
         let outcome = heartbeat_reload_outcome(&rt.pulse_scheduler);
         rt.agent.inject_system_message(outcome);
@@ -305,7 +307,11 @@ mod tests {
         std::fs::write(&path, "pulses: []\n").unwrap();
 
         let mut scheduler = PulseScheduler::new();
-        let _due = scheduler.due_pulses(chrono::Local::now().naive_local(), &path);
+        let _due = scheduler.due_pulses(
+            chrono::Local::now().naive_local(),
+            &path,
+            &crate::config::ModelCatalog::default(),
+        );
 
         assert_eq!(
             heartbeat_reload_outcome(&scheduler),
@@ -321,7 +327,11 @@ mod tests {
         std::fs::write(&path, yaml).unwrap();
 
         let mut scheduler = PulseScheduler::new();
-        let _due = scheduler.due_pulses(chrono::Local::now().naive_local(), &path);
+        let _due = scheduler.due_pulses(
+            chrono::Local::now().naive_local(),
+            &path,
+            &crate::config::ModelCatalog::default(),
+        );
         // Drain the deduped owner notice — the agent-facing outcome must not
         // depend on whether anything is left for the owner to be told.
         let _notice = scheduler.take_problem_notice();
@@ -340,7 +350,11 @@ mod tests {
         std::fs::write(&path, "not: valid: yaml: [[[").unwrap();
 
         let mut scheduler = PulseScheduler::new();
-        let _due = scheduler.due_pulses(chrono::Local::now().naive_local(), &path);
+        let _due = scheduler.due_pulses(
+            chrono::Local::now().naive_local(),
+            &path,
+            &crate::config::ModelCatalog::default(),
+        );
 
         let outcome = heartbeat_reload_outcome(&scheduler);
         assert!(

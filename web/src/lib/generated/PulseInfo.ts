@@ -12,6 +12,11 @@ export type PulseInfo = { name: string,
  */
 enabled: boolean, schedule: string | null, active_hours: string | null, agent: string | null, 
 /**
+ * The pulse's `model_tier` as written: a tier or an explicit
+ * `provider/model` id. `None` runs the `small` tier.
+ */
+model_tier: string | null, 
+/**
  * When the pulse next fires, from `pulse::next_run`: the schedule since
  * `pulse_state.json`'s last run, moved into `active_hours`. `None` for a
  * disabled pulse, one whose schedule or active hours can't be read or

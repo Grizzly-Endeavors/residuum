@@ -338,6 +338,13 @@ async function sessionTranscript(ctx: RouteContext): Promise<void> {
 /** The fields a session start takes. Any other is refused, as the backend refuses it. */
 const START_FIELDS = new Set(["prompt", "context", "skill", "model", "fork"]);
 const MODEL_SIZES = new Set(["small", "medium", "large"]);
+
+/** Whether `model` is a tier or a `provider/model` id, the shapes the backend accepts. */
+function isModelSelector(model: string): boolean {
+  if (MODEL_SIZES.has(model)) return true;
+  const slash = model.indexOf("/");
+  return slash > 0 && slash < model.length - 1 && !/\s/.test(model);
+}
 const MALFORMED_START = 'the body must be JSON like {"prompt": "..."}';
 
 /** A session start's prompt and fork flag, or the backend's reason it can't be read. */
@@ -356,8 +363,10 @@ function readStartRequest(raw: string): { prompt: string; fork: boolean } | { er
     return { error: MALFORMED_START };
   }
   if (!prompt.trim()) return { error: "prompt must not be empty" };
-  if (typeof model === "string" && !MODEL_SIZES.has(model)) {
-    return { error: `invalid model tier '${model}': must be small, medium, or large` };
+  if (typeof model === "string" && !isModelSelector(model)) {
+    return {
+      error: `invalid model '${model}': use a tier (small, medium, or large) or a model id in provider/model form, such as anthropic/claude-haiku-4-5`,
+    };
   }
   return { prompt, fork };
 }

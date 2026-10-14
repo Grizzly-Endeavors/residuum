@@ -20,7 +20,7 @@ use crate::bus::{
     A2aTaskSignalEvent, A2aTaskSignalState, AgentResultStatus, BusHandle, SessionEvent,
     SessionEventKind, topics,
 };
-use crate::config::BackgroundModelTier;
+use crate::config::ModelSelector;
 use crate::inference::{ImageData, MessageSender};
 use crate::interfaces::attachment::{
     self, AttachmentInfo, MAX_IMAGE_INLINE_SIZE, is_supported_image,
@@ -331,7 +331,7 @@ async fn deliver_inbound(
     };
     let spawn = ConversationSpawn {
         source_label: format!("a2a:{display_name}"),
-        model_tier: BackgroundModelTier::Medium,
+        model: ModelSelector::MEDIUM,
         skill,
     };
 

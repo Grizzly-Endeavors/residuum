@@ -47,6 +47,8 @@ function summary(overrides: Partial<SessionSummary> = {}): SessionSummary {
     error: null,
     error_details: null,
     overlap: null,
+    model: null,
+    resolved_model: null,
     ...overrides,
   };
 }
@@ -110,6 +112,14 @@ describe("the session panel", () => {
     expect(screen.getByText("0 tokens in, 0 out, 0 tool calls")).toBeVisible();
     expect(screen.getByText("run-1")).toBeVisible();
     expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
+  });
+
+  it("names the model the run ran on in its details", async () => {
+    await show(summary({ model: "small", resolved_model: "anthropic/claude-haiku-4-5" }));
+    await userEvent.click(screen.getByRole("button", { name: "Details" }));
+    expect(screen.getByText("Model", { selector: "dt" }).nextElementSibling).toHaveTextContent(
+      "anthropic/claude-haiku-4-5, from the small tier",
+    );
   });
 
   it("says the owner started a run, and when it forked the conversation", async () => {

@@ -28,7 +28,8 @@ pub struct PulseContext {
 /// session's role. `agent: "main"` is rejected at load time (see
 /// `validate_pulse`) and never reaches this function.
 ///
-/// The model tier comes from the pulse's own `model_tier`, defaulting to `small`.
+/// The model comes from the pulse's own `model_tier` (a tier or an explicit
+/// model), defaulting to the `small` tier.
 ///
 /// `overlap` is `Some` when the caller found this pulse's previous run still
 /// live in the session registry — the new run still starts normally, this
@@ -56,11 +57,10 @@ pub fn build_pulse_execution(
         skill = skill.unwrap_or("none"),
         "routing pulse to scheduled session"
     );
-    let model_tier = pulse
+    let model = pulse
         .model_tier
-        .as_deref()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(crate::config::BackgroundModelTier::Small);
+        .clone()
+        .unwrap_or(crate::config::ModelSelector::SMALL);
 
     let trigger = EventTrigger::Pulse;
     let address = generate_address(&trigger, &pulse.name);
@@ -72,7 +72,7 @@ pub fn build_pulse_execution(
         prompt,
         context: None,
         source: trigger,
-        model_tier,
+        model,
         spawner: None,
         depth: MAIN_DEPTH + 1,
         hop_count: 0,
@@ -203,10 +203,7 @@ mod tests {
         assert!(spawn_event.prompt.contains("email_check"));
         assert!(spawn_event.prompt.contains(HEARTBEAT_OK));
         assert!(matches!(spawn_event.source, EventTrigger::Pulse));
-        assert!(matches!(
-            spawn_event.model_tier,
-            crate::config::BackgroundModelTier::Small
-        ));
+        assert_eq!(spawn_event.model, crate::config::ModelSelector::SMALL);
         assert!(
             spawn_event
                 .address
@@ -228,10 +225,21 @@ mod tests {
         assert!(matches!(spawn_event.source, EventTrigger::Pulse));
         // A pulse that names no tier runs small, whether or not it
         // names a skill — the tier is the pulse's own setting.
-        assert!(matches!(
-            spawn_event.model_tier,
-            crate::config::BackgroundModelTier::Small
-        ));
+        assert_eq!(spawn_event.model, crate::config::ModelSelector::SMALL);
+    }
+
+    #[test]
+    fn execution_runs_the_pulse_model_tier_or_explicit_model() {
+        let mut pulse = sample_pulse();
+        pulse.model_tier = Some(crate::config::ModelSelector::LARGE);
+        assert_eq!(
+            build_pulse_execution(&pulse, None, None).model,
+            crate::config::ModelSelector::LARGE
+        );
+
+        let explicit = crate::config::ModelSelector::Explicit("local/qwen3:8b".to_string());
+        pulse.model_tier = Some(explicit.clone());
+        assert_eq!(build_pulse_execution(&pulse, None, None).model, explicit);
     }
 
     #[test]

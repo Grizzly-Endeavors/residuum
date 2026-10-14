@@ -357,7 +357,7 @@ On error: skill is not currently active.
 | `prompt`     | string          | yes      | The prompt to execute when the action fires                                                                                                                       |
 | `run_at`     | string          | yes      | Always use local time without an offset (e.g. `2026-03-01T09:00:00`). Interpreted in the user's configured timezone. Must be in the future. |
 | `agent_name` | string          | no       | A skill name (e.g. `"memory-analyst"`) to fork the session with that skill as its role. Omit to fork a plain session with no skill. `"main"` is rejected. |
-| `model_tier` | string (enum)   | no       | Model tier override for session actions: `"small"`, `"medium"`, `"large"`. Defaults to medium.                                                                 |
+| `model_tier` | string | no | The action's model: a tier (`"small"`, `"medium"`, `"large"`) or an explicit `provider/model` id, the format `providers.toml` uses. Defaults to medium. An explicit model runs with no failover. |
 
 ### Output
 
@@ -374,7 +374,7 @@ On error: invalid datetime, `run_at` in the past, or save failure.
 **Source:** `actions.rs` · `ListActionsTool`
 
 **Description sent to LLM:**
-> List all pending scheduled actions with their IDs, names, and fire times.
+> List all pending scheduled actions with their IDs, names, fire times, and models, and say which are held because their model can't run.
 
 ### Input
 
@@ -385,10 +385,10 @@ No parameters required (empty object accepted).
 On success: count header followed by one entry per action (fire times displayed in user's local timezone):
 ```
 {N} action(s):
-  {name} ({id}) — fires: {datetime} [agent info]
+  {name} ({id}) — fires: {datetime} [skill: {skill}] [model: {model}] — held, not running: {reason}
 ```
 
-The agent label shows `[skill: {name}]` for skill-routed actions, or nothing for a plain session with no skill.
+`[skill: …]` appears for skill-routed actions, `[model: …]` for an action that names a model (a tier or a `provider/model` id), and `— held, not running: {reason}` for an action whose model can't run (an unreadable value, or a provider `providers.toml` doesn't have), which stays scheduled without running until its model works or it is cancelled.
 
 When no actions exist: `"No pending scheduled actions."`
 
@@ -774,7 +774,7 @@ The teammate section lists every agent in the hub, sorted by name, from the hub'
 |------------------|-----------------|----------|-----------------------------------------------------------------------|
 | `task`           | string          | yes      | The prompt/instructions for the session                              |
 | `skill`          | string          | no       | Name of a skill to activate as the session's role. Omit to run on the task prompt alone. Must match a known skill or the call fails. `"main"` is rejected. |
-| `model`          | string          | no       | Model tier: `"small"`, `"medium"`, `"large"`. Default: `"medium"`. |
+| `model`          | string          | no       | A tier (`"small"`, `"medium"`, `"large"`) or an explicit `provider/model` id, the format `providers.toml` uses. Default: `"medium"`. An explicit model runs with no failover. |
 
 ### Session Roles
 
@@ -796,7 +796,7 @@ The session runs in the background via the session runtime. Every turn's outcome
 
 - Missing or empty `task` → `InvalidArguments`
 - `skill` is `"main"` (reserved, case-insensitive) → `InvalidArguments`
-- Invalid `model` value → `InvalidArguments`
+- `model` that is neither a tier nor a `provider/model` id, or names a provider that is neither a `[providers]` entry nor a provider type → `InvalidArguments` naming the value; nothing is spawned
 - Unknown `skill` (not in the skill index) → `is_error = true` with the available skill list
 - Spawning past the depth cap → `is_error = true`, e.g. `"cannot spawn: nesting depth cap (3) reached at depth 3 — handle this task directly instead of spawning further, or have a shallower agent spawn it. Raise the \`subagent_depth_cap\` setting under \`[background]\` in config.toml to allow deeper nesting"`
 - Bus publish failure → `Execution` error
@@ -861,7 +861,7 @@ Routed through `crate::a2a::client`'s `A2aClientHub` (resolves the agent's card 
 - **main** — publishes a `MessageEvent` on the `UserMessage` bus topic, formatted with the sender's address and category, reusing the main event loop's existing interrupt-if-running/new-turn-if-idle handling. The hop count is recorded under the published event's id, since `MessageEvent` itself carries no hop-count field.
 - **running/idle session** — delivers an `Interrupt::AgentMessage` through the session's own interrupt channel (registered in the `SessionRegistry` at fork time). A running turn drains it at its next tool-call boundary; an idle session wakes and runs another turn in the same run, with the message as that turn's input.
 - **completing session** — the run no longer accepts messages into itself. `AgentMessenger` hands the wait to a detached task (`wait_until_clear()` on a `tokio::sync::Notify`, not polling) and returns immediately; once the run actually leaves the registry (its resume point is always recorded before that happens), the task re-checks the address before acting: if another message already resumed it in the meantime, this one delivers straight into that live run; otherwise it resumes the session, same as a completed session below. That re-check is what lets two messages queued to one completing session both land, as exactly one new run, instead of the second racing a duplicate spawn and losing. A message still queued in a run's own interrupt channel when its teardown drains it (e.g. one delivered just as `stop_agent` lands) is handled the same way, combined into the resumed run's opening prompt if more than one arrived.
-- **completed session** — publishes a fresh `SpawnRequestEvent` at the same address, carrying the previous run's model tier, the delivered message's own hop count as the new run's starting hop count, and a pointer to its episode id (or run id, retrievable with `memory_get`) in the new run's context. Goes through the ordinary spawn-listener path, exactly like any other session fork. `SessionRegistry::register` is a compare-and-swap: if a spawn/resume for this address raced another one that already registered it live, the loser delivers its own input into the winning run as a message instead of clobbering it. The listener applies the same fallback for a spawn/resume request that arrives for an address it can see is already running/idle/forking — the normal outcome of two messages resuming the same completing session, not an error case.
+- **completed session** — publishes a fresh `SpawnRequestEvent` at the same address, carrying the previous run's model, the delivered message's own hop count as the new run's starting hop count, and a pointer to its episode id (or run id, retrievable with `memory_get`) in the new run's context. Goes through the ordinary spawn-listener path, exactly like any other session fork. `SessionRegistry::register` is a compare-and-swap: if a spawn/resume for this address raced another one that already registered it live, the loser delivers its own input into the winning run as a message instead of clobbering it. The listener applies the same fallback for a spawn/resume request that arrives for an address it can see is already running/idle/forking — the normal outcome of two messages resuming the same completing session, not an error case.
 
 **Available to sessions:** registered in both the main agent's registry and `build_subagent_registry()`, each instance identifying itself with its own address and category (`"main"` for the main agent), and holding a clone of that agent's current-turn `HopCounter`.
 

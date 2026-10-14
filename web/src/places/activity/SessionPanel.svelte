@@ -9,6 +9,7 @@
     isStoppableState,
     runIcon,
     runKind,
+    runModel,
     runStatus,
     sessionArtifact,
     startedByOwner,
@@ -37,6 +38,7 @@
   );
   const finished = $derived(summary?.state === "completed");
   const artifact = $derived(summary ? sessionArtifact(summary) : null);
+  const model = $derived(summary ? runModel(summary) : null);
   const spawner = $derived(
     summary?.spawner != null && summary.spawner !== "main" ? summary.spawner : null,
   );
@@ -130,6 +132,10 @@
               {summary.source_label}
             {/if}
           </dd>
+          {#if model}
+            <dt>Model</dt>
+            <dd>{model}</dd>
+          {/if}
           {#if summary.depth > 1}
             <dt>Depth</dt>
             <dd>{summary.depth} levels below the conversation</dd>

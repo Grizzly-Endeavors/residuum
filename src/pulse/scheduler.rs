@@ -4,10 +4,28 @@ use std::path::{Path, PathBuf};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
+use crate::config::ModelCatalog;
+
 use super::types::{
     HeartbeatProblem, ProblemKind, PulseDef, heartbeat_problems_notice, is_within_active_hours,
     load_heartbeat, parse_active_hours, parse_schedule_duration, read_and_parse,
 };
+
+/// A problem naming `pulse` when its `model_tier` is an explicit model that
+/// doesn't resolve against `models`. A tier always resolves.
+fn unusable_model_problem(pulse: &PulseDef, models: &ModelCatalog) -> Option<HeartbeatProblem> {
+    let model = pulse.model_tier.as_ref()?;
+    let reason = models.check(model).err()?;
+    Some(HeartbeatProblem {
+        name: pulse.name.clone(),
+        message: format!(
+            "pulse '{}' has model_tier '{model}', which can't run: {reason} — skipping until \
+             it's fixed in HEARTBEAT.yml or providers.toml",
+            pulse.name
+        ),
+        kind: ProblemKind::Malformed,
+    })
+}
 
 /// Tracks per-pulse last-run times and determines which pulses are due.
 ///
@@ -93,6 +111,8 @@ impl PulseScheduler {
     /// - Its schedule duration can be parsed
     /// - `now - last_run >= schedule duration`
     /// - If `active_hours` is set, `now` falls within the window
+    /// - Its `model_tier`, when it names an explicit model, resolves against
+    ///   `models`
     ///
     /// A pulse with no `last_run` yet (a new install, or a pulse just added
     /// to HEARTBEAT.yml) is not due: it is recorded as seen at `now` and first
@@ -103,7 +123,12 @@ impl PulseScheduler {
     /// persisted (if a state path is set).
     #[must_use]
     #[tracing::instrument(skip_all, fields(heartbeat_path = %heartbeat_path.display()))]
-    pub fn due_pulses(&mut self, now: NaiveDateTime, heartbeat_path: &Path) -> Vec<PulseDef> {
+    pub fn due_pulses(
+        &mut self,
+        now: NaiveDateTime,
+        heartbeat_path: &Path,
+        models: &ModelCatalog,
+    ) -> Vec<PulseDef> {
         let mut problems = Vec::new();
         let Some(heartbeat) = load_heartbeat(
             heartbeat_path,
@@ -129,6 +154,11 @@ impl PulseScheduler {
 
         for pulse in heartbeat.pulses {
             if !pulse.enabled {
+                continue;
+            }
+
+            if let Some(problem) = unusable_model_problem(&pulse, models) {
+                problems.push(problem);
                 continue;
             }
 
@@ -348,6 +378,47 @@ fn load_state(path: &Path) -> PulseScheduler {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_pulse_whose_explicit_model_does_not_resolve_is_reported_and_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("HEARTBEAT.yml");
+        std::fs::write(
+            &path,
+            "pulses:\n  - name: local\n    schedule: \"1m\"\n    model_tier: lcoal/qwen3:8b\n    tasks: []\n  \
+             - name: hosted\n    schedule: \"1m\"\n    model_tier: openai/gpt-4o\n    tasks: []\n",
+        )
+        .unwrap();
+        let models = crate::config::ModelCatalog::default();
+        let mut scheduler = PulseScheduler::new();
+        let start = chrono::Local::now().naive_local();
+        let _first = scheduler.due_pulses(start, &path, &models);
+        let due = scheduler.due_pulses(start + chrono::Duration::minutes(2), &path, &models);
+
+        let names: Vec<&str> = due.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["hosted"],
+            "only the pulse whose model resolves runs"
+        );
+        let [problem] = scheduler.current_problems() else {
+            panic!(
+                "expected one problem, got {:?}",
+                scheduler.current_problems()
+            );
+        };
+        assert_eq!(problem.name, "local");
+        assert!(
+            problem.message.contains("lcoal/qwen3:8b")
+                && problem.message.contains("not a known provider"),
+            "{}",
+            problem.message
+        );
+        assert!(
+            scheduler.take_problem_notice().is_some(),
+            "the owner is told once"
+        );
+    }
     use super::*;
     use tempfile::tempdir;
 
@@ -376,16 +447,22 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let first = scheduler.due_pulses(now, &path);
+        let first = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
         assert!(first.is_empty(), "a first-seen pulse should not fire");
 
         let almost = now + chrono::Duration::minutes(59);
         assert!(
-            scheduler.due_pulses(almost, &path).is_empty(),
+            scheduler
+                .due_pulses(almost, &path, &crate::config::ModelCatalog::default())
+                .is_empty(),
             "should not fire before one schedule duration has passed"
         );
 
-        let due = scheduler.due_pulses(now + chrono::Duration::hours(1), &path);
+        let due = scheduler.due_pulses(
+            now + chrono::Duration::hours(1),
+            &path,
+            &crate::config::ModelCatalog::default(),
+        );
         assert_eq!(due.len(), 1, "should fire once first_seen + 1h is reached");
         assert_eq!(due.first().unwrap().name, "test_pulse", "name should match");
     }
@@ -407,18 +484,28 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
         assert!(
-            scheduler.due_pulses(now, &path).is_empty(),
+            scheduler
+                .due_pulses(now, &path, &crate::config::ModelCatalog::default())
+                .is_empty(),
             "a new install must not fire a 7d pulse on the first tick"
         );
         assert!(
             scheduler
-                .due_pulses(now + chrono::Duration::days(6), &path)
+                .due_pulses(
+                    now + chrono::Duration::days(6),
+                    &path,
+                    &crate::config::ModelCatalog::default()
+                )
                 .is_empty(),
             "still not due after 6 days"
         );
         assert_eq!(
             scheduler
-                .due_pulses(now + chrono::Duration::days(7), &path)
+                .due_pulses(
+                    now + chrono::Duration::days(7),
+                    &path,
+                    &crate::config::ModelCatalog::default()
+                )
                 .len(),
             1,
             "due once 7 days have passed since first seen"
@@ -434,7 +521,7 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let initial_due = scheduler.due_pulses(now, &path);
+        let initial_due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
         assert!(
             initial_due.is_empty(),
             "test_pulse is deferred on first tick"
@@ -454,7 +541,8 @@ pulses:
         std::fs::write(&path, added).unwrap();
 
         let added_at = now + chrono::Duration::minutes(90);
-        let due_at_add = scheduler.due_pulses(added_at, &path);
+        let due_at_add =
+            scheduler.due_pulses(added_at, &path, &crate::config::ModelCatalog::default());
         let names_at_add: Vec<_> = due_at_add.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
             names_at_add,
@@ -463,13 +551,18 @@ pulses:
         );
 
         let before_late = added_at + chrono::Duration::minutes(119);
-        let due_before_late = scheduler.due_pulses(before_late, &path);
+        let due_before_late =
+            scheduler.due_pulses(before_late, &path, &crate::config::ModelCatalog::default());
         assert!(
             due_before_late.iter().all(|p| p.name != "late_pulse"),
             "late_pulse should not fire before its own schedule duration"
         );
 
-        let due_at_late = scheduler.due_pulses(added_at + chrono::Duration::hours(2), &path);
+        let due_at_late = scheduler.due_pulses(
+            added_at + chrono::Duration::hours(2),
+            &path,
+            &crate::config::ModelCatalog::default(),
+        );
         assert!(
             due_at_late.iter().any(|p| p.name == "late_pulse"),
             "late_pulse should fire once first_seen + 2h is reached"
@@ -487,19 +580,25 @@ pulses:
             .unwrap();
 
         // First tick only records the pulse as seen.
-        assert!(scheduler.due_pulses(now, &path).is_empty());
+        assert!(
+            scheduler
+                .due_pulses(now, &path, &crate::config::ModelCatalog::default())
+                .is_empty()
+        );
 
         // One schedule duration later it fires.
         let first_fire = now + chrono::Duration::hours(1);
         assert_eq!(
-            scheduler.due_pulses(first_fire, &path).len(),
+            scheduler
+                .due_pulses(first_fire, &path, &crate::config::ModelCatalog::default())
+                .len(),
             1,
             "should fire after the schedule duration"
         );
 
         // 30 minutes after that — not yet due (schedule is 1h)
         let later = first_fire + chrono::Duration::minutes(30);
-        let due = scheduler.due_pulses(later, &path);
+        let due = scheduler.due_pulses(later, &path, &crate::config::ModelCatalog::default());
         assert!(due.is_empty(), "should not refire within schedule period");
     }
 
@@ -519,7 +618,7 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let due = scheduler.due_pulses(now, &path);
+        let due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
         assert!(due.is_empty(), "disabled pulse should not fire");
     }
 
@@ -541,7 +640,7 @@ pulses:
             .unwrap()
             .and_hms_opt(22, 0, 0)
             .unwrap();
-        let due = scheduler.due_pulses(night, &path);
+        let due = scheduler.due_pulses(night, &path, &crate::config::ModelCatalog::default());
         assert!(due.is_empty(), "pulse should not fire outside active hours");
     }
 
@@ -563,7 +662,11 @@ pulses:
             .unwrap()
             .and_hms_opt(22, 0, 0)
             .unwrap();
-        assert!(scheduler.due_pulses(night, &path).is_empty());
+        assert!(
+            scheduler
+                .due_pulses(night, &path, &crate::config::ModelCatalog::default())
+                .is_empty()
+        );
         assert!(
             !scheduler.last_run.contains_key("daytime_pulse"),
             "a pulse outside its window should not be recorded as seen"
@@ -578,14 +681,22 @@ pulses:
             .unwrap()
             .and_hms_opt(9, 30, 0)
             .unwrap();
-        assert!(scheduler.due_pulses(morning, &path).is_empty());
+        assert!(
+            scheduler
+                .due_pulses(morning, &path, &crate::config::ModelCatalog::default())
+                .is_empty()
+        );
         assert_eq!(
             scheduler.last_run.get("daytime_pulse"),
             Some(&morning),
             "first evaluation inside the window records the pulse as seen"
         );
 
-        let due = scheduler.due_pulses(morning + chrono::Duration::hours(1), &path);
+        let due = scheduler.due_pulses(
+            morning + chrono::Duration::hours(1),
+            &path,
+            &crate::config::ModelCatalog::default(),
+        );
         assert_eq!(due.len(), 1, "fires one schedule duration after first seen");
     }
 
@@ -608,10 +719,16 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
         assert!(
-            scheduler.due_pulses(day, &path).is_empty(),
+            scheduler
+                .due_pulses(day, &path, &crate::config::ModelCatalog::default())
+                .is_empty(),
             "first-seen pulse is deferred even inside active hours"
         );
-        let due = scheduler.due_pulses(day + chrono::Duration::hours(1), &path);
+        let due = scheduler.due_pulses(
+            day + chrono::Duration::hours(1),
+            &path,
+            &crate::config::ModelCatalog::default(),
+        );
         assert_eq!(due.len(), 1, "pulse should fire inside active hours");
     }
 
@@ -624,7 +741,7 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let due = scheduler.due_pulses(now, &path);
+        let due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
         assert!(due.is_empty(), "missing HEARTBEAT.yml should return empty");
     }
 
@@ -644,7 +761,7 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let due = scheduler.due_pulses(now, &path);
+        let due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
         assert!(
             due.is_empty(),
             "pulse with invalid schedule should be skipped"
@@ -668,7 +785,7 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let due = scheduler.due_pulses(now, &path);
+        let due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
         assert!(
             due.is_empty(),
             "pulse with invalid active_hours should be skipped"
@@ -691,8 +808,16 @@ pulses:
         // First scheduler records first-seen and fires one duration later
         {
             let mut sched = PulseScheduler::with_state_path(&state_path);
-            assert!(sched.due_pulses(now, &hb_path).is_empty());
-            let due = sched.due_pulses(now + chrono::Duration::hours(1), &hb_path);
+            assert!(
+                sched
+                    .due_pulses(now, &hb_path, &crate::config::ModelCatalog::default())
+                    .is_empty()
+            );
+            let due = sched.due_pulses(
+                now + chrono::Duration::hours(1),
+                &hb_path,
+                &crate::config::ModelCatalog::default(),
+            );
             assert_eq!(due.len(), 1, "should fire after the schedule duration");
         }
 
@@ -700,7 +825,11 @@ pulses:
         {
             let mut sched = PulseScheduler::with_state_path(&state_path);
             let ninety_min_later = now + chrono::Duration::minutes(90);
-            let due = sched.due_pulses(ninety_min_later, &hb_path);
+            let due = sched.due_pulses(
+                ninety_min_later,
+                &hb_path,
+                &crate::config::ModelCatalog::default(),
+            );
             assert!(due.is_empty(), "should not re-fire from persisted state");
         }
     }
@@ -718,7 +847,13 @@ pulses:
         {
             let mut sched = PulseScheduler::with_state_path(&state_path);
             assert!(
-                sched.due_pulses(first_seen, &hb_path).is_empty(),
+                sched
+                    .due_pulses(
+                        first_seen,
+                        &hb_path,
+                        &crate::config::ModelCatalog::default()
+                    )
+                    .is_empty(),
                 "nothing fires on the first tick"
             );
         }
@@ -727,11 +862,19 @@ pulses:
         let mut sched = PulseScheduler::with_state_path(&state_path);
         assert!(
             sched
-                .due_pulses(first_seen + chrono::Duration::minutes(59), &hb_path)
+                .due_pulses(
+                    first_seen + chrono::Duration::minutes(59),
+                    &hb_path,
+                    &crate::config::ModelCatalog::default()
+                )
                 .is_empty(),
             "a restart must not push the first run back or pull it forward"
         );
-        let due = sched.due_pulses(first_seen + chrono::Duration::hours(1), &hb_path);
+        let due = sched.due_pulses(
+            first_seen + chrono::Duration::hours(1),
+            &hb_path,
+            &crate::config::ModelCatalog::default(),
+        );
         assert_eq!(
             due.len(),
             1,
@@ -750,7 +893,7 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let due = sched.due_pulses(now, &hb_path);
+        let due = sched.due_pulses(now, &hb_path, &crate::config::ModelCatalog::default());
         assert!(
             due.is_empty(),
             "missing state file means empty state, pulse is first-seen and deferred"
@@ -773,7 +916,7 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let due = sched.due_pulses(now, &hb_path);
+        let due = sched.due_pulses(now, &hb_path, &crate::config::ModelCatalog::default());
         assert!(
             due.is_empty(),
             "corrupt state file should recover to empty state, pulse is first-seen and deferred"
@@ -803,7 +946,11 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 30, 0)
             .unwrap();
-        let due = sched.due_pulses(thirty_min_later, &hb_path);
+        let due = sched.due_pulses(
+            thirty_min_later,
+            &hb_path,
+            &crate::config::ModelCatalog::default(),
+        );
         assert!(
             due.is_empty(),
             "last_run from the legacy state file should still be honored"
@@ -822,7 +969,7 @@ pulses:
             .unwrap();
 
         let mut sched = PulseScheduler::with_state_path(&state_path);
-        let _due = sched.due_pulses(now, &hb_path);
+        let _due = sched.due_pulses(now, &hb_path, &crate::config::ModelCatalog::default());
 
         let contents = std::fs::read_to_string(&state_path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
@@ -921,7 +1068,7 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let _due = sched.due_pulses(tick_time, &hb_path);
+        let _due = sched.due_pulses(tick_time, &hb_path, &crate::config::ModelCatalog::default());
 
         assert_eq!(
             sched.last_output("removed_pulse"),
@@ -953,7 +1100,7 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let _due = sched.due_pulses(tick_time, &hb_path);
+        let _due = sched.due_pulses(tick_time, &hb_path, &crate::config::ModelCatalog::default());
 
         let contents = std::fs::read_to_string(&state_path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
@@ -996,7 +1143,7 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let due = sched.due_pulses(tick_time, &hb_path);
+        let due = sched.due_pulses(tick_time, &hb_path, &crate::config::ModelCatalog::default());
         assert_eq!(
             due.len(),
             1,
@@ -1046,7 +1193,7 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
 
-        let due = scheduler.due_pulses(now, &path);
+        let due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
         assert!(due.is_empty(), "a rejected pulse should never become due");
         let notice = scheduler.take_problem_notice();
         assert!(
@@ -1069,7 +1216,7 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
 
-        let first_due = scheduler.due_pulses(now, &path);
+        let first_due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
         assert!(
             first_due.is_empty(),
             "a rejected pulse should never become due"
@@ -1084,7 +1231,8 @@ pulses:
         // spam this scheduler is meant to prevent).
         for minute in 1..=5 {
             let later = now + chrono::Duration::minutes(minute);
-            let later_due = scheduler.due_pulses(later, &path);
+            let later_due =
+                scheduler.due_pulses(later, &path, &crate::config::ModelCatalog::default());
             assert!(
                 later_due.is_empty(),
                 "a rejected pulse should never become due"
@@ -1106,7 +1254,7 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
 
-        let first_due = scheduler.due_pulses(now, &path);
+        let first_due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
         assert!(
             first_due.is_empty(),
             "a rejected pulse should never become due"
@@ -1114,7 +1262,8 @@ pulses:
         assert!(scheduler.take_problem_notice().is_some());
 
         let later = now + chrono::Duration::minutes(1);
-        let second_due = scheduler.due_pulses(later, &path);
+        let second_due =
+            scheduler.due_pulses(later, &path, &crate::config::ModelCatalog::default());
         assert!(
             second_due.is_empty(),
             "a rejected pulse should never become due"
@@ -1140,7 +1289,8 @@ pulses:
 "#;
         std::fs::write(&path, edited).unwrap();
         let even_later = now + chrono::Duration::minutes(2);
-        let third_due = scheduler.due_pulses(even_later, &path);
+        let third_due =
+            scheduler.due_pulses(even_later, &path, &crate::config::ModelCatalog::default());
         assert!(
             third_due.is_empty(),
             "a rejected pulse should never become due"
@@ -1164,7 +1314,7 @@ pulses:
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap();
-        let due = scheduler.due_pulses(now, &path);
+        let due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
         assert!(due.is_empty(), "a first-seen valid pulse is deferred");
         assert!(
             scheduler.take_problem_notice().is_none(),
@@ -1194,7 +1344,7 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
 
-        let due = scheduler.due_pulses(now, &path);
+        let due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
         assert!(
             due.is_empty(),
             "the surviving 'dup' pulse is first-seen, so deferred"
@@ -1224,7 +1374,7 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
 
-        let first_due = scheduler.due_pulses(now, &path);
+        let first_due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
         assert!(
             first_due.is_empty(),
             "the surviving 'dup' pulse is deferred"
@@ -1239,7 +1389,8 @@ pulses:
         // under test here, and it should stay silent while nothing changes.
         for minute in 1..=5 {
             let later = now + chrono::Duration::minutes(minute);
-            let later_due = scheduler.due_pulses(later, &path);
+            let later_due =
+                scheduler.due_pulses(later, &path, &crate::config::ModelCatalog::default());
             assert!(later_due.is_empty(), "not due within the 1h schedule");
             assert!(
                 scheduler.take_problem_notice().is_none(),
@@ -1258,7 +1409,7 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
 
-        let first_due = scheduler.due_pulses(now, &path);
+        let first_due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
         assert!(
             first_due.is_empty(),
             "the surviving 'dup' pulse is deferred"
@@ -1266,7 +1417,8 @@ pulses:
         assert!(scheduler.take_problem_notice().is_some());
 
         let later = now + chrono::Duration::minutes(1);
-        let second_due = scheduler.due_pulses(later, &path);
+        let second_due =
+            scheduler.due_pulses(later, &path, &crate::config::ModelCatalog::default());
         assert!(
             second_due.is_empty(),
             "not due again within the 1h schedule"
@@ -1295,7 +1447,8 @@ pulses:
 "#;
         std::fs::write(&path, edited).unwrap();
         let even_later = now + chrono::Duration::minutes(2);
-        let third_due = scheduler.due_pulses(even_later, &path);
+        let third_due =
+            scheduler.due_pulses(even_later, &path, &crate::config::ModelCatalog::default());
         assert!(
             third_due.is_empty(),
             "the new 'also-dup' survivor is first-seen, so deferred"
@@ -1334,7 +1487,7 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
 
-        let due = scheduler.due_pulses(now, &path);
+        let due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
         assert!(due.is_empty(), "a pulse with a bad schedule never fires");
         let notice = scheduler.take_problem_notice();
         assert!(notice.is_some(), "first tick should queue a notice");
@@ -1342,7 +1495,8 @@ pulses:
 
         for minute in 1..=5 {
             let later = now + chrono::Duration::minutes(minute);
-            let later_due = scheduler.due_pulses(later, &path);
+            let later_due =
+                scheduler.due_pulses(later, &path, &crate::config::ModelCatalog::default());
             assert!(later_due.is_empty(), "a bad schedule never becomes due");
             assert!(
                 scheduler.take_problem_notice().is_none(),
@@ -1370,7 +1524,7 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
 
-        let due = scheduler.due_pulses(now, &path);
+        let due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
         assert!(due.is_empty(), "a pulse with bad active_hours never fires");
         let notice = scheduler.take_problem_notice();
         assert!(notice.is_some(), "first tick should queue a notice");
@@ -1378,7 +1532,8 @@ pulses:
 
         for minute in 1..=5 {
             let later = now + chrono::Duration::minutes(minute);
-            let later_due = scheduler.due_pulses(later, &path);
+            let later_due =
+                scheduler.due_pulses(later, &path, &crate::config::ModelCatalog::default());
             assert!(later_due.is_empty(), "bad active_hours never becomes due");
             assert!(
                 scheduler.take_problem_notice().is_none(),
@@ -1400,7 +1555,7 @@ pulses:
             .unwrap();
 
         // First tick loads the valid file and records the pulse as seen.
-        let first_due = scheduler.due_pulses(now, &path);
+        let first_due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
         assert!(first_due.is_empty(), "test_pulse is deferred on first tick");
         assert!(
             scheduler.take_problem_notice().is_none(),
@@ -1411,7 +1566,8 @@ pulses:
         // due_pulses must not stop scheduling test_pulse because of it.
         std::fs::write(&path, "not: valid: yaml: [[[").unwrap();
         let later = now + chrono::Duration::hours(2);
-        let due_while_broken = scheduler.due_pulses(later, &path);
+        let due_while_broken =
+            scheduler.due_pulses(later, &path, &crate::config::ModelCatalog::default());
         assert_eq!(
             due_while_broken.len(),
             1,
@@ -1429,7 +1585,8 @@ pulses:
         // requeue the notice.
         for minute in 1..=5 {
             let even_later = later + chrono::Duration::minutes(minute);
-            let repeat_due = scheduler.due_pulses(even_later, &path);
+            let repeat_due =
+                scheduler.due_pulses(even_later, &path, &crate::config::ModelCatalog::default());
             assert!(
                 repeat_due.is_empty(),
                 "not due again within the 1h schedule from its last (fallback) run"
@@ -1452,7 +1609,7 @@ pulses:
             .and_hms_opt(12, 0, 0)
             .unwrap();
 
-        let due = scheduler.due_pulses(now, &path);
+        let due = scheduler.due_pulses(now, &path, &crate::config::ModelCatalog::default());
         assert!(
             due.is_empty(),
             "with nothing known-good yet, a syntax error fires nothing"

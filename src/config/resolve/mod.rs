@@ -13,6 +13,8 @@ mod system_one;
 mod tracing_config;
 mod web_search;
 
+pub(super) use models::session_affinity_key;
+
 pub(crate) use hub::from_file_and_env as resolve_hub_config;
 
 use std::path::Path;
@@ -24,6 +26,7 @@ use super::Config;
 use super::HubConfig;
 use super::constants::{DEFAULT_MAX_TOKENS, DEFAULT_PULSE_ENABLED, DEFAULT_TIMEOUT_SECS};
 use super::deserialize::{AgentConfigFile, ProvidersFile};
+use super::model_catalog::ModelCatalog;
 use super::secrets::SecretStore;
 
 /// Load the secret store, degrading to an empty one (with a notice) if it
@@ -156,6 +159,7 @@ pub(crate) fn from_file_and_env(
         pulse: resolved_models.pulse,
         subconscious: resolved_models.subconscious,
         embedding: resolved_models.embedding,
+        model_catalog: ModelCatalog::new(providers_map, &secrets, &workspace_dir),
         workspace_dir,
         timeout_secs,
         max_tokens,

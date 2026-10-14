@@ -33,7 +33,7 @@ use crate::background::registry::{
 };
 use crate::background::store::{RunCursor, RunFilter, SessionStore, is_valid_run_id};
 use crate::bus::{EventTrigger, Publisher, SkillName, SpawnRequestEvent, topics};
-use crate::config::BackgroundModelTier;
+use crate::config::ModelSelector;
 use crate::gateway::protocol::{
     SessionCommandErrorCode, SessionDeliveryOutcome, SessionListResponse, SessionSummary,
 };
@@ -66,6 +66,9 @@ pub(crate) struct SessionsApiState {
     pub publisher: Publisher,
     /// The skill index, to refuse a start naming a skill that doesn't exist.
     pub skill_state: SharedSkillState,
+    /// The live model catalog, to refuse a start naming an explicit model
+    /// whose provider isn't configured.
+    pub models: crate::config::SharedModelCatalog,
     /// Main's saved conversation (`recent_messages.json`), which a fork
     /// starts from.
     pub main_conversation: std::path::PathBuf,
@@ -403,13 +406,16 @@ pub(crate) async fn api_session_start(
     if body.prompt.trim().is_empty() {
         return json_error(StatusCode::BAD_REQUEST, "prompt must not be empty");
     }
-    let model_tier = match body.model.as_deref() {
-        None => BackgroundModelTier::Medium,
-        Some(raw) => match raw.parse::<BackgroundModelTier>() {
-            Ok(tier) => tier,
+    let model = match body.model.as_deref() {
+        None => ModelSelector::MEDIUM,
+        Some(raw) => match raw.parse::<ModelSelector>() {
+            Ok(model) => model,
             Err(message) => return json_error(StatusCode::BAD_REQUEST, message),
         },
     };
+    if let Err(message) = state.models.read().await.check(&model) {
+        return json_error(StatusCode::BAD_REQUEST, message);
+    }
     if let Some(skill) = body.skill.as_deref()
         && let Err(message) = check_skill(&state.skill_state, skill).await
     {
@@ -417,7 +423,7 @@ pub(crate) async fn api_session_start(
     }
 
     let Some(artifact) = artifact else {
-        return start_owner_session(&state, body, model_tier).await;
+        return start_owner_session(&state, body, model).await;
     };
     if body.fork {
         return json_error(
@@ -435,7 +441,7 @@ pub(crate) async fn api_session_start(
         prompt: body.prompt,
         context: Some(context),
         source: trigger,
-        model_tier,
+        model: model.clone(),
         spawner: None,
         depth: MAIN_DEPTH + 1,
         hop_count: 0,
@@ -457,7 +463,7 @@ pub(crate) async fn api_session_start(
         artifact = %artifact,
         address = %address,
         skill = body.skill.as_deref().unwrap_or("none"),
-        model_tier = %model_tier,
+        model = %model,
         "artifact started a session"
     );
     (
@@ -474,7 +480,7 @@ pub(crate) async fn api_session_start(
 async fn start_owner_session(
     state: &SessionsApiState,
     body: SessionStartRequest,
-    model_tier: BackgroundModelTier,
+    model: ModelSelector,
 ) -> Response {
     let fork_of = if body.fork {
         match load_main_conversation(&state.main_conversation).await {
@@ -496,7 +502,7 @@ async fn start_owner_session(
     let carried = fork_of.as_ref().map(Vec::len);
     let mut event = OwnerSessionStart {
         prompt: body.prompt,
-        model_tier,
+        model: model.clone(),
         fork_of,
         conversation: None,
     }
@@ -523,7 +529,7 @@ async fn start_owner_session(
     }
     tracing::info!(
         address = %address,
-        model_tier = %model_tier,
+        model = %model,
         carried_messages = ?carried,
         "owner started a session"
     );
@@ -682,7 +688,8 @@ mod tests {
             depth: 1,
             purpose: "research".to_string(),
             agent_skill: None,
-            model_tier: crate::config::BackgroundModelTier::Medium,
+            model: crate::config::ModelSelector::MEDIUM,
+            resolved_model: None,
             conversation_target: None,
             started_at: Utc.with_ymd_and_hms(2026, 9, 20, 12, 0, 0).unwrap()
                 + Duration::minutes(minutes),
@@ -720,6 +727,7 @@ mod tests {
             messenger,
             publisher: bus.publisher(),
             skill_state: crate::skills::SkillState::new_shared(index, vec![]),
+            models: crate::config::ModelCatalog::default().into_shared(),
             main_conversation: dir.path().join("recent_messages.json"),
         };
         (state, Fixture { _dir: dir, bus })
@@ -1163,7 +1171,7 @@ mod tests {
             SessionCategory::Spawned
         );
         assert_eq!(spawn.spawner, None, "nothing it says is relayed to main");
-        assert_eq!(spawn.model_tier, BackgroundModelTier::Large);
+        assert_eq!(spawn.model, ModelSelector::LARGE);
         assert_eq!(spawn.prompt, "plan the garden");
         assert!(
             spawn.carried_history.is_empty(),
@@ -1211,7 +1219,7 @@ mod tests {
             .collect();
         assert_eq!(carried, ["should we repaint the shed?", "yes, in green"]);
         assert_eq!(spawn.spawner, None);
-        assert_eq!(spawn.model_tier, BackgroundModelTier::Medium);
+        assert_eq!(spawn.model, ModelSelector::MEDIUM);
         assert!(
             spawn
                 .context
@@ -1272,7 +1280,7 @@ mod tests {
         assert_eq!(spawn.spawner, None, "an artifact session has no spawner");
         assert_eq!(spawn.depth, 1);
         assert_eq!(spawn.hop_count, 0);
-        assert_eq!(spawn.model_tier, BackgroundModelTier::Medium);
+        assert_eq!(spawn.model, ModelSelector::MEDIUM);
         assert_eq!(spawn.skill, None);
         assert_eq!(spawn.prompt, "write a page about otters");
         let context = spawn.context.unwrap();
@@ -1310,6 +1318,19 @@ mod tests {
         assert_eq!(bad_model.status, StatusCode::BAD_REQUEST);
         assert!(bad_model.text("error").contains("huge"));
 
+        let unknown_provider = start(
+            &state,
+            headers(),
+            serde_json::json!({ "prompt": "go", "model": "nowhere/x" }),
+        )
+        .await;
+        assert_eq!(unknown_provider.status, StatusCode::BAD_REQUEST);
+        assert!(
+            unknown_provider.text("error").contains("nowhere/x"),
+            "got {}",
+            unknown_provider.body
+        );
+
         let bad_skill = start(
             &state,
             headers(),
@@ -1335,7 +1356,7 @@ mod tests {
         assert_eq!(good.status, StatusCode::ACCEPTED);
         let spawn = next_spawn(&mut spawns).await;
         assert_eq!(spawn.skill.as_ref().map(AsRef::as_ref), Some("researcher"));
-        assert_eq!(spawn.model_tier, BackgroundModelTier::Large);
+        assert_eq!(spawn.model, ModelSelector::LARGE);
     }
 
     #[tokio::test]
@@ -1429,7 +1450,7 @@ mod tests {
                     trigger: EventTrigger::Artifact("wiki".to_string()),
                     source_label: "artifact:wiki".to_string(),
                     agent_skill: None,
-                    model_tier: BackgroundModelTier::Medium,
+                    model: ModelSelector::MEDIUM,
                     spawner: None,
                     depth: 1,
                     conversation_target: None,

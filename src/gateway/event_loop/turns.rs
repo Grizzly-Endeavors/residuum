@@ -1193,6 +1193,7 @@ mod tests {
             web_search: crate::config::WebSearchConfig::default(),
             tracing: crate::config::TracingConfig::default(),
             role_overrides: std::collections::HashMap::new(),
+            model_catalog: crate::config::ModelCatalog::default(),
             config_dir: std::path::PathBuf::from("/tmp/config"),
             load_notices: vec![],
         }

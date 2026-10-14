@@ -42,7 +42,7 @@ use crate::background::types::SubAgentConfig;
 use crate::bus::{
     BusHandle, EndpointRegistry, Publisher, SessionAddress, SpawnRequestEvent, topics,
 };
-use crate::config::{A2aConfig, A2aVisibility, BackgroundModelTier, Config};
+use crate::config::{A2aConfig, A2aVisibility, Config, ModelSelector};
 use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, ToolCall,
     ToolDefinition,
@@ -151,6 +151,7 @@ fn test_config(dir: &std::path::Path) -> Config {
         },
         tracing: TracingConfig::default(),
         role_overrides: HashMap::new(),
+        model_catalog: crate::config::ModelCatalog::default(),
         config_dir: dir.to_path_buf(),
         load_notices: vec![],
     }
@@ -582,7 +583,8 @@ fn spawn_mini_background_listener(bus_handle: BusHandle, deps: MiniListenerDeps)
                 subagent_config: SubAgentConfig {
                     prompt: event.prompt,
                     context: event.context,
-                    model_tier: event.model_tier,
+                    model: event.model,
+                    resolved_model: None,
                     hop_count: event.hop_count,
                     sender: event.sender,
                     inbound: event.inbound,
@@ -646,6 +648,7 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
             crate::hub::DirectoryHandle::unbound(),
             "test",
         ),
+        model_catalog: crate::config::ModelCatalog::default().into_shared(),
     });
 
     SubAgentResources {
@@ -1218,7 +1221,8 @@ fn register_fake_live_child(harness: &Harness, spawner: &SessionAddress) -> Sess
         depth: 2,
         purpose: "pretending to work".to_string(),
         agent_skill: None,
-        model_tier: BackgroundModelTier::Medium,
+        model: ModelSelector::MEDIUM,
+        resolved_model: None,
         conversation_target: None,
         started_at: chrono::Utc::now(),
         usage: crate::agent::usage::SessionUsageTotals::default(),

@@ -87,4 +87,16 @@ error_details: string | null,
  * Set when this run is a pulse fire that started while its previous run
  * was still live. `None` for every other trigger.
  */
-overlap: PulseOverlap | null, };
+overlap: PulseOverlap | null, 
+/**
+ * The model the run was asked to use: a tier (`small`, `medium`,
+ * `large`) or an explicit `provider/model` id. `None` for a record
+ * written before this field existed.
+ */
+model: string | null, 
+/**
+ * The `provider/model` id the run started on: the first model of the
+ * tier's failover chain, or the explicit model. `None` for a record
+ * written before this field existed.
+ */
+resolved_model: string | null, };

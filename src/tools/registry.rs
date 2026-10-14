@@ -13,6 +13,7 @@ use crate::agent_keys::{Redactor, SharedAgentKeys};
 use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
 use crate::bus::{ConversationTarget, EndpointRegistry, EventTrigger, Publisher, SessionAddress};
+use crate::config::SharedModelCatalog;
 use crate::hub::team::TeamLink;
 use crate::inference::ToolDefinition;
 use crate::memory::search::HybridSearcher;
@@ -149,6 +150,9 @@ pub struct SubagentToolDeps {
     pub checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
     /// How this session's `agent_create`/`agent_delete` reach the hub.
     pub lifecycle: super::LifecycleAccess,
+    /// The live catalog this session's `subagent_spawn` and
+    /// `schedule_action` check an explicit model against, shared with main.
+    pub model_catalog: SharedModelCatalog,
 }
 
 impl ToolRegistry {
@@ -246,6 +250,7 @@ impl ToolRegistry {
         &mut self,
         store: Arc<Mutex<ActionStore>>,
         notify: Arc<Notify>,
+        models: SharedModelCatalog,
         user_inbox_dir: PathBuf,
         user_inbox_attachments_dir: PathBuf,
         tz: chrono_tz::Tz,
@@ -257,6 +262,7 @@ impl ToolRegistry {
             Arc::clone(&store),
             notify,
             tz,
+            models,
         )));
         self.register(Box::new(actions::ListActionsTool::new(store, tz)));
         self.register_user_inbox_add(user_inbox_dir, user_inbox_attachments_dir, tz);
@@ -569,28 +575,10 @@ impl ToolRegistry {
         )));
     }
 
-    /// Register the `subagent_spawn` tool for on-demand sub-agent delegation.
-    ///
-    /// `spawner_address` and `depth` are the caller's own address and depth
-    /// (main is `MAIN_ADDRESS`/`MAIN_DEPTH`; a session passes its own). A
-    /// spawn is refused once `depth + 1` exceeds `depth_cap`.
-    pub(crate) fn register_spawn_tool(
-        &mut self,
-        publisher: crate::bus::Publisher,
-        skill_state: crate::skills::SharedSkillState,
-        spawner_address: crate::bus::SessionAddress,
-        depth: u32,
-        depth_cap: u32,
-        hop_counter: HopCounter,
-    ) {
-        self.register(Box::new(background::SubagentSpawnTool::new(
-            publisher,
-            skill_state,
-            spawner_address,
-            depth,
-            depth_cap,
-            hop_counter,
-        )));
+    /// Register the `subagent_spawn` tool for on-demand sub-agent delegation
+    /// (see [`background::SpawnToolDeps`]).
+    pub(crate) fn register_spawn_tool(&mut self, deps: background::SpawnToolDeps) {
+        self.register(Box::new(background::SubagentSpawnTool::new(deps)));
     }
 
     /// Build a tool registry for a session.
@@ -668,14 +656,15 @@ impl ToolRegistry {
             Arc::clone(&deps.a2a_tracker),
             deps.messenger.team().clone(),
         );
-        self.register_spawn_tool(
-            deps.publisher.clone(),
-            Arc::clone(&deps.skill_state),
-            deps.own_address.clone(),
-            deps.own_depth,
-            deps.depth_cap,
-            deps.hop_counter.clone(),
-        );
+        self.register_spawn_tool(background::SpawnToolDeps {
+            publisher: deps.publisher.clone(),
+            skill_state: Arc::clone(&deps.skill_state),
+            spawner_address: deps.own_address.clone(),
+            depth: deps.own_depth,
+            depth_cap: deps.depth_cap,
+            hop_counter: deps.hop_counter.clone(),
+            models: Arc::clone(&deps.model_catalog),
+        });
         self.register_a2a_task_update_tool(
             deps.conversation_target.as_ref(),
             deps.own_address.clone(),
@@ -715,6 +704,7 @@ impl ToolRegistry {
         self.register_action_tools(
             Arc::clone(&deps.action_store),
             Arc::clone(&deps.action_notify),
+            Arc::clone(&deps.model_catalog),
             deps.tz,
         );
         self.register_ollama_web_search_tool_if_configured(deps.web_search_backend.as_ref());
@@ -806,17 +796,21 @@ impl ToolRegistry {
         )));
     }
 
-    /// Register action scheduling tools (`schedule_action`, `list_actions`, `cancel_action`).
+    /// Register action scheduling tools (`schedule_action`, `list_actions`,
+    /// `cancel_action`). `models` is the live catalog `schedule_action` checks
+    /// an explicit model against.
     pub fn register_action_tools(
         &mut self,
         store: Arc<Mutex<ActionStore>>,
         notify: Arc<Notify>,
+        models: SharedModelCatalog,
         tz: chrono_tz::Tz,
     ) {
         self.register(Box::new(actions::ScheduleActionTool::new(
             Arc::clone(&store),
             Arc::clone(&notify),
             tz,
+            models,
         )));
         self.register(Box::new(actions::ListActionsTool::new(
             Arc::clone(&store),
@@ -850,11 +844,18 @@ mod tests {
         )));
         let notify = Arc::new(Notify::new());
         let mut registry = ToolRegistry::new();
-        registry.register_action_tools(Arc::clone(&store), Arc::clone(&notify), chrono_tz::UTC);
+        let models = crate::config::ModelCatalog::default().into_shared();
+        registry.register_action_tools(
+            Arc::clone(&store),
+            Arc::clone(&notify),
+            Arc::clone(&models),
+            chrono_tz::UTC,
+        );
         for _ in 0..2 {
             registry.reload_timezone_tools(
                 Arc::clone(&store),
                 Arc::clone(&notify),
+                Arc::clone(&models),
                 std::path::PathBuf::from("/tmp/residuum-test-inbox"),
                 std::path::PathBuf::from("/tmp/residuum-test-inbox/attachments"),
                 chrono_tz::America::New_York,
@@ -913,6 +914,7 @@ mod tests {
                 dir.path().join("scheduled_actions.json"),
             ))),
             Arc::new(Notify::new()),
+            crate::config::ModelCatalog::default().into_shared(),
             inbox,
             attachments,
             chrono_tz::America::New_York,
