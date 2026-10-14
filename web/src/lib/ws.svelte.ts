@@ -34,7 +34,7 @@ import {
   cacheKeyProvidersRaw,
   cacheKeyMcpRaw,
 } from "./api";
-import type { ClientMessage, ImageAttachment, ServerMessage } from "./types";
+import type { ClientMessage, ImageAttachment, RecentHistorySegment, ServerMessage } from "./types";
 
 class WsCoordinator {
   /** The bound agent: the one this connection and its stores belong to, or `null` before one is chosen. */
@@ -298,7 +298,7 @@ class WsCoordinator {
     this.historyError = null;
     let recent;
     try {
-      recent = await fetchChatHistory(agent);
+      recent = await this.fetchRecentHistory(agent, store);
     } catch (err) {
       if (store !== this.store) return;
       this.historyError = userErrorReason(err, { action: "Couldn't load the chat history." });
@@ -308,6 +308,25 @@ class WsCoordinator {
     // A message sent before the history arrived keeps its turn on screen.
     store.reloadHistory(recent);
     await this.loadOlderHistory();
+  }
+
+  /**
+   * Read the main chat's Recent segment, and read it again whenever a turn
+   * ended while it was on its way: the read may have come before history
+   * recorded that turn, and applying it would take the turn off the feed.
+   * A read that follows the page hearing the turn end holds it, since history
+   * records a turn before its end goes out. It needs no cap: each further read
+   * needs another turn to end during the one before, and main turns run one
+   * at a time.
+   */
+  private async fetchRecentHistory(agent: string, store: FeedStore): Promise<RecentHistorySegment> {
+    let ended;
+    let recent;
+    do {
+      ended = store.turnsEndedLive;
+      recent = await fetchChatHistory(agent);
+    } while (store === this.store && store.turnsEndedLive !== ended);
+    return recent;
   }
 
   /**
@@ -345,7 +364,7 @@ class WsCoordinator {
     if (agent === null || !store.historyLoaded) return;
     let recent;
     try {
-      recent = await fetchChatHistory(agent);
+      recent = await this.fetchRecentHistory(agent, store);
     } catch (err) {
       if (store !== this.store) return;
       notifications.surface(
