@@ -4,10 +4,15 @@
   import { Icon } from "../../lib/icons";
   import { quietReloads } from "../../lib/reload-notices";
   import { router } from "../../lib/router.svelte";
-  import { Button, Popover, Sheet, type FloatTriggerProps } from "../../lib/ui";
+  import { Badge, Button, Popover, Sheet, type FloatTriggerProps } from "../../lib/ui";
   import { ws } from "../../lib/ws.svelte";
   import { PHONE_QUERY } from "../../styles/breakpoints";
-  import { COMPOSER_THINKING, MainModel, modelControlLabel } from "./main-model.svelte";
+  import {
+    COMPOSER_THINKING,
+    MainModel,
+    modelControlLabel,
+    thinkingBadge,
+  } from "./main-model.svelte";
 
   // The composer's model and thinking control: the agent's main
   // model and how hard it thinks, opened beside the message box in a popover,
@@ -36,6 +41,19 @@
     if (!main.loaded) return "Loading model…";
     if (main.value === "") return "Choose a model";
     return modelControlLabel(main.modelName, main.thinking);
+  });
+
+  /**
+   * On phones the model name and the thinking level render apart, so the level
+   * keeps its place when a long model name is truncated. Null when there is no
+   * level word to split off: the full label is then the visible text.
+   */
+  const phoneParts = $derived.by(() => {
+    if (!phone.current || main.loadError !== null || !main.loaded) return null;
+    if (main.model === "") return null;
+    const level = thinkingBadge(main.thinking);
+    if (level === "") return null;
+    return { model: main.modelName, level };
   });
 
   /** The provider's models, with the one in use first when its list doesn't have it. */
@@ -82,7 +100,12 @@
     aria-busy={main.saving || undefined}
     {...props}
   >
-    <span class="model-trigger-text">{triggerText}</span>
+    {#if phoneParts !== null}
+      <span class="model-trigger-text">{phoneParts.model}</span>
+      <Badge tone="neutral">{phoneParts.level}</Badge>
+    {:else}
+      <span class="model-trigger-text">{triggerText}</span>
+    {/if}
     <Icon name="chevron-down" size={14} />
   </button>
 {/snippet}
@@ -176,6 +199,10 @@
     &[aria-expanded="true"] {
       background: var(--color-stone-3);
       color: var(--color-text);
+
+      & :global(.ui-badge) {
+        background: var(--color-stone-4);
+      }
     }
 
     & :global(svg) {
@@ -184,6 +211,7 @@
   }
 
   .model-trigger-text {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
