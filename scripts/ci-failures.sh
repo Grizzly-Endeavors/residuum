@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 # Lists the failing tests of the latest CI runs for a pull request, a branch, a
 # release tag or a commit, grouped by job and step, so one pass fixes everything
-# that broke. Each failure carries two flags. touched: this change edits the
-# failure's test file. seen elsewhere: the same failure was in a failed run on
-# another branch or tag within the last 14 days. A failure that is not touched but
-# is seen elsewhere is marked likely flake. Every other failure is presumed to come
-# from this change.
+# that broke. Each failure carries two flags. touched: this change edits a file the
+# failure names. seen elsewhere: the same failure was in a failed run on another
+# branch or tag within the last 14 days. A failure that is not touched but is seen
+# elsewhere is marked likely flake. Every other failure is presumed to come from
+# this change.
 #
 # Usage: scripts/ci-failures.sh [PR-number | branch | vYYYY.MM.DD[-N] | commit]
 #        `just ci-failures` runs it for the current branch.
 #
-# touched          the test's file is in the change: the diff against the merge
-#                  base with origin/main, or for a release tag the diff since the
-#                  previous release tag
+# touched          a file the failure names is in the change: the test's file, and
+#                  for a Rust failure also the file its panic was raised in. The
+#                  diff is against the merge base with origin/main, or for a release
+#                  tag the diff since the previous release tag
 # seen elsewhere   the same failure was in a failed run on another branch or tag
 #                  in the last 14 days. The search covers the 150 most recent
 #                  completed runs, and a run that failed and was then rerun to
@@ -46,6 +47,12 @@ readonly RS=$'\036'
 die() {
     echo "ci-failures: $*" >&2
     exit 1
+}
+
+# The lines of the given files, each distinct line once, in first-seen order. Two
+# fetch workers must never be started on the same job.
+unique_lines() {
+    awk '!seen[$0]++' "$@"
 }
 
 for tool in gh jq git awk xargs; do
@@ -191,13 +198,16 @@ done
 # lookback keeps every run that failed or has more than one attempt.
 : > "$work/look.jsonl"
 if [[ "$lookback_ok" == yes && -s "$work/recent.jsonl" ]]; then
+    # A run listed on two pages (new runs land between page fetches) is kept once.
     jq -s -c --arg excluded "$EXCLUDED_WORKFLOW" --arg br "$target_branch" --arg sha "$sha" \
         --argjson days "$LOOKBACK_DAYS" '
         (now - $days * 86400 | todate) as $cut
+        | [ .[]
+            | select(.name != $excluded and .head_branch != $br and .head_sha != $sha and .created_at >= $cut)
+            | select(.conclusion == "failure" or .run_attempt > 1)
+            | {id, name, run_attempt, head_branch, html_url} ]
+        | unique_by(.id)
         | .[]
-        | select(.name != $excluded and .head_branch != $br and .head_sha != $sha and .created_at >= $cut)
-        | select(.conclusion == "failure" or .run_attempt > 1)
-        | {id, name, run_attempt, head_branch, html_url}
     ' "$work/recent.jsonl" > "$work/look.jsonl" || die "could not read the recent CI runs"
 fi
 
@@ -209,43 +219,59 @@ jq -r '. as $r | range(1; $r.run_attempt + 1) as $a | "\($r.id) \($a) completed"
 
 # --- jobs and logs --------------------------------------------------------------
 
+# Copies src to dest through a temp file beside dest, so a reader never sees a
+# partial copy and a failed copy leaves nothing at dest. Used for the cached job
+# lists; fetch_log gives the cached logs the same treatment with a move.
+publish_copy() { # src dest
+    local tmp
+    tmp="$(mktemp "$2.XXXXXX")" || return 1
+    if cp "$1" "$tmp" && mv "$tmp" "$2"; then
+        return 0
+    fi
+    rm -f "$tmp"
+    return 1
+}
+
+# Each worker writes a temp file of its own, so two workers never race on one name.
 fetch_jobs() { # run attempt status
     set -o pipefail
-    local dest="$work/jobs/$1-$2.jsonl" cached="$cache/$1-$2/jobs.jsonl"
+    local dest="$work/jobs/$1-$2.jsonl" cached="$cache/$1-$2/jobs.jsonl" tmp
     if [[ "$3" == completed && -s "$cached" ]]; then
         cp "$cached" "$dest"
         return 0
     fi
-    if ! gh api --paginate "repos/$repo/actions/runs/$1/attempts/$2/jobs?per_page=100" | jq -c '.jobs[]' > "$dest.part"; then
-        rm -f "$dest.part"
+    tmp="$(mktemp "$dest.XXXXXX")" || return 1
+    if ! gh api --paginate "repos/$repo/actions/runs/$1/attempts/$2/jobs?per_page=100" | jq -c '.jobs[]' > "$tmp"; then
+        rm -f "$tmp"
         echo "could not list the jobs of run $1, attempt $2" >&2
         return 1
     fi
-    mv "$dest.part" "$dest"
+    mv "$tmp" "$dest"
     if [[ "$3" == completed ]]; then
         mkdir -p "$(dirname "$cached")"
-        cp "$dest" "$cached"
+        publish_copy "$dest" "$cached" || echo "could not cache the jobs of run $1, attempt $2" >&2
     fi
 }
 
 fetch_log() { # run attempt job
     set -o pipefail
-    local out="$cache/$1-$2/$3.log"
+    local out="$cache/$1-$2/$3.log" tmp
     if [[ -s "$out" ]]; then
         return 0
     fi
     mkdir -p "$(dirname "$out")"
-    if gh api --allow-escape-sequences "repos/$repo/actions/jobs/$3/logs" > "$out.part"; then
-        mv "$out.part" "$out"
+    tmp="$(mktemp "$out.XXXXXX")" || return 1
+    if gh api --allow-escape-sequences "repos/$repo/actions/jobs/$3/logs" > "$tmp"; then
+        mv "$tmp" "$out"
     else
-        rm -f "$out.part"
+        rm -f "$tmp"
         echo "could not fetch the log of job $3 in run $1, attempt $2" >&2
         return 1
     fi
 }
-export -f fetch_jobs fetch_log
+export -f publish_copy fetch_jobs fetch_log
 
-cat "$work/target-attempts.txt" "$work/look-attempts.txt" \
+unique_lines "$work/target-attempts.txt" "$work/look-attempts.txt" \
     | xargs -r -P 8 -L 1 bash -c 'fetch_jobs "$@"' _ || true
 
 # A failed fetch writes no file, so a missing job list is a failed query.
@@ -253,7 +279,7 @@ while read -r run attempt _; do
     if [[ ! -f "$work/jobs/$run-$attempt.jsonl" ]]; then
         query_errors=$((query_errors + 1))
     fi
-done < <(cat "$work/target-attempts.txt" "$work/look-attempts.txt")
+done < <(unique_lines "$work/target-attempts.txt" "$work/look-attempts.txt")
 
 # "run attempt job" lines for the failed jobs of one list of attempts.
 failed_jobs() { # attempts file
@@ -270,7 +296,7 @@ failed_jobs() { # attempts file
 failed_jobs "$work/target-attempts.txt" > "$work/fetch-target.txt"
 failed_jobs "$work/look-attempts.txt" > "$work/fetch-look.txt"
 
-cat "$work/fetch-target.txt" "$work/fetch-look.txt" \
+unique_lines "$work/fetch-target.txt" "$work/fetch-look.txt" \
     | xargs -r -P 8 -L 1 bash -c 'fetch_log "$@"' _ || true
 
 parse_job() { # run attempt job -> records in $work/rec; fails when the log is missing
