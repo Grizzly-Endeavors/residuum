@@ -164,7 +164,9 @@ test.describe("Residuum Cloud", () => {
     mock,
   }) => {
     await mock.post("/api/mock/cloud", { data: { tunnel: "connecting" } });
-    await page.goto("/cloud/callback?token=rst_handed_back");
+    const { url } = (await mock.post("/api/hub/cloud/connect", { data: {} })) as { url: string };
+    const state = new URL(url).searchParams.get("state") ?? "";
+    await page.goto(`/cloud/callback?token=rst_handed_back&state=${state}`);
     await expectSettingsOpen(page);
     await expect.poll(() => new URL(page.url()).search).toBe("?settings=_all/cloud");
     await expect(page.getByText("Connecting…")).toBeVisible();
@@ -205,7 +207,11 @@ test.describe("Residuum Cloud", () => {
     const problem = page.getByRole("region", { name: "Connection" }).getByRole("alert");
     await expect(problem).toContainText("This sign-in link didn't come from this app");
     await expect(page.getByText("Not connected")).toBeVisible();
-    expect(await hubConfig(page)).not.toContain("[cloud]");
+    expect(await hubConfig(page)).not.toContain('token = "secret:cloud_token"');
+    const status = (await (await page.request.get("/api/hub/cloud/status")).json()) as {
+      has_token: boolean;
+    };
+    expect(status.has_token).toBe(false);
   });
 
   test("a sign-in the relay refuses offers to sign in again", async ({ page, mock }) => {
