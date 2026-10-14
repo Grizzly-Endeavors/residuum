@@ -8,6 +8,10 @@
 //! as long as the file exists, not just for the TTL. Only a file outside
 //! the workspace (or the workspace boundary was never configured) falls
 //! back to the token-registry scheme below.
+//!
+//! Every response carrying a file an agent wrote goes through
+//! [`mark_agent_file`], which keeps the browser from running it with the
+//! hub's origin.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -19,6 +23,37 @@ use tokio::sync::RwLock;
 use tokio::time::Instant;
 
 use crate::gateway::browser_landing::{self, AppNotice, Fallback};
+
+/// The `Content-Security-Policy` of a file an agent wrote, served from the
+/// hub's own origin. An agent can be steered by what it read into writing an
+/// HTML or SVG file, and a link to it in a reply opens it as a page; on the
+/// hub's origin its scripts could call the whole API as the user. `sandbox`
+/// gives the page an opaque origin of its own instead, so it still opens and
+/// runs but reaches nothing of the hub's, and the allowances keep what a page
+/// a person opens on purpose needs: its scripts, links that open a tab, and
+/// downloads.
+const AGENT_FILE_CSP: &str = "sandbox allow-scripts allow-popups allow-downloads";
+
+/// Mark a response that carries a file an agent wrote: `nosniff`, so the
+/// browser reads it only as the type it is sent with, and, for every type but
+/// a PDF, [`AGENT_FILE_CSP`]. Chromium's PDF viewer refuses to show a PDF in a
+/// sandboxed document, and a PDF's own scripts never run with the hub's
+/// origin, so a PDF is left to open as it always has.
+pub(crate) fn mark_agent_file(headers: &mut HeaderMap, mime_type: &str) {
+    use axum::http::{HeaderValue, header};
+
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    let essence = mime_type.split(';').next().unwrap_or_default().trim();
+    if !essence.eq_ignore_ascii_case("application/pdf") {
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(AGENT_FILE_CSP),
+        );
+    }
+}
 
 /// How long a registered file remains available (1 hour).
 const FILE_TTL_SECS: u64 = 3600;
@@ -320,9 +355,9 @@ fn json_error(status: StatusCode, message: &str) -> Response {
 
 /// Build the HTTP response for a file's bytes, with a content-disposition
 /// naming `filename` (quotes and backslashes stripped, since they'd need
-/// escaping in the header value) and, when it parses as a valid header
-/// value, `mime_type` as the content type.
-fn respond_with_file(bytes: Vec<u8>, mime_type: &str, filename: &str) -> Response {
+/// escaping in the header value), when it parses as a valid header value,
+/// `mime_type` as the content type, and the headers of [`mark_agent_file`].
+pub(crate) fn respond_with_file(bytes: Vec<u8>, mime_type: &str, filename: &str) -> Response {
     use axum::http::{HeaderValue, header};
 
     let safe_filename: String = filename
@@ -338,6 +373,7 @@ fn respond_with_file(bytes: Vec<u8>, mime_type: &str, filename: &str) -> Respons
     if let Ok(v) = HeaderValue::from_str(&disposition) {
         headers.insert(header::CONTENT_DISPOSITION, v);
     }
+    mark_agent_file(headers, mime_type);
     response
 }
 
@@ -541,6 +577,75 @@ mod tests {
             assert_eq!(resp.status(), StatusCode::OK, "served");
             assert_eq!(body_text(resp).await, "# hello", "the file");
         }
+    }
+
+    fn header_of(resp: &Response, name: axum::http::HeaderName) -> Option<&str> {
+        resp.headers().get(name).map(|v| v.to_str().unwrap())
+    }
+
+    #[tokio::test]
+    async fn an_agents_page_opens_sandboxed_away_from_the_hubs_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        for name in ["page.html", "drawing.svg", "photo.png"] {
+            std::fs::write(
+                dir.path().join(name),
+                "<script>fetch('/api/hub/secrets')</script>",
+            )
+            .unwrap();
+            std::fs::write(outside.path().join(name), "x").unwrap();
+        }
+        let registry = FileRegistry::new("scout").with_workspace_root(dir.path().to_path_buf());
+
+        for name in ["page.html", "drawing.svg", "photo.png"] {
+            let id = registry
+                .register(
+                    outside.path().join(name),
+                    crate::interfaces::attachment::detect_mime_type(&outside.path().join(name)),
+                    name.to_string(),
+                )
+                .await;
+            for resp in [
+                workspace_file(registry.clone(), name, tab_headers()).await,
+                token_file(registry.clone(), &id, tab_headers()).await,
+            ] {
+                assert_eq!(resp.status(), StatusCode::OK, "{name}");
+                assert_eq!(
+                    header_of(&resp, axum::http::header::CONTENT_SECURITY_POLICY),
+                    Some("sandbox allow-scripts allow-popups allow-downloads"),
+                    "{name}"
+                );
+                assert_eq!(
+                    header_of(&resp, axum::http::header::X_CONTENT_TYPE_OPTIONS),
+                    Some("nosniff"),
+                    "{name}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pdf_is_not_sandboxed_so_the_browsers_viewer_shows_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("report.pdf"), "%PDF-1.7").unwrap();
+        let registry = FileRegistry::new("scout").with_workspace_root(dir.path().to_path_buf());
+
+        let resp = workspace_file(registry, "report.pdf", tab_headers()).await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            header_of(&resp, axum::http::header::CONTENT_TYPE),
+            Some("application/pdf")
+        );
+        assert!(
+            resp.headers()
+                .get(axum::http::header::CONTENT_SECURITY_POLICY)
+                .is_none()
+        );
+        assert_eq!(
+            header_of(&resp, axum::http::header::X_CONTENT_TYPE_OPTIONS),
+            Some("nosniff")
+        );
     }
 
     #[tokio::test]

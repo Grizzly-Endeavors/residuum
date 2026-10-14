@@ -15,7 +15,7 @@
 //! - Scripts, styles, JSON, SVG and the manifest are compressed when the client
 //!   accepts it. HTML and images are not.
 //! - HTML documents carry the app shell's Content-Security-Policy
-//!   ([`app_shell_csp`]), which keeps the app from loading images, media,
+//!   ([`APP_SHELL_CSP`]), which keeps the app from loading images, media,
 //!   plug-ins or frames from anywhere but the hub, and from posting a form
 //!   anywhere else.
 
@@ -56,12 +56,7 @@ const REVALIDATE_CACHE_CONTROL: &str = "no-cache";
 ///
 /// The policy is the one line of `web/app-shell-csp.txt`, which the web app's
 /// mock servers send too, so the end-to-end suite runs under it.
-fn app_shell_csp() -> &'static str {
-    APP_SHELL_CSP_FILE.trim()
-}
-
-/// `web/app-shell-csp.txt`, as written; [`app_shell_csp`] is the policy.
-const APP_SHELL_CSP_FILE: &str = include_str!("../../../web/app-shell-csp.txt");
+const APP_SHELL_CSP: &str = include_str!("../../../web/app-shell-csp.txt").trim_ascii();
 
 /// Brotli quality and gzip level for compressing on the fly. The encoder's
 /// default brotli quality (11) takes about 0.7 s per request on the 566 kB
@@ -180,11 +175,7 @@ fn serve_embedded(path: &str, method: &Method, request_headers: &HeaderMap) -> O
     }
 
     if is_html(mime.essence_str()) {
-        set_header(
-            &mut headers,
-            header::CONTENT_SECURITY_POLICY,
-            app_shell_csp(),
-        );
+        set_header(&mut headers, header::CONTENT_SECURITY_POLICY, APP_SHELL_CSP);
     }
 
     set_header(&mut headers, header::CONTENT_TYPE, mime.as_ref());
