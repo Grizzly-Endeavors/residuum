@@ -203,6 +203,7 @@ web/
 │       ├── agent-name.ts         # The backend's agent-name rules, checked as a name is typed
 │       ├── mcp-form.ts           # The text forms a tool server's arguments, environment and headers are edited in
 │       ├── toml.ts               # The config files the setup wizard writes, generated from its state
+│       ├── setup-keys.ts         # The setup wizard's keys: which catalog inputs are keys, the secret each is stored as, and what would save without a key
 │       ├── workbench.ts          # Where artifacts open: the relay's origin, or this host on the artifacts port over plain HTTP, else why they can't
 │       ├── time.ts               # Relative times ("5m ago")
 │       ├── day-label.ts          # A calendar day as dividers name it: Today, Yesterday, Oct 6
