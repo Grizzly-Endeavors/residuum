@@ -44,6 +44,9 @@ pub(super) fn resolve_discord_config(
             context_messages: section
                 .and_then(|s| s.context_messages)
                 .unwrap_or(DEFAULT_DISCORD_CONTEXT_MESSAGES),
+            deliver_intermediate: section
+                .and_then(|s| s.deliver_intermediate)
+                .unwrap_or(false),
         }),
         (Some(_), None) => {
             tracing::warn!(
@@ -73,6 +76,9 @@ pub(super) fn resolve_telegram_config(
             context_messages: section
                 .and_then(|s| s.context_messages)
                 .unwrap_or(DEFAULT_TELEGRAM_CONTEXT_MESSAGES),
+            deliver_intermediate: section
+                .and_then(|s| s.deliver_intermediate)
+                .unwrap_or(false),
         }),
         (Some(_), None) => {
             tracing::warn!(
@@ -134,6 +140,7 @@ pub(super) fn resolve_teams_config(
         context_messages: section
             .context_messages
             .unwrap_or(DEFAULT_TEAMS_CONTEXT_MESSAGES),
+        deliver_intermediate: section.deliver_intermediate.unwrap_or(false),
         port: section.port.unwrap_or(DEFAULT_TEAMS_PORT),
     })
 }

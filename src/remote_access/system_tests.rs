@@ -141,6 +141,7 @@ impl Stack {
             pairing: pairing.clone(),
             tunnel_status: Arc::clone(&tunnel_status),
             status: slot.status_sender(),
+            relay_origin: crate::tunnel::v2::web_origin(&relay.ws_url()),
             notify: Arc::new(move |message| {
                 sink.lock()
                     .unwrap_or_else(PoisonError::into_inner)
@@ -447,6 +448,21 @@ async fn a_relay_without_the_secure_tunnel_leaves_remote_access_down_and_retryin
         );
         stack.stop().await;
     }
+}
+
+#[tokio::test]
+async fn the_status_names_the_web_origin_of_the_configured_relay() {
+    let env = Env::offline();
+    let relay = FakeRelay::start(relay_config()).await;
+    let stack = Stack::start(&env, &relay);
+    let origin = stack.status().relay_origin;
+    assert!(
+        origin
+            .as_deref()
+            .is_some_and(|origin| origin.starts_with("http://127.0.0.1:")),
+        "{origin:?}"
+    );
+    stack.stop().await;
 }
 
 #[tokio::test]

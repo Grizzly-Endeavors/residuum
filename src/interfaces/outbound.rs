@@ -11,6 +11,12 @@
 //! UI notice and a note to main, never a chat message. Replies that stop
 //! getting through are reported the same way, once per run of failures (see
 //! [`DeliveryHealth`]).
+//!
+//! Text the agent writes before a tool call (intermediate text) reaches the
+//! chat only when the platform's `deliver_intermediate` setting is on. Off,
+//! the chat gets each turn's final reply, and the typing indicator, which
+//! runs from the turn's start to its end, shows the turn is still working.
+//! The web UI shows intermediate text either way.
 
 use std::ops::ControlFlow;
 
@@ -36,6 +42,10 @@ pub(crate) trait ChatOutbound: Send + Sync {
 
     /// Product name the owner knows the platform by, for notices.
     fn display_name(&self) -> &'static str;
+
+    /// Whether intermediate (pre-tool-call) text is posted to the chat, from
+    /// the platform's `deliver_intermediate` setting.
+    fn delivers_intermediate(&self) -> bool;
 
     /// What the owner can do about a failed send, in plain language, when the
     /// platform recognizes the cause in `reason` (the error [`Self::send`]
@@ -272,6 +282,16 @@ async fn deliver_intermediate<C: ChatOutbound>(
     health: &mut DeliveryHealth,
     event: IntermediateEvent,
 ) {
+    // Ahead of `send_reply`, so an unsent intermediate never counts toward
+    // delivery health or warns about a missing owner.
+    if !chat.delivers_intermediate() {
+        tracing::trace!(
+            interface = chat.name(),
+            correlation_id = %event.correlation_id,
+            "intermediate text not posted; deliver_intermediate is off"
+        );
+        return;
+    }
     send_reply(
         chat,
         health,
@@ -339,12 +359,22 @@ async fn deliver_main<C: ChatOutbound>(
 }
 
 /// A conversation session's output never falls back to the owner's direct
-/// messages. Either failure mode notifies main instead.
+/// messages. Either failure mode notifies main instead. Its intermediate
+/// text follows the same `deliver_intermediate` rule as a main turn's, and
+/// is skipped before any target lookup so it is never reported undelivered.
 async fn deliver_session<C: ChatOutbound>(
     chat: &C,
     health: &mut DeliveryHealth,
     response: SessionResponseEvent,
 ) {
+    if !response.is_final && !chat.delivers_intermediate() {
+        tracing::trace!(
+            interface = chat.name(),
+            session = %response.session_address,
+            "session intermediate text not posted; deliver_intermediate is off"
+        );
+        return;
+    }
     let Some(target) = chat.conversation_target(&response.conversation_id).await else {
         notify_main_of_undeliverable_session_output(
             chat.publisher(),
@@ -552,7 +582,9 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::bus::{BusHandle, EndpointName, NoticeEvent, NotifyName, SYSTEM_CHANNEL};
+    use crate::bus::{
+        BusHandle, EndpointName, NoticeEvent, NotifyName, SYSTEM_CHANNEL, SessionAddress,
+    };
     use crate::testing::{clock, wait};
 
     const ENDPOINT: &str = "fakechat";
@@ -567,8 +599,14 @@ mod tests {
         failing: Vec<String>,
         /// While set, nobody has messaged the bot: turns have no reply target.
         no_owner: Arc<AtomicBool>,
+        deliver_intermediate: bool,
         sent: Arc<Mutex<Vec<(String, String)>>>,
+        /// Every typing indicator started, by target. One is still running
+        /// while the loop holds its sender.
+        typing: Arc<Mutex<Vec<TypingIndicator>>>,
     }
+
+    type TypingIndicator = (String, tokio::sync::watch::Receiver<()>);
 
     impl FakeChat {
         fn new(handle: &BusHandle) -> Self {
@@ -578,12 +616,28 @@ mod tests {
                 conversations: Vec::new(),
                 failing: Vec::new(),
                 no_owner: Arc::default(),
+                deliver_intermediate: false,
                 sent: Arc::default(),
+                typing: Arc::default(),
             }
         }
 
         fn sent(&self) -> Vec<(String, String)> {
             self.sent.lock().unwrap().clone()
+        }
+
+        fn sent_sorted(&self) -> Vec<(String, String)> {
+            let mut sent = self.sent();
+            sent.sort();
+            sent
+        }
+
+        fn typing_in(&self, target: &str) -> bool {
+            self.typing
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(t, rx)| t == target && rx.has_changed().is_ok())
         }
     }
 
@@ -597,6 +651,10 @@ mod tests {
 
         fn display_name(&self) -> &'static str {
             "FakeChat"
+        }
+
+        fn delivers_intermediate(&self) -> bool {
+            self.deliver_intermediate
         }
 
         fn explain_failure(&self, reason: &str) -> Option<String> {
@@ -642,8 +700,10 @@ mod tests {
             target.clone()
         }
 
-        fn start_typing(&self, _target: String) -> tokio::sync::watch::Sender<()> {
-            tokio::sync::watch::channel(()).0
+        fn start_typing(&self, target: String) -> tokio::sync::watch::Sender<()> {
+            let (tx, rx) = tokio::sync::watch::channel(());
+            self.typing.lock().unwrap().push((target, rx));
+            tx
         }
 
         async fn send(
@@ -678,6 +738,77 @@ mod tests {
             attachment: None,
             conversation: conversation.map(str::to_string),
         }
+    }
+
+    fn session_output(
+        conversation_id: &str,
+        content: &str,
+        is_final: bool,
+    ) -> SessionResponseEvent {
+        SessionResponseEvent {
+            session_address: SessionAddress::from("external-group-7"),
+            conversation_id: conversation_id.to_string(),
+            content: content.to_string(),
+            attachment: None,
+            timestamp: chrono::Utc::now().naive_utc(),
+            is_final,
+        }
+    }
+
+    /// One turn with a tool call in the middle, as a chat sees it: the
+    /// turn starts, the main agent and a group's session each write text
+    /// before a tool call, then each sends its final reply. The turn is left
+    /// open so the test can look at its typing indicator.
+    async fn publish_turn_with_tool_call(handle: &BusHandle) {
+        let endpoint = || topics::Endpoint(EndpointName::from(ENDPOINT));
+        let publisher = handle.publisher();
+        publisher
+            .publish(
+                endpoint(),
+                TurnLifecycleEvent::Started {
+                    correlation_id: "m1".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        publisher
+            .publish(
+                endpoint(),
+                IntermediateEvent {
+                    correlation_id: "m1".to_string(),
+                    content: "checking the build first".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        publisher
+            .publish(
+                endpoint(),
+                session_output("group-7", "looking that up", false),
+            )
+            .await
+            .unwrap();
+        publisher
+            .publish(endpoint(), response("m1", "the build is green", None))
+            .await
+            .unwrap();
+        publisher
+            .publish(endpoint(), session_output("group-7", "it's Tuesday", true))
+            .await
+            .unwrap();
+    }
+
+    async fn end_turn(handle: &BusHandle) {
+        handle
+            .publisher()
+            .publish(
+                topics::Endpoint(EndpointName::from(ENDPOINT)),
+                TurnLifecycleEvent::Ended {
+                    correlation_id: "m1".to_string(),
+                },
+            )
+            .await
+            .unwrap();
     }
 
     async fn wait_for_sends(chat: &FakeChat, count: usize) {
@@ -727,6 +858,115 @@ mod tests {
             vec![("owner-dm".to_string(), "hello".to_string())],
             "only the agent's reply may go out; system output stays in the web UI"
         );
+    }
+
+    // Paused clock: every event is in process, so `clock::elapse` returns
+    // only once the loop has nothing left to handle.
+    #[tokio::test(start_paused = true)]
+    async fn by_default_the_chat_gets_final_replies_and_typing_through_the_turn() {
+        let handle = crate::bus::spawn_broker();
+        let mut chat = FakeChat::new(&handle);
+        chat.conversations.push("group-7".to_string());
+        start(&handle, chat.clone()).await;
+
+        publish_turn_with_tool_call(&handle).await;
+        wait_for_sends(&chat, 2).await;
+        clock::elapse(Duration::from_millis(50)).await;
+        assert_eq!(
+            chat.sent_sorted(),
+            vec![
+                ("group-7".to_string(), "it's Tuesday".to_string()),
+                ("owner-dm".to_string(), "the build is green".to_string()),
+            ],
+            "text written before a tool call stays out of the chat; final replies go out"
+        );
+        assert!(
+            chat.typing_in("owner-dm"),
+            "the typing indicator runs until the turn ends, not until text stops arriving"
+        );
+
+        end_turn(&handle).await;
+        wait::until_true("the typing indicator to stop at turn end", || {
+            !chat.typing_in("owner-dm")
+        })
+        .await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn deliver_intermediate_posts_text_written_before_a_tool_call() {
+        let handle = crate::bus::spawn_broker();
+        let mut chat = FakeChat::new(&handle);
+        chat.conversations.push("group-7".to_string());
+        chat.deliver_intermediate = true;
+        start(&handle, chat.clone()).await;
+
+        publish_turn_with_tool_call(&handle).await;
+        wait_for_sends(&chat, 4).await;
+        clock::elapse(Duration::from_millis(50)).await;
+        assert_eq!(
+            chat.sent_sorted(),
+            vec![
+                ("group-7".to_string(), "it's Tuesday".to_string()),
+                ("group-7".to_string(), "looking that up".to_string()),
+                (
+                    "owner-dm".to_string(),
+                    "checking the build first".to_string()
+                ),
+                ("owner-dm".to_string(), "the build is green".to_string()),
+            ],
+            "with the setting on, each piece of intermediate text is its own message"
+        );
+    }
+
+    // Paused clock, as above. A failing chat proves an unsent intermediate
+    // is not a failure: nothing is reported until the final reply fails.
+    #[tokio::test(start_paused = true)]
+    async fn an_unsent_intermediate_is_never_reported_as_a_failure() {
+        let handle = crate::bus::spawn_broker();
+        let (mut errors, mut main) = subscribe_to_reports(&handle).await;
+        let mut chat = FakeChat::new(&handle);
+        chat.failing.push("owner-dm".to_string());
+        chat.failing.push("group-7".to_string());
+        chat.conversations.push("group-7".to_string());
+        start(&handle, chat.clone()).await;
+        let endpoint = || topics::Endpoint(EndpointName::from(ENDPOINT));
+        let publisher = handle.publisher();
+
+        publisher
+            .publish(
+                endpoint(),
+                IntermediateEvent {
+                    correlation_id: "m1".to_string(),
+                    content: "working on it".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        publisher
+            .publish(
+                endpoint(),
+                session_output("group-7", "looking that up", false),
+            )
+            .await
+            .unwrap();
+        assert!(
+            clock::within(Duration::from_millis(50), errors.recv())
+                .await
+                .is_none(),
+            "an intermediate that was never sent must not be reported"
+        );
+        assert!(
+            clock::within(Duration::from_millis(50), main.recv())
+                .await
+                .is_none(),
+            "main must not hear about an intermediate that was never sent"
+        );
+
+        publisher
+            .publish(endpoint(), response("m1", "done", None))
+            .await
+            .unwrap();
+        expect_failing_replies_error(&mut errors).await;
     }
 
     #[tokio::test]
@@ -1032,6 +1272,7 @@ mod tests {
         let (mut errors, mut main) = subscribe_to_reports(&handle).await;
         let mut chat = FakeChat::new(&handle);
         chat.failing.push("owner-dm".to_string());
+        chat.deliver_intermediate = true;
         start(&handle, chat.clone()).await;
 
         handle

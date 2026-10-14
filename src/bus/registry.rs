@@ -341,6 +341,7 @@ mod tests {
             token: "test-token".to_string(),
             respond_to_others: false,
             context_messages: 20,
+            deliver_intermediate: false,
         });
 
         let reg = EndpointRegistry::from_config(&config, &[]);
@@ -365,6 +366,7 @@ mod tests {
             token: "added-on-reload".to_string(),
             respond_to_others: false,
             context_messages: 20,
+            deliver_intermediate: false,
         });
         registry.refresh(&config, &[]);
         assert!(
@@ -392,6 +394,7 @@ mod tests {
             tenant_id: "tenant".to_string(),
             respond_to_others: false,
             context_messages: 20,
+            deliver_intermediate: false,
             port: 7701,
         });
         let teams = reg_has_teams(&config).unwrap();
