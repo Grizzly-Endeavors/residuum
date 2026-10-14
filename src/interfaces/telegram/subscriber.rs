@@ -50,6 +50,10 @@ impl ChatOutbound for TelegramOutbound {
         self.state.deliver_intermediate
     }
 
+    fn display_name(&self) -> &'static str {
+        "Telegram"
+    }
+
     fn unknown_conversation_reason(&self) -> &'static str {
         "that is not a Telegram chat ID"
     }
