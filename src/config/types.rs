@@ -1141,54 +1141,29 @@ mod tests {
         }
     }
 
-    #[test]
-    fn resolve_tier_tests() {
+    fn dummy_spec(tier: &str) -> ProviderSpec {
         use super::super::provider::{ModelSpec, ProviderKind};
 
-        let p_small = ProviderSpec {
-            name: "dummy-small".to_string(),
+        ProviderSpec {
+            name: format!("dummy-{tier}"),
             model: ModelSpec {
                 kind: ProviderKind::OpenAi,
-                model: "small-model".to_string(),
+                model: format!("{tier}-model"),
             },
             provider_url: "http://dummy".to_string(),
             api_key: None,
             keep_alive: None,
             session_affinity: None,
-        };
-        let p_medium = ProviderSpec {
-            name: "dummy-medium".to_string(),
-            model: ModelSpec {
-                kind: ProviderKind::OpenAi,
-                model: "medium-model".to_string(),
-            },
-            provider_url: "http://dummy".to_string(),
-            api_key: None,
-            keep_alive: None,
-            session_affinity: None,
-        };
-        let p_large = ProviderSpec {
-            name: "dummy-large".to_string(),
-            model: ModelSpec {
-                kind: ProviderKind::OpenAi,
-                model: "large-model".to_string(),
-            },
-            provider_url: "http://dummy".to_string(),
-            api_key: None,
-            keep_alive: None,
-            session_affinity: None,
-        };
-        let p_main = ProviderSpec {
-            name: "dummy-main".to_string(),
-            model: ModelSpec {
-                kind: ProviderKind::OpenAi,
-                model: "main-model".to_string(),
-            },
-            provider_url: "http://dummy".to_string(),
-            api_key: None,
-            keep_alive: None,
-            session_affinity: None,
-        };
+            image_input: crate::config::ImageInput::Undeclared,
+        }
+    }
+
+    #[test]
+    fn resolve_tier_tests() {
+        let p_small = dummy_spec("small");
+        let p_medium = dummy_spec("medium");
+        let p_large = dummy_spec("large");
+        let p_main = dummy_spec("main");
 
         let main_slice = std::slice::from_ref(&p_main);
 
@@ -1267,6 +1242,7 @@ mod tests {
             api_key: None,
             keep_alive: None,
             session_affinity: None,
+            image_input: crate::config::ImageInput::Undeclared,
         };
         let p_medium = ProviderSpec {
             name: "dummy-medium".to_string(),
@@ -1278,6 +1254,7 @@ mod tests {
             api_key: None,
             keep_alive: None,
             session_affinity: None,
+            image_input: crate::config::ImageInput::Undeclared,
         };
         let p_main = ProviderSpec {
             name: "dummy-main".to_string(),
@@ -1289,6 +1266,7 @@ mod tests {
             api_key: None,
             keep_alive: None,
             session_affinity: None,
+            image_input: crate::config::ImageInput::Undeclared,
         };
 
         let main_slice = std::slice::from_ref(&p_main);

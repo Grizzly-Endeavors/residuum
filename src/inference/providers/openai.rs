@@ -304,7 +304,7 @@ impl OpenAiClient {
             tracing::warn!(
                 status = %status,
                 response_body = %raw_body,
-                request_body = %request_json,
+                request_body = %crate::inference::http::without_inline_media(&request_json),
                 "openai API error — full request/response for diagnosis"
             );
             let error_body = serde_json::from_str::<OpenAiErrorResponse>(&raw_body)

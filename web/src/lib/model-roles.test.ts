@@ -17,6 +17,7 @@ const entry = (name: string, type: string): SettingsProviderEntry => ({
   apiKey: "",
   url: "",
   keepAlive: "",
+  models: [],
 });
 
 describe("model roles", () => {

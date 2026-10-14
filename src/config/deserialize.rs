@@ -239,6 +239,28 @@ pub(super) struct ProviderEntryFile {
     pub(super) url: Option<String>,
     /// Ollama `keep_alive` duration (e.g. `"5m"`, `"0"` to unload immediately).
     pub(super) keep_alive: Option<String>,
+    /// Per-model settings under `[providers.<name>.models.<model>]`, keyed by
+    /// the model name as it appears after the slash.
+    pub(super) models: Option<HashMap<String, ProviderModelEntryFile>>,
+}
+
+/// One model's settings under `[providers.<name>.models.<model>]`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ProviderModelEntryFile {
+    /// The kinds of input the model takes, e.g. `["text"]` or
+    /// `["text", "image"]`. Unset means undeclared.
+    pub(super) input: Option<Vec<InputModalityFile>>,
+}
+
+/// A kind of model input named in a model's `input` list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum InputModalityFile {
+    /// Text.
+    Text,
+    /// Images.
+    Image,
 }
 
 /// A model string that can be either a single string or a list (for failover).

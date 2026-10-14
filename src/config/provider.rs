@@ -29,6 +29,24 @@ pub struct ProviderSpec {
     /// Providers that serve from per-replica prompt caches (Fireworks) send it
     /// so a role's long, stable prompt prefix keeps landing on a warm replica.
     pub session_affinity: Option<String>,
+    /// Whether the model takes images, as declared under its provider entry.
+    pub image_input: ImageInput,
+}
+
+/// Whether a model accepts images in its input, as declared by the model's
+/// `input` list under its provider entry in `providers.toml`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImageInput {
+    /// Nothing declared. Images are sent; a provider that turns a request
+    /// down for carrying them marks the model text-only for the rest of the
+    /// run (see `crate::inference::image_input`).
+    #[default]
+    Undeclared,
+    /// The `input` list includes `"image"`.
+    Accepted,
+    /// The `input` list leaves out `"image"`: images are replaced with a
+    /// placeholder in every request to the model.
+    TextOnly,
 }
 
 impl fmt::Debug for ProviderSpec {
@@ -40,6 +58,7 @@ impl fmt::Debug for ProviderSpec {
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
             .field("keep_alive", &self.keep_alive)
             .field("session_affinity", &self.session_affinity)
+            .field("image_input", &self.image_input)
             .finish()
     }
 }
