@@ -247,6 +247,17 @@ fmt: rust-fmt web-fmt
 fmt-check:
     {{ quote(just_executable()) }} _run-parts rust-fmt-check web-fmt-check
 
+# Lint the GitHub Actions workflows with actionlint, at the version CI pins in .github/workflows/actionlint.yml
+[group('check')]
+actionlint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pinned="$(sed -n 's/^ *ACTIONLINT_VERSION: \(.*\)$/\1/p' .github/workflows/actionlint.yml)"
+    command -v actionlint >/dev/null || { echo "actionlint is not installed: get v${pinned} from https://github.com/rhysd/actionlint/releases" >&2; exit 1; }
+    installed="$(actionlint -version | sed -n 1p)"
+    [ "$installed" = "$pinned" ] || { echo "actionlint ${installed} is installed; CI pins ${pinned}" >&2; exit 1; }
+    actionlint
+
 # Every failing test in the latest CI runs for a PR, branch, release tag or commit (default: current branch), with touched and seen-elsewhere flags
 [group('check')]
 [positional-arguments]

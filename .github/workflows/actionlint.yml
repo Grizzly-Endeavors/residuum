@@ -1,0 +1,58 @@
+name: Workflow Lint
+
+# actionlint over every workflow, with the shellcheck findings in run blocks,
+# on each pull request that changes a workflow or the runner-label config
+# (.github/actionlint.yaml). A bad runner label or a quoting mistake in a run
+# block then fails the pull request that introduced it, not the release.
+#
+# The version is pinned here and in the `actionlint` recipe in the justfile
+# reads it from this file, so the two cannot drift apart.
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - ".github/actionlint.yaml"
+  workflow_dispatch:
+
+jobs:
+  actionlint:
+    name: Actionlint
+    # The runners are self-hosted, so a fork's code never runs on them.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: lab-runners-light
+    permissions:
+      contents: read
+
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # The release archive is checked against the published checksums before
+      # it is unpacked, so the run uses exactly the pinned build.
+      - name: Install actionlint
+        run: |
+          case "$(uname -m)" in
+            x86_64) arch=amd64 ;;
+            aarch64) arch=arm64 ;;
+            *) echo "no actionlint build for $(uname -m)" >&2; exit 1 ;;
+          esac
+          base="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_${arch}.tar.gz"
+          checksums="actionlint_${ACTIONLINT_VERSION}_checksums.txt"
+          work="$RUNNER_TEMP/actionlint"
+          mkdir -p "$work/bin"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$work/$archive" "$base/$archive"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$work/$checksums" "$base/$checksums"
+          (cd "$work" && grep " $archive\$" "$checksums" | sha256sum -c -)
+          tar -xzf "$work/$archive" -C "$work/bin" actionlint
+          echo "$work/bin" >> "$GITHUB_PATH"
+
+      # actionlint runs shellcheck over the run blocks only when it is on PATH;
+      # without it the shell findings would silently go unreported.
+      - name: Check shellcheck is available
+        run: command -v shellcheck >/dev/null || { echo "shellcheck is not installed on this runner; actionlint would skip its shell checks" >&2; exit 1; }
+
+      - name: Lint workflows
+        run: actionlint -version && actionlint
