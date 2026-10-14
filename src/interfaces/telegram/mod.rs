@@ -18,7 +18,7 @@ pub(crate) mod subscriber;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use teloxide::types::ChatId;
+use teloxide_core::types::ChatId;
 
 use crate::bus::Publisher;
 use crate::config::TelegramConfig;
