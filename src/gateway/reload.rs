@@ -1269,7 +1269,7 @@ mod tests {
     fn diff_config_detects_idle_channel_change() {
         let old = test_config();
         let mut new = old.clone();
-        new.idle.idle_channel = Some("telegram".to_string());
+        new.idle.idle_channel = "telegram".to_string();
 
         let diff = diff_config(&old, &new);
         assert!(diff.idle_changed);

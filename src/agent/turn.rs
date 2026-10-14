@@ -39,6 +39,71 @@ pub trait ReplyAudience: Send + Sync {
     fn reply_published(&self);
 }
 
+/// The endpoint a main-agent turn delivers to, which can change while the
+/// turn runs: an agent-started turn follows the owner to the interface they
+/// write from mid-turn. The turn reads it each time it publishes.
+#[derive(Debug, Default)]
+pub struct LiveOutputEndpoint(std::sync::Mutex<Option<EndpointName>>);
+
+impl LiveOutputEndpoint {
+    /// Start out delivering to `endpoint` (`None`: nowhere but the web UI's
+    /// main conversation).
+    #[must_use]
+    pub fn new(endpoint: Option<EndpointName>) -> Self {
+        Self(std::sync::Mutex::new(endpoint))
+    }
+
+    /// Where the turn delivers now.
+    #[must_use]
+    pub fn get(&self) -> Option<EndpointName> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Deliver the rest of the turn to `endpoint`. Returns where it went before.
+    pub fn replace(&self, endpoint: EndpointName) -> Option<EndpointName> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(endpoint)
+    }
+}
+
+/// Where a main-agent turn's output goes: an endpoint fixed for the whole
+/// turn, or one the gateway may move while the turn runs.
+#[derive(Debug, Clone, Copy)]
+pub enum TurnOutput<'a> {
+    /// The same endpoint for the whole turn (`None`: no endpoint).
+    Fixed(Option<&'a EndpointName>),
+    /// Read at each publish.
+    Live(&'a LiveOutputEndpoint),
+}
+
+impl TurnOutput<'_> {
+    /// Where the turn delivers at this moment.
+    #[must_use]
+    pub fn current(&self) -> Option<EndpointName> {
+        match self {
+            Self::Fixed(endpoint) => endpoint.cloned(),
+            Self::Live(live) => live.get(),
+        }
+    }
+}
+
+impl<'a> From<Option<&'a EndpointName>> for TurnOutput<'a> {
+    fn from(endpoint: Option<&'a EndpointName>) -> Self {
+        Self::Fixed(endpoint)
+    }
+}
+
+impl<'a> From<&'a LiveOutputEndpoint> for TurnOutput<'a> {
+    fn from(live: &'a LiveOutputEndpoint) -> Self {
+        Self::Live(live)
+    }
+}
+
 /// Context for publishing streaming events during a turn.
 pub(crate) struct EventContext<'a> {
     pub publisher: &'a Publisher,
@@ -71,9 +136,10 @@ pub(crate) enum EventTarget<'a> {
     /// The main agent: the main conversation, and for a turn delivered to a
     /// chat interface that interface's endpoint topic, correlated to the
     /// message that started the turn. The endpoint may be absent (e.g. a
-    /// background turn with nowhere to show its output).
+    /// background turn with nowhere to show its output), and an
+    /// agent-started turn's can move mid-turn (see [`TurnOutput`]).
     Endpoint {
-        output_endpoint: Option<&'a EndpointName>,
+        output_endpoint: TurnOutput<'a>,
         correlation_id: &'a str,
     },
     /// An agent session: the sessions topic, tagged with the session's
@@ -179,7 +245,8 @@ impl EventContext<'_> {
                     content: content.to_owned(),
                 })
                 .await;
-                if let Some(ep) = chat_interface_endpoint(output_endpoint)
+                let output_endpoint = output_endpoint.current();
+                if let Some(ep) = chat_interface_endpoint(output_endpoint.as_ref())
                     && let Err(e) = self
                         .publisher
                         .publish(
@@ -234,14 +301,12 @@ impl EventContext<'_> {
     async fn publish_reply(&self, call: Option<u32>, content: &str) {
         let endpoint = match self.target {
             EventTarget::Endpoint {
-                output_endpoint: Some(ep),
-                ..
-            } => ep.to_string(),
-            EventTarget::Endpoint {
-                output_endpoint: None,
-                ..
-            }
-            | EventTarget::Session { .. } => String::new(),
+                output_endpoint, ..
+            } => output_endpoint
+                .current()
+                .map(|ep| ep.to_string())
+                .unwrap_or_default(),
+            EventTarget::Session { .. } => String::new(),
         };
         let for_endpoint = !endpoint.is_empty();
         self.publish_main(|turn_id| MainConversationEvent::Response {
@@ -1619,7 +1684,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: Some(&audience),
             target: EventTarget::Endpoint {
-                output_endpoint: Some(&ws),
+                output_endpoint: TurnOutput::Fixed(Some(&ws)),
                 correlation_id: "t1",
             },
             session_conversation: None,
@@ -1631,7 +1696,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: Some(&audience),
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "t2",
             },
             session_conversation: None,
@@ -1660,7 +1725,7 @@ mod tests {
             publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "turn-1",
             },
             session_conversation: None,
@@ -1896,7 +1961,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: Some(&ep),
+                output_endpoint: TurnOutput::Fixed(Some(&ep)),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -1927,7 +1992,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: Some(&ep),
+                output_endpoint: TurnOutput::Fixed(Some(&ep)),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -1962,7 +2027,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2015,7 +2080,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2105,7 +2170,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2214,7 +2279,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2328,7 +2393,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2402,7 +2467,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2748,7 +2813,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: Some(&ep),
+                output_endpoint: TurnOutput::Fixed(Some(&ep)),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2785,7 +2850,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2855,7 +2920,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: Some(&ep),
+                output_endpoint: TurnOutput::Fixed(Some(&ep)),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2902,7 +2967,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: Some(&ep),
+                output_endpoint: TurnOutput::Fixed(Some(&ep)),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2933,7 +2998,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: Some(&ep),
+                output_endpoint: TurnOutput::Fixed(Some(&ep)),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -2963,7 +3028,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: Some(&ep),
+                output_endpoint: TurnOutput::Fixed(Some(&ep)),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -3036,7 +3101,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: Some(&ep),
+                output_endpoint: TurnOutput::Fixed(Some(&ep)),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -3166,7 +3231,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: Some(&ep),
+                output_endpoint: TurnOutput::Fixed(Some(&ep)),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -3258,7 +3323,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -3343,7 +3408,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -3431,7 +3496,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -3518,7 +3583,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
@@ -3611,7 +3676,7 @@ mod tests {
             publisher: &publisher,
             reply_audience: None,
             target: EventTarget::Endpoint {
-                output_endpoint: None,
+                output_endpoint: TurnOutput::Fixed(None),
                 correlation_id: "corr-1",
             },
             session_conversation: None,
